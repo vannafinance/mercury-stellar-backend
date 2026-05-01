@@ -1,0 +1,310 @@
+@import "tailwindcss";
+
+@theme {
+  --font-family: var(--font-plus-jakarta-sans), system-ui, sans-serif;
+
+  /* Custom breakpoints */
+  --breakpoint-mobile: 550px;
+  --breakpoint-tablet: 768px;
+  --breakpoint-desktop: 1024px;
+}
+
+:root {
+  /* Base colors */
+  --color-base-dark: #111111;
+  --color-base-white: #ffffff;
+  --color-base-platinum: #f7f7f7;
+
+  /* Gray scale */
+  --gray-50: #f4f4f4;
+  --gray-100: #dfdfdf;
+  --gray-200: #bfbfbf;
+  --gray-300: #a9a9a9;
+  --gray-400: #949494;
+  --gray-500: #777777;
+  --gray-600: #595959;
+  --gray-700: #2c2c2c;
+  --gray-800: #1e1e1e;
+  --gray-900: #111111;
+
+  /* Primary – Violet */
+  --violet-50: #f1ebfd;
+  --violet-100: #d3c2f7;
+  --violet-200: #bda4f4;
+  --violet-300: #9f7bee;
+  --violet-400: #8d61eb;
+  --violet-500: #703ae6;
+  --violet-600: #6635d1;
+  --violet-700: #5029a3;
+  --violet-800: #3e207f;
+  --violet-900: #2f1b61;
+
+  /* Primary – Rose */
+  --rose-50: #ffe6f2;
+  --rose-100: #ffb0d6;
+  --rose-200: #ff8ac2;
+  --rose-300: #ff54a6;
+  --rose-400: #ff3395;
+  --rose-500: #ff007a;
+  --rose-600: #e8006f;
+  --rose-700: #b50057;
+  --rose-800: #8c0043;
+  --rose-900: #6b0033;
+
+  /* Secondary – Imperial Red */
+  --imperial-red-50: #feeeee;
+  --imperial-red-100: #fecacb;
+  --imperial-red-200: #feb0b2;
+  --imperial-red-300: #fd8c8e;
+  --imperial-red-400: #fd7679;
+  --imperial-red-500: #fc5457;
+  --imperial-red-600: #e54c4f;
+  --imperial-red-700: #b33c3e;
+  --imperial-red-800: #8b2e30;
+  --imperial-red-900: #6a2325;
+
+  /* Secondary – Magenta */
+  --magenta-50: #ebfcfd;
+  --magenta-100: #bff6fa;
+  --magenta-200: #a1f2f7;
+  --magenta-300: #76ecf4;
+  --magenta-400: #5be8f1;
+  --magenta-500: #3e2ee0;
+  --magenta-600: #2e2cd9;
+  --magenta-700: #2440a9;
+  --magenta-800: #1c7c83;
+  --magenta-900: #155f64;
+
+  /* Secondary – Electric Blue */
+  --electric-blue-50: #ebfcfd;
+  --electric-blue-100: #bff6fa;
+  --electric-blue-200: #a1f2f7;
+  --electric-blue-300: #76ecf4;
+  --electric-blue-400: #5be8f1;
+  --electric-blue-500: #32eee2;
+  --electric-blue-600: #22ced9;
+  --electric-blue-700: #24a0a9;
+  --electric-blue-800: #1c7c83;
+  --electric-blue-900: #155f64;
+
+  /* Spacing scale (px) */
+  --spacing-0: 2px;
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-7: 32px;
+  --spacing-8: 40px;
+  --spacing-9: 48px;
+  --spacing-10: 56px;
+  --spacing-11: 64px;
+  --spacing-12: 72px;
+  --spacing-13: 80px;
+  --spacing-14: 120px;
+}
+
+/* Global page background and border colors */
+body {
+  background-color: hsl(0, 0%, 100%);
+}
+
+html.dark body {
+  background-color: #111111;
+}
+
+/* Global border colors for light and dark themes */
+* {
+  border-color: #E2E2E2;
+}
+
+html.dark * {
+  border-color: #333333;
+}
+
+/* Margin page 60/40 layout — outside @layer so it beats all Tailwind utilities */
+.margin-layout-cols {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) !important;
+}
+
+/* scrollbar-hide utility — hides scrollbar while keeping scroll functionality */
+@utility scrollbar-hide {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+
+@layer utilities {
+
+  .bg-gradient {
+    background-image: linear-gradient(135deg, #FC5457 10%, #703AE6 80%);
+  }
+
+
+  /* Radius scale utilities (px) */
+  .radius-0   { border-radius: 0px; }
+  .radius-1   { border-radius: 4px; }
+  .radius-2   { border-radius: 8px; }
+  .radius-3   { border-radius: 12px; }
+  .radius-4   { border-radius: 16px; }
+  .radius-5   { border-radius: 20px; }
+  .radius-6   { border-radius: 24px; }
+  .radius-7   { border-radius: 32px; }
+  .radius-8   { border-radius: 40px; }
+  .radius-9   { border-radius: 48px; }
+  .radius-10  { border-radius: 56px; }
+  .radius-11  { border-radius: 64px; }
+  .radius-12  { border-radius: 72px; }
+  .radius-13  { border-radius: 80px; }
+  .radius-full { border-radius: 999px; }
+
+  /* Stroke width utilities (px) */
+  .stroke-0 { border-width: 0px; }
+  .stroke-1 { border-width: 1px; }
+  .stroke-2 { border-width: 2px; }
+  .stroke-3 { border-width: 3px; }
+  .stroke-4 { border-width: 4px; }
+  .stroke-5 { border-width: 5px; }
+  .stroke-6 { border-width: 6px; }
+  .stroke-7 { border-width: 8px; }
+  .stroke-8 { border-width: 10px; }
+  .stroke-9 { border-width: 12px; }
+
+  /* Text color themes */
+  .text-heading    { color: #1f1f1f; }
+  .text-paragraph  { color: #4b5563; }
+  .text-label      { color: #1f1f1f; }
+  .text-placeholder { color: #9ca3af; }
+
+  /* Heading styles (Semibold) */
+  .text-h1  { font-size: 80px; line-height: 96px; }
+  .text-h2  { font-size: 64px; line-height: 87px; }
+  .text-h3  { font-size: 48px; line-height: 72px; }
+  .text-h4  { font-size: 40px; line-height: 60px; }
+  .text-h5  { font-size: 34px; line-height: 51px; }
+  .text-h6  { font-size: 28px; line-height: 42px; }
+  .text-h7  { font-size: 24px; line-height: 36px; }
+  .text-h8  { font-size: 20px; line-height: 36px; }
+  .text-h9  { font-size: 16px; line-height: 24px; }
+  .text-h10 { font-size: 14px; line-height: 21px; font-weight: 600; }
+  .text-h11 { font-size: 12px; line-height: 18px; font-weight: 600; }
+  .text-h12 { font-size: 10px; line-height: 15px; font-weight: 600; }
+
+  /* Body styles (Regular) */
+  .text-subtext { font-size: 20px; line-height: 30px;}
+  .text-body-1  { font-size: 16px; line-height: 24px;}
+  .text-body-2  { font-size: 14px; line-height: 21px;}
+  .text-body-3  { font-size: 12px; line-height: 18px;}
+  .text-body-4  { font-size: 10px; line-height: 15px;}
+  .text-body-5  { font-size: 8px;  line-height: 12px;}
+
+  /* Button text styles (Semibold) */
+  .text-btn-sm { font-size: 12px; line-height:normal; }
+  .text-btn-md { font-size: 16px; line-height:normal; }
+  .text-btn-lg { font-size: 20px; line-height:normal; }
+
+  /* Thin scrollbar styles */
+  .thin-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .thin-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .thin-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #E2E2E2;
+    border-radius: 3px;
+  }
+  
+  .thin-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: #D0D0D0;
+  }
+
+  /* Global thin scrollbar for all scrollable elements */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #E2E2E2 transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  *::-webkit-scrollbar-thumb {
+    background-color: #E2E2E2;
+    border-radius: 3px;
+  }
+  
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #D0D0D0;
+  }
+
+  /* Thin scrollbar (alternate class) */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #a7a7a7 #f4f4f4;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: #f4f4f4;
+    border-radius: 3px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: #a7a7a7;
+    border-radius: 3px;
+  }
+
+  /* Hide scrollbar while keeping scroll functionality */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Shadow utility */
+  .shadow {
+    box-shadow:
+      0px 7px 15px rgba(0, 0, 0, 0.08),
+      0px 28px 28px rgba(0, 0, 0, 0.07);
+  }
+
+  /* Hide TradingView attribution logo */
+  #tv-attr-logo,
+  a#tv-attr-logo {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+  }
+
+  /* Global: strip browser-native spinner arrows from every <input type="number">.
+     Margin page uses this pattern per-input; apply it app-wide so spot, earn,
+     farm, remove/add-liquidity, etc. all match. */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+}
+

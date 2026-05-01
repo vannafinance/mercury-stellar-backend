@@ -1,0 +1,131 @@
+import { Token, DexOption } from "./types";
+
+export const MOCK_TOKENS: Token[] = [
+  {
+    id: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    symbol: "ETH",
+    name: "Ethereum",
+    logo: "/coins/eth.svg",
+    decimals: 18,
+    chain: "ethereum",
+    isNative: true,
+    isVerified: true,
+  },
+  {
+    id: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    symbol: "USDC",
+    name: "USD Coin",
+    logo: "/coins/usdc.svg",
+    decimals: 6,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    symbol: "USDT",
+    name: "Tether USD",
+    logo: "/coins/usdt.svg",
+    decimals: 6,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    symbol: "WBTC",
+    name: "Wrapped Bitcoin",
+    logo: "/coins/btc.svg",
+    decimals: 8,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0x6b175474e89094c44da98b954eedeac495271d0f",
+    symbol: "DAI",
+    name: "Dai Stablecoin",
+    logo: "/coins/dai.svg",
+    decimals: 18,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984",
+    symbol: "UNI",
+    name: "Uniswap",
+    logo: "/coins/uniswap.png",
+    decimals: 18,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9",
+    symbol: "AAVE",
+    name: "Aave",
+    logo: "/coins/aave.svg",
+    decimals: 18,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "0x514910771af9ca656af840dff83e8264ecf986ca",
+    symbol: "LINK",
+    name: "Chainlink",
+    logo: "/coins/chainlink.png",
+    decimals: 18,
+    chain: "ethereum",
+    isVerified: true,
+  },
+  {
+    id: "native_xlm",
+    symbol: "XLM",
+    name: "Stellar Lumens",
+    logo: "/coins/xlm.png",
+    decimals: 7,
+    chain: "stellar",
+    isNative: true,
+    isVerified: true,
+  },
+  // Soroswap testnet tokens (wrapped XLM contract + USDC contract)
+  {
+    id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    symbol: "XLM",
+    name: "Stellar Lumens (Soroswap)",
+    logo: "/coins/xlm.png",
+    decimals: 7,
+    chain: "stellar",
+    isNative: true,
+    isVerified: true,
+  },
+  {
+    id: "CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F",
+    symbol: "USDC",
+    name: "USD Coin (Soroswap)",
+    logo: "/icons/usdc-icon.svg",
+    decimals: 7,
+    chain: "stellar",
+    isVerified: true,
+  },
+  {
+    id: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    symbol: "WETH",
+    name: "Wrapped Ether",
+    logo: "/coins/eth.svg",
+    decimals: 18,
+    chain: "ethereum",
+    isVerified: true,
+  },
+];
+
+export const POPULAR_TOKENS = MOCK_TOKENS.slice(0, 5);
+
+export const MOCK_BALANCES: Record<string, string> = {
+  "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "2.5410",
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "1,250.00",
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": "500.00",
+  "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "0.0120",
+  "0x6b175474e89094c44da98b954eedeac495271d0f": "340.50",
+};
+
+export const MOCK_DEXES: DexOption[] = [
+  { id: "soroswap", name: "Soroswap", logo: "/icons/soroswap-logo.png" },
+  { id: "aquarius", name: "Aquarius", logo: "/icons/aquarius-logo.png" },
+];
