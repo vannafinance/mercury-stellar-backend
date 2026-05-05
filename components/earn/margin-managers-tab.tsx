@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 import { usePoolData } from "@/hooks/use-earn";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { useUserStore } from "@/store/user";

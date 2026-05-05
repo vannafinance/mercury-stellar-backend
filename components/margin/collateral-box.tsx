@@ -13,7 +13,7 @@ import {
   BALANCE_TYPE_OPTIONS,
 } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 import { useUserStore } from "@/store/user";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 

@@ -6,7 +6,7 @@ import { BorrowInfo } from "@/lib/types";
 import { motion } from "framer-motion";
 import { MAX_LEVERAGE, MODE_CONFIG } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 
 type Mode = "Deposit" | "Borrow";

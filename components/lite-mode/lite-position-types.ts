@@ -1,5 +1,5 @@
 import { calcNetApr, calcEarningsUsd } from "./lite-position-math";
-import { getTokenPriceUsdSync } from "@/lib/prices";
+import { getTokenPriceUsdSync } from "@/hooks/use-oracle-prices";
 
 export type LitePositionStatus = "active" | "risky" | "liquidation";
 

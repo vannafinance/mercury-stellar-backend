@@ -1,6 +1,6 @@
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
-import { getTokenPriceUsdSync } from "@/lib/prices";
+import { getTokenPriceUsdSync } from "@/hooks/use-oracle-prices";
 
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
@@ -16,9 +16,8 @@ const inflightCheckByUser = new Map<string, Promise<void>>();
 const lastRefreshByAccount = new Map<string, number>();
 const inflightRefreshByAccount = new Map<string, Promise<void>>();
 
-// USD prices come from the live price service (CoinGecko for XLM, $1.00 for
-// USD-pegged variants). Resolved per-call so freshly fetched values land in
-// store totals on the next refresh.
+// USD prices come from the on-chain oracle (via use-oracle-prices). Resolved
+// per-call so freshly fetched values land in store totals on the next refresh.
 const tokenPriceUsd = (token: string): number => getTokenPriceUsdSync(token);
 
 // Liquidation threshold from RiskEngine contract: BALANCE_TO_BORROW_THRESHOLD = 1.1 * WAD

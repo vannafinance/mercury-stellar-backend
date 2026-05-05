@@ -6,7 +6,7 @@ import { navbarItems } from "@/lib/constants";
 import { ThemeProvider } from "@/contexts/theme-context";
 import { QueryProvider } from "@/contexts/query-provider";
 import { LedgerSubscriberProvider } from "@/contexts/ledger-subscriber";
-import { PriceProvider } from "@/contexts/price-context";
+import { OraclePriceSync } from "@/contexts/oracle-price-sync";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 
@@ -36,11 +36,11 @@ export default function RootLayout({
         <ThemeProvider>
           <QueryProvider>
             <LedgerSubscriberProvider>
-              <PriceProvider>
+              <OraclePriceSync>
                 <Navbar items={navbarItems}/>
                 <ScaleWrapper>{children}</ScaleWrapper>
                 <AppToaster />
-              </PriceProvider>
+              </OraclePriceSync>
             </LedgerSubscriberProvider>
           </QueryProvider>
         </ThemeProvider>

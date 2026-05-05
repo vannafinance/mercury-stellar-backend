@@ -8,7 +8,7 @@ import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 import { useSupplyLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
 import { AssetType, ContractService } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";

@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { StatsCard } from "../ui/stats-card";
 import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 import { usePoolData } from "@/hooks/use-earn";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";

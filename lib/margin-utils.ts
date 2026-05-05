@@ -2,7 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
 import { BlendService } from './blend-utils';
-import { getTokenPriceUsdSync } from './prices';
+import { getTokenPriceUsdSync } from '@/hooks/use-oracle-prices';
 
 // Types
 export interface MarginAccount {

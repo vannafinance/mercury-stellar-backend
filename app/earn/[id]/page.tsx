@@ -18,7 +18,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { setSelectedPool, useSelectedPoolStore } from "@/store/selected-pool-store";
 import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData } from "@/hooks/use-earn";
-import { useTokenPrices } from "@/contexts/price-context";
+import { useTokenPrices } from "@/hooks/use-oracle-prices";
 
 const fmt = (n: number, decimals = 4) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M`
