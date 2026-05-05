@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
@@ -219,13 +219,18 @@ export const useUserPositions = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mutations — stay imperative. react-query's `useMutation` would be a clean
-// fit here, but the message/loading UX is already wired through setState and
-// the callers expect the existing return shape.
+// Mutations
+//
+// Sprint 1 Day 1 (Dev B track): converting from imperative async helpers to
+// `useMutation` so success-path React Query invalidation replaces ad-hoc
+// re-fetching. Still keeping `refreshAllBalances` for the Zustand
+// (useUserStore) wallet balances — those move to RQ in Day 3.
+//
+// Caller return shape preserved: `{ success: boolean, hash?: string }`.
 // ─────────────────────────────────────────────────────────────────────────────
 export const useSupplyLiquidity = () => {
   const address = useUserStore((state) => state.address);
-  const [isLoading, setIsLoading] = useState(false);
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
   const normalizeSupplyError = useCallback((rawError: string | undefined, assetType: AssetType) => {
@@ -238,7 +243,11 @@ export const useSupplyLiquidity = () => {
     if (
       lowerText.includes('cancelled') ||
       lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
+      lowerText.includes('rejected by user') ||
+      // Freighter returns an empty/malformed XDR when the user rejects, which
+      // then fails downstream parsing. Treat as a user cancel.
+      lowerText.includes('xdr read error') ||
+      lowerText.includes('attempt to read outside the boundary')
     ) {
       return 'Transaction cancelled by user.';
     }
@@ -265,6 +274,9 @@ export const useSupplyLiquidity = () => {
     return text.length > 180 ? `${text.slice(0, 180)}...` : text;
   }, []);
 
+  // Zustand-side wallet balance refresh. Lives in useUserStore (not React Query),
+  // so we still have to drive it imperatively here. Day-3 will likely move these
+  // balances into React Query, at which point this helper can be deleted.
   const refreshAllBalances = useCallback(async () => {
     if (!address) return;
 
@@ -292,55 +304,99 @@ export const useSupplyLiquidity = () => {
     }
   }, [address]);
 
-  const supply = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
+  const mutation = useMutation({
+    mutationFn: async (vars: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('NO_WALLET');
+      const result = await ContractService.deposit(address, vars.amount, vars.assetType);
+      if (!result.success) throw new Error(result.error || 'Supply failed');
+      return { hash: result.hash, amount: vars.amount, assetType: vars.assetType };
+    },
+    onMutate: (vars) => {
+      setMessage({
+        type: 'info',
+        text: `Supplying ${vars.amount} ${vars.assetType} to the lending pool...`,
+      });
+    },
+    onSuccess: ({ hash, amount, assetType }) => {
+      setMessage({
+        type: 'success',
+        text: `Successfully supplied ${amount} ${assetType}! You received v${assetType} tokens.`,
+      });
 
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
+      if (hash) {
+        addTransaction('supply', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({
+          asset: assetType,
+          type: 'supply',
+          amount: amount.toString(),
+          hash,
+          status: 'success',
+        });
+      }
 
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Supplying ${amount} ${assetType} to the lending pool...` });
+      // Optimistic activity-feed update. Soroban event indexing lags the tx
+      // confirm by a few seconds, so without this the Activity tab won't show
+      // the new tx until the next 10s poll. Injecting it into the cache here
+      // means instant UI feedback; the next refetch overwrites this with the
+      // canonical chain version (same hash, dedupes naturally).
+      if (hash && address) {
+        queryClient.setQueryData<Array<{
+          type: 'supply' | 'withdraw';
+          asset: string;
+          amount: string;
+          timestamp: number;
+          hash: string;
+          status: 'success';
+        }>>(
+          ['earn', 'transactions', address],
+          (old = []) => [
+            { type: 'supply', asset: assetType, amount: amount.toString(), timestamp: Date.now(), hash, status: 'success' },
+            ...old.filter((t) => t.hash !== hash),
+          ],
+        );
+      }
 
-      const result = await ContractService.deposit(address, amount, assetType);
+      // React Query invalidation — refreshes any consumer of these keys.
+      queryClient.invalidateQueries({ queryKey: ['earn', 'userPositions'] });
+      queryClient.invalidateQueries({ queryKey: ['earn', 'transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['earn', 'pools'] });
 
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully supplied ${amount} ${assetType}! You received v${assetType} tokens.` });
+      // Zustand wallet/deposit balance refresh (still needed pre-Day-3).
+      void refreshAllBalances();
+    },
+    onError: (error: Error, vars) => {
+      setMessage({
+        type: 'error',
+        text: normalizeSupplyError(error?.message, vars.assetType),
+      });
+    },
+  });
 
-        if (result.hash) {
-          addTransaction('supply', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'supply',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeSupplyError(result.error, assetType) });
+  // Wrapper preserves the existing return shape `{ success, hash? }` so callers
+  // (earn form, supply tab) keep working without changes.
+  const supply = useCallback(
+    async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
+      if (!address) {
+        setMessage({ type: 'error', text: 'Please connect your wallet first' });
         return { success: false };
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeSupplyError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, refreshAllBalances, normalizeSupplyError]);
+      if (!amount || amount <= 0) {
+        setMessage({ type: 'error', text: 'Please enter a valid amount' });
+        return { success: false };
+      }
+      try {
+        const result = await mutation.mutateAsync({ amount, assetType });
+        return { success: true, hash: result.hash };
+      } catch {
+        return { success: false };
+      }
+    },
+    [address, mutation],
+  );
 
   return {
     supply,
-    isLoading,
+    isLoading: mutation.isPending,
     message,
     clearMessage: () => setMessage({ type: '', text: '' }),
   };
@@ -349,7 +405,7 @@ export const useSupplyLiquidity = () => {
 export const useWithdrawLiquidity = () => {
   const address = useUserStore((state) => state.address);
   const userPositions = useEarnPoolStore((s) => s.userPositions);
-  const [isLoading, setIsLoading] = useState(false);
+  const queryClient = useQueryClient();
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
   const normalizeWithdrawError = useCallback((rawError: string | undefined, assetType: AssetType) => {
@@ -362,7 +418,11 @@ export const useWithdrawLiquidity = () => {
     if (
       lowerText.includes('cancelled') ||
       lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
+      lowerText.includes('rejected by user') ||
+      // Freighter returns an empty/malformed XDR when the user rejects, which
+      // then fails downstream parsing. Treat as a user cancel.
+      lowerText.includes('xdr read error') ||
+      lowerText.includes('attempt to read outside the boundary')
     ) {
       return 'Transaction cancelled by user.';
     }
@@ -447,62 +507,105 @@ export const useWithdrawLiquidity = () => {
     }
   }, [address]);
 
-  const withdraw = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
+  const mutation = useMutation({
+    mutationFn: async (vars: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('NO_WALLET');
+      const result = await ContractService.withdraw(address, vars.amount, vars.assetType);
+      if (!result.success) throw new Error(result.error || 'Withdraw failed');
+      return { hash: result.hash, amount: vars.amount, assetType: vars.assetType };
+    },
+    onMutate: (vars) => {
+      setMessage({
+        type: 'info',
+        text: `Withdrawing ${vars.amount} v${vars.assetType} from the lending pool...`,
+      });
+    },
+    onSuccess: ({ hash, amount, assetType }) => {
+      setMessage({
+        type: 'success',
+        text: `Successfully withdrew ${assetType}! Transaction confirmed.`,
+      });
 
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
+      if (hash) {
+        addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({
+          asset: assetType,
+          type: 'withdraw',
+          amount: amount.toString(),
+          hash,
+          status: 'success',
+        });
+      }
 
-    const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
-    const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
-    if (amount > depositedAmount) {
-      setMessage({ type: 'error', text: `Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})` });
-      return { success: false };
-    }
+      // Optimistic activity-feed update — see useSupplyLiquidity onSuccess
+      // for the rationale.
+      if (hash && address) {
+        queryClient.setQueryData<Array<{
+          type: 'supply' | 'withdraw';
+          asset: string;
+          amount: string;
+          timestamp: number;
+          hash: string;
+          status: 'success';
+        }>>(
+          ['earn', 'transactions', address],
+          (old = []) => [
+            { type: 'withdraw', asset: assetType, amount: amount.toString(), timestamp: Date.now(), hash, status: 'success' },
+            ...old.filter((t) => t.hash !== hash),
+          ],
+        );
+      }
 
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Withdrawing ${amount} v${assetType} from the lending pool...` });
+      // React Query invalidation — same set as supply.
+      queryClient.invalidateQueries({ queryKey: ['earn', 'userPositions'] });
+      queryClient.invalidateQueries({ queryKey: ['earn', 'transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['earn', 'pools'] });
 
-      const result = await ContractService.withdraw(address, amount, assetType);
+      // Zustand wallet/deposit balance refresh + pool-position recompute
+      // (still needed pre-Day-3 — those balances aren't in React Query yet).
+      void refreshAllBalances();
+    },
+    onError: (error: Error, vars) => {
+      setMessage({
+        type: 'error',
+        text: normalizeWithdrawError(error?.message, vars.assetType),
+      });
+    },
+  });
 
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully withdrew ${assetType}! Transaction confirmed.` });
-
-        if (result.hash) {
-          addTransaction('withdraw', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'withdraw',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeWithdrawError(result.error, assetType) });
+  // Wrapper preserves the existing return shape `{ success, hash? }`.
+  const withdraw = useCallback(
+    async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
+      if (!address) {
+        setMessage({ type: 'error', text: 'Please connect your wallet first' });
         return { success: false };
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeWithdrawError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, userPositions, refreshAllBalances, normalizeWithdrawError]);
+      if (!amount || amount <= 0) {
+        setMessage({ type: 'error', text: 'Please enter a valid amount' });
+        return { success: false };
+      }
+      const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
+      const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
+      if (amount > depositedAmount) {
+        setMessage({
+          type: 'error',
+          text: `Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})`,
+        });
+        return { success: false };
+      }
+      try {
+        const result = await mutation.mutateAsync({ amount, assetType });
+        return { success: true, hash: result.hash };
+      } catch {
+        return { success: false };
+      }
+    },
+    [address, userPositions, mutation],
+  );
 
   return {
     withdraw,
-    isLoading,
+    isLoading: mutation.isPending,
     message,
     depositedBalances: {
       XLM: userPositions.XLM?.vTokenBalance || '0',
