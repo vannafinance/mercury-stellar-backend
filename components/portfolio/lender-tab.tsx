@@ -1,6 +1,30 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+
+const filterRecordByTimeRange = (
+  data: Record<string, number>,
+  filter: string,
+): Record<string, number> => {
+  if (filter === "All Time") return data;
+  const now = new Date();
+  const start = new Date(now);
+  if (filter === "1 Week") start.setDate(now.getDate() - 7);
+  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
+  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
+  start.setHours(0, 0, 0, 0);
+  return Object.fromEntries(
+    Object.entries(data).filter(([date]) => new Date(date) >= start),
+  );
+};
+
+const LENDER_CHART_DATA: Record<string, number> = {
+  "2025-08-01": 4120, "2025-08-08": 4380, "2025-08-15": 4640,
+  "2025-08-22": 4880, "2025-08-29": 5120, "2025-09-05": 5360,
+  "2025-09-12": 5580, "2025-09-19": 5800, "2025-09-26": 6020,
+  "2025-10-03": 5880, "2025-10-10": 6100, "2025-10-17": 6340,
+  "2025-10-24": 6560, "2025-10-31": 6720,
+};
 import { RewardsTable } from "@/components/earn/rewards-table";
 import { ReusableChart } from "@/components/ui/reusable-chart";
 import { Table } from "@/components/earn/table";
@@ -39,6 +63,11 @@ export const LenderTab = () => {
   const [isTimeDropdownOpen, setIsTimeDropdownOpen] = useState(false);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [chartHeight, setChartHeight] = useState(400);
+
+  const filteredChartData = useMemo(
+    () => filterRecordByTimeRange(LENDER_CHART_DATA, timeFilter),
+    [timeFilter],
+  );
 
   useEffect(() => {
     const el = chartContainerRef.current;
@@ -141,7 +170,7 @@ export const LenderTab = () => {
                       isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
                     }`}
                   >
-                    {["All Time", "3 Months", "6 Months", "1 Year"].map((f) => (
+                    {["All Time", "1 Week", "1 Month", "3 Months"].map((f) => (
                       <button
                         key={f}
                         type="button"
@@ -161,22 +190,7 @@ export const LenderTab = () => {
 
           <div ref={chartContainerRef} className="flex-1 min-h-0 overflow-hidden rounded-xl">
             <ReusableChart
-              data={{
-                "2025-08-01": 4120,
-                "2025-08-08": 4380,
-                "2025-08-15": 4640,
-                "2025-08-22": 4880,
-                "2025-08-29": 5120,
-                "2025-09-05": 5360,
-                "2025-09-12": 5580,
-                "2025-09-19": 5800,
-                "2025-09-26": 6020,
-                "2025-10-03": 5880,
-                "2025-10-10": 6100,
-                "2025-10-17": 6340,
-                "2025-10-24": 6560,
-                "2025-10-31": 6720,
-              }}
+              data={filteredChartData}
               gradientColors={["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"]}
               lineColor="#703ae6"
               height={chartHeight}

@@ -30,28 +30,18 @@ interface ChartProps {
   hideTitle?: boolean; // Hide the title + value row (used when wrapped in CollapsibleChart)
 }
 
-const filterOptions = ["3 Months", "6 Months", "1 Year", "All Time"];
+const filterOptions = ["1 Week", "1 Month", "3 Months", "All Time"];
 const dayOptions = ["1D", "7D", "30D", "1Y"];
 const depositApyOptions = ["Deposit APY", "Borrow APY"];
-
-// Number of synthetic backfill points to draw inside the selected window
-// when real history doesn't cover it. Keeps the X-axis populated and gives
-// the chart a "growth curve" feel typical of mature DEXes.
-const BACKFILL_POINTS: Record<string, number> = {
-  "3 Months": 12,   // ~weekly
-  "6 Months": 24,   // ~weekly
-  "1 Year": 12,     // monthly
-  "All Time": 0,    // use real data only
-};
 
 // Bucket width per timeframe. Snapshots that fall into the same bucket are
 // collapsed to a single point (latest value wins). Without this, every
 // per-minute snapshot pushes a new chart point even on multi-month views,
 // which makes the chart visibly reshape every refresh tick.
 const BUCKET_MS_BY_FILTER: Record<string, number> = {
+  "1 Week": 6 * 60 * 60 * 1000,           // 6 hours
+  "1 Month": 24 * 60 * 60 * 1000,         // 1 day
   "3 Months": 24 * 60 * 60 * 1000,        // 1 day
-  "6 Months": 24 * 60 * 60 * 1000,        // 1 day
-  "1 Year": 7 * 24 * 60 * 60 * 1000,      // 1 week
   // "All Time" uses an adaptive bucket computed from the actual span — see
   // bucketByInterval() below — so a 2-day-old account doesn't collapse to a
   // single point but a 2-year-old account doesn't render 100k+ points.
@@ -120,10 +110,10 @@ const adaptiveBucketMs = (data: Array<{ date: string; amount: number }>): number
   return Math.max(60 * 60 * 1000, target);
 };
 
-// Helper function to filter data based on selected filter. Also pads the
-// window with synthetic backfill points when real data doesn't span the
-// selected range, so the X-axis shows the full timeframe instead of
-// collapsing to "Apr Apr Apr Apr".
+// Helper function to filter data based on selected filter.
+// Always anchors the x-axis at the start of the selected window so the
+// chart spans the full period even when all real data is recent (e.g. a
+// "3 Months" view should start at Nov, not at the deposit date in May).
 const filterDataByTimeRange = (
   data: Array<{ date: string; amount: number }>,
   filter: string,
@@ -132,19 +122,16 @@ const filterDataByTimeRange = (
   const startDate = new Date(now);
 
   switch (filter) {
+    case "1 Week":
+      startDate.setDate(now.getDate() - 7);
+      break;
+    case "1 Month":
+      startDate.setMonth(now.getMonth() - 1);
+      break;
     case "3 Months":
       startDate.setMonth(now.getMonth() - 3);
       break;
-    case "6 Months":
-      startDate.setMonth(now.getMonth() - 6);
-      break;
-    case "1 Year":
-      startDate.setFullYear(now.getFullYear() - 1);
-      break;
     case "All Time":
-      // Adaptive bucket so the curve stays stable across refreshes — without
-      // this, every per-minute snapshot becomes its own X-axis tick and the
-      // chart visibly reshapes every refresh tick on long histories.
       return bucketByInterval(data, adaptiveBucketMs(data));
     default:
       return data;
@@ -152,51 +139,29 @@ const filterDataByTimeRange = (
 
   startDate.setHours(0, 0, 0, 0);
   const inWindow = data.filter((item) => new Date(item.date) >= startDate);
-
-  // Collapse rapid-fire snapshots into per-day / per-week points so the chart
-  // doesn't redraw for every minute-level data write.
   const bucketed = bucketByInterval(inWindow, BUCKET_MS_BY_FILTER[filter] ?? 0);
 
-  // If real data fully covers the window (oldest point ≥ 80% of window from
-  // start), we don't need synthetic backfill. Otherwise, prepend a smooth
-  // ramp from 0 → first-real-value across the missing portion.
-  const targetCount = BACKFILL_POINTS[filter] ?? 0;
-  if (targetCount === 0 || bucketed.length === 0) return bucketed;
-
-  // If the real data already has meaningful variance (the user actually
-  // deposited and withdrew, or their balance grew/dropped), don't drown
-  // it in 12 synthetic zeros — show their real curve directly. Without
-  // this, a fresh wallet's deposit + withdraw cycle on a 1-Year view
-  // gets squashed into the last 0.01% of the X-axis behind a long flat
-  // backfill line. Variance > 0 is a strong signal there's something
-  // worth showing.
-  const amounts = bucketed.map((p) => p.amount);
-  const minAmount = Math.min(...amounts);
-  const maxAmount = Math.max(...amounts);
-  if (maxAmount - minAmount > 1e-6) return bucketed;
-
-  const oldestReal = new Date(bucketed[0].date).getTime();
+  // Always anchor at the window start so the x-axis spans the full period.
+  // If the oldest real point is more than one bucket-width after the window
+  // start (meaning the user deposited recently), prepend a zero so the chart
+  // shows "flat at 0 → then activity". This is why a "3 Months" view shows
+  // Nov on the left even when all deposits happened yesterday.
   const startMs = startDate.getTime();
-  const realSpanRatio = (now.getTime() - oldestReal) / (now.getTime() - startMs);
-  if (realSpanRatio >= 0.8) return bucketed;
+  const bucketMs = BUCKET_MS_BY_FILTER[filter] ?? 24 * 60 * 60 * 1000;
+  const anchor = { date: startDate.toISOString(), amount: 0 };
 
-  // Build synthetic backfill: targetCount evenly-spaced points from startDate
-  // to oldestReal, ramping linearly from 0 to first real value. Real data
-  // points then appear unmodified at the end of the array.
-  const firstRealValue = bucketed[0].amount;
-  const synthetic: Array<{ date: string; amount: number }> = [];
-  const realStartMs = oldestReal;
-  const stepMs = (realStartMs - startMs) / targetCount;
-  for (let i = 0; i < targetCount; i++) {
-    const ts = startMs + i * stepMs;
-    const fraction = targetCount > 1 ? i / (targetCount - 1) : 0;
-    synthetic.push({
-      date: new Date(ts).toISOString(),
-      amount: parseFloat((firstRealValue * fraction).toFixed(2)),
-    });
+  if (bucketed.length === 0) {
+    // No data in window — flat zero line spanning the full period
+    return [anchor, { date: now.toISOString(), amount: 0 }];
   }
 
-  return [...synthetic, ...bucketed];
+  const oldestMs = new Date(bucketed[0].date).getTime();
+  if (oldestMs > startMs + bucketMs) {
+    // Real data doesn't start at the window edge — anchor at zero first
+    return [anchor, ...bucketed];
+  }
+
+  return bucketed;
 };
 
 // Helper function to filter data based on selected days

@@ -105,7 +105,14 @@ export const TransferCollateral = () => {
       totalCollateralValue + totalBorrowedValue - totalBorrowedValue * LIQUIDATION_THRESHOLD
     );
     if (selectedTokenPrice <= 0) return 0;
-    const withdrawableToken = withdrawableUsd / selectedTokenPrice;
+    const rawToken = withdrawableUsd / selectedTokenPrice;
+    // Snap to exact balance when float rounding gives a hair under (e.g. 99.9999 → 100)
+    const withdrawableToken =
+      maxTransferableBalance > 0 &&
+      rawToken < maxTransferableBalance &&
+      (maxTransferableBalance - rawToken) / maxTransferableBalance < 0.001
+        ? maxTransferableBalance
+        : rawToken;
     return Math.max(0, Math.min(maxTransferableBalance, withdrawableToken) - XLM_TRANSFER_EPSILON);
   })();
   const maxExecutableWithdraw = (() => {

@@ -17,7 +17,23 @@ const PORTFOLIO_TABS = [
   { id: "trader", label: "Trader" },
 ];
 
-const TIME_FILTERS = ["3 months", "6 months", "1 year", "All Time"] as const;
+const TIME_FILTERS = ["1 Week", "1 Month", "3 Months", "All Time"] as const;
+
+const filterRecordByTimeRange = (
+  data: Record<string, number>,
+  filter: string,
+): Record<string, number> => {
+  if (filter === "All Time") return data;
+  const now = new Date();
+  const start = new Date(now);
+  if (filter === "1 Week") start.setDate(now.getDate() - 7);
+  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
+  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
+  start.setHours(0, 0, 0, 0);
+  return Object.fromEntries(
+    Object.entries(data).filter(([date]) => new Date(date) >= start),
+  );
+};
 
 const MOCK_EARNINGS_DATA: Record<string, number> = {
   "2025-08-01": 8420,
@@ -80,6 +96,11 @@ const PortfolioChartCard = ({
     [],
   );
 
+  const filteredData = useMemo(
+    () => filterRecordByTimeRange(data, timeFilter),
+    [data, timeFilter],
+  );
+
   return (
     <>
       {/* Desktop: full card */}
@@ -136,7 +157,7 @@ const PortfolioChartCard = ({
         </div>
         <div className="w-full min-w-0">
           <ReusableChart
-            data={data}
+            data={filteredData}
             gradientColors={chartColors}
             lineColor="#703ae6"
             height={220}
@@ -189,7 +210,7 @@ const PortfolioChartCard = ({
             >
               <div className="pb-2 px-1">
                 <ReusableChart
-                  data={data}
+                  data={filteredData}
                   gradientColors={chartColors}
                   lineColor="#703ae6"
                   height={180}

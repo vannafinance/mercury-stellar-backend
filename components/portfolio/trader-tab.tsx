@@ -1,6 +1,31 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+
+const filterRecordByTimeRange = (
+  data: Record<string, number>,
+  filter: string,
+): Record<string, number> => {
+  if (filter === "All Time") return data;
+  const now = new Date();
+  const start = new Date(now);
+  if (filter === "1 Week") start.setDate(now.getDate() - 7);
+  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
+  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
+  start.setHours(0, 0, 0, 0);
+  return Object.fromEntries(
+    Object.entries(data).filter(([date]) => new Date(date) >= start),
+  );
+};
+
+const TRADER_CHART_DATA: Record<string, number> = {
+  "2025-08-01": 18200, "2025-08-07": 19800, "2025-08-13": 21200,
+  "2025-08-19": 19400, "2025-08-25": 17200, "2025-08-31": 15000,
+  "2025-09-06": 13200, "2025-09-12": 14800, "2025-09-18": 16600,
+  "2025-09-24": 18400, "2025-09-30": 20400, "2025-10-06": 22200,
+  "2025-10-12": 23800, "2025-10-18": 25200, "2025-10-24": 26400,
+  "2025-10-31": 27800,
+};
 import { ReusableChart } from "@/components/ui/reusable-chart";
 import { Positionstable } from "@/components/margin/positions-table";
 import { FarmSection } from "./farm-section";
@@ -192,6 +217,11 @@ export const TraderTab = () => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const [chartHeight, setChartHeight] = useState(280);
 
+  const filteredChartData = useMemo(
+    () => filterRecordByTimeRange(TRADER_CHART_DATA, timeFilter),
+    [timeFilter],
+  );
+
   useEffect(() => {
     const el = chartContainerRef.current;
     if (!el) return;
@@ -307,7 +337,7 @@ export const TraderTab = () => {
                         isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
                       }`}
                     >
-                      {["All Time", "3 Months", "6 Months", "1 Year"].map((f) => (
+                      {["All Time", "1 Week", "1 Month", "3 Months"].map((f) => (
                         <button
                           key={f}
                           type="button"
@@ -326,24 +356,7 @@ export const TraderTab = () => {
 
               <div ref={chartContainerRef} className="flex-1 min-h-0 overflow-hidden rounded-xl">
                 <ReusableChart
-                  data={{
-                    "2025-08-01": 18200,
-                    "2025-08-07": 19800,
-                    "2025-08-13": 21200,
-                    "2025-08-19": 19400,
-                    "2025-08-25": 17200,
-                    "2025-08-31": 15000,
-                    "2025-09-06": 13200,
-                    "2025-09-12": 14800,
-                    "2025-09-18": 16600,
-                    "2025-09-24": 18400,
-                    "2025-09-30": 20400,
-                    "2025-10-06": 22200,
-                    "2025-10-12": 23800,
-                    "2025-10-18": 25200,
-                    "2025-10-24": 26400,
-                    "2025-10-31": 27800,
-                  }}
+                  data={filteredChartData}
                   gradientColors={["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"]}
                   lineColor="#703ae6"
                   height={chartHeight}

@@ -89,11 +89,10 @@ export default function FarmPage() {
           { chain: symbol, title: symbol, tags: ['Blend', 'Supply'] },
           { title: 'Blend' },
           { title: s ? `${fmtNum(parseFloat(s.totalSupply))} ${symbol}` : (loading ? '...' : '0') },
-          { title: s ? `${fmtNum(parseFloat(s.totalSupply))} ${symbol}` : (loading ? '...' : '0') },
+          { title: s ? `${fmtNum(parseFloat(s.totalBorrow))} ${symbol}` : (loading ? '...' : '0') },
           { title: s ? fmt(s.supplyAPY, '%') : '0' },
           { title: s ? fmt(s.borrowAPY, '%') : '0' },
           { title: s ? fmt(s.utilizationRate, '%') : '0' },
-          { title: s ? fmt(s.bRate) : '0' },
         ],
       };
     });
@@ -121,7 +120,6 @@ export default function FarmPage() {
             { title: poolStats[sym]?.supplyAPY ? `${poolStats[sym]!.supplyAPY}%` : '0' },
             { title: '0' },
             { title: '0' },
-            { title: poolStats[sym]?.bRate ?? '0' },
           ],
         });
       });
@@ -140,7 +138,6 @@ export default function FarmPage() {
           { title: `${mySSLpBalance.toFixed(2)} LP` },
           { title: `${xlmShare} XLM + ${usdcShare} USDC` },
           { title: ssStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
           { title: '0' },
           { title: '0' },
         ],
@@ -165,7 +162,6 @@ export default function FarmPage() {
           { title: `${lpBal.toFixed(2)} LP` },
           { title: `${shareA} ${tokenA} + ${shareB} ${tokenB}` },
           { title: aqPoolStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
           { title: '0' },
           { title: '0' },
         ],
@@ -429,7 +425,7 @@ export default function FarmPage() {
             ? []
             : ["Vaults"],
           supplyApyTab: activeTab === "positions" ? false : true,
-          supplyApyLabel: activeFilterTab === "lending-single-assets" ? "Provider TVL" : "Vanna TVL",
+          supplyApyLabel: activeFilterTab === "lending-single-assets" ? "Total Borrow" : "Vanna TVL",
           filterTabType: activeTab === "positions" ? "solid" : "ghost"
         }}
         filterTabTypeOptions={filterTabTypeOptions}

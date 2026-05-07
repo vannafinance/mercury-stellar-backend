@@ -1,4 +1,4 @@
-export const FILTER_OPTIONS = ["3 Months", "6 Months", "1 Year", "All Time"]
+export const FILTER_OPTIONS = ["1 Week", "1 Month", "3 Months", "All Time"]
 
 // Overall Deposit Data - Monthly data for approximately one year (Jan 2025 - Dec 2025)
 export const depositData = [

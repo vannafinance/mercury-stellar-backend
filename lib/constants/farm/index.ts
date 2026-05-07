@@ -360,10 +360,9 @@ export const singleAssetTableHeadings = [
   { label: "Asset", id: "asset", icon: true },
   { label: "Protocol", id: "protocol", icon: true },
   { label: "Total Deposits", id: "total-deposits", icon: true },
-  { label: "Provider TVL", id: "provider-tvl", icon: true },
+  { label: "Total Borrow", id: "total-borrow", icon: true },
   { label: "Supply APY", id: "supply-apy", icon: true },
-  { label: "Leveraged APY", id: "leveraged-apy", icon: true },
-  { label: "24H Volume", id: "24h-volume", icon: true },
+  { label: "Borrow APY", id: "borrow-apy", icon: true },
   { label: "Utilization", id: "utilization", icon: true },
 ];
 
@@ -380,63 +379,25 @@ export const singleAssetTableBody = {
     // Row 1: XLM - Blend Supply Pool
     {
       cell: [
-        {
-          chain: "XLM",
-          title: "XLM",
-          tags: ["Blend", "Supply"],
-        },
-        {
-          title: "Blend",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
+        { chain: "XLM", title: "XLM", tags: ["Blend", "Supply"] },
+        { title: "Blend" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
       ],
     },
     // Row 2: USDC - Blend Supply Pool
     {
       cell: [
-        {
-          chain: "USDC",
-          title: "USDC",
-          tags: ["Blend", "Supply"],
-        },
-        {
-          title: "Blend",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
-        {
-          title: "—",
-        },
+        { chain: "USDC", title: "USDC", tags: ["Blend", "Supply"] },
+        { title: "Blend" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
+        { title: "—" },
       ],
     },
   ],

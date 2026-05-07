@@ -27,6 +27,14 @@ import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+
+const LIQUIDATION_THRESHOLD = 1.1;
+const HF_INF_SENTINEL = 999;
+const formatHF = (hf: number): string =>
+  !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
+const formatUsd = (n: number): string =>
+  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 type Modes = "Deposit" | "Borrow";
 
@@ -73,8 +81,6 @@ export const LeverageAssetsTab = () => {
   // Component state
   const hasMarginAccount = useMarginAccountInfoStore((state) => state.hasMarginAccount);
   const marginAccountAddress = useMarginAccountInfoStore((state) => state.marginAccountAddress);
-  const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
-  const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
   const isCreatingAccount = useMarginAccountInfoStore((state) => state.isCreatingAccount);
   const [editingId, setEditingId] = useState<string | null>(null);
   const mode: Modes = "Deposit";
@@ -246,15 +252,18 @@ export const LeverageAssetsTab = () => {
     }
   }, [collaterals.size]);
 
-  // Calculate total deposit value - stable dependency
-  const totalDepositValue = useMemo(
-    () =>
-      collateralList.reduce(
-        (sum, collateral) => sum + (collateral.amountInUsd || 0),
-        0
-      ),
-    [collateralList]
-  );
+  // Calculate total deposit value using live prices so the borrow preview
+  // stays consistent with BorrowBox (both use the same React-Query cache).
+  // Using stored amountInUsd (rounded to 2 dp) caused a price-roundtrip
+  // error: 10 XLM → $1.59 stored → 1.59/0.1587 = 10.02 displayed.
+  const totalDepositValue = useMemo(() => {
+    return collateralList.reduce((sum, collateral) => {
+      const sym = (collateral.asset || 'XLM');
+      const priceKey = normalizeContractTokenSymbol(sym);
+      const price = MB_TOKEN_PRICES[priceKey] ?? 1;
+      return sum + (collateral.amount || 0) * price;
+    }, 0);
+  }, [collateralList, MB_TOKEN_PRICES]);
 
   // Derived values (no state needed)
   const depositAmount = totalDepositValue;
@@ -268,18 +277,6 @@ export const LeverageAssetsTab = () => {
   const effectiveTotalForBorrow = isMBMode ? mbSelectedUsd : depositAmount;
   const platformPoints = Number((leverage * 0.575).toFixed(1));
   const projectedBorrowUsd = Math.max(0, effectiveTotalForBorrow * (leverage - 1));
-  const projectedCollateralUsd = totalCollateralValue + (isMBMode ? 0 : depositAmount);
-  const projectedDebtUsd = totalBorrowedValue + projectedBorrowUsd;
-  const updatedCollateral = Math.max(
-    0,
-    projectedCollateralUsd - projectedDebtUsd * 1.1
-  );
-  const netHealthFactor =
-    projectedDebtUsd > 1e-6
-      ? projectedCollateralUsd / projectedDebtUsd
-      : projectedCollateralUsd > 0
-        ? 999
-        : 0;
 
   // Memoized callbacks
   const handleAddCollateral = useCallback(() => {
@@ -1056,7 +1053,7 @@ export const LeverageAssetsTab = () => {
           />
         </motion.section>
 
-        {/* Details panel - shows calculations and info */}
+        {/* Details panel - shows static transaction info */}
         <motion.div
           className="mt-3"
           initial={{ opacity: 0, y: 20 }}
@@ -1071,14 +1068,11 @@ export const LeverageAssetsTab = () => {
               depositAmount: depositAmount,
               fees: fees,
               totalDeposit: totalDeposit,
-              updatedCollateral: updatedCollateral,
-              netHealthFactor: netHealthFactor,
             }}
             showExpandable={true}
             expandableSections={[
               {
                 title: "Transaction Details",
-                
                 items: [
                   {
                     id: "platformPoints",
@@ -1100,14 +1094,6 @@ export const LeverageAssetsTab = () => {
                     id: "totalDeposit",
                     name: "Total deposit including fees",
                   },
-                  {
-                    id: "updatedCollateral",
-                    name: "Updated Collateral Before Liquidation",
-                  },
-                  {
-                    id: "netHealthFactor",
-                    name: "Updated Net Health Factor",
-                  },
                 ],
                 defaultExpanded: false,
                 delay: 0.1,
@@ -1115,6 +1101,13 @@ export const LeverageAssetsTab = () => {
             ]}
           />
         </motion.div>
+
+        {/* Before → after preview for health factor and collateral */}
+        <LeveragePreviewSection
+          depositAmount={depositAmount}
+          projectedBorrowUsd={projectedBorrowUsd}
+          isMBMode={isMBMode}
+        />
 
         {/* Create Margin Account button */}
         <motion.section
@@ -1257,4 +1250,55 @@ export const LeverageAssetsTab = () => {
       </AnimatePresence>
     </>
   );
+};
+
+interface LeveragePreviewSectionProps {
+  depositAmount: number;
+  projectedBorrowUsd: number;
+  isMBMode: boolean;
+}
+
+const LeveragePreviewSection = ({
+  depositAmount,
+  projectedBorrowUsd,
+  isMBMode,
+}: LeveragePreviewSectionProps) => {
+  const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
+  const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+
+  const effectiveDeposit = isMBMode ? 0 : depositAmount;
+  if (effectiveDeposit <= 0 && projectedBorrowUsd <= 0) return null;
+
+  const grossBefore = totalCollateralValue + totalBorrowedValue;
+  const hfBefore = totalBorrowedValue > 0 ? grossBefore / totalBorrowedValue : HF_INF_SENTINEL;
+  const bufferBefore = Math.max(0, grossBefore - totalBorrowedValue * LIQUIDATION_THRESHOLD);
+
+  const collateralAfter = totalCollateralValue + effectiveDeposit;
+  const debtAfter = totalBorrowedValue + projectedBorrowUsd;
+  const grossAfter = collateralAfter + debtAfter;
+  const hfAfter = debtAfter > 1e-6 ? grossAfter / debtAfter : HF_INF_SENTINEL;
+  const bufferAfter = Math.max(0, grossAfter - debtAfter * LIQUIDATION_THRESHOLD);
+
+  const rows: PreviewRow[] = [
+    ...(effectiveDeposit > 0
+      ? [{ label: "Margin Collateral", before: formatUsd(totalCollateralValue), after: formatUsd(collateralAfter), tone: "positive" as const }]
+      : []),
+    ...(projectedBorrowUsd > 0
+      ? [{ label: "Outstanding Debt", before: formatUsd(totalBorrowedValue), after: formatUsd(debtAfter), tone: "negative" as const }]
+      : []),
+    {
+      label: "Health Factor",
+      before: formatHF(hfBefore),
+      after: formatHF(hfAfter),
+      tone: hfAfter >= hfBefore ? "positive" as const : "negative" as const,
+    },
+    {
+      label: "Liquidation Buffer",
+      before: formatUsd(bufferBefore),
+      after: formatUsd(bufferAfter),
+      tone: bufferAfter >= bufferBefore ? "positive" as const : "negative" as const,
+    },
+  ];
+
+  return <MarginActionPreview rows={rows} />;
 };

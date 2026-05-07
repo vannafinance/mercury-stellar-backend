@@ -184,11 +184,11 @@ export const MARGIN_ACCOUNT_INFO_ITEMS = [
   },
   {
     id: "avgHealthFactor",
-    name: "Avg Health Factor",
+    name: "Net Health Factor",
   },
   {
     id: "borrowRate",
-    name: "Borrow Rate",
+    name: "Net Borrow Rate",
   },
 ] as const;
 

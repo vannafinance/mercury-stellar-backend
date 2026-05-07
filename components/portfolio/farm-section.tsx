@@ -1,6 +1,30 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+
+const filterRecordByTimeRange = (
+  data: Record<string, number>,
+  filter: string,
+): Record<string, number> => {
+  if (filter === "All Time") return data;
+  const now = new Date();
+  const start = new Date(now);
+  if (filter === "1 Week") start.setDate(now.getDate() - 7);
+  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
+  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
+  start.setHours(0, 0, 0, 0);
+  return Object.fromEntries(
+    Object.entries(data).filter(([date]) => new Date(date) >= start),
+  );
+};
+
+const FARM_CHART_DATA: Record<string, number> = {
+  "2025-08-01": 22100, "2025-08-08": 22680, "2025-08-15": 23280,
+  "2025-08-22": 23900, "2025-08-29": 24540, "2025-09-05": 25200,
+  "2025-09-12": 25880, "2025-09-19": 26580, "2025-09-26": 27300,
+  "2025-10-03": 28040, "2025-10-10": 28800, "2025-10-17": 29580,
+  "2025-10-24": 30380, "2025-10-31": 31200,
+};
 import { ReusableChart } from "@/components/ui/reusable-chart";
 import { Table } from "@/components/earn/table";
 import { useTheme } from "@/contexts/theme-context";
@@ -52,6 +76,11 @@ export const FarmSection = () => {
     headings: farmTableHeadings,
     body: { rows: [] as any[] },
   }), []);
+
+  const filteredChartData = useMemo(
+    () => filterRecordByTimeRange(FARM_CHART_DATA, timeFilter),
+    [timeFilter],
+  );
 
   const handleFilterTabChange = useCallback((tabId: string) => {
     setActiveFilterTab(tabId);
@@ -123,7 +152,7 @@ export const FarmSection = () => {
                 <div className={`absolute right-0 top-[44px] z-10 rounded-[8px] border-[1px] py-[4px] min-w-[120px] ${
                   isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
                 }`}>
-                  {["All Time", "3 Months", "6 Months", "1 Year"].map((f) => (
+                  {["All Time", "1 Week", "1 Month", "3 Months"].map((f) => (
                     <button
                       key={f}
                       type="button"
@@ -142,22 +171,7 @@ export const FarmSection = () => {
 
           <div ref={chartContainerRef} className="flex-1 min-h-0 overflow-hidden rounded-xl">
             <ReusableChart
-              data={{
-                "2025-08-01": 22100,
-                "2025-08-08": 22680,
-                "2025-08-15": 23280,
-                "2025-08-22": 23900,
-                "2025-08-29": 24540,
-                "2025-09-05": 25200,
-                "2025-09-12": 25880,
-                "2025-09-19": 26580,
-                "2025-09-26": 27300,
-                "2025-10-03": 28040,
-                "2025-10-10": 28800,
-                "2025-10-17": 29580,
-                "2025-10-24": 30380,
-                "2025-10-31": 31200,
-              }}
+              data={filteredChartData}
               gradientColors={["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"]}
               lineColor="#703ae6"
               height={chartHeight}
