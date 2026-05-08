@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { ReactNode } from "react";
+import { useTheme } from "@/contexts/theme-context";
 
 export interface DetailsItem {
   title: string;
@@ -19,6 +20,9 @@ export const DetailsPanel = ({
   items,
   containerClassName = "",
 }: DetailsPanelProps) => {
+  const { isDark } = useTheme();
+  const textClass = isDark ? "text-white" : "text-[#1F1F1F]";
+
   return (
     <motion.div
       className={`px-[16px] w-full h-full flex flex-col gap-[16px] ${containerClassName}`}
@@ -37,7 +41,7 @@ export const DetailsPanel = ({
           transition={{ duration: 0.3, delay: 0.35 + index * 0.05 }}
         >
           <div className="flex items-center gap-[8px]">
-            <div className="text-[16px] text-[#1F1F1F] font-medium">
+            <div className={`text-[16px] font-medium ${textClass}`}>
               {item.title}
             </div>
             {item.linkText && (
@@ -50,7 +54,7 @@ export const DetailsPanel = ({
               </button>
             )}
           </div>
-          <div className="text-[16px] text-[#1F1F1F] font-medium">
+          <div className={`text-[16px] font-medium ${textClass}`}>
             {item.value}
           </div>
         </motion.div>

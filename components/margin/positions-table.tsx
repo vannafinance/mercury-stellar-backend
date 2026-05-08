@@ -400,50 +400,66 @@ export const Positionstable = ({
       </div>
 
       {/* Borrowed assets column */}
-      <div className="w-full flex flex-col gap-[6px] py-[16px] px-[12px]">
-        {item.borrowed.map((borrowedItem, borrowedIdx) => (
-          <motion.div
-            key={borrowedIdx}
-            className="flex gap-[8px] items-center"
-            initial={{ opacity: 0, x: -10 }}
-            whileInView={{ opacity: 1, x: 0 }}
-            viewport={{ once: true }}
-            transition={{
-              duration: 0.3,
-              delay: idx * 0.08 + borrowedIdx * 0.05 + 0.15,
-            }}
+      <div
+        className={`w-full py-[16px] px-[12px] ${
+          item.borrowed.length > 0
+            ? "flex flex-col gap-[6px]"
+            : "flex items-center"
+        }`}
+      >
+        {item.borrowed.length > 0 ? (
+          item.borrowed.map((borrowedItem, borrowedIdx) => (
+            <motion.div
+              key={borrowedIdx}
+              className="flex gap-[8px] items-center"
+              initial={{ opacity: 0, x: -10 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{
+                duration: 0.3,
+                delay: idx * 0.08 + borrowedIdx * 0.05 + 0.15,
+              }}
+            >
+              <Image
+                src={getTokenIcon(borrowedItem.assetData.asset)}
+                alt={borrowedItem.assetData.asset}
+                width={20}
+                height={20}
+                className="rounded-[10px] shrink-0"
+              />
+              <div className="flex flex-col gap-[1px]">
+                <div
+                  className={`text-[13px] font-medium leading-tight ${
+                    isDark ? "text-white" : ""
+                  }`}
+                >
+                  {borrowedItem.assetData.amount}{" "}
+                  {formatTokenName(borrowedItem.assetData.asset)}
+                </div>
+                <div
+                  className={`text-[11px] font-medium ${
+                    isDark ? "text-[#919191]" : "text-[#76737B]"
+                  }`}
+                >
+                  ${borrowedItem.usdValue}
+                </div>
+              </div>
+              {borrowedItem.percentage > 0 && (
+                <div className="h-fit bg-[#F1EBFD] rounded-[4px] py-[1px] px-[6px] text-[10px] font-medium text-[#703AE6]">
+                  {borrowedItem.percentage}%
+                </div>
+              )}
+            </motion.div>
+          ))
+        ) : (
+          <span
+            className={`text-[13px] font-medium ${
+              isDark ? "text-[#666666]" : "text-[#A0A0A0]"
+            }`}
           >
-            <Image
-              src={getTokenIcon(borrowedItem.assetData.asset)}
-              alt={borrowedItem.assetData.asset}
-              width={20}
-              height={20}
-              className="rounded-[10px] shrink-0"
-            />
-            <div className="flex flex-col gap-[1px]">
-              <div
-                className={`text-[13px] font-medium leading-tight ${
-                  isDark ? "text-white" : ""
-                }`}
-              >
-                {borrowedItem.assetData.amount}{" "}
-                {formatTokenName(borrowedItem.assetData.asset)}
-              </div>
-              <div
-                className={`text-[11px] font-medium ${
-                  isDark ? "text-[#919191]" : "text-[#76737B]"
-                }`}
-              >
-                ${borrowedItem.usdValue}
-              </div>
-            </div>
-            {borrowedItem.percentage > 0 && (
-              <div className="h-fit bg-[#F1EBFD] rounded-[4px] py-[1px] px-[6px] text-[10px] font-medium text-[#703AE6]">
-                {borrowedItem.percentage}%
-              </div>
-            )}
-          </motion.div>
-        ))}
+            $0
+          </span>
+        )}
       </div>
 
       {/* Leverage column */}
@@ -595,7 +611,7 @@ export const Positionstable = ({
                 ))}
               </div>
             ) : (
-              <div className={`text-[11px] italic ${isDark ? "text-[#666666]" : "text-[#A0A0A0]"}`}>No borrows</div>
+              <div className={`text-[12px] font-medium ${isDark ? "text-[#666666]" : "text-[#A0A0A0]"}`}>$0</div>
             )}
           </div>
         </div>

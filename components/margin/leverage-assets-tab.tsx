@@ -10,7 +10,6 @@ import { Collateral } from "./collateral-box";
 import { BorrowBox } from "./borrow-box";
 import { MBSelectionGrid } from "./mb-selection-grid";
 import { Dialogue } from "@/components/ui/dialogue";
-import { InfoCard } from "./info-card";
 import {
   useMarginAccountInfoStore,
   type BorrowedBalance,
@@ -275,7 +274,6 @@ export const LeverageAssetsTab = () => {
   const totalDeposit = totalDepositValue + fees;
   // Borrow preview/input should use pure collateral USD (no fee uplift).
   const effectiveTotalForBorrow = isMBMode ? mbSelectedUsd : depositAmount;
-  const platformPoints = Number((leverage * 0.575).toFixed(1));
   const projectedBorrowUsd = Math.max(0, effectiveTotalForBorrow * (leverage - 1));
 
   // Memoized callbacks
@@ -446,6 +444,14 @@ export const LeverageAssetsTab = () => {
   const handleButtonClick = async () => {
     if (!userAddress) {
       console.log('No user address available');
+      return;
+    }
+
+    // Block the action while a collateral row is mid-edit. Otherwise clicking
+    // Deposit & Borrow would submit the previously-saved amount even though
+    // the user has the row open and may be in the middle of changing it.
+    if (editingId !== null) {
+      toast.error("Please save or cancel your collateral edit before proceeding.");
       return;
     }
 
@@ -1053,74 +1059,30 @@ export const LeverageAssetsTab = () => {
           />
         </motion.section>
 
-        {/* Details panel - shows static transaction info */}
-        <motion.div
-          className="mt-3"
-          initial={{ opacity: 0, y: 20 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.4, delay: 0.2, ease: "easeOut" }}
-        >
-          <InfoCard
-            data={{
-              platformPoints: platformPoints,
-              leverage: leverage,
-              depositAmount: depositAmount,
-              fees: fees,
-              totalDeposit: totalDeposit,
-            }}
-            showExpandable={true}
-            expandableSections={[
-              {
-                title: "Transaction Details",
-                items: [
-                  {
-                    id: "platformPoints",
-                    name: "Platform Points",
-                  },
-                  {
-                    id: "leverage",
-                    name: "Leverage",
-                  },
-                  {
-                    id: "depositAmount",
-                    name: "You're depositing",
-                  },
-                  {
-                    id: "fees",
-                    name: "Fees",
-                  },
-                  {
-                    id: "totalDeposit",
-                    name: "Total deposit including fees",
-                  },
-                ],
-                defaultExpanded: false,
-                delay: 0.1,
-              },
-            ]}
-          />
-        </motion.div>
-
-        {/* Before → after preview for health factor and collateral */}
+        {/* Combined transaction details: static rows + before→after preview */}
         <LeveragePreviewSection
           depositAmount={depositAmount}
           projectedBorrowUsd={projectedBorrowUsd}
           isMBMode={isMBMode}
+          leverage={leverage}
+          fees={fees}
+          totalDeposit={totalDeposit}
         />
 
         {/* Create Margin Account button */}
         <motion.section
+          className="mt-4"
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.4, delay: 0.3, ease: "easeOut" }}
         >
           <Button
-            disabled={isProcessing}
+            disabled={isProcessing || editingId !== null}
             size="large"
             text={
               isProcessing ? "Processing..." :
+              editingId !== null ? "Save Collateral to Continue" :
               !userAddress ? "Login" :
               hasMarginAccount  && !isMBMode
                 ? leverage <= 1 ? "Deposit" : "Deposit & Borrow"
@@ -1256,12 +1218,18 @@ interface LeveragePreviewSectionProps {
   depositAmount: number;
   projectedBorrowUsd: number;
   isMBMode: boolean;
+  leverage: number;
+  fees: number;
+  totalDeposit: number;
 }
 
 const LeveragePreviewSection = ({
   depositAmount,
   projectedBorrowUsd,
   isMBMode,
+  leverage,
+  fees,
+  totalDeposit,
 }: LeveragePreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
@@ -1280,6 +1248,10 @@ const LeveragePreviewSection = ({
   const bufferAfter = Math.max(0, grossAfter - debtAfter * LIQUIDATION_THRESHOLD);
 
   const rows: PreviewRow[] = [
+    { label: "Leverage", before: "1.0x", after: `${leverage.toFixed(1)}x` },
+    { label: "You're depositing", before: formatUsd(0), after: formatUsd(depositAmount) },
+    { label: "Fees", before: formatUsd(0), after: formatUsd(fees) },
+    { label: "Total deposit including fees", before: formatUsd(0), after: formatUsd(totalDeposit) },
     ...(effectiveDeposit > 0
       ? [{ label: "Margin Collateral", before: formatUsd(totalCollateralValue), after: formatUsd(collateralAfter), tone: "positive" as const }]
       : []),
@@ -1300,5 +1272,5 @@ const LeveragePreviewSection = ({
     },
   ];
 
-  return <MarginActionPreview rows={rows} />;
+  return <MarginActionPreview rows={rows} className="mt-4" />;
 };

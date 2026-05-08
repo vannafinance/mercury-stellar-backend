@@ -7,9 +7,9 @@ export type PreviewTone = "default" | "positive" | "negative";
 
 export interface PreviewRow {
   label: string;
-  /** Pre-formatted "before" value (e.g. "$174.48", "2.00", "∞"). */
-  before: string;
-  /** Pre-formatted "after" value. */
+  /** Pre-formatted "before" value (e.g. "$174.48", "2.00", "∞"). Omit for a static single-value row. */
+  before?: string;
+  /** Pre-formatted "after" value (or the single value when `before` is omitted). */
   after: string;
   /** Optional colour hint for the after-value (e.g. green for HF improving). */
   tone?: PreviewTone;
@@ -68,10 +68,14 @@ export const MarginActionPreview = ({
               {row.label}
             </span>
             <div className="flex items-center gap-1.5 shrink-0">
-              <span className={`text-[12px] font-medium ${beforeClass}`}>
-                {row.before}
-              </span>
-              <span className={arrowClass} aria-hidden="true">→</span>
+              {row.before !== undefined && (
+                <>
+                  <span className={`text-[12px] font-medium ${beforeClass}`}>
+                    {row.before}
+                  </span>
+                  <span className={arrowClass} aria-hidden="true">→</span>
+                </>
+              )}
               <span className={`text-[12px] font-semibold ${toneClass(row.tone)}`}>
                 {row.after}
               </span>
