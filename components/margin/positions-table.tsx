@@ -491,28 +491,12 @@ export const Positionstable = ({
         viewport={{ once: true }}
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.25 }}
       >
-        {item.interestAccrued > 0 ? (
-          <>
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 14 14"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              className="shrink-0"
-            >
-              <path
-                d="M6 3.33333H7.33333V4.66667H6V3.33333ZM6 6H7.33333V10H6V6ZM6.66667 0C2.98667 0 0 2.98667 0 6.66667C0 10.3467 2.98667 13.3333 6.66667 13.3333C10.3467 13.3333 13.3333 10.3467 13.3333 6.66667C13.3333 2.98667 10.3467 0 6.66667 0ZM6.66667 12C3.72667 12 1.33333 9.60667 1.33333 6.66667C1.33333 3.72667 3.72667 1.33333 6.66667 1.33333C9.60667 1.33333 12 3.72667 12 6.66667C12 9.60667 9.60667 12 6.66667 12Z"
-                fill={isDark ? "#FFFFFF" : "black"}
-              />
-            </svg>
-            {formatInterestUsd(item.interestAccrued)}
-          </>
-        ) : (
-          <span className={isDark ? "text-[#666666]" : "text-[#A0A0A0]"}>
-            $0
-          </span>
-        )}
+        {/* Interest accrual UI is temporarily hardcoded to $0 — the on-chain
+            b_rate-derived value was being displayed incorrectly for some
+            positions, so we suppress it until the calc is verified. */}
+        <span className={isDark ? "text-[#666666]" : "text-[#A0A0A0]"}>
+          $0
+        </span>
       </motion.div>
 
       {/* Action column */}
@@ -626,7 +610,7 @@ export const Positionstable = ({
           </div>
           <div>
             <p className={lbl}>Interest Accrued</p>
-            <p className={val}>{formatInterestUsd(item.interestAccrued)}</p>
+            <p className={val}>$0</p>
           </div>
         </div>
 
