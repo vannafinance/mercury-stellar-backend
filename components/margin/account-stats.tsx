@@ -118,7 +118,7 @@ export const AccountStats = ({
           const isLoading = displayValue === "⟳";
           return (
             <motion.article
-              className="flex flex-col justify-center gap-2.5 px-6 w-full col-span-1 h-[150px]"
+              className="flex flex-col justify-center items-center gap-2.5 px-4 w-full col-span-1 h-[150px]"
               key={item.id}
               initial={{ opacity: 0, y: 10 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -126,7 +126,7 @@ export const AccountStats = ({
               transition={{ duration: 0.3, delay: idx * 0.06, ease: "easeOut" }}
             >
               {/* Icon + label row */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 justify-center w-full">
                 <div
                   className={`w-7 h-7 flex items-center justify-center rounded-full shrink-0 ${
                     isDark ? "bg-[#1A1A1A]" : "bg-white"
@@ -135,7 +135,7 @@ export const AccountStats = ({
                   <Image width={14} height={14} alt={item.id} src={item.icon} />
                 </div>
                 <span
-                  className={`text-[13px] font-medium leading-tight ${
+                  className={`text-[13px] font-medium leading-tight text-center ${
                     isDark ? "text-[#A0A0A0]" : "text-[#6B7280]"
                   }`}
                 >
@@ -144,7 +144,7 @@ export const AccountStats = ({
               </div>
               {/* Value */}
               <motion.div
-                className={`text-[26px] font-bold leading-none pl-0.5 ${
+                className={`text-[26px] font-bold leading-none text-center ${
                   valueColors?.[item.id] ?? (isDark ? "text-white" : "text-[#111111]")
                 }`}
                 initial={{ opacity: 0 }}

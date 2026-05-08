@@ -294,8 +294,8 @@ export default function FarmPage() {
         ? `$${totalUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
         : '$0.00',
       earnings: '$0.00',
-      netFarmApy: '0',
-      pendingRewards: '0',
+      netFarmApy: '0%',
+      pendingRewards: '$0.00',
     };
   }, [userPositions, mySSLpBalance, ssStats, aqLpPositions, aquariusPools, farmTokenPrices]);
 

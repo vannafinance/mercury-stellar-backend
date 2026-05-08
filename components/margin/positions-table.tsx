@@ -73,7 +73,7 @@ export const Positionstable = ({
     })),
   );
 
-  const { history } = useMarginHistory();
+  const { history, isLoading: historyLoading } = useMarginHistory();
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
@@ -139,27 +139,35 @@ export const Positionstable = ({
     // pool's b_rate accrual makes current debt drift above net principal; that
     // drift is the user-visible interest. Negative diffs (e.g. when local
     // history is incomplete) are clamped to 0 so we never show "credit".
+    //
+    // Guard: while history is still fetching, netPrincipalByToken is empty,
+    // which would make diff = full borrowed amount and produce a false reading
+    // of "interest = borrow USD value". Skip the calculation until loaded.
     const netPrincipalByToken: Record<string, number> = {};
-    for (const item of history) {
-      const canonical = canonicalToken(item.asset || '');
-      const amt = parseFloat(String(item.amount ?? '0')) || 0;
-      if (!Number.isFinite(amt) || amt <= 0) continue;
-      if (item.type === 'borrow') {
-        netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) + amt;
-      } else if (item.type === 'repay') {
-        netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) - amt;
+    if (!historyLoading) {
+      for (const item of history) {
+        const canonical = canonicalToken(item.asset || '');
+        const amt = parseFloat(String(item.amount ?? '0')) || 0;
+        if (!Number.isFinite(amt) || amt <= 0) continue;
+        if (item.type === 'borrow') {
+          netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) + amt;
+        } else if (item.type === 'repay') {
+          netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) - amt;
+        }
       }
     }
 
     let interestAccruedUsd = 0;
-    for (const [, bal] of dedupedBorrowed) {
-      const canonical = canonicalToken(bal.token);
-      const currentAmt = parseFloat(bal.balance.amount || '0');
-      const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
-      const diff = currentAmt - principalAmt;
-      if (diff > 0) {
-        const price = tokenPrices[canonical] ?? 1;
-        interestAccruedUsd += diff * price;
+    if (!historyLoading) {
+      for (const [, bal] of dedupedBorrowed) {
+        const canonical = canonicalToken(bal.token);
+        const currentAmt = parseFloat(bal.balance.amount || '0');
+        const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
+        const diff = currentAmt - principalAmt;
+        if (diff > 0) {
+          const price = tokenPrices[canonical] ?? 1;
+          interestAccruedUsd += diff * price;
+        }
       }
     }
 
@@ -182,7 +190,7 @@ export const Positionstable = ({
         user: '',
       };
     });
-  }, [collateralBalances, borrowedBalances, totalCollateralValue, totalBorrowedValue, history, tokenPrices]);
+  }, [collateralBalances, borrowedBalances, totalCollateralValue, totalBorrowedValue, history, historyLoading, tokenPrices]);
 
   const [activeTab, setActiveTab] = useState<string>("currentPositions");
   const [currentPage, setCurrentPage] = useState<number>(1);

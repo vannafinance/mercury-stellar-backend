@@ -430,8 +430,8 @@ export const FARM_STATS_ITEMS = [
 export const FARM_STATS_VALUES: Record<string, string | number | null> = {
   depositTVL: "$2000",
   earnings: "$1000",
-  netFarmApy: "—",
-  pendingRewards: "—",
+  netFarmApy: "0%",
+  pendingRewards: "$0.00",
 };
 
 
