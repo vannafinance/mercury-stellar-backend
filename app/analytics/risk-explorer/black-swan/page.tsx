@@ -13,9 +13,19 @@ const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; retur
 
 type Preset = "crypto_winter" | "defi_contagion" | "perfect_storm" | "custom";
 
+// Stellar-native black-swan dimensions:
+//   • xlmDrop      → XLM spot price drop (only volatile asset)
+//   • secondaryDrop → secondary stress on USDC pool collateral (e.g.
+//     concurrent issuer stress on Aquarius/Soroswap)
+//   • stablecoinDepeg → BLUSDC/AQUSDC/SOUSDC peg break magnitude (%)
+//   • oracleFailure   → Reflector returns stale/wrong prices
+//   • protocolExploit → catastrophic event in Blend/Aquarius/Soroswap
+//   • aprSpike        → rate model spike (debt compounds)
+//   • lpILMultiplier  → LP IL amplifier (Aquarius/Soroswap pools)
+//   • cascadeRounds   → liquidation cascade re-rounds
 interface ShockConfig {
-  ethDrop: number;
-  btcDrop: number;
+  xlmDrop: number;
+  secondaryDrop: number;
   stablecoinDepeg: number;
   oracleFailure: boolean;
   protocolExploit: boolean;
@@ -27,31 +37,31 @@ interface ShockConfig {
 const PRESETS: { id: Preset; label: string; desc: string; color: string; config: ShockConfig }[] = [
   {
     id: "crypto_winter",
-    label: "Crypto Winter",
-    desc: "2022-style — ETH -78%, BTC -73%, 12-month bear market",
+    label: "Stellar Crypto Winter",
+    desc: "Multi-month bear: XLM -75%, USDC reserves wobble -3%, no protocol failures.",
     color: "#9F7BEE",
-    config: { ethDrop: 78, btcDrop: 73, stablecoinDepeg: 3, oracleFailure: false, protocolExploit: false, aprSpike: 40, lpILMultiplier: 1.5, cascadeRounds: 3 }
+    config: { xlmDrop: 75, secondaryDrop: 5, stablecoinDepeg: 3, oracleFailure: false, protocolExploit: false, aprSpike: 40, lpILMultiplier: 1.5, cascadeRounds: 3 }
   },
   {
     id: "defi_contagion",
-    label: "DeFi Contagion",
-    desc: "LUNA/UST-style — stablecoin collapse + protocol cascade",
+    label: "DeFi Contagion (Stellar)",
+    desc: "USDC issuer stress hits all 3 USDC variants simultaneously while one external pool gets exploited.",
     color: "#FC5457",
-    config: { ethDrop: 45, btcDrop: 35, stablecoinDepeg: 80, oracleFailure: true, protocolExploit: true, aprSpike: 120, lpILMultiplier: 2.5, cascadeRounds: 5 }
+    config: { xlmDrop: 35, secondaryDrop: 20, stablecoinDepeg: 60, oracleFailure: true, protocolExploit: true, aprSpike: 120, lpILMultiplier: 2.5, cascadeRounds: 5 }
   },
   {
     id: "perfect_storm",
     label: "Perfect Storm",
-    desc: "Simultaneous: crash + oracle attack + exploit + rate spike",
+    desc: "Simultaneous XLM crash, Reflector oracle outage, Blend exploit, USDC depeg, rate spike.",
     color: "#FF007A",
-    config: { ethDrop: 60, btcDrop: 55, stablecoinDepeg: 20, oracleFailure: true, protocolExploit: true, aprSpike: 80, lpILMultiplier: 3.0, cascadeRounds: 5 }
+    config: { xlmDrop: 55, secondaryDrop: 25, stablecoinDepeg: 20, oracleFailure: true, protocolExploit: true, aprSpike: 80, lpILMultiplier: 3.0, cascadeRounds: 5 }
   },
   {
     id: "custom",
     label: "Custom Shock",
-    desc: "Build your own scenario — full control over all parameters",
+    desc: "Build your own scenario — full control over all parameters.",
     color: "#32EEE2",
-    config: { ethDrop: 30, btcDrop: 25, stablecoinDepeg: 10, oracleFailure: false, protocolExploit: false, aprSpike: 25, lpILMultiplier: 1.2, cascadeRounds: 2 }
+    config: { xlmDrop: 30, secondaryDrop: 10, stablecoinDepeg: 10, oracleFailure: false, protocolExploit: false, aprSpike: 25, lpILMultiplier: 1.2, cascadeRounds: 2 }
   },
 ];
 
@@ -70,7 +80,7 @@ const ALL_POSITIONS = Array.from({ length: 32 }, (_, i) => {
 
 function runBlackSwan(config: ShockConfig) {
   const {
-    ethDrop, btcDrop, stablecoinDepeg, oracleFailure, protocolExploit,
+    xlmDrop, secondaryDrop, stablecoinDepeg, oracleFailure, protocolExploit,
     aprSpike, lpILMultiplier, cascadeRounds
   } = config;
 
@@ -79,8 +89,9 @@ function runBlackSwan(config: ShockConfig) {
   let totalBadDebt = 0;
 
   const results = ALL_POSITIONS.map((pos, i) => {
-    // 1. Price shock (ETH/BTC mix based on position)
-    const assetShock = i % 2 === 0 ? -ethDrop / 100 : -btcDrop / 100;
+    // Asset shock: XLM-heavy positions take the full xlmDrop; positions
+    // skewed toward USDC variants take the lighter `secondaryDrop`.
+    const assetShock = i % 2 === 0 ? -xlmDrop / 100 : -secondaryDrop / 100;
     const perpMultiplier = pos.leverage >= 7 ? pos.leverage * 0.8 : 1;
     const trackShock = assetShock * perpMultiplier;
 
@@ -166,7 +177,7 @@ export default function BlackSwanPage() {
 
   // Risk component breakdown
   const riskComponents = [
-    { name: "Price Shock", severity: Math.min(100, config.ethDrop), color: "#FC5457" },
+    { name: "Price Shock", severity: Math.min(100, config.xlmDrop), color: "#FC5457" },
     { name: "Stable Depeg", severity: Math.min(100, config.stablecoinDepeg * 1.2), color: "#FF007A" },
     { name: "Rate Spike", severity: Math.min(100, config.aprSpike * 0.7), color: "#F59E0B" },
     { name: "LP IL", severity: Math.min(100, (config.lpILMultiplier - 1) * 40), color: "#9F7BEE" },
@@ -186,7 +197,7 @@ export default function BlackSwanPage() {
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Black Swan Multi-Shock</span>
       </div>
-      <PageHeader title="Black Swan Multi-Shock" subtitle="The ultimate stress test — combine all risk vectors simultaneously: price crash, stablecoin depeg, oracle failure, protocol exploit, rate spike, and cascading liquidations" />
+      <PageHeader title="Black Swan Multi-Shock" subtitle="Combine all Stellar risk vectors at once: XLM crash, BLUSDC/AQUSDC/SOUSDC depeg, Reflector oracle failure, Blend/Aquarius/Soroswap exploit, rate spike, and cascading liquidations against the Risk Engine HF≥1.1 threshold." />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Controls */}
@@ -215,11 +226,11 @@ export default function BlackSwanPage() {
             <p className="text-xs font-semibold uppercase tracking-wider text-vgray-500">Shock Parameters</p>
 
             {[
-              { label: "ETH Price Drop", key: "ethDrop" as keyof ShockConfig, min: 0, max: 95, unit: "%" },
-              { label: "BTC Price Drop", key: "btcDrop" as keyof ShockConfig, min: 0, max: 95, unit: "%" },
-              { label: "Stablecoin Depeg", key: "stablecoinDepeg" as keyof ShockConfig, min: 0, max: 100, unit: "%" },
+              { label: "XLM Price Drop", key: "xlmDrop" as keyof ShockConfig, min: 0, max: 95, unit: "%" },
+              { label: "Secondary Asset Drop", key: "secondaryDrop" as keyof ShockConfig, min: 0, max: 95, unit: "%" },
+              { label: "USDC-Variant Depeg", key: "stablecoinDepeg" as keyof ShockConfig, min: 0, max: 100, unit: "%" },
               { label: "Borrow APR Spike", key: "aprSpike" as keyof ShockConfig, min: 0, max: 200, unit: "%" },
-              { label: "LP IL Multiplier", key: "lpILMultiplier" as keyof ShockConfig, min: 1, max: 5, unit: "×", step: 0.1 },
+              { label: "LP IL Multiplier (Aquarius/Soroswap)", key: "lpILMultiplier" as keyof ShockConfig, min: 1, max: 5, unit: "×", step: 0.1 },
               { label: "Cascade Rounds", key: "cascadeRounds" as keyof ShockConfig, min: 0, max: 5, unit: " rounds" },
             ].map(ctrl => (
               <div key={ctrl.key} className="space-y-1.5">
@@ -237,8 +248,8 @@ export default function BlackSwanPage() {
 
             <div className="flex gap-3">
               {[
-                { label: "Oracle Failure", key: "oracleFailure" as keyof ShockConfig },
-                { label: "Protocol Exploit", key: "protocolExploit" as keyof ShockConfig },
+              { label: "Reflector Failure", key: "oracleFailure" as keyof ShockConfig },
+              { label: "External Protocol Exploit", key: "protocolExploit" as keyof ShockConfig },
               ].map(toggle => (
                 <button key={toggle.key}
                   onClick={() => { setPreset("custom"); setConfig(prev => ({ ...prev, [toggle.key]: !prev[toggle.key] })); }}

@@ -1,31 +1,21 @@
 import Image from "next/image";
 
+// Analytics-only icon map. Restricted to the asset universe Vanna actually
+// supports on Soroban (XLM + BLUSDC/AQUSDC/SOUSDC/EURC) plus the symbols the
+// risk-explorer simulators reference (USDC canonical, USDT, AQUA for the
+// Aquarius LP scenarios). Anything outside this list falls through to the
+// generic coin placeholder in `default.svg`.
 const COIN_ICON_MAP: Record<string, string> = {
-  ETH:       "/icons/eth.svg",
-  WBTC:      "/icons/wbtc-icon.png",
-  weETH:     "/icons/rst-Eth-icon.png",
-  BTC:       "/icons/btc.svg",
+  // ── Stellar-native assets ────────────────────────────────────
+  XLM:       "/coins/xlmbg.png",
+  BLUSDC:    "/icons/usdc-icon.svg",
+  AQUSDC:    "/icons/usdc-icon.svg",
+  SOUSDC:    "/icons/usdc-icon.svg",
+  EURC:      "/icons/usdc-icon.svg",
+  // ── Canonical references used by risk-engine pricing ────────
   USDC:      "/icons/usdc.svg",
   USDT:      "/icons/usdt.svg",
-  DAI:       "/icons/dai.svg",
-  SOL:       "/icons/sol.svg",
-  BNB:       "/icons/bnb.svg",
-  MATIC:     "/icons/matic.svg",
-  AAVE:      "/icons/aave.svg",
-  LINK:      "/icons/link.svg",
-  OP:        "/icons/op.svg",
-  XLM:       "/icons/xlm.svg",
-  BASE:      "/icons/base-icon.svg",
-  ARB:       "/icons/arbitrum-icon.svg",
-  AVAX:      "/icons/avax.svg",
-  UNI:       "/icons/uniswap.png",
-  ADA:       "/icons/ada.svg",
-  DOT:       "/icons/dot.svg",
-  DOGE:      "/icons/doge.svg",
-  XRP:       "/icons/xrp.svg",
-  TRX:       "/icons/trx.svg",
-  LTC:       "/icons/ltc.svg",
-  ATOM:      "/icons/atom.svg",
+  AQUA:      "/icons/default.svg",
 };
 
 interface CoinIconProps {

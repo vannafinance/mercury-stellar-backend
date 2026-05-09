@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine, Legend } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
@@ -26,7 +27,15 @@ const BORROWERS = Array.from({ length: 35 }, (_, i) => {
   const cash = Math.floor(marginValue * (0.1 + dr(i * 5) * 0.2));
   const aTokens = Math.floor(marginValue * dr(i * 7) * 0.35);
   const lpTokens = Math.max(0, marginValue - trackTokens - cash - aTokens);
-  return { id: i, debt, marginValue, hf: Math.round(hf * 100) / 100, leverage, breakdown: { trackTokens, cash, aTokens, lpTokens } };
+  return {
+    id: i,
+    debt,
+    marginValue,
+    hf: Math.round(hf * 100) / 100,
+    leverage,
+    address: shortStellar(syntheticGAccount(i + 113)),
+    breakdown: { trackTokens, cash, aTokens, lpTokens },
+  };
 });
 
 const TOTAL_DEBT = BORROWERS.reduce((a, p) => a + p.debt, 0);
@@ -274,7 +283,7 @@ export default function WhaleWithdrawalPage() {
                 <tbody>
                   {sim.results.sort((a, b) => a.newHF - b.newHF).map(p => (
                     <tr key={p.id} className={cn("border-b border-vgray-100/60", p.liquidated ? "bg-imperial-50/20" : "")}>
-                      <td className="px-3 py-2 font-mono text-vgray-600">0x{(0xa000 + p.id * 71).toString(16)}...{(0xb100 + p.id * 53).toString(16)}</td>
+                      <td className="px-3 py-2 font-mono text-vgray-600">{p.address}</td>
                       <td className="px-3 py-2 text-right font-mono text-vgray-600">{formatUsd(p.debt)}</td>
                       <td className="px-3 py-2 text-right font-mono text-amber-600">+{formatUsd(p.newDebt - p.debt)}</td>
                       <td className="px-3 py-2 text-center font-mono text-violet-600">{p.hf.toFixed(2)}</td>

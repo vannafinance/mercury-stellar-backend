@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
+import { ACTIVE_ASSETS, ORACLE, syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, Legend } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
@@ -25,7 +26,10 @@ const FAILURE_MODES: { id: FailureMode; label: string; color: string; desc: stri
     icon: <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M9 1.5L5 8.5H8L7 14.5L11 7.5H8L9 1.5Z" stroke="#9F7BEE" strokeWidth="1.4" strokeLinejoin="round"/></svg> },
 ];
 
-const AFFECTED_ASSETS = ["ETH", "WBTC", "weETH", "USDC", "All"];
+// Oracle failure on Stellar = Reflector path failing for one of the
+// protocol's priced assets. "All" simulates a Reflector outage that
+// poisons every price route the Risk Engine queries (XLM + USDC variants).
+const AFFECTED_ASSETS = [...ACTIVE_ASSETS, "All"];
 
 const ALL_POSITIONS = Array.from({ length: 34 }, (_, i) => {
   const debt = Math.floor(70_000 + dr(i * 7) * 1_400_000 / 1000) * 1000;
@@ -36,10 +40,21 @@ const ALL_POSITIONS = Array.from({ length: 34 }, (_, i) => {
   const cash = Math.floor(marginValue * (0.1 + dr(i * 5) * 0.2));
   const aTokens = Math.floor(marginValue * dr(i * 7) * 0.35);
   const lpTokens = Math.max(0, marginValue - trackTokens - cash - aTokens);
-  // Each position's collateral is backed by a primary asset
-  const assetIdx = Math.floor(dr(i * 19) * 4); // 0=ETH, 1=WBTC, 2=weETH, 3=USDC
-  const assets = ["ETH", "WBTC", "weETH", "USDC"];
-  return { id: i, debt, hf: Math.round(hf * 100) / 100, leverage, marginValue, trackTokens, cash, aTokens, lpTokens, primaryAsset: assets[assetIdx] };
+  // Pick from the live-app asset universe only.
+  const primaryAsset = ACTIVE_ASSETS[Math.floor(dr(i * 19) * ACTIVE_ASSETS.length)];
+  return {
+    id: i,
+    debt,
+    hf: Math.round(hf * 100) / 100,
+    leverage,
+    marginValue,
+    trackTokens,
+    cash,
+    aTokens,
+    lpTokens,
+    primaryAsset,
+    address: shortStellar(syntheticGAccount(i + 23)),
+  };
 });
 
 function applyOracleFailure(pos: typeof ALL_POSITIONS[0], mode: FailureMode, affectedAsset: string, staleness: number, inflationPct: number) {
@@ -85,7 +100,7 @@ function applyOracleFailure(pos: typeof ALL_POSITIONS[0], mode: FailureMode, aff
 export default function OracleFailurePage() {
   const cc = useChartColors();
   const [failureMode, setFailureMode] = useState<FailureMode>("stale");
-  const [affectedAsset, setAffectedAsset] = useState("ETH");
+  const [affectedAsset, setAffectedAsset] = useState<string>(ACTIVE_ASSETS[0]);
   const [staleness, setStaleness] = useState(15); // % market moved while oracle stale
   const [inflationPct, setInflationPct] = useState(50);
   const [hasRun, setHasRun] = useState(false);
@@ -115,8 +130,9 @@ export default function OracleFailurePage() {
     return { staleness: `${s}%`, liquidations: liq.length, badDebt: Math.round(bd / 1000) };
   });
 
-  // Asset breakdown
-  const assetBreakdown = ["ETH", "WBTC", "weETH", "USDC"].map(asset => {
+  // Per-asset oracle-feed risk breakdown, scoped to assets the protocol
+  // actually consults via Reflector (lib/oracle-price.ts → PRICEABLE_TOKENS).
+  const assetBreakdown = ACTIVE_ASSETS.map(asset => {
     const res = ALL_POSITIONS.map(p => applyOracleFailure(p, failureMode, asset, staleness, inflationPct));
     const liq = res.filter(p => p.liquidated);
     const bd = liq.reduce((a, p) => a + p.badDebt, 0);
@@ -135,7 +151,7 @@ export default function OracleFailurePage() {
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Oracle Failure / Manipulation</span>
       </div>
-      <PageHeader title="Oracle Failure / Manipulation" subtitle="Stress test what happens when price oracles fail, go stale, or are manipulated — bad prices = wrong HF calculations = wrong liquidations" />
+      <PageHeader title="Reflector Oracle Failure / Manipulation" subtitle={`Stress test what happens when the protocol's Reflector wrapper (${ORACLE.contractAddress.slice(0,6)}…${ORACLE.contractAddress.slice(-4)}) returns stale, zero, or inflated prices — bad prices feed straight into Risk Engine HF math.`} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Controls */}
@@ -286,12 +302,15 @@ export default function OracleFailurePage() {
             <div className="bg-surface rounded-r4 border border-vgray-100 shadow-vanna p-4 space-y-3">
               <p className="text-[10px] font-semibold uppercase tracking-wide text-vgray-500">Oracle Safeguards Status</p>
               {[
-                { label: "Chainlink heartbeat", status: "Active", ok: true, note: "60s max staleness" },
-                { label: "Pyth fallback", status: "Standby", ok: true, note: "Cross-validated" },
-                { label: "RedStone fallback", status: "Standby", ok: true, note: "On-demand" },
-                { label: "Deviation guard", status: failureMode === "inflated" ? "BREACHED" : "Active", ok: failureMode !== "inflated", note: "±2% from median" },
-                { label: "TWAP protection", status: failureMode === "manipulated" ? "BYPASSED" : "Active", ok: failureMode !== "manipulated", note: "30-min window" },
-                { label: "Emergency pause", status: failureMode === "crashed" ? "TRIGGERED" : "Armed", ok: true, note: "DAO multisig" },
+                // Stellar deployment uses Reflector as its single oracle source — no
+                // Pyth/RedStone fallbacks exist on Soroban yet. The Risk Engine's own
+                // staleness guard + circuit-breaker pause (TrackingTokenContract +
+                // RiskEngineContract) are the real safeguards.
+                { label: "Reflector heartbeat", status: "Active", ok: true, note: "60s max staleness" },
+                { label: "Risk Engine staleness guard", status: failureMode === "stale" ? "BREACHED" : "Active", ok: failureMode !== "stale", note: "Aborts borrow/withdraw on stale price" },
+                { label: "Deviation guard", status: failureMode === "inflated" ? "BREACHED" : "Active", ok: failureMode !== "inflated", note: "±2% from previous push" },
+                { label: "Tracking-token cap", status: failureMode === "manipulated" ? "BYPASSED" : "Active", ok: failureMode !== "manipulated", note: "Prevents oracle-driven mint" },
+                { label: "Emergency pause", status: failureMode === "crashed" ? "TRIGGERED" : "Armed", ok: true, note: "Registry admin multisig" },
               ].map(s => (
                 <div key={s.label} className="flex items-center justify-between">
                   <div>
@@ -322,7 +341,7 @@ export default function OracleFailurePage() {
                 <tbody>
                   {sim.results.sort((a, b) => a.newHF - b.newHF).slice(0, 20).map(p => (
                     <tr key={p.id} className={cn("border-b border-vgray-100/60", p.liquidated ? "bg-imperial-50/20" : "")}>
-                      <td className="px-3 py-2 font-mono text-vgray-600">0x{(0xa000 + p.id * 71).toString(16)}...{(0xb100 + p.id * 53).toString(16)}</td>
+                      <td className="px-3 py-2 font-mono text-vgray-600">{p.address}</td>
                       <td className="px-3 py-2">
                         <div className="flex items-center justify-center gap-1">
                           <CoinIcon symbol={p.primaryAsset} size={14} />

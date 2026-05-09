@@ -26,9 +26,13 @@ function hashAddr(addr: string): number {
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const PROTOCOLS = ["Avantis", "Hyperliquid", "Morpho", "Uniswap", "Aerodrome", "Aquarius", "Pendle", "GMX"];
-const ASSETS = ["ETH", "WBTC", "weETH", "USDC", "USDT"];
-const POS_TYPES = ["Long", "Short", "LP", "Lend"];
+// Stellar-native universe — protocols + assets the Soroban deployment supports.
+// Match `lib/analytics/stellar/canon.ts` and CONTRACT_ADDRESSES so the per-user
+// breakdown can never surface a non-deployed integration.
+const PROTOCOLS = ["Blend", "Aquarius", "Soroswap"];
+const ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"];
+// Vanna Soroban exposes deposit-style and LP-style margin only — no perp side.
+const POS_TYPES = ["Long", "LP", "Lend"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -258,7 +262,6 @@ export default function UserPortfolioPage() {
   const router = useRouter();
   const rawAddress = typeof params.address === "string" ? decodeURIComponent(params.address) : "";
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  const isBase = rawAddress.startsWith("0x");
 
   const { positions, totalCollateral, totalDebt, avgHF, totalPnL, calendarData } = useMemo(
     () => generateUserData(rawAddress),
@@ -290,8 +293,8 @@ export default function UserPortfolioPage() {
     },
     {
       label: "Network",
-      value: isBase ? "Base" : "Stellar",
-      sub: isBase ? "EVM chain" : "Layer-1 chain",
+      value: "Stellar",
+      sub: "Soroban testnet",
     },
   ];
 

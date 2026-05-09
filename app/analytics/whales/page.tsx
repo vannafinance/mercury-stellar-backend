@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import { whaleConcentration, whaleActivity } from "@/lib/analytics/data/mock";
 import {
@@ -11,18 +12,19 @@ import {
 } from "@/lib/analytics/utils";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { useChartColors } from "@/lib/analytics/theme";
+import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { deriveWhaleConcentration } from "@/lib/analytics/onchain/derivations";
+import { useUserStore } from "@/store/user";
+import { readLiveEventFeed, type LiveWhaleActivityRow } from "@/lib/analytics/stellar/eventFeed";
 
 /* ────────────────────────────────────────────
    HELPERS
    ──────────────────────────────────────────── */
 
-function chainBadge(chain: string) {
-  return chain === "base" ? (
-    <span className="inline-flex items-center rounded-full bg-[#0052FF]/15 px-2 py-0.5 text-[10px] font-semibold text-[#3b82f6]">
-      BASE
-    </span>
-  ) : (
-    <span className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-400">
+// Single-chain build — every wallet/account is a Soroban G-account.
+function chainBadge(_chain: string) {
+  return (
+    <span className="inline-flex items-center rounded-full bg-electric-50 px-2 py-0.5 text-[10px] font-semibold text-electric-700">
       STELLAR
     </span>
   );
@@ -74,13 +76,17 @@ function ConcentrationBar({
    ROW 1 — Supply + Borrow Concentration Bars
    ──────────────────────────────────────────── */
 
-function ConcentrationBars() {
+function ConcentrationBars({
+  data,
+}: {
+  data: typeof whaleConcentration;
+}) {
   const cc = useChartColors();
   const supplyConc = {
-    top1: whaleConcentration.topPositions[0]?.sharePercent ?? 0,
-    top5: whaleConcentration.top5Share,
-    top10: whaleConcentration.top10Share,
-    top20: whaleConcentration.top20Share,
+    top1: data.topPositions[0]?.sharePercent ?? 0,
+    top5: data.top5Share,
+    top10: data.top10Share,
+    top20: data.top20Share,
   };
   const borrowConc = {
     top1: whaleConcentration.topPositions[0]?.sharePercent ?? 0,
@@ -130,7 +136,11 @@ function ConcentrationBars() {
    ROW 2 — Top 10 Positions Table
    ──────────────────────────────────────────── */
 
-function TopPositionsTable() {
+function TopPositionsTable({
+  data,
+}: {
+  data: typeof whaleConcentration;
+}) {
   return (
     <div className="bg-surface rounded-r4 shadow-vanna p-5 border border-vgray-100">
       <div className="flex items-center gap-1.5 mb-4">
@@ -153,7 +163,7 @@ function TopPositionsTable() {
             </tr>
           </thead>
           <tbody>
-            {whaleConcentration.topPositions.map((pos, i) => (
+            {data.topPositions.map((pos, i) => (
               <tr
                 key={pos.address}
                 className={cn(
@@ -198,7 +208,11 @@ function TopPositionsTable() {
    ROW 3 — Whale Activity Feed (24h)
    ──────────────────────────────────────────── */
 
-function WhaleActivityFeed() {
+function WhaleActivityFeed({
+  activity,
+}: {
+  activity: LiveWhaleActivityRow[] | typeof whaleActivity;
+}) {
   return (
     <div className="bg-surface rounded-r4 shadow-vanna p-5 border border-vgray-100">
       <div className="flex items-center gap-1.5 mb-4">
@@ -208,7 +222,7 @@ function WhaleActivityFeed() {
         <InfoTooltip size="md" text="Real-time feed of large wallet actions — opens, closes, leverage changes, deposits, and withdrawals. Sudden whale moves often signal market-moving events." />
       </div>
       <div className="space-y-3">
-        {whaleActivity.map((evt, i) => {
+        {activity.map((evt, i) => {
           const style = actionStyles[evt.action] ?? {
             bg: "bg-vgray-200",
             text: "text-vgray-700",
@@ -258,7 +272,7 @@ function WhaleActivityFeed() {
           );
         })}
 
-        {whaleActivity.length === 0 && (
+        {activity.length === 0 && (
           <p className="text-xs text-vgray-400 text-center py-6">
             No whale activity in the last 24 hours
           </p>
@@ -273,6 +287,54 @@ function WhaleActivityFeed() {
    ──────────────────────────────────────────── */
 
 export default function WhalesPage() {
+  const userAddress = useUserStore((s) => s.address);
+  const snapshot = useAnalyticsOnchainStore((s) => s.result);
+  const isLoading = useAnalyticsOnchainStore((s) => s.isLoading);
+  const load = useAnalyticsOnchainStore((s) => s.load);
+  const [liveActivity, setLiveActivity] = useState<LiveWhaleActivityRow[]>([]);
+  const [isLiveFeedLoading, setIsLiveFeedLoading] = useState(true);
+
+  useEffect(() => {
+    void load(userAddress);
+  }, [userAddress, load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pull = async () => {
+      try {
+        const feed = await readLiveEventFeed();
+        if (!cancelled) setLiveActivity(feed.whaleActivity);
+      } catch {
+        // keep fallback
+      } finally {
+        if (!cancelled) {
+          setIsLiveFeedLoading(false);
+          timer = setTimeout(pull, 30_000);
+        }
+      }
+    };
+    void pull();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const liveWhales = useMemo(
+    () => (snapshot ? deriveWhaleConcentration(snapshot.accounts, 10) : null),
+    [snapshot],
+  );
+  const hasLive = Boolean(liveWhales && liveWhales.topPositions.length > 0);
+  const whalesData = hasLive ? liveWhales! : whaleConcentration;
+  const hasLiveActivity = liveActivity.length > 0;
+  const isLiveActivityReady = !isLiveFeedLoading;
+  const activityData = hasLiveActivity
+    ? liveActivity
+    : isLiveFeedLoading
+      ? whaleActivity
+      : [];
+
   const timeStr = new Date().toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
@@ -283,17 +345,43 @@ export default function WhalesPage() {
       <PageHeader
         title="Whale tracker"
         subtitle="Large positions, concentration risk, and recent whale activity"
-        meta={<PageHeaderMeta timeLabel={timeStr} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={!(hasLive || isLiveActivityReady)} />}
       />
 
+      <div className="flex items-center justify-between gap-3 rounded-r4 border border-vgray-100 bg-surface px-4 py-2 text-[11px]">
+        <div className="flex items-center gap-2 text-vgray-500">
+          <span
+            className={cn(
+              "inline-block h-2 w-2 rounded-full",
+              hasLive ? "bg-electric-500" : isLoading ? "bg-amber-400 animate-pulse" : "bg-vgray-300",
+            )}
+          />
+          {hasLive ? (
+            <span>Whale concentration derived from live account snapshots</span>
+          ) : isLoading ? (
+            <span>Loading live positions…</span>
+          ) : (
+            <span>Live snapshots unavailable — showing fallback fixture</span>
+          )}
+          <span className="text-vgray-400">·</span>
+          {hasLiveActivity ? (
+            <span>Activity feed from live Soroban events</span>
+          ) : isLiveFeedLoading ? (
+            <span>Loading live activity…</span>
+          ) : (
+            <span>No whale events in lookback window (live)</span>
+          )}
+        </div>
+      </div>
+
       {/* Row 1 — Concentration Bars */}
-      <ConcentrationBars />
+      <ConcentrationBars data={whalesData} />
 
       {/* Row 2 — Top 10 Table */}
-      <TopPositionsTable />
+      <TopPositionsTable data={whalesData} />
 
       {/* Row 3 — Activity Feed */}
-      <WhaleActivityFeed />
+      <WhaleActivityFeed activity={activityData} />
     </div>
   );
 }

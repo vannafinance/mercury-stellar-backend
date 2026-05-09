@@ -6,17 +6,22 @@ import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, cn, hfColor } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ScatterChart, Scatter, ZAxis, CartesianGrid } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
+// Real LP pools deployed on Stellar testnet (see CONTRACT_ADDRESSES in
+// lib/stellar-utils.ts → AQUARIUS_XLM_USDC_POOL, SOROSWAP_XLM_USDC_POOL,
+// AQUARIUS_XLM_USDT_POOL, AQUARIUS_XLM_AQUA_POOL). All are XLM-paired —
+// XLM is the only volatile asset in our universe.
 const POOLS = [
-  { id: "eth_usdc", label: "ETH/USDC", volatileAsset: "ETH", stableAsset: "USDC" },
-  { id: "wbtc_usdc", label: "WBTC/USDC", volatileAsset: "WBTC", stableAsset: "USDC" },
-  { id: "eth_wbtc", label: "ETH/WBTC", volatileAsset: "ETH", stableAsset: "WBTC" },
-  { id: "weeth_eth", label: "weETH/ETH", volatileAsset: "weETH", stableAsset: "ETH" },
+  { id: "aq_xlm_blusdc", label: "Aquarius XLM/USDC", volatileAsset: "XLM",  stableAsset: "AQUSDC", protocol: "Aquarius" as const },
+  { id: "ss_xlm_susdc", label: "Soroswap XLM/USDC", volatileAsset: "XLM",  stableAsset: "SOUSDC", protocol: "Soroswap" as const },
+  { id: "aq_xlm_aqua",  label: "Aquarius XLM/AQUA", volatileAsset: "XLM",  stableAsset: "AQUA",   protocol: "Aquarius" as const },
+  { id: "aq_xlm_usdt",  label: "Aquarius XLM/USDT", volatileAsset: "XLM",  stableAsset: "USDT",   protocol: "Aquarius" as const },
 ] as const;
 
 // Standard AMM IL formula
@@ -36,7 +41,7 @@ const LP_POSITIONS = Array.from({ length: 22 }, (_, i) => {
   const poolIdx = Math.floor(dr(i * 13) * POOLS.length);
   return {
     id: i,
-    address: `0x${(0xa000 + i * 71).toString(16)}...${(0xb100 + i * 53).toString(16)}`,
+    address: shortStellar(syntheticGAccount(i + 41)),
     vannaLeverage: vannaLev,
     ownCollateral,
     debt,
@@ -118,10 +123,10 @@ export default function LPILAmplificationPage() {
       <PageHeader title="Leveraged LP Impermanent Loss Amplification" subtitle="IL on leveraged LP positions is amplified by Vanna leverage — normal IL becomes catastrophic at 8–10x" />
 
       <div className="bg-amber-50/60 border border-amber-200 rounded-r3 p-4">
-        <p className="text-[11px] text-amber-700 font-semibold mb-1">📊 Why leverage amplifies IL</p>
+        <p className="text-[11px] text-amber-700 font-semibold mb-1">Why leverage amplifies IL on Stellar LPs</p>
         <p className="text-[10px] text-amber-600 leading-relaxed">
-          Normal ETH/USDC LP: ETH drops 30% → IL = ~7.2% → acceptable loss.<br />
-          <strong>With 8x Vanna leverage:</strong> Same LP on $80K capital (from $10K collateral) → 7.2% IL = $5,760 loss → 57.6% of your own $10K → near total wipeout + bad debt.
+          Normal Aquarius/Soroswap XLM/USDC LP: XLM drops 30% → IL ≈ 7.2% → acceptable loss.<br />
+          <strong>With 8× Vanna leverage:</strong> Same LP on $80K notional (from $10K collateral) → 7.2% IL = $5,760 loss → 57.6% of your own $10K → near total wipeout + bad debt below the Risk Engine 1.1 HF threshold.
         </p>
       </div>
 

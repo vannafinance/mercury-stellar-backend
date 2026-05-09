@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import { liquidationMetrics } from "@/lib/analytics/data/mock";
 import type { Chain } from "@/lib/analytics/data/mock";
@@ -13,23 +13,22 @@ import {
   hfColor,
 } from "@/lib/analytics/utils";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
+import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { derivePositionRows } from "@/lib/analytics/onchain/derivations";
+import { useUserStore } from "@/store/user";
+import { readLiveEventFeed, type LiveLiquidationRow } from "@/lib/analytics/stellar/eventFeed";
 
 const lm = liquidationMetrics;
 
 const PAGE_SIZE = 5;
 
-/* ── Chain Badge ── */
-function ChainBadge({ chain }: { chain: Chain }) {
+/* ── Chain Badge ──
+ * Single-chain build: every margin account lives on Soroban testnet.
+ * Component kept so existing call-sites continue to compile. */
+function ChainBadge({ chain: _chain }: { chain: Chain }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-        chain === "base"
-          ? "bg-[#0052FF]/15 text-[#3b82f6]"
-          : "bg-violet-100 text-violet-400",
-      )}
-    >
-      {chain}
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-electric-50 text-electric-700">
+      stellar
     </span>
   );
 }
@@ -161,12 +160,71 @@ function usePagedSlice<T>(items: T[], page: number, pageSize: number) {
 export default function LiquidationsPage() {
   const [recentPage, setRecentPage] = useState(1);
   const [eligiblePage, setEligiblePage] = useState(1);
+  const [liveHistory, setLiveHistory] = useState<LiveLiquidationRow[]>([]);
+  const [isEventFeedLoading, setIsEventFeedLoading] = useState(true);
+  const userAddress = useUserStore((s) => s.address);
+  const snapshot = useAnalyticsOnchainStore((s) => s.result);
+  const isLoading = useAnalyticsOnchainStore((s) => s.isLoading);
+  const load = useAnalyticsOnchainStore((s) => s.load);
 
-  const history = lm.liquidationHistory;
-  const eligible = lm.walletsEligibleForLiquidation;
+  useEffect(() => {
+    void load(userAddress);
+  }, [userAddress, load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pull = async () => {
+      try {
+        const feed = await readLiveEventFeed();
+        if (!cancelled) setLiveHistory(feed.liquidations);
+      } catch {
+        // keep fallback
+      } finally {
+        if (!cancelled) {
+          setIsEventFeedLoading(false);
+          timer = setTimeout(pull, 30_000);
+        }
+      }
+    };
+    void pull();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const hasLiveHistory = liveHistory.length > 0;
+  const history = hasLiveHistory
+    ? liveHistory
+    : isEventFeedLoading
+      ? lm.liquidationHistory
+      : [];
+  const isLiveHistoryReady = !isEventFeedLoading;
+  const liveEligible = useMemo(() => {
+    if (!snapshot) return [];
+    return derivePositionRows(snapshot.accounts).filter((p) => p.healthFactor < 1.1).map((p) => ({
+      address: p.address,
+      chain: "stellar" as const,
+      healthFactor: p.healthFactor,
+      debtUsd: p.totalDebt,
+      collateralUsd: p.marginValue,
+    }));
+  }, [snapshot]);
+  const hasLiveEligible = liveEligible.length > 0;
+  const eligible = hasLiveEligible ? liveEligible : lm.walletsEligibleForLiquidation;
+  const liveBadDebtEstimate = useMemo(
+    () => eligible.reduce((sum, w) => sum + Math.max(0, w.debtUsd - w.collateralUsd * 0.9), 0),
+    [eligible],
+  );
 
   const recentSlice = usePagedSlice(history, recentPage, PAGE_SIZE);
   const eligibleSlice = usePagedSlice(eligible, eligiblePage, PAGE_SIZE);
+  const successRate = useMemo(() => {
+    if (history.length === 0) return lm.successRate;
+    const success = history.filter((h) => h.status === "success").length;
+    return (success / history.length) * 100;
+  }, [history]);
 
   const timeStr = new Date().toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -178,8 +236,34 @@ export default function LiquidationsPage() {
       <PageHeader
         title="Liquidation monitor"
         subtitle="Recent liquidations and wallets eligible for liquidation"
-        meta={<PageHeaderMeta timeLabel={timeStr} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={!(hasLiveEligible || isLiveHistoryReady)} />}
       />
+
+      <div className="flex items-center justify-between gap-3 rounded-r4 border border-vgray-100 bg-surface px-4 py-2 text-[11px]">
+        <div className="flex items-center gap-2 text-vgray-500">
+          <span
+            className={cn(
+              "inline-block h-2 w-2 rounded-full",
+              hasLiveEligible ? "bg-electric-500" : isLoading ? "bg-amber-400 animate-pulse" : "bg-vgray-300",
+            )}
+          />
+          {hasLiveEligible ? (
+            <span>Eligible wallets derived from live snapshot HF (&lt; 1.1)</span>
+          ) : isLoading ? (
+            <span>Loading live positions…</span>
+          ) : (
+            <span>Live eligible set unavailable — showing fallback fixtures</span>
+          )}
+          <span className="text-vgray-400">·</span>
+          {hasLiveHistory ? (
+            <span>Recent liquidation events from Soroban RPC</span>
+          ) : isEventFeedLoading ? (
+            <span>Loading liquidation events…</span>
+          ) : (
+            <span>No liquidation events in lookback window (live)</span>
+          )}
+        </div>
+      </div>
 
       <section className="space-y-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-vgray-400">
@@ -188,8 +272,8 @@ export default function LiquidationsPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <KpiCard
             title="Number of liquidations"
-            value={formatNumber(lm.numberOfLiquidations)}
-            subtitle={lm.liquidationsPeriodLabel}
+            value={formatNumber(history.length)}
+            subtitle={isLiveHistoryReady ? "Recent on-chain events" : lm.liquidationsPeriodLabel}
             tooltip="Total liquidation events executed on-chain during the selected period."
           />
           <KpiCard
@@ -206,14 +290,20 @@ export default function LiquidationsPage() {
           />
           <KpiCard
             title="Wallets with bad debt"
-            value={formatNumber(lm.walletsWithBadDebt)}
+            value={formatNumber(hasLiveEligible ? eligible.filter((w) => w.debtUsd > w.collateralUsd * 0.9).length : lm.walletsWithBadDebt)}
             subtitle="Distinct addresses"
             tooltip="Wallets where collateral couldn't fully cover the debt — the protocol absorbs the remaining shortfall."
           />
           <KpiCard
+            title="Live bad debt estimate"
+            value={formatUsd(hasLiveEligible ? liveBadDebtEstimate : lm.liquidationHistory.reduce((s, h) => s + h.badDebt, 0))}
+            subtitle={hasLiveEligible ? "Derived from live eligible set" : "Fallback estimate"}
+            tooltip="Approximation using current debt vs 90% collateral recovery for eligible wallets."
+          />
+          <KpiCard
             title="Success rate"
-            value={formatPercent(lm.successRate)}
-            subtitle="Completed liquidations"
+            value={formatPercent(successRate)}
+            subtitle={isLiveHistoryReady ? "From live event feed" : "Completed liquidations"}
             tooltip="Percentage of liquidation attempts that completed successfully without reverting on-chain."
           />
           <KpiCard

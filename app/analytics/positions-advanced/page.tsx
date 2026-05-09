@@ -83,15 +83,11 @@ function VelocityIndicator({ velocity }: { velocity: number }) {
   );
 }
 
-function ChainBadge({ chain }: { chain: "base" | "stellar" }) {
+// Single-chain build — every margin account is a Soroban SmartAccount.
+function ChainBadge({ chain: _chain }: { chain: "base" | "stellar" }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-        chain === "base" ? "bg-[#0052FF]/15 text-[#3b82f6]" : "bg-violet-100 text-violet-400"
-      )}
-    >
-      {chain}
+    <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-electric-50 text-electric-700">
+      stellar
     </span>
   );
 }
@@ -802,7 +798,7 @@ export default function PositionsAdvancedPage() {
         <SectionHeader
           title="Correlated position detection"
           subtitle="Groups of positions sharing the same collateral dependency \u2014 a single crash affects all"
-          tooltip="If 30 positions use ETH LP tokens and ETH drops 20%, all 30 are affected simultaneously. This can overwhelm liquidators and create bad debt. Larger groups with higher debt are more dangerous."
+          tooltip="If 30 positions use XLM-denominated LP tokens (Aquarius/Soroswap) and XLM drops 20%, all 30 are affected simultaneously. This can overwhelm liquidators and create bad debt. Larger groups with higher debt are more dangerous."
         />
         <CorrelatedPositionsPanel groups={correlatedGroups} />
       </section>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import { alertsData } from "@/lib/analytics/data/mock";
 import { formatTimeAgo, cn } from "@/lib/analytics/utils";
@@ -8,6 +8,23 @@ import type { AlertPriority } from "@/lib/analytics/data/mock";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
+import { readOracleSnapshot, readAllPoolStats, type StellarPoolStats, type StellarAnalyticsSource } from "@/lib/analytics/stellar/rpcReader";
+import { ORACLE } from "@/lib/analytics/stellar/canon";
+
+// Live RPC-derived alert. Carries a `source` flag so the UI can show a
+// "LIVE" badge (vs the mock alerts that originate from the static fixture).
+type LiveAlert = {
+  id: string;
+  priority: AlertPriority;
+  metric: string;
+  value: number | string;
+  threshold: number | string;
+  message: string;
+  chain: "stellar";
+  timestamp: number;
+  acknowledged: false;
+  source: "live";
+};
 
 const priorityConfig: Record<AlertPriority, { bg: string; text: string; border: string; label: string }> = {
   P0: { bg: "bg-imperial-500", text: "text-white", border: "border-l-imperial-500", label: "EMERGENCY" },
@@ -25,8 +42,9 @@ function PriorityBadge({ priority }: { priority: AlertPriority }) {
   );
 }
 
-function AlertCard({ alert }: { alert: typeof alertsData.active[0] }) {
+function AlertCard({ alert }: { alert: typeof alertsData.active[0] | LiveAlert }) {
   const c = priorityConfig[alert.priority];
+  const isLive = (alert as LiveAlert).source === "live";
   return (
     <div className={cn("bg-surface rounded-r3 shadow-vanna p-4 border-l-[4px] flex items-start gap-4", c.border,
       alert.acknowledged && "opacity-60"
@@ -34,7 +52,7 @@ function AlertCard({ alert }: { alert: typeof alertsData.active[0] }) {
       <PriorityBadge priority={alert.priority} />
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-vgray-800">{alert.message}</p>
-        <div className="flex items-center gap-3 mt-1.5">
+        <div className="flex items-center gap-3 mt-1.5 flex-wrap">
           <span className="text-xs text-vgray-400">{formatTimeAgo(alert.timestamp)}</span>
           <span className="text-xs px-1.5 py-0.5 rounded-r1 bg-vgray-50 text-vgray-500 font-mono">{alert.metric}</span>
           <span className="text-xs text-vgray-400">
@@ -42,10 +60,18 @@ function AlertCard({ alert }: { alert: typeof alertsData.active[0] }) {
             {" "}(threshold: {alert.threshold})
           </span>
           {alert.chain && (
-            <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded-rfull",
-              alert.chain === "base" ? "bg-[#0052FF]/15 text-[#3b82f6]" : "bg-violet-100 text-violet-400"
-            )}>
-              {alert.chain === "base" ? "Base" : "Stellar"}
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-rfull bg-electric-50 text-electric-700">
+              Stellar
+            </span>
+          )}
+          {isLive ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-rfull bg-electric-500 text-white">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+              LIVE · RPC
+            </span>
+          ) : (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-rfull bg-vgray-100 text-vgray-500">
+              MOCK
             </span>
           )}
         </div>
@@ -61,29 +87,151 @@ export default function AlertsPage() {
   const [filter, setFilter] = useState<"all" | AlertPriority>("all");
   const [tab, setTab] = useState<"active" | "history">("active");
 
-  // Surface a REAL alert if the connected wallet's margin position is unhealthy.
-  // Everything else on this page stays mock — bridging the rest needs an indexer.
+  // ── Real-signal sources (RPC-only, no indexer) ───────────────────────
+  // 1. Connected wallet margin: from `margin-account-info-store` (already
+  //    polling RiskEngine + LendingProtocol contracts via ContractService).
+  // 2. Reflector oracle freshness: pulled directly from OracleContract via
+  //    `readOracleSnapshot()` (canonical fallback when an asset misses).
+  // 3. Per-pool utilization: pulled from each LendingProtocol via
+  //    `readAllPoolStats()` — flags when utilization > 95% (borrow-rate
+  //    spike imminent + withdraw queue risk).
   const userAddress = useUserStore((s) => s.address);
   const hasMargin = useMarginAccountInfoStore((s) => s.hasMarginAccount);
   const hf = useMarginAccountInfoStore((s) => s.avgHealthFactor);
   const totalDebt = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
 
-  const realActiveAlerts = useMemo(() => {
-    if (!userAddress || !hasMargin || totalDebt <= 0) return [];
-    if (!Number.isFinite(hf) || hf <= 0 || hf >= 1.3) return [];
-    const priority: AlertPriority = hf < 1.05 ? "P0" : hf < 1.1 ? "P1" : "P2";
-    return [{
-      id: `self-hf-${userAddress.slice(0, 8)}`,
-      priority,
-      metric: "your_health_factor",
-      value: parseFloat(hf.toFixed(2)),
-      threshold: 1.3,
-      message: `Your margin position health factor at ${hf.toFixed(2)} (debt $${totalDebt.toFixed(2)})`,
-      chain: "stellar" as const,
-      timestamp: Date.now(),
-      acknowledged: false,
-    }];
-  }, [userAddress, hasMargin, hf, totalDebt]);
+  const [oracle, setOracle] = useState<StellarAnalyticsSource["oracle"] | null>(null);
+  const [pools, setPools] = useState<StellarPoolStats[]>([]);
+  const [rpcStale, setRpcStale] = useState<boolean>(false);
+  const [rpcError, setRpcError] = useState<string | null>(null);
+
+  // RPC poll loop. 30s heartbeat matches the analytics store TTL so we
+  // don't double-fan-out under typical session usage.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const pull = async () => {
+      try {
+        const [o, p] = await Promise.all([readOracleSnapshot(), readAllPoolStats()]);
+        if (cancelled) return;
+        setOracle(o);
+        setPools(p);
+        setRpcStale(o.prices.some((x) => x.isFallback));
+        setRpcError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setRpcStale(true);
+        setRpcError(err instanceof Error ? err.message : "Soroban RPC unavailable");
+      } finally {
+        if (!cancelled) timer = setTimeout(pull, 30_000);
+      }
+    };
+    void pull();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const realActiveAlerts = useMemo<LiveAlert[]>(() => {
+    const out: LiveAlert[] = [];
+    const now = Date.now();
+
+    // (1) Connected wallet margin HF
+    if (
+      userAddress &&
+      hasMargin &&
+      totalDebt > 0 &&
+      Number.isFinite(hf) &&
+      hf > 0 &&
+      hf < 1.3
+    ) {
+      const priority: AlertPriority = hf < 1.05 ? "P0" : hf < 1.1 ? "P1" : "P2";
+      out.push({
+        id: `self-hf-${userAddress.slice(0, 8)}`,
+        priority,
+        metric: "your_health_factor",
+        value: parseFloat(hf.toFixed(2)),
+        threshold: 1.3,
+        message: `Your margin position health factor at ${hf.toFixed(2)} (debt $${totalDebt.toFixed(2)})`,
+        chain: "stellar",
+        timestamp: now,
+        acknowledged: false,
+        source: "live",
+      });
+    }
+
+    // (2) Reflector oracle staleness — every fallback price means the live
+    // RPC didn't return a usable value for that asset.
+    if (oracle) {
+      for (const p of oracle.prices) {
+        if (p.isFallback) {
+          out.push({
+            id: `oracle-stale-${p.symbol}`,
+            priority: "P1",
+            metric: `reflector_${p.symbol.toLowerCase()}`,
+            value: "stale",
+            threshold: `${ORACLE.expectedHeartbeatSec}s`,
+            message: `Reflector feed for ${p.symbol} did not return a fresh price — Risk Engine will block borrows / withdraws on this asset.`,
+            chain: "stellar",
+            timestamp: now,
+            acknowledged: false,
+            source: "live",
+          });
+        }
+      }
+    }
+
+    // (3) Pool utilization — borrow-side stress.
+    for (const pool of pools) {
+      if (pool.utilizationRate >= 95) {
+        out.push({
+          id: `util-${pool.symbol}`,
+          priority: pool.utilizationRate >= 99 ? "P0" : "P1",
+          metric: `${pool.symbol.toLowerCase()}_utilization`,
+          value: `${pool.utilizationRate.toFixed(1)}%`,
+          threshold: "95%",
+          message: `${pool.symbol} pool utilization at ${pool.utilizationRate.toFixed(1)}% — borrow APR spiking, withdraws may queue.`,
+          chain: "stellar",
+          timestamp: now,
+          acknowledged: false,
+          source: "live",
+        });
+      } else if (pool.utilizationRate >= 85) {
+        out.push({
+          id: `util-${pool.symbol}`,
+          priority: "P2",
+          metric: `${pool.symbol.toLowerCase()}_utilization`,
+          value: `${pool.utilizationRate.toFixed(1)}%`,
+          threshold: "85%",
+          message: `${pool.symbol} pool utilization at ${pool.utilizationRate.toFixed(1)}% — approaching borrow-rate kink.`,
+          chain: "stellar",
+          timestamp: now,
+          acknowledged: false,
+          source: "live",
+        });
+      }
+    }
+
+    // (4) RPC outage itself.
+    if (rpcError) {
+      out.push({
+        id: `rpc-error`,
+        priority: "P1",
+        metric: "soroban_rpc",
+        value: "unreachable",
+        threshold: "ok",
+        message: `Soroban RPC unavailable — falling back to cached/synthetic data. (${rpcError})`,
+        chain: "stellar",
+        timestamp: now,
+        acknowledged: false,
+        source: "live",
+      });
+    }
+
+    return out;
+  }, [userAddress, hasMargin, hf, totalDebt, oracle, pools, rpcError]);
 
   const summaryCounts = useMemo(() => {
     const s = { ...alertsData.summary };
@@ -103,13 +251,49 @@ export default function AlertsPage() {
     minute: "2-digit",
   });
 
+  // Freshness summary for the live-status strip.
+  const liveSummary = useMemo(() => {
+    if (!oracle && pools.length === 0) {
+      return { ready: false, label: rpcError ? "RPC error" : "Loading Soroban RPC…" };
+    }
+    if (rpcError) return { ready: false, label: rpcError };
+    if (rpcStale) return { ready: true, label: "Reflector partially stale" };
+    return { ready: true, label: `Reflector + ${pools.length} pools live` };
+  }, [oracle, pools, rpcStale, rpcError]);
+
   return (
     <div className="p-6 w-full max-w-[1600px] mx-auto space-y-8">
       <PageHeader
         title="Alerts & notifications"
         subtitle="Priority feed, filters, and alert history"
-        meta={<PageHeaderMeta timeLabel={timeStr} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={!liveSummary.ready} />}
       />
+
+      {/* ── Live Data Status Strip ─────────────────────────────────────── */}
+      <div className="flex items-center justify-between gap-3 rounded-r4 border border-vgray-100 bg-surface px-4 py-2 text-[11px]">
+        <div className="flex items-center gap-2 text-vgray-500">
+          <span
+            className={cn(
+              "inline-block h-2 w-2 rounded-full",
+              liveSummary.ready && !rpcStale ? "bg-electric-500" : "bg-amber-400 animate-pulse"
+            )}
+          />
+          <span>{liveSummary.label}</span>
+          {realActiveAlerts.length > 0 && (
+            <span className="px-1.5 py-0.5 rounded-rfull bg-electric-500 text-white text-[9px] font-bold">
+              {realActiveAlerts.length} LIVE
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-vgray-400">
+          {oracle && (
+            <span>Reflector heartbeat ≤ {oracle.expectedHeartbeatSec}s</span>
+          )}
+          {pools.length > 0 && (
+            <span>Pools polled: {pools.map((p) => p.symbol).join(" · ")}</span>
+          )}
+        </div>
+      </div>
 
       {/* Summary Badges */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

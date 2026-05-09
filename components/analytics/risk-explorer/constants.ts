@@ -1,43 +1,59 @@
+// Risk-Explorer asset universe & wallet generator. STELLAR-NATIVE only —
+// every symbol comes from `lib/analytics/stellar/canon.ts → ACTIVE_ASSETS`
+// and every synthetic address is a Stellar G-account (56 chars base32).
+// We never introduce assets that aren't already used in the live app.
+
+import {
+  ACTIVE_ASSETS,
+  FALLBACK_PRICES,
+  syntheticGAccount,
+  type StellarAsset,
+} from "@/lib/analytics/stellar/canon";
+
 export interface WalletPosition {
   address: string;
   collateral: number;
   debt: number;
   hf: number;
-  primaryAsset: string;
+  primaryAsset: StellarAsset;
   leverageX: number;
 }
 
-/** USD reference prices for simulation (mock oracle). */
-export const TOKEN_PRICES: Record<string, number> = {
-  ETH: 3500,
-  WBTC: 98_000,
-  weETH: 3550,
-  USDC: 1,
-  USDT: 1,
-  DAI: 1,
+/** USD reference prices for simulator math. Mirrors the Reflector
+ *  fallbacks so a fresh user (cold cache) sees consistent numbers
+ *  before live oracle prices land. */
+export const TOKEN_PRICES: Record<StellarAsset, number> = {
+  XLM: FALLBACK_PRICES.XLM,
+  BLUSDC: FALLBACK_PRICES.BLUSDC,
+  AQUSDC: FALLBACK_PRICES.AQUSDC,
+  SOUSDC: FALLBACK_PRICES.SOUSDC,
+  EURC: FALLBACK_PRICES.EURC,
 };
 
-/** Standard collateral assets available in the Risk Explorer asset selector. */
+/** Asset selector entries shown in the Risk Explorer side panel. */
 export const SIM_ASSETS = [
-  { symbol: "ETH", name: "Ether (native)", icon: "◆" },
-  { symbol: "WBTC", name: "Wrapped Bitcoin", icon: "₿" },
-  { symbol: "weETH", name: "Ether.fi weETH", icon: "⬢" },
-  { symbol: "USDC", name: "USD Coin", icon: "$" },
-  { symbol: "USDT", name: "Tether USD", icon: "₮" },
-  { symbol: "DAI", name: "DAI Stablecoin", icon: "ⓓ" },
+  { symbol: "XLM", name: "Stellar Lumens", icon: "★" },
+  { symbol: "BLUSDC", name: "Blend USDC", icon: "$" },
+  { symbol: "AQUSDC", name: "Aquarius USDC", icon: "$" },
+  { symbol: "SOUSDC", name: "Soroswap USDC", icon: "$" },
 ] as const;
 
-const COLLATERAL_SYMBOLS = SIM_ASSETS.map((a) => a.symbol);
+const COLLATERAL_SYMBOLS: StellarAsset[] = ACTIVE_ASSETS;
 
+/** Generate a deterministic synthetic-wallet population for the
+ *  Risk Explorer simulator. The `chainId` argument is preserved for
+ *  callsite compatibility but only used as a deterministic seed —
+ *  this dashboard is single-chain (Stellar). */
 export function generateWallets(chainId: number): WalletPosition[] {
   const seed = chainId * 7;
   const gen = (i: number) => {
     const r = Math.sin(seed + i * 13.7) * 10000;
     return Math.abs(r - Math.floor(r));
   };
+  const pickAsset = (i: number) => COLLATERAL_SYMBOLS[i % COLLATERAL_SYMBOLS.length];
+  const addr = (bucket: number, i: number) => syntheticGAccount(seed * 1000 + bucket * 100 + i);
 
   const wallets: WalletPosition[] = [];
-  const pickAsset = (i: number) => COLLATERAL_SYMBOLS[i % COLLATERAL_SYMBOLS.length];
 
   const underwaterCount = 2 + Math.floor(gen(0) * 3);
   for (let i = 0; i < underwaterCount; i++) {
@@ -45,7 +61,7 @@ export function generateWallets(chainId: number): WalletPosition[] {
     const hf = 0.75 + gen(i + 200) * 0.24;
     const debt = (coll * 0.9) / hf;
     wallets.push({
-      address: `0x${(seed * 1000 + i).toString(16).padStart(4, "0")}...${(i * 7 + 3).toString(16).padStart(4, "0")}`,
+      address: addr(1, i),
       collateral: coll,
       debt,
       hf,
@@ -60,7 +76,7 @@ export function generateWallets(chainId: number): WalletPosition[] {
     const hf = 1.001 + gen(i + 400) * 0.098;
     const debt = (coll * 0.9) / hf;
     wallets.push({
-      address: `0x${(seed * 2000 + i).toString(16).padStart(4, "0")}...${(i * 11 + 5).toString(16).padStart(4, "0")}`,
+      address: addr(2, i),
       collateral: coll,
       debt,
       hf,
@@ -75,7 +91,7 @@ export function generateWallets(chainId: number): WalletPosition[] {
     const hf = 1.1 + gen(i + 600) * 0.1;
     const debt = (coll * 0.9) / hf;
     wallets.push({
-      address: `0x${(seed * 3000 + i).toString(16).padStart(4, "0")}...${(i * 13 + 9).toString(16).padStart(4, "0")}`,
+      address: addr(3, i),
       collateral: coll,
       debt,
       hf,
@@ -90,7 +106,7 @@ export function generateWallets(chainId: number): WalletPosition[] {
     const hf = 1.2 + gen(i + 800) * 0.3;
     const debt = (coll * 0.9) / hf;
     wallets.push({
-      address: `0x${(seed * 4000 + i).toString(16).padStart(4, "0")}...${(i * 17 + 2).toString(16).padStart(4, "0")}`,
+      address: addr(4, i),
       collateral: coll,
       debt,
       hf,
@@ -105,7 +121,7 @@ export function generateWallets(chainId: number): WalletPosition[] {
     const hf = 1.5 + gen(i + 1000) * 3;
     const debt = (coll * 0.9) / hf;
     wallets.push({
-      address: `0x${(seed * 5000 + i).toString(16).padStart(4, "0")}...${(i * 19 + 7).toString(16).padStart(4, "0")}`,
+      address: addr(5, i),
       collateral: coll,
       debt,
       hf,

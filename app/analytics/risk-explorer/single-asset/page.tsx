@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn, hfColor, hfBandColor } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
+import { ACTIVE_ASSETS, FALLBACK_PRICES, syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
@@ -28,14 +29,15 @@ const SIM_POSITIONS = Array.from({ length: 28 }, (_, i) => {
   const aTokens = Math.floor(marginValue * aTokenPct);
   const lpTokens = Math.floor(marginValue * lpTokenPct);
   const cash = Math.max(0, marginValue - trackTokens - aTokens - lpTokens);
-  const ASSETS = ["ETH", "WBTC", "weETH", "USDC", "USDT"];
-  const collateralAsset = ASSETS[Math.floor(dr(i * 17) * ASSETS.length)];
-  const chains = ["base", "stellar"] as const;
-  const chain = chains[i % 4 === 0 ? 1 : 0];
+  // Stellar-only universe: every synthetic position picks from the live
+  // app's ACTIVE_ASSETS (lib/analytics/stellar/canon.ts) and gets a
+  // format-correct G-account address.
+  const collateralAsset = ACTIVE_ASSETS[Math.floor(dr(i * 17) * ACTIVE_ASSETS.length)];
+  const fullAddr = syntheticGAccount(i + 1);
   return {
     id: i,
-    address: chain === "base" ? `0x${(0xa000 + i * 71).toString(16)}...${(0xb100 + i * 53).toString(16)}` : `G${String.fromCharCode(65 + i % 6)}${1000 + i * 47}...${87 + i % 4}`,
-    chain,
+    address: shortStellar(fullAddr),
+    chain: "stellar" as const,
     healthFactor: Math.round(hf * 100) / 100,
     totalDebt: debt,
     marginValue,
@@ -45,13 +47,12 @@ const SIM_POSITIONS = Array.from({ length: 28 }, (_, i) => {
   };
 });
 
-const ASSETS_LIST = [
-  { symbol: "ETH",   price: 3842  },
-  { symbol: "WBTC",  price: 97420 },
-  { symbol: "weETH", price: 3880  },
-  { symbol: "USDC",  price: 1     },
-  { symbol: "USDT",  price: 1     },
-];
+// Reference prices from the Reflector fallback table — same numbers the
+// app uses when the live oracle hasn't returned yet.
+const ASSETS_LIST = ACTIVE_ASSETS.map((symbol) => ({
+  symbol,
+  price: FALLBACK_PRICES[symbol] ?? 1,
+}));
 
 function computeSimulation(positions: typeof SIM_POSITIONS, asset: string, shockPct: number) {
   const shock = shockPct / 100;
@@ -80,15 +81,14 @@ function computeSimulation(positions: typeof SIM_POSITIONS, asset: string, shock
 
 export default function SingleAssetSimPage() {
   const cc = useChartColors();
-  const [selectedAsset, setSelectedAsset] = useState("ETH");
+  // Default to XLM — only volatile asset in the Stellar universe.
+  const [selectedAsset, setSelectedAsset] = useState<string>(ACTIVE_ASSETS[0]);
   const [shockPct, setShockPct] = useState(-30);
-  const [chainFilter, setChainFilter] = useState<"all" | "base" | "stellar">("all");
   const [hasRun, setHasRun] = useState(false);
 
-  const filteredPositions = useMemo(() =>
-    SIM_POSITIONS.filter(p => chainFilter === "all" || p.chain === chainFilter),
-    [chainFilter]
-  );
+  // Chain filter dropped — protocol only operates on Stellar; leaving it
+  // would imply multi-chain support we don't have.
+  const filteredPositions = SIM_POSITIONS;
 
   const sim = useMemo(() => computeSimulation(filteredPositions, selectedAsset, shockPct), [filteredPositions, selectedAsset, shockPct]);
 
@@ -168,16 +168,12 @@ export default function SingleAssetSimPage() {
               </div>
             </div>
 
-            {/* Chain Filter */}
+            {/* Network indicator (read-only — protocol is Stellar-only) */}
             <div className="space-y-2">
-              <label className="text-[10px] font-semibold uppercase tracking-wide text-vgray-400">Chain</label>
-              <div className="flex rounded-full bg-vgray-50 border border-vgray-100 p-0.5">
-                {(["all", "base", "stellar"] as const).map(c => (
-                  <button key={c} onClick={() => setChainFilter(c)}
-                    className={cn("flex-1 py-1 rounded-full text-[10px] font-semibold transition-all",
-                      chainFilter === c ? "bg-surface text-violet-500 shadow-sm" : "text-vgray-400"
-                    )}>{c === "all" ? "All" : c === "base" ? "Base" : "Stellar"}</button>
-                ))}
+              <label className="text-[10px] font-semibold uppercase tracking-wide text-vgray-400">Network</label>
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-r2 border border-vgray-100 bg-vgray-50">
+                <span className="w-1.5 h-1.5 rounded-full bg-electric-500" />
+                <span className="text-[10px] font-semibold text-vgray-700">Stellar (Soroban testnet)</span>
               </div>
             </div>
 

@@ -11,6 +11,7 @@
 
 import type { AccountSnapshot, CollateralPosition, DebtPosition } from "@/lib/analytics/onchain/types";
 import { useMarginAccountInfoStore, type BorrowedBalance } from "@/store/margin-account-info-store";
+import { ACTIVE_ASSETS, syntheticCAccount, syntheticGAccount } from "@/lib/analytics/stellar/canon";
 
 const SYNTHETIC_FILL_COUNT = 31; // total chart population = 1 real + 31 synthetic
 const STELLAR_CHAIN_ID = 0; // synthetic id; UI doesn't read it for routing decisions
@@ -109,9 +110,11 @@ function syntheticAccount(i: number): AccountSnapshot {
   const totalCollateralUsd = Math.floor(debt * hf);
   const leverage = Math.min(10, Math.max(1, 1 + debt / Math.max(1, totalCollateralUsd)));
 
-  const symbols = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"];
-  const collSymbol = symbols[i % symbols.length];
-  const debtSymbol = symbols[(i + 1) % symbols.length];
+  // Synthetic distribution drawn ONLY from the live app's asset universe
+  // (lib/analytics/stellar/canon.ts → ACTIVE_ASSETS). Never introduce any
+  // asset that isn't currently surfaced in the user-facing dropdowns.
+  const collSymbol = ACTIVE_ASSETS[i % ACTIVE_ASSETS.length];
+  const debtSymbol = ACTIVE_ASSETS[(i + 1) % ACTIVE_ASSETS.length];
 
   const collateral: CollateralPosition[] = [{
     asset: collSymbol,
@@ -130,11 +133,11 @@ function syntheticAccount(i: number): AccountSnapshot {
     usd: debt,
   }];
 
-  // Address-shaped synthetic identifiers (Stellar contract addrs are 56 chars
-  // base32 starting with C; we only need uniqueness for chart keys, not
-  // resolvability — the UI never RPC-fetches these).
-  const synthAccount = `CSYNTH${String(i).padStart(50, "0")}`;
-  const synthOwner = `GSYNTH${String(i).padStart(50, "0")}`;
+  // Stellar-shaped identifiers (C... contract / G... wallet, 56 chars
+  // base32). Chart keys only — never RPC-fetched — but format-correct so
+  // tables, filters and explorer-style links don't break invariants.
+  const synthAccount = syntheticCAccount(i);
+  const synthOwner = syntheticGAccount(i);
 
   return {
     account: synthAccount,

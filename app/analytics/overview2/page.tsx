@@ -26,6 +26,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   RadialBarChart, RadialBar, PolarAngleAxis,
 } from "recharts";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -36,6 +37,9 @@ const LIQUIDATION_THRESHOLD = 1.1;
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
+// Single-chain protocol; legacy "base" kept in the union for back-compat with
+// derivations that may still tag rows historically — UI now treats everything
+// as Stellar.
 type Chain = "base" | "stellar";
 type ActiveTab = "hf" | "pnl" | "leverage";
 
@@ -66,7 +70,8 @@ const dr = (seed: number): number => {
   return x - Math.floor(x);
 };
 
-const PROTO_LIST = ["Avantis", "Morpho", "Uniswap", "Aerodrome", "Soroswap", "Hyperliquid", "Pendle", "Aquarius"];
+// Stellar-only protocol universe (matches CONTRACT_ADDRESSES on testnet).
+const PROTO_LIST = ["Blend", "Aquarius", "Soroswap"];
 
 const ALL_POSITIONS: PositionRow[] = Array.from({ length: 32 }, (_, i) => {
   let hf: number;
@@ -82,7 +87,8 @@ const ALL_POSITIONS: PositionRow[] = Array.from({ length: 32 }, (_, i) => {
   const debt = Math.floor(60_000 + dr(i * 7 + 1) * 1_600_000 / 1000) * 1000;
   const marginValue = Math.floor(debt * hf);
   const leverage = Math.min(10, Math.max(1, Math.round(1.5 + dr(i * 13 + 2) * 8.5)));
-  const chain: Chain = i % 4 === 0 ? "stellar" : "base";
+  // Single chain — every margin account is a Soroban SmartAccount.
+  const chain: Chain = "stellar";
 
   const trackPct = leverage >= 7 ? 0.35 + dr(i * 3 + 3) * 0.3 : dr(i * 3 + 3) * 0.22;
   const aTokenPct = dr(i * 5 + 4) * 0.38;
@@ -101,10 +107,8 @@ const ALL_POSITIONS: PositionRow[] = Array.from({ length: 32 }, (_, i) => {
   const distToLiq = Math.max(0, ((hf - LIQUIDATION_THRESHOLD) / hf) * 100);
   const protIdx = Math.floor(dr(i * 23 + 7) * PROTO_LIST.length);
 
-  const baseAddr = (n: number) => n.toString(16).padStart(4, "0");
-  const address = chain === "base"
-    ? `0x${baseAddr(0xa000 + i * 71)}...${baseAddr(0xb100 + i * 53)}`
-    : `G${String.fromCharCode(65 + (i % 6))}${1000 + i * 47}...${String.fromCharCode(87 + (i % 4))}${100 + i * 31}`;
+  // Format-correct Stellar G-account addresses (56 chars base32).
+  const address = shortStellar(syntheticGAccount(i + 5001));
 
   return {
     address,
@@ -121,7 +125,8 @@ const ALL_POSITIONS: PositionRow[] = Array.from({ length: 32 }, (_, i) => {
     hfTrend: Array.from({ length: 10 }, (_, j) => Math.max(0.5, hf + (dr(i * 100 + j) - 0.5) * 0.14)),
     pnlTrend: Array.from({ length: 10 }, (_, j) => Math.floor(debt * pnlPct * (0.65 + dr(i * 200 + j) * 0.7))),
     distanceToLiquidation: Math.round(distToLiq * 10) / 10,
-    liquidationPrice: Math.round(3842 * (1 - distToLiq / 100)),
+    // Anchored to XLM Reflector reference price (~$0.16) — see FALLBACK_PRICES.
+    liquidationPrice: Math.round(0.16 * (1 - distToLiq / 100) * 10000) / 10000,
     timeAtRisk: hf < 1.5 ? Math.floor(dr(i * 31 + 9) * 7200) : 0,
   };
 });
@@ -149,13 +154,10 @@ function rowBg(hf: number): string {
   return "";
 }
 
-function ChainBadge({ chain }: { chain: Chain }) {
+function ChainBadge({ chain: _chain }: { chain: Chain }) {
   return (
-    <span className={cn(
-      "text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide",
-      chain === "base" ? "bg-violet-100 text-violet-600" : "bg-electric-50 text-electric-700"
-    )}>
-      {chain === "base" ? "Base" : "Stellar"}
+    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wide bg-electric-50 text-electric-700">
+      Stellar
     </span>
   );
 }
@@ -246,12 +248,12 @@ const SIM_CARDS: { cat: string; catColor: string; title: string; desc: string; r
   // MARKET RISK
   { cat: "MARKET RISK", catColor: "#703AE6", title: "Single Asset Risk Explorer", desc: "Simulate the impact of a single asset price drop on all positions holding it as collateral or exposure.", route: "/analytics/risk-explorer/single-asset", lastResult: "47 positions at risk · $2.1M bad debt est.",
     icon: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 4L7 10L11 7L18 16" stroke="#703AE6" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/><path d="M13 16H18V11" stroke="#703AE6" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg> },
-  { cat: "MARKET RISK", catColor: "#703AE6", title: "Multi-Asset Correlated Crash", desc: "Correlated market crash where multiple assets drop simultaneously — 2022 Bear, Black Thursday presets.", route: "/analytics/risk-explorer/multi-asset-crash", lastResult: "112 positions at risk · $8.4M bad debt est.",
+  { cat: "MARKET RISK", catColor: "#703AE6", title: "Multi-Asset Correlated Crash", desc: "Correlated market crash across the Stellar ecosystem — XLM Deep Bear, Stellar Flash Crash, Stable Pool Contagion presets.", route: "/analytics/risk-explorer/multi-asset-crash", lastResult: "112 positions at risk · $8.4M bad debt est.",
     icon: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="10" width="3" height="8" rx="1" fill="#703AE6"/><rect x="7" y="6" width="3" height="12" rx="1" fill="#703AE6" fillOpacity="0.7"/><rect x="12" y="2" width="3" height="16" rx="1" fill="#703AE6" fillOpacity="0.4"/><path d="M17 8L15 10M15 10L13 8M15 10V4" stroke="#FC5457" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg> },
-  { cat: "MARKET RISK", catColor: "#703AE6", title: "Stablecoin Depeg Simulation", desc: "USDC/USDT/DAI depegs — dual impact: collateral value drops and borrower debt exposure changes.", route: "/analytics/risk-explorer/stablecoin-depeg", lastResult: "23 positions at risk · $1.2M bad debt est.",
+  { cat: "MARKET RISK", catColor: "#703AE6", title: "Stablecoin Depeg Simulation", desc: "BLUSDC / AQUSDC / SOUSDC depegs — dual impact: collateral value drops and borrower debt exposure changes.", route: "/analytics/risk-explorer/stablecoin-depeg", lastResult: "23 positions at risk · $1.2M bad debt est.",
     icon: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="7.5" stroke="#703AE6" strokeWidth="1.6"/><path d="M10 5.5V7M10 13V14.5M7.5 8.5C7.5 7.4 8.6 6.5 10 6.5C11.4 6.5 12.5 7.4 12.5 8.5C12.5 9.6 11.4 10.5 10 10.5C8.6 10.5 7.5 11.4 7.5 12.5C7.5 13.6 8.6 14.5 10 14.5C11.4 14.5 12.5 13.6 12.5 12.5" stroke="#703AE6" strokeWidth="1.6" strokeLinecap="round"/></svg> },
   // LEVERAGE RISK
-  { cat: "LEVERAGE RISK", catColor: "#FC5457", title: "LP Impermanent Loss Amplification", desc: "Leveraged LP positions on Uniswap/Soroswap — IL amplified by Vanna leverage causes HF collapse.", route: "/analytics/risk-explorer/lp-il-amplification", lastResult: "34 positions at risk · $2.8M bad debt est.",
+  { cat: "LEVERAGE RISK", catColor: "#FC5457", title: "LP Impermanent Loss Amplification", desc: "Leveraged LP positions on Aquarius / Soroswap — IL amplified by Vanna leverage causes HF collapse.", route: "/analytics/risk-explorer/lp-il-amplification", lastResult: "34 positions at risk · $2.8M bad debt est.",
     icon: <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 12C4 8 6 6 10 6C14 6 16 10 18 10" stroke="#FC5457" strokeWidth="1.6" strokeLinecap="round"/><path d="M2 16C4 12 6 10 10 10C14 10 16 14 18 14" stroke="#FC5457" strokeWidth="1.6" strokeLinecap="round" strokeOpacity="0.5"/><path d="M10 6V3M8.5 4.5L10 3L11.5 4.5" stroke="#FC5457" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg> },
   // SYSTEMIC RISK
   { cat: "SYSTEMIC RISK", catColor: "#F59E0B", title: "Whale Withdrawal Risk", desc: "Top LP depositors withdraw — pool utilization spikes, APR surges, borrower HF degrades over time.", route: "/analytics/risk-explorer/whale-withdrawal", lastResult: "18 positions at risk · $0.9M bad debt est.",
@@ -335,7 +337,8 @@ export default function Overview2Page() {
   const cc = useChartColors();
   const [activeTab, setActiveTab] = useState<ActiveTab>("hf");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [chainFilter, setChainFilter] = useState<"all" | "base" | "stellar">("all");
+  // Single-chain build — kept as a no-op for layout compatibility.
+  const chainFilter = "all" as const;
 
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
@@ -542,17 +545,10 @@ export default function Overview2Page() {
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-[10px] font-semibold uppercase tracking-wider text-vgray-400">All Positions Monitor</h2>
           <div className="flex items-center gap-2">
-            {/* Chain filter */}
-            <div className="flex rounded-full bg-vgray-50 border border-vgray-100 p-0.5">
-              {(["all", "base", "stellar"] as const).map(c => (
-                <button key={c} onClick={() => setChainFilter(c)}
-                  className={cn("px-3 py-1 rounded-full text-[10px] font-semibold transition-all",
-                    chainFilter === c ? "bg-surface text-violet-500 shadow-sm" : "text-vgray-400 hover:text-vgray-600"
-                  )}>
-                  {c === "all" ? "All Chains" : c === "base" ? "Base" : "Stellar"}
-                </button>
-              ))}
-            </div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-electric-50 text-electric-700 border border-electric-200 text-[10px] font-bold uppercase tracking-wide">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-electric-500" />
+              Stellar (Soroban)
+            </span>
           </div>
         </div>
 
@@ -788,7 +784,7 @@ export default function Overview2Page() {
                               {/* Position Stats */}
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                 {[
-                                  { label: "Liquidation Price (ETH)", val: `$${formatNumber(pos.liquidationPrice)}` },
+                                  { label: "Liquidation Price (XLM)", val: `$${pos.liquidationPrice.toFixed(4)}` },
                                   { label: "Distance to Liquidation", val: `${pos.distanceToLiquidation.toFixed(1)}%` },
                                   { label: "Margin Buffer", val: `${((pos.marginValue / pos.totalDebt - 1) * 100).toFixed(1)}%` },
                                   { label: "Open Since", val: formatTimeAgo(pos.openSince) },

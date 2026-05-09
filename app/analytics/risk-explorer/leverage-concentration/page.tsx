@@ -6,6 +6,7 @@ import { leverageDistribution } from "@/lib/analytics/data/mock";
 import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   LineChart, Line, ReferenceLine, Legend,
@@ -44,7 +45,7 @@ const ALL_POSITIONS = Array.from({ length: 40 }, (_, i) => {
     ownCollateral, debt, totalMargin, hf,
     trackTokens, aTokens, lpTokens, cash,
     breakEvenMove: Math.round(breakEvenMove * 10) / 10,
-    address: `0x${(0xa000 + i * 71).toString(16)}...${(0xb100 + i * 53).toString(16)}`,
+    address: shortStellar(syntheticGAccount(i + 167)),
   };
 });
 

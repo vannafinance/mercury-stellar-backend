@@ -5,13 +5,19 @@ import Link from "next/link";
 import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn, hfColor } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
+import { ACTIVE_ASSETS, syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
-const PROTOCOLS = ["Avantis", "Hyperliquid", "GMX", "All Perp Protocols"] as const;
+// On Stellar there are no permissionless perp venues integrated by Vanna.
+// What composes here is borrowed funds deployed into external Soroban
+// protocols (Blend / Aquarius / Soroswap) that already deliver effective
+// leverage via LP rebalancing or pool insolvency. We model the same
+// "amplified loss" mechanic but route it through Stellar primitives.
+const PROTOCOLS = ["Blend pool", "Aquarius LP", "Soroswap LP", "All external pools"] as const;
 type Protocol = typeof PROTOCOLS[number];
 
 // Generate positions that have significant track token exposure (perp positions)
@@ -29,12 +35,10 @@ const PERP_POSITIONS = Array.from({ length: 24 }, (_, i) => {
   const lpTokens = marginValue - trackTokens - cash - aTokens;
   const directions = ["long", "short"] as const;
   const protoIdx = Math.floor(dr(i * 13) * 3);
-  const assets = ["ETH", "WBTC", "weETH"] as const;
-  const chains = ["base", "stellar"] as const;
   return {
     id: i,
-    address: chains[i % 4 === 0 ? 1 : 0] === "base" ? `0x${(0xa000 + i * 71).toString(16)}...${(0xb100 + i * 53).toString(16)}` : `G${String.fromCharCode(65 + i % 6)}${1000 + i * 47}...`,
-    chain: chains[i % 4 === 0 ? 1 : 0],
+    address: shortStellar(syntheticGAccount(i + 67)),
+    chain: "stellar" as const,
     healthFactor: Math.round(hf * 100) / 100,
     totalDebt: debt,
     marginValue,
@@ -43,7 +47,7 @@ const PERP_POSITIONS = Array.from({ length: 24 }, (_, i) => {
     externalLeverage: extLev,
     effectiveLeverage: effectiveLev,
     protocol: PROTOCOLS[protoIdx],
-    underlyingAsset: assets[Math.floor(dr(i * 17) * 3)],
+    underlyingAsset: ACTIVE_ASSETS[Math.floor(dr(i * 17) * ACTIVE_ASSETS.length)],
     direction: directions[i % 2],
     breakdown: { trackTokens, cash, aTokens, lpTokens: Math.max(0, lpTokens) },
   };
@@ -53,12 +57,12 @@ export default function LeveragedPerpShockPage() {
   const cc = useChartColors();
   const [assetShock, setAssetShock] = useState(-15);
   const [extLev, setExtLev] = useState(5);
-  const [protocol, setProtocol] = useState<Protocol>("All Perp Protocols");
+  const [protocol, setProtocol] = useState<Protocol>("All external pools");
   const [assumeExtLiq, setAssumeExtLiq] = useState(true);
   const [hasRun, setHasRun] = useState(false);
 
   const filteredPos = useMemo(() =>
-    PERP_POSITIONS.filter(p => protocol === "All Perp Protocols" || p.protocol === protocol),
+    PERP_POSITIONS.filter(p => protocol === "All external pools" || p.protocol === protocol),
     [protocol]
   );
 
@@ -92,7 +96,7 @@ export default function LeveragedPerpShockPage() {
   // Leverage amplification funnel data
   const funnelData = [
     { stage: "Asset Move", value: Math.abs(assetShock), color: "#703AE6" },
-    { stage: `Perp PnL (${extLev}x)`, value: Math.abs(assetShock) * extLev, color: "#F59E0B" },
+    { stage: `Pool PnL (${extLev}x)`, value: Math.abs(assetShock) * extLev, color: "#F59E0B" },
     { stage: "Track Token Loss", value: Math.min(100, Math.abs(assetShock) * extLev), color: "#FF007A" },
     { stage: "Portfolio HF Drop", value: Math.min(100, Math.abs(assetShock) * extLev * 0.8), color: "#FC5457" },
   ];
@@ -116,20 +120,21 @@ export default function LeveragedPerpShockPage() {
           Risk Command Center
         </Link>
         <span className="text-vgray-200">/</span>
-        <span className="text-[11px] text-vgray-600 font-semibold">Leveraged Perp Position Shock</span>
+        <span className="text-[11px] text-vgray-600 font-semibold">Leveraged External-Pool Shock</span>
       </div>
       <PageHeader
-        title="Leveraged Perp Position Shock"
-        subtitle="Vanna's composable leverage: 10x Vanna credit deployed to Avantis/Hyperliquid perps creates amplified liquidation risk"
+        title="Leveraged External-Pool Shock"
+        subtitle="Composable Stellar leverage: borrowed Vanna credit deployed into Blend / Aquarius / Soroswap. Adverse moves on those pools cascade back through the SmartAccount's tracking-token collateral."
       />
 
       {/* Explainer Banner */}
       <div className="bg-imperial-50/60 border border-imperial-200 rounded-r3 p-4">
-        <p className="text-[11px] text-imperial-700 font-semibold mb-1">⚠️ Why this simulation matters</p>
+        <p className="text-[11px] text-imperial-700 font-semibold mb-1">Why this simulation matters</p>
         <p className="text-[10px] text-imperial-600 leading-relaxed">
-          Users who borrow 9x from Vanna and deploy to a 5x ETH long on Avantis have <strong>45x effective ETH exposure</strong>.
-          A 2% ETH drop = 90% perp PnL loss → track token → $0 → HF collapses below 1.1 on Vanna.
-          This is fundamentally different from a standard price shock — the external leverage <strong>amplifies</strong> the impact.
+          Users who borrow 9× from Vanna and deploy into Aquarius/Soroswap LPs (or stake b-tokens in Blend) get
+          an effective <strong>9× × LP-leverage</strong> exposure to XLM. A sharp XLM move (or pool insolvency) collapses the
+          tracking-token side of their SmartAccount collateral; the Risk Engine sees gross collateral fall and HF can
+          drop below the 1.1 threshold faster than the underlying spot move would suggest.
         </p>
       </div>
 
@@ -172,13 +177,13 @@ export default function LeveragedPerpShockPage() {
                 onChange={e => setExtLev(Number(e.target.value))}
                 className="w-full h-1.5 appearance-none rounded-full bg-vgray-100 accent-violet-500 cursor-pointer"
               />
-              <p className="text-[9px] text-vgray-400">Leverage on Avantis/Hyperliquid (separate from Vanna leverage)</p>
+              <p className="text-[9px] text-vgray-400">Effective leverage from the external Stellar pool (LP rebalance / pool insolvency factor)</p>
             </div>
 
             <div className="flex items-center justify-between p-3 bg-vgray-50 rounded-r2 border border-vgray-100">
               <div>
-                <p className="text-[10px] font-semibold text-vgray-600">Assume External Protocol Liquidates First</p>
-                <p className="text-[9px] text-vgray-400">Track token → $0 when Avantis liquidates</p>
+                <p className="text-[10px] font-semibold text-vgray-600">Assume External Pool Wipes First</p>
+                <p className="text-[9px] text-vgray-400">Tracking-token collateral → $0 when the Blend/Aquarius/Soroswap position is wiped out</p>
               </div>
               <button onClick={() => setAssumeExtLiq(!assumeExtLiq)}
                 className={cn("w-10 h-5 rounded-full transition-colors relative flex-shrink-0", assumeExtLiq ? "bg-imperial-500" : "bg-vgray-200")}>
@@ -194,14 +199,14 @@ export default function LeveragedPerpShockPage() {
                 <p className="text-[9px] text-imperial-500">Avg Vanna (8x) × External ({extLev}x)</p>
               </div>
               <div className="text-[9px] text-imperial-600 space-y-0.5">
-                <p>→ Asset moves {Math.abs(assetShock)}% → Perp loses {Math.min(100, Math.abs(assetShock) * extLev).toFixed(0)}%</p>
-                <p>→ At avg 8x Vanna: {Math.min(100, Math.abs(assetShock) * extLev * 8 / 8).toFixed(0)}% of margin lost</p>
+                <p>→ XLM moves {Math.abs(assetShock)}% → external pool position loses {Math.min(100, Math.abs(assetShock) * extLev).toFixed(0)}%</p>
+                <p>→ At avg 8× Vanna: {Math.min(100, Math.abs(assetShock) * extLev * 8 / 8).toFixed(0)}% of margin lost</p>
               </div>
             </div>
 
             <button onClick={() => setHasRun(true)}
               className="w-full py-3 rounded-r3 bg-gradient-to-r from-imperial-500 to-violet-500 text-white text-[11px] font-bold uppercase tracking-wide hover:opacity-90 transition-opacity shadow-vanna">
-              Run Perp Shock Simulation
+              Run External-Pool Shock Simulation
             </button>
           </div>
         </div>
@@ -214,7 +219,7 @@ export default function LeveragedPerpShockPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               {[
                 { label: "Positions Below HF 1.1", value: String(sim.breaching.length), sub: `${formatUsd(sim.debtAtRisk)} debt at risk`, color: sim.breaching.length > 0 ? "#FC5457" : "#32EEE2" },
-                { label: "Double Liquidations", value: String(sim.doubleLiq.length), sub: "Avantis + Vanna both trigger", color: sim.doubleLiq.length > 0 ? "#FF007A" : "#949494" },
+                { label: "Double Liquidations", value: String(sim.doubleLiq.length), sub: "External pool wipe + Vanna HF<1.1", color: sim.doubleLiq.length > 0 ? "#FF007A" : "#949494" },
                 { label: "Estimated Bad Debt", value: formatUsd(sim.netBadDebt), sub: `${formatUsd(sim.grossRecovery)} recovery`, color: sim.netBadDebt > 0 ? "#FF007A" : "#32EEE2" },
                 { label: "Insurance Coverage", value: sim.netBadDebt > 0 ? `${Math.min(999, sim.coverage).toFixed(0)}%` : "Full", sub: `${formatUsd(sim.fundRemaining)} remaining`, color: sim.coverage >= 100 ? "#32EEE2" : "#FC5457" },
               ].map(r => (
@@ -261,7 +266,7 @@ export default function LeveragedPerpShockPage() {
           {/* Position Impact Table */}
           <div className="bg-surface rounded-r4 border border-vgray-100 shadow-vanna overflow-hidden">
             <div className="px-5 py-3 border-b border-vgray-100">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-vgray-500">Perp Position Impact — Sorted by Effective Leverage</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-vgray-500">External-Pool Position Impact — Sorted by Effective Leverage</p>
             </div>
             <div className="overflow-x-auto scrollbar-thin max-h-64">
               <table className="w-full text-[10px] min-w-[700px]">

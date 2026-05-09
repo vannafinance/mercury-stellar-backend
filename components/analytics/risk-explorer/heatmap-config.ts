@@ -8,46 +8,37 @@ export const LEVERAGE_RANGES = [
   { label: "7–10x", min: 7, max: 10 },
 ] as const;
 
+// Volatile-asset drops apply to XLM (the only true volatile in our universe).
+// Stable drops apply to BLUSDC / AQUSDC / SOUSDC — depegs are tighter.
 const VOL_DROPS = [-5, -10, -15, -20, -25, -30, -40, -50, -60] as const;
 const STABLE_DROPS = [-1, -2, -3, -5, -8, -10, -13, -15, -20] as const;
 
-/** Heatmap tabs: must align with how wallets tag `primaryAsset`. */
+/** Heatmap tabs match wallet `primaryAsset` exactly. Stellar-only — no
+ *  EVM tabs (ETH/WBTC/weETH) and no stables we don't actually support. */
 export const HEATMAP_ASSETS = [
   {
-    symbol: "ETH",
-    label: "ETH",
+    symbol: "XLM",
+    label: "XLM",
     drops: [...VOL_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "ETH",
+    matchFn: (w: WalletPosition) => w.primaryAsset === "XLM",
   },
   {
-    symbol: "WBTC",
-    label: "WBTC",
-    drops: [...VOL_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "WBTC",
-  },
-  {
-    symbol: "weETH",
-    label: "weETH",
-    drops: [...VOL_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "weETH",
-  },
-  {
-    symbol: "USDC",
-    label: "USDC",
+    symbol: "BLUSDC",
+    label: "Blend USDC",
     drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "USDC",
+    matchFn: (w: WalletPosition) => w.primaryAsset === "BLUSDC",
   },
   {
-    symbol: "USDT",
-    label: "USDT",
+    symbol: "AQUSDC",
+    label: "Aquarius USDC",
     drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "USDT",
+    matchFn: (w: WalletPosition) => w.primaryAsset === "AQUSDC",
   },
   {
-    symbol: "DAI",
-    label: "DAI",
+    symbol: "SOUSDC",
+    label: "Soroswap USDC",
     drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "DAI",
+    matchFn: (w: WalletPosition) => w.primaryAsset === "SOUSDC",
   },
 ] as const;
 

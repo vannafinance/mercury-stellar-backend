@@ -9,11 +9,16 @@ import { Card, useColors } from "./primitives";
 import { useChartColors } from "@/lib/analytics/theme";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { SIM_ASSETS, TOKEN_PRICES, type WalletPosition } from "./constants";
+import { ACTIVE_ASSETS, resolveUsdAlias, type StellarAsset } from "@/lib/analytics/stellar/canon";
 import { HEATMAP_ASSETS, LEVERAGE_RANGES, type HeatmapSelection } from "./heatmap-config";
 import BadDebtMonitorSummary from "./BadDebtMonitorSummary";
 import BadDebtStressHeatmap from "./BadDebtStressHeatmap";
 
 const PAGE_SIZE = 5;
+
+function isStellarAsset(value: string): value is StellarAsset {
+  return ACTIVE_ASSETS.includes(value as StellarAsset);
+}
 
 function usePagedSlice<T>(items: T[], page: number, pageSize: number) {
   return useMemo(() => {
@@ -201,7 +206,10 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
   const c = useColors();
   const cc = useChartColors();
 
-  const [selectedAsset, setSelectedAsset] = useState("ETH");
+  // Default selection mirrors the app's primary asset on Stellar (XLM is
+  // the only volatile collateral; everything else in our universe is a
+  // dollar peg). Source of truth: lib/analytics/stellar/canon.ts.
+  const [selectedAsset, setSelectedAsset] = useState<StellarAsset>(ACTIVE_ASSETS[0]);
   const [priceChangePct, setPriceChangePct] = useState(0);
   const [direction, setDirection] = useState<"up" | "down">("down");
   const [applied, setApplied] = useState(false);
@@ -217,7 +225,7 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
   };
 
   const applyStressPreset = (p: (typeof riskExplorerStressPresets)[number]) => {
-    setSelectedAsset(p.asset);
+    setSelectedAsset(p.asset as StellarAsset);
     setDirection(p.direction);
     setPriceChangePct(Math.min(100, Math.max(0, p.priceChangePct)));
     setApplied(true);
@@ -231,7 +239,7 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
     dropPct: number;
     leverageLabel: string;
   }) => {
-    setSelectedAsset(payload.symbol);
+    setSelectedAsset(payload.symbol as StellarAsset);
     setDirection("down");
     setPriceChangePct(payload.dropPct);
     setApplied(true);
@@ -256,8 +264,13 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
           applyShock =
             ha.matchFn(w) && w.leverageX >= lev.min && w.leverageX < lev.max;
         } else {
-          applyShock =
-            w.primaryAsset === selectedAsset || w.primaryAsset === "W" + selectedAsset;
+          // Stellar collateral aliasing: shocking USDC also moves
+          // BLUSDC/AQUSDC/SOUSDC (they all reference USDC under the hood
+          // in Risk Engine via canonical_price_symbol). XLM only matches
+          // XLM. `resolveUsdAlias` mirrors the contract behaviour exactly.
+          const walletKey = resolveUsdAlias(w.primaryAsset);
+          const selectedKey = resolveUsdAlias(selectedAsset);
+          applyShock = w.primaryAsset === selectedAsset || walletKey === selectedKey;
         }
       }
       const adjustedCollateral = applyShock ? w.collateral * priceMultiplier : w.collateral;
@@ -371,7 +384,10 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
             <select
               value={selectedAsset}
               onChange={(e) => {
-                setSelectedAsset(e.target.value);
+                const nextAsset = e.target.value;
+                if (isStellarAsset(nextAsset)) {
+                  setSelectedAsset(nextAsset);
+                }
                 onManualChange();
               }}
               className={`rounded-lg px-3 py-2 text-sm font-mono border ${c.inputBg} ${c.text1} outline-none`}

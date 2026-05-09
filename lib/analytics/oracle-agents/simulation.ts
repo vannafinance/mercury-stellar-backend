@@ -1,3 +1,11 @@
+// Oracle/agent monitoring fixtures, Stellar-native edition.
+//
+// All names, asset symbols, and protocol references must match the
+// Soroban deployment (RiskEngine + OracleContract + LendingProtocol_*
+// + tracking-token contracts). Anything EVM (Chainlink/Pyth/dYdX/GMX/
+// Uniswap, vETH/vBTC perp tickers) is replaced by its Stellar equivalent
+// (Reflector + Blend/Aquarius/Soroswap, BLEND_XLM/AQ_XLM_USDC/SS_XLM_USDC).
+
 import type {
   AlertEvent,
   AlertSeverity,
@@ -5,6 +13,7 @@ import type {
   OracleHealth,
   OracleStatus,
 } from "./types";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 
 let alertCounter = 0;
 
@@ -23,36 +32,36 @@ function drift(value: number, range: number, min: number, max: number): number {
 
 const ALERT_MESSAGES: Record<string, string[]> = {
   "liquidation-guard": [
-    "Position health factor dropped below 1.10 — liquidation bot triggered",
-    "Liquidation attempt failed — retrying with higher gas",
-    "Slippage estimate 8.2% for LP collateral liquidation",
-    "No liquidator response in 45s — escalating",
+    "SmartAccount health factor dropped below 1.10 — liquidation path triggered (AccountManager.liquidate)",
+    "Liquidation attempt failed — Soroban resource limit hit, retrying with reduced footprint",
+    "Slippage estimate 8.2% for AQ_XLM_USDC LP collateral liquidation",
+    "No liquidator response in 45s — escalating to Risk Engine pause",
   ],
   "track-token-verifier": [
-    "vBTC-PERP deviation spiked to 2.8% temporarily",
-    "vETH-USDC-LP IL causing 3.1% value gap",
-    "Cross-check passed — all track tokens within threshold",
-    "vETH-PERP basis spread widened to 1.2%",
+    "BLEND_USDC tracking token deviation spiked to 2.8% temporarily",
+    "AQ_XLM_USDC LP IL causing 3.1% value gap vs Aquarius pool quote",
+    "Cross-check passed — all tracking tokens within deviation threshold",
+    "SS_XLM_USDC basis spread vs Soroswap pool widened to 1.2%",
   ],
   "oracle-watcher": [
-    "SOL oracle stale — freshness exceeds 60s",
-    "ETH Chainlink heartbeat healthy — 12s",
-    "BTC oracle deviation between Chainlink and Pyth: 0.3%",
-    "New borrows paused for SOL — oracle freshness critical",
+    "BLUSDC Reflector feed stale — freshness exceeds 60s",
+    "XLM Reflector heartbeat healthy — 12s",
+    "EURC oracle deviation between Reflector pushes: 0.3%",
+    "New borrows paused for BLUSDC — Risk Engine staleness guard tripped",
   ],
   "liquidity-stress": [
     "Stress test passed — insurance covers 1.74x worst-case shortfall",
-    "Warning: 30% ETH crash scenario would exceed insurance by $70K",
+    "Warning: 30% XLM crash scenario would exceed insurance by $70K",
     "Hourly simulation complete — 2 of 3 scenarios passing",
   ],
   "protocol-monitor": [
-    "GMX TVL stable — $480M (+0.2%)",
-    "dYdX maintenance window detected — monitoring",
-    "Uniswap V3 ETH-USDC pool depth adequate for liquidations",
+    "Blend pool TVL stable — $90M (+0.2%)",
+    "Aquarius scheduled fee-tier update detected — monitoring",
+    "Soroswap XLM/USDC pool depth adequate for liquidations",
   ],
   "correlation-risk": [
-    "ETH-correlated positions now 42% of pool — approaching 45% threshold",
-    "Concentration alert: 3 whale accounts hold 28% of total borrows",
+    "XLM-correlated positions now 42% of pool — approaching 45% threshold",
+    "Concentration alert: 3 whale G-accounts hold 28% of total borrows",
     "Cross-asset correlation within acceptable range",
   ],
 };
@@ -76,27 +85,36 @@ export function createOracleAgentsInitialState(): {
 } {
   const now = Date.now();
 
+  // Stellar oracle wrappers from `lib/analytics/stellar/canon.ts → ORACLE`
+  // — Reflector is the only price source on Soroban.
   const oracles: OracleHealth[] = [
     {
-      asset: "ETH",
-      source: "Chainlink",
+      asset: "XLM",
+      source: "Reflector",
       lastUpdateTimestamp: now - 12_000,
       freshnessSeconds: 12,
       status: "healthy",
     },
     {
-      asset: "BTC",
-      source: "Chainlink",
+      asset: "BLUSDC",
+      source: "Reflector",
       lastUpdateTimestamp: now - 8_000,
       freshnessSeconds: 8,
       status: "healthy",
     },
     {
-      asset: "SOL",
-      source: "Pyth",
+      asset: "AQUSDC",
+      source: "Reflector",
       lastUpdateTimestamp: now - 47_000,
       freshnessSeconds: 47,
       status: "warning",
+    },
+    {
+      asset: "SOUSDC",
+      source: "Reflector",
+      lastUpdateTimestamp: now - 14_000,
+      freshnessSeconds: 14,
+      status: "healthy",
     },
   ];
 
@@ -105,7 +123,7 @@ export function createOracleAgentsInitialState(): {
       id: "liquidation-guard",
       name: "Liquidation Guard Agent",
       description:
-        "Scans all positions every 15s. Triggers liquidation bots. Alerts if no liquidator responds in 60s.",
+        "Scans every SmartAccount each ledger close (~5s). Calls AccountManager.liquidate when HF < 1.10. Alerts if no liquidator responds in 60s.",
       status: "Running",
       lastCheck: now - 3_000,
       alertCount: 2,
@@ -115,7 +133,7 @@ export function createOracleAgentsInitialState(): {
       id: "track-token-verifier",
       name: "Track Token Verifier",
       description:
-        "Cross-checks track token value vs underlying protocol position. Flags deviation >2%.",
+        "Cross-checks Vanna tracking tokens (BLEND_*, AQ_*, SS_*) vs the underlying Blend/Aquarius/Soroswap pool quote. Flags deviation >2%.",
       status: "Running",
       lastCheck: now - 12_000,
       alertCount: 1,
@@ -123,9 +141,9 @@ export function createOracleAgentsInitialState(): {
     },
     {
       id: "oracle-watcher",
-      name: "Oracle Staleness Watcher",
+      name: "Reflector Staleness Watcher",
       description:
-        "Monitors all price feeds. Pauses new borrows if any critical oracle stale >60s.",
+        "Monitors all Reflector feeds proxied through OracleContract. Pauses new borrows if any critical oracle is stale >60s.",
       status: "Warning",
       lastCheck: now - 5_000,
       alertCount: 3,
@@ -135,7 +153,7 @@ export function createOracleAgentsInitialState(): {
       id: "liquidity-stress",
       name: "Liquidity Stress Agent",
       description:
-        "Runs simulation: if top 10 borrowers default, does insurance cover shortfall? Hourly.",
+        "Runs simulation: if top 10 borrowers default, does insurance cover the shortfall? Hourly.",
       status: "Running",
       lastCheck: now - 1_800_000,
       alertCount: 0,
@@ -145,7 +163,7 @@ export function createOracleAgentsInitialState(): {
       id: "protocol-monitor",
       name: "Integrated Protocol Monitor",
       description:
-        "Pings GMX, dYdX, Uniswap, farm protocols every 30s. Alerts if TVL drops >15% sudden.",
+        "Pings Blend / Aquarius / Soroswap contracts every 30s. Alerts if any pool TVL drops >15% suddenly.",
       status: "Running",
       lastCheck: now - 15_000,
       alertCount: 0,
@@ -155,7 +173,7 @@ export function createOracleAgentsInitialState(): {
       id: "correlation-risk",
       name: "Correlation Risk Agent",
       description:
-        "Detects if multiple large positions hold correlated assets. Triggers concentration alert.",
+        "Detects when multiple large SmartAccounts hold correlated XLM-denominated collateral. Triggers concentration alert.",
       status: "Running",
       lastCheck: now - 60_000,
       alertCount: 1,
@@ -163,13 +181,17 @@ export function createOracleAgentsInitialState(): {
     },
   ];
 
+  // Reuse a deterministic Stellar G-account for the example liquidation alert
+  // so it renders as a 56-char base32 short form (G…), never as `0x…`.
+  const exampleAccount = shortStellar(syntheticGAccount(0xa1b));
+
   const alerts: AlertEvent[] = [
     {
       id: "init-1",
       agentId: "oracle-watcher",
-      agentName: "Oracle Staleness Watcher",
+      agentName: "Reflector Staleness Watcher",
       severity: "warning",
-      message: "SOL oracle freshness exceeds 30s threshold (47s)",
+      message: "AQUSDC Reflector freshness exceeds 30s threshold (47s)",
       timestamp: now - 20_000,
       acknowledged: false,
     },
@@ -178,7 +200,7 @@ export function createOracleAgentsInitialState(): {
       agentId: "track-token-verifier",
       agentName: "Track Token Verifier",
       severity: "critical",
-      message: "vETH-USDC-LP deviation at 4.3% — exceeds 2% threshold",
+      message: "AQ_XLM_USDC tracking token deviation at 4.3% — exceeds 2% threshold",
       timestamp: now - 45_000,
       acknowledged: false,
     },
@@ -187,7 +209,7 @@ export function createOracleAgentsInitialState(): {
       agentId: "liquidation-guard",
       agentName: "Liquidation Guard Agent",
       severity: "warning",
-      message: "Position 0x4f2...a1b health factor at 1.08 — liquidation imminent",
+      message: `SmartAccount ${exampleAccount} health factor at 1.08 — liquidation imminent`,
       timestamp: now - 120_000,
       acknowledged: false,
     },
@@ -258,3 +280,8 @@ export function simulateOracleAgentsTick(state: {
 
   return { oracles, agents, alerts, lastUpdated: now };
 }
+
+// `drift` is currently used to evolve future numeric metrics in the agents
+// dashboard. Keep it exported via internal use to avoid TS6133 if/when it's
+// referenced again.
+void drift;

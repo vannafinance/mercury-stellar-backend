@@ -7,22 +7,52 @@ import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn, hfColor, hfBandColor } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
+import { ACTIVE_ASSETS, syntheticGAccount, shortStellar, type StellarAsset } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
+// Stellar-native multi-asset shocks. XLM is the only volatile asset in
+// the universe; the three USDC variants depeg independently per pool
+// (Blend / Aquarius / Soroswap). Presets reflect events that could
+// realistically affect this protocol.
 const PRESETS = [
-  { id: "2022bear", label: "2022 Bear Market", shocks: { ETH: -60, WBTC: -65, weETH: -55, USDC: 0, USDT: 0 }, desc: "ETH -60%, WBTC -65%, weETH -55%" },
-  { id: "ethcrash", label: "ETH Ecosystem Crash", shocks: { ETH: -50, WBTC: -10, weETH: -45, USDC: 0, USDT: 0 }, desc: "ETH -50%, weETH -45%, WBTC -10%" },
-  { id: "altreverse", label: "Alt-Season Reversal", shocks: { ETH: -40, WBTC: -40, weETH: -40, USDC: 0, USDT: 0 }, desc: "All majors -40%, stables hold" },
-  { id: "black2020", label: "Black Thursday 2020", shocks: { ETH: -50, WBTC: -45, weETH: -40, USDC: 0, USDT: 0 }, desc: "ETH -50%, WBTC -45%" },
-  { id: "custom", label: "Custom", shocks: { ETH: -30, WBTC: -30, weETH: -25, USDC: 0, USDT: 0 }, desc: "Set your own shocks" },
+  {
+    id: "xlm-deep-bear",
+    label: "XLM Deep Bear",
+    shocks: { XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0 },
+    desc: "XLM -50% over multi-week drawdown — stables hold their peg",
+  },
+  {
+    id: "stellar-flash-crash",
+    label: "Stellar Flash Crash",
+    shocks: { XLM: -35, BLUSDC: -2, AQUSDC: -3, SOUSDC: -2 },
+    desc: "XLM -35% in 1h with mild stable wobble across all pools",
+  },
+  {
+    id: "stable-contagion",
+    label: "Stable Pool Contagion",
+    shocks: { XLM: -10, BLUSDC: -8, AQUSDC: -7, SOUSDC: -6 },
+    desc: "Cross-pool USDC depeg (~7%) with XLM partially affected",
+  },
+  {
+    id: "reflector-failure-proxy",
+    label: "Reflector Oracle Failure",
+    shocks: { XLM: -20, BLUSDC: -3, AQUSDC: -3, SOUSDC: -3 },
+    desc: "Stale/incorrect oracle prints — stress proxy across the board",
+  },
+  {
+    id: "custom",
+    label: "Custom",
+    shocks: { XLM: -30, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0 },
+    desc: "Set your own per-asset shocks",
+  },
 ];
 
-const ASSETS = ["ETH", "WBTC", "weETH", "USDC", "USDT"] as const;
-type Asset = typeof ASSETS[number];
+const ASSETS = ACTIVE_ASSETS;
+type Asset = StellarAsset;
 
 const SIM_POSITIONS = Array.from({ length: 30 }, (_, i) => {
   const hf = i < 2 ? 0.96 + i * 0.05 : 1.05 + (i - 2) * 0.1;
@@ -37,11 +67,10 @@ const SIM_POSITIONS = Array.from({ length: 30 }, (_, i) => {
   const lpTokens = Math.floor(marginValue * lpTokenPct);
   const cash = Math.max(0, marginValue - trackTokens - aTokens - lpTokens);
   const assetIdx = Math.floor(dr(i * 17) * ASSETS.length);
-  const chains = ["base", "stellar"] as const;
   return {
     id: i,
-    address: i % 4 === 0 ? `G${String.fromCharCode(65 + i % 6)}${1000 + i * 47}...` : `0x${(0xa000 + i * 71).toString(16)}...${(0xb100 + i * 53).toString(16)}`,
-    chain: chains[i % 4 === 0 ? 1 : 0],
+    address: shortStellar(syntheticGAccount(i + 11)),
+    chain: "stellar" as const,
     healthFactor: Math.round(hf * 100) / 100,
     totalDebt: debt,
     marginValue,
@@ -53,8 +82,8 @@ const SIM_POSITIONS = Array.from({ length: 30 }, (_, i) => {
 
 export default function MultiAssetCrashPage() {
   const cc = useChartColors();
-  const [activePreset, setActivePreset] = useState("2022bear");
-  const [shocks, setShocks] = useState<Record<Asset, number>>({ ETH: -60, WBTC: -65, weETH: -55, USDC: 0, USDT: 0 });
+  const [activePreset, setActivePreset] = useState("xlm-deep-bear");
+  const [shocks, setShocks] = useState<Record<Asset, number>>({ XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0 });
   const [hasRun, setHasRun] = useState(false);
 
   const applyPreset = (presetId: string) => {
@@ -285,9 +314,7 @@ export default function MultiAssetCrashPage() {
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1.5">
                               <span className="font-mono text-vgray-600">{pos.address}</span>
-                              <span className={cn("text-[8px] font-bold px-1 py-0.5 rounded-full",
-                                pos.chain === "base" ? "bg-violet-100 text-violet-600" : "bg-electric-50 text-electric-700"
-                              )}>{pos.chain === "base" ? "BASE" : "STELLAR"}</span>
+                              <span className="text-[8px] font-bold px-1 py-0.5 rounded-full bg-electric-50 text-electric-700">STELLAR</span>
                             </div>
                           </td>
                           <td className="px-3 py-2">

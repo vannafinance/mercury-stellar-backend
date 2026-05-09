@@ -12,13 +12,17 @@ const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
-type Stablecoin = "USDC" | "USDT" | "DAI" | "USDC+USDT";
+// Stellar's USDC universe is three protocol-specific variants (one per
+// pool: Blend / Aquarius / Soroswap). They each peg to USD independently
+// so a depeg in one doesn't auto-propagate, but a paired depeg models
+// systemic contagion (e.g. shared issuer or oracle path).
+type Stablecoin = "BLUSDC" | "AQUSDC" | "SOUSDC" | "BLUSDC+AQUSDC";
 
 const STABLECOIN_OPTIONS: { id: Stablecoin; label: string; color: string; desc: string }[] = [
-  { id: "USDC", label: "USDC", color: "#2775CA", desc: "Circle USD — largest DeFi stable" },
-  { id: "USDT", label: "USDT", color: "#26A17B", desc: "Tether — highest market cap stable" },
-  { id: "DAI", label: "DAI", color: "#F5AC37", desc: "MakerDAO DAI — decentralized stable" },
-  { id: "USDC+USDT", label: "USDC + USDT", color: "#FC5457", desc: "Dual depeg — systemic contagion" },
+  { id: "BLUSDC",          label: "Blend USDC",      color: "#2775CA", desc: "Blend pool USDC reserve — primary lending pool" },
+  { id: "AQUSDC",          label: "Aquarius USDC",   color: "#26A17B", desc: "Aquarius AMM USDC reserve" },
+  { id: "SOUSDC",          label: "Soroswap USDC",   color: "#F5AC37", desc: "Soroswap DEX USDC reserve" },
+  { id: "BLUSDC+AQUSDC",   label: "Blend + Aquarius", color: "#FC5457", desc: "Dual-pool USDC depeg — systemic contagion" },
 ];
 
 const RECOVERY_OPTIONS = [
@@ -27,27 +31,28 @@ const RECOVERY_OPTIONS = [
   { id: "full", label: "Full Recovery", desc: "Fully recovers in 14 days" },
 ];
 
-// Each position has USDC/USDT/DAI exposure in cash + aTokens
+// Each synthetic position carries exposure to all three Stellar USDC
+// variants (held as collateral in different pools) plus XLM-tracking
+// collateral (Blend/Aquarius LP positions) and free XLM cash.
 const ALL_POSITIONS = Array.from({ length: 32 }, (_, i) => {
   const debt = Math.floor(80_000 + dr(i * 7) * 1_200_000 / 1000) * 1000;
   const hf = 1.15 + dr(i * 11) * 1.6;
   const marginValue = Math.floor(debt * hf);
   const leverage = Math.min(10, Math.max(1, Math.round(1.5 + dr(i * 13) * 8.5)));
-  // Stablecoin composition of margin
-  const usdcPct = 0.1 + dr(i * 3) * 0.35;
-  const usdtPct = 0.05 + dr(i * 5) * 0.25;
-  const daiPct = dr(i * 7) * 0.15;
+  const blusdcPct = 0.1 + dr(i * 3) * 0.35;
+  const aqusdcPct = 0.05 + dr(i * 5) * 0.25;
+  const sousdcPct = dr(i * 7) * 0.15;
   const trackPct = leverage >= 7 ? 0.3 + dr(i * 9) * 0.25 : 0.05 + dr(i * 9) * 0.2;
-  const lpPct = Math.max(0, 1 - usdcPct - usdtPct - daiPct - trackPct);
+  const lpPct = Math.max(0, 1 - blusdcPct - aqusdcPct - sousdcPct - trackPct);
   return {
     id: i,
     debt,
     hf: Math.round(hf * 100) / 100,
     leverage,
     marginValue,
-    usdcValue: Math.floor(marginValue * usdcPct),
-    usdtValue: Math.floor(marginValue * usdtPct),
-    daiValue: Math.floor(marginValue * daiPct),
+    blusdcValue: Math.floor(marginValue * blusdcPct),
+    aqusdcValue: Math.floor(marginValue * aqusdcPct),
+    sousdcValue: Math.floor(marginValue * sousdcPct),
     trackValue: Math.floor(marginValue * trackPct),
     lpValue: Math.floor(marginValue * lpPct),
   };
@@ -55,23 +60,24 @@ const ALL_POSITIONS = Array.from({ length: 32 }, (_, i) => {
 
 function applyDepeg(pos: typeof ALL_POSITIONS[0], stable: Stablecoin, severity: number) {
   const depegFactor = 1 - severity / 100;
-  let newUsdc = pos.usdcValue;
-  let newUsdt = pos.usdtValue;
-  let newDai = pos.daiValue;
-  if (stable === "USDC" || stable === "USDC+USDT") newUsdc = Math.floor(pos.usdcValue * depegFactor);
-  if (stable === "USDT" || stable === "USDC+USDT") newUsdt = Math.floor(pos.usdtValue * depegFactor);
-  if (stable === "DAI") newDai = Math.floor(pos.daiValue * depegFactor);
-  const newMargin = newUsdc + newUsdt + newDai + pos.trackValue + pos.lpValue;
+  let newBl = pos.blusdcValue;
+  let newAq = pos.aqusdcValue;
+  let newSo = pos.sousdcValue;
+  if (stable === "BLUSDC" || stable === "BLUSDC+AQUSDC") newBl = Math.floor(pos.blusdcValue * depegFactor);
+  if (stable === "AQUSDC" || stable === "BLUSDC+AQUSDC") newAq = Math.floor(pos.aqusdcValue * depegFactor);
+  if (stable === "SOUSDC") newSo = Math.floor(pos.sousdcValue * depegFactor);
+  const newMargin = newBl + newAq + newSo + pos.trackValue + pos.lpValue;
   const newHF = Math.round((newMargin / pos.debt) * 100) / 100;
+  // Risk Engine threshold: BALANCE_TO_BORROW_THRESHOLD = 1.1 (risk_engine.rs).
   const liquidated = newHF < LIQ_THRESHOLD;
   const grossRecovery = liquidated ? newMargin * 0.93 : 0;
   const badDebt = liquidated ? Math.max(0, pos.debt - grossRecovery) : 0;
-  return { ...pos, newMargin, newHF, liquidated, badDebt, newUsdc, newUsdt, newDai };
+  return { ...pos, newMargin, newHF, liquidated, badDebt, newBl, newAq, newSo };
 }
 
 export default function StablecoinDepegPage() {
   const cc = useChartColors();
-  const [stablecoin, setStablecoin] = useState<Stablecoin>("USDC");
+  const [stablecoin, setStablecoin] = useState<Stablecoin>("BLUSDC");
   const [severity, setSeverity] = useState(10);
   const [recovery, setRecovery] = useState("none");
   const [hasRun, setHasRun] = useState(false);
@@ -85,9 +91,9 @@ export default function StablecoinDepegPage() {
     const coverage = totalBadDebt > 0 ? Math.min(999, (INSURANCE_FUND / totalBadDebt) * 100) : 999;
     const totalExposure = ALL_POSITIONS.reduce((a, p) => {
       let exp = 0;
-      if (stablecoin === "USDC" || stablecoin === "USDC+USDT") exp += p.usdcValue;
-      if (stablecoin === "USDT" || stablecoin === "USDC+USDT") exp += p.usdtValue;
-      if (stablecoin === "DAI") exp += p.daiValue;
+      if (stablecoin === "BLUSDC" || stablecoin === "BLUSDC+AQUSDC") exp += p.blusdcValue;
+      if (stablecoin === "AQUSDC" || stablecoin === "BLUSDC+AQUSDC") exp += p.aqusdcValue;
+      if (stablecoin === "SOUSDC") exp += p.sousdcValue;
       return a + exp;
     }, 0);
     return { results, liquidated, totalBadDebt, coverage, totalExposure, fundRemaining: Math.max(0, INSURANCE_FUND - totalBadDebt), effectiveSeverity };
@@ -126,7 +132,7 @@ export default function StablecoinDepegPage() {
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Stablecoin Depeg Scenario</span>
       </div>
-      <PageHeader title="Stablecoin Depeg Scenario" subtitle="Model USDC, USDT, or DAI losing its peg — stablecoin-heavy margin positions lose value and breach liquidation thresholds" />
+      <PageHeader title="Stablecoin Depeg Scenario" subtitle="Model Blend / Aquarius / Soroswap USDC losing its peg — protocol-specific stable variants reprice and breach Risk Engine HF≥1.1" />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Controls */}
@@ -143,7 +149,7 @@ export default function StablecoinDepegPage() {
                     className={cn("w-full flex items-center gap-2.5 p-2.5 rounded-r2 border text-left transition-all",
                       stablecoin === s.id ? "border-violet-300 bg-violet-50" : "border-vgray-100 hover:border-vgray-200"
                     )}>
-                    <CoinIcon symbol={s.id === "USDC+USDT" ? "USDC" : s.id} size={18} />
+                    <CoinIcon symbol={s.id === "BLUSDC+AQUSDC" ? "BLUSDC" : s.id} size={18} />
                     <div>
                       <p className={cn("text-[10px] font-bold", stablecoin === s.id ? "text-violet-700" : "text-vgray-600")}>{s.label}</p>
                       <p className="text-[8px] text-vgray-400">{s.desc}</p>
@@ -164,7 +170,7 @@ export default function StablecoinDepegPage() {
                 className="w-full h-1.5 appearance-none rounded-full bg-vgray-100 accent-imperial-500 cursor-pointer"
               />
               <div className="flex justify-between text-[9px] text-vgray-300"><span>-1%</span><span>-30%</span><span>-60%</span></div>
-              <p className="text-[9px] text-vgray-400">Drop from $1.00 peg (USDC 2023: -12%, UST 2022: -99%)</p>
+              <p className="text-[9px] text-vgray-400">Drop from $1.00 peg (real-world references: USDC 2023: -12%, UST 2022: -99%)</p>
             </div>
 
             {/* Recovery */}
@@ -272,13 +278,16 @@ export default function StablecoinDepegPage() {
                 <tbody>
                   {sim.results.sort((a, b) => a.newHF - b.newHF).slice(0, 20).map(p => {
                     let exposure = 0;
-                    if (stablecoin === "USDC" || stablecoin === "USDC+USDT") exposure += p.usdcValue;
-                    if (stablecoin === "USDT" || stablecoin === "USDC+USDT") exposure += p.usdtValue;
-                    if (stablecoin === "DAI") exposure += p.daiValue;
+                    if (stablecoin === "BLUSDC" || stablecoin === "BLUSDC+AQUSDC") exposure += p.blusdcValue;
+                    if (stablecoin === "AQUSDC" || stablecoin === "BLUSDC+AQUSDC") exposure += p.aqusdcValue;
+                    if (stablecoin === "SOUSDC") exposure += p.sousdcValue;
                     const loss = exposure * sim.effectiveSeverity / 100;
+                    // Stellar G-account synthetic — never an EVM 0x.
+                    const synthAccount = `G${(0xA000 + p.id * 71).toString(36).toUpperCase().padStart(50, "0").slice(0, 50)}`;
+                    const display = `${synthAccount.slice(0, 6)}...${synthAccount.slice(-4)}`;
                     return (
                       <tr key={p.id} className={cn("border-b border-vgray-100/60", p.liquidated ? "bg-imperial-50/20" : "")}>
-                        <td className="px-3 py-2 font-mono text-vgray-600">0x{(0xa000 + p.id * 71).toString(16)}...{(0xb100 + p.id * 53).toString(16)}</td>
+                        <td className="px-3 py-2 font-mono text-vgray-600">{display}</td>
                         <td className="px-3 py-2 text-right font-mono text-vgray-600">{formatUsd(exposure)}</td>
                         <td className="px-3 py-2 text-right font-mono text-imperial-600">-{formatUsd(loss)}</td>
                         <td className="px-3 py-2 text-center font-mono text-violet-600">{p.hf.toFixed(2)}</td>

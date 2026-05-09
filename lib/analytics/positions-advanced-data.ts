@@ -55,7 +55,8 @@ export interface AdvancedPosition extends WalletPosition {
   hfVelocity: number;
   /** Price drop % needed on primary asset to reach HF 1.1 */
   distToLiqPct: number;
-  /** Chain label */
+  /** Chain label. Single-chain build — kept as a literal union for back-compat
+   *  with `ChainBadge` callers that still type the prop as `"base" | "stellar"`. */
   chain: "base" | "stellar";
 }
 
@@ -151,14 +152,16 @@ export function generateAdvancedPositions(chainId: number): AdvancedPosition[] {
       ageCategory: getAgeCategory(openedAt),
       hfVelocity: Math.round(hfVelocity * 10000) / 10000,
       distToLiqPct: Math.round(distToLiqPct * 100) / 100,
-      chain: chainId === 8453 ? ("base" as const) : ("stellar" as const),
+      // Always Stellar — the dashboard is single-chain. The `chainId`
+      // argument is preserved as a deterministic seed only.
+      chain: "stellar" as const,
     };
   });
 }
 
 /* ── Correlated position grouping ── */
 export interface CorrelatedGroup {
-  /** Grouping key (e.g., "ETH + lpToken") */
+  /** Grouping key (e.g., "XLM + lpToken") */
   key: string;
   /** Human-readable description */
   label: string;

@@ -1,4 +1,5 @@
 import type { AccountSnapshot } from "./types";
+import { protocolFor, resolveUsdAlias, shortStellar } from "@/lib/analytics/stellar/canon";
 
 export type RiskStatus = "healthy" | "warning" | "danger" | "critical";
 
@@ -171,7 +172,10 @@ export type PositionRow = {
   protocols: string[];
 };
 
-const shortAddr = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`;
+// Stellar G/C addresses are 56 chars base32. `shortStellar` lives in the
+// canon module so liquidations / whales / alerts pages all format the
+// same way.
+const shortAddr = (a: string) => shortStellar(a);
 
 function bucketCollateral(s: AccountSnapshot): PositionRow["breakdown"] {
   const b = { aTokens: 0, lpTokens: 0, trackTokens: 0, cash: 0 };
@@ -187,19 +191,33 @@ function bucketCollateral(s: AccountSnapshot): PositionRow["breakdown"] {
 }
 
 export function derivePositionRows(snapshots: AccountSnapshot[]): PositionRow[] {
-  return snapshots.filter(withDebt).map((s) => ({
-    account: s.account,
-    address: shortAddr(s.account),
-    ownerProxy: s.ownerProxy,
-    chain: "base",
-    healthFactor: s.healthFactor,
-    totalDebt: s.totalDebtUsd,
-    marginValue: s.totalCollateralUsd,
-    leverage: isFinite(s.leverage) ? s.leverage : 0,
-    status: statusForHF(s.healthFactor),
-    breakdown: bucketCollateral(s),
-    protocols: [],
-  }));
+  return snapshots.filter(withDebt).map((s) => {
+    // Tag each row with the Stellar protocols that backed its collateral
+    // / debt (Blend / Aquarius / Soroswap). UI uses this for the protocol
+    // chip column on the positions table.
+    const protocols = new Set<string>();
+    for (const c of s.collateral) {
+      const p = protocolFor(c.symbol);
+      if (p) protocols.add(p);
+    }
+    for (const d of s.debt) {
+      const p = protocolFor(d.symbol);
+      if (p) protocols.add(p);
+    }
+    return {
+      account: s.account,
+      address: shortAddr(s.account),
+      ownerProxy: s.ownerProxy,
+      chain: "stellar",
+      healthFactor: s.healthFactor,
+      totalDebt: s.totalDebtUsd,
+      marginValue: s.totalCollateralUsd,
+      leverage: isFinite(s.leverage) ? s.leverage : 0,
+      status: statusForHF(s.healthFactor),
+      breakdown: bucketCollateral(s),
+      protocols: Array.from(protocols),
+    };
+  });
 }
 
 export function deriveHighRiskPositions(
@@ -279,7 +297,7 @@ export function deriveWhaleConcentration(
     topPositions: active.slice(0, topN).map((s) => ({
       address: shortAddr(s.account),
       account: s.account,
-      chain: "base",
+      chain: "stellar",
       debtUsd: s.totalDebtUsd,
       sharePercent: totalDebt > 0 ? (s.totalDebtUsd / totalDebt) * 100 : 0,
       healthFactor: s.healthFactor,
@@ -367,39 +385,62 @@ export type ShockResult = {
 };
 
 /**
- * Pure math: recompute each account's collateral USD using new prices, debt USD
- * stays the same (debt is denominated in the borrowed asset, but since mock/core
- * prices we track stables near $1 and ETH at spot, we apply the shock only to
- * collateral side for simplicity). A more complete version would shock debt too.
+ * Pure math: recompute each account's collateral AND debt USD using new
+ * prices, then re-derive HF and leverage. The Stellar Risk Engine prices
+ * BLEND_/AQ_/SS_ tracking tokens off their underlying (XLM/USDC/EURC),
+ * so we resolve every symbol through `resolveUsdAlias` before looking up
+ * the override. Stables that aren't shocked stay at their cached USD value.
  */
 export function applyShock(
   snapshots: AccountSnapshot[],
   priceOverrides: PriceShock,
 ): AccountSnapshot[] {
+  // Normalize override keys through the same alias resolver so callers
+  // can pass either canonical ("USDC") or asset-flavour ("BLUSDC") keys.
+  const normalized: Record<string, number> = {};
+  for (const [k, v] of Object.entries(priceOverrides)) {
+    normalized[resolveUsdAlias(k)] = v;
+    normalized[k.toUpperCase()] = v; // also keep raw key for direct hits
+  }
+
+  const repriceLeg = <T extends { symbol: string; amount: number; usd: number }>(leg: T): { leg: T; newUsd: number } => {
+    const direct = normalized[leg.symbol.toUpperCase()];
+    const aliased = normalized[resolveUsdAlias(leg.symbol)];
+    const override = direct ?? aliased;
+    if (override === undefined) return { leg, newUsd: leg.usd };
+    const newUsd = leg.amount * override;
+    return { leg: { ...leg, usd: newUsd }, newUsd };
+  };
+
   return snapshots.map((s) => {
     let newCollateralUsd = 0;
     const newCollateral = s.collateral.map((c) => {
-      const sym = c.symbol === "WETH" ? "ETH" : c.symbol;
-      if (priceOverrides[sym] !== undefined) {
-        const newUsd = c.amount * priceOverrides[sym];
-        newCollateralUsd += newUsd;
-        return { ...c, usd: newUsd };
-      }
-      newCollateralUsd += c.usd;
-      return c;
+      const r = repriceLeg(c);
+      newCollateralUsd += r.newUsd;
+      return r.leg;
     });
 
-    const healthFactor = s.totalDebtUsd > 0 ? newCollateralUsd / s.totalDebtUsd : Number.POSITIVE_INFINITY;
-    const equity = newCollateralUsd - s.totalDebtUsd;
+    let newDebtUsd = 0;
+    const newDebt = s.debt.map((d) => {
+      const r = repriceLeg(d);
+      newDebtUsd += r.newUsd;
+      return r.leg;
+    });
+
+    const healthFactor = newDebtUsd > 0 ? newCollateralUsd / newDebtUsd : Number.POSITIVE_INFINITY;
+    const equity = newCollateralUsd - newDebtUsd;
     const leverage = equity > 0 ? newCollateralUsd / equity : Number.POSITIVE_INFINITY;
 
     return {
       ...s,
       collateral: newCollateral,
+      debt: newDebt,
       totalCollateralUsd: newCollateralUsd,
+      totalDebtUsd: newDebtUsd,
       healthFactor,
       leverage,
-      isHealthy: healthFactor >= 1,
+      // Liquidatable threshold mirrors RiskEngineContract::BALANCE_TO_BORROW_THRESHOLD = 1.1.
+      isHealthy: healthFactor >= 1.1,
     };
   });
 }

@@ -5,13 +5,15 @@ import Link from "next/link";
 import { PageHeader } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
+import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineChart, Line, ReferenceLine, Legend } from "recharts";
 
 const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
-// Base borrower positions
+// Synthetic Stellar borrower distribution. The rate-spike scenario only
+// needs debt + margin breakdown; address shape is for table display.
 const BASE_POSITIONS = Array.from({ length: 38 }, (_, i) => {
   const debt = Math.floor(60_000 + dr(i * 7) * 1_500_000 / 1000) * 1000;
   const hf = 1.12 + dr(i * 11) * 1.9;
@@ -22,7 +24,19 @@ const BASE_POSITIONS = Array.from({ length: 38 }, (_, i) => {
   const aTokens = Math.floor(marginValue * dr(i * 7) * 0.35);
   const lpTokens = Math.max(0, marginValue - trackTokens - cash - aTokens);
   const borrowDuration = Math.floor(30 + dr(i * 17) * 335); // days already borrowed (30-365)
-  return { id: i, debt, hf: Math.round(hf * 100) / 100, leverage, marginValue, trackTokens, cash, aTokens, lpTokens, borrowDuration };
+  return {
+    id: i,
+    debt,
+    hf: Math.round(hf * 100) / 100,
+    leverage,
+    marginValue,
+    trackTokens,
+    cash,
+    aTokens,
+    lpTokens,
+    borrowDuration,
+    address: shortStellar(syntheticGAccount(i + 137)),
+  };
 });
 
 function computeRateImpact(positions: typeof BASE_POSITIONS, newAPR: number, horizon: number) {
@@ -241,7 +255,7 @@ export default function RateSpikePage() {
                 <tbody>
                   {sim.results.sort((a, b) => a.newHF - b.newHF).slice(0, 20).map(p => (
                     <tr key={p.id} className={cn("border-b border-vgray-100/60", p.liquidated ? "bg-imperial-50/20" : "")}>
-                      <td className="px-3 py-2 font-mono text-vgray-600">0x{(0xa000 + p.id * 71).toString(16)}...{(0xb100 + p.id * 53).toString(16)}</td>
+                      <td className="px-3 py-2 font-mono text-vgray-600">{p.address}</td>
                       <td className="px-3 py-2 text-right font-mono text-vgray-600">{formatUsd(p.debt)}</td>
                       <td className="px-3 py-2 text-right font-mono text-amber-600">+{formatUsd(p.extraInterest)}</td>
                       <td className="px-3 py-2 text-center font-mono text-violet-600">{p.hf.toFixed(2)}</td>
