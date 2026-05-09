@@ -37,6 +37,9 @@ function isNavItemActive(
   if (item.title === "Margin") {
     return pathname === "/" || pathname === "/margin";
   }
+  if (item.title === "Analytics") {
+    return pathname.startsWith("/analytics");
+  }
   return (
     pathname === item.link ||
     (item.link !== "/" && pathname.startsWith(`${item.link}/`))
@@ -1565,7 +1568,11 @@ export const Navbar = (props: Navbar) => {
             >
               <nav className="flex flex-col p-2 gap-0.5">
                 {/* All nav items */}
-                {[...groupedItems.primary, ...groupedItems.bordered].map(
+                {[
+                  ...groupedItems.primary,
+                  ...groupedItems.bordered,
+                  ...groupedItems.secondary,
+                ].map(
                   (item, idx) => {
                     const isActive = isNavItemActive(pathname, item);
                     return (

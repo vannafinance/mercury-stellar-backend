@@ -1,6 +1,4 @@
-import { Chain } from "viem";
-
-export const chains: readonly Chain[] = [
+export const chains = [
     {
       id: 8453,
       name: "Base",

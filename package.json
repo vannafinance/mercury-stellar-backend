@@ -24,6 +24,7 @@
     "react-dom": "19.2.0",
     "react-hook-form": "^7.71.2",
     "react-hot-toast": "^2.6.0",
+    "recharts": "^3.8.1",
     "viem": "^2.39.0",
     "zustand": "^5.0.9"
   },

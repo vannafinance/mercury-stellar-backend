@@ -7,6 +7,70 @@
   --breakpoint-mobile: 550px;
   --breakpoint-tablet: 768px;
   --breakpoint-desktop: 1024px;
+
+  /* Analytics / Risk Monitor (Vanna) — driven by --analytics-* vars below */
+  --color-surface: var(--analytics-surface);
+  --color-vgray-50: var(--analytics-vgray-50);
+  --color-vgray-100: var(--analytics-vgray-100);
+  --color-vgray-200: var(--analytics-vgray-200);
+  --color-vgray-300: var(--analytics-vgray-300);
+  --color-vgray-400: var(--analytics-vgray-400);
+  --color-vgray-500: var(--analytics-vgray-500);
+  --color-vgray-600: var(--analytics-vgray-600);
+  --color-vgray-700: var(--analytics-vgray-700);
+  --color-vgray-800: var(--analytics-vgray-800);
+  --color-vgray-900: var(--analytics-vgray-900);
+  --shadow-vanna: var(--analytics-shadow-vanna);
+  --radius-r1: 4px;
+  --radius-r2: 8px;
+  --radius-r3: 12px;
+  --radius-r4: 16px;
+  --radius-rfull: 999px;
+
+  /* App + analytics semantic names → :root scales (imperial/electric were missing; badges broke) */
+  --color-imperial-50: var(--imperial-red-50);
+  --color-imperial-100: var(--imperial-red-100);
+  --color-imperial-200: var(--imperial-red-200);
+  --color-imperial-300: var(--imperial-red-300);
+  --color-imperial-400: var(--imperial-red-400);
+  --color-imperial-500: var(--imperial-red-500);
+  --color-imperial-600: var(--imperial-red-600);
+  --color-imperial-700: var(--imperial-red-700);
+  --color-imperial-800: var(--imperial-red-800);
+  --color-imperial-900: var(--imperial-red-900);
+
+  --color-electric-50: var(--electric-blue-50);
+  --color-electric-100: var(--electric-blue-100);
+  --color-electric-200: var(--electric-blue-200);
+  --color-electric-300: var(--electric-blue-300);
+  --color-electric-400: var(--electric-blue-400);
+  --color-electric-500: var(--electric-blue-500);
+  --color-electric-600: var(--electric-blue-600);
+  --color-electric-700: var(--electric-blue-700);
+  --color-electric-800: var(--electric-blue-800);
+  --color-electric-900: var(--electric-blue-900);
+
+  --color-violet-50: var(--violet-50);
+  --color-violet-100: var(--violet-100);
+  --color-violet-200: var(--violet-200);
+  --color-violet-300: var(--violet-300);
+  --color-violet-400: var(--violet-400);
+  --color-violet-500: var(--violet-500);
+  --color-violet-600: var(--violet-600);
+  --color-violet-700: var(--violet-700);
+  --color-violet-800: var(--violet-800);
+  --color-violet-900: var(--violet-900);
+
+  --color-rose-50: var(--rose-50);
+  --color-rose-100: var(--rose-100);
+  --color-rose-200: var(--rose-200);
+  --color-rose-300: var(--rose-300);
+  --color-rose-400: var(--rose-400);
+  --color-rose-500: var(--rose-500);
+  --color-rose-600: var(--rose-600);
+  --color-rose-700: var(--rose-700);
+  --color-rose-800: var(--rose-800);
+  --color-rose-900: var(--rose-900);
 }
 
 :root {
@@ -14,6 +78,20 @@
   --color-base-dark: #111111;
   --color-base-white: #ffffff;
   --color-base-platinum: #f7f7f7;
+
+  /* Analytics UI tokens (light) — html.dark overrides below */
+  --analytics-surface: #ffffff;
+  --analytics-vgray-50: #f7f8fa;
+  --analytics-vgray-100: #e6e8ee;
+  --analytics-vgray-200: #d0d5dd;
+  --analytics-vgray-300: #b8c0cc;
+  --analytics-vgray-400: #8b95a7;
+  --analytics-vgray-500: #667085;
+  --analytics-vgray-600: #475467;
+  --analytics-vgray-700: #344054;
+  --analytics-vgray-800: #1f2937;
+  --analytics-vgray-900: #111827;
+  --analytics-shadow-vanna: 0px 10px 22px rgba(0, 0, 0, 0.10), 0px 24px 36px rgba(0, 0, 0, 0.09);
 
   /* Gray scale */
   --gray-50: #f4f4f4;
@@ -103,6 +181,23 @@
   --spacing-12: 72px;
   --spacing-13: 80px;
   --spacing-14: 120px;
+}
+
+/* Dark: analytics grays invert so text stays readable on dark shells */
+html.dark {
+  --color-base-platinum: #111116;
+  --analytics-surface: #1c1c24;
+  --analytics-vgray-50: #27272a;
+  --analytics-vgray-100: #3f3f46;
+  --analytics-vgray-200: #52525b;
+  --analytics-vgray-300: #71717a;
+  --analytics-vgray-400: #a1a1aa;
+  --analytics-vgray-500: #c8c8d0;
+  --analytics-vgray-600: #d4d4d8;
+  --analytics-vgray-700: #e4e4e7;
+  --analytics-vgray-800: #f4f4f5;
+  --analytics-vgray-900: #fafafa;
+  --analytics-shadow-vanna: 0px 8px 28px rgba(0, 0, 0, 0.45);
 }
 
 /* Global page background and border colors */

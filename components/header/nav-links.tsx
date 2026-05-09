@@ -44,10 +44,13 @@ export default function NavLinks() {
       {navbarItems.map((link) => {
         const isTradeRoute = pathname === link.link || pathname.startsWith("/trade");
         const isMarginRoute = link.title === "Margin" && (pathname === "/" || pathname === "/margin");
+        const isAnalyticsRoute =
+          link.title === "Analytics" && pathname.startsWith("/analytics");
         const isActive =
           pathname === link.link ||
           (link.title === "Trade" && isTradeRoute) ||
-          isMarginRoute;
+          isMarginRoute ||
+          isAnalyticsRoute;
 
         const activeSub =
           link.title === "Trade"
