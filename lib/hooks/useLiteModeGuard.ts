@@ -23,10 +23,7 @@ function getPersistApi(): PersistApi | null {
 export function useLiteModeGuard(): boolean {
   const router = useRouter();
   const appMode = useAppModeStore((s) => s.mode);
-  const [hydrated, setHydrated] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return getPersistApi()?.hasHydrated() ?? true;
-  });
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (hydrated) return;

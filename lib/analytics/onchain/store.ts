@@ -53,7 +53,7 @@ export const useAnalyticsOnchainStore = create<Store>((set, get) => ({
 
     const promise = (async (): Promise<AllAccountsResult> => {
       try {
-        const { accounts, realAccountCount } = await buildAnalyticsSnapshots(userAddress);
+        const { accounts, realAccountCount } = await buildAnalyticsSnapshots(userAddress, { force });
         const result: AllAccountsResult = {
           chainId: 0, // synthetic — Stellar isn't EVM, callers don't read this
           accounts,

@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
-import { whaleConcentration, whaleActivity } from "@/lib/analytics/data/mock";
 import {
   formatUsd,
   formatPercent,
@@ -13,7 +12,7 @@ import {
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { useChartColors } from "@/lib/analytics/theme";
 import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
-import { deriveWhaleConcentration } from "@/lib/analytics/onchain/derivations";
+import { deriveWhaleConcentration, type WhaleConcentration } from "@/lib/analytics/onchain/derivations";
 import { useUserStore } from "@/store/user";
 import { readLiveEventFeed, type LiveWhaleActivityRow } from "@/lib/analytics/stellar/eventFeed";
 
@@ -29,6 +28,13 @@ function chainBadge(_chain: string) {
     </span>
   );
 }
+
+const EMPTY_CONCENTRATION: WhaleConcentration = {
+  top5Share: 0,
+  top10Share: 0,
+  top20Share: 0,
+  topPositions: [],
+};
 
 const actionStyles: Record<string, { bg: string; text: string }> = {
   OPEN_POSITION: { bg: "bg-electric-100", text: "text-electric-500" },
@@ -79,7 +85,7 @@ function ConcentrationBar({
 function ConcentrationBars({
   data,
 }: {
-  data: typeof whaleConcentration;
+  data: WhaleConcentration;
 }) {
   const cc = useChartColors();
   const supplyConc = {
@@ -89,10 +95,10 @@ function ConcentrationBars({
     top20: data.top20Share,
   };
   const borrowConc = {
-    top1: whaleConcentration.topPositions[0]?.sharePercent ?? 0,
-    top5: whaleConcentration.top5Share * 1.05,
-    top10: whaleConcentration.top10Share * 1.03,
-    top20: whaleConcentration.top20Share * 1.01,
+    top1: data.topPositions[0]?.sharePercent ?? 0,
+    top5: data.top5Share,
+    top10: data.top10Share,
+    top20: data.top20Share,
   };
 
   return (
@@ -139,7 +145,7 @@ function ConcentrationBars({
 function TopPositionsTable({
   data,
 }: {
-  data: typeof whaleConcentration;
+  data: WhaleConcentration;
 }) {
   return (
     <div className="bg-surface rounded-r4 shadow-vanna p-5 border border-vgray-100">
@@ -211,7 +217,7 @@ function TopPositionsTable({
 function WhaleActivityFeed({
   activity,
 }: {
-  activity: LiveWhaleActivityRow[] | typeof whaleActivity;
+  activity: LiveWhaleActivityRow[];
 }) {
   return (
     <div className="bg-surface rounded-r4 shadow-vanna p-5 border border-vgray-100">
@@ -321,19 +327,13 @@ export default function WhalesPage() {
     };
   }, []);
 
-  const liveWhales = useMemo(
-    () => (snapshot ? deriveWhaleConcentration(snapshot.accounts, 10) : null),
+  const whalesData = useMemo(
+    () => (snapshot ? deriveWhaleConcentration(snapshot.accounts, 10) : EMPTY_CONCENTRATION),
     [snapshot],
   );
-  const hasLive = Boolean(liveWhales && liveWhales.topPositions.length > 0);
-  const whalesData = hasLive ? liveWhales! : whaleConcentration;
+  const hasLive = whalesData.topPositions.length > 0;
   const hasLiveActivity = liveActivity.length > 0;
-  const isLiveActivityReady = !isLiveFeedLoading;
-  const activityData = hasLiveActivity
-    ? liveActivity
-    : isLiveFeedLoading
-      ? whaleActivity
-      : [];
+  const activityData = liveActivity;
 
   const timeStr = new Date().toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -345,7 +345,7 @@ export default function WhalesPage() {
       <PageHeader
         title="Whale tracker"
         subtitle="Large positions, concentration risk, and recent whale activity"
-        meta={<PageHeaderMeta timeLabel={timeStr} mock={!(hasLive || isLiveActivityReady)} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={false} />}
       />
 
       <div className="flex items-center justify-between gap-3 rounded-r4 border border-vgray-100 bg-surface px-4 py-2 text-[11px]">
@@ -361,7 +361,7 @@ export default function WhalesPage() {
           ) : isLoading ? (
             <span>Loading live positions…</span>
           ) : (
-            <span>Live snapshots unavailable — showing fallback fixture</span>
+            <span>No borrowed positions in snapshot — whale view is empty until your SmartAccount has debt</span>
           )}
           <span className="text-vgray-400">·</span>
           {hasLiveActivity ? (

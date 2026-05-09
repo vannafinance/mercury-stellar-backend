@@ -98,6 +98,7 @@ function TablePagination({
 interface RiskExplorerProps {
   wallets: WalletPosition[];
   chainName: string;
+  tokenPrices?: Partial<Record<StellarAsset, number>>;
 }
 
 function LiquidationBucket({
@@ -202,7 +203,7 @@ function LiquidationBucket({
   );
 }
 
-export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) {
+export default function RiskExplorer({ wallets, chainName, tokenPrices }: RiskExplorerProps) {
   const c = useColors();
   const cc = useChartColors();
 
@@ -249,7 +250,7 @@ export default function RiskExplorer({ wallets, chainName }: RiskExplorerProps) 
   };
 
   const effectivePctChange = direction === "down" ? -Math.abs(priceChangePct) : Math.abs(priceChangePct);
-  const currentPrice = TOKEN_PRICES[selectedAsset] ?? 1;
+  const currentPrice = tokenPrices?.[selectedAsset] ?? TOKEN_PRICES[selectedAsset] ?? 1;
   const projectedPrice = currentPrice * (1 + effectivePctChange / 100);
 
   const { eligible, atRisk } = useMemo(() => {

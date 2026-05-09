@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
-import { liquidationMetrics } from "@/lib/analytics/data/mock";
-import type { Chain } from "@/lib/analytics/data/mock";
+type Chain = "stellar";
 import {
   formatUsd,
   formatPercent,
@@ -17,8 +16,6 @@ import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
 import { derivePositionRows } from "@/lib/analytics/onchain/derivations";
 import { useUserStore } from "@/store/user";
 import { readLiveEventFeed, type LiveLiquidationRow } from "@/lib/analytics/stellar/eventFeed";
-
-const lm = liquidationMetrics;
 
 const PAGE_SIZE = 5;
 
@@ -194,13 +191,7 @@ export default function LiquidationsPage() {
     };
   }, []);
 
-  const hasLiveHistory = liveHistory.length > 0;
-  const history = hasLiveHistory
-    ? liveHistory
-    : isEventFeedLoading
-      ? lm.liquidationHistory
-      : [];
-  const isLiveHistoryReady = !isEventFeedLoading;
+  const history: LiveLiquidationRow[] = liveHistory;
   const liveEligible = useMemo(() => {
     if (!snapshot) return [];
     return derivePositionRows(snapshot.accounts).filter((p) => p.healthFactor < 1.1).map((p) => ({
@@ -212,7 +203,7 @@ export default function LiquidationsPage() {
     }));
   }, [snapshot]);
   const hasLiveEligible = liveEligible.length > 0;
-  const eligible = hasLiveEligible ? liveEligible : lm.walletsEligibleForLiquidation;
+  const eligible = liveEligible;
   const liveBadDebtEstimate = useMemo(
     () => eligible.reduce((sum, w) => sum + Math.max(0, w.debtUsd - w.collateralUsd * 0.9), 0),
     [eligible],
@@ -221,9 +212,20 @@ export default function LiquidationsPage() {
   const recentSlice = usePagedSlice(history, recentPage, PAGE_SIZE);
   const eligibleSlice = usePagedSlice(eligible, eligiblePage, PAGE_SIZE);
   const successRate = useMemo(() => {
-    if (history.length === 0) return lm.successRate;
+    if (history.length === 0) return 0;
     const success = history.filter((h) => h.status === "success").length;
     return (success / history.length) * 100;
+  }, [history]);
+
+  const collateralSeizedUsd = useMemo(
+    () => history.reduce((s, h) => s + h.recoveryAmount, 0),
+    [history],
+  );
+  const debtRepaidUsd = useMemo(() => history.reduce((s, h) => s + h.debtAmount, 0), [history]);
+  const avgTimeToLiquidateSec = useMemo(() => {
+    if (history.length === 0) return 0;
+    const sum = history.reduce((s, h) => s + h.durationSeconds, 0);
+    return Math.round(sum / history.length);
   }, [history]);
 
   const timeStr = new Date().toLocaleTimeString("en-US", {
@@ -236,7 +238,7 @@ export default function LiquidationsPage() {
       <PageHeader
         title="Liquidation monitor"
         subtitle="Recent liquidations and wallets eligible for liquidation"
-        meta={<PageHeaderMeta timeLabel={timeStr} mock={!(hasLiveEligible || isLiveHistoryReady)} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={false} />}
       />
 
       <div className="flex items-center justify-between gap-3 rounded-r4 border border-vgray-100 bg-surface px-4 py-2 text-[11px]">
@@ -252,10 +254,10 @@ export default function LiquidationsPage() {
           ) : isLoading ? (
             <span>Loading live positions…</span>
           ) : (
-            <span>Live eligible set unavailable — showing fallback fixtures</span>
+            <span>No eligible wallets in your snapshot (HF ≥ 1.1) or still loading</span>
           )}
           <span className="text-vgray-400">·</span>
-          {hasLiveHistory ? (
+          {history.length > 0 ? (
             <span>Recent liquidation events from Soroban RPC</span>
           ) : isEventFeedLoading ? (
             <span>Loading liquidation events…</span>
@@ -273,43 +275,43 @@ export default function LiquidationsPage() {
           <KpiCard
             title="Number of liquidations"
             value={formatNumber(history.length)}
-            subtitle={isLiveHistoryReady ? "Recent on-chain events" : lm.liquidationsPeriodLabel}
+            subtitle={isEventFeedLoading ? "Loading events…" : "Soroban events in lookback window"}
             tooltip="Total liquidation events executed on-chain during the selected period."
           />
           <KpiCard
             title="Collateral seized"
-            value={formatUsd(lm.collateralSeizedUsd)}
-            subtitle="Cumulative seized (period)"
+            value={formatUsd(collateralSeizedUsd)}
+            subtitle="Sum of recoveryAmount from events (often 0 if payload sparse)"
             tooltip="Total USD value of collateral claimed by liquidators to cover under-collateralized debt."
           />
           <KpiCard
             title="Debt repaid"
-            value={formatUsd(lm.debtRepaidUsd)}
-            subtitle="From liquidations (period)"
+            value={formatUsd(debtRepaidUsd)}
+            subtitle="Sum of debtAmount from events"
             tooltip="Total outstanding debt that was repaid through liquidation events during this period."
           />
           <KpiCard
             title="Wallets with bad debt"
-            value={formatNumber(hasLiveEligible ? eligible.filter((w) => w.debtUsd > w.collateralUsd * 0.9).length : lm.walletsWithBadDebt)}
-            subtitle="Distinct addresses"
+            value={formatNumber(eligible.filter((w) => w.debtUsd > w.collateralUsd * 0.9).length)}
+            subtitle="Distinct addresses (eligible set)"
             tooltip="Wallets where collateral couldn't fully cover the debt — the protocol absorbs the remaining shortfall."
           />
           <KpiCard
             title="Live bad debt estimate"
-            value={formatUsd(hasLiveEligible ? liveBadDebtEstimate : lm.liquidationHistory.reduce((s, h) => s + h.badDebt, 0))}
-            subtitle={hasLiveEligible ? "Derived from live eligible set" : "Fallback estimate"}
+            value={formatUsd(liveBadDebtEstimate)}
+            subtitle={hasLiveEligible ? "Derived from live eligible set" : "No HF < 1.1 positions in snapshot"}
             tooltip="Approximation using current debt vs 90% collateral recovery for eligible wallets."
           />
           <KpiCard
             title="Success rate"
             value={formatPercent(successRate)}
-            subtitle={isLiveHistoryReady ? "From live event feed" : "Completed liquidations"}
+            subtitle={history.length === 0 ? "No events in window" : "From live event feed"}
             tooltip="Percentage of liquidation attempts that completed successfully without reverting on-chain."
           />
           <KpiCard
             title="Avg time to liquidate"
-            value={`${lm.avgTimeToLiquidate}s`}
-            subtitle="Mean execution time"
+            value={avgTimeToLiquidateSec > 0 ? `${avgTimeToLiquidateSec}s` : "—"}
+            subtitle={history.length === 0 ? "No timed events" : "Mean durationSeconds from events"}
             tooltip="Average time from when a position drops below HF 1.1 to when the liquidation transaction is confirmed."
           />
         </div>

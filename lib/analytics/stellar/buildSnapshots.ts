@@ -1,20 +1,18 @@
-// Adapter that synthesises an `AccountSnapshot[]` for the analytics
-// dashboard out of Stellar data. v1: a single REAL snapshot from the
-// connected wallet's margin account (read straight from the existing
-// margin-account-info-store — no mutations), padded with deterministic
-// SYNTHETIC snapshots so distribution charts have something to plot.
+// Builds `AccountSnapshot[]` for analytics from **live** Stellar / Soroban data only.
 //
-// We don't enumerate all protocol margin accounts here because Stellar
-// keys SmartAccounts by trader (no registry-style "all accounts" call),
-// and Soroban testnet event retention is only ~7 days. A proper indexer
-// is a separate, server-side project.
+// There is no on-chain registry that lists every margin account, so the client can
+// only snapshot the **connected wallet's** SmartAccount (via the margin-account
+// store). Charts and KPIs reflect that real position — never synthetic padding.
 
 import type { AccountSnapshot, CollateralPosition, DebtPosition } from "@/lib/analytics/onchain/types";
-import { useMarginAccountInfoStore, type BorrowedBalance } from "@/store/margin-account-info-store";
-import { ACTIVE_ASSETS, syntheticCAccount, syntheticGAccount } from "@/lib/analytics/stellar/canon";
+import {
+  useMarginAccountInfoStore,
+  checkUserMarginAccount,
+  refreshBorrowedBalances,
+  type BorrowedBalance,
+} from "@/store/margin-account-info-store";
 
-const SYNTHETIC_FILL_COUNT = 31; // total chart population = 1 real + 31 synthetic
-const STELLAR_CHAIN_ID = 0; // synthetic id; UI doesn't read it for routing decisions
+const STELLAR_CHAIN_ID = 0;
 
 const TOKEN_DECIMALS: Record<string, number> = {
   XLM: 7,
@@ -27,9 +25,6 @@ const TOKEN_DECIMALS: Record<string, number> = {
   SOROSWAP_USDC: 7,
 };
 
-// Heuristics mirror the bucket the EVM `fetchAllAccounts` placed each token
-// in. Stellar test pools are: Blend (lending) → "aToken", Aquarius/Soroswap
-// (LP-flavoured pools) → "lp", plain XLM/USDC → "cash".
 function bucketFor(symbol: string): CollateralPosition["type"] {
   const s = symbol.toUpperCase();
   if (s === "BLUSDC" || s === "BLEND_USDC") return "aToken";
@@ -89,88 +84,25 @@ function buildSelfSnapshot(userAddress: string): AccountSnapshot | null {
   };
 }
 
-// ─── Synthetic fill ─────────────────────────────────────────────────────────
-// Deterministic pseudo-random so charts don't reshuffle on every refresh.
-// Same `dr(seed)` shape used elsewhere in the codebase for mock pages.
-const dr = (seed: number): number => {
-  const x = Math.sin(seed * 9301 + 49297) * 233280;
-  return x - Math.floor(x);
-};
-
-function syntheticAccount(i: number): AccountSnapshot {
-  let hf: number;
-  if (i === 0) hf = 0.94;
-  else if (i === 1) hf = 1.05;
-  else if (i < 6) hf = 1.08 + (i - 2) * 0.05;
-  else if (i < 16) hf = 1.3 + (i - 6) * 0.07;
-  else hf = 2.0 + (i - 16) * 0.12;
-  hf = Math.round(hf * 100) / 100;
-
-  const debt = Math.floor(40_000 + dr(i * 7 + 1) * 600_000 / 1000) * 1000;
-  const totalCollateralUsd = Math.floor(debt * hf);
-  const leverage = Math.min(10, Math.max(1, 1 + debt / Math.max(1, totalCollateralUsd)));
-
-  // Synthetic distribution drawn ONLY from the live app's asset universe
-  // (lib/analytics/stellar/canon.ts → ACTIVE_ASSETS). Never introduce any
-  // asset that isn't currently surfaced in the user-facing dropdowns.
-  const collSymbol = ACTIVE_ASSETS[i % ACTIVE_ASSETS.length];
-  const debtSymbol = ACTIVE_ASSETS[(i + 1) % ACTIVE_ASSETS.length];
-
-  const collateral: CollateralPosition[] = [{
-    asset: collSymbol,
-    symbol: collSymbol,
-    decimals: 7,
-    amount: totalCollateralUsd,
-    usd: totalCollateralUsd,
-    type: bucketFor(collSymbol),
-  }];
-
-  const debtArr: DebtPosition[] = [{
-    asset: debtSymbol,
-    symbol: debtSymbol,
-    decimals: 7,
-    amount: debt,
-    usd: debt,
-  }];
-
-  // Stellar-shaped identifiers (C... contract / G... wallet, 56 chars
-  // base32). Chart keys only — never RPC-fetched — but format-correct so
-  // tables, filters and explorer-style links don't break invariants.
-  const synthAccount = syntheticCAccount(i);
-  const synthOwner = syntheticGAccount(i);
-
-  return {
-    account: synthAccount,
-    ownerProxy: synthOwner,
-    chainId: STELLAR_CHAIN_ID,
-    collateral,
-    debt: debtArr,
-    totalCollateralUsd,
-    totalDebtUsd: debt,
-    healthFactor: hf,
-    leverage,
-    isHealthy: hf >= 1.1,
-  };
-}
-
 export async function buildAnalyticsSnapshots(
   userAddress: string | null,
+  opts?: { force?: boolean },
 ): Promise<{ accounts: AccountSnapshot[]; realAccountCount: number }> {
   const out: AccountSnapshot[] = [];
   let realAccountCount = 0;
+  const force = opts?.force ?? false;
 
   if (userAddress) {
+    await checkUserMarginAccount(userAddress, force);
+    const { hasMarginAccount, marginAccountAddress } = useMarginAccountInfoStore.getState();
+    if (hasMarginAccount && marginAccountAddress) {
+      await refreshBorrowedBalances(marginAccountAddress, force);
+    }
     const self = buildSelfSnapshot(userAddress);
     if (self) {
       out.push(self);
       realAccountCount = 1;
     }
-  }
-
-  // Pad with synthetic snapshots so distribution charts populate. Real vs
-  // synthetic counts are shown on the overview status strip.
-  for (let i = 0; i < SYNTHETIC_FILL_COUNT; i++) {
-    out.push(syntheticAccount(i));
   }
 
   return { accounts: out, realAccountCount };

@@ -6,9 +6,11 @@
 import {
   ACTIVE_ASSETS,
   FALLBACK_PRICES,
+  resolveUsdAlias,
   syntheticGAccount,
   type StellarAsset,
 } from "@/lib/analytics/stellar/canon";
+import type { AccountSnapshot } from "@/lib/analytics/onchain/types";
 
 export interface WalletPosition {
   address: string;
@@ -17,6 +19,35 @@ export interface WalletPosition {
   hf: number;
   primaryAsset: StellarAsset;
   leverageX: number;
+}
+
+function walletPrimaryAsset(snapshot: AccountSnapshot): StellarAsset {
+  const topCollateral = snapshot.collateral
+    .slice()
+    .sort((a, b) => b.usd - a.usd)[0]?.symbol;
+  const symbol = (topCollateral || "BLUSDC").toUpperCase();
+  if (ACTIVE_ASSETS.includes(symbol as StellarAsset)) {
+    return symbol as StellarAsset;
+  }
+  const canonical = resolveUsdAlias(symbol);
+  if (canonical === "XLM") return "XLM";
+  // Risk explorer controls are currently XLM + USDC-flavoured assets.
+  // EURC collateral is mapped into the USD bucket until a dedicated tab exists.
+  return "BLUSDC";
+}
+
+export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosition[] {
+  return snapshots
+    .filter((s) => s.totalCollateralUsd > 0 || s.totalDebtUsd > 0)
+    .map((s) => ({
+      address: s.account,
+      collateral: s.totalCollateralUsd,
+      debt: s.totalDebtUsd,
+      hf: Number.isFinite(s.healthFactor) ? s.healthFactor : 99,
+      primaryAsset: walletPrimaryAsset(s),
+      leverageX: Number.isFinite(s.leverage) ? s.leverage : 1,
+    }))
+    .sort((a, b) => a.hf - b.hf);
 }
 
 /** USD reference prices for simulator math. Mirrors the Reflector

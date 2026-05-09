@@ -1,22 +1,17 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { WalletPosition } from "@/components/analytics/risk-explorer/constants";
 import { formatUsd, formatPercent, hfColor, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
+import { readAllPoolStats } from "@/lib/analytics/stellar/rpcReader";
+import { computeBorrowApr } from "@/lib/utils/borrow-rate";
 
-const MONTH_LABELS = ["Feb 14", "Feb 21", "Feb 28", "Mar 7", "Mar 14"];
-
-function genBorrowRateHistory(chainId: number): number[] {
-  return Array.from({ length: 30 }, (_, i) => {
-    const jitter = Math.sin(chainId * 0.37 + i * 0.31) * 0.35;
-    return 3.5 + Math.sin(i * 0.2) * 2 + jitter;
-  });
-}
+const POOL_APR_CHART_POINTS = 20;
 
 /* ── HF bucket definitions (colors injected at render time for theme support) ── */
 function getHfBuckets(cc: ReturnType<typeof useChartColors>) {
@@ -178,16 +173,36 @@ function BorrowRateLineChart({
 export default function PositionsMonitor({
   wallets,
   chainName,
-  activeChainId,
 }: {
   wallets: WalletPosition[];
   chainName: string;
-  activeChainId: number;
 }) {
   const cc = useChartColors();
   const router = useRouter();
   const [expandedBucket, setExpandedBucket] = useState<number | null>(null);
   const [search, setSearch] = useState("");
+  const [poolBorrowAprSeries, setPoolBorrowAprSeries] = useState<number[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const pools = await readAllPoolStats();
+        const aprs = pools.map((p) => computeBorrowApr(p.utilizationRate));
+        const avg = aprs.length
+          ? aprs.reduce((a, b) => a + b, 0) / aprs.length
+          : computeBorrowApr(0);
+        if (!cancelled) {
+          setPoolBorrowAprSeries(Array.from({ length: POOL_APR_CHART_POINTS }, () => avg));
+        }
+      } catch {
+        if (!cancelled) setPoolBorrowAprSeries([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wallets.length]);
 
   const filteredWallets = useMemo(() =>
     search.trim()
@@ -200,9 +215,13 @@ export default function PositionsMonitor({
   const levBucketDefs = useMemo(() => getLevBuckets(cc), [cc]);
   const hfBuckets = useMemo(() => bucketWallets(wallets, hfBucketDefs), [wallets, hfBucketDefs]);
   const levBuckets = useMemo(() => bucketLeverage(wallets, levBucketDefs), [wallets, levBucketDefs]);
-  const borrowRateData = useMemo(
-    () => genBorrowRateHistory(activeChainId),
-    [activeChainId]
+  const borrowRateData =
+    poolBorrowAprSeries.length > 0
+      ? poolBorrowAprSeries
+      : [computeBorrowApr(0), computeBorrowApr(0)];
+  const borrowChartXLabels = useMemo(
+    () => Array.from({ length: borrowRateData.length }, (_, i) => String(i + 1)),
+    [borrowRateData.length],
   );
 
   const maxHfCount = useMemo(
@@ -231,18 +250,16 @@ export default function PositionsMonitor({
       { min: 2.0, max: Infinity },
     ];
 
-    return hfRangeBounds.map((range, ri) => {
+    return hfRangeBounds.map((range) => {
       const baseWallets = wallets.filter((w) => w.hf >= range.min && w.hf < range.max);
       const baseValue = baseWallets.reduce((s, w) => s + w.collateral, 0);
-      const cells = HEATMAP_TIME_LABELS.map((_, ti) => {
-        const variation =
-          1 + Math.sin((ri * 2.1 + ti * 1.3 + activeChainId) * 0.7) * 0.35;
-        return Math.max(0, baseValue * variation);
-      });
-      const rowTotal = cells.reduce((s, v) => s + v, 0);
+      const n = HEATMAP_TIME_LABELS.length;
+      const perCol = n > 0 ? baseValue / n : 0;
+      const cells = HEATMAP_TIME_LABELS.map(() => perCol);
+      const rowTotal = baseValue;
       return { cells, rowTotal };
     });
-  }, [wallets, activeChainId]);
+  }, [wallets]);
 
   const heatmapMax = useMemo(
     () => Math.max(...heatmapData.flatMap((r) => r.cells), 1),
@@ -251,6 +268,11 @@ export default function PositionsMonitor({
 
   return (
     <div className="space-y-6">
+      {wallets.length === 0 && (
+        <div className="rounded-r4 border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900">
+          No live margin positions — charts reflect your SmartAccount from Soroban only. Connect a wallet with an active borrowed position to populate this page.
+        </div>
+      )}
       <SectionHeader
         title="Health factor distribution & borrow rate"
         subtitle={`Current health factor distribution and historical borrow rates on ${chainName}`}
@@ -294,19 +316,19 @@ export default function PositionsMonitor({
         </Card>
 
         <BorrowRateLineChart
-          title="Borrow rate over time"
-          subtitle="Average borrow APR across all markets"
+          title="Borrow rate (pools)"
+          subtitle="Average model-implied borrow APR from live lending-pool utilization — flat series (no on-chain historical rate feed)"
           data={borrowRateData}
           color={cc.violet}
           yFormat={(v) => formatPercent(v)}
-          xLabels={MONTH_LABELS}
+          xLabels={borrowChartXLabels}
         />
       </div>
 
       <SectionHeader
         title="Leverage & health factor heatmap"
-        subtitle="Position leverage distribution and temporal HF-collateral density"
-        tooltip="Higher leverage amplifies both gains and losses. The heatmap shows where collateral is concentrated by HF range over time — dark cells mean heavy exposure."
+        subtitle="Position leverage distribution and HF-collateral density"
+        tooltip="Higher leverage amplifies both gains and losses. Time columns split each band's collateral evenly — there is no on-chain HF history feed yet."
       />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>

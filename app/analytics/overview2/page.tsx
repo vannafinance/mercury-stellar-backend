@@ -1,37 +1,33 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useUserStore } from "@/store/user";
-import {
-  protocolOverview as mockProtocolOverview,
-  hfDistribution as mockHfDistribution,
-  leverageDistribution as mockLeverageDistribution,
-  marginComposition as mockMarginComposition,
-} from "@/lib/analytics/data/mock";
 import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
 import {
   deriveProtocolOverview,
   deriveHfDistribution,
   deriveLeverageDistribution,
   deriveMarginComposition,
+  derivePositionRows,
 } from "@/lib/analytics/onchain/derivations";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import { formatUsd, formatNumber, formatPercent, formatTimeAgo, cn, hfColor, hfBandColor, leverageColor } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import MiniSparkline from "@/components/analytics/charts/MiniSparkline";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
-import CoinIcon from "@/components/analytics/ui/CoinIcon";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   RadialBarChart, RadialBar, PolarAngleAxis,
 } from "recharts";
-import { syntheticGAccount, shortStellar } from "@/lib/analytics/stellar/canon";
+import { FALLBACK_PRICES } from "@/lib/analytics/stellar/canon";
+import type { AccountSnapshot } from "@/lib/analytics/onchain/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const INSURANCE_FUND = 5_400_000;
+/** Insurance / protocol reserve balance is not read from a Soroban getter in this app yet. */
+const INSURANCE_FUND_USD = 0;
 const LIQUIDATION_THRESHOLD = 1.1;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,6 +40,7 @@ type Chain = "base" | "stellar";
 type ActiveTab = "hf" | "pnl" | "leverage";
 
 interface PositionRow {
+  accountId: string;
   address: string;
   chain: Chain;
   healthFactor: number;
@@ -62,74 +59,40 @@ interface PositionRow {
   timeAtRisk: number;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DETERMINISTIC POSITION DATA (seeded, no Math.random)
-// ─────────────────────────────────────────────────────────────────────────────
-const dr = (seed: number): number => {
-  const x = Math.sin(seed * 9301 + 49297) * 233280;
-  return x - Math.floor(x);
-};
+function buildTableRowsFromSnapshot(
+  accounts: AccountSnapshot[],
+  fetchedAt: number,
+  hfTrendByAccount: Map<string, number[]>,
+): PositionRow[] {
+  if (!accounts.length) return [];
 
-// Stellar-only protocol universe (matches CONTRACT_ADDRESSES on testnet).
-const PROTO_LIST = ["Blend", "Aquarius", "Soroswap"];
-
-const ALL_POSITIONS: PositionRow[] = Array.from({ length: 32 }, (_, i) => {
-  let hf: number;
-  if (i === 0) hf = 0.93;
-  else if (i === 1) hf = 0.97;
-  else if (i === 2) hf = 1.04;
-  else if (i < 7) hf = 1.06 + (i - 3) * 0.04;
-  else if (i < 18) hf = 1.25 + (i - 7) * 0.08;
-  else hf = 2.0 + (i - 18) * 0.15;
-
-  hf = Math.round(hf * 100) / 100;
-
-  const debt = Math.floor(60_000 + dr(i * 7 + 1) * 1_600_000 / 1000) * 1000;
-  const marginValue = Math.floor(debt * hf);
-  const leverage = Math.min(10, Math.max(1, Math.round(1.5 + dr(i * 13 + 2) * 8.5)));
-  // Single chain — every margin account is a Soroban SmartAccount.
-  const chain: Chain = "stellar";
-
-  const trackPct = leverage >= 7 ? 0.35 + dr(i * 3 + 3) * 0.3 : dr(i * 3 + 3) * 0.22;
-  const aTokenPct = dr(i * 5 + 4) * 0.38;
-  const rem = Math.max(0.08, 1 - trackPct - aTokenPct);
-  const lpTokenPct = dr(i * 11 + 5) * rem * 0.7;
-  const cashPct = Math.max(0.05, rem - lpTokenPct);
-  const trackTokens = Math.floor(marginValue * trackPct);
-  const aTokens = Math.floor(marginValue * aTokenPct);
-  const lpTokens = Math.floor(marginValue * lpTokenPct);
-  const cash = Math.max(0, marginValue - trackTokens - aTokens - lpTokens);
-
-  const pnlPct = leverage >= 7
-    ? -(dr(i * 17 + 6) * 0.7 + 0.05)
-    : (dr(i * 17 + 6) - 0.45) * 0.7;
-
-  const distToLiq = Math.max(0, ((hf - LIQUIDATION_THRESHOLD) / hf) * 100);
-  const protIdx = Math.floor(dr(i * 23 + 7) * PROTO_LIST.length);
-
-  // Format-correct Stellar G-account addresses (56 chars base32).
-  const address = shortStellar(syntheticGAccount(i + 5001));
-
-  return {
-    address,
-    chain,
-    healthFactor: hf,
-    totalDebt: debt,
-    marginValue,
-    leverage,
-    currentPnL: Math.floor(debt * pnlPct),
-    pnlPercent: Math.round(pnlPct * 1000) / 10,
-    openSince: Date.now() - Math.floor(dr(i * 29 + 8) * 30) * 86_400_000,
-    primaryProtocol: PROTO_LIST[protIdx],
-    breakdown: { aTokens, lpTokens, trackTokens, cash },
-    hfTrend: Array.from({ length: 10 }, (_, j) => Math.max(0.5, hf + (dr(i * 100 + j) - 0.5) * 0.14)),
-    pnlTrend: Array.from({ length: 10 }, (_, j) => Math.floor(debt * pnlPct * (0.65 + dr(i * 200 + j) * 0.7))),
-    distanceToLiquidation: Math.round(distToLiq * 10) / 10,
-    // Anchored to XLM Reflector reference price (~$0.16) — see FALLBACK_PRICES.
-    liquidationPrice: Math.round(0.16 * (1 - distToLiq / 100) * 10000) / 10000,
-    timeAtRisk: hf < 1.5 ? Math.floor(dr(i * 31 + 9) * 7200) : 0,
-  };
-});
+  return derivePositionRows(accounts).map((r) => {
+    const hf = r.healthFactor;
+    const distToLiq = hf > 0 ? Math.max(0, ((hf - LIQUIDATION_THRESHOLD) / hf) * 100) : 0;
+    const rawTrend = hfTrendByAccount.get(r.account) ?? [];
+    const hfTrend = rawTrend.length >= 2 ? rawTrend : [hf, hf];
+    return {
+      accountId: r.account,
+      address: r.address,
+      chain: "stellar" as const,
+      healthFactor: hf,
+      totalDebt: r.totalDebt,
+      marginValue: r.marginValue,
+      leverage: r.leverage,
+      currentPnL: 0,
+      pnlPercent: 0,
+      openSince: fetchedAt,
+      primaryProtocol: r.protocols[0] ?? "—",
+      breakdown: r.breakdown,
+      hfTrend,
+      pnlTrend: [0, 0],
+      distanceToLiquidation: Math.round(distToLiq * 10) / 10,
+      liquidationPrice:
+        Math.round(FALLBACK_PRICES.XLM * (1 - distToLiq / 100) * 10000) / 10000,
+      timeAtRisk: 0,
+    };
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -299,10 +262,11 @@ function SimCard({ sim }: { sim: typeof SIM_CARDS[0] }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function BadDebtMeter({ badDebt, atRisk, buffer, insuranceFund }: { badDebt: number; atRisk: number; buffer: number; insuranceFund: number }) {
   const total = badDebt + atRisk + buffer;
-  const safePct = Math.max(5, (buffer / total) * 100);
-  const atRiskPct = (atRisk / total) * 100;
-  const badDebtPct = Math.max(0, (badDebt / total) * 100);
-  const coverPct = Math.min(100, (insuranceFund / total) * 100);
+  const denom = total > 0 ? total : 1;
+  const safePct = Math.max(5, (buffer / denom) * 100);
+  const atRiskPct = (atRisk / denom) * 100;
+  const badDebtPct = Math.max(0, (badDebt / denom) * 100);
+  const coverPct = total > 0 ? Math.min(100, (insuranceFund / total) * 100) : 0;
 
   return (
     <div className="space-y-2">
@@ -342,10 +306,10 @@ export default function Overview2Page() {
 
   const timeStr = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-  // ── Live data (Stellar) ────────────────────────────────────────────────
-  // Adapter pulls 1 real snapshot from the connected wallet's margin
-  // account + a deterministic synthetic fill so distribution charts
-  // populate. See lib/analytics/stellar/buildSnapshots.ts.
+  const hfTrendHistoryRef = useRef<Map<string, number[]>>(new Map());
+  const avgHfHistoryRef = useRef<number[]>([]);
+  const [histTick, setHistTick] = useState(0);
+
   const userAddress = useUserStore((s) => s.address);
   const snapshot = useAnalyticsOnchainStore((s) => s.result);
   const isLoadingSnapshot = useAnalyticsOnchainStore((s) => s.isLoading);
@@ -355,54 +319,64 @@ export default function Overview2Page() {
     void load(userAddress);
   }, [userAddress, load]);
 
-  // Derivations. Fall back to mock when no snapshot OR the protocol has zero
-  // active debt (charts would otherwise render empty bars).
-  const liveOverview = useMemo(
-    () => (snapshot ? deriveProtocolOverview(snapshot.accounts) : null),
-    [snapshot],
-  );
-  const liveHfDist = useMemo(
-    () => (snapshot ? deriveHfDistribution(snapshot.accounts) : null),
-    [snapshot],
-  );
-  const liveLeverageDist = useMemo(
-    () => (snapshot ? deriveLeverageDistribution(snapshot.accounts) : null),
-    [snapshot],
-  );
-  const liveMargin = useMemo(
-    () => (snapshot ? deriveMarginComposition(snapshot.accounts) : null),
-    [snapshot],
-  );
+  useEffect(() => {
+    if (!snapshot?.accounts.length) {
+      hfTrendHistoryRef.current = new Map();
+      avgHfHistoryRef.current = [];
+      setHistTick((t) => t + 1);
+      return;
+    }
+    for (const r of derivePositionRows(snapshot.accounts)) {
+      const m = hfTrendHistoryRef.current;
+      const prev = m.get(r.account) ?? [];
+      m.set(r.account, [...prev, r.healthFactor].slice(-12));
+    }
+    const overview = deriveProtocolOverview(snapshot.accounts);
+    if (overview.activeAccountCount > 0 && Number.isFinite(overview.avgHealthFactor) && overview.avgHealthFactor > 0) {
+      avgHfHistoryRef.current = [...avgHfHistoryRef.current, overview.avgHealthFactor].slice(-12);
+    }
+    setHistTick((t) => t + 1);
+  }, [snapshot?.fetchedAt]);
 
-  const hasLiveData = Boolean(liveOverview && liveOverview.activeAccountCount > 0);
-  const protocolOverview = hasLiveData ? liveOverview! : mockProtocolOverview;
-  const hfDistribution = hasLiveData && liveHfDist!.some((b) => b.totalDebtUsd > 0)
-    ? liveHfDist!
-    : mockHfDistribution;
-  const leverageDistribution = hasLiveData && liveLeverageDist!.some((b) => b.debtUsd > 0)
-    ? liveLeverageDist!
-    : mockLeverageDistribution;
-  const marginComposition = hasLiveData &&
-    (liveMargin!.aTokens.valueUsd + liveMargin!.lpTokens.valueUsd + liveMargin!.trackTokens.valueUsd + liveMargin!.cash.valueUsd) > 0
-    ? liveMargin!
-    : mockMarginComposition;
+  const accounts = snapshot?.accounts ?? [];
+  const protocolOverview = useMemo(() => deriveProtocolOverview(accounts), [accounts]);
+  const hfDistribution = useMemo(() => deriveHfDistribution(accounts), [accounts]);
+  const leverageDistribution = useMemo(() => deriveLeverageDistribution(accounts), [accounts]);
+  const marginComposition = useMemo(() => deriveMarginComposition(accounts), [accounts]);
+
+  const hasActiveMargin = Boolean(snapshot && protocolOverview.activeAccountCount > 0);
 
   // ── Derived KPI Data ────────────────────────────────────────────────────
-  const belowThreshold = hfDistribution.filter(b => b.range.includes("1.0")).reduce((a, b) => ({ positions: a.positions + b.positionCount, debt: a.debt + b.totalDebtUsd }), { positions: 0, debt: 0 });
-  const atRiskExposure = hfDistribution.find(b => b.range === "1.0–1.1")?.totalDebtUsd ?? 0;
-  const bufferZoneDebt = hfDistribution.find(b => b.range === "1.1–1.3")?.totalDebtUsd ?? 0;
+  const belowThreshold = hfDistribution
+    .filter((b) => b.range === "< 1.0" || b.range === "1.0–1.1")
+    .reduce(
+      (a, b) => ({ positions: a.positions + b.positionCount, debt: a.debt + b.totalDebtUsd }),
+      { positions: 0, debt: 0 },
+    );
+  const atRiskExposure = hfDistribution.find((b) => b.range === "1.0–1.1")?.totalDebtUsd ?? 0;
+  const bufferZoneDebt = hfDistribution.find((b) => b.range === "1.1–1.3")?.totalDebtUsd ?? 0;
   const activeBadDebt = protocolOverview.activeBadDebt.value;
-  const totalPositions = leverageDistribution.reduce((a, b) => a + b.count, 0);
-  const avgLeverage = totalPositions > 0
-    ? leverageDistribution.reduce((a, b) => a + (parseInt(b.range) + 0.5) * b.count, 0) / totalPositions
-    : 0;
-  const avgHFSparkline = Array.from({ length: 10 }, (_, i) => 2.12 + (dr(i * 17) - 0.5) * 0.12);
-  const activeCount = hasLiveData ? liveOverview!.activeAccountCount : ALL_POSITIONS.length;
+  const activeCount = protocolOverview.activeAccountCount;
+  const avgLeverage = Number.isFinite(protocolOverview.avgLeverage) ? protocolOverview.avgLeverage : 0;
+  const avgHFSparkline = useMemo(() => {
+    const h = avgHfHistoryRef.current;
+    if (h.length >= 2) return h;
+    if (h.length === 1) return [h[0], h[0]];
+    const v = protocolOverview.avgHealthFactor;
+    if (hasActiveMargin && v > 0) return [v, v];
+    return [];
+  }, [histTick, hasActiveMargin, protocolOverview.avgHealthFactor]);
+
+  const tableRows = useMemo(
+    () =>
+      buildTableRowsFromSnapshot(accounts, snapshot?.fetchedAt ?? Date.now(), hfTrendHistoryRef.current),
+    [accounts, snapshot?.fetchedAt, histTick],
+  );
 
   // ── Filtered & Sorted Positions ─────────────────────────────────────────
-  const filteredPositions = useMemo(() =>
-    ALL_POSITIONS.filter(p => chainFilter === "all" || p.chain === chainFilter),
-    [chainFilter]
+  const filteredPositions = useMemo(
+    () => tableRows.filter((p) => chainFilter === "all" || p.chain === chainFilter),
+    [tableRows, chainFilter],
   );
 
   const hfSorted = useMemo(() => [...filteredPositions].sort((a, b) => a.healthFactor - b.healthFactor), [filteredPositions]);
@@ -416,7 +390,7 @@ export default function Overview2Page() {
       <PageHeader
         title="Overview"
         subtitle="Advanced protocol-wide risk intelligence · Liquidation threshold: HF 1.1"
-        meta={<PageHeaderMeta timeLabel={timeStr} mock={!hasLiveData} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={false} />}
       />
 
       {/* ── LIVE DATA STATUS STRIP ─────────────────────────────────────── */}
@@ -425,35 +399,22 @@ export default function Overview2Page() {
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full",
-              hasLiveData ? "bg-electric-500" : isLoadingSnapshot ? "bg-amber-400 animate-pulse" : "bg-vgray-300",
+              hasActiveMargin ? "bg-electric-500" : isLoadingSnapshot ? "bg-amber-400 animate-pulse" : "bg-vgray-300",
             )}
           />
           {isLoadingSnapshot && !snapshot ? (
-            <span>Loading Stellar accounts…</span>
-          ) : hasLiveData ? (
+            <span>Loading margin account from Soroban…</span>
+          ) : !userAddress ? (
+            <span>Connect a wallet — analytics use your on-chain SmartAccount only (no protocol-wide account list on RPC).</span>
+          ) : hasActiveMargin ? (
             <span>
-              Live · Stellar · <span className="font-mono tabular-nums">{snapshot!.accountCount}</span> accounts
-              {userAddress ? (
-                snapshot!.realAccountCount > 0 ? (
-                  <span className="text-vgray-400">
-                    {" "}
-                    · {snapshot!.realAccountCount} real + {snapshot!.accountCount - snapshot!.realAccountCount}{" "}
-                    synthetic
-                  </span>
-                ) : (
-                  <span className="text-vgray-400">
-                    {" "}
-                    · all {snapshot!.accountCount} synthetic (open a margin account for your data)
-                  </span>
-                )
-              ) : (
-                <span className="text-vgray-400"> · all synthetic (connect wallet for real data)</span>
-              )}
+              Live · Stellar · <span className="font-mono tabular-nums">{snapshot!.accountCount}</span> margin account
+              {snapshot!.accountCount === 1 ? "" : "s"} (your wallet)
             </span>
           ) : snapshot ? (
-            <span>No active accounts — showing mock data</span>
+            <span>No margin position with borrow activity — open or fund a margin account to see KPIs.</span>
           ) : (
-            <span>Connect wallet for real margin position — showing mock data</span>
+            <span>Could not load snapshot — try Refresh.</span>
           )}
         </div>
         <button
@@ -481,8 +442,12 @@ export default function Overview2Page() {
 
           <AdvKpi
             label="Insurance Fund"
-            value={formatUsd(INSURANCE_FUND)}
-            sub={`${((INSURANCE_FUND / (activeBadDebt + INSURANCE_FUND)) * 100).toFixed(0)}% capacity remaining`}
+            value={formatUsd(INSURANCE_FUND_USD)}
+            sub={
+              INSURANCE_FUND_USD > 0
+                ? `${((INSURANCE_FUND_USD / (activeBadDebt + INSURANCE_FUND_USD)) * 100).toFixed(0)}% capacity remaining`
+                : "Not read from chain in this UI — wire contract getter when available"
+            }
             accentColor="#32EEE2"
             tooltip="Total insurance fund balance available to cover bad debt. If bad debt exceeds this, the protocol requires recapitalization."
           />
@@ -514,11 +479,15 @@ export default function Overview2Page() {
 
           <AdvKpi
             label="Average HF"
-            value={protocolOverview.avgHealthFactor.toFixed(2)}
-            sub="Across all open positions"
-            sparkData={avgHFSparkline}
+            value={
+              hasActiveMargin && protocolOverview.avgHealthFactor > 0
+                ? protocolOverview.avgHealthFactor.toFixed(2)
+                : "—"
+            }
+            sub="Across all open positions (your SmartAccount)"
+            sparkData={avgHFSparkline.length >= 2 ? avgHFSparkline : undefined}
             sparkColor={cc.electric}
-            tooltip="Simple average health factor across all open positions. A declining number signals growing protocol-wide risk."
+            tooltip="Debt-weighted average health factor from your on-chain margin account. Sparkline fills as you refresh (no historical indexer yet)."
           />
 
           <AdvKpi
@@ -532,9 +501,9 @@ export default function Overview2Page() {
           <AdvKpi
             label="Average Leverage"
             value={`${avgLeverage.toFixed(2)}×`}
-            sub={`Across ${formatNumber(totalPositions)} active positions`}
+            sub={`Across ${formatNumber(activeCount)} active position${activeCount === 1 ? "" : "s"}`}
             accentColor={avgLeverage > 6 ? "#FC5457" : avgLeverage > 4 ? "#F59E0B" : "#949494"}
-            tooltip="Weighted average leverage across all open positions. Higher average means the protocol is more sensitive to price moves — a rising average is a systemic risk signal."
+            tooltip="Debt-weighted average leverage from your on-chain margin account."
           />
 
         </div>
@@ -625,18 +594,26 @@ export default function Overview2Page() {
                 </tr>
               </thead>
               <tbody>
+                {displayPositions.length === 0 && (
+                  <tr>
+                    <td colSpan={12} className="px-5 py-12 text-center text-sm text-vgray-400">
+                      {userAddress
+                        ? "No borrowed margin positions in your SmartAccount — KPIs and this table stay empty until you have on-chain debt."
+                        : "Connect your wallet to load your SmartAccount from Soroban."}
+                    </td>
+                  </tr>
+                )}
                 {displayPositions.map((pos, idx) => {
                   const status = getStatus(pos.healthFactor);
-                  const isExpanded = expandedRow === pos.address;
+                  const isExpanded = expandedRow === pos.accountId;
                   const ownCollateral = Math.floor(pos.totalDebt / pos.leverage);
                   const trackTokenPct = Math.round((pos.breakdown.trackTokens / pos.marginValue) * 100);
                   const breakEvenMove = pos.distanceToLiquidation;
 
                   return (
-                    <>
+                    <Fragment key={pos.accountId}>
                       <tr
-                        key={pos.address}
-                        onClick={() => setExpandedRow(isExpanded ? null : pos.address)}
+                        onClick={() => setExpandedRow(isExpanded ? null : pos.accountId)}
                         className={cn(
                           "border-b border-vgray-100/60 cursor-pointer transition-colors select-none",
                           isExpanded ? "bg-violet-50/40" : rowBg(pos.healthFactor),
@@ -757,7 +734,7 @@ export default function Overview2Page() {
 
                       {/* Expanded Row Detail */}
                       {isExpanded && (
-                        <tr key={`${pos.address}-detail`} className="border-b-2 border-violet-100">
+                        <tr className="border-b-2 border-violet-100">
                           <td colSpan={12} className="p-0">
                             <div className="px-5 py-4 bg-violet-50/30 border-l-2 border-violet-400">
 
@@ -799,7 +776,7 @@ export default function Overview2Page() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -882,7 +859,7 @@ export default function Overview2Page() {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div>
                 <p className="text-[10px] text-vgray-400 mb-3">Protocol debt risk exposure vs. insurance fund</p>
-                <BadDebtMeter badDebt={activeBadDebt} atRisk={atRiskExposure} buffer={bufferZoneDebt} insuranceFund={INSURANCE_FUND} />
+                <BadDebtMeter badDebt={activeBadDebt} atRisk={atRiskExposure} buffer={bufferZoneDebt} insuranceFund={INSURANCE_FUND_USD} />
               </div>
               <div>
                 <p className="text-[10px] text-vgray-400 mb-3">Margin composition across all positions</p>

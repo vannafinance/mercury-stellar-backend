@@ -6,7 +6,8 @@ import { Card, useColors } from "./primitives";
 import type { WalletPosition } from "./constants";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 
-const MOCK_RESERVE_FUND = 850_000;
+/** Protocol reserve / insurance not read from a Soroban getter in this client yet. */
+const RESERVE_FUND_USD = 0;
 
 export default function BadDebtMonitorSummary({ wallets }: { wallets: WalletPosition[] }) {
   const c = useColors();
@@ -28,7 +29,11 @@ export default function BadDebtMonitorSummary({ wallets }: { wallets: WalletPosi
     const totalDebt = wallets.reduce((sum, w) => sum + w.debt, 0);
     const ratio = totalDebt > 0 ? (totalBadDebt / totalDebt) * 100 : 0;
     const reserveCoverage =
-      totalBadDebt > 0 ? (MOCK_RESERVE_FUND / totalBadDebt) * 100 : Infinity;
+      totalBadDebt <= 0
+        ? Infinity
+        : RESERVE_FUND_USD > 0
+          ? (RESERVE_FUND_USD / totalBadDebt) * 100
+          : 0;
 
     return { totalBadDebt, ratio, reserveCoverage, byAsset };
   }, [wallets]);
@@ -51,7 +56,7 @@ export default function BadDebtMonitorSummary({ wallets }: { wallets: WalletPosi
           <InfoTooltip size="md" text="Baseline bad debt from current positions before any stress simulation. Shows how much debt is already underwater and whether the reserve fund can cover it." />
         </div>
         <p className={`text-xs mt-1 ${c.text3}`}>
-          Current mock positions — before any stress simulation
+          Live margin snapshot (your SmartAccount) — before any stress simulation
         </p>
       </div>
 
@@ -81,11 +86,11 @@ export default function BadDebtMonitorSummary({ wallets }: { wallets: WalletPosi
         </Card>
         <Card className="!p-4">
           <div className={`text-[10px] font-semibold uppercase tracking-wide ${c.text3} flex items-center gap-1`}>
-            Reserve fund (mock)
+            Reserve fund
             <InfoTooltip text="Protocol's safety buffer to absorb bad debt. If bad debt exceeds the reserve, the shortfall must be socialized across lenders." />
           </div>
           <div className={`text-lg font-bold font-mono mt-1 ${c.text1}`}>
-            {formatUsd(MOCK_RESERVE_FUND)}
+            {formatUsd(RESERVE_FUND_USD)}
           </div>
         </Card>
         <Card className="!p-4">

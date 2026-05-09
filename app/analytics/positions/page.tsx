@@ -1,16 +1,26 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import PositionsMonitor from "@/components/analytics/positions/PositionsMonitor";
-import { generateWallets } from "@/components/analytics/risk-explorer/constants";
-
-// Stellar testnet doesn't expose an EIP-155 chain id; we pass a stable seed so
-// downstream wallet generation stays deterministic across renders.
-const STELLAR_TESTNET_SEED = 100200300;
+import { mapSnapshotsToWallets } from "@/components/analytics/risk-explorer/constants";
+import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useUserStore } from "@/store/user";
 
 export default function PositionsPage() {
-  const wallets = useMemo(() => generateWallets(STELLAR_TESTNET_SEED), []);
+  const userAddress = useUserStore((s) => s.address);
+  const snapshot = useAnalyticsOnchainStore((s) => s.result);
+  const load = useAnalyticsOnchainStore((s) => s.load);
+
+  useEffect(() => {
+    void load(userAddress);
+  }, [load, userAddress]);
+
+  const wallets = useMemo(
+    () => (snapshot ? mapSnapshotsToWallets(snapshot.accounts) : []),
+    [snapshot],
+  );
+
   const timeStr = new Date().toLocaleTimeString("en-US", {
     hour: "2-digit",
     minute: "2-digit",
@@ -21,14 +31,10 @@ export default function PositionsPage() {
       <PageHeader
         title="Positions"
         subtitle="Health factor distribution, borrow rates, leverage, HF heatmap, and expandable positions by bucket"
-        meta={<PageHeaderMeta timeLabel={timeStr} />}
+        meta={<PageHeaderMeta timeLabel={timeStr} mock={false} />}
       />
 
-      <PositionsMonitor
-        wallets={wallets}
-        chainName="Stellar (Soroban testnet)"
-        activeChainId={STELLAR_TESTNET_SEED}
-      />
+      <PositionsMonitor wallets={wallets} chainName="Stellar (Soroban testnet)" />
     </div>
   );
 }
