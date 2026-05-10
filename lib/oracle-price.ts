@@ -21,6 +21,9 @@ const PRICE_ALIASES: Record<string, string> = {
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
+  /** Rough LP-token USD when oracle has no feed — matches analytics canon. */
+  AQ_XLM_USDC: 0.4,
+  SS_XLM_USDC: 0.4,
 };
 
 const PRICE_TTL_MS = 30_000;

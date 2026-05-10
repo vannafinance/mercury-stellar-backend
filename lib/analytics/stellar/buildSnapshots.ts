@@ -1,16 +1,31 @@
-// Builds `AccountSnapshot[]` for analytics from **live** Stellar / Soroban data only.
+// Builds `AccountSnapshot[]` for analytics from **live** Stellar / Soroban data.
 //
-// There is no on-chain registry that lists every margin account, so the client can
-// only snapshot the **connected wallet's** SmartAccount (via the margin-account
-// store). Charts and KPIs reflect that real position — never synthetic padding.
+// Strategy (protocol-wide):
+//   1. Read every margin (smart) account ever registered with
+//      AccountManager via Registry's `SmartAccountsList` storage entry —
+//      this is the closest thing to an on-chain account index.
+//   2. For each open account, snapshot its collateral + debt directly from
+//      the contract (read-only `simulateTransaction` calls — no Freighter
+//      signature required).
+//   3. Merge in the connected wallet's snapshot via the live in-memory
+//      margin-account-info store. This guarantees the dashboard reflects
+//      the user's pending writes immediately (e.g. right after a borrow,
+//      before the protocol-wide cache TTL expires) without waiting for
+//      the next RPC refresh.
 
-import type { AccountSnapshot, CollateralPosition, DebtPosition } from "@/lib/analytics/onchain/types";
+import type {
+  AccountSnapshot,
+  CollateralPosition,
+  DebtPosition,
+} from "@/lib/analytics/onchain/types";
 import {
   useMarginAccountInfoStore,
   checkUserMarginAccount,
   refreshBorrowedBalances,
   type BorrowedBalance,
 } from "@/store/margin-account-info-store";
+import { fetchAllMarginAccountSnapshots } from "./allMarginAccounts";
+import { collateralPositionTypeForSymbol } from "@/lib/analytics/stellar/collateralClassification";
 
 const STELLAR_CHAIN_ID = 0;
 
@@ -25,14 +40,6 @@ const TOKEN_DECIMALS: Record<string, number> = {
   SOROSWAP_USDC: 7,
 };
 
-function bucketFor(symbol: string): CollateralPosition["type"] {
-  const s = symbol.toUpperCase();
-  if (s === "BLUSDC" || s === "BLEND_USDC") return "aToken";
-  if (s === "AQUSDC" || s === "SOUSDC" || s === "AQUARIUS_USDC" || s === "SOROSWAP_USDC") return "lp";
-  if (s === "XLM" || s === "USDC") return "cash";
-  return "unknown";
-}
-
 function entriesToCollateral(entries: Record<string, BorrowedBalance>): CollateralPosition[] {
   return Object.entries(entries)
     .map(([symbol, b]): CollateralPosition => ({
@@ -41,7 +48,7 @@ function entriesToCollateral(entries: Record<string, BorrowedBalance>): Collater
       decimals: TOKEN_DECIMALS[symbol] ?? 7,
       amount: parseFloat(b.amount) || 0,
       usd: parseFloat(b.usdValue) || 0,
-      type: bucketFor(symbol),
+      type: collateralPositionTypeForSymbol(symbol),
     }))
     .filter((p) => p.amount > 0);
 }
@@ -88,22 +95,37 @@ export async function buildAnalyticsSnapshots(
   userAddress: string | null,
   opts?: { force?: boolean },
 ): Promise<{ accounts: AccountSnapshot[]; realAccountCount: number }> {
-  const out: AccountSnapshot[] = [];
-  let realAccountCount = 0;
   const force = opts?.force ?? false;
 
+  // 1. Connected-wallet refresh: keep this so the overview reacts immediately
+  //    to the connected user's writes (the in-memory store is hotter than
+  //    the protocol-wide RPC cache).
+  let selfSnapshot: AccountSnapshot | null = null;
   if (userAddress) {
     await checkUserMarginAccount(userAddress, force);
     const { hasMarginAccount, marginAccountAddress } = useMarginAccountInfoStore.getState();
     if (hasMarginAccount && marginAccountAddress) {
       await refreshBorrowedBalances(marginAccountAddress, force);
     }
-    const self = buildSelfSnapshot(userAddress);
-    if (self) {
-      out.push(self);
-      realAccountCount = 1;
-    }
+    selfSnapshot = buildSelfSnapshot(userAddress);
   }
 
-  return { accounts: out, realAccountCount };
+  // 2. Protocol-wide fan-out — every margin account ever registered, owners
+  //    resolved from RegistryKey::OwnerAddress, balances pulled with a
+  //    public read-source (no wallet auth required).
+  const { accounts: protocolSnapshots } = await fetchAllMarginAccountSnapshots({ force });
+
+  // 3. Merge — prefer the connected wallet's freshly-recomputed snapshot
+  //    over the protocol-wide read for that same account, since the in-memory
+  //    store reflects the latest local writes.
+  const byAccount = new Map<string, AccountSnapshot>();
+  for (const snap of protocolSnapshots) {
+    byAccount.set(snap.account, snap);
+  }
+  if (selfSnapshot) {
+    byAccount.set(selfSnapshot.account, selfSnapshot);
+  }
+
+  const accounts = Array.from(byAccount.values());
+  return { accounts, realAccountCount: accounts.length };
 }

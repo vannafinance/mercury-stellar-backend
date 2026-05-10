@@ -536,7 +536,14 @@ export const refreshBorrowedBalances = async (
     // the borrowed value again — would double-count.
     const hasTrackingTokenCollateral = Object.keys(collateralBalances).some((sym) => {
       const upper = sym.toUpperCase();
-      return upper.startsWith('BLEND_') || upper.endsWith('_LP') || upper.includes('AQUARIUS') || upper.includes('SOROSWAP');
+      return (
+        upper.startsWith('BLEND_') ||
+        upper.startsWith('AQ_') ||
+        upper.startsWith('SS_') ||
+        upper.endsWith('_LP') ||
+        upper.includes('AQUARIUS') ||
+        upper.includes('SOROSWAP')
+      );
     });
     const grossCollateralValue = hasTrackingTokenCollateral
       ? totalCollateralValue

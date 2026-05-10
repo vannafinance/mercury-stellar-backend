@@ -54,6 +54,18 @@ export interface LeveragePreview {
   projectedEarnings1y: number;
 }
 
+/** Matches `BALANCE_TO_BORROW_THRESHOLD` / WAD in `risk_engine.rs` (strictly &gt; 1.1 healthy). */
+export const RISK_ENGINE_LIQUIDATION_HF = 1.1 as const;
+
+/**
+ * Distance from current HF down to liquidation threshold (1.1), as a fraction of current HF.
+ * Same form as analytics `((hf - 1.1) / hf) * 100`.
+ */
+export const distanceToLiquidationPct = (
+  hf: number,
+  threshold = RISK_ENGINE_LIQUIDATION_HF,
+): number => (hf > threshold ? ((hf - threshold) / hf) * 100 : 0);
+
 export const calcNetApr = ({ supplyApr, vannaFeeApr, leverage }: YieldRates): number =>
   leverage * supplyApr - (leverage - 1) * vannaFeeApr;
 

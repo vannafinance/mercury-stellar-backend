@@ -3,6 +3,7 @@ import { getAddress, signTransaction } from '@stellar/freighter-api';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { fetchTokenPrice } from './oracle-price';
+import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 
 // Types
 export interface MarginAccount {
@@ -1828,7 +1829,6 @@ export class MarginAccountService {
     marginAccountAddress: string
   ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
     try {
-      // Validate address before making any blockchain calls
       if (!marginAccountAddress || typeof marginAccountAddress !== 'string' || marginAccountAddress.length < 10) {
         return {
           success: false,
@@ -1837,50 +1837,91 @@ export class MarginAccountService {
       }
       console.log('📊 Getting collateral balances for margin account:', marginAccountAddress);
 
+      const userAddress = await getAddress();
+      if (userAddress.error) {
+        return {
+          success: false,
+          error: 'Failed to get user address'
+        };
+      }
+
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(userAddress.address);
       const contract = new StellarSdk.Contract(marginAccountAddress);
+
+      const listTx = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call('get_all_collateral_tokens'))
+        .setTimeout(30)
+        .build();
+
+      const preparedList = await server.prepareTransaction(listTx);
+      const listSim = await server.simulateTransaction(preparedList);
+
+      if ('error' in listSim) {
+        console.error('❌ Failed to get collateral token list:', listSim.error);
+        return {
+          success: false,
+          error: 'Failed to get collateral tokens from margin account'
+        };
+      }
+
+      if (!('result' in listSim) || !listSim.result) {
+        return { success: true, data: {} };
+      }
+
+      const collateralTokensRaw = StellarSdk.scValToNative(listSim.result.retval) as unknown;
+      const collateralTokens = Array.isArray(collateralTokensRaw)
+        ? collateralTokensRaw.map((t) => String(t))
+        : [];
+
+      if (collateralTokens.length === 0) {
+        return { success: true, data: {} };
+      }
 
       const balances: Record<string, { amount: string; usdValue: string }> = {};
 
-      // Query collateral balances for each token
-      for (const tokenSymbol of ['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'USDC']) {
+      for (const token of collateralTokens) {
         try {
-          const userAddress = await getAddress();
-          if (userAddress.error) continue;
-
-          const sourceAccount = await server.getAccount(userAddress.address);
-
-          const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+          const balTx = new StellarSdk.TransactionBuilder(sourceAccount, {
             fee: StellarSdk.BASE_FEE,
             networkPassphrase: NETWORK_PASSPHRASE,
           })
             .addOperation(
               contract.call(
                 'get_collateral_token_balance',
-                StellarSdk.nativeToScVal(tokenSymbol, { type: 'symbol' })
+                StellarSdk.nativeToScVal(token, { type: 'symbol' })
               )
             )
             .setTimeout(30)
             .build();
 
-          const simulationResult = await server.simulateTransaction(transaction);
+          const preparedBal = await server.prepareTransaction(balTx);
+          const balSim = await server.simulateTransaction(preparedBal);
 
-          if ('result' in simulationResult && simulationResult.result) {
-            const balance = StellarSdk.scValToNative(simulationResult.result.retval);
-            const balanceInToken = parseFloat(balance.toString()) / Math.pow(10, 18);
-            
-            balances[tokenSymbol] = {
-              amount: balanceInToken.toFixed(7),
-              usdValue: (balanceInToken * 1).toFixed(2) // Placeholder for price conversion
-            };
+          if (!('error' in balSim) && 'result' in balSim && balSim.result) {
+            const rawBal = StellarSdk.scValToNative(balSim.result.retval);
+            const balanceWad = rawBal?.toString?.() ?? String(rawBal ?? '0');
+            const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
+
+            if (balanceNumber > 0) {
+              const price = await fetchTokenPrice(token);
+              const usdValue = (balanceNumber * price).toFixed(2);
+              balances[token] = {
+                amount: balanceNumber.toFixed(7),
+                usdValue
+              };
+            }
           }
-        } catch (error) {
-          console.warn(`Could not get ${tokenSymbol} collateral balance:`, error);
-          balances[tokenSymbol] = { amount: '0', usdValue: '0' };
+        } catch (err) {
+          console.warn(`⚠️ Failed to read collateral balance for ${token}:`, err);
         }
       }
 
-      return { success: true, data: this.addUsdcAliases(balances) };
+      const withFarm = await mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, balances);
+      return { success: true, data: this.addUsdcAliases(withFarm) };
     } catch (error: any) {
       console.error('❌ Error getting collateral balances:', error);
       return {

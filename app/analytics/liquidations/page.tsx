@@ -199,7 +199,7 @@ export default function LiquidationsPage() {
       chain: "stellar" as const,
       healthFactor: p.healthFactor,
       debtUsd: p.totalDebt,
-      collateralUsd: p.marginValue,
+      collateralUsd: p.grossCollateralUsd,
     }));
   }, [snapshot]);
   const hasLiveEligible = liveEligible.length > 0;

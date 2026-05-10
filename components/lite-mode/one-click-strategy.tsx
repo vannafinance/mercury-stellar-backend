@@ -13,6 +13,10 @@ import { Button } from "@/components/ui/button";
 import { LeverageSlider } from "@/components/ui/leverage-slider";
 import { Modal } from "@/components/ui/modal";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import {
+  distanceToLiquidationPct,
+  RISK_ENGINE_LIQUIDATION_HF,
+} from "@/components/lite-mode/lite-position-math";
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -258,10 +262,31 @@ export const OneClickStrategy = () => {
   // until deployed, so HF is evaluated on gross assets.
   const grossCollateralUsd = totalCollateralUsd + totalBorrowUsd;
   const newHF = totalBorrowUsd > 0 ? grossCollateralUsd / totalBorrowUsd : 0;
-  const newLTV = totalCollateralUsd > 0 ? (totalBorrowUsd / totalCollateralUsd) * 100 : 0;
+  /** Debt as % of gross balance-sheet assets — matches HF⁻¹ view (HF = gross / debt). */
+  const newLTV = grossCollateralUsd > 0 ? (totalBorrowUsd / grossCollateralUsd) * 100 : 0;
   const maxBorrowUsd = collateralUsd * 0.8 + Math.max(0, totalCollateralValue - totalBorrowedValue) * 0.8;
-  const liquidationPrice = collateralNum > 0 && borrowedAmount > 0 ? (borrowUsd * 1.1) / collateralNum : 0;
-  const liquidationBuffer = newHF > 0 ? ((newHF - 1) / newHF) * 100 : 0;
+  /**
+   * Implied liq. oracle price for the **deposit asset** only when borrow ≠ collateral
+   * (e.g. XLM collateral / USDC debt): solve gross(P) ≈ 1.1 × debt with
+   * gross ≈ C×P + (gross_now − C×P_now). Same-asset borrow: collateral and debt both
+   * scale with the same oracle → RiskEngine HF is ~invariant → no single "liq price".
+   */
+  const liquidationPriceUsd = useMemo(() => {
+    if (collateralNum <= 0 || totalBorrowUsd <= 0) return null;
+    if (collateralAsset === borrowAsset) return null;
+    const stablePartUsd = Math.max(0, grossCollateralUsd - collateralNum * collateralPrice);
+    const px =
+      (RISK_ENGINE_LIQUIDATION_HF * totalBorrowUsd - stablePartUsd) / collateralNum;
+    return px > 0 && Number.isFinite(px) ? px : null;
+  }, [
+    collateralNum,
+    totalBorrowUsd,
+    collateralAsset,
+    borrowAsset,
+    grossCollateralUsd,
+    collateralPrice,
+  ]);
+  const liquidationBuffer = distanceToLiquidationPct(newHF);
 
   const hasDeposit = collateralNum > 0;
   const hasBorrow = borrowedAmount > 0;
@@ -992,21 +1017,51 @@ export const OneClickStrategy = () => {
                           <motion.div custom={1} variants={metricCardVariant} initial="hidden" animate="visible"
                             className={`rounded-[12px] p-[14px] flex flex-col gap-[4px] ${isDark ? "bg-[#1E1E1E] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}
                           >
-                            <span className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}>LTV</span>
+                            <span
+                              className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}
+                              title="Debt ÷ gross assets (matches on-chain HF = gross ÷ debt)"
+                            >
+                              LTV
+                            </span>
                             <span className={`text-[20px] font-bold ${headingText}`}>{newLTV > 0 ? `${newLTV.toFixed(1)}%` : "—"}</span>
                           </motion.div>
-                          {liquidationPrice > 0 && (
-                            <motion.div custom={2} variants={metricCardVariant} initial="hidden" animate="visible"
-                              className={`rounded-[12px] p-[14px] flex flex-col gap-[4px] ${isDark ? "bg-[#1E1E1E] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}
+                          <motion.div custom={2} variants={metricCardVariant} initial="hidden" animate="visible"
+                            className={`rounded-[12px] p-[14px] flex flex-col gap-[4px] ${isDark ? "bg-[#1E1E1E] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}
+                          >
+                            <span
+                              className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}
+                              title={
+                                liquidationPriceUsd == null && collateralAsset === borrowAsset
+                                  ? "Same-asset borrow: collateral and debt use the same oracle — health factor does not move with a uniform XLM price change."
+                                  : "Implied oracle price of this asset at HF = 1.1 (cross-asset preview)."
+                              }
                             >
-                              <span className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}>Liq. Price ({collateralAsset})</span>
-                              <span className={`text-[20px] font-bold ${headingText}`}>${liquidationPrice.toFixed(collateralAsset === "XLM" ? 4 : 2)}</span>
-                            </motion.div>
-                          )}
+                              Liq. Price ({collateralAsset})
+                            </span>
+                            {liquidationPriceUsd != null ? (
+                              <span className={`text-[20px] font-bold ${headingText}`}>
+                                ${liquidationPriceUsd.toFixed(collateralAsset === "XLM" ? 4 : 2)}
+                              </span>
+                            ) : (
+                              <>
+                                <span className={`text-[20px] font-bold ${headingText}`}>—</span>
+                                {collateralAsset === borrowAsset && (
+                                  <span className={`text-[9px] font-medium leading-tight ${mutedText}`}>
+                                    Same-asset — HF stable vs spot
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </motion.div>
                           <motion.div custom={3} variants={metricCardVariant} initial="hidden" animate="visible"
                             className={`rounded-[12px] p-[14px] flex flex-col gap-[4px] ${isDark ? "bg-[#1E1E1E] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}
                           >
-                            <span className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}>Liq. Buffer</span>
+                            <span
+                              className={`text-[10px] font-semibold uppercase tracking-[0.3px] ${labelText}`}
+                              title="Room above protocol liquidation threshold (HF 1.1)"
+                            >
+                              Liq. Buffer
+                            </span>
                             <span className={`text-[20px] font-bold ${headingText}`}>{liquidationBuffer > 0 ? `${liquidationBuffer.toFixed(1)}%` : "—"}</span>
                           </motion.div>
                           <motion.div custom={4} variants={metricCardVariant} initial="hidden" animate="visible"
@@ -1209,7 +1264,7 @@ export const OneClickStrategy = () => {
           {/* Risk Notice */}
           <div className={`rounded-[14px] border p-4 ${isDark ? "bg-[#FC5457]/5 border-[#FC5457]/15" : "bg-[#FFF5F5] border-[#FC5457]/20"}`}>
             <p className={`text-[11px] leading-[18px] ${isDark ? "text-[#FC5457]/80" : "text-[#FC5457]"}`}>
-              <strong>Risk notice:</strong> Leveraged positions can be liquidated if your Health Factor drops below 1.1. XLM price volatility can affect your position significantly. Only deposit what you can afford to lose.
+              <strong>Risk notice:</strong> Positions can be liquidated if Health Factor falls to 1.1 per the Risk Engine. Cross-asset strategies are more sensitive to relative price moves than same-asset XLM↔XLM style borrows. Only deposit what you can afford to lose.
             </p>
           </div>
         </motion.div>

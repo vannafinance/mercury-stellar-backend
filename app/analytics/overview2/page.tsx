@@ -3,6 +3,7 @@
 import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useUserStore } from "@/store/user";
+import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
 import {
   deriveProtocolOverview,
@@ -46,6 +47,7 @@ interface PositionRow {
   healthFactor: number;
   totalDebt: number;
   marginValue: number;
+  grossCollateralUsd: number;
   leverage: number;
   currentPnL: number;
   pnlPercent: number;
@@ -78,6 +80,7 @@ function buildTableRowsFromSnapshot(
       healthFactor: hf,
       totalDebt: r.totalDebt,
       marginValue: r.marginValue,
+      grossCollateralUsd: r.grossCollateralUsd,
       leverage: r.leverage,
       currentPnL: 0,
       pnlPercent: 0,
@@ -132,10 +135,11 @@ function MarginBar({ breakdown, total }: { breakdown: PositionRow["breakdown"]; 
     { val: breakdown.aTokens, color: "#32EEE2", label: "aToken" },
     { val: breakdown.cash, color: "#949494", label: "Cash" },
   ];
+  const denom = total > 0 ? total : 1;
   return (
     <div className="flex h-2 w-20 rounded-full overflow-hidden gap-px" title="Track/LP/aToken/Cash">
       {segments.map((s) => (
-        <div key={s.label} style={{ width: `${(s.val / total) * 100}%`, background: s.color }} />
+        <div key={s.label} style={{ width: `${(s.val / denom) * 100}%`, background: s.color }} />
       ))}
     </div>
   );
@@ -383,7 +387,33 @@ export default function Overview2Page() {
   const pnlSorted = useMemo(() => [...filteredPositions].sort((a, b) => a.currentPnL - b.currentPnL), [filteredPositions]);
   const leverageSorted = useMemo(() => [...filteredPositions].sort((a, b) => b.leverage - a.leverage), [filteredPositions]);
 
-  const displayPositions = activeTab === "hf" ? hfSorted : activeTab === "pnl" ? pnlSorted : leverageSorted;
+  const sortedForTab = activeTab === "hf" ? hfSorted : activeTab === "pnl" ? pnlSorted : leverageSorted;
+
+  /** 1-based rank in the current tab sort — same # whether your row is pinned first or not. */
+  const sortRankByAccountId = useMemo(() => {
+    const m = new Map<string, number>();
+    sortedForTab.forEach((p, i) => m.set(p.accountId, i + 1));
+    return m;
+  }, [sortedForTab]);
+
+  const myMarginAccountAddress = useMarginAccountInfoStore((s) =>
+    s.hasMarginAccount && s.marginAccountAddress ? s.marginAccountAddress : null,
+  );
+
+  /** Only row order changes: your margin account first; # column still uses true sort rank from `sortRankByAccountId`. */
+  const displayPositions = useMemo(() => {
+    if (!myMarginAccountAddress || sortedForTab.length === 0) return sortedForTab;
+    const sortIdx = sortedForTab.findIndex((p) => p.accountId === myMarginAccountAddress);
+    if (sortIdx < 0) return sortedForTab;
+    const mine = sortedForTab[sortIdx];
+    const rest = sortedForTab.filter((p) => p.accountId !== myMarginAccountAddress);
+    return [mine, ...rest];
+  }, [sortedForTab, myMarginAccountAddress]);
+
+  const isMyRowPinned =
+    Boolean(myMarginAccountAddress) &&
+    displayPositions[0]?.accountId === myMarginAccountAddress &&
+    sortedForTab[0]?.accountId !== myMarginAccountAddress;
 
   return (
     <div className="p-6 w-full max-w-[1600px] mx-auto space-y-8">
@@ -403,16 +433,15 @@ export default function Overview2Page() {
             )}
           />
           {isLoadingSnapshot && !snapshot ? (
-            <span>Loading margin account from Soroban…</span>
-          ) : !userAddress ? (
-            <span>Connect a wallet — analytics use your on-chain SmartAccount only (no protocol-wide account list on RPC).</span>
+            <span>Loading margin accounts from Soroban…</span>
           ) : hasActiveMargin ? (
             <span>
-              Live · Stellar · <span className="font-mono tabular-nums">{snapshot!.accountCount}</span> margin account
-              {snapshot!.accountCount === 1 ? "" : "s"} (your wallet)
+              Live · Stellar · <span className="font-mono tabular-nums">{snapshot!.accountCount}</span> active margin account
+              {snapshot!.accountCount === 1 ? "" : "s"} protocol-wide
+              {userAddress ? " (incl. your wallet)" : ""}
             </span>
           ) : snapshot ? (
-            <span>No margin position with borrow activity — open or fund a margin account to see KPIs.</span>
+            <span>No margin accounts with borrow activity on the protocol yet — open a position to populate analytics.</span>
           ) : (
             <span>Could not load snapshot — try Refresh.</span>
           )}
@@ -484,10 +513,10 @@ export default function Overview2Page() {
                 ? protocolOverview.avgHealthFactor.toFixed(2)
                 : "—"
             }
-            sub="Across all open positions (your SmartAccount)"
+            sub="Debt-weighted across all active margin accounts"
             sparkData={avgHFSparkline.length >= 2 ? avgHFSparkline : undefined}
             sparkColor={cc.electric}
-            tooltip="Debt-weighted average health factor from your on-chain margin account. Sparkline fills as you refresh (no historical indexer yet)."
+            tooltip="Debt-weighted average health factor across every margin account registered with the AccountManager. Sparkline fills as you refresh (no historical indexer yet)."
           />
 
           <AdvKpi
@@ -503,7 +532,7 @@ export default function Overview2Page() {
             value={`${avgLeverage.toFixed(2)}×`}
             sub={`Across ${formatNumber(activeCount)} active position${activeCount === 1 ? "" : "s"}`}
             accentColor={avgLeverage > 6 ? "#FC5457" : avgLeverage > 4 ? "#F59E0B" : "#949494"}
-            tooltip="Debt-weighted average leverage from your on-chain margin account."
+            tooltip="Debt-weighted average leverage across every active margin account on the protocol."
           />
 
         </div>
@@ -597,9 +626,7 @@ export default function Overview2Page() {
                 {displayPositions.length === 0 && (
                   <tr>
                     <td colSpan={12} className="px-5 py-12 text-center text-sm text-vgray-400">
-                      {userAddress
-                        ? "No borrowed margin positions in your SmartAccount — KPIs and this table stay empty until you have on-chain debt."
-                        : "Connect your wallet to load your SmartAccount from Soroban."}
+                      No margin accounts with borrowed debt on the protocol yet — open a leveraged position to populate this table.
                     </td>
                   </tr>
                 )}
@@ -607,8 +634,13 @@ export default function Overview2Page() {
                   const status = getStatus(pos.healthFactor);
                   const isExpanded = expandedRow === pos.accountId;
                   const ownCollateral = Math.floor(pos.totalDebt / pos.leverage);
-                  const trackTokenPct = Math.round((pos.breakdown.trackTokens / pos.marginValue) * 100);
+                  const trackTokenPct =
+                    pos.marginValue > 0
+                      ? Math.round((pos.breakdown.trackTokens / pos.marginValue) * 100)
+                      : 0;
                   const breakEvenMove = pos.distanceToLiquidation;
+                  const isMyMarginAccount =
+                    Boolean(myMarginAccountAddress) && pos.accountId === myMarginAccountAddress;
 
                   return (
                     <Fragment key={pos.accountId}>
@@ -617,7 +649,8 @@ export default function Overview2Page() {
                         className={cn(
                           "border-b border-vgray-100/60 cursor-pointer transition-colors select-none",
                           isExpanded ? "bg-violet-50/40" : rowBg(pos.healthFactor),
-                          !isExpanded && "hover:bg-vgray-50/50"
+                          !isExpanded && "hover:bg-vgray-50/50",
+                          isMyMarginAccount && "ring-1 ring-inset ring-violet-200/80 bg-violet-50/20",
                         )}
                       >
                         {/* Chevron */}
@@ -630,13 +663,25 @@ export default function Overview2Page() {
                           </svg>
                         </td>
 
-                        {/* # index */}
-                        <td className="px-3 py-2.5 text-vgray-400 font-mono">{idx + 1}</td>
+                        {/* # = true rank in current tab sort (HF / PnL / leverage); only visual order pins your row first */}
+                        <td
+                          className={cn(
+                            "px-3 py-2.5 font-mono tabular-nums",
+                            isMyMarginAccount ? "text-violet-700 font-semibold" : "text-vgray-400",
+                          )}
+                        >
+                          {sortRankByAccountId.get(pos.accountId) ?? "—"}
+                        </td>
 
                         {/* Common: Wallet */}
                         <td className="px-3 py-2.5">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-mono text-vgray-700">{pos.address}</span>
+                            {isMyMarginAccount && (
+                              <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 border border-violet-200 uppercase tracking-wide shrink-0">
+                                You
+                              </span>
+                            )}
                             <ChainBadge chain={pos.chain} />
                           </div>
                         </td>
@@ -752,7 +797,11 @@ export default function Overview2Page() {
                                     <div>
                                       <p className="text-[8px] text-vgray-400 uppercase tracking-wide">{d.label}</p>
                                       <p className="text-[11px] font-bold font-mono text-vgray-700">{formatUsd(d.val)}</p>
-                                      <p className="text-[8px] text-vgray-400">{((d.val / pos.marginValue) * 100).toFixed(1)}% of margin</p>
+                                      <p className="text-[8px] text-vgray-400">
+                                        {pos.marginValue > 0
+                                          ? `${((d.val / pos.marginValue) * 100).toFixed(1)}% of margin`
+                                          : "—"}
+                                      </p>
                                     </div>
                                   </div>
                                 ))}
@@ -763,7 +812,7 @@ export default function Overview2Page() {
                                 {[
                                   { label: "Liquidation Price (XLM)", val: `$${pos.liquidationPrice.toFixed(4)}` },
                                   { label: "Distance to Liquidation", val: `${pos.distanceToLiquidation.toFixed(1)}%` },
-                                  { label: "Margin Buffer", val: `${((pos.marginValue / pos.totalDebt - 1) * 100).toFixed(1)}%` },
+                                  { label: "Margin Buffer", val: `${((pos.grossCollateralUsd / pos.totalDebt - 1) * 100).toFixed(1)}%` },
                                   { label: "Open Since", val: formatTimeAgo(pos.openSince) },
                                 ].map(d => (
                                   <div key={d.label} className="bg-surface rounded-r2 px-3 py-2 border border-vgray-100">
@@ -785,7 +834,14 @@ export default function Overview2Page() {
 
           {/* Table footer */}
           <div className="px-5 py-3 border-t border-vgray-100 bg-vgray-50/30 flex items-center justify-between">
-            <p className="text-[10px] text-vgray-400">Click any row to expand margin composition details · Sorted by {activeTab === "hf" ? "Health Factor ↑" : activeTab === "pnl" ? "PnL (loss first) ↑" : "Leverage ↓"}</p>
+            <p className="text-[10px] text-vgray-400">
+              Click any row to expand margin composition details · Sorted by {activeTab === "hf" ? "Health Factor ↑" : activeTab === "pnl" ? "PnL (loss first) ↑" : "Leverage ↓"}
+              {myMarginAccountAddress && sortRankByAccountId.has(myMarginAccountAddress)
+                ? isMyRowPinned
+                  ? " · Your margin account is shown first; # is still your real rank in this sort."
+                  : " · # is your rank in this sort."
+                : ""}
+            </p>
             <div className="flex items-center gap-3 text-[9px] text-vgray-400">
               <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm bg-imperial-50 border border-imperial-200" />Liquidatable</div>
               <div className="flex items-center gap-1"><div className="w-2 h-2 rounded-sm bg-amber-50 border border-amber-200" />Critical</div>

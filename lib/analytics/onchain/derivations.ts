@@ -165,7 +165,10 @@ export type PositionRow = {
   chain: string;
   healthFactor: number;
   totalDebt: number;
+  /** Sum of breakdown segments (on-chain collateral USD only). Denominator for composition bar / "% of margin". */
   marginValue: number;
+  /** Collateral leg used with debt for HF (gross when borrowed cash counts toward solvency). */
+  grossCollateralUsd: number;
   leverage: number;
   status: RiskStatus;
   breakdown: { aTokens: number; lpTokens: number; trackTokens: number; cash: number };
@@ -190,6 +193,16 @@ function bucketCollateral(s: AccountSnapshot): PositionRow["breakdown"] {
   return b;
 }
 
+/** Gross collateral backing HF: HF × debt when HF is a normal finite ratio; else snapshot field. */
+function grossCollateralUsdOf(s: AccountSnapshot): number {
+  const d = s.totalDebtUsd;
+  const hf = s.healthFactor;
+  if (d > 0 && Number.isFinite(hf) && hf > 0 && hf < 900) {
+    return hf * d;
+  }
+  return s.totalCollateralUsd;
+}
+
 export function derivePositionRows(snapshots: AccountSnapshot[]): PositionRow[] {
   return snapshots.filter(withDebt).map((s) => {
     // Tag each row with the Stellar protocols that backed its collateral
@@ -204,6 +217,13 @@ export function derivePositionRows(snapshots: AccountSnapshot[]): PositionRow[] 
       const p = protocolFor(d.symbol);
       if (p) protocols.add(p);
     }
+    const breakdown = bucketCollateral(s);
+    const breakdownTotal =
+      breakdown.aTokens + breakdown.lpTokens + breakdown.trackTokens + breakdown.cash;
+    const grossCollateralUsd = grossCollateralUsdOf(s);
+    // Protocol snapshots store gross in `totalCollateralUsd` but breakdown sums raw collateral
+    // only — using gross as the bar denominator made Cash appear to equal gross and broke %.
+    const marginValue = breakdownTotal > 0 ? breakdownTotal : grossCollateralUsd;
     return {
       account: s.account,
       address: shortAddr(s.account),
@@ -211,10 +231,11 @@ export function derivePositionRows(snapshots: AccountSnapshot[]): PositionRow[] 
       chain: "stellar",
       healthFactor: s.healthFactor,
       totalDebt: s.totalDebtUsd,
-      marginValue: s.totalCollateralUsd,
+      marginValue,
+      grossCollateralUsd,
       leverage: isFinite(s.leverage) ? s.leverage : 0,
       status: statusForHF(s.healthFactor),
-      breakdown: bucketCollateral(s),
+      breakdown,
       protocols: Array.from(protocols),
     };
   });

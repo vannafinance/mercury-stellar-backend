@@ -107,7 +107,7 @@ async function fetchContractEvents(
 }
 
 export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGERS): Promise<LiveEventFeed> {
-  await fetchTokenPrices(["XLM", "BLUSDC", "AQUSDC", "SOUSDC", "EURC"]).catch(() => undefined);
+  await fetchTokenPrices(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]).catch(() => undefined);
 
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
   const latest = await server.getLatestLedger();

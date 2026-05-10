@@ -66,8 +66,8 @@ export default function RiskExplorerPage() {
 
       {!hasLiveWallets && (
         <p className="rounded-r4 border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900">
-          No on-chain margin positions loaded. Connect your wallet and open a SmartAccount with collateral/debt — stress tools only use real contract-derived
-          snapshots (no synthetic fill).
+          No on-chain margin positions loaded yet. Stress tools render as soon as any margin account on the protocol has collateral/debt — they only use
+          real contract-derived snapshots (no synthetic fill).
         </p>
       )}
 

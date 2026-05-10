@@ -361,7 +361,7 @@ export default function WhalesPage() {
           ) : isLoading ? (
             <span>Loading live positions…</span>
           ) : (
-            <span>No borrowed positions in snapshot — whale view is empty until your SmartAccount has debt</span>
+            <span>No borrowed positions on the protocol yet — whale view fills as margin accounts open leveraged debt</span>
           )}
           <span className="text-vgray-400">·</span>
           {hasLiveActivity ? (
