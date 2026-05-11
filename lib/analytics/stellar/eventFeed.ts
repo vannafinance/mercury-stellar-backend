@@ -1,6 +1,12 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
-import { FALLBACK_PRICES, resolveUsdAlias, shortStellar, syntheticGAccount } from "./canon";
+import {
+  fallbackPriceForCanonical,
+  fallbackPriceForSymbol,
+  resolveUsdAlias,
+  shortStellar,
+  syntheticGAccount,
+} from "./canon";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 
 type RawEvent = {
@@ -76,7 +82,10 @@ function amountWadToToken(raw: unknown): number {
 
 function tokenUsd(symbol: string, tokenAmount: number): number {
   const canonical = resolveUsdAlias(symbol);
-  const px = getCachedTokenPrice(symbol) || getCachedTokenPrice(canonical) || FALLBACK_PRICES[symbol as keyof typeof FALLBACK_PRICES] || FALLBACK_PRICES[canonical];
+  const px =
+    getCachedTokenPrice(symbol) ||
+    getCachedTokenPrice(canonical) ||
+    (fallbackPriceForSymbol(symbol) ?? fallbackPriceForCanonical(canonical));
   return tokenAmount * (px || 0);
 }
 

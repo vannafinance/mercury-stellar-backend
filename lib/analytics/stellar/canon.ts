@@ -70,6 +70,46 @@ export function resolveUsdAlias(sym: string): "XLM" | "USDC" | "EURC" {
   return "USDC";
 }
 
+export type CanonicalUsdSymbol = ReturnType<typeof resolveUsdAlias>;
+
+/** Fallback USD unit price for resolveUsdAlias buckets (USDC → BLUSDC peg). */
+export function fallbackPriceForCanonical(c: CanonicalUsdSymbol): number {
+  if (c === "XLM") return FALLBACK_PRICES.XLM;
+  if (c === "EURC") return FALLBACK_PRICES.EURC;
+  return FALLBACK_PRICES.BLUSDC;
+}
+
+/** Fallback USD unit price for raw event/token symbols before canonical merge. */
+export function fallbackPriceForSymbol(sym: string): number | undefined {
+  const u = (sym || "").toUpperCase();
+  switch (u) {
+    case "XLM":
+      return FALLBACK_PRICES.XLM;
+    case "EURC":
+      return FALLBACK_PRICES.EURC;
+    case "BLUSDC":
+      return FALLBACK_PRICES.BLUSDC;
+    case "AQUSDC":
+      return FALLBACK_PRICES.AQUSDC;
+    case "SOUSDC":
+      return FALLBACK_PRICES.SOUSDC;
+    case "BLEND_XLM":
+      return FALLBACK_PRICES.BLEND_XLM;
+    case "BLEND_USDC":
+      return FALLBACK_PRICES.BLEND_USDC;
+    case "BLEND_EURC":
+      return FALLBACK_PRICES.BLEND_EURC;
+    case "AQ_XLM_USDC":
+      return FALLBACK_PRICES.AQ_XLM_USDC;
+    case "SS_XLM_USDC":
+      return FALLBACK_PRICES.SS_XLM_USDC;
+    case "USDC":
+      return FALLBACK_PRICES.BLUSDC;
+    default:
+      return undefined;
+  }
+}
+
 /** True for tracking-token collateral that doesn't have its own oracle
  *  feed (matches `is_unpriced_collateral` in risk_engine.rs). */
 export function isTrackingSymbol(sym: string): boolean {
