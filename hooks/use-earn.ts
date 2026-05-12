@@ -6,6 +6,7 @@ import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/st
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
+import { computeBorrowApr } from '@/lib/utils/borrow-rate';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool data
@@ -21,8 +22,8 @@ const calculateSupplyAPY = (utilizationRate: string) => {
 };
 
 const calculateBorrowAPY = (utilizationRate: string) => {
-  const utilization = parseFloat(utilizationRate) / 100;
-  return (4.0 + utilization * 15).toFixed(2);
+  const utilizationPct = parseFloat(utilizationRate) || 0;
+  return computeBorrowApr(utilizationPct).toFixed(2);
 };
 
 const calculateExchangeRateFromPool = (totalAssets: string, vTokenSupply: string) => {

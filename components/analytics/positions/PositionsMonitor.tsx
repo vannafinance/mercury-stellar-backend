@@ -4,14 +4,22 @@ import type { ReactNode } from "react";
 import { useMemo, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { WalletPosition } from "@/components/analytics/risk-explorer/constants";
-import { formatUsd, formatPercent, hfColor, cn } from "@/lib/analytics/utils";
+import { formatUsd, hfColor, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
-import { readAllPoolStats } from "@/lib/analytics/stellar/rpcReader";
+import { readAllPoolStats, type StellarPoolStats } from "@/lib/analytics/stellar/rpcReader";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
-
-const POOL_APR_CHART_POINTS = 20;
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 /* ── HF bucket definitions (colors injected at render time for theme support) ── */
 function getHfBuckets(cc: ReturnType<typeof useChartColors>) {
@@ -85,86 +93,130 @@ function SectionHeader({ title, subtitle, tooltip }: { title: string; subtitle: 
   );
 }
 
-function BorrowRateLineChart({
+type PoolBorrowRow = {
+  key: string;
+  label: string;
+  /** Model-implied borrow APR from live utilization (percent). */
+  apr: number;
+  utilization: number;
+};
+
+function poolStatsToBorrowRows(pools: StellarPoolStats[]): PoolBorrowRow[] {
+  const labelFor = (sym: string) => {
+    switch (sym) {
+      case "BLUSDC":
+        return "Blend USDC";
+      case "AQUSDC":
+        return "Aquarius USDC";
+      case "SOUSDC":
+        return "Soroswap USDC";
+      default:
+        return sym;
+    }
+  };
+  return pools.map((p) => ({
+    key: p.symbol,
+    label: labelFor(p.symbol),
+    apr: Math.round(computeBorrowApr(p.utilizationRate) * 100) / 100,
+    utilization: Math.round(p.utilizationRate * 10) / 10,
+  }));
+}
+
+const POOL_BAR_COLORS = ["#32EEE2", "#703AE6", "#F59E0B", "#FC5457"] as const;
+
+function BorrowRatePoolsChart({
   title,
   subtitle,
-  data,
-  color,
-  yFormat,
-  xLabels,
+  rows,
+  loading,
 }: {
   title: string;
   subtitle: string;
-  data: number[];
-  color: string;
-  yFormat: (v: number) => string;
-  xLabels: string[];
+  rows: PoolBorrowRow[];
+  loading: boolean;
 }) {
-  const max = Math.max(...data, 1);
-  const min = Math.min(...data, 0);
-  const range = max - min || 1;
-  const pts = data.map((v, i) => ({
-    x: (i / Math.max(data.length - 1, 1)) * 100,
-    y: 100 - ((v - min) / range) * 85 - 5,
-  }));
-  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-  const area = `${line} L 100 100 L 0 100 Z`;
-  const gradId = `br-${color.replace("#", "")}`;
+  const maxApr = Math.max(6, ...rows.map((r) => r.apr), 1);
 
   return (
     <Card>
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div>
           <h3 className="text-sm font-bold text-vgray-800">{title}</h3>
-          <p className="text-xs mt-1 text-vgray-500">{subtitle}</p>
+          <p className="text-xs mt-1 text-vgray-500 leading-relaxed">{subtitle}</p>
         </div>
-        <div className="relative h-48">
-          <div className="absolute left-0 top-0 bottom-5 w-14 flex flex-col justify-between text-[9px] font-mono pr-2 text-right text-vgray-400">
-            <span>{yFormat(max)}</span>
-            <span>{yFormat((max + min) / 2)}</span>
-            <span>{yFormat(min)}</span>
+        {loading && rows.length === 0 ? (
+          <div className="h-[220px] flex items-center justify-center rounded-r2 bg-vgray-50/80 border border-vgray-100">
+            <span className="text-xs text-vgray-400 font-medium">Loading pool utilization…</span>
           </div>
-          <div className="ml-16 mr-1 relative h-[calc(100%-18px)]">
-            {[0, 50, 100].map((y) => (
-              <div
-                key={y}
-                className="absolute left-0 right-0 h-px bg-vgray-100"
-                style={{ top: `${y}%` }}
-              />
-            ))}
-            <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={color} stopOpacity="0.2" />
-                  <stop offset="100%" stopColor={color} stopOpacity="0.01" />
-                </linearGradient>
-              </defs>
-              <path d={area} fill={`url(#${gradId})`} />
-              <path
-                d={line}
-                fill="none"
-                stroke={color}
-                strokeWidth="0.6"
-                vectorEffect="non-scaling-stroke"
-              />
-              {pts.map((p, i) => (
-                <circle
-                  key={i}
-                  cx={p.x}
-                  cy={p.y}
-                  r="0.8"
-                  fill={color}
-                  vectorEffect="non-scaling-stroke"
+        ) : rows.length === 0 ? (
+          <div className="h-[220px] flex items-center justify-center rounded-r2 bg-vgray-50/80 border border-dashed border-vgray-200">
+            <span className="text-xs text-vgray-400">No pool data — check RPC</span>
+          </div>
+        ) : (
+          <div className="h-[240px] w-full min-w-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={rows}
+                margin={{ top: 12, right: 8, left: 4, bottom: 8 }}
+                barCategoryGap="22%"
+              >
+                <defs>
+                  {rows.map((r, i) => (
+                    <linearGradient key={r.key} id={`brg-${r.key}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={POOL_BAR_COLORS[i % POOL_BAR_COLORS.length]} stopOpacity={1} />
+                      <stop offset="100%" stopColor={POOL_BAR_COLORS[i % POOL_BAR_COLORS.length]} stopOpacity={0.55} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#ECECF0" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 10, fill: "#6B7280" }}
+                  tickLine={false}
+                  axisLine={{ stroke: "#E5E7EB" }}
+                  interval={0}
+                  height={36}
                 />
-              ))}
-            </svg>
+                <YAxis
+                  domain={[0, Math.ceil(maxApr * 1.12)]}
+                  tickFormatter={(v) => `${v}%`}
+                  tick={{ fontSize: 10, fill: "#9CA3AF" }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={44}
+                />
+                <Tooltip
+                  cursor={{ fill: "rgba(112, 58, 230, 0.06)" }}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload as PoolBorrowRow;
+                    return (
+                      <div className="rounded-lg border border-vgray-200 bg-white px-3 py-2 shadow-lg text-[11px]">
+                        <p className="font-semibold text-vgray-800">{d.label}</p>
+                        <p className="mt-1 font-mono text-violet-700">
+                          Borrow APR <span className="font-bold">{d.apr.toFixed(2)}%</span>
+                        </p>
+                        <p className="text-vgray-500 mt-0.5">
+                          Pool utilization <span className="font-mono text-vgray-700">{d.utilization.toFixed(1)}%</span>
+                        </p>
+                      </div>
+                    );
+                  }}
+                />
+                <Bar dataKey="apr" radius={[8, 8, 0, 0]} maxBarSize={56}>
+                  {rows.map((r) => (
+                    <Cell key={r.key} fill={`url(#brg-${r.key})`} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-          <div className="ml-16 mr-1 flex justify-between text-[9px] font-mono mt-1.5 text-vgray-300">
-            {xLabels.map((l, i) => (
-              <span key={i}>{l}</span>
-            ))}
-          </div>
-        </div>
+        )}
+        {!loading && rows.length > 0 && (
+          <p className="text-[10px] text-vgray-400 text-center">
+            One bar per live lending pool · APR from on-chain utilization via the protocol rate model
+          </p>
+        )}
       </div>
     </Card>
   );
@@ -181,28 +233,28 @@ export default function PositionsMonitor({
   const router = useRouter();
   const [expandedBucket, setExpandedBucket] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [poolBorrowAprSeries, setPoolBorrowAprSeries] = useState<number[]>([]);
+  const [poolBorrowRows, setPoolBorrowRows] = useState<PoolBorrowRow[]>([]);
+  const [poolBorrowLoading, setPoolBorrowLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      setPoolBorrowLoading(true);
       try {
         const pools = await readAllPoolStats();
-        const aprs = pools.map((p) => computeBorrowApr(p.utilizationRate));
-        const avg = aprs.length
-          ? aprs.reduce((a, b) => a + b, 0) / aprs.length
-          : computeBorrowApr(0);
         if (!cancelled) {
-          setPoolBorrowAprSeries(Array.from({ length: POOL_APR_CHART_POINTS }, () => avg));
+          setPoolBorrowRows(poolStatsToBorrowRows(pools));
         }
       } catch {
-        if (!cancelled) setPoolBorrowAprSeries([]);
+        if (!cancelled) setPoolBorrowRows([]);
+      } finally {
+        if (!cancelled) setPoolBorrowLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [wallets.length]);
+  }, []);
 
   const filteredWallets = useMemo(() =>
     search.trim()
@@ -215,15 +267,6 @@ export default function PositionsMonitor({
   const levBucketDefs = useMemo(() => getLevBuckets(cc), [cc]);
   const hfBuckets = useMemo(() => bucketWallets(wallets, hfBucketDefs), [wallets, hfBucketDefs]);
   const levBuckets = useMemo(() => bucketLeverage(wallets, levBucketDefs), [wallets, levBucketDefs]);
-  const borrowRateData =
-    poolBorrowAprSeries.length > 0
-      ? poolBorrowAprSeries
-      : [computeBorrowApr(0), computeBorrowApr(0)];
-  const borrowChartXLabels = useMemo(
-    () => Array.from({ length: borrowRateData.length }, (_, i) => String(i + 1)),
-    [borrowRateData.length],
-  );
-
   const maxHfCount = useMemo(
     () => Math.max(...hfBuckets.map((b) => b.count), 1),
     [hfBuckets]
@@ -315,13 +358,11 @@ export default function PositionsMonitor({
           </div>
         </Card>
 
-        <BorrowRateLineChart
+        <BorrowRatePoolsChart
           title="Borrow rate (pools)"
-          subtitle="Average model-implied borrow APR from live lending-pool utilization — flat series (no on-chain historical rate feed)"
-          data={borrowRateData}
-          color={cc.violet}
-          yFormat={(v) => formatPercent(v)}
-          xLabels={borrowChartXLabels}
+          subtitle="Live per-pool borrow APR from Soroban utilization (same kinked curve as the Margin tab). Refreshes on page load."
+          rows={poolBorrowRows}
+          loading={poolBorrowLoading}
         />
       </div>
 

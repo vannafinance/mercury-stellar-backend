@@ -33,6 +33,16 @@ const canonicalToken = (token: string): string => {
   return normalized;
 };
 
+/**
+ * Registry tracking symbols for deployed Blend / LP capital — not separate
+ * margin "positions". The account has one borrow basket; listing these as
+ * extra rows duplicated the same debt/leverage on every line.
+ */
+const isProtocolReceiptCollateral = (symbol: string): boolean => {
+  const u = symbol.toUpperCase();
+  return u.startsWith("BLEND_") || u.startsWith("AQ_") || u.startsWith("SS_");
+};
+
 const getTokenIcon = (asset: string): string => {
   return (
     COIN_ICONS[asset as keyof typeof COIN_ICONS] ||
@@ -77,9 +87,9 @@ export const Positionstable = ({
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
-    const collateralEntries = (Object.entries(collateralBalances) as [string, BorrowedBalance][]).filter(
-      ([, bal]) => parseFloat(bal.amount) > 0
-    );
+    const collateralEntries = (Object.entries(collateralBalances) as [string, BorrowedBalance][])
+      .filter(([, bal]) => parseFloat(bal.amount) > 0)
+      .filter(([token]) => !isProtocolReceiptCollateral(token));
     if (collateralEntries.length === 0) return [];
 
     const borrowedEntries = Object.entries(borrowedBalances) as [string, BorrowedBalance][];
@@ -196,11 +206,10 @@ export const Positionstable = ({
   const [currentPage, setCurrentPage] = useState<number>(1);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Current Positions = anything the user currently has collateral on (the
-  // `positions` array is already keyed off non-zero collateral entries, so
-  // every row qualifies). Rows with no real borrow render the Repay button
-  // in disabled gray rather than dropping into the History tab — which is
-  // a separate view that lists margin transaction events, not positions.
+  // Current Positions = non-zero **cash / pool deposit** collateral (XLM, USDC,
+  // BLUSDC, …). Blend b-token and LP *receipt* symbols (BLEND_*, AQ_*, SS_*)
+  // are excluded — they are not separate positions and were duplicating the
+  // same borrow/leverage on every row after farm-tracking enrichment.
   const filteredPositions = useMemo(() => {
     if (activeTab === "currentPositions") return positions;
     return [];
