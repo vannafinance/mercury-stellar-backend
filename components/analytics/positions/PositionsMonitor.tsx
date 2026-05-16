@@ -44,7 +44,6 @@ function getLevBuckets(cc: ReturnType<typeof useChartColors>) {
 }
 
 const HEATMAP_HF_RANGES = ["< 1.0", "1.0-1.1", "1.1-1.2", "1.2-1.5", "1.5-2.0", "> 2.0"] as const;
-const HEATMAP_TIME_LABELS = ["Mar 10", "Mar 12", "Mar 14", "Mar 16", "Today"] as const;
 
 function bucketWallets(wallets: WalletPosition[], buckets: ReturnType<typeof getHfBuckets>) {
   return buckets.map((b) => {
@@ -294,18 +293,14 @@ export default function PositionsMonitor({
     ];
 
     return hfRangeBounds.map((range) => {
-      const baseWallets = wallets.filter((w) => w.hf >= range.min && w.hf < range.max);
-      const baseValue = baseWallets.reduce((s, w) => s + w.collateral, 0);
-      const n = HEATMAP_TIME_LABELS.length;
-      const perCol = n > 0 ? baseValue / n : 0;
-      const cells = HEATMAP_TIME_LABELS.map(() => perCol);
-      const rowTotal = baseValue;
-      return { cells, rowTotal };
+      const inRange = wallets.filter((w) => w.hf >= range.min && w.hf < range.max);
+      const collateral = inRange.reduce((s, w) => s + w.collateral, 0);
+      return { count: inRange.length, collateral };
     });
   }, [wallets]);
 
   const heatmapMax = useMemo(
-    () => Math.max(...heatmapData.flatMap((r) => r.cells), 1),
+    () => Math.max(...heatmapData.map((r) => r.collateral), 1),
     [heatmapData]
   );
 
@@ -430,56 +425,47 @@ export default function PositionsMonitor({
         <Card>
           <div className="flex items-center gap-1.5 mb-1">
             <h3 className="text-sm font-bold text-vgray-800">HF heatmap</h3>
-            <InfoTooltip text="Collateral density by health factor range over time. Darker cells indicate heavier collateral concentration — watch for buildup in low-HF bands." />
+            <InfoTooltip text="Collateral distribution by health factor range — current live snapshot. Darker cells = higher collateral concentration. Watch for buildup in low-HF bands." />
           </div>
           <p className="text-[10px] text-vgray-500 mb-4">
-            Collateral density by health factor range over time
+            Collateral density by health factor range (live snapshot)
           </p>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <th className="text-left text-[9px] font-mono pb-2 pr-2 text-vgray-400">
-                    HF range
-                  </th>
-                  {HEATMAP_TIME_LABELS.map((lbl) => (
-                    <th
-                      key={lbl}
-                      className="text-center text-[9px] font-mono pb-2 px-1 text-vgray-400"
-                    >
-                      {lbl}
-                    </th>
-                  ))}
-                  <th className="text-right text-[9px] font-mono pb-2 pl-2 text-vgray-400">
-                    Total
-                  </th>
+                  <th className="text-left text-[9px] font-mono pb-2 pr-2 text-vgray-400">HF range</th>
+                  <th className="text-center text-[9px] font-mono pb-2 px-2 text-vgray-400">Positions</th>
+                  <th className="text-left text-[9px] font-mono pb-2 px-2 text-vgray-400">Collateral</th>
+                  <th className="text-right text-[9px] font-mono pb-2 pl-2 text-vgray-400">Total</th>
                 </tr>
               </thead>
               <tbody>
-                {HEATMAP_HF_RANGES.map((range, ri) => (
-                  <tr key={range}>
-                    <td className="text-[10px] font-mono py-1 pr-2 text-vgray-600">{range}</td>
-                    {heatmapData[ri].cells.map((val, ci) => {
-                      const intensity = val / heatmapMax;
-                      return (
-                        <td key={ci} className="py-1 px-1">
-                          <div
-                            className="rounded h-7 flex items-center justify-center text-[8px] font-mono"
-                            style={{
-                              backgroundColor: `rgba(${cc.violet === "#703AE6" ? "112, 58, 230" : "139, 92, 246"}, ${0.08 + intensity * 0.72})`,
-                              color: intensity > 0.4 ? (cc.violet === "#703AE6" ? "#ffffff" : "#f1f5f9") : cc.axisText,
-                            }}
-                          >
-                            {formatUsd(val)}
-                          </div>
-                        </td>
-                      );
-                    })}
-                    <td className="text-right text-[10px] font-mono py-1 pl-2 font-semibold text-vgray-700">
-                      {formatUsd(heatmapData[ri].rowTotal)}
-                    </td>
-                  </tr>
-                ))}
+                {HEATMAP_HF_RANGES.map((range, ri) => {
+                  const { count, collateral } = heatmapData[ri];
+                  const intensity = collateral / heatmapMax;
+                  return (
+                    <tr key={range}>
+                      <td className="text-[10px] font-mono py-1 pr-2 text-vgray-600">{range}</td>
+                      <td className="text-center text-[10px] font-mono py-1 px-2 text-vgray-500">{count}</td>
+                      <td className="py-1 px-2 w-full">
+                        <div
+                          className="rounded h-7 flex items-center justify-start px-2 text-[8px] font-mono"
+                          style={{
+                            backgroundColor: `rgba(${cc.violet === "#703AE6" ? "112, 58, 230" : "139, 92, 246"}, ${0.08 + intensity * 0.72})`,
+                            color: intensity > 0.4 ? (cc.violet === "#703AE6" ? "#ffffff" : "#f1f5f9") : cc.axisText,
+                            minWidth: `${Math.max(intensity * 100, collateral > 0 ? 8 : 0)}%`,
+                          }}
+                        >
+                          {collateral > 0 ? formatUsd(collateral) : ""}
+                        </div>
+                      </td>
+                      <td className="text-right text-[10px] font-mono py-1 pl-2 font-semibold text-vgray-700">
+                        {formatUsd(collateral)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
