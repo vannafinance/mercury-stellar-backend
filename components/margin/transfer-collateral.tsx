@@ -65,6 +65,7 @@ export const TransferCollateral = () => {
   const [isLoading, setIsLoading] = useState(false);
   const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
+  const avgHealthFactor = useMarginAccountInfoStore((state) => state.avgHealthFactor);
   // Subscribe to global wallet state — local user/balance state is loaded once
   // on mount via Freighter, so without this hook the component keeps showing
   // the previous wallet's margin and wallet balances after disconnect.
@@ -97,12 +98,17 @@ export const TransferCollateral = () => {
   const maxRiskSafeWithdraw = (() => {
     if (selectedTransferType !== "WB") return maxTransferableBalance;
     if (totalBorrowedValue <= XLM_TRANSFER_EPSILON) return maxTransferableBalance;
-    // Mirror the RiskEngine withdraw health model:
-    // (collateral + debt - withdraw) / debt > 1.1
-    // => max withdraw value = collateral + debt - (1.1 * debt)
+    // Use the store's avgHealthFactor (which mirrors the contract RiskEngine HF)
+    // rather than recomputing gross from collateral+debt — that formula is only
+    // correct for undeployed-cash accounts and gives a wrong (higher) limit when
+    // the borrower has deployed assets (aTokens, LP tokens, tracking tokens).
+    //
+    // gross_before = avgHF × debt
+    // After withdrawing W: gross_after = gross_before − W
+    // Constraint: gross_after / debt ≥ 1.1  →  W ≤ (avgHF − 1.1) × debt
     const withdrawableUsd = Math.max(
       0,
-      totalCollateralValue + totalBorrowedValue - totalBorrowedValue * LIQUIDATION_THRESHOLD
+      (avgHealthFactor - LIQUIDATION_THRESHOLD) * totalBorrowedValue
     );
     if (selectedTokenPrice <= 0) return 0;
     const rawToken = withdrawableUsd / selectedTokenPrice;
@@ -129,6 +135,22 @@ export const TransferCollateral = () => {
     return Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON);
   })();
   const isOverSourceBalance = Number(valueInput || 0) > sourceBalance;
+
+  // Projected HF after a WB (withdraw) — used to block the Transfer button
+  // and show a warning when the withdrawal would push HF below 1.1.
+  const projectedHfAfterWb = (() => {
+    if (selectedTransferType !== "WB" || totalBorrowedValue <= XLM_TRANSFER_EPSILON) return Infinity;
+    if (avgHealthFactor <= 0) return Infinity;
+    const withdrawUsd = Number(valueInput || 0) * selectedTokenPrice;
+    const grossBefore = avgHealthFactor * totalBorrowedValue;
+    const grossAfter = Math.max(0, grossBefore - withdrawUsd);
+    return grossAfter / totalBorrowedValue;
+  })();
+  const isWbBelowLiqThreshold =
+    selectedTransferType === "WB" &&
+    Number(valueInput || 0) > 0 &&
+    totalBorrowedValue > XLM_TRANSFER_EPSILON &&
+    projectedHfAfterWb < LIQUIDATION_THRESHOLD;
 
   function computeMaxTransferableBalance(
     transferType: "MB" | "WB",
@@ -640,11 +662,16 @@ export const TransferCollateral = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, delay: 0.4 }}
       >
+        {isWbBelowLiqThreshold && (
+          <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-xs font-semibold text-red-700">
+            ⚠ This withdrawal would drop your Health Factor to {projectedHfAfterWb.toFixed(2)} (below 1.10). Reduce the amount or repay some debt first.
+          </div>
+        )}
         <Button
           text={isLoading ? "Processing..." : "Transfer"}
           size="large"
           type="gradient"
-          disabled={!(Number(valueInput) > 0 && !isLoading && marginAccount && !isOverSourceBalance)}
+          disabled={!(Number(valueInput) > 0 && !isLoading && marginAccount && !isOverSourceBalance) || isWbBelowLiqThreshold}
           onClick={handleTransferClick}
         />
       </motion.section>
@@ -677,6 +704,7 @@ const TransferPreviewSection = ({
 }: TransferPreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
 
   const transferUsd = Math.max(0, transferAmount * selectedTokenPrice);
   if (transferUsd <= 0) return null;
@@ -687,11 +715,21 @@ const TransferPreviewSection = ({
     ? totalCollateralValue + transferUsd
     : Math.max(0, totalCollateralValue - transferUsd);
 
-  const grossBefore = totalCollateralValue + totalBorrowedValue;
-  const grossAfter = collateralAfter + totalBorrowedValue;
+  // Use the store's avgHealthFactor to back-calculate the real gross collateral.
+  // The naive formula (collateral + debt) is only correct for pure-cash accounts;
+  // for accounts with deployed assets (aTokens, LP, track tokens) gross = collateral
+  // only — adding debt would overstate it and produce a higher-than-real HF projection.
+  //
+  // gross_before = avgHF × debt  (works regardless of collateral type)
+  // gross_after  = gross_before ± transferUsd
+  const hfBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+    ? avgHealthFactor
+    : HF_INF_SENTINEL;
+  const grossBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+    ? avgHealthFactor * totalBorrowedValue
+    : totalCollateralValue;
+  const grossAfter = isInbound ? grossBefore + transferUsd : Math.max(0, grossBefore - transferUsd);
 
-  const hfBefore =
-    totalBorrowedValue > 0 ? grossBefore / totalBorrowedValue : HF_INF_SENTINEL;
   const hfAfter =
     totalBorrowedValue > 0 ? grossAfter / totalBorrowedValue : HF_INF_SENTINEL;
 

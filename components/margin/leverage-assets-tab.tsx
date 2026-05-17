@@ -1233,17 +1233,27 @@ const LeveragePreviewSection = ({
 }: LeveragePreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
 
   const effectiveDeposit = isMBMode ? 0 : depositAmount;
   if (effectiveDeposit <= 0 && projectedBorrowUsd <= 0) return null;
 
-  const grossBefore = totalCollateralValue + totalBorrowedValue;
-  const hfBefore = totalBorrowedValue > 0 ? grossBefore / totalBorrowedValue : HF_INF_SENTINEL;
+  // Use the store's real HF to back-calculate gross, rather than the naive
+  // collateral + debt formula which overcounts for accounts with deployed
+  // assets (aTokens, LP tokens, tracking tokens).
+  const grossBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+    ? avgHealthFactor * totalBorrowedValue
+    : totalCollateralValue + totalBorrowedValue;
+  const hfBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+    ? avgHealthFactor
+    : HF_INF_SENTINEL;
   const bufferBefore = Math.max(0, grossBefore - totalBorrowedValue * LIQUIDATION_THRESHOLD);
 
   const collateralAfter = totalCollateralValue + effectiveDeposit;
   const debtAfter = totalBorrowedValue + projectedBorrowUsd;
-  const grossAfter = collateralAfter + debtAfter;
+  // grossAfter: both new deposit and new borrow increase the gross
+  // (deposit registered as collateral; borrow sits in account until deployed)
+  const grossAfter = grossBefore + effectiveDeposit + projectedBorrowUsd;
   const hfAfter = debtAfter > 1e-6 ? grossAfter / debtAfter : HF_INF_SENTINEL;
   const bufferAfter = Math.max(0, grossAfter - debtAfter * LIQUIDATION_THRESHOLD);
 
