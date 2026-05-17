@@ -176,7 +176,7 @@ export const MARGIN_ACCOUNT_INFO_ITEMS = [
   },
   {
     id: "totalCollateralValue",
-    name: "Total Collateral value",
+    name: "Net Available Collateral",
   },
   {
     id: "totalValue",

@@ -70,8 +70,8 @@ const Margin = () => {
     marginAccountAddress,
     avgHealthFactor,
     totalCollateralValue,
+    grossCollateralValue,
     totalBorrowedValue,
-    totalValue,
     collateralLeftBeforeLiquidation,
     netAvailableCollateral,
     timeToLiquidation,
@@ -83,8 +83,8 @@ const Margin = () => {
       marginAccountAddress: state.marginAccountAddress,
       avgHealthFactor: state.avgHealthFactor,
       totalCollateralValue: state.totalCollateralValue,
+      grossCollateralValue: state.grossCollateralValue,
       totalBorrowedValue: state.totalBorrowedValue,
-      totalValue: state.totalValue,
       collateralLeftBeforeLiquidation: state.collateralLeftBeforeLiquidation,
       netAvailableCollateral: state.netAvailableCollateral,
       timeToLiquidation: state.timeToLiquidation,
@@ -131,7 +131,7 @@ const Margin = () => {
 
   const accountStats = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || totalCollateralValue > 0 || totalBorrowedValue > 0;
+      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
 
     if (!hasAnyMarginData) {
       return null;
@@ -153,7 +153,6 @@ const Margin = () => {
     collateralLeftBeforeLiquidation,
     netAvailableCollateral,
     totalBorrowedValue,
-    totalValue,
     hasMarginAccount,
     totalCollateralValue,
   ]);
@@ -161,11 +160,11 @@ const Margin = () => {
   // Format data for InfoCard component (numeric values for Stellar backend's InfoCard)
   const marginAccountInfo = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || totalCollateralValue > 0 || totalBorrowedValue > 0;
+      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
 
-    // Actual max debt = collateral / liquidation threshold (1.1)
-    const actualDebtLimit = totalCollateralValue > 0
-      ? parseFloat((totalCollateralValue / 1.1).toFixed(2))
+    // Actual max debt = gross collateral / liquidation threshold (1.1)
+    const actualDebtLimit = grossCollateralValue > 0
+      ? parseFloat((grossCollateralValue / 1.1).toFixed(2))
       : 0;
 
     if (!hasAnyMarginData) {
@@ -186,8 +185,8 @@ const Margin = () => {
 
     return {
       totalBorrowedValue,
-      totalCollateralValue,
-      totalValue,
+      totalCollateralValue: netAvailableCollateral,
+      totalValue: totalBorrowedValue + netAvailableCollateral,
       avgHealthFactor,
       timeToLiquidation,
       borrowRate: storeBorrowRate,
@@ -199,12 +198,13 @@ const Margin = () => {
     };
   }, [
     avgHealthFactor,
+    grossCollateralValue,
     hasMarginAccount,
+    netAvailableCollateral,
     storeBorrowRate,
     timeToLiquidation,
     totalBorrowedValue,
     totalCollateralValue,
-    totalValue,
   ]);
 
   // Real on-chain contract addresses — InfoCard auto-renders Stellar contract
@@ -219,9 +219,16 @@ const Margin = () => {
   );
 
   // Pre-merge InfoCard data so we pass a stable object reference.
+  // totalCollateralValue is overridden here to always show user's net equity
+  // (Net Available Collateral = gross assets − debt), not the raw chain value.
   const infoCardData = useMemo(
-    () => ({ ...marginAccountInfo, ...oracleAndLtsData }),
-    [marginAccountInfo, oracleAndLtsData],
+    () => ({
+      ...marginAccountInfo,
+      ...oracleAndLtsData,
+      totalCollateralValue: netAvailableCollateral,
+      totalValue: totalBorrowedValue + netAvailableCollateral,
+    }),
+    [marginAccountInfo, oracleAndLtsData, netAvailableCollateral, totalBorrowedValue],
   );
 
   // Expandable sections — stable array (constants are already stable).
@@ -283,7 +290,7 @@ const Margin = () => {
   // through subsequent refreshes (no flicker on the polling interval).
   const accountStatsValues = useMemo(() => {
     const noDataYet =
-      totalCollateralValue <= 0 && totalBorrowedValue <= 0;
+      grossCollateralValue <= 0 && totalBorrowedValue <= 0;
     const showSpinner = isLoadingMargin && noDataYet;
 
     return ACCOUNT_STATS_ITEMS.reduce(
@@ -302,7 +309,7 @@ const Margin = () => {
       },
       {} as Record<string, string>,
     );
-  }, [accountStats, isLoadingMargin, totalBorrowedValue, totalCollateralValue]);
+  }, [accountStats, isLoadingMargin, totalBorrowedValue, grossCollateralValue]);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
   // neutral (default) at exactly zero.

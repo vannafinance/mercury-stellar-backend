@@ -333,11 +333,13 @@ export default function FarmDetailPage() {
     return `1 b${tokenSymbol} = ${bRate} ${tokenSymbol}`;
   }, [tokenSymbol, reserveData]);
 
-  // Current Position table. Hide stroop-level dust (≤ 1e-4) left over after
-  // a 100% withdrawal so the table doesn't show a "0.00 b/0.00" ghost row.
-  const POSITION_DUST = 1e-4;
+  // Current Position table. Hide dust left over after a 100% withdrawal so
+  // the table doesn't show a "0.00 b/0.00" ghost row. Guard on the underlying
+  // token amount (not bToken count) so tiny b-rate rounding remnants that map
+  // to zero underlying are suppressed even when bTokenBalance is non-zero.
+  const POSITION_DUST = 0.001;
   const currentPositionBody = useMemo(() => {
-    if (!tokenSymbol || myBTokens <= POSITION_DUST) return { rows: [] };
+    if (!tokenSymbol || myUnderlying <= POSITION_DUST) return { rows: [] };
     const bTokens = (parseFloat(myPosition?.bTokenBalance ?? '0') || 0).toFixed(2);
     const underlying = (parseFloat(myPosition?.underlyingValue ?? '0') || 0).toFixed(2);
     const apy = reserveData ? (parseFloat(reserveData.supplyAPY) || 0).toFixed(2) : '—';
