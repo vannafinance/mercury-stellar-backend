@@ -66,7 +66,7 @@ Every mutation gets migrated to `@tanstack/react-query`'s `useMutation`. Each on
 
 ```
 main                                                  (mercury-stellar-backend — merge 7c25ac7 from new-contract-update)
-  └─ feat/stellar-optimization-30d                    (long-lived integration branch — cuts from main 2026-05-19)
+  └─ feat/stellar-rewire                    (long-lived integration branch — cuts from main 2026-05-19)
        │
        │  ── Phase 1 (Sanujit, solo) ──
        ├─ s1/ledger-provider                          (D1–2)
@@ -95,7 +95,7 @@ main                                                  (mercury-stellar-backend �
 **Rules:**
 
 - **Trunk is `main`** of mercury-stellar-backend.
-- **Integration branch** `feat/stellar-optimization-30d` collects all 17 phase branches. Each phase branch PRs into the integration branch.
+- **Integration branch** `feat/stellar-rewire` collects all 17 phase branches. Each phase branch PRs into the integration branch.
 - **Old v2 branches** (`feat/sprint-1-rewire`, `feat/s1-*`) remain on origin as reference — do not delete.
 - **Daily PRs** into the integration branch. Cross-review SLA: same-day before EOD (Phase 2).
 - **Each branch must pass** `npm run lint && npm run build` before merge.
@@ -107,7 +107,7 @@ main                                                  (mercury-stellar-backend �
 
 ### Day 1 — LedgerSubscriberProvider (scaffold)
 
-- [ ] `git checkout main && git pull` → `git checkout -b s1/ledger-provider feat/stellar-optimization-30d`
+- [ ] `git checkout main && git pull` → `git checkout -b s1/ledger-provider feat/stellar-rewire`
 - [ ] Verify Soroban testnet RPC + Horizon SSE working with curl
 - [ ] Build `contexts/ledger-subscriber.tsx` from `IMPLEMENTATION_PLAN.md` L140–225. Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, lastLedgerSeq }`
 - [ ] Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries`
@@ -121,7 +121,7 @@ main                                                  (mercury-stellar-backend �
 
 ### Day 3 — Hook-level mutations (earn)
 
-- [ ] `git checkout -b s1/mutations-hook feat/stellar-optimization-30d`
+- [ ] `git checkout -b s1/mutations-hook feat/stellar-rewire`
 - [ ] Convert `useSupplyLiquidity` (`hooks/use-earn.ts:227`) to `useMutation`. Wire `onSuccess: () => qc.invalidateQueries({ queryKey: ['earn'] })`. Delete inline `refreshAllBalances()`.
 - [ ] Convert `useWithdrawLiquidity` (`hooks/use-earn.ts:350`). Same pattern.
 - [ ] Delete the outdated comment at `hooks/use-earn.ts:223–225` ("Mutations — stay imperative")
@@ -137,7 +137,7 @@ main                                                  (mercury-stellar-backend �
 
 ### Day 5 — token-prices tick + setInterval cleanup
 
-- [ ] `git checkout -b s1/token-prices-tick feat/stellar-optimization-30d`
+- [ ] `git checkout -b s1/token-prices-tick feat/stellar-rewire`
 - [ ] Rewire `hooks/use-token-prices.ts:47`: drop 30 s `setInterval(refresh, REFRESH_INTERVAL_MS)`. Wrap `useTokenPrices` in `useQuery` with `queryKey: ['oracle','prices', sortedSymbols, tick]`
 - [ ] Delete `app/page.tsx:114` `setInterval(refreshBorrowedBalances, 30000)`. Hook-level tick on `useMarginHistory` + `useUserPositions` (after Phase 2 D8–10) replaces it. Interim: keep a `useEffect` that invalidates `['margin']` on tick change.
 - [ ] Verify Network tab: no 30 s pulse on Reflector price calls; refresh is now ledger-close (~5 s)
@@ -145,7 +145,7 @@ main                                                  (mercury-stellar-backend �
 
 ### Day 6 — Inline mutations (margin)
 
-- [ ] `git checkout -b s1/mutations-inline feat/stellar-optimization-30d`
+- [ ] `git checkout -b s1/mutations-inline feat/stellar-rewire`
 - [ ] Extract inline mutations to local `useMutation` in:
   - `components/margin/repay-loan-tab.tsx` — `onSuccess` invalidates `['margin']`, delete `refreshBorrowedBalances(...)` call
   - `components/margin/leverage-assets-tab.tsx` (4 sites: L537, L557, L773, L795)
@@ -271,7 +271,7 @@ Fix any bugs found in `s4/release`.
   - `components/ui/carousel.tsx` — slide rotation
   - `components/ui/bridging-dialogue.tsx` — animation
   - `lib/analytics/oracle-agents/store.ts` — simulation agent tick
-- Squash-merge `feat/stellar-optimization-30d` → `main`
+- Squash-merge `feat/stellar-rewire` → `main`
 - Write CHANGELOG entry summarizing the 30-day sprint
 - Tag release `v0.s1.0`
 
