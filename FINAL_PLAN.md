@@ -1,11 +1,25 @@
 # Vanna Backend — Final Plan (Mercury Stack)
 
+> ⚠️ **HISTORICAL ARCHITECTURE SNAPSHOT — Superseded by [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) + [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)**
+>
+> This was the locked-in 6-week roadmap. The **active plan is now** `SPRINT_1_GUIDE.md` v3
+> (2026-05-19) — a 30-calendar-day Sprint 1 with 2 frontend devs (Sanujit + Divyansh joining D8)
+> that absorbs the original Sprint 2–6 scope into Phase 2 (Days 8–30).
+>
+> **Read this doc for:** macro architecture context, 6-week cost model, decision rationale
+> **For current execution:** see [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md)
+> **For code stubs (Day 1 v3-updated):** see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+>
+> **Stale specifics in this doc:** `hooks/use-oracle-prices.ts` (actual is `hooks/use-token-prices.ts`),
+> `setInterval` at `app/page.tsx:111` (actual line is 114 — still pending v3 D5 deletion),
+> all Sprint 3+ API routes (`/api/snapshot`, `/api/account/[addr]`) — deferred to post-Sprint-1.
+
 > The locked-in plan. Builds on [PROTOCOL_BACKEND_PLAN.md](PROTOCOL_BACKEND_PLAN.md)
 > and [BACKEND_OPTIONS.md](BACKEND_OPTIONS.md). Read those for the *why*; this
 > doc is the *what* and *when*.
 >
-> **Total duration:** 6 weeks
-> **Steady-state cost:** ~$1,500–2,000/mo at 10k DAU
+> **Original duration:** 6 weeks
+> **Steady-state cost target:** ~$1,500–2,000/mo at 10k DAU
 > **Outcome:** Production-grade backend matching Aave/Gearbox UX standards.
 
 ---

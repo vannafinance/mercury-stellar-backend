@@ -1,5 +1,20 @@
 # Vanna V1 Protocol — Tailored Backend Architecture Plan
 
+> ⚠️ **HISTORICAL ARCHITECTURE REFERENCE (v1 plan, Jan 2026)**
+>
+> This document describes a proposed 6-sprint backend architecture **with a 1-week Sprint 1**.
+> That timeline expanded 6× (now 30 calendar days with 2 devs) and most of the proposed
+> compressor/Mercury scope was deferred. The **active plan is** [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) v3.
+>
+> **Read this doc for** the *why* — Gearbox-style compressor reasoning, ledger-tick architecture model, protocol contract topology.
+> **Read [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for** the *what* and *when* (current execution).
+>
+> **Specifically stale here:**
+> - "Sprint 1 (1 week, 1 engineer)" → actually 30 days, 2 engineers (v3)
+> - `ProtocolViewContract` deployment → deferred post-Sprint-1
+> - Mercury indexer integration → deferred post-Sprint-1
+> - LedgerSubscriberProvider code stub (L543–614) includes a "Stream B" Soroban event poll that was **intentionally NOT shipped** in v3 (see `IMPLEMENTATION_PLAN.md` Day 1 for the actual shipped code)
+
 > Built after reading the actual contract code at
 > `C:\Users\dell\Downloads\Protocol_V1_Soroban (1)\Protocol_V1_Soroban\contracts\`.
 >

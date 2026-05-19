@@ -1,5 +1,22 @@
 # Vanna Backend — Combinations & Sprint Plans
 
+> ⚠️ **DECISION LOCKED 2026-05-19 — Combo 1 (MVP) selected; this doc is now a PROGRESS RECORD**
+>
+> The options comparison below was used to decide the backend architecture. Decision: **Combo 1 (A2+B2+C5)** —
+> ProtocolViewContract compressor + Horizon SSE ledger-tick live updates + BigQuery Hubble analytics.
+>
+> **Status of Combo 1 components (as of 2026-05-19):**
+> - LedgerSubscriberProvider (Horizon SSE) → ✅ shipped 2026-05-19 (`contexts/ledger-subscriber.tsx`)
+> - Reflector oracle integration → ✅ shipped (`lib/oracle-price.ts`)
+> - CoinGecko removal → ✅ complete
+> - `setInterval` chain-data polling deletion → ⏳ in progress (scheduled v3 D5)
+> - `useMutation` migration → ⏳ in progress (scheduled v3 D3–7 + D18–20)
+> - `refetchInterval` → ledger-tick → ⏳ scheduled v3 D8–10
+> - ProtocolViewContract compressor → 📜 deferred post-Sprint-1
+> - BigQuery Hubble analytics → 📜 deferred post-Sprint-1
+>
+> **For active execution:** [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) v3 (30-day, 2-dev plan)
+
 > Single decision-grade reference. Pick one combination, follow its sprint plan.
 > Deep reasoning lives in [BACKEND_RESEARCH.md](BACKEND_RESEARCH.md) and
 > [PROTOCOL_BACKEND_PLAN.md](PROTOCOL_BACKEND_PLAN.md).

@@ -109,7 +109,7 @@ main                                                  (mercury-stellar-backend �
 
 - [ ] `git checkout main && git pull` → `git checkout -b s1/ledger-provider feat/stellar-rewire`
 - [ ] Verify Soroban testnet RPC + Horizon SSE working with curl
-- [ ] Build `contexts/ledger-subscriber.tsx` from `IMPLEMENTATION_PLAN.md` L140–225. Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, lastLedgerSeq }`
+- [x] Build `contexts/ledger-subscriber.tsx` (see Day 1 section in `IMPLEMENTATION_PLAN.md` for current v3-updated code). Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, latestLedger }` ✅ **shipped 2026-05-19 on branch `s1/ledger-provider`**
 - [ ] Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries`
 
 ### Day 2 — LedgerProvider verify + merge
