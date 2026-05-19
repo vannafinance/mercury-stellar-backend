@@ -1,9 +1,11 @@
 # Vanna Backend — Combinations & Sprint Plans
 
-> ⚠️ **DECISION LOCKED 2026-05-19 — Combo 1 (MVP) selected; this doc is now a PROGRESS RECORD**
+> ⚠️ **DECISION LOCKED 2026-05-19 — Combo 1 (MVP, free-tier variant) is what Sprint 1 v3.1 ships**
 >
 > The options comparison below was used to decide the backend architecture. Decision: **Combo 1 (A2+B2+C5)** —
-> ProtocolViewContract compressor + Horizon SSE ledger-tick live updates + BigQuery Hubble analytics.
+> Horizon SSE ledger-tick live updates + Mercury free dev tier (replaces compressor short-term) + BigQuery Hubble analytics. The `ProtocolViewContract` compressor (A2 original) is **deferred post-v3.1** because we don't have a Soroban dev on the team.
+>
+> **v3.1 free-tier cost: $0/mo.** Mercury free dev tier + BigQuery 1 TB/month free. **Mercury Pro upgrade target: $79/mo** if we ever hit the free entity cap.
 >
 > **Status of Combo 1 components (as of 2026-05-19):**
 > - LedgerSubscriberProvider (Horizon SSE) → ✅ shipped 2026-05-19 (`contexts/ledger-subscriber.tsx`)
