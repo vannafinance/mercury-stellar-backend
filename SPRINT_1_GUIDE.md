@@ -19,6 +19,47 @@ v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 
 
 **Mutation strategy stays per v1/v2: full `useMutation` migration.** This decision is locked.
 
+---
+
+## What's IN v3.1 vs What's Deferred
+
+**v3.1 update (2026-05-19, late):** Mercury indexer + Hubble analytics promoted from "deferred" → "in v3.1 Phase 2". Both start on **free tiers** (no payment decision needed). Adapted to current codebase (multi-pool: XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC).
+
+### IN v3.1 — Phase 2 scope
+
+| Item | Where | Free-tier OK? | Adapted for current code |
+| --- | --- | --- | --- |
+| Hook tick migration (refetchInterval → ledger tick) | D8–10 | n/a | All 4 pools |
+| `refreshKey` teardown + 4-pool verify | D11 | n/a | ✓ |
+| `useSmartPolling` delete + first smoke | D12 | n/a | ✓ |
+| Test infra (vitest + RTL) | D13–15 | n/a | ✓ |
+| Unified mutation error/toast UX | D16–17 | n/a | ✓ |
+| Optimistic updates (earn + margin) | D18–19 | n/a | ✓ |
+| **Mercury indexer integration** | **D20–22** | ✅ free dev tier | Includes new Aquarius/Soroswap LP events, not just original 12 |
+| **Hubble BigQuery analytics** | **D23–24** | ✅ free (1TB/mo) | Queries hit `crypto-stellar.crypto_stellar.contract_events` for all 4 pools |
+| Analytics + Risk Dashboard perf | D25 | n/a | Memoize `PositionsMonitor`, `BadDebtMonitorSummary` |
+| Zustand dual-write cleanup | D26 | n/a | ✓ |
+| Docs + `ARCHITECTURE.md` | D27 | n/a | ✓ |
+| Bug bash + e2e (now covers Mercury+Hubble) | D28–29 | n/a | ✓ |
+| Final integration → main | D30 | n/a | ✓ |
+
+### STILL deferred post-v3.1
+
+| Original sprint | Deliverable | Reason still deferred |
+| --- | --- | --- |
+| S2 | `ProtocolViewContract` (compressor) | Needs a Soroban dev. Not on team for v3.1. |
+| S3 | Edge cache (`/api/snapshot`, `/api/account/[addr]`) | Caching after reactive layer is the right order, but pushing past 30 days. Sprint 2 candidate. |
+| S6 | Production infra + 2× RPC HA + load test + mainnet config | Pre-mainnet concern. v3.1 is testnet. |
+| Type safety pass | (was D25–26) | Cut from v3.1 to make room for Mercury+Hubble. Folded into ongoing reviewer discipline. |
+
+### Scaling strategy (free → upgrade only if needed)
+
+- **Mercury:** Start free dev tier. Prioritize `Trader_*` events for margin history (highest-value). If free entity cap hit, Aquarius/Soroswap LP event hooks stay on RPC until Pro upgrade ($79/mo).
+- **Hubble:** BigQuery free tier (1TB/mo queries) — comfortably covers protocol event volume for the foreseeable future. SDF maintains the public `crypto-stellar` dataset.
+- **No payment decision required for v3.1.** Mercury Pro / Edge cache / 2× RPC HA / mainnet config all become Sprint 2 conversations once v3.1 lands.
+
+---
+
 ### Code state (audited 2026-05-19, post-merge)
 
 Nothing from Sprint 1 has shipped yet. The starting line:
@@ -58,7 +99,9 @@ Every mutation gets migrated to `@tanstack/react-query`'s `useMutation`. Each on
 
 **Phase 2 (Days 8–30) — Two-dev parallel:** Divyansh joins. Both devs work in parallel tracks. The hook `refetchInterval` migration splits cleanly (earn+margin vs farm+soroswap), and from Day 13 onward the work fans out into independent optimization streams (test infra, optimistic updates, analytics perf, etc.) that don't share files.
 
-**Net vs v2:** v2 budgeted 10 dev-days for 2 devs over 5 calendar days. v3 budgets ~7 solo dev-days (Phase 1) + ~46 dev-days for 2 devs over 23 calendar days (Phase 2) = ~53 dev-days total. The extra ~43 dev-days fund: test infra (~6), unified error UX (~4), optimistic updates (~6), analytics perf (~6), dual-write consolidation (~2), type safety (~4), docs (~2), bug bash + e2e (~4), buffer (~9).
+**Net vs v2:** v2 budgeted 10 dev-days for 2 devs over 5 calendar days. v3.1 budgets ~7 solo dev-days (Phase 1) + ~46 dev-days for 2 devs over 23 calendar days (Phase 2) = ~53 dev-days total. Phase 2 split: test infra (~6), unified error UX (~4), optimistic updates (~4 — reduced), **Mercury indexer (~6) NEW**, **Hubble analytics (~4) NEW**, analytics+risk perf (~2 — reduced), dual-write consolidation (~2), docs (~2), bug bash + e2e (~4), buffer (~12). Type safety pass cut (folded into PR review discipline).
+
+**Cost target:** $0/mo during the sprint. Mercury free dev tier + BigQuery free 1 TB/month. Mercury Pro ($79/mo) is the post-sprint upgrade path **only if** we exceed the free entity cap. No payment decisions during v3.1.
 
 ---
 
@@ -82,12 +125,16 @@ main                                                  (mercury-stellar-backend �
        ├─ s2/test-infra-services                      (D13–15 · Dev A)
        ├─ s2/test-infra-hooks                         (D13–15 · Dev B)
        ├─ s3/error-ux                                 (D16–17)
-       ├─ s3/optimistic-earn                          (D18–20 · Dev A)
-       ├─ s3/optimistic-margin                        (D18–20 · Dev B)
-       ├─ s4/perf-analytics                           (D21–23 · Dev A)
-       ├─ s4/perf-risk-dashboard                      (D21–23 · Dev B)
-       ├─ s4/dual-write-cleanup                       (D24)
-       ├─ s4/typesafety                               (D25–26)
+       ├─ s3/optimistic-earn                          (D18–19 · Dev A)
+       ├─ s3/optimistic-margin                        (D18–19 · Dev B)
+       ├─ s4/mercury-setup                            (D20    · joint — free tier signup + client + entities)
+       ├─ s4/mercury-events-margin-farm               (D21    · Dev A)
+       ├─ s4/mercury-events-soroswap-earn             (D21    · Dev B)
+       ├─ s4/mercury-analytics-migration              (D22    · joint)
+       ├─ s4/hubble-api                               (D23    · Dev A — BigQuery + 4 API routes)
+       ├─ s4/hubble-ui                                (D23–24 · Dev B — /stats page UI)
+       ├─ s4/perf-analytics-risk                      (D25    · joint — reduced from 3 days)
+       ├─ s4/dual-write-cleanup                       (D26)
        ├─ s4/docs                                     (D27)
        └─ s4/release                                  (D28–30 — bug bash + final integration → squash to main)
 ```
@@ -109,7 +156,7 @@ main                                                  (mercury-stellar-backend �
 
 - [ ] `git checkout main && git pull` → `git checkout -b s1/ledger-provider feat/stellar-rewire`
 - [ ] Verify Soroban testnet RPC + Horizon SSE working with curl
-- [ ] Build `contexts/ledger-subscriber.tsx` from `IMPLEMENTATION_PLAN.md` L140–225. Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, lastLedgerSeq }`
+- [x] Build `contexts/ledger-subscriber.tsx` (see Day 1 section in `IMPLEMENTATION_PLAN.md` for current v3-updated code). Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, latestLedger }` ✅ **shipped 2026-05-19 on branch `s1/ledger-provider`**
 - [ ] Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries`
 
 ### Day 2 — LedgerProvider verify + merge
@@ -207,51 +254,100 @@ Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation 
 
 **Joint PR `s3/error-ux`**.
 
-### Days 18–20 — Optimistic updates
+### Days 18–19 — Optimistic updates
 
 | Dev A (earn supply/withdraw) | Dev B (margin borrow/repay) |
 | --- | --- |
 | `onMutate`: snapshot current `['earn', 'positions', ...]` cache, write predicted post-deposit balance. | `onMutate`: snapshot `['margin', ...]`, write predicted post-borrow debt + HF. |
-| `onError`: rollback to snapshot. | `onError`: rollback. |
-| `onSettled`: invalidate to reconcile with on-chain truth. | `onSettled`: invalidate. |
+| `onError`: rollback to snapshot. `onSettled`: invalidate to reconcile. | Same pattern. |
 | Visual: supply button shows "Confirming…" but balance updates immediately, snaps back if tx fails. | Visual: borrow shows new HF immediately; rolls back on revert. |
 | **PR `s3/optimistic-earn`** | **PR `s3/optimistic-margin`** |
 
-### Days 21–23 — Analytics + Risk Dashboard perf
+### Days 20–22 — Mercury indexer integration (NEW in v3.1)
 
-| Dev A (analytics) | Dev B (risk explorer) |
+> **Prereq:** Sign up a Mercury **free dev tier** account at [mercurydata.app](https://mercurydata.app) before D20 starts. No payment needed.
+
+**D20 — Mercury setup + entity config**
+
+| Dev A | Dev B |
 | --- | --- |
-| Audit `lib/analytics/onchain/derivations.ts` — memoize heavy reduce/map chains. | Audit `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — derive once per render, not per row. |
-| `PositionsMonitor.tsx` — React DevTools profile, eliminate redundant re-renders (likely missing `useMemo` on derived rows). | Bisect Risk Dashboard render cost — find the heaviest sub-tree, optimize. |
-| Confirm `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays untouched (allowlist). | Confirm event feed pagination doesn't re-fetch on every tick. |
-| **PR `s4/perf-analytics`** | **PR `s4/perf-risk-dashboard`** |
+| Sign up Mercury free tier, add testnet contracts (`AccountManager`, `LendingPool{XLM,USDC,AQUARIUS_USDC,SOROSWAP_USDC}`). | Audit current event hooks to map them to Mercury entities: `useMarginHistory` (use-margin.ts), `useBlendEvents` / `useAquariusEvents` (use-farm.ts), `useSoroswapEvents` (use-soroswap.ts), `useEarnTransactions` (use-earn.ts). |
+| Configure free-tier entities — **prioritize** `Trader_Borrow`, `Trader_Repay_Event`, `Trader_Liquidate_Event`, `Trader_SettleAccount_Event`, `Smart_account_creation`. If free entity cap allows: add `deposit_event`, `withdraw_event` per pool, Aquarius LP `add/remove_liquidity`, Soroswap `swap`/`add/remove_liquidity`. | Build `lib/mercury-client.ts` (GraphQL client using `graphql-request`). Add `NEXT_PUBLIC_MERCURY_URL` + `NEXT_PUBLIC_MERCURY_KEY` to env. |
+| Write GraphQL queries: `HISTORY_QUERY` (borrows/repays/liquidations), `EVENTS_QUERY` (pool-level), `LEADERBOARD_QUERY` (top borrowers). | Test client end-to-end against testnet account that has some real history. |
 
-### Day 24 — Zustand dual-write consolidation
+**D21 — Migrate event hooks**
+
+| Dev A (margin + farm) | Dev B (soroswap + earn) |
+| --- | --- |
+| `useMarginHistory` (use-margin.ts:7) — replace localStorage merge with Mercury query. Drop ledger-tick refetch (Mercury push-driven). | `useSoroswapEvents` (use-soroswap.ts:97) — replace RPC pagination with Mercury query. |
+| `useBlendEvents` + `useAquariusEvents` (use-farm.ts) — same. If Aquarius events not in free-tier entity set, keep on RPC + add TODO. | `useEarnTransactions` (use-earn.ts:514) — same. If event not indexed, keep on RPC. |
+| **PR `s4/mercury-events-margin-farm`** | **PR `s4/mercury-events-soroswap-earn`** |
+
+**D22 — Migrate analytics pages + cleanup**
+
+- Both devs pair: audit `app/analytics/liquidations/page.tsx`, `components/analytics/positions/PositionsMonitor.tsx`, `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — these currently replay events client-side from RPC. Switch to Mercury queries where entities are indexed.
+- Replace any unbounded `get_lenders_*()` chain reads with Mercury "addresses with non-zero vToken balance" queries.
+- Verify: `grep -rn "localStorage.*history" .` returns nothing critical.
+- **Joint PR `s4/mercury-analytics-migration`**.
+
+> **Risk note:** If Mercury free tier caps entities below what we need, the lowest-priority hooks (Aquarius/Soroswap LP events) stay on RPC. The high-value migration (margin history + liquidations) is non-negotiable.
+
+### Days 23–24 — Hubble analytics (NEW in v3.1)
+
+> **Prereq:** Free Google Cloud account + enable BigQuery API (free). **"Hubble" is NOT a separate paid service** — it's SDF's name for their public BigQuery dataset (`crypto-stellar.crypto_stellar.contract_events`). 1 TB/month free query quota covers our event volume comfortably.
+
+**D23 — BigQuery setup + API routes**
+
+| Dev A (backend) | Dev B (UI scaffolding) |
+| --- | --- |
+| Create GCP project, enable BigQuery, create service account with `BigQuery Job User` + `BigQuery Data Viewer` roles. Save JSON to Vercel env: `GOOGLE_CREDS_JSON`. | Scaffold `/stats` page route (`app/stats/page.tsx`). Stub chart containers with placeholder data. |
+| Write 4 SQL queries adapted for **current 4-pool architecture** (XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC, NOT old USDC/XLM/EURC): daily TVL, top borrowers all-time, daily borrow volume, recent 50 liquidations. | Pick chart lib — `recharts` already in package.json (per merge `d636247`). Reuse from analytics pages. |
+| Build 4 API routes: `/api/analytics/tvl`, `/api/analytics/top-borrowers`, `/api/analytics/volume`, `/api/analytics/liquidations`. `Cache-Control: s-maxage=300, stale-while-revalidate=900`. Edge runtime. | Confirm `recharts` styles match analytics pages (consistent design). |
+| **PR `s4/hubble-api`** | (same branch as Dev A or scaffold-only on integration) |
+
+**D24 — Wire `/stats` UI**
+
+- Both devs pair: connect `/stats` page to the 4 API routes. Render TVL chart (90-day line), top-100 borrowers list, daily volume bars, liquidation feed.
+- Verify: open `/stats` on testnet, all 4 panels populate with real data within 2 seconds (BigQuery query latency).
+- Verify: BigQuery month-to-date cost in GCP console reads $0.
+- **Joint PR `s4/hubble-ui`**.
+
+### Day 25 — Analytics + Risk Dashboard perf (reduced from 3 days)
+
+- Dev A: Memoize heavy reduce/map chains in `lib/analytics/onchain/derivations.ts`. Profile `PositionsMonitor.tsx` with React DevTools — eliminate redundant re-renders (likely missing `useMemo` on derived rows).
+- Dev B: Audit `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — derive once per render, not per row. Confirm event feed pagination doesn't re-fetch on every tick.
+- Confirm `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays untouched (allowlist).
+- **Joint PR `s4/perf-analytics-risk`**.
+
+### Day 26 — Zustand dual-write consolidation
 
 - Audit `useEarnPoolStore.getState().set({...})` calls in `use-earn.ts:48,84`. Decide: remove (and migrate readers to RQ) or keep (and document why dual-write is intentional).
 - Same audit for `store/margin-account-info-store.ts` — `refreshBorrowedBalances` writes at L148, 160, 195.
 - Recommend remove unless a non-RQ legacy reader is found.
 - **Joint PR `s4/dual-write-cleanup`**.
 
-### Days 25–26 — Type safety pass
-
-| Dev A | Dev B |
-| --- | --- |
-| Tighten service-layer return types: `ContractService`, `MarginAccountService`, `BlendService`, `AquariusService`, `SoroswapService`. Replace any `any` / loose return shapes. | Tighten hook return types — explicit interfaces for `usePoolData`, `useUserPositions`, `useMarginHistory`, `useAll*PoolStats`. |
-| `npm run lint` strict + no warnings. | Same. |
-| **Joint PR `s4/typesafety`**. | (same PR) |
+> **Type safety pass cut from v3.1.** Was D25–26 in v3 (4 dev-days). Folded into reviewer discipline (catch `any` in PR review) + ongoing during all other Phase 2 work. Dedicated pass deferred to a future sprint.
 
 ### Day 27 — Documentation
 
 - Update `SPRINT_1_GUIDE.md` (this doc) — mark each Phase 2 step done.
-- Update `IMPLEMENTATION_PLAN.md` "What's done in S1" section.
-- Write new `ARCHITECTURE.md` summarizing post-sprint state: ledger-tick model, mutation pattern, store/RQ split, test layout.
+- Update `IMPLEMENTATION_PLAN.md` "What's done in S1" section. Mark Day 1, 2, 3 stubs as ✅ shipped where applicable; document the Mercury + Hubble integration as Sprint 4 + Sprint 5 of the original plan, now landed.
+- Write new `ARCHITECTURE.md` summarizing post-sprint state: ledger-tick model, mutation pattern, store/RQ split, test layout, Mercury entity map, Hubble query map.
 - Update `contexts/query-provider.tsx` JSDoc.
 - **Joint PR `s4/docs`**.
 
 ### Days 28–29 — Bug bash + full testnet e2e
 
-Both devs pair. Run every flow from v2's Day 5 checklist (Earn × 4 assets, Margin × 4 assets, Farm × Aquarius + Soroswap, Lite + One-click, Risk Dashboard regression). Each scenario verifies functional success AND reactive UI update ≤5 s.
+Both devs pair. Run every flow:
+- **Earn** × 4 assets (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC) — supply/withdraw, balance updates ≤5 s
+- **Margin** × 4 assets — deposit/borrow/repay/transfer/withdraw, HF updates ≤5 s
+- **Farm** × Aquarius + Soroswap — add/remove liquidity, LP balance updates ≤5 s
+- **Lite + One-click** — entry flow, position detail reactive
+- **Risk Dashboard regression** — `/analytics` renders, oracle sim tick still firing (sim NOT chain — allowlist)
+- **NEW v3.1: Mercury-backed flows** — margin history populates from Mercury, liquidations feed populates, leaderboard renders
+- **NEW v3.1: `/stats` page** — TVL chart, top borrowers, volume, liquidations all populate within 2 s
+
+Each scenario verifies functional success AND reactive UI update ≤5 s.
 
 Fix any bugs found in `s4/release`.
 
@@ -363,7 +459,7 @@ useMutation({
   - Any blockers
 - **EOD** — async update: PRs opened/merged, what's left
 - **PR review SLA:** same-day before EOD
-- **Pair sessions:** Day 11 (4-pool verify), Day 24 (dual-write consolidation), Days 28–29 (bug bash + e2e)
+- **Pair sessions:** Day 11 (4-pool verify), Day 22 (Mercury analytics migration), Day 24 (Hubble `/stats` UI wiring), Day 26 (dual-write consolidation), Days 28–29 (bug bash + e2e)
 
 ---
 
@@ -382,8 +478,10 @@ useMutation({
 - [ ] **NEW v3:** Unified error/toast UX across all mutations
 - [ ] **NEW v3:** Analytics + Risk Dashboard re-render audit clean
 - [ ] **NEW v3:** Zustand dual-write decision documented (kept or removed)
-- [ ] **NEW v3:** Type safety pass — zero `any` in service + hook return types
 - [ ] **NEW v3:** `ARCHITECTURE.md` written
+- [ ] **NEW v3.1:** Mercury indexer integration live — `Trader_*` events indexed; margin history / liquidations feed read from Mercury, not RPC; localStorage history merge deleted
+- [ ] **NEW v3.1:** `/stats` page live on BigQuery (Hubble) — TVL chart, top borrowers, daily volume, liquidation feed
+- [ ] **NEW v3.1:** All third-party services on free tiers — Mercury free dev tier, BigQuery 1 TB/month free. Monthly cost: $0
 - [ ] App works end-to-end on testnet
 
 ---
@@ -393,9 +491,10 @@ useMutation({
 - Days 28–29 have ~12 hrs total buffer for bugs found in the bug bash
 - **Drop-firsts** if behind schedule:
   - Day 27 docs (`ARCHITECTURE.md`) → defer to post-sprint
-  - Day 24 dual-write consolidation → keep dual-write, document and defer
+  - Day 26 dual-write consolidation → keep dual-write, document and defer
   - Day 12 `useSmartPolling` delete → keep + document, defer delete
-  - Type safety pass (D25–26) — partial completion acceptable
+  - Day 25 analytics/risk perf → defer to post-sprint
+  - Mercury low-priority entities (Aquarius/Soroswap LP events) → keep those event hooks on RPC, only migrate `Trader_*` events
 - **Hard requirements** (cannot defer):
   - LedgerSubscriberProvider wired (D2)
   - 4 hook-level mutations on `useMutation` (D4)
@@ -416,4 +515,4 @@ useMutation({
 
 ---
 
-*Updated 2026-05-19 as v3. v2 (2026-05-14) was a 5-day plan for 2 devs in parallel. v3 expands to 30 days because Dev A (Divyansh) is unavailable for the first 7 days, and scope grows to absorb test infrastructure, optimistic updates, unified error UX, analytics perf, dual-write consolidation, type safety, and documentation that the original 6-sprint roadmap had spread across later sprints. **Mutation strategy is unchanged from v1/v2: full `useMutation` migration for all hook-level + inline mutations.***
+*Updated 2026-05-19 as v3.1. v2 (2026-05-14) was a 5-day plan for 2 devs in parallel. v3 (2026-05-19 AM) expanded to 30 days because Dev A (Divyansh) is unavailable for the first 7 days. **v3.1 (2026-05-19 PM)** additionally promotes Mercury indexer + Hubble BigQuery analytics from "deferred" to "in Phase 2" by running both on **free tiers** ($0/mo). The 30-day budget now ships: ledger-tick foundation + full `useMutation` migration + test infra + optimistic updates + error UX + Mercury event indexing + Hubble historical analytics + analytics perf + dual-write cleanup + docs. Type safety pass cut (folded into PR review discipline). **Mutation strategy is unchanged from v1/v2: full `useMutation` migration for all hook-level + inline mutations.***

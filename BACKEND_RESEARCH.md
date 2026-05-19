@@ -1,5 +1,17 @@
 # Backend Architecture Research — Vanna vs. Derive, Gearbox, SushiSwap
 
+> ⚠️ **RESEARCH SNAPSHOT (2026-04-30) — NOT a live planning doc**
+>
+> This is a pre-Sprint-1 research note describing the codebase **as it was before** the
+> v3 rewire. Some claims have rotted:
+> - "CoinGecko on the hot path" → ✅ **REMOVED** (Reflector oracle live via `lib/oracle-price.ts`)
+> - "11 React Query hooks with `refetchInterval`" → still **TRUE** as of 2026-05-19 (scheduled removal in Phase 2 D8–10)
+> - "Zero `useMutation` in codebase" → still **TRUE** as of 2026-05-19 (scheduled migration in Phase 1 D3–7 + Phase 2 D8–20)
+> - Compressor contract references → **DEFERRED** (post-Sprint-1)
+>
+> **For the active plan:** [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) v3 (30-day, 2-dev)
+> **Why this doc still matters:** architectural rationale (Section 1), Gearbox DataCompressor pattern (4.3.2), CEX comparison (Section 3), migration phasing (Section 8) — all timeless.
+
 > **What this document is:** A deep, side-by-side comparison of how the Vanna Stellar
 > frontend currently moves data between chain ↔ UI versus how three reference DeFi
 > protocols (Derive, Gearbox, SushiSwap) do it. Goal: identify exactly what we're

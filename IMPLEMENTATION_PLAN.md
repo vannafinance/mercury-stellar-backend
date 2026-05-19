@@ -1,13 +1,31 @@
 # Vanna Backend — Implementation Plan (10k DAU Ready)
 
+> ⚠️ **HISTORICAL ROADMAP — see [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for the active plan**
+>
+> This document was originally a 6-sprint, 30-working-day roadmap (S1–S6) for 1 frontend
+> eng + 1 Soroban dev (S2) + 1 DevOps (S6). The **active plan is now** `SPRINT_1_GUIDE.md` v3
+> (2026-05-19) — a 30-**calendar**-day Sprint 1 with 2 frontend devs (Sanujit + Divyansh
+> joining D8) that **absorbs the original S2–S6 scope** (test infra, optimistic updates,
+> analytics perf, type safety, docs, dual-write consolidation) into Phase 2 (Days 8–30).
+>
+> **What in this doc is still current:**
+> - Architecture diagram (L16–73) — still accurate
+> - 10k DAU scaling math (L75–117) — still valid sizing
+> - Day 1 LedgerSubscriberProvider stub (L141–228) — ✅ **Updated 2026-05-19** to match shipped code
+>
+> **What is stale / deferred:**
+> - Days 2–5 stubs (oracle migration, refetchInterval cleanup, mutation migration) → rescheduled into `SPRINT_1_GUIDE.md` Phase 1 D2–7 + Phase 2 D8–10
+> - Sprints 2–6 (Compressor Contract, Edge Cache, Mercury Indexer, Hubble Analytics, Production Infra) → marked **DEFERRED** at L355. Either absorbed into v3 Phase 2 or moved to a future post-Sprint-1 sprint
+> - Sprint 0 pre-reqs (L899+) — partially still valid; cross-check against `SPRINT_1_GUIDE.md`
+
 > **The "go and build this" document.** Day-by-day sprints, real code stubs,
 > file paths, scaling math. Supersedes [FINAL_PLAN.md](FINAL_PLAN.md) for
 > day-to-day execution. Read [BACKEND_RESEARCH.md](BACKEND_RESEARCH.md) and
 > [PROTOCOL_BACKEND_PLAN.md](PROTOCOL_BACKEND_PLAN.md) for the *why*.
 >
-> **Outcome:** Production stack handling 10k DAU at $1,500–2,000/mo.
-> **Duration:** 6 weeks (30 working days).
-> **Team:** 1 frontend eng + 1 Soroban dev (S2 only) + 1 DevOps (S6 only).
+> **Original outcome target:** Production stack handling 10k DAU at $1,500–2,000/mo.
+> **Original duration:** 6 weeks (30 working days).
+> **Original team:** 1 frontend eng + 1 Soroban dev (S2 only) + 1 DevOps (S6 only).
 
 ---
 
@@ -133,110 +151,89 @@ within 2× hosted RPC capacity (~500–1000 req/s each).
 **Goal:** Zero `setInterval` for data. Zero `refetchInterval`. Ledger-tick
 drives everything. CoinGecko deleted.
 
-### Day 1 — Build LedgerSubscriberProvider
+### Day 1 — Build LedgerSubscriberProvider ✅ Updated (Sprint 1 v3, 2026-05-19)
+
+**What actually shipped** (matches the current codebase, not the original env-var-based stub).
 
 Create [contexts/ledger-subscriber.tsx](contexts/ledger-subscriber.tsx):
 
 ```tsx
 "use client";
-import React, { createContext, useContext, useEffect, useState } from "react";
-import { useQueryClient, QueryClient } from "@tanstack/react-query";
-import { Horizon, rpc as sorobanRpc } from "@stellar/stellar-sdk";
 
-type LedgerCtx = { tick: number; latestLedger: number };
-const Ctx = createContext<LedgerCtx>({ tick: 0, latestLedger: 0 });
-export const useLedgerTick = () => useContext(Ctx);
+import { createContext, useContext, useEffect, useState } from "react";
+import * as StellarSdk from "@stellar/stellar-sdk";
 
-const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL!;
-const SOROBAN_URL = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!;
+import { HORIZON_URL } from "@/lib/stellar-utils";
 
-const WATCHED_CONTRACTS = [
-  process.env.NEXT_PUBLIC_ACCOUNT_MANAGER_ADDR!,
-  process.env.NEXT_PUBLIC_LENDING_POOL_USDC!,
-  process.env.NEXT_PUBLIC_LENDING_POOL_XLM!,
-  process.env.NEXT_PUBLIC_LENDING_POOL_EURC!,
-  process.env.NEXT_PUBLIC_LENDING_POOL_AQUARIUS_USDC!,
-  process.env.NEXT_PUBLIC_LENDING_POOL_SOROSWAP_USDC!,
-];
+type LedgerCtx = {
+  tick: number;
+  latestLedger: number;
+};
 
-export function LedgerSubscriberProvider({ children }: { children: React.ReactNode }) {
-  const qc = useQueryClient();
+const LedgerContext = createContext<LedgerCtx>({ tick: 0, latestLedger: 0 });
+
+export const useLedgerTick = () => useContext(LedgerContext);
+
+export function LedgerSubscriberProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const [tick, setTick] = useState(0);
   const [latestLedger, setLatestLedger] = useState(0);
 
-  // STREAM A — Horizon SSE: tick on every ledger close
   useEffect(() => {
-    const horizon = new Horizon.Server(HORIZON_URL);
-    const close = horizon.ledgers().cursor("now").stream({
-      onmessage: (ledger: any) => {
-        setLatestLedger(Number(ledger.sequence));
-        setTick((t) => t + 1);
-        qc.invalidateQueries({ queryKey: ["snapshot"] });
-        qc.invalidateQueries({ queryKey: ["accountView"] });
-      },
-      onerror: (e: unknown) => console.warn("[ledger] err", e),
-    });
-    return () => close();
-  }, [qc]);
+    const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
 
-  // STREAM B — Soroban events poll (every 5s) — drives Mercury invalidation
-  useEffect(() => {
-    const soroban = new sorobanRpc.Server(SOROBAN_URL);
-    let stop = false;
-    let cursor: string | undefined;
+    const closeStream = horizon
+      .ledgers()
+      .cursor("now")
+      .stream({
+        onmessage: (ledger) => {
+          const record = ledger as StellarSdk.Horizon.ServerApi.LedgerRecord;
+          setLatestLedger(Number(record.sequence));
+          setTick((t) => t + 1);
+        },
+        onerror: (err) => {
+          console.warn("[ledger-subscriber] Horizon SSE error", err);
+        },
+      });
 
-    async function loop() {
-      while (!stop) {
-        try {
-          if (!cursor) {
-            const latest = await soroban.getLatestLedger();
-            cursor = String(latest.sequence - 5);
-          }
-          const resp = await soroban.getEvents({
-            startLedger: Number(cursor),
-            filters: [{ type: "contract", contractIds: WATCHED_CONTRACTS }],
-            limit: 100,
-          });
-          for (const ev of resp.events) {
-            handleEvent(ev, qc);
-            cursor = ev.pagingToken;
-          }
-        } catch (e) { console.warn("[events] err", e); }
-        await new Promise((r) => setTimeout(r, 5000));
-      }
-    }
-    loop();
-    return () => { stop = true; };
-  }, [qc]);
+    return () => {
+      closeStream();
+    };
+  }, []);
 
-  return <Ctx.Provider value={{ tick, latestLedger }}>{children}</Ctx.Provider>;
-}
-
-function handleEvent(ev: any, qc: QueryClient) {
-  const topic = ev.topic?.[0]?.toString?.() ?? "";
-  if (topic.startsWith("Trader_") || topic.includes("event")) {
-    qc.invalidateQueries({ queryKey: ["accountView"] });
-    qc.invalidateQueries({ queryKey: ["mercury", "history"] });
-    qc.invalidateQueries({ queryKey: ["snapshot"] });
-  }
-  if (topic.includes("Smart_Account_")) {
-    qc.invalidateQueries({ queryKey: ["accounts"] });
-  }
+  return (
+    <LedgerContext.Provider value={{ tick, latestLedger }}>
+      {children}
+    </LedgerContext.Provider>
+  );
 }
 ```
 
 Wrap [app/layout.tsx](app/layout.tsx):
 
 ```tsx
-<QueryProvider>
-  <LedgerSubscriberProvider>
-    {children}
-  </LedgerSubscriberProvider>
-</QueryProvider>
+<ThemeProvider>
+  <QueryProvider>
+    <LedgerSubscriberProvider>
+      <Navbar items={navbarItems}/>
+      <ScaleWrapper>{children}</ScaleWrapper>
+      <AppToaster />
+    </LedgerSubscriberProvider>
+  </QueryProvider>
+</ThemeProvider>
 ```
 
-**Day 1 acceptance:** `tick` increments roughly every 5s in DevTools. Console
-logs no errors during a 30-min idle session.
+**Differences from the original v1 stub** (documented so the divergence is intentional):
+
+1. **No "Stream B" Soroban-events poll.** The v1 stub polled `soroban.getEvents` against `WATCHED_CONTRACTS` env vars that don't exist in this codebase, and invalidated Mercury queryKeys that don't exist yet (Mercury indexer is Sprint 4 of the original plan). v3 Sprint 1 only needs Stream A (Horizon SSE) — adding `tick` to consumer queryKeys is sufficient invalidation.
+2. **`HORIZON_URL` imported from `lib/stellar-utils.ts:7`**, not from env. The repo hard-codes the testnet URL there alongside `SOROBAN_RPC_URL` and `NETWORK_PASSPHRASE`.
+3. **No manual `invalidateQueries` in the provider.** v3's pattern is "consumer hooks add `tick` to their queryKey, RQ refetches automatically when the value changes" (see the migration pattern in [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) D8–10). This keeps the provider single-purpose: produce ticks.
+4. **Strict TypeScript** — `StellarSdk.Horizon.ServerApi.LedgerRecord` instead of `any`. Supports the D25–26 type-safety pass.
+
+**Day 1 acceptance:** `tick` increments roughly every 5s in DevTools (React DevTools → `LedgerSubscriberProvider` → Hooks). Console logs no errors during a 30-min idle session. Consumer wiring (`useLedgerTick()` → queryKey) comes in Phase 1 D5 (`token-prices`) and Phase 2 D8–10 (all chain-data hooks).
 
 ### Day 2 — Replace CoinGecko with on-chain oracle
 
@@ -367,7 +364,25 @@ Apply to: `useSupply*`, `useWithdraw*`, `useBorrow*`, `useRepay*`,
 
 ---
 
-## Sprint 2 — Compressor Contract (Day 6–15)
+---
+
+> ⚠️ **EVERYTHING BELOW (Sprints 2–6) IS DEFERRED**
+>
+> The sections below describe **future work** that was originally scoped as Sprints 2–6
+> of the 6-sprint roadmap. None of this is part of the active **30-day Sprint 1 v3**
+> (see [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md)). Some of this scope (test infra,
+> optimistic updates, perf, type safety, docs) was **compressed into Sprint 1 v3 Phase 2**
+> (Days 8–30) with adjusted scope. Other items (Compressor Contract, Edge Cache, Mercury
+> Indexer, Hubble Analytics, Production Infra) are **deferred to a post-Sprint-1 sprint**
+> and the dates/owners below are no longer accurate.
+>
+> **Read these sections as architectural reference, NOT as current execution plan.**
+> Re-verify against the codebase before lifting any code stub. Most env vars and
+> queryKey names in the stubs below do not match what's actually shipped.
+
+---
+
+## Sprint 2 — Compressor Contract (Day 6–15) — 📜 DEFERRED
 
 **Goal:** `ProtocolViewContract` deployed; dashboard does 1 sim per render.
 
