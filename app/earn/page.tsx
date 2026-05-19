@@ -12,7 +12,6 @@ import { setSelectedPool } from "@/store/selected-pool-store";
 import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData, useUserPositions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { getEarnHistoryByAsset } from "@/lib/earn-history";
 
 // AQUARIUS_USDC / SOROSWAP_USDC piggyback on USDC's oracle price (no separate
 // Reflector entry exists — the alias resolves inside oracle-price.ts).
@@ -37,20 +36,6 @@ type EarnOverviewSnapshot = {
   earnedYieldUSD: number;
 };
 
-// Net principal still on deposit per asset, derived from local earn history
-// (sum of supplies minus withdrawals). Used as the baseline against which
-// the on-chain vToken-redeem value is compared to surface accrued yield.
-const sumNetSuppliedTokens = (asset: AssetType): number => {
-  const events = getEarnHistoryByAsset(asset);
-  let net = 0;
-  for (const e of events) {
-    const amt = parseFloat(e.amount || '0') || 0;
-    if (!Number.isFinite(amt) || amt <= 0) continue;
-    if (e.type === 'supply') net += amt;
-    else if (e.type === 'withdraw') net -= amt;
-  }
-  return net;
-};
 
 const getHistoryKey = (address: string) => `vanna_earn_overview_history_v2_${address}`;
 
@@ -275,25 +260,18 @@ export default function Earn() {
 
   const { totalDepositedUSD, earnedYieldUSD } = useMemo(() => {
     let totalUSD = 0;
-    let earnedUSD = 0;
     ALL_ASSETS.forEach((asset) => {
       const depositedTokens = parseFloat(userPositions[asset]?.deposited || "0");
       const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? 1;
       totalUSD += depositedTokens * price;
-
-      // Earned yield = on-chain redeemable amount − net principal still on
-      // deposit (sum of supplies − withdraws from local history). The vToken
-      // exchange rate grows with accrued interest, so this difference is the
-      // user's actual yield. Showing the *projected annual* return on freshly
-      // supplied liquidity (the previous behavior) misled users into thinking
-      // a year of yield had already accrued the moment they deposited.
-      const netSupplied = sumNetSuppliedTokens(asset);
-      const earnedTokens = Math.max(0, depositedTokens - netSupplied);
-      earnedUSD += earnedTokens * price;
     });
     return {
       totalDepositedUSD: totalUSD,
-      earnedYieldUSD: earnedUSD,
+      // Net Earnings disabled: earn history tracking is per-wallet but the
+      // underlying supply/withdraw event store does not yet scope entries by
+      // wallet address, causing cross-wallet contamination. Hardcoded to $0
+      // until the per-wallet history migration is complete.
+      earnedYieldUSD: 0,
     };
   }, [userPositions, tokenPrices]);
 
@@ -302,8 +280,12 @@ export default function Earn() {
       queueMicrotask(() => setOverviewHistory([]));
       return;
     }
-    const next = readOverviewHistory(userAddress);
-    queueMicrotask(() => setOverviewHistory(next));
+    const raw = readOverviewHistory(userAddress);
+    // Zero out any stale earnedYieldUSD values stored in chart history
+    // (artifacts from when Net Earnings was incorrectly computed).
+    const cleaned = raw.map((s) => ({ ...s, earnedYieldUSD: 0 }));
+    writeOverviewHistory(userAddress, cleaned);
+    queueMicrotask(() => setOverviewHistory(cleaned));
   }, [userAddress]);
 
   useEffect(() => {

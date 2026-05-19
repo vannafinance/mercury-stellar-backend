@@ -17,6 +17,7 @@ import {
   distanceToLiquidationPct,
   RISK_ENGINE_LIQUIDATION_HF,
 } from "@/components/lite-mode/lite-position-math";
+import { usePoolData } from "@/hooks/use-earn";
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -31,32 +32,26 @@ interface PoolOption {
   protocol: string;
   poolVersion: string;
   feeTier: string;
-  supplyApr: number;
-  borrowApr: number;
-  tvl: string;
-  vannaTvl: string;
+  storeKey: "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
   tags: string[];
 }
 
 const POOL_OPTIONS: PoolOption[] = [
-  // ─── Blend Lending Pools ───
   {
     id: "usdc-blend", type: "single", tokens: ["USDC"], protocol: "Blend", poolVersion: "V1",
-    feeTier: "-", supplyApr: 8.1, borrowApr: 5.0, tvl: "$9.8M", vannaTvl: "$6.5M", tags: ["Vanna", "Blend"],
+    feeTier: "-", storeKey: "USDC", tags: ["Vanna", "Blend"],
   },
   {
     id: "xlm-blend", type: "single", tokens: ["XLM"], protocol: "Blend", poolVersion: "V1",
-    feeTier: "-", supplyApr: 5.2, borrowApr: 3.5, tvl: "$12.4M", vannaTvl: "$8.2M", tags: ["Vanna", "Blend"],
+    feeTier: "-", storeKey: "XLM", tags: ["Vanna", "Blend"],
   },
-  // ─── Aquarius AMM LP Pools ───
   {
     id: "xlm-usdc-aquarius", type: "lp", tokens: ["XLM", "USDC"], protocol: "Aquarius", poolVersion: "AMM",
-    feeTier: "0.3%", supplyApr: 12.5, borrowApr: 6.0, tvl: "$5.3M", vannaTvl: "$3.1M", tags: ["Vanna", "Aquarius"],
+    feeTier: "0.3%", storeKey: "AQUARIUS_USDC", tags: ["Vanna", "Aquarius"],
   },
-  // ─── Soroswap DEX LP Pools ───
   {
     id: "xlm-usdc-soroswap", type: "lp", tokens: ["XLM", "USDC"], protocol: "Soroswap", poolVersion: "DEX",
-    feeTier: "0.3%", supplyApr: 10.2, borrowApr: 5.5, tvl: "$3.8M", vannaTvl: "$2.4M", tags: ["Vanna", "Soroswap"],
+    feeTier: "0.3%", storeKey: "SOROSWAP_USDC", tags: ["Vanna", "Soroswap"],
   },
 ];
 
@@ -117,6 +112,7 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
 
 export const OneClickStrategy = () => {
   const { isDark } = useTheme();
+  const { pools: earnPools } = usePoolData();
   const userAddress = useUserStore((s) => s.address);
   const tokenBalances = useUserStore((s) => s.tokenBalances);
   const hasMarginAccount = useMarginAccountInfoStore((s) => s.hasMarginAccount);
@@ -168,6 +164,41 @@ export const OneClickStrategy = () => {
       .catch(() => {});
   }, []);
 
+  const formatTvl = (tokens: string, priceUsd: number): string => {
+    const usd = (parseFloat(tokens) || 0) * priceUsd;
+    if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`;
+    if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}K`;
+    return `$${usd.toFixed(0)}`;
+  };
+
+  const livePools = useMemo(() => ({
+    "xlm-blend": {
+      supplyApr: parseFloat(earnPools.XLM.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.XLM.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.XLM.totalSupply, prices.XLM || 0),
+    },
+    "usdc-blend": {
+      supplyApr: parseFloat(earnPools.USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
+    },
+    "xlm-usdc-aquarius": {
+      supplyApr: parseFloat(earnPools.AQUARIUS_USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.AQUARIUS_USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.AQUARIUS_USDC.totalSupply, prices.USDC || 1),
+    },
+    "xlm-usdc-soroswap": {
+      supplyApr: parseFloat(earnPools.SOROSWAP_USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.SOROSWAP_USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.SOROSWAP_USDC.totalSupply, prices.USDC || 1),
+    },
+  }), [earnPools, prices]);
+
+  const selectedPoolLive = useMemo(() => ({
+    ...selectedPool,
+    ...(livePools[selectedPool.id as keyof typeof livePools] ?? { supplyApr: 0, borrowApr: 0, tvl: "—" }),
+  }), [selectedPool, livePools]);
+
   // Wallet balance from Stellar user store
   const walletBalance = tokenBalances?.[collateralAsset] ?? "0";
   const balanceNum = Number(walletBalance) || 0;
@@ -210,8 +241,8 @@ export const OneClickStrategy = () => {
 
   // APR calculations
   const aprCalc = useMemo(() => {
-    const supplyApr = selectedPool.supplyApr;
-    const vannaBorrowApr = selectedPool.borrowApr;
+    const supplyApr = selectedPoolLive.supplyApr;
+    const vannaBorrowApr = selectedPoolLive.borrowApr;
 
     if (scenario === "same-asset") {
       const totalDeployed = collateralNum + borrowedAmount;
@@ -227,7 +258,8 @@ export const OneClickStrategy = () => {
 
     if (scenario === "cross-asset-keep") {
       const collateralPool = POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset);
-      const collateralSupplyApr = collateralPool?.supplyApr ?? 0;
+      const collateralLive = collateralPool ? livePools[collateralPool.id as keyof typeof livePools] : null;
+      const collateralSupplyApr = collateralLive?.supplyApr ?? 0;
       const collateralEarning = collateralSupplyApr;
       const borrowMultiplier = collateralNum > 0 ? (borrowedAmount * borrowPrice) / collateralUsd : 0;
       const targetEarning = borrowMultiplier * supplyApr;
@@ -253,7 +285,7 @@ export const OneClickStrategy = () => {
       netApr, supplyEarnings, borrowCost,
       legs: [{ label: `${selectedPool.tokens.join("/")} (all-in)`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
     };
-  }, [scenario, selectedPool, collateralNum, borrowedAmount, leverage, collateralUsd, borrowUsd, borrowPrice, collateralAsset]);
+  }, [scenario, selectedPool, selectedPoolLive, livePools, collateralNum, borrowedAmount, leverage, collateralUsd, borrowUsd, borrowPrice, collateralAsset]);
 
   const totalCollateralUsd = totalCollateralValue + collateralUsd;
   const totalBorrowUsd = totalBorrowedValue + borrowUsd;
@@ -366,8 +398,8 @@ export const OneClickStrategy = () => {
         borrowAmount: borrowedAmount,
         borrowUsdAtOpen: borrowUsd,
         leverage,
-        supplyApr: selectedPool.supplyApr,
-        vannaFeeApr: selectedPool.borrowApr,
+        supplyApr: selectedPoolLive.supplyApr,
+        vannaFeeApr: selectedPoolLive.borrowApr,
         liquidationLtv: 82,
         isSameAsset: collateralAsset === borrowAsset,
         txHash: result.hash,
@@ -511,7 +543,7 @@ export const OneClickStrategy = () => {
                 </div>
                 <div className="flex items-center gap-[12px]">
                   <div className="flex flex-col items-end gap-[1px]">
-                    <span className="text-[14px] font-bold text-[#10B981] leading-[20px]">{selectedPool.supplyApr}%</span>
+                    <span className="text-[14px] font-bold text-[#10B981] leading-[20px]">{selectedPoolLive.supplyApr.toFixed(2)}%</span>
                     <span className={`text-[10px] leading-[13px] ${mutedText}`}>Supply APR</span>
                   </div>
                   <motion.svg
@@ -560,11 +592,11 @@ export const OneClickStrategy = () => {
                         </div>
                         <div className="flex items-center gap-[16px]">
                           <div className="flex flex-col items-end">
-                            <span className="text-[12px] font-bold text-[#10B981]">{pool.supplyApr}%</span>
+                            <span className="text-[12px] font-bold text-[#10B981]">{(livePools[pool.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}%</span>
                             <span className={`text-[9px] ${mutedText}`}>APR</span>
                           </div>
                           <span className={`text-[10px] font-medium px-[6px] py-[1px] rounded-[4px] ${isDark ? "bg-[#2C2C2C] text-[#919191]" : "bg-[#F4F4F4] text-[#76737B]"}`}>
-                            {pool.tvl}
+                            {livePools[pool.id as keyof typeof livePools]?.tvl ?? "—"}
                           </span>
                         </div>
                       </button>
@@ -793,7 +825,7 @@ export const OneClickStrategy = () => {
                     <div className="flex flex-col">
                       <h3 className={`text-[14px] font-semibold leading-5 ${headingText}`}>Set Leverage</h3>
                       <span className={`text-[11px] leading-4 ${mutedText}`}>
-                        Borrow {borrowAsset} from Vanna at {selectedPool.borrowApr}% APR
+                        Borrow {borrowAsset} from Vanna at {selectedPoolLive.borrowApr.toFixed(2)}% APR
                       </span>
                     </div>
                   </div>
@@ -970,7 +1002,7 @@ export const OneClickStrategy = () => {
                                   <span className={`text-[12px] font-medium ${headingText}`}>Vanna Borrow Cost</span>
                                   <div className="flex items-center gap-2">
                                     <span className="text-[12px] font-bold text-[#FC5457]">-{aprCalc.borrowCost.toFixed(1)}%</span>
-                                    <span className={`text-[10px] font-medium ${mutedText}`}>{selectedPool.borrowApr}% × {(leverage - 1).toFixed(1)}x</span>
+                                    <span className={`text-[10px] font-medium ${mutedText}`}>{selectedPoolLive.borrowApr.toFixed(2)}% × {(leverage - 1).toFixed(1)}x</span>
                                   </div>
                                 </div>
                                 <div className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#703AE6]/8 border-t border-[#703AE6]/15" : "bg-[#F1EBFD]/50 border-t border-[#703AE6]/10"}`}>
@@ -1104,7 +1136,7 @@ export const OneClickStrategy = () => {
                             <span>
                               Vanna lenders fund{" "}
                               <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
-                              (~${borrowUsd.toFixed(2)}) at {selectedPool.borrowApr}% APR.
+                              (~${borrowUsd.toFixed(2)}) at {selectedPoolLive.borrowApr.toFixed(2)}% APR.
                             </span>
                           </li>
                           {scenario === "same-asset" && (
@@ -1114,7 +1146,7 @@ export const OneClickStrategy = () => {
                                 <span className={`font-semibold ${headingText}`}>{(collateralNum + borrowedAmount).toFixed(2)} {collateralAsset}</span>{" "}
                                 deployed to{" "}
                                 <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
-                                on {selectedPool.protocol} at {selectedPool.supplyApr}% supply APR.
+                                on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
                               </span>
                             </li>
                           )}
@@ -1124,14 +1156,14 @@ export const OneClickStrategy = () => {
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                                 <span>
                                   Your <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAsset} pool</span> at {POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.supplyApr ?? 0}% APR.
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAsset} pool</span> at {(livePools[POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}% APR.
                                 </span>
                               </li>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>4.</span>
                                 <span>
                                   <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAsset} pool</span> at {selectedPool.supplyApr}% APR.
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAsset} pool</span> at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
                             </>
@@ -1149,7 +1181,7 @@ export const OneClickStrategy = () => {
                                 <span>
                                   <span className={`font-semibold ${headingText}`}>${totalPositionUsd.toFixed(2)}</span>{" "}
                                   total deployed to <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
-                                  on {selectedPool.protocol} at {selectedPool.supplyApr}% APR.
+                                  on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
                             </>
@@ -1231,10 +1263,10 @@ export const OneClickStrategy = () => {
               <span className={`text-[12px] font-semibold ${headingText}`}>{selectedPool.protocol} · {selectedPool.tokens.join("/")} Pool</span>
             </div>
             {[
-              { label: "Supply APR", value: `${selectedPool.supplyApr}%`, color: "text-[#10B981]" },
-              { label: "Borrow APR", value: `${selectedPool.borrowApr}%`, color: "text-[#FC5457]" },
-              { label: "Total TVL", value: selectedPool.tvl, color: headingText },
-              { label: "Vanna TVL", value: selectedPool.vannaTvl, color: headingText },
+              { label: "Supply APY", value: `${selectedPoolLive.supplyApr.toFixed(2)}%`, color: "text-[#10B981]" },
+              { label: "Borrow APY", value: `${selectedPoolLive.borrowApr.toFixed(2)}%`, color: "text-[#FC5457]" },
+              { label: "Total TVL", value: selectedPoolLive.tvl, color: headingText },
+              { label: "Utilization", value: `${parseFloat(earnPools[selectedPool.storeKey].utilizationRate).toFixed(2)}%`, color: headingText },
             ].map((row) => (
               <div key={row.label} className="flex items-center justify-between">
                 <span className={`text-[12px] ${labelText}`}>{row.label}</span>
@@ -1247,9 +1279,21 @@ export const OneClickStrategy = () => {
           <div className={`rounded-[14px] border p-4 flex flex-col gap-3 ${isDark ? "bg-[#1A1A1A] border-[#2C2C2C]" : "bg-white border-[#E5E7EB]"}`}>
             <span className={`text-[12px] font-semibold ${headingText}`}>Supported Protocols</span>
             {[
-              { name: "Blend Capital", desc: "Lending & borrowing", apr: "5–8% APR" },
-              { name: "Aquarius AMM", desc: "XLM/USDC LP yield", apr: "12.5% APR" },
-              { name: "Soroswap DEX", desc: "XLM/USDC LP yield", apr: "10.2% APR" },
+              {
+                name: "Blend Capital",
+                desc: "Lending & borrowing",
+                apr: `${Math.min(livePools["xlm-blend"].supplyApr, livePools["usdc-blend"].supplyApr).toFixed(1)}–${Math.max(livePools["xlm-blend"].supplyApr, livePools["usdc-blend"].supplyApr).toFixed(1)}% APY`,
+              },
+              {
+                name: "Aquarius AMM",
+                desc: "XLM/USDC LP yield",
+                apr: `${livePools["xlm-usdc-aquarius"].supplyApr.toFixed(1)}% APY`,
+              },
+              {
+                name: "Soroswap DEX",
+                desc: "XLM/USDC LP yield",
+                apr: `${livePools["xlm-usdc-soroswap"].supplyApr.toFixed(1)}% APY`,
+              },
             ].map((proto) => (
               <div key={proto.name} className="flex items-center justify-between">
                 <div>

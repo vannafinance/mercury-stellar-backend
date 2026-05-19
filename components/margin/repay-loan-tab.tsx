@@ -580,15 +580,12 @@ interface RepayPreviewSectionProps {
  * preview. Reads margin totals from the store so it stays in sync with the
  * canonical risk-engine values used everywhere else.
  *
- * Repay math (mirrors store/margin-account-info-store.ts:498-525):
- *   gross_collateral = collateral + debt   (smart-account holds borrowed funds)
- *   HF              = gross_collateral / debt
- *   buffer          = gross_collateral - debt × 1.1
- * After repay (uses borrowed funds → both sides drop by repayUsd):
- *   gross_after  = gross - repayUsd
+ * Repay math:
+ *   gross_before = avgHealthFactor × debt   (back-calculated from real on-chain HF)
+ *   After repay (debt drops; gross may also drop for non-deployed cash accounts):
+ *   gross_after  = gross_before - repayUsd  (conservative estimate)
  *   debt_after   = debt - repayUsd
  *   HF_after     = gross_after / debt_after
- *   buffer_after = gross_after - debt_after × 1.1
  */
 const RepayPreviewSection = ({
   repayAmount,
@@ -596,12 +593,18 @@ const RepayPreviewSection = ({
 }: RepayPreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
 
   const repayUsd = Math.max(0, repayAmount * selectedTokenPrice);
   if (repayUsd <= 0 || totalBorrowedValue <= 0) return null;
 
-  const gross = totalCollateralValue + totalBorrowedValue;
-  const hfBefore = totalBorrowedValue > 0 ? gross / totalBorrowedValue : HF_INF_SENTINEL;
+  // Use the store's real HF to back-calculate gross, rather than the naive
+  // collateral + debt formula which overcounts for accounts with deployed
+  // assets (aTokens, LP tokens, tracking tokens).
+  const gross = avgHealthFactor > 0
+    ? avgHealthFactor * totalBorrowedValue
+    : totalCollateralValue + totalBorrowedValue;
+  const hfBefore = avgHealthFactor > 0 ? avgHealthFactor : HF_INF_SENTINEL;
   const bufferBefore = Math.max(0, gross - totalBorrowedValue * LIQUIDATION_THRESHOLD);
 
   const cappedRepay = Math.min(repayUsd, totalBorrowedValue);

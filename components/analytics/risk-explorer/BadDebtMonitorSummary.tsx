@@ -19,7 +19,7 @@ export default function BadDebtMonitorSummary({ wallets }: { wallets: WalletPosi
     const byAsset: Record<string, number> = {};
 
     for (const w of underwaterWallets) {
-      const shortfall = w.debt - w.collateral * 0.9;
+      const shortfall = w.debt - w.collateral;
       if (shortfall > 0) {
         totalBadDebt += shortfall;
         byAsset[w.primaryAsset] = (byAsset[w.primaryAsset] || 0) + shortfall;

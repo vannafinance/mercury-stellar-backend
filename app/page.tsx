@@ -63,7 +63,6 @@ export default function Home() {
   const totalCollateralValue = useMarginAccountInfoStore(
     (state) => state.totalCollateralValue
   );
-  const totalValue = useMarginAccountInfoStore((state) => state.totalValue);
   const avgHealthFactor = useMarginAccountInfoStore(
     (state) => state.avgHealthFactor
   );
@@ -143,25 +142,38 @@ export default function Home() {
     totalBorrowedValue,
   ]);
 
-  // Format data for InfoCard component. The address fields below are real
-  // on-chain contract addresses; InfoCard renders them as copyable badges
-  // with a Stellar Expert link via its address-detection logic.
-  const marginAccountInfo = {
-    totalBorrowedValue,
-    totalCollateralValue,
-    totalValue,
-    avgHealthFactor,
-    timeToLiquidation,
-    borrowRate,
-    liquidationPremium,
-    liquidationFee,
-    debtLimit,
-    minDebt,
-    maxDebt,
-    oracleContract: CONTRACT_ADDRESSES.ORACLE,
-    liquidationThreshold: "1.10x",
-    riskEngine: CONTRACT_ADDRESSES.RISK_ENGINE,
-  };
+  // InfoCard row keyed `totalCollateralValue` shows Net Available Collateral
+  // (gross assets − debt), matching ACCOUNT_STATS_ITEMS — not raw chain collateral.
+  const infoCardData = useMemo(
+    () => ({
+      totalBorrowedValue,
+      totalCollateralValue: netAvailableCollateral,
+      totalValue: totalBorrowedValue + netAvailableCollateral,
+      avgHealthFactor,
+      timeToLiquidation,
+      borrowRate,
+      liquidationPremium,
+      liquidationFee,
+      debtLimit,
+      minDebt,
+      maxDebt,
+      oracleContract: CONTRACT_ADDRESSES.ORACLE,
+      liquidationThreshold: "1.10x",
+      riskEngine: CONTRACT_ADDRESSES.RISK_ENGINE,
+    }),
+    [
+      avgHealthFactor,
+      borrowRate,
+      debtLimit,
+      liquidationFee,
+      liquidationPremium,
+      maxDebt,
+      minDebt,
+      netAvailableCollateral,
+      timeToLiquidation,
+      totalBorrowedValue,
+    ],
+  );
 
   // Format account stats value with explicit units, following industry
   // conventions: Health Factor is a bare unitless ratio (Aave/Compound style,
@@ -329,7 +341,7 @@ export default function Home() {
 
             {/* Info card with expandable sections */}
             <InfoCard
-              data={marginAccountInfo}
+              data={infoCardData}
               items={[...MARGIN_ACCOUNT_INFO_ITEMS]}
               showExpandable={true}
               expandableSections={[

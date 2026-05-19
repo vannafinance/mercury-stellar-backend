@@ -495,11 +495,12 @@ export const LeverageAssetsTab = () => {
           // Pre-validate against risk engine before submitting
           const latestMarginState = useMarginAccountInfoStore.getState();
           const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
-          const liveTotalCollateralValue = latestMarginState.totalCollateralValue;
+          // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
+          const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
           const threshold = 1.1;
           const maxAdditionalBorrowUsd = Math.max(
             0,
-            (liveTotalCollateralValue - threshold * liveTotalBorrowedValue) / (threshold - 1)
+            (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
           );
 
           if (maxAdditionalBorrowUsd <= 0) {
@@ -602,22 +603,19 @@ export const LeverageAssetsTab = () => {
         }
 
         // Pre-validate borrow against the Risk Engine's formula before submitting.
-        // Contract check: (collateral + borrow) / (existingDebt + borrow) > 1.1
-        // Rearranged for max borrow: borrow < (collateral - 1.1 * existingDebt) / (1.1 - 1)
+        // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.1, where grossAssets
+        // = priced collateral + outstanding debt (borrowed funds still in the account).
         if (multiplier > 1) {
           const latestMarginState = useMarginAccountInfoStore.getState();
           const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
-          const liveTotalCollateralValue = latestMarginState.totalCollateralValue;
+          const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
           const threshold = 1.1;
-          const projectedCollateralUsd = liveTotalCollateralValue + totalDepositAmountUsd;
+          const projectedGrossUsd = liveGrossCollateralUsd + totalDepositAmountUsd;
           const requestedBorrowUsd = totalDepositAmountUsd * (multiplier - 1);
 
-          // Max borrow derived from contract formula:
-          // (projectedCollateral + borrow) / (existingDebt + borrow) > threshold
-          // => borrow < (projectedCollateral - threshold * existingDebt) / (threshold - 1)
           const maxAdditionalBorrowUsd = Math.max(
             0,
-            (projectedCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
+            (projectedGrossUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
           );
 
           if (maxAdditionalBorrowUsd <= 0) {
@@ -1232,18 +1230,28 @@ const LeveragePreviewSection = ({
   totalDeposit,
 }: LeveragePreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
+  const grossCollateralValue = useMarginAccountInfoStore((s) => s.grossCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
 
   const effectiveDeposit = isMBMode ? 0 : depositAmount;
   if (effectiveDeposit <= 0 && projectedBorrowUsd <= 0) return null;
 
-  const grossBefore = totalCollateralValue + totalBorrowedValue;
-  const hfBefore = totalBorrowedValue > 0 ? grossBefore / totalBorrowedValue : HF_INF_SENTINEL;
+  const grossBefore = grossCollateralValue > 0
+    ? grossCollateralValue
+    : totalBorrowedValue > 0 && avgHealthFactor > 0
+      ? avgHealthFactor * totalBorrowedValue
+      : totalCollateralValue + totalBorrowedValue;
+  const hfBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+    ? avgHealthFactor
+    : HF_INF_SENTINEL;
   const bufferBefore = Math.max(0, grossBefore - totalBorrowedValue * LIQUIDATION_THRESHOLD);
 
   const collateralAfter = totalCollateralValue + effectiveDeposit;
   const debtAfter = totalBorrowedValue + projectedBorrowUsd;
-  const grossAfter = collateralAfter + debtAfter;
+  // grossAfter: both new deposit and new borrow increase the gross
+  // (deposit registered as collateral; borrow sits in account until deployed)
+  const grossAfter = grossBefore + effectiveDeposit + projectedBorrowUsd;
   const hfAfter = debtAfter > 1e-6 ? grossAfter / debtAfter : HF_INF_SENTINEL;
   const bufferAfter = Math.max(0, grossAfter - debtAfter * LIQUIDATION_THRESHOLD);
 

@@ -3,6 +3,8 @@ import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
+import { mergeFarmTrackingCollateralIntoBalances } from "@/lib/analytics/stellar/farmTrackingCollateral";
+import { BlendService } from "@/lib/blend-utils";
 
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
@@ -64,6 +66,7 @@ export interface BorrowedBalance {
 export interface MarginAccountInfoStateType {
   totalBorrowedValue: number;
   totalCollateralValue: number;
+  grossCollateralValue: number;
   totalValue: number;
   avgHealthFactor: number;
   collateralLeftBeforeLiquidation: number;
@@ -88,6 +91,7 @@ export interface MarginAccountInfoStateType {
 const initialState: MarginAccountInfoStateType = {
   totalBorrowedValue: 0,
   totalCollateralValue: 0,
+  grossCollateralValue: 0,
   totalValue: 0,
   avgHealthFactor: 0,
   collateralLeftBeforeLiquidation: 0,
@@ -514,6 +518,33 @@ export const refreshBorrowedBalances = async (
       });
     }
 
+    // Enrich collateralBalances with Blend bTokens and Aquarius/Soroswap LP tokens.
+    // The chain's CollateralBalanceWAD for tracking tokens is 0 by design — Farm
+    // UIs read tracking balances directly from the protocol services. We do the
+    // same here so hasTrackingTokenCollateral fires and HF stays stable after
+    // add-liquidity (user gets bXLM/LP, not raw tokens — should not drop HF).
+    // We also handle the withdrawal case: after full removal the tracking token
+    // key stays in the chain response with WAD=0. We must NOT treat that as an
+    // active farm position, so we override chain zeros with live protocol values
+    // and then gate hasTrackingTokenCollateral on meaningful USD value.
+    try {
+      const enriched = await mergeFarmTrackingCollateralIntoBalances(
+        marginAccountAddress,
+        collateralBalances,
+      );
+      for (const [sym, val] of Object.entries(enriched)) {
+        const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? '0');
+        const newUsd = parseFloat(val.usdValue);
+        // Override stale/zero chain entry with live protocol value when better.
+        if (newUsd > existingUsd) {
+          totalCollateralValue += newUsd - existingUsd;
+          collateralBalances[sym] = val;
+        }
+      }
+    } catch (e) {
+      console.warn('[refreshBorrowedBalances] farm tracking collateral enrichment failed:', e);
+    }
+
     // ── Derived calculations (matching RiskEngine contract math) ──────────────
     //
     // Contract check is effectively:
@@ -534,7 +565,11 @@ export const refreshBorrowedBalances = async (
     // If the user has tracking-tokens (Blend deploy already happened), those
     // are already accounted for inside collateralBalances and we must NOT add
     // the borrowed value again — would double-count.
-    const hasTrackingTokenCollateral = Object.keys(collateralBalances).some((sym) => {
+    //
+    // IMPORTANT: After a full withdrawal the contract still lists the tracking
+    // token key with WAD=0. Gate on USD value > dust so a zero-value residual
+    // key doesn't falsely trigger the tracking branch (which drops HF to 0.5).
+    const isTrackingSymbol = (sym: string) => {
       const upper = sym.toUpperCase();
       return (
         upper.startsWith('BLEND_') ||
@@ -544,10 +579,46 @@ export const refreshBorrowedBalances = async (
         upper.includes('AQUARIUS') ||
         upper.includes('SOROSWAP')
       );
-    });
-    const grossCollateralValue = hasTrackingTokenCollateral
-      ? totalCollateralValue
-      : totalCollateralValue + effectiveDebtValue;
+    };
+    // Gate on meaningful USD value: after full withdrawal the tracking token key
+    // stays in the chain response with WAD=0 — a zero-value entry must not
+    // falsely trigger the farm branch (which would drop HF to ~0.5).
+    const farmPositionValue = Object.entries(collateralBalances)
+      .filter(([sym]) => isTrackingSymbol(sym))
+      .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
+
+    const hasTrackingTokenCollateral = farmPositionValue > USD_DUST_EPSILON;
+
+    let grossCollateralValue: number;
+    if (hasTrackingTokenCollateral) {
+      // Farm positions exist. Gross = farm_value + raw_tokens_still_in_account.
+      //
+      // Invariant: farm_value + raw_in_account = total_assets (constant regardless
+      // of deployment). This correctly handles all sub-cases:
+      //   • farm-all   → raw = 0,   gross = farm                      ✓
+      //   • farm-collateral-only → raw = borrowed, gross = farm + borrowed ✓
+      //   • farm-partial → raw = remaining, gross = farm + remaining   ✓
+      //
+      // Using totalCollateralValue alone (old approach) missed the borrowed funds
+      // still sitting in the account when only collateral was deployed to Blend.
+      let rawAssetValue = 0;
+      try {
+        const [rawXlm, rawUsdc] = await Promise.all([
+          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'XLM'),
+          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'USDC'),
+        ]);
+        rawAssetValue =
+          parseFloat(rawXlm) * tokenPrice('XLM') +
+          parseFloat(rawUsdc) * tokenPrice('USDC');
+      } catch (e) {
+        console.warn('[refreshBorrowedBalances] raw token balance read failed, using farm-only gross:', e);
+      }
+      grossCollateralValue = farmPositionValue + rawAssetValue;
+    } else {
+      // No farm. Borrowed funds physically sit in the account — mirror the
+      // contract's borrow-time check: gross = collateral + debt.
+      grossCollateralValue = totalCollateralValue + effectiveDebtValue;
+    }
 
     const avgHealthFactor =
       effectiveDebtValue > 0
@@ -567,14 +638,12 @@ export const refreshBorrowedBalances = async (
     // Net Available Collateral = unencumbered equity (deposit not backing debt).
     // For a leveraged position this equals the user's initial collateral —
     // the borrowed assets sit in the account but they're owed, not free.
-    const netAvailableCollateral = Math.max(0, totalCollateralValue);
+    const netAvailableCollateral = Math.max(0, grossCollateralValue - effectiveDebtValue);
 
-    //  Total Value = collateral + debt (gross balance sheet). Reflects the
-    // total USD value sitting in the margin account — both the user's own
-    // deposit and the borrowed funds physically held by the smart account.
-    // Equity (collateral − debt) is already surfaced separately as
-    // "Net Available Collateral", so this row is the additive total.
-    const totalValue = totalCollateralValue + effectiveDebtValue;
+    // Total Value (InfoCard) = Net Available Collateral + Total Borrowed.
+    // Matches the two rows above it; equals grossCollateralValue when HF math
+    // is consistent, but must not use raw chain collateral + debt (double-counts).
+    const totalValue = netAvailableCollateral + totalBorrowedValue;
 
     //  Debt limit = maximum safe debt at liquidation threshold
     const debtLimit = grossCollateralValue > 0
@@ -607,6 +676,7 @@ export const refreshBorrowedBalances = async (
       collateralBalances,
       totalBorrowedValue,
       totalCollateralValue,
+      grossCollateralValue,
       totalValue,
       avgHealthFactor,
       collateralLeftBeforeLiquidation,

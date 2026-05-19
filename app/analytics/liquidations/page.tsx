@@ -204,8 +204,12 @@ export default function LiquidationsPage() {
   }, [snapshot]);
   const hasLiveEligible = liveEligible.length > 0;
   const eligible = liveEligible;
+  // Bad debt = positions already underwater (HF < 1.0): debt exceeds collateral with no haircut.
+  // Matches the Active Bad Debt formula on the Overview page.
   const liveBadDebtEstimate = useMemo(
-    () => eligible.reduce((sum, w) => sum + Math.max(0, w.debtUsd - w.collateralUsd * 0.9), 0),
+    () => eligible
+      .filter((w) => w.healthFactor < 1.0)
+      .reduce((sum, w) => sum + Math.max(0, w.debtUsd - w.collateralUsd), 0),
     [eligible],
   );
 
@@ -280,27 +284,27 @@ export default function LiquidationsPage() {
           />
           <KpiCard
             title="Collateral seized"
-            value={formatUsd(collateralSeizedUsd)}
-            subtitle="Sum of recoveryAmount from events (often 0 if payload sparse)"
-            tooltip="Total USD value of collateral claimed by liquidators to cover under-collateralized debt."
+            value={collateralSeizedUsd > 0 ? formatUsd(collateralSeizedUsd) : "—"}
+            subtitle="Not emitted by contract yet"
+            tooltip="Total USD value of collateral claimed by liquidators. Currently unavailable — the Trader_Liquidate_Event contract event does not yet emit recovery amounts."
           />
           <KpiCard
             title="Debt repaid"
-            value={formatUsd(debtRepaidUsd)}
-            subtitle="Sum of debtAmount from events"
-            tooltip="Total outstanding debt that was repaid through liquidation events during this period."
+            value={debtRepaidUsd > 0 ? formatUsd(debtRepaidUsd) : "—"}
+            subtitle="Not emitted by contract yet"
+            tooltip="Total debt repaid through liquidations. Currently unavailable — the contract event does not emit debt amounts."
           />
           <KpiCard
             title="Wallets with bad debt"
-            value={formatNumber(eligible.filter((w) => w.debtUsd > w.collateralUsd * 0.9).length)}
-            subtitle="Distinct addresses (eligible set)"
-            tooltip="Wallets where collateral couldn't fully cover the debt — the protocol absorbs the remaining shortfall."
+            value={formatNumber(eligible.filter((w) => w.healthFactor < 1.0 && w.debtUsd > w.collateralUsd).length)}
+            subtitle="Distinct addresses (HF < 1.0)"
+            tooltip="Wallets where debt exceeds gross collateral value (HF < 1.0) — the protocol absorbs the uncovered shortfall."
           />
           <KpiCard
             title="Live bad debt estimate"
             value={formatUsd(liveBadDebtEstimate)}
-            subtitle={hasLiveEligible ? "Derived from live eligible set" : "No HF < 1.1 positions in snapshot"}
-            tooltip="Approximation using current debt vs 90% collateral recovery for eligible wallets."
+            subtitle={hasLiveEligible ? "Derived from live eligible set" : "No HF < 1.0 positions in snapshot"}
+            tooltip="Sum of (debt − collateral) for all underwater positions (HF < 1.0). Matches the Active Bad Debt figure on the Overview page."
           />
           <KpiCard
             title="Success rate"
@@ -310,9 +314,9 @@ export default function LiquidationsPage() {
           />
           <KpiCard
             title="Avg time to liquidate"
-            value={avgTimeToLiquidateSec > 0 ? `${avgTimeToLiquidateSec}s` : "—"}
-            subtitle={history.length === 0 ? "No timed events" : "Mean durationSeconds from events"}
-            tooltip="Average time from when a position drops below HF 1.1 to when the liquidation transaction is confirmed."
+            value="—"
+            subtitle="Not emitted by contract yet"
+            tooltip="Average time from position becoming liquidatable to confirmed liquidation. Currently unavailable — durationSeconds not emitted by the contract event."
           />
         </div>
       </section>

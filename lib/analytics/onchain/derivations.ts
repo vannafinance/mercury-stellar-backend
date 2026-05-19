@@ -18,8 +18,10 @@ export function statusForHF(hf: number): RiskStatus {
   return "healthy";
 }
 
-/** Accounts with any debt. HF=Infinity accounts (zero debt) skew aggregates. */
-const withDebt = (s: AccountSnapshot) => s.totalDebtUsd > 0;
+/** Min debt to be counted as an active position. Sub-dollar dust creates
+ *  astronomically large HF values that skew every aggregate. */
+const MIN_ACTIVE_DEBT_USD = 1;
+const withDebt = (s: AccountSnapshot) => s.totalDebtUsd >= MIN_ACTIVE_DEBT_USD;
 
 // ============================================================================
 // Overview scalars
