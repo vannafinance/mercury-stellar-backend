@@ -10,7 +10,10 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { getAddress } from "@stellar/freighter-api";
 import { ContractService, CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import {
+  useMarginAccountInfoStore,
+  refreshBorrowedBalances,
+} from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -20,6 +23,8 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 
 const XLM_WALLET_RESERVE = 1;
 const XLM_TRANSFER_EPSILON = 1e-7;
+/** Match store + positions table: sub-cent residual debt is not real debt. */
+const BORROW_DUST_USD = 0.01;
 // XLM reserved inside the margin smart account. Stellar requires every
 // account to keep a base reserve (0.5 XLM × (2 + sub_entries)). A margin
 // account holds 4 collateral trustlines + persistent contract storage,
@@ -27,7 +32,7 @@ const XLM_TRANSFER_EPSILON = 1e-7;
 // b_rate→underlying rounding dust. A 5 XLM buffer was too tight in
 // practice (4 XLM withdraws still failed on-chain); bumping to 8 keeps
 // the margin account safely above all on-chain minimums.
-const XLM_MARGIN_WITHDRAW_BUFFER = 8;
+const XLM_MARGIN_WITHDRAW_BUFFER = 5;
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
 const formatHF = (hf: number): string =>
@@ -66,6 +71,8 @@ export const TransferCollateral = () => {
   const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
   const avgHealthFactor = useMarginAccountInfoStore((state) => state.avgHealthFactor);
+  const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
+  const hasMeaningfulDebt = totalBorrowedValue > BORROW_DUST_USD;
   // Subscribe to global wallet state — local user/balance state is loaded once
   // on mount via Freighter, so without this hook the component keeps showing
   // the previous wallet's margin and wallet balances after disconnect.
@@ -97,7 +104,7 @@ export const TransferCollateral = () => {
   const sourceBalanceInUsd = sourceBalance * selectedTokenPrice;
   const maxRiskSafeWithdraw = (() => {
     if (selectedTransferType !== "WB") return maxTransferableBalance;
-    if (totalBorrowedValue <= XLM_TRANSFER_EPSILON) return maxTransferableBalance;
+    if (!hasMeaningfulDebt) return maxTransferableBalance;
     // Use the store's avgHealthFactor (which mirrors the contract RiskEngine HF)
     // rather than recomputing gross from collateral+debt — that formula is only
     // correct for undeployed-cash accounts and gives a wrong (higher) limit when
@@ -126,7 +133,7 @@ export const TransferCollateral = () => {
     const token = normalizeContractTokenSymbol(selectedCurrency);
     // In practice, exact full XLM collateral withdraw can fail on-chain due to
     // state/rounding drift. Keep a small operational buffer for WB XLM when no debt.
-    if (token === "XLM" && totalBorrowedValue <= XLM_TRANSFER_EPSILON) {
+    if (token === "XLM" && !hasMeaningfulDebt) {
       return Math.max(
         0,
         Math.min(maxRiskSafeWithdraw, maxTransferableBalance - XLM_MARGIN_WITHDRAW_BUFFER)
@@ -139,7 +146,7 @@ export const TransferCollateral = () => {
   // Projected HF after a WB (withdraw) — used to block the Transfer button
   // and show a warning when the withdrawal would push HF below 1.1.
   const projectedHfAfterWb = (() => {
-    if (selectedTransferType !== "WB" || totalBorrowedValue <= XLM_TRANSFER_EPSILON) return Infinity;
+    if (selectedTransferType !== "WB" || !hasMeaningfulDebt) return Infinity;
     if (avgHealthFactor <= 0) return Infinity;
     const withdrawUsd = Number(valueInput || 0) * selectedTokenPrice;
     const grossBefore = avgHealthFactor * totalBorrowedValue;
@@ -149,7 +156,7 @@ export const TransferCollateral = () => {
   const isWbBelowLiqThreshold =
     selectedTransferType === "WB" &&
     Number(valueInput || 0) > 0 &&
-    totalBorrowedValue > XLM_TRANSFER_EPSILON &&
+    hasMeaningfulDebt &&
     projectedHfAfterWb < LIQUIDATION_THRESHOLD;
 
   function computeMaxTransferableBalance(
@@ -205,7 +212,7 @@ export const TransferCollateral = () => {
       return "Withdrawal failed on-chain. Please retry with a slightly smaller amount.";
     }
     if (text.includes("hosterror")) {
-      if (selectedTransferType === "WB" && totalBorrowedValue <= XLM_TRANSFER_EPSILON) {
+      if (selectedTransferType === "WB" && !hasMeaningfulDebt) {
         return `Full withdrawal can fail due to on-chain rounding/state dust. Try up to ${maxExecutableWithdraw.toFixed(2)} ${selectedCurrency}.`;
       }
       return "Transfer failed on-chain. Please retry in a moment.";
@@ -249,10 +256,16 @@ export const TransferCollateral = () => {
     if (!accountAddress) return;
 
     try {
-      const result = await MarginAccountService.getCollateralBalances(accountAddress);
-      if (result.success && result.data) {
-        const tokenData = result.data[normalizeContractTokenSymbol(selectedCurrency)];
-        setMarginAccountBalance(tokenData ? parseFloat(tokenData.amount) || 0 : 0);
+      const sym = normalizeContractTokenSymbol(selectedCurrency);
+      const storeBal = useMarginAccountInfoStore.getState().collateralBalances[sym];
+      if (storeBal?.amount) {
+        setMarginAccountBalance(parseFloat(storeBal.amount) || 0);
+      } else {
+        const result = await MarginAccountService.getCollateralBalances(accountAddress);
+        if (result.success && result.data) {
+          const tokenData = result.data[sym];
+          setMarginAccountBalance(tokenData ? parseFloat(tokenData.amount) || 0 : 0);
+        }
       }
     } catch (error) {
       console.error("Error refreshing margin account balance:", error);
@@ -286,6 +299,7 @@ export const TransferCollateral = () => {
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
+            await refreshBorrowedBalances(account.address, true);
             await refreshTokenBalances(address.address, account.address);
           } else {
             await refreshTokenBalances(address.address);
@@ -299,12 +313,28 @@ export const TransferCollateral = () => {
     loadUserData();
   }, []);
 
+  // Keep margin withdrawable balance in sync with the global store (farm-enriched).
+  useEffect(() => {
+    if (selectedTransferType !== "WB" || !marginAccount) return;
+    const sym = normalizeContractTokenSymbol(selectedCurrency);
+    const entry = collateralBalances[sym];
+    if (entry?.amount) {
+      setMarginAccountBalance(parseFloat(entry.amount) || 0);
+    }
+  }, [collateralBalances, selectedCurrency, selectedTransferType, marginAccount]);
+
   // Refresh when currency changes
   useEffect(() => {
     if (userAddress) {
       refreshTokenBalances(userAddress, marginAccount);
     }
   }, [selectedCurrency, marginAccount, userAddress]);
+
+  useEffect(() => {
+    if (marginAccount) {
+      refreshBorrowedBalances(marginAccount, true).catch(console.error);
+    }
+  }, [marginAccount]);
 
   const handlePercentageClick = (item: number) => {
     setPercentage(item);
@@ -360,9 +390,6 @@ export const TransferCollateral = () => {
       selectedTransferType === "WB" &&
       Number(valueInput) > maxExecutableWithdraw + XLM_TRANSFER_EPSILON
     ) {
-      // Treat near-zero debt (< 0.01 USD) as effectively no debt — leftover
-      // dust from rounding shouldn't make us lecture the user about safety.
-      const hasMeaningfulDebt = totalBorrowedValue > 0.01;
       const safeMaxDisplay = (Math.floor(maxExecutableWithdraw * 100) / 100).toFixed(2);
       if (!hasMeaningfulDebt) {
         toast.error(
@@ -406,6 +433,9 @@ export const TransferCollateral = () => {
         toast.success(
           `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
         );
+        if (marginAccount) {
+          await refreshBorrowedBalances(marginAccount, true);
+        }
         await refreshTokenBalances(userAddress, marginAccount);
         setValueInput("");
         setValueInUsd(0);
@@ -422,7 +452,7 @@ export const TransferCollateral = () => {
         if (
           selectedTransferType === "WB" &&
           normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
-          totalBorrowedValue <= XLM_TRANSFER_EPSILON &&
+          !hasMeaningfulDebt &&
           safeMaxAfterFailure > 0
         ) {
           setValueInput(safeMaxAfterFailure.toFixed(2));
@@ -722,16 +752,16 @@ const TransferPreviewSection = ({
   //
   // gross_before = avgHF × debt  (works regardless of collateral type)
   // gross_after  = gross_before ± transferUsd
-  const hfBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+  const hasDebt = totalBorrowedValue > BORROW_DUST_USD;
+  const hfBefore = hasDebt && avgHealthFactor > 0
     ? avgHealthFactor
     : HF_INF_SENTINEL;
-  const grossBefore = totalBorrowedValue > 0 && avgHealthFactor > 0
+  const grossBefore = hasDebt && avgHealthFactor > 0
     ? avgHealthFactor * totalBorrowedValue
     : totalCollateralValue;
   const grossAfter = isInbound ? grossBefore + transferUsd : Math.max(0, grossBefore - transferUsd);
 
-  const hfAfter =
-    totalBorrowedValue > 0 ? grossAfter / totalBorrowedValue : HF_INF_SENTINEL;
+  const hfAfter = hasDebt ? grossAfter / totalBorrowedValue : HF_INF_SENTINEL;
 
   const bufferBefore = Math.max(
     0,
