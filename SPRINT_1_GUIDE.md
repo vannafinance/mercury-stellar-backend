@@ -1,166 +1,285 @@
-# Sprint 1 Plan — Frontend Rewire (2-Dev Split)
+# Sprint 1 Plan — Stellar Integration Upgrade & Optimization (30-Day, 2-Dev Split)
 
-> **Sprint 1 of 6 — Vanna Backend Implementation**
-> **Duration:** 5 days · **Team:** 2 frontend devs in parallel
-> **Goal:** Zero `setInterval` for chain data. Zero `refetchInterval`. Ledger-tick drives every read. Every mutation migrated to `useMutation` with `onSuccess: invalidateQueries`.
-> **Companion doc:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (full code stubs + 6-sprint roadmap)
-> **Trunk for this sprint:** `main` of this repo (mercury-stellar-backend) — force-synced to Stellar_frontend's `new-contract-update` on 2026-05-14, so it carries the multi-pool contracts (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC), the Reflector oracle, and Risk Dashboard.
+> **Sprint 1 v3 — Vanna Backend Implementation**
+> **Duration:** 30 calendar days · **Start:** 2026-05-19 · **Target end:** 2026-06-17
+> **Team:** Phase 1 (Days 1–7) — Sanujit solo · Phase 2 (Days 8–30) — Sanujit + Divyansh in parallel
+> **Goal:** Zero `setInterval` for chain data. Zero `refetchInterval`. Ledger-tick drives every read. Every mutation migrated to `useMutation` with `onSuccess: invalidateQueries`. Plus: test infrastructure, optimistic updates, analytics perf, dual-write consolidation, type safety.
+> **Companion doc:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
+> **Trunk:** `main` of mercury-stellar-backend (merged with Stellar_frontend's `new-contract-update` on 2026-05-19 via merge commit `7c25ac7`; carries multi-pool contracts XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC, Reflector oracle, Risk Dashboard, the HF/net-earning fix, one-click APY-live, Blend liquidity HF bug fix, and LP-token deposit tracking fix).
 > **Notion source of truth:** https://www.notion.so/Sprint-1-Plan-Frontend-Rewire-2-Dev-Split-36042874c59b80e7a81fdec4d85eb0d7
 
 ---
 
-## What Changed Since v1 of This Doc
+## What Changed in v3
 
-Sprint 1 v1 was written before `new-contract-update` landed. A re-audit shows some original tasks are already done, and new ones are in scope. **Mutation strategy stays per v1: full `useMutation` migration.**
+v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 stretches that to **30 days** for two reasons:
 
-### Already shipped on `new-contract-update` — drop from Sprint 1
+1. **Dev A unavailable for first 7 days** — Sanujit owns the entire foundation + mutation surface solo before Divyansh joins on Day 8.
+2. **Scope expansion** — original 6-sprint roadmap compressed into this single 30-day sprint: test infra, unified error UX, optimistic updates, analytics perf, dual-write consolidation, type safety pass, and documentation.
 
-- CoinGecko deleted — `grep -ri coingecko .` returns nothing.
-- `contexts/price-context.tsx` deleted.
-- `lib/prices.ts` deleted.
-- `lib/oracle-price.ts` (Reflector wrapper) is live. `hooks/use-token-prices.ts` exposes `useTokenPrice` / `useTokenPrices` on top of it. The "delete + replace all `useTokenPrice("XLM")` imports" task is done.
+**Mutation strategy stays per v1/v2: full `useMutation` migration.** This decision is locked.
 
-### Still pending — Sprint 1 scope holds
+### Code state (audited 2026-05-19, post-merge)
 
-- `LedgerSubscriberProvider` — not built.
-- `setInterval` at `app/page.tsx:115` — still polls `refreshBorrowedBalances` every 30 s.
-- `setInterval` at `hooks/use-token-prices.ts:47` — Reflector cache refresh every 30 s.
-- `refetchInterval` still present in `use-earn.ts`, `use-margin.ts`, `use-farm.ts`, `use-soroswap.ts` (8 occurrences total).
-- `refreshKey` / `triggerRefresh` machinery in `store/blend-store.ts` + 5 consumers.
-- `lib/hooks/useSmartPolling.ts` still imported by `app/margin/page.tsx` and referenced in `contexts/query-provider.tsx` JSDoc.
-- All mutations are still imperative wrappers (no `useMutation` migration yet).
+Nothing from Sprint 1 has shipped yet. The starting line:
 
-### New scope added since v1 was written
+| Anti-pattern | Count | Locations |
+| ------------ | ----- | --------- |
+| `refetchInterval` on chain data | 11 | `use-earn.ts` (×2), `use-margin.ts` (×1), `use-farm.ts` (×5), `use-soroswap.ts` (×3) |
+| Chain-data `setInterval` | 2 | `hooks/use-token-prices.ts:47`, `app/page.tsx:114` |
+| `refreshKey` reads | 8 | `use-farm.ts` (×5), `use-soroswap.ts` (×3), `app/farm/[id]/page.tsx` (×4) |
+| Imperative mutation wrappers | 4 hook + 8 inline | See mutation table below |
+| `LedgerSubscriberProvider` | not built | — |
 
-| Area | Detail |
-| ---- | ------ |
-| Multi-pool ASSET_TYPES | `AQUARIUS_USDC` and `SOROSWAP_USDC` added alongside `XLM`/`USDC`. Every read path that lists pools must include all 4. `usePoolData` already does — verify the rest. |
-| `useMarginHistory` | New hook in `hooks/use-margin.ts:7` — 10 s `refetchInterval`. Needs ledger tick. |
-| `useAllAquariusPoolStats` / `useAllSoroswapPoolStats` | New multi-pool aggregators — 60 s `refetchInterval`. Needs tick. |
-| Risk Dashboard & Analytics pages | New `lib/analytics/`, `lib/risk/`, `components/analytics/`. Uses `setInterval` for **simulation agent tick** (`lib/analytics/oracle-agents/store.ts`). **Scope out:** this is simulation, not chain data. Document in audit allowlist. |
-| Lite Mode | New `components/lite-mode/`, `lib/one-click-strategy.ts`, `lib/hooks/useLiteModeGuard.ts`. Smoke-test path on Day 5. |
-| `MarginAccountService.getMarginTransactionHistory` | New on-chain history reader — already in a query, just needs tick. |
+The 5 upstream commits pulled into `main` on 2026-05-19 (risk dashboard, HF/net-earning fix, one-click APY live, Blend liquidity HF bug, LP-token deposit tracking) introduce **no new files** requiring extra scope beyond what's already enumerated.
 
-### Mutation strategy — full `useMutation` migration (per v1)
+### Mutation strategy — full `useMutation` migration
 
 Every mutation gets migrated to `@tanstack/react-query`'s `useMutation`. Each one wires `onSuccess: () => queryClient.invalidateQueries(...)` against the right key. The manual `refreshAllBalances()` / `refreshBorrowedBalances()` / `triggerRefresh()` calls get deleted — RQ cache becomes the single source of truth.
 
-**Scope grounded in `new-contract-update` code (audited 2026-05-14):**
-
 | Where | What exists today | Target |
 | --- | --- | --- |
-| `hooks/use-earn.ts:227` | `useSupplyLiquidity` — imperative wrapper returning `{ supply, isLoading, message }`, calls `refreshAllBalances()` after deposit | Migrate to `useMutation`, drop manual refresh |
-| `hooks/use-earn.ts:350` | `useWithdrawLiquidity` — same pattern | Migrate to `useMutation`, drop manual refresh |
-| `hooks/use-wallet.ts:199` | `useDeposit` — wraps `ContractService.deposit` | Migrate to `useMutation` |
-| `hooks/use-wallet.ts:276` | `useWithdraw` — wraps `ContractService.withdraw` | Migrate to `useMutation` |
-| `components/margin/repay-loan-tab.tsx` | Inline mutation calling `refreshBorrowedBalances` | Extract into a local `useMutation`, drop manual refresh |
-| `components/margin/leverage-assets-tab.tsx`, `transfer-collateral.tsx`, `collateral-box.tsx`, `borrow-box.tsx` | Same inline pattern (4 files) | Same — extract to `useMutation` |
-| `components/spot/spot-nonorderbook/SwapCard.tsx`, `components/lite-mode/position-detail.tsx` | Inline mutations on swap / one-click | Same |
-| `components/farm/add-liquidity.tsx:61`, `components/farm/remove-liquidity.tsx:30` | Call `triggerBlendRefresh()` after tx | Migrate to `useMutation` with `onSuccess: invalidateQueries({ queryKey: ['farm'] })` |
+| `hooks/use-earn.ts:227` | `useSupplyLiquidity` — imperative, calls `refreshAllBalances()` | `useMutation`, drop manual refresh |
+| `hooks/use-earn.ts:350` | `useWithdrawLiquidity` — same | Same |
+| `hooks/use-wallet.ts:199` | `useDeposit` — wraps `ContractService.deposit` | `useMutation` |
+| `hooks/use-wallet.ts:276` | `useWithdraw` — wraps `ContractService.withdraw` | `useMutation` |
+| `components/margin/repay-loan-tab.tsx` | Inline mutation + `refreshBorrowedBalances` | Local `useMutation`, drop manual refresh |
+| `components/margin/leverage-assets-tab.tsx`, `transfer-collateral.tsx`, `collateral-box.tsx`, `borrow-box.tsx` | Same inline pattern (4 files) | Same |
+| `components/spot/spot-nonorderbook/SwapCard.tsx`, `components/lite-mode/position-detail.tsx` | Inline swap / one-click mutations | Same |
+| `components/farm/add-liquidity.tsx:61`, `components/farm/remove-liquidity.tsx:30` | `triggerBlendRefresh()` post-tx | `useMutation` with `onSuccess: invalidateQueries({ queryKey: ['farm'] })` |
 
-**4 hook-level + ~8 inline component-level = ~12 mutation sites to convert.**
-
-**Caller impact:** the 4 hook-level mutations currently expose `{ supply, isLoading, message }` (or equivalent). After migration callers switch to the mutation object: `{ mutate, mutateAsync, isPending, error, isSuccess }`. The `message` toast UX (currently `useState` inside the hook) moves into the caller — read `mutation.error?.message` on failure, react to `mutation.isSuccess` for success. Plan on touching ~10–15 caller sites across `components/earn/`, `components/margin/`, `components/spot/`, `components/lite-mode/`, `app/page.tsx` while converting each hook.
-
-**Note on existing comment in `hooks/use-earn.ts:223-225`** (current code says imperative wrappers are intentional): that comment is now outdated and gets deleted as part of this migration. The full `useMutation` end-state is what the sprint commits to.
+**4 hook-level + ~8 inline = ~12 mutation sites · ~10–15 caller refactors.**
 
 ---
 
 ## Strategy
 
-Sprint 1 me 5 days of work hai for 1 dev. 2 devs ke saath parallel tracks chala ke same 5 days me khatam karenge with **safety buffer** + better integration testing.
+**Phase 1 (Days 1–7) — Solo:** Sanujit owns the entire foundation. The work is independent and well-bounded: build `LedgerSubscriberProvider`, migrate all hook-level + inline mutations, rewire `token-prices` tick. No pairing required, no upstream blockers after Day 2 once the provider is merged.
 
-**Critical dependency:** Day 1 ko `LedgerSubscriberProvider` build hona MUST hai — baki saara kaam `useLedgerTick` hook par depend karta hai. Isiliye Dev A Day 1 par usi pe focused hai, Dev B parallel me `useMutation` conversion shuru karta hai (jo independent hai — `useMutation` already in TanStack Query, no new deps).
+**Phase 2 (Days 8–30) — Two-dev parallel:** Divyansh joins. Both devs work in parallel tracks. The hook `refetchInterval` migration splits cleanly (earn+margin vs farm+soroswap), and from Day 13 onward the work fans out into independent optimization streams (test infra, optimistic updates, analytics perf, etc.) that don't share files.
 
-**Net delta vs v1:** ~1.5 dev-days of Sprint 1 scope is already done (CoinGecko removal + price-context delete). That budget is being re-spent on multi-pool verification, inline-mutation `useMutation` extraction, and the lite-mode + Risk-Dashboard smoke path on Day 5 — so calendar is unchanged but coverage is wider.
+**Net vs v2:** v2 budgeted 10 dev-days for 2 devs over 5 calendar days. v3 budgets ~7 solo dev-days (Phase 1) + ~46 dev-days for 2 devs over 23 calendar days (Phase 2) = ~53 dev-days total. The extra ~43 dev-days fund: test infra (~6), unified error UX (~4), optimistic updates (~6), analytics perf (~6), dual-write consolidation (~2), type safety (~4), docs (~2), bug bash + e2e (~4), buffer (~9).
 
 ---
 
 ## Branching Strategy
 
 ```
-main                                          (mercury-stellar-backend — synced to new-contract-update)
-  └─ feat/sprint-1-rewire                     (integration branch)
-       ├─ feat/s1-ledger-provider             (Dev A — Day 1)
-       ├─ feat/s1-token-prices-tick           (Dev A — Day 2)
-       ├─ feat/s1-hooks-earn-margin           (Dev A — Day 3)
-       ├─ feat/s1-mutations                   (Dev B — Day 1–2)
-       ├─ feat/s1-hooks-farm-soroswap         (Dev B — Day 3)
-       └─ feat/s1-cleanup                     (split — Day 4)
+main                                                  (mercury-stellar-backend — merge 7c25ac7 from new-contract-update)
+  └─ feat/stellar-optimization-30d                    (long-lived integration branch — cuts from main 2026-05-19)
+       │
+       │  ── Phase 1 (Sanujit, solo) ──
+       ├─ s1/ledger-provider                          (D1–2)
+       ├─ s1/mutations-hook                           (D3–4 — useSupplyLiquidity, useWithdrawLiquidity, useDeposit, useWithdraw)
+       ├─ s1/token-prices-tick                        (D5)
+       ├─ s1/mutations-inline                         (D6–7 — 8 inline component mutations)
+       │
+       │  ── Phase 2 (Sanujit + Divyansh, parallel) ──
+       ├─ s1/hooks-tick-earn-margin                   (D8–10  · Dev A)
+       ├─ s1/hooks-tick-farm-soroswap                 (D8–10  · Dev B)
+       ├─ s1/cleanup-refreshkey                       (D11)
+       ├─ s1/cleanup-smartpolling                     (D12)
+       ├─ s2/test-infra-services                      (D13–15 · Dev A)
+       ├─ s2/test-infra-hooks                         (D13–15 · Dev B)
+       ├─ s3/error-ux                                 (D16–17)
+       ├─ s3/optimistic-earn                          (D18–20 · Dev A)
+       ├─ s3/optimistic-margin                        (D18–20 · Dev B)
+       ├─ s4/perf-analytics                           (D21–23 · Dev A)
+       ├─ s4/perf-risk-dashboard                      (D21–23 · Dev B)
+       ├─ s4/dual-write-cleanup                       (D24)
+       ├─ s4/typesafety                               (D25–26)
+       ├─ s4/docs                                     (D27)
+       └─ s4/release                                  (D28–30 — bug bash + final integration → squash to main)
 ```
 
-- **Trunk is `main` of mercury-stellar-backend** (force-synced to Stellar_frontend's `new-contract-update` on 2026-05-14). All Sprint 1 branches already exist on origin pointing at the same commit. Day 5 EOD: integration branch → `main` (squash merge).
-- Daily PRs into the integration branch.
-- Each branch must pass `npm run lint && npm run build` before merge.
+**Rules:**
+
+- **Trunk is `main`** of mercury-stellar-backend.
+- **Integration branch** `feat/stellar-optimization-30d` collects all 17 phase branches. Each phase branch PRs into the integration branch.
+- **Old v2 branches** (`feat/sprint-1-rewire`, `feat/s1-*`) remain on origin as reference — do not delete.
+- **Daily PRs** into the integration branch. Cross-review SLA: same-day before EOD (Phase 2).
+- **Each branch must pass** `npm run lint && npm run build` before merge.
+- **Day 30 EOD:** integration branch → `main` via squash merge.
 
 ---
 
-## Day-by-Day Split
+## Phase 1 — Solo Foundation (Days 1–7, Sanujit)
 
-### Day 1 — Foundation + Parallel Mutation Start
+### Day 1 — LedgerSubscriberProvider (scaffold)
 
-**Morning (pair, ~2 hrs):**
+- [ ] `git checkout main && git pull` → `git checkout -b s1/ledger-provider feat/stellar-optimization-30d`
+- [ ] Verify Soroban testnet RPC + Horizon SSE working with curl
+- [ ] Build `contexts/ledger-subscriber.tsx` from `IMPLEMENTATION_PLAN.md` L140–225. Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, lastLedgerSeq }`
+- [ ] Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries`
 
-- [ ] Both devs: pull contract addresses for the 4 pools (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC); set up `.env.local` per Sprint 0 prereqs
-- [ ] Both devs: verify Soroban testnet RPC + Horizon SSE working with curl
-- [ ] Both devs: `git checkout main && git pull && git checkout feat/sprint-1-rewire` (already exists on origin)
+### Day 2 — LedgerProvider verify + merge
 
-**Afternoon (split):**
+- [ ] DevTools: `tick` increments every ~5 s, no console errors, RQ DevTools shows invalidations firing on tick
+- [ ] Handle: SSE reconnect on network drop, tab visibility (continue or back off — pick + document)
+- [ ] `npm run lint && npm run build` clean
+- [ ] **PR `s1/ledger-provider` → integration branch** ⚡ unblocks all later tick wiring
 
-| Dev A (foundation track) | Dev B (useMutation track) |
-| --- | --- |
-| Build `contexts/ledger-subscriber.tsx` (full code from `IMPLEMENTATION_PLAN.md` L140–225). Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, lastLedgerSeq }` | Audit every mutation site — both hook-level *and* inline component-level. Produce a checklist: `grep -rn "ContractService\." hooks/ components/ app/` |
-| Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries` | Convert `useSupplyLiquidity` (hooks/use-earn.ts:227) to `useMutation`. Wire `onSuccess: () => qc.invalidateQueries({ queryKey: ['earn'] })`. Delete inline `refreshAllBalances()`. Update callers from `{ supply, isLoading, message }` to `{ mutate, isPending, error }`. |
-| Verify DevTools: `tick` increments every ~5 s, no console errors, RQ DevTools shows invalidations firing | Convert `useWithdrawLiquidity` (hooks/use-earn.ts:350), `useDeposit` (hooks/use-wallet.ts:199), `useWithdraw` (hooks/use-wallet.ts:276) — same pattern. |
-| **PR `feat/s1-ledger-provider` → review → merge** ⚡ blocker for Day 2+ | Open `feat/s1-mutations` PR (work continues Day 2) |
+### Day 3 — Hook-level mutations (earn)
 
-**EOD Checkpoint:** LedgerProvider merged into integration. Dev B can now use `useLedgerTick` from Day 2. All 4 hook-level mutations converted to `useMutation` (PR open, not yet merged).
+- [ ] `git checkout -b s1/mutations-hook feat/stellar-optimization-30d`
+- [ ] Convert `useSupplyLiquidity` (`hooks/use-earn.ts:227`) to `useMutation`. Wire `onSuccess: () => qc.invalidateQueries({ queryKey: ['earn'] })`. Delete inline `refreshAllBalances()`.
+- [ ] Convert `useWithdrawLiquidity` (`hooks/use-earn.ts:350`). Same pattern.
+- [ ] Delete the outdated comment at `hooks/use-earn.ts:223–225` ("Mutations — stay imperative")
+- [ ] Update callers: `{ supply, isLoading, message }` → `{ mutate, mutateAsync, isPending, error, isSuccess }`. Toast UX moves to the caller via `mutation.error?.message` / `mutation.isSuccess`. Expect to touch ~5 caller sites in `components/earn/`, `app/earn/page.tsx`.
+
+### Day 4 — Hook-level mutations (wallet)
+
+- [ ] Convert `useDeposit` (`hooks/use-wallet.ts:199`) to `useMutation`. Invalidate `['earn']` + `['margin']` as appropriate.
+- [ ] Convert `useWithdraw` (`hooks/use-wallet.ts:276`). Same pattern.
+- [ ] Caller refactors: `app/page.tsx`, `app/earn/page.tsx`, `components/wallet/*` (~3–5 sites)
+- [ ] `npm run lint && npm run build` clean
+- [ ] **PR `s1/mutations-hook` → integration branch**
+
+### Day 5 — token-prices tick + setInterval cleanup
+
+- [ ] `git checkout -b s1/token-prices-tick feat/stellar-optimization-30d`
+- [ ] Rewire `hooks/use-token-prices.ts:47`: drop 30 s `setInterval(refresh, REFRESH_INTERVAL_MS)`. Wrap `useTokenPrices` in `useQuery` with `queryKey: ['oracle','prices', sortedSymbols, tick]`
+- [ ] Delete `app/page.tsx:114` `setInterval(refreshBorrowedBalances, 30000)`. Hook-level tick on `useMarginHistory` + `useUserPositions` (after Phase 2 D8–10) replaces it. Interim: keep a `useEffect` that invalidates `['margin']` on tick change.
+- [ ] Verify Network tab: no 30 s pulse on Reflector price calls; refresh is now ledger-close (~5 s)
+- [ ] **PR `s1/token-prices-tick` → integration branch**
+
+### Day 6 — Inline mutations (margin)
+
+- [ ] `git checkout -b s1/mutations-inline feat/stellar-optimization-30d`
+- [ ] Extract inline mutations to local `useMutation` in:
+  - `components/margin/repay-loan-tab.tsx` — `onSuccess` invalidates `['margin']`, delete `refreshBorrowedBalances(...)` call
+  - `components/margin/leverage-assets-tab.tsx` (4 sites: L537, L557, L773, L795)
+  - `components/margin/transfer-collateral.tsx`
+  - `components/margin/collateral-box.tsx`, `borrow-box.tsx`
+
+### Day 7 — Inline mutations (swap/lite/farm) + Phase 1 review
+
+- [ ] Extract inline mutations in:
+  - `components/spot/spot-nonorderbook/SwapCard.tsx` — invalidate `['margin']` + `['soroswap']`
+  - `components/lite-mode/position-detail.tsx`
+  - `components/farm/add-liquidity.tsx:61` — invalidate `['farm']`, delete `triggerBlendRefresh()`
+  - `components/farm/remove-liquidity.tsx:30` — same
+- [ ] `npm run lint && npm run build` clean
+- [ ] **PR `s1/mutations-inline` → integration branch**
+- [ ] **Phase 1 review (EOD):** all 12 mutation sites on `useMutation`. Smoke test supply/withdraw/repay on testnet against one pool.
+
+**Phase 1 done when:** LedgerProvider live · 12 mutations on `useMutation` · `token-prices` on tick · `app/page.tsx:114` setInterval deleted.
 
 ---
 
-### Day 2 — Branch Out
+## Phase 2 — Two-Dev Parallel (Days 8–30)
 
-| Dev A (token-prices + page-level setInterval) | Dev B (inline component-level mutations → useMutation) |
-| --- | --- |
-| Rewire `hooks/use-token-prices.ts:47`: drop the 30 s `setInterval(refresh, REFRESH_INTERVAL_MS)`. Wrap `useTokenPrices` in `useQuery` with `queryKey: ['oracle','prices', sortedSymbols, tick]` | Extract inline mutation in `components/margin/repay-loan-tab.tsx` into a `useMutation`. `onSuccess` invalidates `['margin']`. Delete the `refreshBorrowedBalances(...)` call. |
-| Delete `app/page.tsx:115` `setInterval(refreshBorrowedBalances, 30000)`. Replace with a `useEffect` that calls invalidate on each `tick` change (or just delete entirely — hook-level tick already covers it) | Same for `components/margin/leverage-assets-tab.tsx`, `components/margin/transfer-collateral.tsx`, `components/margin/collateral-box.tsx`, `components/margin/borrow-box.tsx` (4 files) |
-| Verify Network tab: no 30 s pulse on Reflector price calls; refresh is now driven by ledger close (~5 s) | Same for `components/spot/spot-nonorderbook/SwapCard.tsx`, `components/lite-mode/position-detail.tsx`, `components/farm/add-liquidity.tsx` (replace `triggerBlendRefresh` with `qc.invalidateQueries({ queryKey: ['farm'] })`), `components/farm/remove-liquidity.tsx` |
-| **PR `feat/s1-token-prices-tick`** | **PR `feat/s1-mutations`** (continued — finalize + merge) |
-
-**EOD Checkpoint:** Cross-review each other's PRs (15 min each). Both merge to integration. All ~12 mutation sites now on `useMutation`.
-
----
-
-### Day 3 — Hook Migration (Split by File)
+### Days 8–10 — Hook tick migration
 
 | Dev A (earn + margin) | Dev B (farm + soroswap) |
 | --- | --- |
-| `hooks/use-earn.ts` — drop `refetchInterval: 30_000` on `usePoolData` and `refetchInterval: 10_000` on `useEarnTransactions`. Add `tick` to both queryKeys. Confirm 4-pool fetch (XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC) still works after migration. | `hooks/use-soroswap.ts` — drop 60 s `refetchInterval` on `useAllSoroswapPoolStats` + `useSoroswapPoolStats`; drop 10 s on `useSoroswapEvents`. Add `tick` to queryKeys. **Also delete `refreshKey` reads** (lines 78, 101, 125) — the tick replaces them. |
-| `hooks/use-margin.ts` — drop `refetchInterval: 10_000` on `useMarginHistory`. Add `tick` to queryKey. (Note: this hook is new since Sprint 1 v1 was drafted.) | `hooks/use-farm.ts` — same pattern. Drop 60 s on `useBlendPoolStats`, `useAllAquariusPoolStats`, `useAquariusPoolStats`. Drop 10 s on `useBlendEvents`, `useAquariusEvents`. **Delete `refreshKey` reads** in all 5 places. |
-| Verify each hook invalidates on ledger tick using RQ DevTools | Verify same. Confirm `useAllAquariusLpPositions` (no `refetchInterval` today, but does use `refreshKey`) gets the tick treatment too. |
-| **PR `feat/s1-hooks-earn-margin`** | **PR `feat/s1-hooks-farm-soroswap`** |
+| `hooks/use-earn.ts` — drop `refetchInterval: 30_000` on `usePoolData`, `refetchInterval: 10_000` on `useEarnTransactions`. Add `tick` to both queryKeys. | `hooks/use-soroswap.ts` — drop 60 s `refetchInterval` on `useAllSoroswapPoolStats` + `useSoroswapPoolStats`; drop 10 s on `useSoroswapEvents`. Add `tick` to queryKeys. Delete `refreshKey` reads (L78, L101, L125). |
+| `hooks/use-margin.ts` — drop `refetchInterval: 10_000` on `useMarginHistory`. Add `tick` to queryKey. | `hooks/use-farm.ts` — drop 60 s on `useBlendPoolStats`, `useAllAquariusPoolStats`, `useAquariusPoolStats`. Drop 10 s on `useBlendEvents`, `useAquariusEvents`. Delete `refreshKey` reads in all 5 places. |
+| Verify each hook invalidates on ledger tick via RQ DevTools. Confirm 4-pool fetch (XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC) still works. | Confirm `useAllAquariusLpPositions` and `useSoroswapTokenBalance` also get tick treatment. |
+| **PR `s1/hooks-tick-earn-margin`** | **PR `s1/hooks-tick-farm-soroswap`** |
 
-**Migration pattern (apply to every hook):**
+### Day 11 — `refreshKey` teardown + 4-pool verify
 
-```typescript
-// Before
-useQuery({
-  queryKey: ['earn', 'pools'],
-  queryFn: fetchPools,
-  refetchInterval: 30_000,
-  staleTime: 15_000,
-});
+- Dev A: Delete `refreshKey` + `triggerRefresh` from `store/blend-store.ts` (file is 17 lines — likely empty or gets deleted). Confirm no remaining `triggerBlendRefresh()` callers.
+- Dev B: 4-pool end-to-end verify on testnet — supply/withdraw/borrow/repay each of XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC. Confirm balance updates ≤5 s without manual refresh.
+- Final grep: `grep -rn "refreshKey\|triggerRefresh" .` returns nothing.
+- **Joint PR `s1/cleanup-refreshkey`**.
 
-// After
-const { tick } = useLedgerTick();
-useQuery({
-  queryKey: ['earn', 'pools', tick],
-  queryFn: fetchPools,
-  staleTime: 4_000,
-});
-```
+### Day 12 — `useSmartPolling` decision + first integration smoke
 
-**Mutation pattern (from Days 1–2, for reference):**
+- Dev A: Delete `lib/hooks/useSmartPolling.ts`. Remove import from `app/margin/page.tsx`. Update JSDoc in `contexts/query-provider.tsx:11`.
+- Dev B: First full integration smoke pass on testnet (supply, borrow, swap, add liquidity, remove liquidity across all 4 pools). Document any bugs surfaced.
+- **PR `s1/cleanup-smartpolling`**.
+
+### Days 13–15 — Test infrastructure
+
+| Dev A (services) | Dev B (hooks) |
+| --- | --- |
+| Install vitest + happy-dom. Configure for ESM + TS. Add `npm run test` script. | Install React Testing Library. Configure with vitest. |
+| Unit tests: `ContractService.deposit`/`withdraw`/`getPoolStats` happy + failure path. Mock Soroban client at the `rpcServer` boundary. | Hook tests: `useLedgerTick` (mocks Horizon SSE), `useSupplyLiquidity` (`renderHook` + `act` for mutation lifecycle, RQ provider wrapper). |
+| Unit tests: `MarginAccountService.getMarginTransactionHistory`, repay/borrow service-layer paths. | Hook tests: `usePoolData` tick-driven invalidation, `useEarnTransactions`. |
+| Aim: ~30 service-layer tests across 4 services. | Aim: ~15 hook tests. |
+| **PR `s2/test-infra-services`** | **PR `s2/test-infra-hooks`** |
+
+### Days 16–17 — Unified mutation error/toast UX
+
+Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation callers with a single hook (e.g., `useMutationToast(mutation, { success, error })`). One toast lib (sonner or react-hot-toast — pick first). Error normalization centralised in `lib/errors/normalize.ts` (replaces ad-hoc `normalizeSupplyError`, `normalizeWithdrawError` in `use-earn.ts`).
+
+**Joint PR `s3/error-ux`**.
+
+### Days 18–20 — Optimistic updates
+
+| Dev A (earn supply/withdraw) | Dev B (margin borrow/repay) |
+| --- | --- |
+| `onMutate`: snapshot current `['earn', 'positions', ...]` cache, write predicted post-deposit balance. | `onMutate`: snapshot `['margin', ...]`, write predicted post-borrow debt + HF. |
+| `onError`: rollback to snapshot. | `onError`: rollback. |
+| `onSettled`: invalidate to reconcile with on-chain truth. | `onSettled`: invalidate. |
+| Visual: supply button shows "Confirming…" but balance updates immediately, snaps back if tx fails. | Visual: borrow shows new HF immediately; rolls back on revert. |
+| **PR `s3/optimistic-earn`** | **PR `s3/optimistic-margin`** |
+
+### Days 21–23 — Analytics + Risk Dashboard perf
+
+| Dev A (analytics) | Dev B (risk explorer) |
+| --- | --- |
+| Audit `lib/analytics/onchain/derivations.ts` — memoize heavy reduce/map chains. | Audit `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — derive once per render, not per row. |
+| `PositionsMonitor.tsx` — React DevTools profile, eliminate redundant re-renders (likely missing `useMemo` on derived rows). | Bisect Risk Dashboard render cost — find the heaviest sub-tree, optimize. |
+| Confirm `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays untouched (allowlist). | Confirm event feed pagination doesn't re-fetch on every tick. |
+| **PR `s4/perf-analytics`** | **PR `s4/perf-risk-dashboard`** |
+
+### Day 24 — Zustand dual-write consolidation
+
+- Audit `useEarnPoolStore.getState().set({...})` calls in `use-earn.ts:48,84`. Decide: remove (and migrate readers to RQ) or keep (and document why dual-write is intentional).
+- Same audit for `store/margin-account-info-store.ts` — `refreshBorrowedBalances` writes at L148, 160, 195.
+- Recommend remove unless a non-RQ legacy reader is found.
+- **Joint PR `s4/dual-write-cleanup`**.
+
+### Days 25–26 — Type safety pass
+
+| Dev A | Dev B |
+| --- | --- |
+| Tighten service-layer return types: `ContractService`, `MarginAccountService`, `BlendService`, `AquariusService`, `SoroswapService`. Replace any `any` / loose return shapes. | Tighten hook return types — explicit interfaces for `usePoolData`, `useUserPositions`, `useMarginHistory`, `useAll*PoolStats`. |
+| `npm run lint` strict + no warnings. | Same. |
+| **Joint PR `s4/typesafety`**. | (same PR) |
+
+### Day 27 — Documentation
+
+- Update `SPRINT_1_GUIDE.md` (this doc) — mark each Phase 2 step done.
+- Update `IMPLEMENTATION_PLAN.md` "What's done in S1" section.
+- Write new `ARCHITECTURE.md` summarizing post-sprint state: ledger-tick model, mutation pattern, store/RQ split, test layout.
+- Update `contexts/query-provider.tsx` JSDoc.
+- **Joint PR `s4/docs`**.
+
+### Days 28–29 — Bug bash + full testnet e2e
+
+Both devs pair. Run every flow from v2's Day 5 checklist (Earn × 4 assets, Margin × 4 assets, Farm × Aquarius + Soroswap, Lite + One-click, Risk Dashboard regression). Each scenario verifies functional success AND reactive UI update ≤5 s.
+
+Fix any bugs found in `s4/release`.
+
+### Day 30 — Final integration + handoff
+
+- `npm run lint && npm run build && npm run test` all green
+- Final grep audit (from v2 Day 5):
+  ```bash
+  grep -rn "refetchInterval" hooks/ app/        # empty
+  grep -rn "refreshKey\|triggerRefresh" .       # empty
+  grep -rni "coingecko" .                       # empty
+  grep -rn "refreshAllBalances\|refreshBorrowedBalances" .  # empty
+  ```
+- `setInterval` allowlist (NOT chain data — leave alone):
+  - `components/faucet/faucet-popup.tsx` — countdown timer
+  - `components/analytics/layout/Header.tsx` — clock
+  - `components/ui/carousel.tsx` — slide rotation
+  - `components/ui/bridging-dialogue.tsx` — animation
+  - `lib/analytics/oracle-agents/store.ts` — simulation agent tick
+- Squash-merge `feat/stellar-optimization-30d` → `main`
+- Write CHANGELOG entry summarizing the 30-day sprint
+- Tag release `v0.s1.0`
+
+---
+
+## Migration Patterns
+
+**Mutation pattern (Phase 1):**
 
 ```typescript
 // Before (imperative wrapper)
@@ -194,149 +313,95 @@ export const useSupplyLiquidity = () => {
 //   if (supply.error) toast.error(supply.error.message);
 ```
 
-**For hooks that read `refreshKey` (use-farm.ts, use-soroswap.ts):** delete the `useBlendStore((s) => s.refreshKey)` line and remove `refreshKey` from the queryKey. The ledger tick replaces it, and Dev B's `useMutation` work from Days 1–2 means mutations invalidate RQ keys directly on success.
+**Hook tick pattern (Phase 2 Days 8–10):**
 
-**EOD Checkpoint:** Both branches pass `npm run lint && npm run build`. Cross-review + merge. Run a smoke test of the analytics/risk dashboard (Dev B owns) — confirm the simulation `setInterval` in `lib/analytics/oracle-agents/store.ts` is **untouched** and the page still renders.
+```typescript
+// Before
+useQuery({
+  queryKey: ['earn', 'pools'],
+  queryFn: fetchPools,
+  refetchInterval: 30_000,
+  staleTime: 15_000,
+});
 
----
-
-### Day 4 — Cleanup (Split)
-
-| Dev A (refreshKey teardown) | Dev B (audit + smart-polling fate) |
-| --- | --- |
-| Delete `refreshKey` + `triggerRefresh` from `store/blend-store.ts` (file is 17 lines — likely becomes empty or gets deleted entirely) | Verify: queries write *only* to RQ cache, not Zustand. Audit `useEarnPoolStore.getState().set({...})` calls in `use-earn.ts:48,84` — decide keep (dual-write for legacy consumers) or remove (and migrate readers to RQ) |
-| Confirm no remaining `triggerBlendRefresh()` callers in `components/farm/*` (Day 2 handled them — re-grep to be sure) | Audit `lib/hooks/useSmartPolling.ts` — currently imported by `app/margin/page.tsx` and JSDoc'd in `contexts/query-provider.tsx`. **Decision:** delete it (ledger tick supersedes its purpose) OR keep + document as a fallback primitive. Recommend delete. |
-| Verify: `grep -rn "refreshKey\|triggerRefresh" .` returns nothing (excluding `node_modules`) | Update the JSDoc comment in `contexts/query-provider.tsx:11` that still references `useSmartPolling` |
-| Update `STATE_MANAGEMENT_ANALYSIS.md` for what changed | Update `IMPLEMENTATION_PLAN.md` "What's done in S1" section to reflect actual end-state |
-| **Joint PR `feat/s1-cleanup`** | (same PR) |
-
-**EOD Checkpoint:** All PRs merged into `feat/sprint-1-rewire` integration branch.
-
----
-
-### Day 5 — Integration Testing (Pair All Day)
-
-Both devs pair on testnet smoke test. Each scenario verifies **both** functional success and reactive (≤5 s) UI update.
-
-**Earn / Lending pool flows (all 4 assets):**
-
-- [ ] Supply XLM → vToken balance updates ≤5 s, no manual refresh
-- [ ] Supply USDC, AQUARIUS_USDC, SOROSWAP_USDC → same
-- [ ] Withdraw each → balance updates ≤5 s
-- [ ] Pool stats (`usePoolData`) refresh on every ledger close
-- [ ] Mutations expose `isPending` correctly (button disabled state) + surface errors via `mutation.error.message`
-
-**Margin flows:**
-
-- [ ] Deposit collateral (each asset type) → margin account balance + health factor update ≤5 s
-- [ ] Borrow each token → health factor updates in real-time
-- [ ] Repay (partial + full) → debt balance updates ≤5 s
-- [ ] Transfer collateral → balance updates ≤5 s
-- [ ] Withdraw collateral → balance + health factor update
-- [ ] `useMarginHistory` shows new tx within one ledger tick (verify against on-chain Stellar Expert)
-
-**Farm flows:**
-
-- [ ] Aquarius: add liquidity to each pool → LP balance updates ≤5 s
-- [ ] Aquarius: remove liquidity → same
-- [ ] Aquarius events feed shows new tx within one tick
-- [ ] Soroswap: add liquidity → LP balance updates ≤5 s
-- [ ] Soroswap: swap (each pair) → wallet balance updates ≤5 s
-- [ ] Soroswap events feed shows new tx within one tick
-
-**Lite mode + One-click:**
-
-- [ ] Lite home renders and loads positions
-- [ ] One-click strategy entry → balances update ≤5 s
-- [ ] Position detail page reactive to ledger close
-
-**Risk Dashboard / Analytics (regression — must NOT have been broken by Sprint 1):**
-
-- [ ] `/analytics` route renders
-- [ ] Oracle agent simulation tick still firing (sim, NOT chain — verified by `lib/analytics/oracle-agents/store.ts` still using `setInterval` 3 s)
-- [ ] Event feed / liquidation / alert pages render with live RPC data
-
-**Idle + visibility:**
-
-- [ ] Idle 5+ min → ledger SSE still attached, but no spurious extra RPC calls. Network tab shows ~1 invalidate burst per ledger close
-- [ ] Tab hidden 2+ min → background SSE continues OR backs off cleanly (document chosen behavior)
-
-**Final audit grep (must return nothing outside the allowlist):**
-
-```bash
-# Forbidden in chain-data paths:
-grep -rn "refetchInterval" hooks/ app/        # should be empty
-grep -rn "refreshKey\|triggerRefresh" .       # should be empty
-grep -rni "coingecko" .                        # should be empty
-grep -rn "refreshAllBalances\|refreshBorrowedBalances" .   # should be empty
-
-# setInterval allowlist (NOT chain data — leave alone):
-#   components/faucet/faucet-popup.tsx        — countdown timer
-#   components/analytics/layout/Header.tsx    — clock
-#   components/ui/carousel.tsx                — slide rotation
-#   components/ui/bridging-dialogue.tsx       — animation
-#   lib/analytics/oracle-agents/store.ts      — simulation agent tick
+// After
+const { tick } = useLedgerTick();
+useQuery({
+  queryKey: ['earn', 'pools', tick],
+  queryFn: fetchPools,
+  staleTime: 4_000,
+});
 ```
 
-**Final action:** Squash-merge `feat/sprint-1-rewire` → `main`.
+**Optimistic mutation pattern (Phase 2 Days 18–20):**
 
----
-
-## Workload Balance
-
-|        | Day 1 | Day 2 | Day 3 | Day 4 | Day 5 |
-| ------ | ----- | ----- | ----- | ----- | ----- |
-| Dev A  | LedgerProvider (heavy creation, ~6 hrs) | token-prices tick + delete app/page.tsx setInterval | use-earn + use-margin (incl. new `useMarginHistory` + multi-pool verify) | refreshKey teardown + sanity-check farm callsites | Pair test |
-| Dev B  | Audit + convert 4 hook-level mutations to `useMutation` (use-earn × 2, use-wallet × 2) | Convert ~8 inline component-level mutations to `useMutation` | use-farm + use-soroswap (incl. multi-pool aggregators) | SmartPolling audit + dual-write decision + docs | Pair test |
-
-**Net split:**
-
-- **Dev A** owns *creation* + *file deletes* (LedgerProvider, refreshKey teardown).
-- **Dev B** owns *mutation surface conversion* — ~12 mutation sites migrated to `useMutation` + caller refactors (~10–15 caller sites).
-
-Hours roughly equal, complementary in skills.
+```typescript
+useMutation({
+  mutationFn: ({ amount }) => ContractService.deposit(address, amount, assetType),
+  onMutate: async ({ amount }) => {
+    await qc.cancelQueries({ queryKey: ['earn', 'positions'] });
+    const prev = qc.getQueryData(['earn', 'positions']);
+    qc.setQueryData(['earn', 'positions'], (old) => predictBalanceAfterDeposit(old, amount));
+    return { prev };
+  },
+  onError: (_err, _vars, ctx) => qc.setQueryData(['earn', 'positions'], ctx.prev),
+  onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
+});
+```
 
 ---
 
 ## Daily Operating Rhythm
 
+**Phase 1 (solo):** EOD update in #stellar-development with PR opened/merged status. No daily standup needed.
+
+**Phase 2 (2 devs):**
+
 - **9:00 AM** — 15 min standup (Slack huddle in #stellar-development)
   - What I shipped yesterday
   - What I'm doing today
-  - Any blockers (especially: am I waiting on LedgerProvider merge?)
-- **EOD** — async update in #stellar-development: PRs opened/merged, what's left
+  - Any blockers
+- **EOD** — async update: PRs opened/merged, what's left
 - **PR review SLA:** same-day before EOD
-- **Pair sessions:** Day 1 morning (2 hrs setup), Day 5 all-day (testing)
+- **Pair sessions:** Day 11 (4-pool verify), Day 24 (dual-write consolidation), Days 28–29 (bug bash + e2e)
 
 ---
 
-## Sprint 1 Done When
+## Sprint Done When
 
 - [ ] `LedgerSubscriberProvider` wraps app inside `QueryProvider`
-- [ ] Zero `refetchInterval` in `hooks/` and `app/` (component-internal UI intervals like carousel are allowed)
-- [ ] Zero data-polling `setInterval` outside the allowlist documented above
+- [ ] Zero `refetchInterval` in `hooks/` and `app/`
+- [ ] Zero data-polling `setInterval` outside the allowlist
 - [ ] Zero `refreshKey` / `triggerRefresh` references
-- [ ] All hook-level + inline component mutations migrated to `useMutation`, each with `onSuccess: () => queryClient.invalidateQueries(...)` (no manual `refreshAllBalances` / `refreshBorrowedBalances` / `triggerRefresh` remain)
+- [ ] All 12 hook-level + inline component mutations migrated to `useMutation`, each with `onSuccess: invalidateQueries(...)`. No manual `refreshAllBalances` / `refreshBorrowedBalances` / `triggerRefresh` remain
 - [ ] All hooks invalidate via ledger tick (queryKey includes `tick`)
-- [ ] All 4 pools (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC) verified end-to-end
+- [ ] All 4 pools (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC) verified end-to-end on testnet
 - [ ] Risk Dashboard + Lite mode pass non-regression smoke test
+- [ ] **NEW v3:** vitest + RTL set up, ≥45 tests passing (~30 service + ~15 hook)
+- [ ] **NEW v3:** Optimistic updates live on earn + margin mutations
+- [ ] **NEW v3:** Unified error/toast UX across all mutations
+- [ ] **NEW v3:** Analytics + Risk Dashboard re-render audit clean
+- [ ] **NEW v3:** Zustand dual-write decision documented (kept or removed)
+- [ ] **NEW v3:** Type safety pass — zero `any` in service + hook return types
+- [ ] **NEW v3:** `ARCHITECTURE.md` written
 - [ ] App works end-to-end on testnet
 
 ---
 
 ## Risk Buffer
 
-- Day 5 has ~6–8 hrs buffer if testing finds bugs
+- Days 28–29 have ~12 hrs total buffer for bugs found in the bug bash
 - **Drop-firsts** if behind schedule:
-  - `useSmartPolling` deletion → keep as documented unused primitive, defer delete to Sprint 2
-  - `STATE_MANAGEMENT_ANALYSIS.md` doc update → defer
-  - Dual-write removal in `use-earn.ts` (Zustand `useEarnPoolStore`) → defer to Sprint 2; keep dual-write as long as RQ remains source of truth on writes
-  - **Inline component mutations** — if running out of time on Day 2, leave 2–3 of them imperative and finish in Sprint 2 (but hook-level 4 mutations are non-negotiable)
+  - Day 27 docs (`ARCHITECTURE.md`) → defer to post-sprint
+  - Day 24 dual-write consolidation → keep dual-write, document and defer
+  - Day 12 `useSmartPolling` delete → keep + document, defer delete
+  - Type safety pass (D25–26) — partial completion acceptable
 - **Hard requirements** (cannot defer):
-  - LedgerSubscriberProvider wired
-  - All ledger-tick invalidations live for `usePoolData`, `useUserPositions`, `useUserBlendPositions`, `useMarginHistory`, `useAquariusEvents`, `useSoroswapEvents`
-  - 4 hook-level mutations (`useSupplyLiquidity`, `useWithdrawLiquidity`, `useDeposit`, `useWithdraw`) migrated to `useMutation`
-  - `refreshKey` machinery deleted (it's the smallest, highest-leverage cleanup)
+  - LedgerSubscriberProvider wired (D2)
+  - 4 hook-level mutations on `useMutation` (D4)
+  - All ledger-tick invalidations live (D10)
+  - `refreshKey` machinery deleted (D11)
+  - All 4 pools verified e2e on testnet (D29)
 
 ---
 
@@ -351,4 +416,4 @@ Hours roughly equal, complementary in skills.
 
 ---
 
-*Updated 2026-05-14 against `new-contract-update` (Stellar_frontend HEAD `5349509`, now mirrored as `main` of mercury-stellar-backend). v1 of this doc assumed CoinGecko / price-context work was still pending — that's now shipped. v2 re-allocates that budget toward multi-pool verification, the inline-mutation `useMutation` migration surface, and Lite-mode + Risk-Dashboard non-regression checks. **Mutation strategy follows v1: full `useMutation` migration for all hook-level + inline mutations.***
+*Updated 2026-05-19 as v3. v2 (2026-05-14) was a 5-day plan for 2 devs in parallel. v3 expands to 30 days because Dev A (Divyansh) is unavailable for the first 7 days, and scope grows to absorb test infrastructure, optimistic updates, unified error UX, analytics perf, dual-write consolidation, type safety, and documentation that the original 6-sprint roadmap had spread across later sprints. **Mutation strategy is unchanged from v1/v2: full `useMutation` migration for all hook-level + inline mutations.***
