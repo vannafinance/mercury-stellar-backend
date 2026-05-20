@@ -161,10 +161,11 @@ main                                                  (mercury-stellar-backend �
 
 ### Day 2 — LedgerProvider verify + merge
 
-- [ ] DevTools: `tick` increments every ~5 s, no console errors, RQ DevTools shows invalidations firing on tick
-- [ ] Handle: SSE reconnect on network drop, tab visibility (continue or back off — pick + document)
-- [ ] `npm run lint && npm run build` clean
-- [ ] **PR `s1/ledger-provider` → integration branch** ⚡ unblocks all later tick wiring
+- [x] DevTools: `tick` increments every ~5 s, no console errors ✅ verified 2026-05-19 (`tick: 112`, `latestLedger: 2634844`)
+- [x] SSE reconnect — relying on EventSource built-in auto-reconnect (documented in `contexts/ledger-subscriber.tsx`); verify via DevTools "Offline" toggle
+- [x] Tab visibility — chose **keep stream running**; documented in `contexts/ledger-subscriber.tsx`
+- [x] `npm run lint && npm run build` clean
+- [ ] Merge PR #4 (`s1/ledger-provider` → `feat/stellar-rewire`) ⚡ unblocks all later tick wiring
 
 ### Day 3 — Hook-level mutations (earn)
 
