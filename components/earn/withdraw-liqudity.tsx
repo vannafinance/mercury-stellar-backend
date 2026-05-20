@@ -58,17 +58,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
 
   const userAddress = useUserStore((state) => state.address);
 
-  const { withdraw, isLoading, message } = useWithdrawLiquidity();
-
-  // Toast instead of inline banner.
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
+  const withdraw = useWithdrawLiquidity();
   const { pools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
 
@@ -113,11 +103,15 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
       // No frontend hardcoded "100% blocked" guard — let the contract
       // decide. A previous version unconditionally toasted "cannot
       // withdraw all" on 100%, which made full withdrawals impossible.
-      const result = await withdraw(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      const toastId = toast.loading(`Withdrawing ${numAmount} v${selectedOption} from the lending pool...`);
+      try {
+        await withdraw.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
+        toast.success(`Successfully withdrew ${selectedOption}! Transaction confirmed.`, { id: toastId });
         setShares("");
         setSelectedPercentage(0);
         refreshPositions();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `Failed to withdraw ${selectedOption}. Please try again.`, { id: toastId });
       }
     }
   };
@@ -157,7 +151,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Withdrawing...";
+    if (withdraw.isPending) return "Withdrawing...";
     if (!shares || parseFloat(shares) <= 0) return "Enter Amount";
     // 1e-7 tolerance (~one stroop) absorbs float reformatting drift so a
     // 100% click that pins to the exact balance string doesn't misfire as
@@ -167,7 +161,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   };
 
   const isButtonDisabled =
-    !userAddress || isLoading || !shares || parseFloat(shares) <= 0 || parseFloat(shares) > vTokenBalance;
+    !userAddress || withdraw.isPending || !shares || parseFloat(shares) <= 0 || parseFloat(shares) > vTokenBalance;
 
   return (
     <>
@@ -268,10 +262,10 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
               type="text"
               inputMode="decimal"
               placeholder="0"
-              disabled={isLoading}
+              disabled={withdraw.isPending}
               className={`w-full text-right text-[28px] font-semibold bg-transparent outline-none placeholder:opacity-20 ${
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
-              } ${isLoading ? "opacity-50" : ""}`}
+              } ${withdraw.isPending ? "opacity-50" : ""}`}
             />
           </div>
         </div>
@@ -283,7 +277,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
               <motion.button
                 key={pct}
                 type="button"
-                disabled={isLoading || vTokenBalance <= 0}
+                disabled={withdraw.isPending || vTokenBalance <= 0}
                 onClick={() => handlePercentageClick(pct)}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.93 }}
@@ -294,7 +288,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
                     : isDark
                       ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
                       : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
-                } ${isLoading || vTokenBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
+                } ${withdraw.isPending || vTokenBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
               >
                 {pct}%
               </motion.button>
