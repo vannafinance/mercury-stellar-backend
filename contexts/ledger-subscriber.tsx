@@ -14,6 +14,19 @@ const LedgerContext = createContext<LedgerCtx>({ tick: 0, latestLedger: 0 });
 
 export const useLedgerTick = () => useContext(LedgerContext);
 
+/**
+ * Subscribes to Horizon's ledger-close stream and exposes a tick counter
+ * plus the latest ledger sequence through React Context. Consumer hooks
+ * include the tick in their queryKey to drive ledger-paced cache
+ * invalidation in TanStack Query.
+ *
+ * Reconnect is handled by the browser's EventSource: on transient network
+ * failures it retries automatically and resumes the stream from the last
+ * cursor, so no manual retry logic is required. The stream stays open when
+ * the tab is hidden — browsers throttle background tabs, keeping bandwidth
+ * cost negligible while ensuring the UI returns to fresh data without a
+ * reconnect lag.
+ */
 export function LedgerSubscriberProvider({
   children,
 }: {
