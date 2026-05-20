@@ -60,18 +60,8 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const balance = useUserStore((state) => state.balance);
   const storeTokenBalances = useUserStore((state) => state.tokenBalances);
 
-  const { supply, isLoading, message } = useSupplyLiquidity();
+  const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
-
-  // Toast instead of inline banner.
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -115,10 +105,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
         return;
       }
 
-      const result = await supply(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
+      try {
+        await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
+        toast.success(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`, { id: toastId });
         setAmount("");
         setSelectedPercentage(0);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `Failed to supply ${selectedOption}. Please try again.`, { id: toastId });
       }
     }
   };
@@ -170,14 +164,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Supplying...";
+    if (supply.isPending) return "Supplying...";
     if (!amount || parseFloat(amount) <= 0) return "Enter Amount";
     if (parseFloat(amount) > availableBalance) return "Insufficient Balance";
     return "Supply Liquidity";
   };
 
   const isButtonDisabled =
-    !userAddress || isLoading || !amount || parseFloat(amount) <= 0 || parseFloat(amount) > availableBalance;
+    !userAddress || supply.isPending || !amount || parseFloat(amount) <= 0 || parseFloat(amount) > availableBalance;
 
   return (
     <>
@@ -278,10 +272,10 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
               type="text"
               inputMode="decimal"
               placeholder="0"
-              disabled={isLoading}
+              disabled={supply.isPending}
               className={`w-full text-right text-[28px] font-semibold bg-transparent outline-none placeholder:opacity-20 ${
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
-              } ${isLoading ? "opacity-50" : ""}`}
+              } ${supply.isPending ? "opacity-50" : ""}`}
             />
           </div>
         </div>
@@ -293,7 +287,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
               <motion.button
                 key={pct}
                 type="button"
-                disabled={isLoading || availableBalance <= 0}
+                disabled={supply.isPending || availableBalance <= 0}
                 onClick={() => handlePercentageClick(pct)}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.93 }}
@@ -304,7 +298,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
                     : isDark
                       ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
                       : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
-                } ${isLoading || availableBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
+                } ${supply.isPending || availableBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
               >
                 {pct}%
               </motion.button>

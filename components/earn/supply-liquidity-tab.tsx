@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import toast from "react-hot-toast";
 import { Dropdown } from "../ui/dropdown";
 import { DropdownOptions } from "@/lib/constants";
@@ -17,24 +17,14 @@ export const SupplyLiquidityTab = () => {
   const [selectedOption, setSelectedOption] = useState<string>("XLM");
   const [value, setValue] = useState<string>("");
   const [selectedPercentage, setSelectedPercentage] = useState<number | null>(null);
-  
+
   const userAddress = useUserStore((state) => state.address);
   const balance = useUserStore((state) => state.balance);
   const tokenBalances = useUserStore((state) => state.tokenBalances);
-  
-  const { supply, isLoading, message } = useSupplyLiquidity();
+
+  const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
   const { refresh: refreshPositions } = useUserPositions();
-
-  // Surface supply result as a bottom-left toast (replaces inline banner).
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
 
   // Fetch all token balances when user connects
   const refreshTokenBalances = useCallback(async () => {
@@ -107,8 +97,10 @@ export const SupplyLiquidityTab = () => {
         return;
       }
 
-      const result = await supply(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
+      try {
+        await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
+        toast.success(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`, { id: toastId });
         setValue("");
         setSelectedPercentage(null);
         // Refresh positions and balances after successful deposit
@@ -116,6 +108,8 @@ export const SupplyLiquidityTab = () => {
           refreshPositions();
           refreshTokenBalances();
         }, 2000);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `Failed to supply ${selectedOption}. Please try again.`, { id: toastId });
       }
     }
   };
@@ -134,7 +128,7 @@ export const SupplyLiquidityTab = () => {
   // Get button text
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Processing...";
+    if (supply.isPending) return "Processing...";
     if (!value || parseFloat(value) <= 0) return "Enter Amount";
     if (parseFloat(value) > parseFloat(availableBalance)) return "Insufficient Balance";
     return `Supply ${value} ${selectedOption}`;
@@ -142,7 +136,7 @@ export const SupplyLiquidityTab = () => {
 
   const isButtonDisabled = 
     !userAddress || 
-    isLoading || 
+    supply.isPending || 
     !value || 
     parseFloat(value) <= 0 || 
     parseFloat(value) > parseFloat(availableBalance);

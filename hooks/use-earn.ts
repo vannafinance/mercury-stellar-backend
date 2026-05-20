@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
+import { useCallback } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
@@ -219,300 +219,156 @@ export const useUserPositions = () => {
   };
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mutations — stay imperative. react-query's `useMutation` would be a clean
-// fit here, but the message/loading UX is already wired through setState and
-// the callers expect the existing return shape.
-// ─────────────────────────────────────────────────────────────────────────────
+const normalizeSupplyError = (rawError: string | undefined, assetType: AssetType) => {
+  const fallback = `Failed to supply ${assetType}. Please try again.`;
+  if (!rawError) return fallback;
+
+  const text = rawError.replace(/\s+/g, ' ').trim();
+  const lowerText = text.toLowerCase();
+
+  if (
+    lowerText.includes('cancelled') ||
+    lowerText.includes('canceled') ||
+    lowerText.includes('rejected by user')
+  ) {
+    return 'Transaction cancelled by user.';
+  }
+
+  if (
+    lowerText.includes('insufficient') ||
+    lowerText.includes('underfunded') ||
+    lowerText.includes('insufficientbalance') ||
+    lowerText.includes('balance is not sufficient')
+  ) {
+    return `You cannot supply all your ${assetType}. Keep a small balance and try again.`;
+  }
+
+  if (
+    lowerText.includes('diagnostic event') ||
+    lowerText.includes('hosterror') ||
+    lowerText.includes('sorobanrpcerror') ||
+    lowerText.includes('transaction failed') ||
+    lowerText.includes('error(contract')
+  ) {
+    return `Supply failed for ${assetType}. Please reduce the amount and try again.`;
+  }
+
+  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+};
+
 export const useSupplyLiquidity = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const normalizeSupplyError = useCallback((rawError: string | undefined, assetType: AssetType) => {
-    const fallback = `Failed to supply ${assetType}. Please try again.`;
-    if (!rawError) return fallback;
-
-    const text = rawError.replace(/\s+/g, ' ').trim();
-    const lowerText = text.toLowerCase();
-
-    if (
-      lowerText.includes('cancelled') ||
-      lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
-    ) {
-      return 'Transaction cancelled by user.';
-    }
-
-    if (
-      lowerText.includes('insufficient') ||
-      lowerText.includes('underfunded') ||
-      lowerText.includes('insufficientbalance') ||
-      lowerText.includes('balance is not sufficient')
-    ) {
-      return `You cannot supply all your ${assetType}. Keep a small balance and try again.`;
-    }
-
-    if (
-      lowerText.includes('diagnostic event') ||
-      lowerText.includes('hosterror') ||
-      lowerText.includes('sorobanrpcerror') ||
-      lowerText.includes('transaction failed') ||
-      lowerText.includes('error(contract')
-    ) {
-      return `Supply failed for ${assetType}. Please reduce the amount and try again.`;
-    }
-
-    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-  }, []);
-
-  const refreshAllBalances = useCallback(async () => {
-    if (!address) return;
-
-    try {
-      const balance = await WalletService.getBalance(address);
-
-      const [xlmDeposited, usdcDeposited, aquiresUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquiresUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const supply = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Supplying ${amount} ${assetType} to the lending pool...` });
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
       const result = await ContractService.deposit(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully supplied ${amount} ${assetType}! You received v${assetType} tokens.` });
-
-        if (result.hash) {
-          addTransaction('supply', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'supply',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeSupplyError(result.error, assetType) });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(normalizeSupplyError(result.error, assetType));
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeSupplyError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, refreshAllBalances, normalizeSupplyError]);
+      return { hash: result.hash, amount, assetType };
+    },
+    onSuccess: ({ hash, amount, assetType }) => {
+      if (hash) {
+        addTransaction('supply', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({
+          asset: assetType,
+          type: 'supply',
+          amount: amount.toString(),
+          hash,
+          status: 'success',
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['earn'] });
+    },
+  });
+};
 
-  return {
-    supply,
-    isLoading,
-    message,
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+const normalizeWithdrawError = (rawError: string | undefined, assetType: AssetType) => {
+  const fallback = `Failed to withdraw ${assetType}. Please try again.`;
+  if (!rawError) return fallback;
+
+  const text = rawError.replace(/\s+/g, ' ').trim();
+  const lowerText = text.toLowerCase();
+
+  if (
+    lowerText.includes('cancelled') ||
+    lowerText.includes('canceled') ||
+    lowerText.includes('rejected by user')
+  ) {
+    return 'Transaction cancelled by user.';
+  }
+
+  if (
+    lowerText.includes('insufficient') ||
+    lowerText.includes('underfunded') ||
+    lowerText.includes('insufficientbalance') ||
+    lowerText.includes('balance is not sufficient')
+  ) {
+    return `You cannot withdraw all your v${assetType}. Keep a small balance and try again.`;
+  }
+
+  if (
+    lowerText.includes('diagnostic event') ||
+    lowerText.includes('hosterror') ||
+    lowerText.includes('sorobanrpcerror') ||
+    lowerText.includes('transaction failed') ||
+    lowerText.includes('error(contract')
+  ) {
+    return `Withdraw failed for ${assetType}. Please reduce the amount and try again.`;
+  }
+
+  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 };
 
 export const useWithdrawLiquidity = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
   const userPositions = useEarnPoolStore((s) => s.userPositions);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const normalizeWithdrawError = useCallback((rawError: string | undefined, assetType: AssetType) => {
-    const fallback = `Failed to withdraw ${assetType}. Please try again.`;
-    if (!rawError) return fallback;
+  const mutation = useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-    const text = rawError.replace(/\s+/g, ' ').trim();
-    const lowerText = text.toLowerCase();
-
-    if (
-      lowerText.includes('cancelled') ||
-      lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
-    ) {
-      return 'Transaction cancelled by user.';
-    }
-
-    if (
-      lowerText.includes('insufficient') ||
-      lowerText.includes('underfunded') ||
-      lowerText.includes('insufficientbalance') ||
-      lowerText.includes('balance is not sufficient')
-    ) {
-      return `You cannot withdraw all your v${assetType}. Keep a small balance and try again.`;
-    }
-
-    if (
-      lowerText.includes('diagnostic event') ||
-      lowerText.includes('hosterror') ||
-      lowerText.includes('sorobanrpcerror') ||
-      lowerText.includes('transaction failed') ||
-      lowerText.includes('error(contract')
-    ) {
-      return `Withdraw failed for ${assetType}. Please reduce the amount and try again.`;
-    }
-
-    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-  }, []);
-
-  const refreshAllBalances = useCallback(async () => {
-    if (!address) return;
-
-    try {
-      const balance = await WalletService.getBalance(address);
-
-      const [xlmDeposited, usdcDeposited, aquiresUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquiresUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-
-      const poolRates = useEarnPoolStore.getState().pools;
-      const xlmRate = parseFloat(poolRates.XLM.exchangeRate || '1') || 1;
-      const usdcRate = parseFloat(poolRates.USDC.exchangeRate || '1') || 1;
-      const aquiresUsdcRate = parseFloat(poolRates.AQUARIUS_USDC.exchangeRate || '1') || 1;
-      const soroswapUsdcRate = parseFloat(poolRates.SOROSWAP_USDC.exchangeRate || '1') || 1;
-
-      useEarnPoolStore.getState().set({
-        userPositions: {
-          XLM: {
-            ...useEarnPoolStore.getState().userPositions.XLM,
-            vTokenBalance: xlmDeposited,
-            deposited: ((parseFloat(xlmDeposited) || 0) * xlmRate).toFixed(7),
-          },
-          USDC: {
-            ...useEarnPoolStore.getState().userPositions.USDC,
-            vTokenBalance: usdcDeposited,
-            deposited: ((parseFloat(usdcDeposited) || 0) * usdcRate).toFixed(7),
-          },
-          AQUARIUS_USDC: {
-            ...useEarnPoolStore.getState().userPositions.AQUARIUS_USDC,
-            vTokenBalance: aquiresUsdcDeposited,
-            deposited: ((parseFloat(aquiresUsdcDeposited) || 0) * aquiresUsdcRate).toFixed(7),
-          },
-          SOROSWAP_USDC: {
-            ...useEarnPoolStore.getState().userPositions.SOROSWAP_USDC,
-            vTokenBalance: soroswapUsdcDeposited,
-            deposited: ((parseFloat(soroswapUsdcDeposited) || 0) * soroswapUsdcRate).toFixed(7),
-          },
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const withdraw = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
-    const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
-    if (amount > depositedAmount) {
-      setMessage({ type: 'error', text: `Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})` });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Withdrawing ${amount} v${assetType} from the lending pool...` });
+      const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
+      const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
+      if (amount > depositedAmount) {
+        throw new Error(`Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})`);
+      }
 
       const result = await ContractService.withdraw(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully withdrew ${assetType}! Transaction confirmed.` });
-
-        if (result.hash) {
-          addTransaction('withdraw', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'withdraw',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeWithdrawError(result.error, assetType) });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(normalizeWithdrawError(result.error, assetType));
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeWithdrawError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, userPositions, refreshAllBalances, normalizeWithdrawError]);
+      return { hash: result.hash, amount, assetType };
+    },
+    onSuccess: ({ hash, amount, assetType }) => {
+      if (hash) {
+        addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({
+          asset: assetType,
+          type: 'withdraw',
+          amount: amount.toString(),
+          hash,
+          status: 'success',
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['earn'] });
+    },
+  });
 
-  return {
-    withdraw,
-    isLoading,
-    message,
+  return Object.assign(mutation, {
     depositedBalances: {
       XLM: userPositions.XLM?.vTokenBalance || '0',
       USDC: userPositions.USDC?.vTokenBalance || '0',
       AQUARIUS_USDC: userPositions.AQUARIUS_USDC?.vTokenBalance || '0',
       SOROSWAP_USDC: userPositions.SOROSWAP_USDC?.vTokenBalance || '0',
     },
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+  });
 };
 
 // Hook to load on-chain earn pool transactions for the connected user.
