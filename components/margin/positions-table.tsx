@@ -33,16 +33,6 @@ const canonicalToken = (token: string): string => {
   return normalized;
 };
 
-/**
- * Registry tracking symbols for deployed Blend / LP capital — not separate
- * margin "positions". The account has one borrow basket; listing these as
- * extra rows duplicated the same debt/leverage on every line.
- */
-const isProtocolReceiptCollateral = (symbol: string): boolean => {
-  const u = symbol.toUpperCase();
-  return u.startsWith("BLEND_") || u.startsWith("AQ_") || u.startsWith("SS_");
-};
-
 const getTokenIcon = (asset: string): string => {
   return (
     COIN_ICONS[asset as keyof typeof COIN_ICONS] ||
@@ -87,11 +77,6 @@ export const Positionstable = ({
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
-    const collateralEntries = (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([, bal]) => parseFloat(bal.amount) > 0)
-      .filter(([token]) => !isProtocolReceiptCollateral(token));
-    if (collateralEntries.length === 0) return [];
-
     const borrowedEntries = Object.entries(borrowedBalances) as [string, BorrowedBalance][];
     const dedupedBorrowed = new Map<string, { token: string; balance: BorrowedBalance }>();
 
@@ -128,20 +113,38 @@ export const Positionstable = ({
         usdValue: parseFloat(bal.usdValue),
       }));
 
-    // Leverage matches the slider semantic in leverage-assets-tab.tsx:
-    //   borrow_amount = own_deposit × (multiplier − 1)
-    // For a fresh position this means debt_USD == own × (m−1), so
-    //   m = 1 + debt_USD / own_USD  ≈  1 + debt / collateral
-    // when borrow proceeds aren't redeposited. This is the same as the
-    // standard "1 + LTV" leverage figure DeFi protocols display, and it
-    // stays finite & ≥ 1 even when debt exceeds collateral (e.g. user
-    // borrowed and withdrew the proceeds, making equity negative). The
-    // earlier collateral/equity formula divided by 0 / went negative in
-    // exactly those cases and fell through to "1x" — which is what
-    // surfaced as the user-reported "leverage shows 1x" bug.
+    // Collateral Deposited = net margin deposits only (deposit / transfer-in / out).
+    // Blend, Soroswap, Aquarius, and spot swaps change HF in the store but must
+    // not re-label wallet balance as "collateral" in this table.
+    const netDepositedByToken: Record<string, number> = {};
+    if (!historyLoading) {
+      for (const item of history) {
+        const canonical = canonicalToken(item.asset || '');
+        const amt = parseFloat(String(item.amount ?? '0')) || 0;
+        if (!Number.isFinite(amt) || amt <= 0) continue;
+        if (item.type === 'deposit' || item.type === 'transfer-in') {
+          netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + amt;
+        } else if (item.type === 'transfer-out') {
+          netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) - amt;
+        }
+      }
+    }
+
+    const underlyingSymbols = new Set<string>([
+      ...Object.keys(netDepositedByToken),
+      ...borrowedEntriesClean.map(([token]) => canonicalToken(token)),
+    ]);
+
+    let netDepositedUsd = 0;
+    for (const underlying of underlyingSymbols) {
+      const amt = Math.max(0, netDepositedByToken[underlying] ?? 0);
+      if (amt <= BORROW_DUST_EPSILON) continue;
+      netDepositedUsd += amt * (tokenPrices[underlying] ?? 0);
+    }
+
     const leverage =
-      totalCollateralValue > 0
-        ? parseFloat((1 + totalBorrowedValue / totalCollateralValue).toFixed(2))
+      netDepositedUsd > 0
+        ? parseFloat((1 + totalBorrowedValue / netDepositedUsd).toFixed(2))
         : 1;
 
     // Interest accrued = current debt − net principal still owed, in USD.
@@ -188,19 +191,34 @@ export const Positionstable = ({
     // Now each collateral row shows the full borrow list; with a single
     // collateral (the typical case) you see exactly your real debt.
     const hasAnyDebt = borrowedArray.length > 0;
-    return collateralEntries.map(([token, bal], idx) => {
-      return {
+    const positionRows: Position[] = [];
+    let idx = 0;
+    for (const underlying of underlyingSymbols) {
+      const depositedAmt = Math.max(0, netDepositedByToken[underlying] ?? 0);
+      const hasBorrowForRow = borrowedArray.some(
+        (b) => canonicalToken(b.assetData.asset) === underlying,
+      );
+      if (depositedAmt <= BORROW_DUST_EPSILON && !hasBorrowForRow && !hasAnyDebt) {
+        continue;
+      }
+
+      const price = tokenPrices[underlying] ?? 0;
+      const depositedUsd = depositedAmt * price;
+
+      positionRows.push({
         positionId: idx + 1,
-        collateral: { asset: token, amount: parseFloat(bal.amount).toFixed(2) },
-        collateralUsdValue: parseFloat(bal.usdValue),
+        collateral: { asset: underlying, amount: depositedAmt.toFixed(2) },
+        collateralUsdValue: parseFloat(depositedUsd.toFixed(2)),
         borrowed: borrowedArray,
         leverage,
         interestAccrued: hasAnyDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
-        isOpen: hasAnyDebt,
+        isOpen: hasAnyDebt || depositedAmt > BORROW_DUST_EPSILON,
         user: '',
-      };
-    });
-  }, [collateralBalances, borrowedBalances, totalCollateralValue, totalBorrowedValue, history, historyLoading, tokenPrices]);
+      });
+      idx += 1;
+    }
+    return positionRows;
+  }, [collateralBalances, borrowedBalances, totalBorrowedValue, history, historyLoading, tokenPrices]);
 
   const [activeTab, setActiveTab] = useState<string>("currentPositions");
   const [currentPage, setCurrentPage] = useState<number>(1);

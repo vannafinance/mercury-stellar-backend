@@ -5,6 +5,7 @@ import { Navbar } from "@/components/navbar";
 import { navbarItems } from "@/lib/constants";
 import { ThemeProvider } from "@/contexts/theme-context";
 import { QueryProvider } from "@/contexts/query-provider";
+import { PriceProvider } from "@/contexts/price-context";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 
@@ -33,9 +34,11 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <QueryProvider>
-            <Navbar items={navbarItems}/>
-            <ScaleWrapper>{children}</ScaleWrapper>
-            <AppToaster />
+            <PriceProvider>
+              <Navbar items={navbarItems}/>
+              <ScaleWrapper>{children}</ScaleWrapper>
+              <AppToaster />
+            </PriceProvider>
           </QueryProvider>
         </ThemeProvider>
       </body>

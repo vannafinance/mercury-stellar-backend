@@ -143,7 +143,7 @@ export const ActivityTab = () => {
         },
       ],
     };
-  }, [pools, assetKey, displaySymbol]);
+  }, [pools, assetKey, displaySymbol, tokenPrices]);
 
   // Format transactions for table
   const txTableBody = useMemo(() => {
@@ -191,7 +191,7 @@ export const ActivityTab = () => {
         ],
       })),
     };
-  }, [filteredTransactions, assetKey]);
+  }, [filteredTransactions, assetKey, tokenPrices]);
 
   return (
     <section

@@ -8,12 +8,14 @@ import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { useSupplyLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
 import { AssetType, ContractService } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 export const SupplyLiquidityTab = () => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const [selectedOption, setSelectedOption] = useState<string>("XLM");
   const [value, setValue] = useState<string>("");
   const [selectedPercentage, setSelectedPercentage] = useState<number | null>(null);
@@ -194,7 +196,7 @@ export const SupplyLiquidityTab = () => {
           
           <div className="flex justify-between items-center">
             <span className={`text-xs ${isDark ? "text-gray-500" : "text-gray-400"}`}>
-              ≈ ${(parseFloat(value) * (selectedOption === 'XLM' ? 0.1 : 1) || 0).toFixed(2)} USD
+              ≈ ${(parseFloat(value) * getPrice(selectedOption) || 0).toFixed(2)} USD
             </span>
             <span className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
               Available: {(parseFloat(String(availableBalance)) || 0).toFixed(2)} {selectedOption}

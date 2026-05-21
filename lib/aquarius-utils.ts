@@ -7,6 +7,7 @@ import {
   SOROBAN_RPC_URL,
   ASSET_ISSUERS,
 } from './stellar-utils';
+import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
 
 // ── Aquarius Swap constants ─────────────────────────────────────────────────
 // XLM Soroban token contract (wrapped native XLM on testnet)
@@ -35,8 +36,10 @@ function buildSwapsChain(tokenInContract: string, poolIndexBytes?: Buffer): Stel
 export type AquariusAction = 'AddLiquidity' | 'RemoveLiquidity' | 'Swap';
 
 export interface AquariusPoolStats {
-  reserveA: string;   // XLM reserve, human-readable (7 decimals)
-  reserveB: string;   // USDC reserve, human-readable (7 decimals)
+  /** Matches `AquariusPoolConfig.tokens[0]` (human-readable, 7 decimals). */
+  reserveA: string;
+  /** Matches `AquariusPoolConfig.tokens[1]`. */
+  reserveB: string;
   totalShares: string; // total LP shares, human-readable
   feeFraction: string; // e.g., "0.30%"
   feeRaw: number;      // raw fee fraction (30 = 0.30%)
@@ -62,6 +65,11 @@ export interface AquariusLpEvent {
 export interface AquariusPoolConfig {
   id: string;
   tokens: [string, string];
+  /**
+   * `get_reserves()` index order on the pool contract (sorted by token address).
+   * When omitted, assumed equal to `tokens` (legacy — wrong for XLM/USDC).
+   */
+  onChainReserveSymbols?: [string, string];
   feeFraction: number; // 30 = 0.30%
   displayName: string;
   poolAddress: string;
@@ -71,6 +79,7 @@ export const AQUARIUS_POOLS: AquariusPoolConfig[] = [
   {
     id: 'aquarius-xlm-usdc',
     tokens: ['XLM', 'USDC'],
+    onChainReserveSymbols: ['USDC', 'XLM'],
     feeFraction: 30,
     displayName: 'XLM / USDC',
     poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
@@ -101,6 +110,8 @@ const WAD = 1e18;
 const LP_SHARE_SCALE = 1e7;
 const AQUARIUS_AMM_API_BASE = 'https://amm-api-testnet.aqua.network';
 const AQUARIUS_API_CACHE_TTL_MS = 60_000;
+/** Bump when reserve→config mapping changes so stale cache is not reused. */
+const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 2;
 
 interface AquariusApiPoolsResponse {
   items?: AquariusApiPoolItem[];
@@ -134,15 +145,63 @@ const toLpShareUnits = (amount: number): bigint => {
 
 const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
+const SCALAR_7 = 1e7;
+const fromStroopScalar = (raw: string | undefined): string => {
+  const n = parseFloat(raw ?? '0');
+  return Number.isFinite(n) ? (n / SCALAR_7).toFixed(7) : '0';
+};
+
+/** Map on-chain reserve indices to `AquariusPoolConfig.tokens` order. */
+export function mapAquariusReservesToConfig(
+  cfg: AquariusPoolConfig | undefined,
+  raw0: string | undefined,
+  raw1: string | undefined,
+): { reserveA: string; reserveB: string } {
+  const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? ['', ''];
+  const onChainOrder = cfg?.onChainReserveSymbols ?? cfg?.tokens;
+  const bySym: Record<string, string> = {};
+  onChainOrder.forEach((sym, idx) => {
+    const raw = idx === 0 ? raw0 : raw1;
+    if (sym) bySym[sym.toUpperCase()] = fromStroopScalar(raw);
+  });
+  return {
+    reserveA: bySym[cfgTokenA?.toUpperCase()] ?? fromStroopScalar(raw0),
+    reserveB: bySym[cfgTokenB?.toUpperCase()] ?? fromStroopScalar(raw1),
+  };
+}
+
+/** Pro-rata underlying token amounts for an LP position (config token order). */
+export function aquariusLpUnderlyingAmounts(
+  lpShares: number,
+  stats: AquariusPoolStats,
+  tokenA: string,
+  tokenB: string,
+): { amountA: number; amountB: number } {
+  const totalShares = parseFloat(stats.totalShares);
+  if (!(lpShares > 0) || !(totalShares > 0)) {
+    return { amountA: 0, amountB: 0 };
+  }
+  const ratio = lpShares / totalShares;
+  return {
+    amountA: ratio * (parseFloat(stats.reserveA) || 0),
+    amountB: ratio * (parseFloat(stats.reserveB) || 0),
+  };
+}
+
 export class AquariusService {
   private static apiPoolStatsCache: {
+    version: number;
     expiresAt: number;
     byAddress: Record<string, AquariusPoolStats>;
   } | null = null;
 
   private static async getAquariusApiPoolStatsByAddress(): Promise<Record<string, AquariusPoolStats>> {
     const now = Date.now();
-    if (AquariusService.apiPoolStatsCache && AquariusService.apiPoolStatsCache.expiresAt > now) {
+    if (
+      AquariusService.apiPoolStatsCache &&
+      AquariusService.apiPoolStatsCache.version === AQUARIUS_API_POOL_STATS_CACHE_VERSION &&
+      AquariusService.apiPoolStatsCache.expiresAt > now
+    ) {
       return AquariusService.apiPoolStatsCache.byAddress;
     }
 
@@ -161,38 +220,37 @@ export class AquariusService {
     // the reserveA/reserveB labels would be flipped (XLM value shown under
     // USDC and vice versa). We map by symbol via `tokens_str` so the
     // returned reserveA always matches AQUARIUS_POOLS config tokens[0].
-    const SCALAR_7 = 1e7;
-    const fromStroop = (raw: string | undefined): string => {
-      const n = parseFloat(raw ?? '0');
-      return Number.isFinite(n) ? (n / SCALAR_7).toFixed(7) : '0';
-    };
-
     for (const pool of json.items ?? []) {
       const address = (pool.address ?? '').trim().toUpperCase();
       if (!address) continue;
 
-      // Resolve reserves by symbol so config order wins, not API sort order.
-      const apiTokens = (pool.tokens_str ?? []).map((s) => (s || '').toUpperCase());
-      const reservesByToken: Record<string, string> = {};
-      apiTokens.forEach((sym, idx) => {
-        const raw = pool.reserves?.[idx];
-        if (sym && raw !== undefined) reservesByToken[sym] = raw;
-      });
-
-      // Find this pool's AQUARIUS_POOLS config so we can return reserves in
-      // the config's token order. Falls back to raw API order for unknown
-      // pools (so we degrade gracefully instead of returning zeros).
       const cfg = AQUARIUS_POOLS.find((p) => p.poolAddress.toUpperCase() === address);
-      const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? [apiTokens[0] ?? '', apiTokens[1] ?? ''];
-      const rawA = reservesByToken[cfgTokenA?.toUpperCase()] ?? pool.reserves?.[0];
-      const rawB = reservesByToken[cfgTokenB?.toUpperCase()] ?? pool.reserves?.[1];
 
-      const totalShare = fromStroop(pool.total_share);
+      // Resolve reserves by symbol when API ships tokens_str; otherwise map
+      // on-chain [token0, token1] via pool config (critical for XLM/USDC).
+      const apiTokens = (pool.tokens_str ?? []).map((s) => (s || '').toUpperCase());
+      let mapped: { reserveA: string; reserveB: string };
+      if (apiTokens.length >= 2 && cfg) {
+        const reservesByToken: Record<string, string> = {};
+        apiTokens.forEach((sym, idx) => {
+          const raw = pool.reserves?.[idx];
+          if (sym && raw !== undefined) reservesByToken[sym] = fromStroopScalar(raw);
+        });
+        const [cfgTokenA, cfgTokenB] = cfg.tokens;
+        mapped = {
+          reserveA: reservesByToken[cfgTokenA.toUpperCase()] ?? fromStroopScalar(pool.reserves?.[0]),
+          reserveB: reservesByToken[cfgTokenB.toUpperCase()] ?? fromStroopScalar(pool.reserves?.[1]),
+        };
+      } else {
+        mapped = mapAquariusReservesToConfig(cfg, pool.reserves?.[0], pool.reserves?.[1]);
+      }
+
+      const totalShare = fromStroopScalar(pool.total_share);
       const feeRaw = Math.round((parseFloat(pool.fee ?? '0.003') || 0.003) * 10_000);
 
       byAddress[address] = {
-        reserveA: fromStroop(rawA),
-        reserveB: fromStroop(rawB),
+        reserveA: mapped.reserveA,
+        reserveB: mapped.reserveB,
         totalShares: totalShare,
         feeFraction: `${(feeRaw / 100).toFixed(2)}%`,
         feeRaw,
@@ -205,6 +263,7 @@ export class AquariusService {
     }
 
     AquariusService.apiPoolStatsCache = {
+      version: AQUARIUS_API_POOL_STATS_CACHE_VERSION,
       expiresAt: now + AQUARIUS_API_CACHE_TTL_MS,
       byAddress,
     };
@@ -596,13 +655,21 @@ export class AquariusService {
         makeSim('get_total_shares'),
       ]);
 
+      const cfg = AQUARIUS_POOLS.find(
+        (p) => p.poolAddress.toUpperCase() === poolAddress.trim().toUpperCase(),
+      );
       let reserveA = '0';
       let reserveB = '0';
       if (StellarSdk.rpc.Api.isSimulationSuccess(resSim) && resSim.result?.retval) {
         const resNative = StellarSdk.scValToNative(resSim.result.retval) as any[];
         if (Array.isArray(resNative) && resNative.length >= 2) {
-          reserveA = (Number(resNative[0].toString()) / 1e7).toFixed(7);
-          reserveB = (Number(resNative[1].toString()) / 1e7).toFixed(7);
+          const mapped = mapAquariusReservesToConfig(
+            cfg,
+            resNative[0]?.toString?.() ?? String(resNative[0]),
+            resNative[1]?.toString?.() ?? String(resNative[1]),
+          );
+          reserveA = mapped.reserveA;
+          reserveB = mapped.reserveB;
         }
       }
 
@@ -1307,11 +1374,16 @@ export class AquariusService {
 
       const tokenOutSymbol: 'XLM' | 'USDC' = tokenInSymbol === 'XLM' ? 'USDC' : 'XLM';
 
+      const amountStroops = floorAmountToStroops(amountIn);
+      if (amountStroops <= 0n) {
+        return { success: false, error: 'Invalid swap amount' };
+      }
+
       const callBytes = AquariusService.buildSwapCallBytesForMargin(
         routerAddress,
         tokenInSymbol,
         tokenOutSymbol,
-        toWad(amountIn),
+        stroopsToWad(amountStroops),
         marginAccountAddress,
       );
 
