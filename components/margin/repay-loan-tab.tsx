@@ -47,6 +47,7 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
 
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const normalizeContractTokenSymbol = (symbol: string) =>
     symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
       ? "BLUSDC"
@@ -101,7 +102,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
@@ -515,6 +516,31 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
             </span>
           </div>
         </motion.article>
+
+        {/* Repay Details */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.35 }}
+        >
+          <InfoCard
+            data={repayDetails}
+            showExpandable={true}
+            expandableSections={[
+              {
+                title: "Repay Details",
+                items: [
+                  { id: "updatedCollateral", name: "Updated Collateral" },
+                  { id: "updatedBorrowedAmount", name: "Updated Borrowed Amount" },
+                  { id: "updatedHealthFactor", name: "Updated Health Factor" },
+                  { id: "updatedLeverage", name: "Updated Leverage" },
+                ],
+                defaultExpanded: false,
+                delay: 0.1,
+              },
+            ]}
+          />
+        </motion.div>
 
         {/* Action buttons */}
         <motion.section
