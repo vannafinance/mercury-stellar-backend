@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWithdraw } from "@/hooks/use-wallet";
 import { ASSET_TYPES, AssetType } from "@/lib/stellar-utils";
@@ -36,36 +36,27 @@ const AssetIcon = ({ asset, size = 36 }: { asset: string; size?: number }) => {
 export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose }) => {
   const [amount, setAmount] = useState("");
   const [selectedAsset, setSelectedAsset] = useState<AssetType>(ASSET_TYPES.XLM);
-  const { withdraw, isLoading, message, clearMessage } = useWithdraw();
+  const withdraw = useWithdraw();
   const { depositedBalances } = useUserStore();
   const { isDark } = useTheme();
-  const lastToastedRef = useRef<string>("");
-
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
 
   const handleWithdraw = async () => {
     const numAmount = parseFloat(amount);
     if (numAmount > 0) {
-      const result = await withdraw(numAmount, selectedAsset);
-      if (result.success) {
+      const toastId = toast.loading('Processing withdrawal...');
+      try {
+        await withdraw.mutateAsync({ amount: numAmount, assetType: selectedAsset });
+        toast.success(`Successfully withdrew ${numAmount} ${selectedAsset}!`, { id: toastId });
         setAmount("");
-        setTimeout(() => {
-          onClose();
-          clearMessage();
-        }, 2000);
+        setTimeout(() => onClose(), 2000);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Withdrawal failed', { id: toastId });
       }
     }
   };
 
   const handleClose = () => {
     setAmount("");
-    clearMessage();
     onClose();
   };
 
@@ -271,7 +262,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
               <button
                 type="button"
                 onClick={handleClose}
-                disabled={isLoading}
+                disabled={withdraw.isPending}
                 className={`flex-1 h-11 rounded-xl text-[14px] font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                   isDark
                     ? "bg-[#2A2A2A] text-[#A0A0A0] hover:bg-[#333] hover:text-white"
@@ -283,10 +274,10 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
               <button
                 type="button"
                 onClick={handleWithdraw}
-                disabled={isLoading || !isValid}
+                disabled={withdraw.isPending || !isValid}
                 className="flex-1 h-11 rounded-xl text-[14px] font-semibold text-white transition-all cursor-pointer bg-[#703AE6] hover:bg-[#6030CC] disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-[#703AE6]/20"
               >
-                {isLoading ? (
+                {withdraw.isPending ? (
                   <span className="flex items-center justify-center gap-2">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="animate-spin">
                       <circle cx="12" cy="12" r="10" strokeOpacity="0.25" strokeWidth="4" />
