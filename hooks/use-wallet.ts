@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
@@ -197,162 +198,51 @@ export const useWallet = () => {
 };
 
 export const useDeposit = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const refreshBalances = useCallback(async (walletAddress?: string) => {
-    const targetAddress = walletAddress || address;
-    if (!targetAddress) return;
-
-    try {
-      const balance = await WalletService.getBalance(targetAddress);
-      
-      const [xlmDeposited, usdcDeposited, aquariusUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquariusUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const deposit = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: 'Processing deposit...' });
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
       const result = await ContractService.deposit(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully deposited ${amount} ${assetType}!` });
-        
-        // Refresh balances after successful deposit
-        await refreshBalances(address);
-        
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: result.error || 'Deposit failed' });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(result.error || 'Deposit failed');
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error?.message || 'Deposit failed' });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, refreshBalances]);
-
-  return {
-    deposit,
-    isLoading,
-    message,
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+      return { hash: result.hash, amount, assetType };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['earn'] });
+      qc.invalidateQueries({ queryKey: ['margin'] });
+    },
+  });
 };
 
 export const useWithdraw = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
   const depositedBalances = useUserStore((state) => state.depositedBalances);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const refreshBalances = useCallback(async (walletAddress?: string) => {
-    const targetAddress = walletAddress || address;
-    if (!targetAddress) return;
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-    try {
-      const balance = await WalletService.getBalance(targetAddress);
-      
-      const [xlmDeposited, usdcDeposited, aquariusUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquariusUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const withdraw = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    const depositedAmount = parseFloat(depositedBalances[assetType] || '0');
-    if (amount > depositedAmount) {
-      setMessage({ type: 'error', text: 'Cannot withdraw more than deposited balance' });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: 'Processing withdrawal...' });
+      const depositedAmount = parseFloat(depositedBalances[assetType] || '0');
+      if (amount > depositedAmount) {
+        throw new Error('Cannot withdraw more than deposited balance');
+      }
 
       const result = await ContractService.withdraw(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully withdrew ${amount} ${assetType}!` });
-        
-        // Refresh balances after successful withdrawal
-        await refreshBalances(address);
-        
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: result.error || 'Withdrawal failed' });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(result.error || 'Withdrawal failed');
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: error?.message || 'Withdrawal failed' });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, depositedBalances, refreshBalances]);
-
-  return {
-    withdraw,
-    isLoading,
-    message,
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+      return { hash: result.hash, amount, assetType };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['earn'] });
+      qc.invalidateQueries({ queryKey: ['margin'] });
+    },
+  });
 };
