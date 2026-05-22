@@ -113,20 +113,16 @@ export const Positionstable = ({
         usdValue: parseFloat(bal.usdValue),
       }));
 
-    // Collateral Deposited = net margin deposits only (deposit / transfer-in / out).
-    // Blend, Soroswap, Aquarius, and spot swaps change HF in the store but must
-    // not re-label wallet balance as "collateral" in this table.
+    // Collateral Deposited = live on-chain collateral balances, excluding farm
+    // receipt tokens (BLEND_*, AQ_*, SS_*) which are not direct deposits.
+    const FARM_PREFIX = /^(BLEND_|AQ_|SS_)/i;
     const netDepositedByToken: Record<string, number> = {};
-    if (!historyLoading) {
-      for (const item of history) {
-        const canonical = canonicalToken(item.asset || '');
-        const amt = parseFloat(String(item.amount ?? '0')) || 0;
-        if (!Number.isFinite(amt) || amt <= 0) continue;
-        if (item.type === 'deposit' || item.type === 'transfer-in') {
-          netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + amt;
-        } else if (item.type === 'transfer-out') {
-          netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) - amt;
-        }
+    for (const [sym, bal] of Object.entries(collateralBalances) as [string, { amount: string; usdValue: string }][]) {
+      if (FARM_PREFIX.test(sym)) continue;
+      const canonical = canonicalToken(sym);
+      const amt = parseFloat(bal.amount || '0');
+      if (amt > BORROW_DUST_EPSILON) {
+        netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + amt;
       }
     }
 
