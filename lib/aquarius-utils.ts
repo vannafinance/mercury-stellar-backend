@@ -160,7 +160,7 @@ export function mapAquariusReservesToConfig(
   const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? ['', ''];
   const onChainOrder = cfg?.onChainReserveSymbols ?? cfg?.tokens;
   const bySym: Record<string, string> = {};
-  onChainOrder.forEach((sym, idx) => {
+  onChainOrder?.forEach((sym, idx) => {
     const raw = idx === 0 ? raw0 : raw1;
     if (sym) bySym[sym.toUpperCase()] = fromStroopScalar(raw);
   });
@@ -1375,7 +1375,7 @@ export class AquariusService {
       const tokenOutSymbol: 'XLM' | 'USDC' = tokenInSymbol === 'XLM' ? 'USDC' : 'XLM';
 
       const amountStroops = floorAmountToStroops(amountIn);
-      if (amountStroops <= 0n) {
+      if (amountStroops <= BigInt(0)) {
         return { success: false, error: 'Invalid swap amount' };
       }
 

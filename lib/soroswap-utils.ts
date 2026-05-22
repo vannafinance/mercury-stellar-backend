@@ -662,7 +662,7 @@ export class SoroswapService {
       const tokenOut: 'XLM' | 'USDC' = tokenIn === 'XLM' ? 'USDC' : 'XLM';
 
       const amountStroops = floorAmountToStroops(amountIn);
-      if (amountStroops <= 0n) {
+      if (amountStroops <= BigInt(0)) {
         return { success: false, error: 'Invalid swap amount' };
       }
 

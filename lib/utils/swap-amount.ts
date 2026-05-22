@@ -2,7 +2,7 @@
 export const TOKEN_DECIMALS = 7;
 const STROOP_BASE = BigInt(10 ** TOKEN_DECIMALS);
 /** Leave 1 stroop on MAX / 100% so transfers never exceed on-chain balance. */
-const DEFAULT_MAX_BUFFER_STROOPS = 1n;
+const DEFAULT_MAX_BUFFER_STROOPS = BigInt(1);
 
 /** Parse a human token amount string into stroops (floor fractional digits). */
 export function parseTokenAmountToStroops(
@@ -10,7 +10,7 @@ export function parseTokenAmountToStroops(
   decimals = TOKEN_DECIMALS,
 ): bigint {
   const s = amount.replace(/,/g, "").trim();
-  if (!s || s === ".") return 0n;
+  if (!s || s === ".") return BigInt(0);
   const negative = s.startsWith("-");
   const cleaned = negative ? s.slice(1) : s;
   const [whole, frac = ""] = cleaned.split(".");
@@ -25,7 +25,7 @@ export function stroopsToAmountString(
   stroops: bigint,
   decimals = TOKEN_DECIMALS,
 ): string {
-  if (stroops <= 0n) return "0";
+  if (stroops <= BigInt(0)) return "0";
   const base = BigInt(10 ** decimals);
   const whole = stroops / base;
   const frac = stroops % base;
@@ -40,7 +40,7 @@ export function getMaxSwappableBalance(
 ): string {
   let stroops = parseTokenAmountToStroops(balanceStr);
   if (stroops > bufferStroops) stroops -= bufferStroops;
-  else stroops = 0n;
+  else stroops = BigInt(0);
   return stroopsToAmountString(stroops);
 }
 
@@ -53,11 +53,11 @@ export function amountFromBalancePercent(
   let total = parseTokenAmountToStroops(balanceStr);
   if (pct >= 100) {
     if (total > bufferStroops) total -= bufferStroops;
-    else total = 0n;
+    else total = BigInt(0);
   } else if (pct > 0) {
-    total = (total * BigInt(Math.floor(pct))) / 100n;
+    total = (total * BigInt(Math.floor(pct))) / BigInt(100);
   } else {
-    total = 0n;
+    total = BigInt(0);
   }
   return stroopsToAmountString(total);
 }
@@ -73,7 +73,7 @@ export function stroopsToWad(
 
 /** Floor a JS number to stroops and back (avoids float overshoot on MAX). */
 export function floorAmountToStroops(amount: number): bigint {
-  if (!Number.isFinite(amount) || amount <= 0) return 0n;
+  if (!Number.isFinite(amount) || amount <= 0) return BigInt(0);
   return BigInt(Math.floor(amount * Number(STROOP_BASE) + 1e-9));
 }
 

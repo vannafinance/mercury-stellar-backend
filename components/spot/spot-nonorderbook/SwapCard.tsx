@@ -418,7 +418,7 @@ export const SwapCard = ({
               ? marginUsdcBalance || "0"
               : ssMarginUsdcBalance || "0"
         : tokenInBalance;
-    if (!rawBal || parseTokenAmountToStroops(rawBal) <= 0n) return;
+    if (!rawBal || parseTokenAmountToStroops(rawBal) <= BigInt(0)) return;
     setAmountIn(amountFromBalancePercent(rawBal, pct));
     setTxStatus("idle");
   }, [

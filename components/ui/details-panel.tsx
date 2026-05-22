@@ -41,7 +41,7 @@ export const DetailsPanel = ({
           transition={{ duration: 0.3, delay: 0.35 + index * 0.05 }}
         >
           <div className="flex items-center gap-[8px]">
-            <div className={`text-[16px] ${textColor} font-medium`}>
+            <div className={`text-[16px] ${textClass} font-medium`}>
               {item.title}
             </div>
             {item.linkText && (
