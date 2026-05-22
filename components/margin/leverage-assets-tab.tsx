@@ -22,7 +22,6 @@ import {
 import { MarginAccountService } from "@/lib/margin-utils";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
 import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
@@ -70,7 +69,6 @@ export const LeverageAssetsTab = () => {
   const XLM_WALLET_RESERVE = 1;
   const XLM_DEPOSIT_EPSILON = 1e-7;
   const { isDark } = useTheme();
-  const { getPrice } = useTokenPrices();
   const { refreshBalances } = useWallet();
   const normalizeContractTokenSymbol = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
@@ -170,7 +168,7 @@ export const LeverageAssetsTab = () => {
 
   // Live oracle prices for USD conversions in deposit/borrow flows. Aliased
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
-  const MB_TOKEN_PRICES = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   // Map dropdown asset name → canonical key used in collateralBalances.
   // Mirrors canonicalMarginToken() in margin-account-info-store.ts.
@@ -221,7 +219,7 @@ export const LeverageAssetsTab = () => {
     return mbCollateralItems.reduce((sum, item) => {
       const itemId = `${item.asset}-${item.amount}`;
       if (!mbSelectedIds.has(itemId)) return sum;
-      const price = getPrice(item.asset);
+      const price = MB_TOKEN_PRICES[item.asset] ?? 1;
       return sum + item.amount * price;
     }, 0);
   }, [isMBMode, mbCollateralItems, mbSelectedIds, MB_TOKEN_PRICES]);
@@ -472,7 +470,7 @@ export const LeverageAssetsTab = () => {
           const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
             const itemId = `${item.asset}-${item.amount}`;
             if (!mbSelectedIds.has(itemId)) return sum;
-            const price = getPrice(item.asset);
+            const price = MB_TOKEN_PRICES[item.asset] ?? 1;
             return sum + item.amount * price;
           }, 0);
 
@@ -490,7 +488,7 @@ export const LeverageAssetsTab = () => {
 
           const borrowAmountUsd = totalCollateralUsd * (leverage - 1);
           const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken);
-          const borrowTokenPrice = getPrice(normalizedBorrowToken);
+          const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
           const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
 
           // Pre-validate against risk engine before submitting
@@ -570,7 +568,7 @@ export const LeverageAssetsTab = () => {
             const amount = Number(item.amount || 0);
             const amountInUsd =
               Number(item.amountInUsd || 0) ||
-              amount * getPrice(normalizedAsset);
+              amount * (MB_TOKEN_PRICES[normalizedAsset] ?? 1);
             return {
               asset: normalizedAsset,
               amount,
