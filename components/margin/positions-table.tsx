@@ -113,16 +113,39 @@ export const Positionstable = ({
         usdValue: parseFloat(bal.usdValue),
       }));
 
-    // Collateral Deposited = live on-chain collateral balances, excluding farm
-    // receipt tokens (BLEND_*, AQ_*, SS_*) which are not direct deposits.
+    // Collateral Deposited = net user-deposited collateral per token.
+    // Formula: collateralBalance - borrowedBalance (per token).
+    //
+    // Why: the margin contract records borrowed funds as collateral too
+    // (the loan proceeds stay in the account). Subtracting the borrowed
+    // amount isolates only what the user actually deposited.
+    //
+    // Examples:
+    //   Deposit 700 XLM, borrow 3004 XLM → shown 3700-3004 = 696 XLM
+    //   Deposit 1000 XLM, borrow 2000 BLUSDC → XLM: 1000-0=1000, BLUSDC: 2000-2000=0
+    //
+    // Farm receipt tokens (BLEND_*, AQ_*, SS_*) are always excluded.
     const FARM_PREFIX = /^(BLEND_|AQ_|SS_)/i;
+
+    // Sum all borrowed amounts by canonical token
+    const borrowedAmtByToken: Record<string, number> = {};
+    for (const [sym, bal] of Object.entries(borrowedBalances) as [string, BorrowedBalance][]) {
+      const canonical = canonicalToken(sym);
+      const amt = parseFloat(bal.amount || '0');
+      if (amt > 0) {
+        borrowedAmtByToken[canonical] = (borrowedAmtByToken[canonical] ?? 0) + amt;
+      }
+    }
+
     const netDepositedByToken: Record<string, number> = {};
     for (const [sym, bal] of Object.entries(collateralBalances) as [string, { amount: string; usdValue: string }][]) {
       if (FARM_PREFIX.test(sym)) continue;
       const canonical = canonicalToken(sym);
-      const amt = parseFloat(bal.amount || '0');
-      if (amt > BORROW_DUST_EPSILON) {
-        netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + amt;
+      const collateralAmt = parseFloat(bal.amount || '0');
+      const borrowedAmt = borrowedAmtByToken[canonical] ?? 0;
+      const netAmt = collateralAmt - borrowedAmt;
+      if (netAmt > BORROW_DUST_EPSILON) {
+        netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + netAmt;
       }
     }
 

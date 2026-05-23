@@ -1,13 +1,12 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { DropdownOptions } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { Dropdown } from "../ui/dropdown";
 import { Popup } from "@/components/ui/popup";
-import { InfoCard } from "./info-card";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
@@ -109,20 +108,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // Current margin account state for computing updated values
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
-
-  // Repay details — projected values after repay
-  const repayDetails = useMemo(() => {
-    const updatedCollateral = totalCollateralValue;
-    const updatedBorrowedAmount = Math.max(0, totalBorrowedValue - repayAmountInUsd);
-    const updatedHealthFactor = updatedBorrowedAmount > 0
-      ? updatedCollateral / updatedBorrowedAmount
-      : 999;
-    const equity = updatedCollateral - updatedBorrowedAmount;
-    const updatedLeverage = equity > 0
-      ? updatedCollateral / equity
-      : 1;
-    return { updatedCollateral, updatedBorrowedAmount, updatedHealthFactor, updatedLeverage };
-  }, [totalCollateralValue, totalBorrowedValue, repayAmountInUsd]);
 
   // Popup visibility states
   const [isPayNowPopupOpen, setIsPayNowPopupOpen] = useState(false);
@@ -516,30 +501,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           </div>
         </motion.article>
 
-        {/* Repay Details */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.35 }}
-        >
-          <InfoCard
-            data={repayDetails}
-            showExpandable={true}
-            expandableSections={[
-              {
-                title: "Repay Details",
-                items: [
-                  { id: "updatedCollateral", name: "Updated Collateral" },
-                  { id: "updatedBorrowedAmount", name: "Updated Borrowed Amount" },
-                  { id: "updatedHealthFactor", name: "Updated Health Factor" },
-                  { id: "updatedLeverage", name: "Updated Leverage" },
-                ],
-                defaultExpanded: false,
-                delay: 0.1,
-              },
-            ]}
-          />
-        </motion.div>
+        {/* Repay preview — before → after values (same style as Leverage/Transfer tabs) */}
+        <RepayPreviewSection
+          repayAmount={repayAmount}
+          selectedTokenPrice={selectedTokenPrice}
+        />
 
         {/* Action buttons */}
         <motion.section

@@ -1,12 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Dropdown } from "../ui/dropdown";
 import { AnimatePresence, motion } from "framer-motion";
 import { DropdownOptions } from "@/lib/constants";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
-import { InfoCard } from "./info-card";
 import { Button } from "../ui/button";
 import { useTheme } from "@/contexts/theme-context";
-import { useTokenPrices } from "@/contexts/price-context";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { getAddress } from "@stellar/freighter-api";
 import { ContractService, CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
@@ -43,7 +41,6 @@ const formatUsd = (n: number): string =>
 
 export const TransferCollateral = () => {
   const { isDark } = useTheme();
-  const { getPrice } = useTokenPrices();
   const normalizeContractTokenSymbol = (symbol: string) =>
     symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
       ? "USDC"
@@ -55,19 +52,12 @@ export const TransferCollateral = () => {
   const [selectedCurrency, setSelectedCurrency] = useState<string>("XLM");
   const [selectedTransferType, setSelectedTransferType] = useState<"MB" | "WB">("MB");
   const [valueInput, setValueInput] = useState<string>("");
-  const [valueInUsd, setValueInUsd] = useState<number>(0.0);
   const [percentage, setPercentage] = useState<number>(0);
-  
+
   // Wallet and margin account state
   const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
   const [marginAccountBalance, setMarginAccountBalance] = useState<number>(0);
-  // Raw on-chain SAC balance held by the margin smart account. Differs from
-  // `marginAccountBalance` (collateral book value) because borrowed funds sit
-  // in the smart account but are not registered as collateral. Used for the
-  // display row below the transaction preview — transfer math still uses the
-  // collateral balance since only collateral is withdrawable.
-  const [marginAccountActualBalance, setMarginAccountActualBalance] = useState<number>(0);
   const [walletBalance, setWalletBalance] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(false);
   const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
@@ -85,10 +75,8 @@ export const TransferCollateral = () => {
       setUserAddress("");
       setMarginAccount("");
       setMarginAccountBalance(0);
-      setMarginAccountActualBalance(0);
       setWalletBalance(0);
       setValueInput("");
-      setValueInUsd(0);
       setPercentage(0);
     }
   }, [globalIsConnected, globalAddress]);
@@ -145,22 +133,6 @@ export const TransferCollateral = () => {
   })();
   const isOverSourceBalance = Number(valueInput || 0) > sourceBalance;
 
-  // Transfer details — projected values after transfer
-  const transferDetails = useMemo(() => {
-    const transferAmountInUsd = Number(valueInput || 0) * selectedTokenPrice;
-    const updatedCollateral = selectedTransferType === "MB"
-      ? totalCollateralValue + transferAmountInUsd
-      : Math.max(0, totalCollateralValue - transferAmountInUsd);
-    const updatedBorrowedAmount = totalBorrowedValue; // transfer doesn't change debt
-    const updatedHealthFactor = updatedBorrowedAmount > 0
-      ? updatedCollateral / updatedBorrowedAmount
-      : 999;
-    const equity = updatedCollateral - updatedBorrowedAmount;
-    const updatedLeverage = equity > 0
-      ? updatedCollateral / equity
-      : 1;
-    return { updatedCollateral, updatedBorrowedAmount, updatedHealthFactor, updatedLeverage };
-  }, [totalCollateralValue, totalBorrowedValue, valueInput, selectedTokenPrice, selectedTransferType]);
 
   // Projected HF after a WB (withdraw) — used to block the Transfer button
   // and show a warning when the withdrawal would push HF below 1.1.
@@ -300,7 +272,6 @@ export const TransferCollateral = () => {
         accountAddress,
         address,
       );
-      setMarginAccountActualBalance(parseFloat(balance) || 0);
     } catch (error) {
       console.error("Error refreshing actual margin balance:", error);
     }
@@ -363,14 +334,12 @@ export const TransferCollateral = () => {
     // above the actual max — see handleMaxValueClick comment for the gotcha.
     const safeAmount = Math.floor(calculatedAmount * 100) / 100;
     setValueInput(safeAmount.toFixed(2));
-    setValueInUsd(safeAmount);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = validateAmountChange(e.target.value);
     if (sanitized === null) return;
     setValueInput(sanitized);
-    setValueInUsd(sanitized === "" ? 0 : Number(sanitized) * 1); // Placeholder for price conversion
   };
 
   const handleMaxValueClick = () => {
@@ -380,7 +349,6 @@ export const TransferCollateral = () => {
     // guarantees the displayed value is always ≤ the real max.
     const safeMax = Math.floor(targetMax * 100) / 100;
     setValueInput(safeMax.toFixed(2));
-    setValueInUsd(safeMax);
   };
 
   const handleTransferClick = async () => {
@@ -457,7 +425,6 @@ export const TransferCollateral = () => {
         }
         await refreshTokenBalances(userAddress, marginAccount);
         setValueInput("");
-        setValueInUsd(0);
       } else {
         // The on-chain call failed at the entered amount, so the "safe max"
         // shown in the toast must be lower than what the user just tried —
@@ -475,7 +442,6 @@ export const TransferCollateral = () => {
           safeMaxAfterFailure > 0
         ) {
           setValueInput(safeMaxAfterFailure.toFixed(2));
-          setValueInUsd(safeMaxAfterFailure);
         }
         toast.error(getFriendlyTransferError(result.error, safeMaxAfterFailure));
       }
@@ -660,7 +626,6 @@ export const TransferCollateral = () => {
                     setSelectedTransferType(mode as "WB" | "MB");
                     setPercentage(0);
                     setValueInput("");
-                    setValueInUsd(0);
                   }}
                   className={`px-3 py-1 rounded-[8px] text-[12px] font-semibold transition-all ${
                     active
@@ -685,32 +650,6 @@ export const TransferCollateral = () => {
         transferType={selectedTransferType}
       />
 
-      {/* Margin / Wallet balance row — moved below the transaction preview.
-          For MB destination we show the *actual* on-chain SAC balance of the
-          smart account (collateral + any borrowed funds parked in it), not
-          just the registered collateral book value. */}
-      <motion.aside
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.35 }}
-      >
-        <InfoCard
-          data={transferDetails}
-          showExpandable={true}
-          expandableSections={[
-            {
-              title: "Transfer Details",
-              items: [
-                { id: "updatedCollateral", name: "Updated Collateral" },
-                { id: "updatedHealthFactor", name: "Updated Health Factor" },
-                { id: "updatedLeverage", name: "Updated Leverage" },
-              ],
-              defaultExpanded: false,
-              delay: 0.1,
-            },
-          ]}
-        />
-      </motion.aside>
 
       {/* Action buttons */}
       <motion.section
