@@ -111,7 +111,7 @@ const LP_SHARE_SCALE = 1e7;
 const AQUARIUS_AMM_API_BASE = 'https://amm-api-testnet.aqua.network';
 const AQUARIUS_API_CACHE_TTL_MS = 60_000;
 /** Bump when reserve→config mapping changes so stale cache is not reused. */
-const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 2;
+const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 3;
 
 interface AquariusApiPoolsResponse {
   items?: AquariusApiPoolItem[];
@@ -158,16 +158,28 @@ export function mapAquariusReservesToConfig(
   raw1: string | undefined,
 ): { reserveA: string; reserveB: string } {
   const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? ['', ''];
-  const onChainOrder = cfg?.onChainReserveSymbols ?? cfg?.tokens;
+  const onChainOrder = cfg?.onChainReserveSymbols ?? cfg?.tokens ?? ['', ''];
   const bySym: Record<string, string> = {};
-  onChainOrder?.forEach((sym, idx) => {
+  onChainOrder.forEach((sym, idx) => {
     const raw = idx === 0 ? raw0 : raw1;
     if (sym) bySym[sym.toUpperCase()] = fromStroopScalar(raw);
   });
-  return {
-    reserveA: bySym[cfgTokenA?.toUpperCase()] ?? fromStroopScalar(raw0),
-    reserveB: bySym[cfgTokenB?.toUpperCase()] ?? fromStroopScalar(raw1),
-  };
+  let reserveA = bySym[cfgTokenA?.toUpperCase()] ?? fromStroopScalar(raw0);
+  let reserveB = bySym[cfgTokenB?.toUpperCase()] ?? fromStroopScalar(raw1);
+
+  // API `tokens_str` is sometimes [XLM, USDC] while reserves stay [USDC, XLM].
+  // For XLM/USDC, XLM reserve count should dwarf USDC (~96:1 on testnet).
+  if (cfg?.id === 'aquarius-xlm-usdc') {
+    const a = parseFloat(reserveA);
+    const b = parseFloat(reserveB);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a * 10) {
+      const tmp = reserveA;
+      reserveA = reserveB;
+      reserveB = tmp;
+    }
+  }
+
+  return { reserveA, reserveB };
 }
 
 /** Pro-rata underlying token amounts for an LP position (config token order). */
@@ -226,24 +238,14 @@ export class AquariusService {
 
       const cfg = AQUARIUS_POOLS.find((p) => p.poolAddress.toUpperCase() === address);
 
-      // Resolve reserves by symbol when API ships tokens_str; otherwise map
-      // on-chain [token0, token1] via pool config (critical for XLM/USDC).
-      const apiTokens = (pool.tokens_str ?? []).map((s) => (s || '').toUpperCase());
-      let mapped: { reserveA: string; reserveB: string };
-      if (apiTokens.length >= 2 && cfg) {
-        const reservesByToken: Record<string, string> = {};
-        apiTokens.forEach((sym, idx) => {
-          const raw = pool.reserves?.[idx];
-          if (sym && raw !== undefined) reservesByToken[sym] = fromStroopScalar(raw);
-        });
-        const [cfgTokenA, cfgTokenB] = cfg.tokens;
-        mapped = {
-          reserveA: reservesByToken[cfgTokenA.toUpperCase()] ?? fromStroopScalar(pool.reserves?.[0]),
-          reserveB: reservesByToken[cfgTokenB.toUpperCase()] ?? fromStroopScalar(pool.reserves?.[1]),
-        };
-      } else {
-        mapped = mapAquariusReservesToConfig(cfg, pool.reserves?.[0], pool.reserves?.[1]);
-      }
+      // Always map via on-chain reserve index order when we know it (XLM/USDC).
+      // Do not trust tokens_str index alignment — API often lists symbols in
+      // display order while reserves[] stays sorted by contract address.
+      let mapped = mapAquariusReservesToConfig(
+        cfg,
+        pool.reserves?.[0],
+        pool.reserves?.[1],
+      );
 
       const totalShare = fromStroopScalar(pool.total_share);
       const feeRaw = Math.round((parseFloat(pool.fee ?? '0.003') || 0.003) * 10_000);

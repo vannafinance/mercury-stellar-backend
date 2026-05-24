@@ -160,7 +160,11 @@ export const AddLiquidity = memo(function AddLiquidity() {
     }
   }, [isAquariusPool, isSoroswapPool]);
 
-  // Auto-calculate tokenB when user types tokenA (and vice versa)
+  // Auto-calculate tokenB when user types tokenA (and vice versa).
+  // reserveA / reserveB match pool.tokens[0] / tokens[1] (see aquarius-utils).
+  const poolSpotPriceAinB = (rA: number, rB: number): number =>
+    rA > 0 && rB > 0 ? rB / rA : 0;
+
   const handleAmountAChange = (val: string) => {
     setAmountA(val);
     const parsed = parseFloat(val);
@@ -172,9 +176,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
       : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
     if (!isNaN(parsed) && parsed > 0 && reserveA > 0 && reserveB > 0) {
-      const rA = reserveA;
-      const rB = reserveB;
-      if (rA > 0) setAmountB((parsed * rB / rA).toFixed(2));
+      const ratio = poolSpotPriceAinB(reserveA, reserveB);
+      if (ratio > 0) setAmountB((parsed * ratio).toFixed(2));
     } else if (val === '') {
       setAmountB('');
     }
@@ -191,9 +194,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
       : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
     if (!isNaN(parsed) && parsed > 0 && reserveA > 0 && reserveB > 0) {
-      const rA = reserveA;
-      const rB = reserveB;
-      if (rB > 0) setAmountA((parsed * rA / rB).toFixed(2));
+      const inverseRatio = reserveA / reserveB;
+      if (inverseRatio > 0) setAmountA((parsed * inverseRatio).toFixed(2));
     } else if (val === '') {
       setAmountA('');
     }
@@ -453,9 +455,13 @@ export const AddLiquidity = memo(function AddLiquidity() {
         }`}>
           {(reserveA > 0 && reserveB > 0) && (
             <div className={`text-[11px] font-medium mb-[4px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-              1 {tokenB} ≈ {(reserveA / reserveB).toFixed(2)} {tokenA}
-              &nbsp;·&nbsp;
-              1 {tokenA} ≈ {(reserveB / reserveA).toFixed(2)} {tokenB}
+              {(() => {
+                const priceAinB = poolSpotPriceAinB(reserveA, reserveB);
+                const priceBinA = reserveA > 0 && reserveB > 0 ? reserveA / reserveB : 0;
+                const fmtA = priceAinB < 0.01 ? priceAinB.toFixed(4) : priceAinB.toFixed(2);
+                const fmtB = priceBinA < 0.01 ? priceBinA.toFixed(4) : priceBinA.toFixed(2);
+                return `1 ${tokenA} ≈ ${fmtA} ${tokenB} · 1 ${tokenB} ≈ ${fmtB} ${tokenA}`;
+              })()}
             </div>
           )}
           <div className="w-full flex flex-col gap-[12px]">
