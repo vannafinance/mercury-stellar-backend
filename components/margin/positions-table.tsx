@@ -58,22 +58,20 @@ export const Positionstable = ({
 }: PositionstableProps) => {
   const { isDark } = useTheme();
   const {
-    collateralBalances,
     borrowedBalances,
-    totalCollateralValue,
     totalBorrowedValue,
+    netAvailableCollateral,
     hasMarginAccount,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
-      collateralBalances: state.collateralBalances,
       borrowedBalances: state.borrowedBalances,
-      totalCollateralValue: state.totalCollateralValue,
       totalBorrowedValue: state.totalBorrowedValue,
+      netAvailableCollateral: state.netAvailableCollateral,
       hasMarginAccount: state.hasMarginAccount,
     })),
   );
 
-  const { history, isLoading: historyLoading } = useMarginHistory();
+  const { history, isLoading: historyInitialLoading } = useMarginHistory();
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
@@ -113,57 +111,13 @@ export const Positionstable = ({
         usdValue: parseFloat(bal.usdValue),
       }));
 
-    // Collateral Deposited = net user-deposited collateral per token.
-    // Formula: collateralBalance - borrowedBalance (per token).
-    //
-    // Why: the margin contract records borrowed funds as collateral too
-    // (the loan proceeds stay in the account). Subtracting the borrowed
-    // amount isolates only what the user actually deposited.
-    //
-    // Examples:
-    //   Deposit 700 XLM, borrow 3004 XLM → shown 3700-3004 = 696 XLM
-    //   Deposit 1000 XLM, borrow 2000 BLUSDC → XLM: 1000-0=1000, BLUSDC: 2000-2000=0
-    //
-    // Farm receipt tokens (BLEND_*, AQ_*, SS_*) are always excluded.
-    const FARM_PREFIX = /^(BLEND_|AQ_|SS_)/i;
+    const hasAnyDebt = borrowedArray.length > 0;
 
-    // Sum all borrowed amounts by canonical token
-    const borrowedAmtByToken: Record<string, number> = {};
-    for (const [sym, bal] of Object.entries(borrowedBalances) as [string, BorrowedBalance][]) {
-      const canonical = canonicalToken(sym);
-      const amt = parseFloat(bal.amount || '0');
-      if (amt > 0) {
-        borrowedAmtByToken[canonical] = (borrowedAmtByToken[canonical] ?? 0) + amt;
-      }
-    }
-
-    const netDepositedByToken: Record<string, number> = {};
-    for (const [sym, bal] of Object.entries(collateralBalances) as [string, { amount: string; usdValue: string }][]) {
-      if (FARM_PREFIX.test(sym)) continue;
-      const canonical = canonicalToken(sym);
-      const collateralAmt = parseFloat(bal.amount || '0');
-      const borrowedAmt = borrowedAmtByToken[canonical] ?? 0;
-      const netAmt = collateralAmt - borrowedAmt;
-      if (netAmt > BORROW_DUST_EPSILON) {
-        netDepositedByToken[canonical] = (netDepositedByToken[canonical] ?? 0) + netAmt;
-      }
-    }
-
-    const underlyingSymbols = new Set<string>([
-      ...Object.keys(netDepositedByToken),
-      ...borrowedEntriesClean.map(([token]) => canonicalToken(token)),
-    ]);
-
-    let netDepositedUsd = 0;
-    for (const underlying of underlyingSymbols) {
-      const amt = Math.max(0, netDepositedByToken[underlying] ?? 0);
-      if (amt <= BORROW_DUST_EPSILON) continue;
-      netDepositedUsd += amt * (tokenPrices[underlying] ?? 0);
-    }
-
+    const equityUsd =
+      netAvailableCollateral > BORROW_DUST_USD ? netAvailableCollateral : 0;
     const leverage =
-      netDepositedUsd > 0
-        ? parseFloat((1 + totalBorrowedValue / netDepositedUsd).toFixed(2))
+      equityUsd > BORROW_DUST_USD
+        ? parseFloat((1 + totalBorrowedValue / equityUsd).toFixed(2))
         : 1;
 
     // Interest accrued = current debt − net principal still owed, in USD.
@@ -176,7 +130,7 @@ export const Positionstable = ({
     // which would make diff = full borrowed amount and produce a false reading
     // of "interest = borrow USD value". Skip the calculation until loaded.
     const netPrincipalByToken: Record<string, number> = {};
-    if (!historyLoading) {
+    if (!historyInitialLoading) {
       for (const item of history) {
         const canonical = canonicalToken(item.asset || '');
         const amt = parseFloat(String(item.amount ?? '0')) || 0;
@@ -190,7 +144,7 @@ export const Positionstable = ({
     }
 
     let interestAccruedUsd = 0;
-    if (!historyLoading) {
+    if (!historyInitialLoading) {
       for (const [, bal] of dedupedBorrowed) {
         const canonical = canonicalToken(bal.token);
         const currentAmt = parseFloat(bal.balance.amount || '0');
@@ -209,35 +163,39 @@ export const Positionstable = ({
     // current row's collateral symbol — that hid every cross-asset borrow.
     // Now each collateral row shows the full borrow list; with a single
     // collateral (the typical case) you see exactly your real debt.
-    const hasAnyDebt = borrowedArray.length > 0;
     const positionRows: Position[] = [];
-    let idx = 0;
-    for (const underlying of underlyingSymbols) {
-      const depositedAmt = Math.max(0, netDepositedByToken[underlying] ?? 0);
-      const hasBorrowForRow = borrowedArray.some(
-        (b) => canonicalToken(b.assetData.asset) === underlying,
-      );
-      if (depositedAmt <= BORROW_DUST_EPSILON && !hasBorrowForRow && !hasAnyDebt) {
-        continue;
-      }
 
-      const price = tokenPrices[underlying] ?? 0;
-      const depositedUsd = depositedAmt * price;
+    if (hasAnyDebt || equityUsd > BORROW_DUST_USD) {
+      const underlying = canonicalToken(
+        borrowedEntriesClean[0]?.[0] ?? "XLM",
+      );
+      const price = tokenPrices[underlying] ?? tokenPrices.XLM ?? 0;
+      const depositedUsd = equityUsd;
+      const depositedAmt =
+        price > 0 && depositedUsd > BORROW_DUST_USD
+          ? depositedUsd / price
+          : 0;
 
       positionRows.push({
-        positionId: idx + 1,
+        positionId: 1,
         collateral: { asset: underlying, amount: depositedAmt.toFixed(2) },
         collateralUsdValue: parseFloat(depositedUsd.toFixed(2)),
         borrowed: borrowedArray,
         leverage,
         interestAccrued: hasAnyDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
         isOpen: hasAnyDebt || depositedAmt > BORROW_DUST_EPSILON,
-        user: '',
+        user: "",
       });
-      idx += 1;
     }
     return positionRows;
-  }, [collateralBalances, borrowedBalances, totalBorrowedValue, history, historyLoading, tokenPrices]);
+  }, [
+    borrowedBalances,
+    totalBorrowedValue,
+    netAvailableCollateral,
+    history,
+    historyInitialLoading,
+    tokenPrices,
+  ]);
 
   const [activeTab, setActiveTab] = useState<string>("currentPositions");
   const [currentPage, setCurrentPage] = useState<number>(1);

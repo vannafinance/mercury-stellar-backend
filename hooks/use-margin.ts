@@ -30,6 +30,9 @@ export const useMarginHistory = () => {
 
   return {
     history: mergedHistory,
-    isLoading: query.isLoading || query.isFetching,
+    // Only block on the first load. isFetching during 10s refetch must not
+    // clear deposit sums in Positions (that caused 1775 ↔ 2600 XLM flicker).
+    isLoading: query.isLoading,
+    isRefetching: query.isFetching,
   };
 };
