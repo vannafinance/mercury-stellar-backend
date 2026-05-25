@@ -2,6 +2,7 @@
 
 import { useTheme } from "@/contexts/theme-context";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { MarginAccountService } from "@/lib/margin-utils";
@@ -506,80 +507,92 @@ export const SwapCard = ({
     if (tokenInBalance) setAmountIn(tokenInBalance.replace(/,/g, ""));
   }, [tokenInBalance]);
 
-  const handleButtonClick = useCallback(async () => {
-    if (buttonState !== "ready") return;
-    if (!userAddress || !tokenIn) return;
-    if (swapMode === "margin" && !marginAccountAddress) return;
-    if (!isAquarius && !isSoroswap) return;
+  const qc = useQueryClient();
 
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    const slippageVal = slippageMode === "auto" ? 0.5 : parseFloat(slippage);
-    const requestedAmountIn = parseFloat(amountIn);
-    const availableAmountIn = tokenInBalance ? parseFloat(tokenInBalance.replace(/,/g, "")) : null;
-    const amountInToUse = availableAmountIn !== null
-      ? Math.min(requestedAmountIn, availableAmountIn)
-      : requestedAmountIn;
-    if (!Number.isFinite(amountInToUse) || amountInToUse <= 0) {
-      setTxStatus("error");
-      setTxError("Invalid amount");
-      return;
-    }
-
-    let result: { success: boolean; hash?: string; error?: string };
-
-    if (isAquarius) {
-      if (swapMode === "wallet") {
-        result = await AquariusService.aquariusSwap(
-          userAddress,
-          marginAccountAddress ?? "",
-          tokenIn.symbol as "XLM" | "USDC",
-          amountInToUse,
-          slippageVal,
-        );
-      } else {
-        result = await AquariusService.aquariusSwapFromMargin(
-          userAddress,
-          marginAccountAddress!,
-          tokenIn.symbol as "XLM" | "USDC",
-          amountInToUse,
-        );
+  const swapMutation = useMutation({
+    mutationFn: async () => {
+      const slippageVal = slippageMode === "auto" ? 0.5 : parseFloat(slippage);
+      const requestedAmountIn = parseFloat(amountIn);
+      const availableAmountIn = tokenInBalance ? parseFloat(tokenInBalance.replace(/,/g, "")) : null;
+      const amountInToUse = availableAmountIn !== null
+        ? Math.min(requestedAmountIn, availableAmountIn)
+        : requestedAmountIn;
+      if (!Number.isFinite(amountInToUse) || amountInToUse <= 0) {
+        throw new Error("Invalid amount");
       }
-    } else {
-      // Soroswap
-      if (swapMode === "wallet") {
-        result = await SoroswapService.swap(
-          userAddress,
-          tokenIn.symbol as "XLM" | "USDC",
-          amountInToUse,
-          slippageVal,
-        );
-      } else {
-        result = await SoroswapService.swapFromMargin(
-          userAddress,
-          marginAccountAddress!,
-          tokenIn.symbol as "XLM" | "USDC",
-          amountInToUse,
-        );
-      }
-    }
 
-    if (result.success) {
+      let result: { success: boolean; hash?: string; error?: string };
+
+      if (isAquarius) {
+        if (swapMode === "wallet") {
+          result = await AquariusService.aquariusSwap(
+            userAddress!,
+            marginAccountAddress ?? "",
+            tokenIn!.symbol as "XLM" | "USDC",
+            amountInToUse,
+            slippageVal,
+          );
+        } else {
+          result = await AquariusService.aquariusSwapFromMargin(
+            userAddress!,
+            marginAccountAddress!,
+            tokenIn!.symbol as "XLM" | "USDC",
+            amountInToUse,
+          );
+        }
+      } else {
+        if (swapMode === "wallet") {
+          result = await SoroswapService.swap(
+            userAddress!,
+            tokenIn!.symbol as "XLM" | "USDC",
+            amountInToUse,
+            slippageVal,
+          );
+        } else {
+          result = await SoroswapService.swapFromMargin(
+            userAddress!,
+            marginAccountAddress!,
+            tokenIn!.symbol as "XLM" | "USDC",
+            amountInToUse,
+          );
+        }
+      }
+
+      if (!result.success) {
+        throw new Error(result.error ?? "Swap failed");
+      }
+      return result;
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: (result) => {
       setTxStatus("success");
       setTxHash(result.hash ?? "");
       toast.success(`Swap submitted! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
       setAmountIn("");
       setAmountOut("");
       if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress);
-    } else {
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      qc.invalidateQueries({ queryKey: ['earn'] });
+    },
+    onError: (error) => {
       setTxStatus("error");
-      const errorMsg = result.error ?? "Swap failed";
+      const errorMsg = error instanceof Error ? error.message : "Swap failed";
       setTxError(errorMsg);
       toast.error(errorMsg);
-    }
-  }, [buttonState, isAquarius, isSoroswap, swapMode, userAddress, marginAccountAddress, tokenIn, amountIn, tokenInBalance, slippageMode, slippage]);
+    },
+  });
+
+  const handleButtonClick = useCallback(() => {
+    if (buttonState !== "ready") return;
+    if (!userAddress || !tokenIn) return;
+    if (swapMode === "margin" && !marginAccountAddress) return;
+    if (!isAquarius && !isSoroswap) return;
+    swapMutation.mutate();
+  }, [buttonState, isAquarius, isSoroswap, swapMode, userAddress, marginAccountAddress, tokenIn, swapMutation]);
 
   const minReceived = amountOut && slippage
     ? `${(parseFloat(amountOut) * (1 - parseFloat(slippageMode === "auto" ? "0.5" : slippage) / 100)).toFixed(2)} ${tokenOut?.symbol ?? ""}`

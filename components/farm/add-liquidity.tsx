@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useFarmStore } from "@/store/farm-store";
@@ -270,52 +271,41 @@ export const AddLiquidity = memo(function AddLiquidity() {
     setTxError("");
   };
 
-  const handleAddLiquidity = async () => {
-    if (!userAddress || !marginAccountAddress) return;
+  const qc = useQueryClient();
 
-    const amtA = parseFloat(amountA);
-    const amtB = parseFloat(amountB);
-    if (isNaN(amtA) || isNaN(amtB) || amtA <= 0 || amtB <= 0) return;
-
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    const result = isSoroswapPool
-      ? await SoroswapService.addLiquidity(
-          userAddress,
-          marginAccountAddress,
-          amtA,
-          amtB
-        )
-      : await AquariusService.addLiquidity(
-          userAddress,
-          marginAccountAddress,
-          tokenA,
-          tokenB,
-          amtA,
-          amtB
-        );
-
-    if (result.success) {
+  const addLiquidityMutation = useMutation({
+    mutationFn: async ({ amtA, amtB }: { amtA: number; amtB: number }) => {
+      const result = isSoroswapPool
+        ? await SoroswapService.addLiquidity(userAddress!, marginAccountAddress!, amtA, amtB)
+        : await AquariusService.addLiquidity(userAddress!, marginAccountAddress!, tokenA, tokenB, amtA, amtB);
+      if (!result.success) {
+        throw new Error(result.error ?? "Add liquidity failed");
+      }
+      return { ...result, amtA, amtB };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amtA, amtB }) => {
       setTxStatus("success");
-      setTxHash(result.hash ?? "");
+      setTxHash(hash ?? "");
       appendFarmHistory({
         protocol: isSoroswapPool ? "soroswap" : "aquarius",
         poolKey: buildFarmPoolKey(tokenA, tokenB),
-        marginAccountAddress,
+        marginAccountAddress: marginAccountAddress!,
         action: "add",
         amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenB}`,
-        txHash: result.hash ?? "",
+        txHash: hash ?? "",
       });
-      toast.success(`Liquidity added! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      toast.success(`Liquidity added! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
       const nextXlm = Math.max(0, parseFloat(marginXlmBalance || "0") - amtA);
       const nextUsdc = Math.max(0, parseFloat(marginUsdcBalance || "0") - amtB);
       setMarginXlmBalance(nextXlm.toFixed(2));
       setMarginUsdcBalance(nextUsdc.toFixed(2));
       setAmountA("");
       setAmountB("");
-      // Refresh canonical balances and pool stats; retries absorb RPC indexing delay.
       refreshDexMarginBalances(3, 1500);
       if (isSoroswapPool) {
         SoroswapService.getPoolStats().then(setSoroswapPoolStats).catch(() => {});
@@ -324,63 +314,87 @@ export const AddLiquidity = memo(function AddLiquidity() {
           .then(setAquariusPoolStats)
           .catch(() => {});
       }
-
-      // Keep store-level data in sync for other pages that derive margin info.
-      refreshBorrowedBalances(marginAccountAddress);
+      qc.invalidateQueries({ queryKey: ['farm'] });
+      try {
+        if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress);
+      } catch (err) {
+        console.warn("Post-add liquidity balance refresh failed; ledger tick will reconcile.", err);
+      }
       triggerBlendRefresh();
-    } else {
+    },
+    onError: (error) => {
       setTxStatus("error");
-      const message = result.error ?? "Add liquidity failed";
+      const message = error instanceof Error ? error.message : "Add liquidity failed";
       setTxError(message);
       toast.error(message);
-    }
+    },
+  });
+
+  const handleAddLiquidity = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    const amtA = parseFloat(amountA);
+    const amtB = parseFloat(amountB);
+    if (isNaN(amtA) || isNaN(amtB) || amtA <= 0 || amtB <= 0) return;
+    addLiquidityMutation.mutate({ amtA, amtB });
   };
 
-  const handleDeposit = async () => {
-    if (!userAddress || !marginAccountAddress) return;
-    const amount = parseFloat(value);
-    if (isNaN(amount) || amount <= 0) return;
-
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    // Deposit from margin account → Blend pool via AccountManager.execute
-    const result = await BlendService.depositToBlendPool(
-      userAddress,
-      marginAccountAddress,
-      selectedToken,
-      amount
-    );
-
-    if (result.success) {
+  const depositToBlendMutation = useMutation({
+    mutationFn: async ({ amount }: { amount: number }) => {
+      const result = await BlendService.depositToBlendPool(
+        userAddress!,
+        marginAccountAddress!,
+        selectedToken,
+        amount,
+      );
+      if (!result.success) {
+        throw new Error(result.error ?? "Deposit failed");
+      }
+      return { ...result, amount };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amount }) => {
       setTxStatus("success");
-      setTxHash(result.hash ?? "");
+      setTxHash(hash ?? "");
       appendFarmHistory({
         protocol: "blend",
         poolKey: buildFarmPoolKey(selectedToken),
-        marginAccountAddress,
+        marginAccountAddress: marginAccountAddress!,
         action: "add",
         amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
-        txHash: result.hash ?? "",
+        txHash: hash ?? "",
       });
-      toast.success(`Deposit successful! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      toast.success(`Deposit successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
       setValue("");
-      refreshBorrowedBalances(marginAccountAddress);
-      // Refresh Blend positions (positions table + events) after a short delay
-      // to allow the RPC node to reflect the confirmed transaction state
+      qc.invalidateQueries({ queryKey: ['farm'] });
+      try {
+        if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress);
+      } catch (err) {
+        console.warn("Post-deposit balance refresh failed; ledger tick will reconcile.", err);
+      }
       setTimeout(() => {
         triggerBlendRefresh();
-        BlendService.getUserBlendBalance(marginAccountAddress, selectedToken)
+        BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken)
           .then((info) => setBlendBalance(info.underlyingBalance))
           .catch(() => {});
       }, 3000);
-    } else {
+    },
+    onError: (error) => {
       setTxStatus("error");
-      const errorMsg = result.error ?? "Deposit failed";
+      const errorMsg = error instanceof Error ? error.message : "Deposit failed";
       setTxError(errorMsg);
       toast.error(errorMsg);
-    }
+    },
+  });
+
+  const handleDeposit = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    const amount = parseFloat(value);
+    if (isNaN(amount) || amount <= 0) return;
+    depositToBlendMutation.mutate({ amount });
   };
 
   const poolAsset = BLEND_POOL_ASSETS.find((a) => a.symbol === selectedToken);

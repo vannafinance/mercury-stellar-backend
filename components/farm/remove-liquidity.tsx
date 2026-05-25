@@ -2,6 +2,8 @@
 
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useFarmStore } from "@/store/farm-store";
@@ -157,6 +159,105 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     }
   };
 
+  const qc = useQueryClient();
+
+  const withdrawFromBlendMutation = useMutation({
+    mutationFn: async ({ amount }: { amount: number }) => {
+      const result = await BlendService.withdrawFromBlendPool(
+        userAddress!,
+        marginAccountAddress!,
+        selectedToken,
+        amount,
+      );
+      if (!result.success) {
+        throw new Error(result.error ?? "Withdrawal failed");
+      }
+      return { ...result, amount };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amount }) => {
+      setTxStatus("success");
+      setTxHash(hash ?? "");
+      appendFarmHistory({
+        protocol: "blend",
+        poolKey: buildFarmPoolKey(selectedToken),
+        marginAccountAddress: marginAccountAddress!,
+        action: "remove",
+        amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
+        txHash: hash ?? "",
+      });
+      toast.success(`Withdrawal successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      setValue("");
+      setSelectedPercentage(0);
+      qc.invalidateQueries({ queryKey: ['farm'] });
+      setTimeout(() => {
+        triggerBlendRefresh();
+        BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken).then((info) =>
+          setBlendBalance(info.underlyingBalance),
+        ).catch(() => {});
+      }, 3000);
+    },
+    onError: (error) => {
+      setTxStatus("error");
+      const errorMsg = error instanceof Error ? error.message : "Withdrawal failed";
+      setTxError(errorMsg);
+      toast.error(errorMsg);
+    },
+  });
+
+  const removeMultiDexMutation = useMutation({
+    mutationFn: async ({ amount }: { amount: number }) => {
+      const result = isSoroswapPool
+        ? await SoroswapService.removeLiquidity(userAddress!, marginAccountAddress!, amount)
+        : await AquariusService.removeLiquidity(userAddress!, marginAccountAddress!, tokenA, tokenB, amount);
+      if (!result.success) {
+        throw new Error(result.error ?? "Remove liquidity failed");
+      }
+      return { ...result, amount };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amount }) => {
+      setTxStatus("success");
+      setTxHash(hash ?? "");
+      appendFarmHistory({
+        protocol: isSoroswapPool ? "soroswap" : "aquarius",
+        poolKey: buildFarmPoolKey(tokenA, tokenB),
+        marginAccountAddress: marginAccountAddress!,
+        action: "remove",
+        amountDisplay: `${amount.toFixed(2)} LP`,
+        txHash: hash ?? "",
+      });
+      toast.success(`Liquidity removed! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      setValue("");
+      setSelectedPercentage(0);
+      qc.invalidateQueries({ queryKey: ['farm'] });
+      try {
+        if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress);
+      } catch (err) {
+        console.warn("Post-remove balance refresh failed; ledger tick will reconcile.", err);
+      }
+      const refreshLpBalance = isSoroswapPool
+        ? SoroswapService.getLpBalance(marginAccountAddress!)
+        : AquariusService.getUserLpBalance(marginAccountAddress!, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL);
+      refreshLpBalance.then(setLpBalance).catch(() => {});
+      triggerBlendRefresh();
+    },
+    onError: (error) => {
+      setTxStatus("error");
+      const errorMsg = error instanceof Error ? error.message : "Remove liquidity failed";
+      setTxError(errorMsg);
+      toast.error(errorMsg);
+    },
+  });
+
   const handleWithdraw = async () => {
     if (!userAddress || !marginAccountAddress) return;
     let amount = parseFloat(value);
@@ -181,43 +282,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       }
     }
 
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    const result = await BlendService.withdrawFromBlendPool(
-      userAddress,
-      marginAccountAddress,
-      selectedToken,
-      amount
-    );
-
-    if (result.success) {
-      setTxStatus("success");
-      setTxHash(result.hash ?? "");
-      appendFarmHistory({
-        protocol: "blend",
-        poolKey: buildFarmPoolKey(selectedToken),
-        marginAccountAddress,
-        action: "remove",
-        amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
-        txHash: result.hash ?? "",
-      });
-      toast.success(`Withdrawal successful! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
-      setValue("");
-      setSelectedPercentage(0);
-      setTimeout(() => {
-        triggerBlendRefresh();
-        BlendService.getUserBlendBalance(marginAccountAddress, selectedToken).then((info) =>
-          setBlendBalance(info.underlyingBalance)
-        );
-      }, 3000);
-    } else {
-      setTxStatus("error");
-      const errorMsg = result.error ?? "Withdrawal failed";
-      setTxError(errorMsg);
-      toast.error(errorMsg);
-    }
+    withdrawFromBlendMutation.mutate({ amount });
   };
 
   const poolAsset = BLEND_POOL_ASSETS.find((a) => a.symbol === selectedToken);
@@ -259,57 +324,11 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       isOverBalance ||
       txStatus === "loading";
 
-    const handleMultiDexWithdraw = async () => {
+    const handleMultiDexWithdraw = () => {
       if (!userAddress || !marginAccountAddress) return;
       const amount = parseFloat(value);
       if (isNaN(amount) || amount <= 0) return;
-
-      setTxStatus("loading");
-      setTxError("");
-      setTxHash("");
-
-      const result = isSoroswapPool
-        ? await SoroswapService.removeLiquidity(
-            userAddress,
-            marginAccountAddress,
-            amount
-          )
-        : await AquariusService.removeLiquidity(
-            userAddress,
-            marginAccountAddress,
-            tokenA,
-            tokenB,
-            amount
-          );
-
-      if (result.success) {
-        setTxStatus("success");
-        setTxHash(result.hash ?? "");
-        appendFarmHistory({
-          protocol: isSoroswapPool ? "soroswap" : "aquarius",
-          poolKey: buildFarmPoolKey(tokenA, tokenB),
-          marginAccountAddress,
-          action: "remove",
-          amountDisplay: `${amount.toFixed(2)} LP`,
-          txHash: result.hash ?? "",
-        });
-        toast.success(`Liquidity removed! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
-        setValue("");
-        setSelectedPercentage(0);
-        const refreshLpBalance = isSoroswapPool
-          ? SoroswapService.getLpBalance(marginAccountAddress)
-          : AquariusService.getUserLpBalance(
-              marginAccountAddress,
-              CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL
-            );
-        refreshLpBalance.then(setLpBalance);
-        triggerBlendRefresh();
-      } else {
-        setTxStatus("error");
-        const errorMsg = result.error ?? "Remove liquidity failed";
-        setTxError(errorMsg);
-        toast.error(errorMsg);
-      }
+      removeMultiDexMutation.mutate({ amount });
     };
 
     const buttonText = () => {
