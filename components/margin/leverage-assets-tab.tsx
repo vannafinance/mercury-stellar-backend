@@ -2,6 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Collaterals, BorrowInfo } from "@/lib/types";
 import { DropdownOptions } from "@/lib/constants";
 import { BALANCE_TYPE_OPTIONS } from "@/lib/constants/margin";
@@ -441,6 +442,59 @@ export const LeverageAssetsTab = () => {
     setCurrentBorrowItems([]);
   }, []);
 
+  const qc = useQueryClient();
+
+  // MB-mode borrow-only flow. WB-mode (deposit + borrow compound) stays
+  // imperative below because its multi-step orchestration with partial-success
+  // handling doesn't fit a single-promise useMutation cleanly.
+  const mbBorrowMutation = useMutation({
+    mutationFn: async (params: {
+      userAddress: string;
+      normalizedBorrowToken: string;
+      borrowAmountTokens: number;
+    }) => {
+      const result = await borrowTokens(
+        params.userAddress,
+        params.normalizedBorrowToken,
+        params.borrowAmountTokens
+      );
+      if (!result.success) {
+        throw new Error(result.error || 'Borrow failed');
+      }
+      return {
+        hash: result.hash,
+        normalizedBorrowToken: params.normalizedBorrowToken,
+        borrowAmountTokens: params.borrowAmountTokens,
+      };
+    },
+    onMutate: () => {
+      setIsProcessing(true);
+    },
+    onSuccess: ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
+      if (hash && marginAccountAddress) {
+        appendMarginHistory({
+          marginAccountAddress,
+          type: "borrow",
+          asset: normalizedBorrowToken,
+          amount: borrowAmountTokens.toFixed(7),
+          hash,
+        });
+      }
+      toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
+      if (marginAccountAddress) {
+        refreshBorrowedBalances(marginAccountAddress);
+      }
+      resetForm();
+      qc.invalidateQueries({ queryKey: ['margin'] });
+    },
+    onError: (error) => {
+      toast.error('Borrow failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    },
+    onSettled: () => {
+      setIsProcessing(false);
+    },
+  });
+
   const handleButtonClick = async () => {
     if (!userAddress) {
       console.log('No user address available');
@@ -458,93 +512,61 @@ export const LeverageAssetsTab = () => {
     if (hasMarginAccount) {
       // ── MB mode: borrow-only (collateral already in margin account) ──────────
       if (isMBMode) {
-        try {
-          setIsProcessing(true);
-
-          if (mbCollateralItems.length === 0) {
-            toast.error('No collateral found in your margin account. Deposit collateral first using WB mode.');
-            setIsProcessing(false);
-            return;
-          }
-
-          // Sum the full balance of every selected MB collateral.
-          const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
-            const itemId = `${item.asset}-${item.amount}`;
-            if (!mbSelectedIds.has(itemId)) return sum;
-            const price = MB_TOKEN_PRICES[item.asset] ?? 1;
-            return sum + item.amount * price;
-          }, 0);
-
-          if (totalCollateralUsd <= 0) {
-            toast.error('Select at least one collateral from your margin account.');
-            setIsProcessing(false);
-            return;
-          }
-
-          if (leverage <= 1) {
-            toast.error('Please set leverage greater than 1x to borrow.');
-            setIsProcessing(false);
-            return;
-          }
-
-          const borrowAmountUsd = totalCollateralUsd * (leverage - 1);
-          const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken);
-          const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-          const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
-
-          // Pre-validate against risk engine before submitting
-          const latestMarginState = useMarginAccountInfoStore.getState();
-          const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
-          // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
-          const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
-          const threshold = 1.1;
-          const maxAdditionalBorrowUsd = Math.max(
-            0,
-            (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
-          );
-
-          if (maxAdditionalBorrowUsd <= 0) {
-            toast.error('Borrow blocked by Risk Engine: debt too high for current collateral. Repay first.');
-            setIsProcessing(false);
-            return;
-          }
-
-          if (borrowAmountUsd > maxAdditionalBorrowUsd) {
-            const maxSafeLeverage = totalCollateralUsd > 0
-              ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
-              : 1;
-            toast.error(`Selected leverage (${leverage}x) exceeds safe limit. Max safe leverage: ~${maxSafeLeverage}x.`);
-            setIsProcessing(false);
-            return;
-          }
-
-          console.log('🚀 MB mode: borrow-only', { normalizedBorrowToken, borrowAmountTokens, borrowAmountUsd });
-
-          const result = await borrowTokens(userAddress, normalizedBorrowToken, borrowAmountTokens);
-
-          if (result.success) {
-            if (result.hash && marginAccountAddress) {
-              appendMarginHistory({
-                marginAccountAddress,
-                type: "borrow",
-                asset: normalizedBorrowToken,
-                amount: borrowAmountTokens.toFixed(7),
-                hash: result.hash,
-              });
-            }
-            toast.success('Borrow successful! Tx: ' + (result.hash ? result.hash.slice(0, 16) + '…' : ''));
-            if (marginAccountAddress) {
-              await refreshBorrowedBalances(marginAccountAddress);
-            }
-            resetForm();
-          } else {
-            toast.error('Borrow failed: ' + result.error);
-          }
-        } catch (error) {
-          toast.error('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
-        } finally {
-          setIsProcessing(false);
+        if (mbCollateralItems.length === 0) {
+          toast.error('No collateral found in your margin account. Deposit collateral first using WB mode.');
+          return;
         }
+
+        // Sum the full balance of every selected MB collateral.
+        const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
+          const itemId = `${item.asset}-${item.amount}`;
+          if (!mbSelectedIds.has(itemId)) return sum;
+          const price = MB_TOKEN_PRICES[item.asset] ?? 1;
+          return sum + item.amount * price;
+        }, 0);
+
+        if (totalCollateralUsd <= 0) {
+          toast.error('Select at least one collateral from your margin account.');
+          return;
+        }
+
+        if (leverage <= 1) {
+          toast.error('Please set leverage greater than 1x to borrow.');
+          return;
+        }
+
+        const borrowAmountUsd = totalCollateralUsd * (leverage - 1);
+        const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken);
+        const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+        const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
+
+        // Pre-validate against risk engine before submitting
+        const latestMarginState = useMarginAccountInfoStore.getState();
+        const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
+        // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
+        const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
+        const threshold = 1.1;
+        const maxAdditionalBorrowUsd = Math.max(
+          0,
+          (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
+        );
+
+        if (maxAdditionalBorrowUsd <= 0) {
+          toast.error('Borrow blocked by Risk Engine: debt too high for current collateral. Repay first.');
+          return;
+        }
+
+        if (borrowAmountUsd > maxAdditionalBorrowUsd) {
+          const maxSafeLeverage = totalCollateralUsd > 0
+            ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
+            : 1;
+          toast.error(`Selected leverage (${leverage}x) exceeds safe limit. Max safe leverage: ~${maxSafeLeverage}x.`);
+          return;
+        }
+
+        console.log('🚀 MB mode: borrow-only', { normalizedBorrowToken, borrowAmountTokens, borrowAmountUsd });
+
+        mbBorrowMutation.mutate({ userAddress, normalizedBorrowToken, borrowAmountTokens });
         return;
       }
 

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Dropdown } from "../ui/dropdown";
 import { AnimatePresence, motion } from "framer-motion";
 import { DropdownOptions } from "@/lib/constants";
@@ -62,7 +63,7 @@ export const TransferCollateral = () => {
   // collateral balance since only collateral is withdrawable.
   const [marginAccountActualBalance, setMarginAccountActualBalance] = useState<number>(0);
   const [walletBalance, setWalletBalance] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState(false);
+  const qc = useQueryClient();
   const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
   const avgHealthFactor = useMarginAccountInfoStore((state) => state.avgHealthFactor);
@@ -334,7 +335,80 @@ export const TransferCollateral = () => {
     setValueInUsd(safeMax);
   };
 
-  const handleTransferClick = async () => {
+  const transferMutation = useMutation({
+    mutationFn: async () => {
+      const amountWad = (BigInt(Math.floor(Number(valueInput) * 1000000)) * BigInt(1000000000000)).toString();
+
+      const result = selectedTransferType === "MB"
+        ? await MarginAccountService.depositCollateralTokens(
+            marginAccount,
+            normalizeContractTokenSymbol(selectedCurrency),
+            amountWad
+          )
+        : await MarginAccountService.withdrawCollateralBalance(
+            marginAccount,
+            normalizeContractTokenSymbol(selectedCurrency),
+            amountWad
+          );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Transfer failed');
+      }
+      return result;
+    },
+    onSuccess: async (result) => {
+      appendMarginHistory({
+        marginAccountAddress: marginAccount,
+        type: selectedTransferType === "MB" ? "transfer-in" : "transfer-out",
+        asset: normalizeContractTokenSymbol(selectedCurrency),
+        amount: Number(valueInput).toFixed(7),
+        hash: result.hash ?? "",
+      });
+
+      toast.success(
+        `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
+      );
+
+      // Reset the form and invalidate RQ caches first so the UI updates even
+      // if the imperative Zustand refresh below throws (Freighter's getAddress
+      // can transiently return undefined right after a signed tx popup closes,
+      // which trips strkey decoding inside getCollateralBalances). The ledger
+      // tick will pick up the latest state on the next close regardless.
+      setValueInput("");
+      setValueInUsd(0);
+      qc.invalidateQueries({ queryKey: ['margin'] });
+
+      try {
+        await refreshTokenBalances(userAddress, marginAccount);
+      } catch (error) {
+        console.warn("Post-transfer balance refresh failed; ledger tick will reconcile.", error);
+      }
+    },
+    onError: (error) => {
+      // The on-chain call failed at the entered amount, so the "safe max"
+      // shown in the toast must be lower than what the user just tried —
+      // showing maxExecutableWithdraw (the frontend's optimistic estimate)
+      // is misleading because that's the same number that just failed.
+      const message = error instanceof Error ? error.message : "Transfer failed";
+      const entered = Number(valueInput) || 0;
+      const steppedDown = Math.max(0, entered - XLM_MARGIN_WITHDRAW_BUFFER);
+      const safeFloor = Math.floor(steppedDown * 100) / 100;
+      const safeMaxAfterFailure = Math.max(0, Math.min(maxExecutableWithdraw, safeFloor));
+
+      if (
+        selectedTransferType === "WB" &&
+        normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
+        totalBorrowedValue <= XLM_TRANSFER_EPSILON &&
+        safeMaxAfterFailure > 0
+      ) {
+        setValueInput(safeMaxAfterFailure.toFixed(2));
+        setValueInUsd(safeMaxAfterFailure);
+      }
+      toast.error(getFriendlyTransferError(message, safeMaxAfterFailure));
+    },
+  });
+
+  const handleTransferClick = () => {
     if (!marginAccount || !valueInput || Number(valueInput) <= 0) {
       toast.error("Please enter a valid amount");
       return;
@@ -378,67 +452,7 @@ export const TransferCollateral = () => {
       return;
     }
 
-    setIsLoading(true);
-    try {
-      const amountWad = (BigInt(Math.floor(Number(valueInput) * 1000000)) * BigInt(1000000000000)).toString();
-
-      const result = selectedTransferType === "MB"
-        ? await MarginAccountService.depositCollateralTokens(
-            marginAccount,
-            normalizeContractTokenSymbol(selectedCurrency),
-            amountWad
-          )
-        : await MarginAccountService.withdrawCollateralBalance(
-            marginAccount,
-            normalizeContractTokenSymbol(selectedCurrency),
-            amountWad
-          );
-
-      if (result.success) {
-        appendMarginHistory({
-          marginAccountAddress: marginAccount,
-          type: selectedTransferType === "MB" ? "transfer-in" : "transfer-out",
-          asset: normalizeContractTokenSymbol(selectedCurrency),
-          amount: Number(valueInput).toFixed(7),
-          hash: result.hash ?? "",
-        });
-
-        toast.success(
-          `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
-        );
-        await refreshTokenBalances(userAddress, marginAccount);
-        setValueInput("");
-        setValueInUsd(0);
-      } else {
-        // The on-chain call failed at the entered amount, so the "safe max"
-        // shown in the toast must be lower than what the user just tried —
-        // showing maxExecutableWithdraw (the frontend's optimistic estimate)
-        // is misleading because that's the same number that just failed.
-        const entered = Number(valueInput) || 0;
-        const steppedDown = Math.max(0, entered - XLM_MARGIN_WITHDRAW_BUFFER);
-        const safeFloor = Math.floor(steppedDown * 100) / 100;
-        const safeMaxAfterFailure = Math.max(0, Math.min(maxExecutableWithdraw, safeFloor));
-
-        if (
-          selectedTransferType === "WB" &&
-          normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
-          totalBorrowedValue <= XLM_TRANSFER_EPSILON &&
-          safeMaxAfterFailure > 0
-        ) {
-          setValueInput(safeMaxAfterFailure.toFixed(2));
-          setValueInUsd(safeMaxAfterFailure);
-        }
-        toast.error(getFriendlyTransferError(result.error, safeMaxAfterFailure));
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : "Transfer failed";
-      const entered = Number(valueInput) || 0;
-      const safeFloor = Math.floor(Math.max(0, entered - XLM_MARGIN_WITHDRAW_BUFFER) * 100) / 100;
-      const safeMaxAfterFailure = Math.max(0, Math.min(maxExecutableWithdraw, safeFloor));
-      toast.error(getFriendlyTransferError(message, safeMaxAfterFailure));
-    } finally {
-      setIsLoading(false);
-    }
+    transferMutation.mutate();
   };
 
   return (
@@ -668,10 +682,10 @@ export const TransferCollateral = () => {
           </div>
         )}
         <Button
-          text={isLoading ? "Processing..." : "Transfer"}
+          text={transferMutation.isPending ? "Processing..." : "Transfer"}
           size="large"
           type="gradient"
-          disabled={!(Number(valueInput) > 0 && !isLoading && marginAccount && !isOverSourceBalance) || isWbBelowLiqThreshold}
+          disabled={!(Number(valueInput) > 0 && !transferMutation.isPending && marginAccount && !isOverSourceBalance) || isWbBelowLiqThreshold}
           onClick={handleTransferClick}
         />
       </motion.section>

@@ -2,6 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DropdownOptions } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
@@ -58,7 +59,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // Wallet and margin account state
   const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(false);
+  const qc = useQueryClient();
   
   // Repay form state
   // Repay loan statistics
@@ -174,12 +175,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         const address = await getAddress();
         if (!address.error && address.address) {
           setUserAddress(address.address);
-          
+
           // Get margin account
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
-            
+
             // Get borrowed balances
             await refreshSelectedTokenDebt(account.address);
 
@@ -191,7 +192,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         console.error("Error loading user data:", error);
       }
     };
-    
+
     loadUserData();
   }, []);
 
@@ -258,15 +259,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     setRepayAmount(sanitized === "" ? 0 : Number(sanitized));
   };
 
-  // Handler for pay now click
-  const handlePayNowClick = async () => {
-    if (!marginAccount || repayAmount <= 0) {
-      toast.error("Please enter a valid repay amount");
-      return;
-    }
+  const repayMutation = useMutation({
+    mutationFn: async () => {
+      if (!marginAccount || repayAmount <= 0) {
+        throw new Error('Please enter a valid repay amount');
+      }
 
-    setIsLoading(true);
-    try {
       const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
         marginAccount,
         normalizeContractTokenSymbol(selectedRepayCurrency)
@@ -281,40 +279,61 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         : inputRepayWad;
 
       if (finalRepayWad <= BigInt(0)) {
-        toast.error('Nothing to repay for this token');
-        return;
+        throw new Error('Nothing to repay for this token');
       }
-      
+
       const result = await MarginAccountService.repayLoan(
         marginAccount,
         normalizeContractTokenSymbol(selectedRepayCurrency),
         finalRepayWad.toString()
       );
 
-      if (result.success) {
-        if (result.hash) {
-          appendMarginHistory({
-            marginAccountAddress: marginAccount,
-            type: "repay",
-            asset: normalizeContractTokenSymbol(selectedRepayCurrency),
-            amount: wadToFixed7(finalRepayWad),
-            hash: result.hash,
-          });
-        }
-        toast.success(`Loan repayment successful! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      if (!result.success) {
+        throw new Error(result.error || 'Loan repayment failed');
+      }
+
+      return { hash: result.hash, finalRepayWad };
+    },
+    onSuccess: async ({ hash, finalRepayWad }) => {
+      if (hash) {
+        appendMarginHistory({
+          marginAccountAddress: marginAccount,
+          type: "repay",
+          asset: normalizeContractTokenSymbol(selectedRepayCurrency),
+          amount: wadToFixed7(finalRepayWad),
+          hash,
+        });
+      }
+      toast.success(`Loan repayment successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+
+      // Reset form and trigger RQ refresh first so the UI reflects the new
+      // state immediately. The imperative Zustand-store refresh calls below
+      // can transiently throw when Freighter's getAddress returns undefined
+      // right after a signed tx popup closes (strkey decode of an undefined
+      // address). Swallowing the error here keeps the mutation in its success
+      // state — the ledger tick will reconcile the store on the next close.
+      setRepayAmount(0);
+      qc.invalidateQueries({ queryKey: ['margin'] });
+
+      try {
         await refreshSelectedTokenDebt(marginAccount);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
         await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
-        setRepayAmount(0);
-      } else {
-        toast.error(result.error || 'Loan repayment failed');
+      } catch (error) {
+        console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
-    } catch (error: unknown) {
+    },
+    onError: (error) => {
       toast.error(error instanceof Error ? error.message : 'Repay failed');
-    } finally {
-      setIsLoading(false);
+    },
+    onSettled: () => {
       setIsPayNowPopupOpen(false);
-    }
+    },
+  });
+
+  // Handler for pay now click
+  const handlePayNowClick = () => {
+    repayMutation.mutate();
   };
 
   // Handler for closing pay now popup
@@ -525,11 +544,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
             whileTap={isInputEmpty ? {} : { scale: 0.98 }}
           >
             <Button
-              text={isLoading ? "Processing..." : "Pay Now"}
+              text={repayMutation.isPending ? "Processing..." : "Pay Now"}
               size="large"
               type="gradient"
               onClick={handlePayNowClick}
-              disabled={isInputEmpty || isLoading || !marginAccount}
+              disabled={isInputEmpty || repayMutation.isPending || !marginAccount}
             />
           </motion.div>
         </motion.section>
@@ -556,7 +575,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               <Popup
                 icon="/assets/exclamation.png"
                 description={`Are you sure you want to repay ${(Number(repayAmount) || 0).toFixed(2)} ${selectedRepayCurrency}? This will reduce your borrowed amount.`}
-                buttonText={isLoading ? "Processing..." : "Confirm Repayment"}
+                buttonText={repayMutation.isPending ? "Processing..." : "Confirm Repayment"}
                 buttonOnClick={handlePayNowClick}
                 closeButtonText="Cancel"
                 closeButtonOnClick={handleClosePayNowPopup}
