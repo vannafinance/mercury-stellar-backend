@@ -368,10 +368,21 @@ export const TransferCollateral = () => {
       toast.success(
         `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
       );
-      await refreshTokenBalances(userAddress, marginAccount);
+
+      // Reset the form and invalidate RQ caches first so the UI updates even
+      // if the imperative Zustand refresh below throws (Freighter's getAddress
+      // can transiently return undefined right after a signed tx popup closes,
+      // which trips strkey decoding inside getCollateralBalances). The ledger
+      // tick will pick up the latest state on the next close regardless.
       setValueInput("");
       setValueInUsd(0);
       qc.invalidateQueries({ queryKey: ['margin'] });
+
+      try {
+        await refreshTokenBalances(userAddress, marginAccount);
+      } catch (error) {
+        console.warn("Post-transfer balance refresh failed; ledger tick will reconcile.", error);
+      }
     },
     onError: (error) => {
       // The on-chain call failed at the entered amount, so the "safe max"

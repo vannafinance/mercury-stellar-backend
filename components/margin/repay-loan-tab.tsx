@@ -305,11 +305,23 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         });
       }
       toast.success(`Loan repayment successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
-      await refreshSelectedTokenDebt(marginAccount);
-      await refreshMarginStoreBorrowedBalances(marginAccount, true);
-      await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
+
+      // Reset form and trigger RQ refresh first so the UI reflects the new
+      // state immediately. The imperative Zustand-store refresh calls below
+      // can transiently throw when Freighter's getAddress returns undefined
+      // right after a signed tx popup closes (strkey decode of an undefined
+      // address). Swallowing the error here keeps the mutation in its success
+      // state — the ledger tick will reconcile the store on the next close.
       setRepayAmount(0);
       qc.invalidateQueries({ queryKey: ['margin'] });
+
+      try {
+        await refreshSelectedTokenDebt(marginAccount);
+        await refreshMarginStoreBorrowedBalances(marginAccount, true);
+        await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
+      } catch (error) {
+        console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
+      }
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : 'Repay failed');
