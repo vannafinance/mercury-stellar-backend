@@ -274,8 +274,13 @@ export const borrowTokens = async (
 
     console.log('✅ Found active margin account:', account.address);
 
-    // Convert borrow amount to WAD (18 decimals)
-    const borrowAmountWad = (borrowAmount * Math.pow(10, 18)).toString();
+    // Convert borrow amount to WAD (18 decimals). Splitting the multiplication
+    // through BigInt avoids the JS Number `toString()` falling back to
+    // scientific notation for large values (e.g. 3431.79 * 1e18 prints as
+    // '3.43e+21'), which downstream `BigInt(...)` parsing rejects.
+    const borrowAmountWad = (
+      BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
+    ).toString();
     console.log('🔢 Converting to WAD:', {
       originalAmount: borrowAmount,
       wadAmount: borrowAmountWad
