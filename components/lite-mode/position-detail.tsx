@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Image from "next/image";
 import { motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
@@ -78,7 +79,6 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
   const [exitPct, setExitPct] = useState<number>(100);
-  const [loading, setLoading] = useState(false);
   const [txModal, setTxModal] = useState<{
     open: boolean;
     status: "pending" | "success" | "error";
@@ -135,14 +135,13 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const projectedLiquidity = exit.remainingBorrowUsd;
 
   /* ── Close position handler ────────────────────────────────────────────── */
-  const handleExit = async () => {
-    if (!userAddress || !marginAccountAddress) return;
-    setLoading(true);
-    setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
-    try {
+  const qc = useQueryClient();
+
+  const exitMutation = useMutation({
+    mutationFn: async () => {
       const result = await closePosition({
-        userAddress,
-        marginAccountAddress,
+        userAddress: userAddress!,
+        marginAccountAddress: marginAccountAddress!,
         borrowAsset: position.borrowAsset as "XLM" | "USDC",
         borrowAmount: position.borrowAmount,
         collateralAsset: position.collateralAsset as "XLM" | "USDC",
@@ -154,7 +153,15 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         exitPct,
         onStep: (msg) => setTxModal((p) => ({ ...p, message: msg })),
       });
-      if (!result.success) throw new Error(parseContractError(result.error ?? ""));
+      if (!result.success) {
+        throw new Error(result.error ?? "Close position failed.");
+      }
+      return result;
+    },
+    onMutate: () => {
+      setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
+    },
+    onSuccess: async (result) => {
       // Drop / scale the Lite registry record to match the on-chain state.
       // Without this the Position tab keeps showing the original numbers
       // even after a 100% close, which looks like the close failed.
@@ -165,20 +172,34 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         message: `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
         txHash: result.hash,
       });
-      await refreshBorrowedBalances(marginAccountAddress);
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      qc.invalidateQueries({ queryKey: ['earn'] });
+      if (marginAccountAddress) {
+        try {
+          await refreshBorrowedBalances(marginAccountAddress);
+        } catch (err) {
+          console.warn("Post-exit balance refresh failed; ledger tick will reconcile.", err);
+        }
+      }
       onExitSuccess?.();
-    } catch (err: any) {
-      const msg = err?.message || "Close position failed.";
+    },
+    onError: (error: Error) => {
+      const msg = error?.message || "Close position failed.";
       const cancelled = msg.includes("cancelled") || msg.includes("rejected");
       setTxModal({
         open: true, status: "error",
         title: cancelled ? "Cancelled" : "Transaction Failed",
         message: parseContractError(msg),
       });
-    } finally {
-      setLoading(false);
-    }
+    },
+  });
+
+  const handleExit = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    exitMutation.mutate();
   };
+
+  const loading = exitMutation.isPending;
 
   return (
     <>
