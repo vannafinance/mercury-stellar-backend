@@ -1,13 +1,14 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   SoroswapService,
   SoroswapPoolStats,
   SOROSWAP_POOLS,
   SoroswapPoolConfig,
 } from '@/lib/soroswap-utils';
-import { useBlendStore } from '@/store/blend-store';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // All Soroswap pools stats
@@ -20,6 +21,10 @@ export interface SoroswapPoolWithStats {
 }
 
 export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['soroswap', 'allPoolStats'],
     queryFn: async () => {
@@ -34,9 +39,14 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
       });
       return map;
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['soroswap', 'allPoolStats'] });
+  }, [tick, qc]);
 
   const statsMap = query.data ?? {};
   const loading = query.isLoading;
@@ -53,19 +63,29 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useSoroswapPoolStats = (enabled = true) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['soroswap', 'poolStats'],
     enabled,
     queryFn: async (): Promise<SoroswapPoolStats | null> => {
       return SoroswapService.getPoolStats();
     },
-    refetchInterval: enabled ? 60_000 : false,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['soroswap', 'poolStats'] });
+  }, [tick, qc]);
 
   return {
     stats: query.data ?? null,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     refresh: () => query.refetch(),
   };
 };
@@ -75,20 +95,30 @@ export const useSoroswapPoolStats = (enabled = true) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useSoroswapLpPosition = (marginAccountAddress: string | null) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'lpPosition', marginAccountAddress, refreshKey],
+    queryKey: ['soroswap', 'lpPosition', marginAccountAddress],
     enabled: Boolean(marginAccountAddress),
     queryFn: async () => {
       if (!marginAccountAddress) return '0';
       return SoroswapService.getLpBalance(marginAccountAddress);
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['soroswap', 'lpPosition'] });
+  }, [tick, qc]);
 
   return {
     lpBalance: query.data ?? '0',
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
@@ -98,22 +128,33 @@ export const useSoroswapEvents = (
   pairAddress?: string | null,
   marginAccountAddress?: string | null,
 ) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'lpEvents', pairAddress ?? null, marginAccountAddress ?? null, refreshKey],
+    queryKey: ['soroswap', 'lpEvents', pairAddress ?? null, marginAccountAddress ?? null],
     enabled: Boolean(pairAddress && marginAccountAddress),
     queryFn: async () => {
       if (!pairAddress || !marginAccountAddress) return [];
       return SoroswapService.getSoroswapLpEvents(pairAddress, marginAccountAddress);
     },
-    staleTime: 5_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
-    refetchInterval: pairAddress && marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
   });
 
-  return { events: query.data ?? [], isLoading: query.isLoading || query.isFetching };
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['soroswap', 'lpEvents'] });
+  }, [tick, qc]);
+
+  return {
+    events: query.data ?? [],
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+  };
 };
 
 // ---------- Soroswap token balance in margin account ----------
@@ -122,19 +163,29 @@ export const useSoroswapTokenBalance = (
   marginAccountAddress: string | null,
   tokenSymbol: 'XLM' | 'USDC' | null,
 ) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'tokenBalance', marginAccountAddress, tokenSymbol, refreshKey],
+    queryKey: ['soroswap', 'tokenBalance', marginAccountAddress, tokenSymbol],
     enabled: Boolean(marginAccountAddress && tokenSymbol),
     queryFn: async () => {
       if (!marginAccountAddress || !tokenSymbol) return '0';
       return SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, tokenSymbol);
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['soroswap', 'tokenBalance'] });
+  }, [tick, qc]);
 
   return {
     balance: query.data ?? '0',
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
