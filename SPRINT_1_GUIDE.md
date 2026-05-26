@@ -112,9 +112,10 @@ main                                                  (mercury-stellar-backend �
   └─ feat/stellar-rewire                    (long-lived integration branch — cuts from main 2026-05-19)
        │
        │  ── Phase 1 (Sanujit, solo) ──
-       ├─ s1/ledger-provider                          (D1–2)
-       ├─ s1/mutations-hook                           (D3–4 — useSupplyLiquidity, useWithdrawLiquidity, useDeposit, useWithdraw)
-       ├─ s1/token-prices-tick                        (D5)
+       ├─ s1/ledger-provider                          (D1–2)   ✅ merged (PR #4, #5) 2026-05-19
+       ├─ s1/mutations-hook                           (D3)     ✅ merged (PR #6) 2026-05-20
+       ├─ s1/mutations-hook-wallet                    (D4)     ✅ merged (PR #7) 2026-05-21
+       ├─ s1/token-prices-tick                        (D5)     🔄 IN PROGRESS
        ├─ s1/mutations-inline                         (D6–7 — 8 inline component mutations)
        │
        │  ── Phase 2 (Sanujit + Divyansh, parallel) ──
@@ -159,31 +160,33 @@ main                                                  (mercury-stellar-backend �
 - [x] Build `contexts/ledger-subscriber.tsx` (see Day 1 section in `IMPLEMENTATION_PLAN.md` for current v3-updated code). Subscribe via Horizon `streamLedgers` SSE; expose `useLedgerTick()` → `{ tick, latestLedger }` ✅ **shipped 2026-05-19 on branch `s1/ledger-provider`**
 - [ ] Wrap `app/layout.tsx` with `<LedgerSubscriberProvider>` *inside* `<QueryProvider>` so it can call `queryClient.invalidateQueries`
 
-### Day 2 — LedgerProvider verify + merge
+### Day 2 — LedgerProvider verify + merge ✅ 2026-05-19
 
 - [x] DevTools: `tick` increments every ~5 s, no console errors ✅ verified 2026-05-19 (`tick: 112`, `latestLedger: 2634844`)
 - [x] SSE reconnect — relying on EventSource built-in auto-reconnect (documented in `contexts/ledger-subscriber.tsx`); verify via DevTools "Offline" toggle
 - [x] Tab visibility — chose **keep stream running**; documented in `contexts/ledger-subscriber.tsx`
 - [x] `npm run lint && npm run build` clean
-- [ ] Merge PR #4 (`s1/ledger-provider` → `feat/stellar-rewire`) ⚡ unblocks all later tick wiring
+- [x] Merge PR #4 + PR #5 (`s1/ledger-provider` → `feat/stellar-rewire`) ⚡ unblocks all later tick wiring
 
-### Day 3 — Hook-level mutations (earn)
+### Day 3 — Hook-level mutations (earn) ✅ 2026-05-20 (PR #6)
 
-- [ ] `git checkout -b s1/mutations-hook feat/stellar-rewire`
-- [ ] Convert `useSupplyLiquidity` (`hooks/use-earn.ts:227`) to `useMutation`. Wire `onSuccess: () => qc.invalidateQueries({ queryKey: ['earn'] })`. Delete inline `refreshAllBalances()`.
-- [ ] Convert `useWithdrawLiquidity` (`hooks/use-earn.ts:350`). Same pattern.
-- [ ] Delete the outdated comment at `hooks/use-earn.ts:223–225` ("Mutations — stay imperative")
-- [ ] Update callers: `{ supply, isLoading, message }` → `{ mutate, mutateAsync, isPending, error, isSuccess }`. Toast UX moves to the caller via `mutation.error?.message` / `mutation.isSuccess`. Expect to touch ~5 caller sites in `components/earn/`, `app/earn/page.tsx`.
+- [x] `git checkout -b s1/mutations-hook feat/stellar-rewire`
+- [x] Convert `useSupplyLiquidity` (`hooks/use-earn.ts`) to `useMutation`. Wire `onSuccess: () => qc.invalidateQueries({ queryKey: ['earn'] })`. Delete inline `refreshAllBalances()`.
+- [x] Convert `useWithdrawLiquidity` (`hooks/use-earn.ts`). Same pattern.
+- [x] Delete the outdated comment ("Mutations — stay imperative")
+- [x] Updated earn caller sites (`components/earn/*`)
+- [x] **PR #6 → `feat/stellar-rewire` merged** (`80b8048`)
 
-### Day 4 — Hook-level mutations (wallet)
+### Day 4 — Hook-level mutations (wallet) ✅ 2026-05-21 (PR #7)
 
-- [ ] Convert `useDeposit` (`hooks/use-wallet.ts:199`) to `useMutation`. Invalidate `['earn']` + `['margin']` as appropriate.
-- [ ] Convert `useWithdraw` (`hooks/use-wallet.ts:276`). Same pattern.
-- [ ] Caller refactors: `app/page.tsx`, `app/earn/page.tsx`, `components/wallet/*` (~3–5 sites)
-- [ ] `npm run lint && npm run build` clean
-- [ ] **PR `s1/mutations-hook` → integration branch**
+- [x] `git checkout -b s1/mutations-hook-wallet feat/stellar-rewire`
+- [x] Convert `useDeposit` (`hooks/use-wallet.ts`) to `useMutation`. Invalidate `['earn']` + `['margin']` as appropriate.
+- [x] Convert `useWithdraw` (`hooks/use-wallet.ts`). Same pattern.
+- [x] Caller refactors: `components/portfolio/deposit-modal.tsx`, `components/portfolio/withdraw-modal.tsx`
+- [x] `npm run lint && npm run build` clean
+- [x] **PR #7 → `feat/stellar-rewire` merged** (`b12e2fb`)
 
-### Day 5 — token-prices tick + setInterval cleanup
+### Day 5 — token-prices tick + setInterval cleanup 🔄 IN PROGRESS (2026-05-21)
 
 - [ ] `git checkout -b s1/token-prices-tick feat/stellar-rewire`
 - [ ] Rewire `hooks/use-token-prices.ts:47`: drop 30 s `setInterval(refresh, REFRESH_INTERVAL_MS)`. Wrap `useTokenPrices` in `useQuery` with `queryKey: ['oracle','prices', sortedSymbols, tick]`
