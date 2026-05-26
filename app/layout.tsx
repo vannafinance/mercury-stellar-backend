@@ -6,6 +6,7 @@ import { navbarItems } from "@/lib/constants";
 import { ThemeProvider } from "@/contexts/theme-context";
 import { QueryProvider } from "@/contexts/query-provider";
 import { LedgerSubscriberProvider } from "@/contexts/ledger-subscriber";
+import { PriceProvider } from "@/contexts/price-context";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
@@ -36,10 +37,12 @@ export default function RootLayout({
         <ThemeProvider>
           <QueryProvider>
             <LedgerSubscriberProvider>
-              <MarginAccountHydrator />
-              <Navbar items={navbarItems}/>
-              <ScaleWrapper>{children}</ScaleWrapper>
-              <AppToaster />
+              <PriceProvider>
+                <MarginAccountHydrator />
+                <Navbar items={navbarItems}/>
+                <ScaleWrapper>{children}</ScaleWrapper>
+                <AppToaster />
+              </PriceProvider>
             </LedgerSubscriberProvider>
           </QueryProvider>
         </ThemeProvider>

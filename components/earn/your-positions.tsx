@@ -4,11 +4,12 @@ import { useState, useMemo, memo } from "react";
 import { Chart } from "./chart";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 
 const tabs = [
   { id: "current-positions", label: "Current Position" },
@@ -59,6 +60,7 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
 
 export const YourPositions = memo(function YourPositions() {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const [activeTab, setActiveTab] = useState<string>("current-positions");
   const [chartNow] = useState<number>(() => Date.now());
 
@@ -81,7 +83,7 @@ export const YourPositions = memo(function YourPositions() {
   // (stroop-level) left over after a 100% withdrawal — not a real position.
   const hasPosition = deposited > 1e-4;
 
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[assetKey] ?? assetKey] ?? 1;
   const vTokenBalance = parseFloat(userPosition?.vTokenBalance || '0');
 

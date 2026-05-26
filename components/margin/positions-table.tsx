@@ -33,16 +33,6 @@ const canonicalToken = (token: string): string => {
   return normalized;
 };
 
-/**
- * Registry tracking symbols for deployed Blend / LP capital — not separate
- * margin "positions". The account has one borrow basket; listing these as
- * extra rows duplicated the same debt/leverage on every line.
- */
-const isProtocolReceiptCollateral = (symbol: string): boolean => {
-  const u = symbol.toUpperCase();
-  return u.startsWith("BLEND_") || u.startsWith("AQ_") || u.startsWith("SS_");
-};
-
 const getTokenIcon = (asset: string): string => {
   return (
     COIN_ICONS[asset as keyof typeof COIN_ICONS] ||
@@ -68,30 +58,23 @@ export const Positionstable = ({
 }: PositionstableProps) => {
   const { isDark } = useTheme();
   const {
-    collateralBalances,
     borrowedBalances,
-    totalCollateralValue,
     totalBorrowedValue,
+    netAvailableCollateral,
     hasMarginAccount,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
-      collateralBalances: state.collateralBalances,
       borrowedBalances: state.borrowedBalances,
-      totalCollateralValue: state.totalCollateralValue,
       totalBorrowedValue: state.totalBorrowedValue,
+      netAvailableCollateral: state.netAvailableCollateral,
       hasMarginAccount: state.hasMarginAccount,
     })),
   );
 
-  const { history, isLoading: historyLoading } = useMarginHistory();
+  const { history, isLoading: historyInitialLoading } = useMarginHistory();
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
-    const collateralEntries = (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([, bal]) => parseFloat(bal.amount) > 0)
-      .filter(([token]) => !isProtocolReceiptCollateral(token));
-    if (collateralEntries.length === 0) return [];
-
     const borrowedEntries = Object.entries(borrowedBalances) as [string, BorrowedBalance][];
     const dedupedBorrowed = new Map<string, { token: string; balance: BorrowedBalance }>();
 
@@ -128,20 +111,13 @@ export const Positionstable = ({
         usdValue: parseFloat(bal.usdValue),
       }));
 
-    // Leverage matches the slider semantic in leverage-assets-tab.tsx:
-    //   borrow_amount = own_deposit × (multiplier − 1)
-    // For a fresh position this means debt_USD == own × (m−1), so
-    //   m = 1 + debt_USD / own_USD  ≈  1 + debt / collateral
-    // when borrow proceeds aren't redeposited. This is the same as the
-    // standard "1 + LTV" leverage figure DeFi protocols display, and it
-    // stays finite & ≥ 1 even when debt exceeds collateral (e.g. user
-    // borrowed and withdrew the proceeds, making equity negative). The
-    // earlier collateral/equity formula divided by 0 / went negative in
-    // exactly those cases and fell through to "1x" — which is what
-    // surfaced as the user-reported "leverage shows 1x" bug.
+    const hasAnyDebt = borrowedArray.length > 0;
+
+    const equityUsd =
+      netAvailableCollateral > BORROW_DUST_USD ? netAvailableCollateral : 0;
     const leverage =
-      totalCollateralValue > 0
-        ? parseFloat((1 + totalBorrowedValue / totalCollateralValue).toFixed(2))
+      equityUsd > BORROW_DUST_USD
+        ? parseFloat((1 + totalBorrowedValue / equityUsd).toFixed(2))
         : 1;
 
     // Interest accrued = current debt − net principal still owed, in USD.
@@ -154,7 +130,7 @@ export const Positionstable = ({
     // which would make diff = full borrowed amount and produce a false reading
     // of "interest = borrow USD value". Skip the calculation until loaded.
     const netPrincipalByToken: Record<string, number> = {};
-    if (!historyLoading) {
+    if (!historyInitialLoading) {
       for (const item of history) {
         const canonical = canonicalToken(item.asset || '');
         const amt = parseFloat(String(item.amount ?? '0')) || 0;
@@ -168,7 +144,7 @@ export const Positionstable = ({
     }
 
     let interestAccruedUsd = 0;
-    if (!historyLoading) {
+    if (!historyInitialLoading) {
       for (const [, bal] of dedupedBorrowed) {
         const canonical = canonicalToken(bal.token);
         const currentAmt = parseFloat(bal.balance.amount || '0');
@@ -187,20 +163,39 @@ export const Positionstable = ({
     // current row's collateral symbol — that hid every cross-asset borrow.
     // Now each collateral row shows the full borrow list; with a single
     // collateral (the typical case) you see exactly your real debt.
-    const hasAnyDebt = borrowedArray.length > 0;
-    return collateralEntries.map(([token, bal], idx) => {
-      return {
-        positionId: idx + 1,
-        collateral: { asset: token, amount: parseFloat(bal.amount).toFixed(2) },
-        collateralUsdValue: parseFloat(bal.usdValue),
+    const positionRows: Position[] = [];
+
+    if (hasAnyDebt || equityUsd > BORROW_DUST_USD) {
+      const underlying = canonicalToken(
+        borrowedEntriesClean[0]?.[0] ?? "XLM",
+      );
+      const price = tokenPrices[underlying] ?? tokenPrices.XLM ?? 0;
+      const depositedUsd = equityUsd;
+      const depositedAmt =
+        price > 0 && depositedUsd > BORROW_DUST_USD
+          ? depositedUsd / price
+          : 0;
+
+      positionRows.push({
+        positionId: 1,
+        collateral: { asset: underlying, amount: depositedAmt.toFixed(2) },
+        collateralUsdValue: parseFloat(depositedUsd.toFixed(2)),
         borrowed: borrowedArray,
         leverage,
         interestAccrued: hasAnyDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
-        isOpen: hasAnyDebt,
-        user: '',
-      };
-    });
-  }, [collateralBalances, borrowedBalances, totalCollateralValue, totalBorrowedValue, history, historyLoading, tokenPrices]);
+        isOpen: hasAnyDebt || depositedAmt > BORROW_DUST_EPSILON,
+        user: "",
+      });
+    }
+    return positionRows;
+  }, [
+    borrowedBalances,
+    totalBorrowedValue,
+    netAvailableCollateral,
+    history,
+    historyInitialLoading,
+    tokenPrices,
+  ]);
 
   const [activeTab, setActiveTab] = useState<string>("currentPositions");
   const [currentPage, setCurrentPage] = useState<number>(1);

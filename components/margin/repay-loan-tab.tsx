@@ -9,14 +9,13 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { Dropdown } from "../ui/dropdown";
 import { Popup } from "@/components/ui/popup";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
 import { getAddress } from "@stellar/freighter-api";
 import { ContractService } from "@/lib/stellar-utils";
-import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances } from "@/store/margin-account-info-store";
+import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useTokenPrices } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import toast from "react-hot-toast";
@@ -106,6 +105,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
+
+  // Current margin account state for computing updated values
+  const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
+  const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
 
   // Popup visibility states
   const [isPayNowPopupOpen, setIsPayNowPopupOpen] = useState(false);
@@ -517,7 +520,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           </div>
         </motion.article>
 
-        {/* Transaction preview — debt / HF / liquidation buffer before vs after */}
+        {/* Repay preview — before → after values (same style as Leverage/Transfer tabs) */}
         <RepayPreviewSection
           repayAmount={repayAmount}
           selectedTokenPrice={selectedTokenPrice}

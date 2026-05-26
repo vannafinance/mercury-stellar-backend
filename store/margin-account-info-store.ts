@@ -3,9 +3,11 @@ import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
-import { mergeFarmTrackingCollateralIntoBalances } from "@/lib/analytics/stellar/farmTrackingCollateral";
-import { BlendService } from "@/lib/blend-utils";
-
+import {
+  mergeFarmTrackingCollateralIntoBalances,
+  reconcileMarginRawSacCollateral,
+  sumCollateralBalancesUsd,
+} from "@/lib/analytics/stellar/farmTrackingCollateral";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -536,6 +538,7 @@ export const refreshBorrowedBalances = async (
       const enriched = await mergeFarmTrackingCollateralIntoBalances(
         marginAccountAddress,
         collateralBalances,
+        tokenPrice,
       );
       for (const [sym, val] of Object.entries(enriched)) {
         const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? '0');
@@ -550,6 +553,22 @@ export const refreshBorrowedBalances = async (
       console.warn('[refreshBorrowedBalances] farm tracking collateral enrichment failed:', e);
     }
 
+    // Live SAC balances — swaps on Aquarius/Soroswap change tokens in the margin
+    // account but not the collateral ledger WAD entries. Always reconcile raw
+    // XLM/USDC so HF and collateral rows match economic reality (with or without
+    // a Blend farm position).
+    let rawAssetValue = 0;
+    try {
+      rawAssetValue = await reconcileMarginRawSacCollateral(
+        marginAccountAddress,
+        collateralBalances,
+        tokenPrice,
+      );
+      totalCollateralValue = sumCollateralBalancesUsd(collateralBalances);
+    } catch (e) {
+      console.warn('[refreshBorrowedBalances] raw SAC collateral reconcile failed:', e);
+    }
+
     // ── Derived calculations (matching RiskEngine contract math) ──────────────
     //
     // Contract check is effectively:
@@ -558,19 +577,6 @@ export const refreshBorrowedBalances = async (
     const effectiveDebtValue =
       totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
 
-    // Borrowed funds physically live in the smart_account until they're
-    // deployed elsewhere, so for solvency they're an asset on the balance
-    // sheet. Mirror the contract's borrow-time check (risk_engine.rs:141-145):
-    //   HF_check = (collateral + borrow_value) / (debt + borrow_value)
-    // For ongoing display this becomes (collateral + debt) / debt — collateral
-    // is the unencumbered deposit, +debt is the borrowed funds sitting in the
-    // account. Without this, a 3x leverage position shows HF = 0.5 even though
-    // the borrow check passed at 1.5, which is the number users expect to see.
-    //
-    // If the user has tracking-tokens (Blend deploy already happened), those
-    // are already accounted for inside collateralBalances and we must NOT add
-    // the borrowed value again — would double-count.
-    //
     // IMPORTANT: After a full withdrawal the contract still lists the tracking
     // token key with WAD=0. Gate on USD value > dust so a zero-value residual
     // key doesn't falsely trigger the tracking branch (which drops HF to 0.5).
@@ -585,44 +591,18 @@ export const refreshBorrowedBalances = async (
         upper.includes('SOROSWAP')
       );
     };
-    // Gate on meaningful USD value: after full withdrawal the tracking token key
-    // stays in the chain response with WAD=0 — a zero-value entry must not
-    // falsely trigger the farm branch (which would drop HF to ~0.5).
     const farmPositionValue = Object.entries(collateralBalances)
       .filter(([sym]) => isTrackingSymbol(sym))
       .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
 
-    const hasTrackingTokenCollateral = farmPositionValue > USD_DUST_EPSILON;
-
-    let grossCollateralValue: number;
-    if (hasTrackingTokenCollateral) {
-      // Farm positions exist. Gross = farm_value + raw_tokens_still_in_account.
-      //
-      // Invariant: farm_value + raw_in_account = total_assets (constant regardless
-      // of deployment). This correctly handles all sub-cases:
-      //   • farm-all   → raw = 0,   gross = farm                      ✓
-      //   • farm-collateral-only → raw = borrowed, gross = farm + borrowed ✓
-      //   • farm-partial → raw = remaining, gross = farm + remaining   ✓
-      //
-      // Using totalCollateralValue alone (old approach) missed the borrowed funds
-      // still sitting in the account when only collateral was deployed to Blend.
-      let rawAssetValue = 0;
-      try {
-        const [rawXlm, rawUsdc] = await Promise.all([
-          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'XLM'),
-          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'USDC'),
-        ]);
-        rawAssetValue =
-          parseFloat(rawXlm) * tokenPrice('XLM') +
-          parseFloat(rawUsdc) * tokenPrice('USDC');
-      } catch (e) {
-        console.warn('[refreshBorrowedBalances] raw token balance read failed, using farm-only gross:', e);
-      }
-      grossCollateralValue = farmPositionValue + rawAssetValue;
-    } else {
-      // No farm. Borrowed funds physically sit in the account — mirror the
-      // contract's borrow-time check: gross = collateral + debt.
-      grossCollateralValue = totalCollateralValue + effectiveDebtValue;
+    // Gross assets = all tokens in the margin account (Blend/AQ/SS farm + SAC).
+    // Borrowed XLM/USDC already appear in those balances — never add debt again
+    // or HF jumps after farm deposits (e.g. 1.5 → 2.5 when moving 2000 XLM to
+    // Blend) and Net Available Collateral is overstated.
+    let grossCollateralValue = farmPositionValue + rawAssetValue;
+    if (grossCollateralValue <= USD_DUST_EPSILON && totalCollateralValue > USD_DUST_EPSILON) {
+      // SAC reconcile failed — fall back to priced ledger collateral only.
+      grossCollateralValue = totalCollateralValue;
     }
 
     const avgHealthFactor =

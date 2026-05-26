@@ -21,6 +21,12 @@ import { Token, SwapButtonState, DexOption } from "./types";
 import { MOCK_TOKENS, MOCK_DEXES } from "./mock-data";
 import { AnimatePresence, motion } from "framer-motion";
 import toast from "react-hot-toast";
+import {
+  amountFromBalancePercent,
+  capAmountToMaxBalance,
+  getMaxSwappableBalance,
+  parseTokenAmountToStroops,
+} from "@/lib/utils/swap-amount";
 
 // Stellar tokens supported for Aquarius swap
 const STELLAR_TOKENS: Token[] = [
@@ -98,7 +104,7 @@ function deriveSwapButtonState(
   if (isLoading) return "loading_quote";
   if (
     tokenInBalance !== null &&
-    parseFloat(amountIn) > parseFloat(tokenInBalance.replace(/,/g, ""))
+    parseTokenAmountToStroops(amountIn) > parseTokenAmountToStroops(tokenInBalance)
   )
     return "insufficient_balance";
   if (!amountOut) return "disabled";
@@ -341,35 +347,40 @@ export const SwapCard = ({
     return () => { cancelled = true; };
   }, [isSoroswap, marginAccountAddress, swapMode, txHash]);
 
-  // Balances: Aquarius/Soroswap → wallet or margin balance depending on mode; others → null
-  // Keep 7-decimal precision (Stellar token precision) so MAX/validation never overshoots.
+  // Balances for MAX / % — floor from on-chain precision (7 decimals), never round up.
   const getBalance = useCallback((token: Token | null): string | null => {
     if (!isWalletConnected || !token) return null;
     if (isAquarius) {
       if (swapMode === "wallet") {
         if (token.symbol === "XLM") {
           const xlm = parseFloat(walletXlmBalance || "0");
-          return Math.max(0, xlm - 1).toFixed(2);
+          return getMaxSwappableBalance(formatSwapAmount(Math.max(0, xlm - 1)));
         }
-        return parseFloat(aquariusUsdcWalletBalance || "0").toFixed(2);
-      } else {
-        if (token.symbol === "XLM") return parseFloat(marginXlmBalance).toFixed(2);
-        if (token.symbol === "USDC") return parseFloat(marginUsdcBalance).toFixed(2);
-        return "0.00";
+        return getMaxSwappableBalance(aquariusUsdcWalletBalance || "0");
       }
+      if (token.symbol === "XLM") {
+        return getMaxSwappableBalance(marginXlmBalance || "0");
+      }
+      if (token.symbol === "USDC") {
+        return getMaxSwappableBalance(marginUsdcBalance || "0");
+      }
+      return "0";
     }
     if (isSoroswap) {
       if (swapMode === "wallet") {
         if (token.symbol === "XLM") {
           const xlm = parseFloat(walletXlmBalance || "0");
-          return Math.max(0, xlm - 1).toFixed(2);
+          return getMaxSwappableBalance(formatSwapAmount(Math.max(0, xlm - 1)));
         }
-        return parseFloat(soroswapUsdcWalletBalance || "0").toFixed(2);
-      } else {
-        if (token.symbol === "XLM") return parseFloat(ssMarginXlmBalance).toFixed(2);
-        if (token.symbol === "USDC") return parseFloat(ssMarginUsdcBalance).toFixed(2);
-        return "0.00";
+        return getMaxSwappableBalance(soroswapUsdcWalletBalance || "0");
       }
+      if (token.symbol === "XLM") {
+        return getMaxSwappableBalance(ssMarginXlmBalance || "0");
+      }
+      if (token.symbol === "USDC") {
+        return getMaxSwappableBalance(ssMarginUsdcBalance || "0");
+      }
+      return "0";
     }
     return null;
   }, [isWalletConnected, isAquarius, isSoroswap, swapMode, walletXlmBalance, aquariusUsdcWalletBalance, marginXlmBalance, marginUsdcBalance, soroswapUsdcWalletBalance, ssMarginXlmBalance, ssMarginUsdcBalance]);
@@ -392,12 +403,39 @@ export const SwapCard = ({
   const handlePercentClick = useCallback((pct: number) => {
     setActivePercent(pct);
     if (!tokenInBalance) return;
-    const bal = parseFloat(tokenInBalance.replace(/,/g, ""));
-    if (!Number.isFinite(bal) || bal <= 0) return;
-    const val = (bal * pct / 100).toFixed(2);
-    setAmountIn(val);
+    const rawBal =
+      isAquarius || isSoroswap
+        ? swapMode === "wallet"
+          ? tokenIn?.symbol === "XLM"
+            ? formatSwapAmount(Math.max(0, parseFloat(walletXlmBalance || "0") - 1))
+            : isAquarius
+              ? aquariusUsdcWalletBalance || "0"
+              : soroswapUsdcWalletBalance || "0"
+          : tokenIn?.symbol === "XLM"
+            ? isAquarius
+              ? marginXlmBalance || "0"
+              : ssMarginXlmBalance || "0"
+            : isAquarius
+              ? marginUsdcBalance || "0"
+              : ssMarginUsdcBalance || "0"
+        : tokenInBalance;
+    if (!rawBal || parseTokenAmountToStroops(rawBal) <= BigInt(0)) return;
+    setAmountIn(amountFromBalancePercent(rawBal, pct));
     setTxStatus("idle");
-  }, [tokenInBalance]);
+  }, [
+    tokenInBalance,
+    isAquarius,
+    isSoroswap,
+    swapMode,
+    tokenIn,
+    walletXlmBalance,
+    aquariusUsdcWalletBalance,
+    soroswapUsdcWalletBalance,
+    marginXlmBalance,
+    marginUsdcBalance,
+    ssMarginXlmBalance,
+    ssMarginUsdcBalance,
+  ]);
 
   // Debounce window for quote fetches. Each Soroban simulateTransaction round
   // trip costs ~1–3s on testnet, so firing on every keystroke creates a queue
@@ -513,10 +551,10 @@ export const SwapCard = ({
     mutationFn: async () => {
       const slippageVal = slippageMode === "auto" ? 0.5 : parseFloat(slippage);
       const requestedAmountIn = parseFloat(amountIn);
-      const availableAmountIn = tokenInBalance ? parseFloat(tokenInBalance.replace(/,/g, "")) : null;
-      const amountInToUse = availableAmountIn !== null
-        ? Math.min(requestedAmountIn, availableAmountIn)
-        : requestedAmountIn;
+      const amountInToUse =
+        tokenInBalance !== null
+          ? capAmountToMaxBalance(requestedAmountIn, tokenInBalance)
+          : requestedAmountIn;
       if (!Number.isFinite(amountInToUse) || amountInToUse <= 0) {
         throw new Error("Invalid amount");
       }
@@ -574,7 +612,7 @@ export const SwapCard = ({
       toast.success(`Swap submitted! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
       setAmountIn("");
       setAmountOut("");
-      if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress);
+      if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
     },
