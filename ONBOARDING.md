@@ -121,6 +121,10 @@ API so there's one source of truth.
   and its import in `app/margin/page.tsx`; **reconcile the price system** (section 4);
   then a full testnet smoke across all 4 pools. Target: `grep -rn "setInterval" contexts/` empty.
 
+- **D22 — analytics-island rework (NEW, pulled into S1).** The whole `app/analytics/*`
+  surface is a pre-rewire island: bespoke imperative store, 5 pages on 30s `setTimeout`
+  polling, an unbounded all-accounts × per-token RPC fan-out. D22 brings it onto
+  Mercury/Hubble/tick (and retires the unbounded read). Rides the Mercury work.
 - **D25 — stats snapshot-cache layer (NEW, pulled into S1).** The cold-load of
   *every* stats panel (Margin HF/collateral/borrowed, Earn vault stats + positions,
   Farm pool stats + LP, Portfolio summary) is slow because each reads live chain
@@ -137,6 +141,12 @@ on **free tiers** — no payment decisions in this sprint.
 > **Note on stats speed:** Mercury/Hubble do **not** speed up the live stats panels —
 > Mercury is event *history*, Hubble is protocol-wide *analytics*. The live per-account
 > stats fetch fast only via the D25 snapshot-cache layer above.
+
+> **Read before you start any cleanup day:** [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md) is the
+> full health audit — every known perf/reactivity/correctness issue with file:line,
+> severity, and the exact day it's scheduled. Check it before D11/D12/D16–17/D22/D25/D26
+> so you're fixing the catalogued item, not rediscovering it. It also lists the
+> drop-first buffer that protects D30.
 
 ---
 

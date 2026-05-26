@@ -36,6 +36,11 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
     `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow
     cold-load of **all** stats panels (Margin/Earn/Farm/Portfolio). Pulled in from
     S2/S3. See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) D25.
+  - **Codebase audit (2026-05-27):** full health audit in [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md).
+    Hook layer clean; remaining issues cluster in the margin Zustand path, farm/repay/
+    lite components, and the analytics island. Items folded into D11/D12/D16–17/D22/
+    D25/D26. **Analytics-island rework (5 polling pages + bespoke store + unbounded
+    all-accounts read) pulled into S1 (D22)**, riding Mercury/Hubble.
 
 See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for the day-by-day plan and Phase 2
 track assignments.
@@ -199,6 +204,8 @@ content rendering on `isRefreshing`.
 ## Where decisions live
 
 - Sprint plan + day-by-day work: [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md)
+- New-dev onboarding (Rohit): [ONBOARDING.md](ONBOARDING.md)
+- Codebase health audit + per-issue day mapping: [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md)
 - Implementation details + code recipes: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Backend choices (Mercury, Hubble): [BACKEND_OPTIONS.md](BACKEND_OPTIONS.md), [BACKEND_RESEARCH.md](BACKEND_RESEARCH.md)
 - Protocol-side roadmap: [PROTOCOL_BACKEND_PLAN.md](PROTOCOL_BACKEND_PLAN.md)

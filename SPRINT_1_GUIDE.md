@@ -17,7 +17,8 @@
 - **Sync (PR #13, 2026-05-27):** ✅ merged. `new-contract-update` @ `de77db7` layered under the rewire; build green, calc changes manually verified.
 - **Open debt from the sync (→ D12):** `contexts/price-context.tsx` polls XLM price on a 60s `setInterval`; two `useTokenPrices` systems coexist. D12 collapses them.
 - **New scope pulled into S1 (→ D25):** stats snapshot-cache layer (`/api/account/[addr]` + `/api/pools`) — the real fix for the slow cold-load of **all** stats panels (Margin, Earn, Farm, Portfolio), not just margin. Was deferred to S2/S3; pulled in so every stat fetches fast by EOD. Reuses Hubble's edge-API patterns; parallel across both devs.
-- **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling` + `PriceProvider`).
+- **Codebase audit (2026-05-27):** full health audit done — see [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md). Hook layer (D8–10) is clean; all remaining issues cluster in the margin Zustand path, farm/repay/lite components, and the analytics island. Items folded into D11/D12/D16–17/D22/D25/D26 with a drop-first buffer. **The full analytics-island rework (5 polling pages + bespoke store + unbounded all-accounts read) is pulled into S1 (D22)**, riding Mercury/Hubble.
+- **Next:** D11 (refreshKey teardown + farm read cleanup), D12 (kill remaining polling — `useSmartPolling` + `PriceProvider`).
 - **Pattern source of truth:** repo [CLAUDE.md](CLAUDE.md) §1–3. (The "Hook tick pattern" recipe lower in this doc shows the superseded `tick`-in-queryKey form — use CLAUDE.md.)
 
 ---
@@ -48,6 +49,7 @@ v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 
 | Unified mutation error/toast UX | D16–17 | n/a | ✓ |
 | Optimistic updates (earn + margin) | D18–19 | n/a | ✓ |
 | **Mercury indexer integration** | **D20–22** | ✅ free dev tier | Includes new Aquarius/Soroswap LP events, not just original 12 |
+| **Analytics-island rework** (audit item 14) | **D22** | ✅ free | NEW — 5 `setTimeout(30s)` polling pages + bespoke store → RQ/tick; retire `allMarginAccounts` unbounded read via Mercury/Hubble. Pulled into S1; rides Mercury |
 | **Hubble BigQuery analytics** | **D23–24** | ✅ free (1TB/mo) | Queries hit `crypto-stellar.crypto_stellar.contract_events` for all 4 pools |
 | **Stats snapshot-cache layer** (fast cold-load for ALL stats) + Analytics/Risk perf | D25 | ✅ free (own edge routes) | NEW — `/api/account/[addr]` + `/api/pools` edge snapshots fix slow Margin/Earn/Farm/Portfolio stats; pulled in from S2/S3 |
 | Zustand dual-write cleanup | D26 | n/a | ✓ |
@@ -241,16 +243,17 @@ main                                                  (mercury-stellar-backend �
 | Verify each hook invalidates on ledger tick via RQ DevTools. Confirm 4-pool fetch (XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC) still works. | Confirm `useAllAquariusLpPositions` and `useSoroswapTokenBalance` also get tick treatment. |
 | **PR `s1/hooks-tick-earn-margin`** | **PR `s1/hooks-tick-farm-soroswap`** |
 
-### Day 11 — `refreshKey` teardown + 4-pool verify
+### Day 11 — `refreshKey` teardown + farm-component read cleanup + 4-pool verify
 
-- Dev A: Delete `refreshKey` + `triggerRefresh` from `store/blend-store.ts` (file is 17 lines — likely empty or gets deleted). Confirm no remaining `triggerBlendRefresh()` callers.
+- Dev A: Delete `refreshKey` + `triggerRefresh` from `store/blend-store.ts` (file is 17 lines — likely empty or gets deleted). Drop the `refreshKey` reads in `app/farm/[id]/page.tsx`. Confirm no remaining `triggerBlendRefresh()` callers.
+- Dev A (audit item 9): in `components/farm/add-liquidity.tsx` + `remove-liquidity.tsx`, drop the duplicate imperative pool-stat/balance `useEffect`s that re-fetch what `useAllAquariusPoolStats`/`useSoroswapPoolStats`/`use*LpPosition` already cache, and remove the manual `refreshDexMarginBalances`/`refreshBorrowedBalances`/setState post-tx refreshes — mutations should pure-`invalidateQueries`. (We're already editing these files for `triggerBlendRefresh`.)
 - Dev B: 4-pool end-to-end verify on testnet — supply/withdraw/borrow/repay each of XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC. Confirm balance updates ≤5 s without manual refresh.
 - Final grep: `grep -rn "refreshKey\|triggerRefresh" .` returns nothing.
 - **Joint PR `s1/cleanup-refreshkey`**.
 
 ### Day 12 — Kill remaining polling (`useSmartPolling` + `PriceProvider`) + first integration smoke
 
-- Dev A: Delete `lib/hooks/useSmartPolling.ts`. Remove import from `app/margin/page.tsx`. Update JSDoc in `contexts/query-provider.tsx:11`.
+- Dev A: Delete `lib/hooks/useSmartPolling.ts`. Remove import from `app/margin/page.tsx`. Update JSDoc in `contexts/query-provider.tsx:11`. **Also fix the `contexts/ledger-subscriber.tsx` JSDoc** (audit nit) — it still tells devs to put `tick` in the queryKey, the exact anti-pattern CLAUDE.md §1 bans; trivial fix that prevents copy-paste regressions. Confirm which margin page ships (`app/page.tsx` is tick-driven; `app/margin/page.tsx` is a second, still-polling copy — retire the dead one).
 - Dev A: **Reconcile the price system** (debt from the 2026-05-27 sync). `contexts/price-context.tsx` polls XLM price on a 60s `setInterval` — the chain-data polling anti-pattern this sprint removes. Collapse it onto the ledger tick (or retire `PriceProvider` in favour of `hooks/use-token-prices.ts`), then drop the dual `useTokenPrices` API (7 files currently import both, aliased `useTokenPricesFromHook`) so there is one source of truth. Target: `grep -rn "setInterval" contexts/` returns nothing.
 - Dev B: First full integration smoke pass on testnet (supply, borrow, swap, add liquidity, remove liquidity across all 4 pools). Document any bugs surfaced.
 - **PR `s1/cleanup-smartpolling`** (covers both polling removals).
@@ -265,9 +268,12 @@ main                                                  (mercury-stellar-backend �
 | Aim: ~30 service-layer tests across 4 services. | Aim: ~15 hook tests. |
 | **PR `s2/test-infra-services`** | **PR `s2/test-infra-hooks`** |
 
-### Days 16–17 — Unified mutation error/toast UX
+### Days 16–17 — Unified mutation error/toast UX + last mutation holdouts
 
 Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation callers with a single hook (e.g., `useMutationToast(mutation, { success, error })`). One toast lib (sonner or react-hot-toast — pick first). Error normalization centralised in `lib/errors/normalize.ts` (replaces ad-hoc `normalizeSupplyError`, `normalizeWithdrawError` in `use-earn.ts`).
+
+- Audit item 11: convert the `components/margin/leverage-assets-tab.tsx` **WB deposit+borrow flow** from its hand-rolled async handler to `useMutation` (only the MB borrow-only path is migrated today) and remove its 4 manual `refreshBorrowedBalances` sites.
+- Audit item 12: surface the silently-swallowed read errors in `store/margin-account-info-store.ts` (farm-merge / SAC-reconcile / borrow-rate `console.warn`-only) through the new error path, so a failed read doesn't show a wrong HF/collateral with no signal.
 
 **Joint PR `s3/error-ux`**.
 
@@ -300,11 +306,19 @@ Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation 
 | `useBlendEvents` + `useAquariusEvents` (use-farm.ts) — same. If Aquarius events not in free-tier entity set, keep on RPC + add TODO. | `useEarnTransactions` (use-earn.ts:514) — same. If event not indexed, keep on RPC. |
 | **PR `s4/mercury-events-margin-farm`** | **PR `s4/mercury-events-soroswap-earn`** |
 
-**D22 — Migrate analytics pages + cleanup**
+**D22 — Reclaim the analytics island (audit item 14) — full rework, pulled into S1**
 
-- Both devs pair: audit `app/analytics/liquidations/page.tsx`, `components/analytics/positions/PositionsMonitor.tsx`, `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — these currently replay events client-side from RPC. Switch to Mercury queries where entities are indexed.
-- Replace any unbounded `get_lenders_*()` chain reads with Mercury "addresses with non-zero vToken balance" queries.
-- Verify: `grep -rn "localStorage.*history" .` returns nothing critical.
+The analytics surface is a pre-rewire island: bespoke imperative store, 5 pages on 30s
+`setTimeout` polling, an unbounded all-accounts × per-token RPC fan-out. This day brings
+it onto Mercury/Hubble/tick. ~3–4 dev-days of work absorbed across D22 + the Mercury/
+Hubble block + the D28–29 buffer; see the "Drop-first buffer" note below to protect D30.
+
+- Both devs pair: audit `app/analytics/liquidations/page.tsx`, `components/analytics/positions/PositionsMonitor.tsx`, `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — these replay events client-side from RPC. Switch to Mercury queries where entities are indexed; Hubble (D23–24) backs the protocol-wide aggregates.
+- **Retire `lib/analytics/stellar/allMarginAccounts.ts` unbounded fan-out** (reads the whole accounts Vec + per-account + per-token RPC) — back the all-accounts roster with Mercury/Hubble instead of live N×token RPC. (Further mainnet-scale pagination/edge-cache of the roster stays S2.)
+- **Convert the 5 `setTimeout(pull, 30_000)` polling pages** (`oracles`, `alerts`, `whales`, `liquidations`, `risk-explorer`) to ledger-tick / Mercury-backed reads. These evaded the earlier `setInterval` greps.
+- **Migrate the bespoke `lib/analytics/onchain/store.ts`** imperative `useEffect`-load to the RQ + ledger-tick pattern (CLAUDE.md §1), so analytics reads cache, dedupe, and refresh on tick like the rest of the app.
+- Surface the swallowed analytics read errors (`fetchTokenPrices().catch(() => undefined)`, `simulateView` null-swallow) instead of silently showing wrong totals / dropping accounts.
+- Verify: `grep -rn "localStorage.*history" .` empty; `grep -rn "setTimeout(.*30_000\|setTimeout(.*30000" app/analytics/` empty (only allowlisted UI timers remain).
 - **Joint PR `s4/mercury-analytics-migration`**.
 
 > **Risk note:** If Mercury free tier caps entities below what we need, the lowest-priority hooks (Aquarius/Soroswap LP events) stay on RPC. The high-value migration (margin history + liquidations) is non-negotiable.
@@ -343,12 +357,18 @@ the ledger tick + the user's own mutations invalidate. Reuses the edge-API-route
   live state across pages: margin `{ avgHealthFactor, totalCollateralValue, netAvailableCollateral, totalBorrowedValue }`,
   earn positions, farm LP positions, portfolio totals. Edge runtime.
   `Cache-Control: s-maxage=15, stale-while-revalidate=60`.
+- **Parallelize the read source (audit item 1):** the server read must collapse
+  `refreshBorrowedBalances`' 3 sequential awaits (farm-merge → SAC-reconcile →
+  borrow-rate) into a single parallel batch, so even a cache *miss* isn't a serial
+  waterfall.
 - Hook `hooks/use-account-snapshot.ts` on the **ledger-tick stable-queryKey +
   invalidate-on-tick** pattern (CLAUDE.md §1). First paint serves the cached snapshot
   (instant on warm cache); ledger tick + the user's borrow/repay/transfer/supply/
   withdraw mutations invalidate it.
 - Wire the Margin stats bar, `/portfolio` summary, and Earn/Farm user-position panels
   to the snapshot. The imperative chain-read paths become the cache-miss fallback only.
+- Audit item 2: collapse `useUserPositions`' 3 serial RPC waves into one + reuse the
+  pool-stats cache instead of re-fetching what `usePoolData` already has.
 
 **Dev B — `s4/pool-snapshot-cache` (shared pool stats) + analytics perf:**
 - Edge route `app/api/pools/route.ts` → pool-level stats shared across all users
@@ -358,6 +378,8 @@ the ledger tick + the user's own mutations invalidate. Reuses the edge-API-route
 - Then the original D25 perf: memoize `lib/analytics/onchain/derivations.ts`, profile
   `PositionsMonitor.tsx`, fix `BadDebtMonitorSummary.tsx` per-render derivation.
   `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays (allowlist).
+- Audit item 5: delete the dead per-tick `useMemo` in `components/margin/positions-table.tsx`
+  that recomputes interest accrual every ~5s and then discards it (UI hardcodes `$0`).
 
 **Done when:** every stats panel (Margin / Earn / Farm / Portfolio) renders in
 **< 1 s on a warm edge cache** — the absolute first cache-miss per account/pool is
@@ -366,14 +388,23 @@ with no manual refresh. (If the layer needs more than one day, it shares the
 D28–29 bug-bash buffer — it's a hard requirement, the analytics memoization is the
 drop-first.)
 
-### Day 26 — Zustand dual-write consolidation
+### Day 26 — Zustand dual-write consolidation + repay-tab cleanup
 
 - Audit `useEarnPoolStore.getState().set({...})` calls in `use-earn.ts:48,84`. Decide: remove (and migrate readers to RQ) or keep (and document why dual-write is intentional).
 - Same audit for `store/margin-account-info-store.ts` — `refreshBorrowedBalances` writes at L148, 160, 195.
 - Recommend remove unless a non-RQ legacy reader is found.
+- Audit item 10: `components/margin/repay-loan-tab.tsx` — move the imperative debt/wallet-balance `useState` reads onto the account snapshot / RQ, and drop the 3 manual post-tx refreshes (`invalidateQueries(['margin'])` already covers it).
 - **Joint PR `s4/dual-write-cleanup`**.
 
 > **Type safety pass cut from v3.1.** Was D25–26 in v3 (4 dev-days). Folded into reviewer discipline (catch `any` in PR review) + ongoing during all other Phase 2 work. Dedicated pass deferred to a future sprint.
+
+> **Drop-first buffer (protect D30).** The analytics rework (D22) + stats snapshot
+> layer (D25) are the heavy adds. If the back half runs hot, drop in this order:
+> (1) `ARCHITECTURE.md` (D27) → post-sprint; (2) analytics derivation memoization
+> (D25) → defer (correctness is already fine); (3) Mercury low-priority LP-event
+> entities → stay on RPC. **Never drop:** the snapshot cache, Mercury `Trader_*` +
+> margin history, Hubble `/stats`, analytics off 30s-polling, 4-pool e2e, merge to main.
+> Full findings + per-item day mapping: [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md).
 
 ### Day 27 — Documentation
 
