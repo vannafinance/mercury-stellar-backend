@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
 import { computeBorrowApr } from '@/lib/utils/borrow-rate';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool data
@@ -34,6 +35,8 @@ const calculateExchangeRateFromPool = (totalAssets: string, vTokenSupply: string
   // outstanding borrows (+ accrued interest). Borrows alone don't move the rate
   // since the loan is still owed back to the pool — cash drops but borrows rise
   // by the same amount. Interest pushes the rate above 1, so 1 vToken > 1 asset.
+
+
   if (assets <= 0 || supply <= 0) return '1';
   return (assets / supply).toFixed(7);
 };
@@ -41,6 +44,9 @@ const calculateExchangeRateFromPool = (totalAssets: string, vTokenSupply: string
 export const usePoolData = () => {
   const storePools = useEarnPoolStore((s) => s.pools);
   const lastUpdated = useEarnPoolStore((s) => s.lastUpdated);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'pools'],
@@ -89,19 +95,23 @@ export const usePoolData = () => {
 
       return mapped;
     },
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    staleTime: 4_000,
   });
 
-  // Let the store's loading flag stay false after an error — the store write
-  // in queryFn only runs on success. Reset it here so retries don't get stuck.
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'pools'] });
+  }, [tick, qc]);
+
   if (query.isError) {
     useEarnPoolStore.getState().set({ isLoadingPools: false });
   }
 
   return {
     pools: query.data ?? storePools,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     lastUpdated,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
@@ -131,6 +141,9 @@ export const useUserPositions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
   const storePositions = useEarnPoolStore((s) => s.userPositions);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'userPositions', address ?? null],
@@ -207,13 +220,22 @@ export const useUserPositions = () => {
     },
   });
 
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'userPositions'] });
+  }, [tick, qc]);
+
   if (query.isError) {
     useEarnPoolStore.getState().set({ isLoadingPositions: false });
   }
 
+  const isWalletConnected = Boolean(address && isConnected);
+
   return {
-    positions: query.data ?? storePositions,
-    isLoading: query.isLoading || query.isFetching,
+    positions: isWalletConnected ? (query.data ?? storePositions) : EMPTY_POSITIONS,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -377,6 +399,9 @@ export const useWithdrawLiquidity = () => {
 export const useEarnTransactions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'transactions', address ?? null],
@@ -385,15 +410,21 @@ export const useEarnTransactions = () => {
       if (!address) return [];
       return ContractService.getEarnPoolEvents(address);
     },
-    staleTime: 30_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
-    refetchInterval: address && isConnected ? 10_000 : false,
     refetchOnWindowFocus: true,
   });
 
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'transactions'] });
+  }, [tick, qc]);
+
   return {
     transactions: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     refresh: () => query.refetch(),
   };
 };

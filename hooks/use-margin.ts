@@ -1,11 +1,16 @@
 'use client';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { MarginAccountService } from '@/lib/margin-utils';
 import { getMarginHistoryByAccount } from '@/lib/margin-history';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 export const useMarginHistory = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['margin', 'history', marginAccountAddress ?? null],
@@ -14,11 +19,16 @@ export const useMarginHistory = () => {
       if (!marginAccountAddress) return [];
       return MarginAccountService.getMarginTransactionHistory(marginAccountAddress);
     },
-    staleTime: 30_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
-    refetchInterval: marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['margin', 'history'] });
+  }, [tick, qc]);
 
   const onchainHistory = query.data ?? [];
   const localHistory = getMarginHistoryByAccount(marginAccountAddress);
@@ -30,6 +40,7 @@ export const useMarginHistory = () => {
 
   return {
     history: mergedHistory,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };

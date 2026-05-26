@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   fetchTokenPrices,
@@ -29,6 +29,7 @@ const buildPricesMap = (tokens: string[]): Record<string, number> => {
 export function useTokenPrices(tokens: string[]): Record<string, number> {
   const { tick } = useLedgerTick();
   const queryClient = useQueryClient();
+  const lastTickRef = useRef(tick);
 
   const key = useMemo(() => {
     const unique = Array.from(
@@ -41,7 +42,7 @@ export function useTokenPrices(tokens: string[]): Record<string, number> {
   const symbols = useMemo(() => (key ? key.split(',') : []), [key]);
 
   const { data } = useQuery({
-    queryKey: ['oracle', 'prices', key, tick],
+    queryKey: ['oracle', 'prices', key],
     queryFn: async () => {
       if (symbols.length === 0) return {} as Record<string, number>;
       return await fetchTokenPrices(symbols);
@@ -49,6 +50,12 @@ export function useTokenPrices(tokens: string[]): Record<string, number> {
     enabled: symbols.length > 0,
     staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    queryClient.invalidateQueries({ queryKey: ['oracle', 'prices'] });
+  }, [tick, queryClient]);
 
   useEffect(() => {
     const unsubscribe = subscribePriceUpdates(() => {

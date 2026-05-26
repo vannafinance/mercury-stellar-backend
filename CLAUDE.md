@@ -31,16 +31,32 @@ track assignments.
 
 ### 1. Ledger-tick driven reads (replaces all chain-data `setInterval` / `refetchInterval`)
 
+**Keep the queryKey stable. Invalidate on tick via `useEffect`.** Do NOT put
+`tick` in the queryKey — each new key value creates a fresh cache slot with
+no data, which forces `query.isLoading = true` on every ledger close and
+causes the UI to flicker to a "Loading…" state every ~5 s.
+
 ```ts
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
+const qc = useQueryClient();
 const { tick } = useLedgerTick();
+const lastTickRef = useRef(tick);
+
 const query = useQuery({
-  queryKey: ['earn', 'pools', tick],   // tick in queryKey → refetch on each ledger close (~5s)
+  queryKey: ['earn', 'pools'],   // STABLE — survives across ticks
   queryFn: ...,
-  staleTime: 4_000,                    // OK to keep a short staleTime
+  staleTime: 4_000,
   // refetchInterval: REMOVED
 });
+
+useEffect(() => {
+  if (tick === lastTickRef.current) return;   // skip initial mount
+  lastTickRef.current = tick;
+  qc.invalidateQueries({ queryKey: ['earn', 'pools'] });
+}, [tick, qc]);
 ```
 
 `LedgerSubscriberProvider` is mounted in `app/layout.tsx` *inside*
@@ -61,11 +77,31 @@ No manual `refreshAllBalances()` / `refreshBorrowedBalances()` /
 Callers consume `{ mutate, mutateAsync, isPending, error, isSuccess }`;
 toasts/UX wire to `mutation.error?.message` and `mutation.isSuccess`.
 
+### 3. Loading flags — stale-while-revalidate, no flicker
+
+```ts
+return {
+  data: query.data ?? fallback,
+  isLoading: query.isLoading,                          // initial mount only
+  isRefreshing: query.isFetching && !query.isLoading,  // optional opt-in
+  error: ...,
+  refresh: () => query.refetch(),
+};
+```
+
+**Never** `isLoading: query.isLoading || query.isFetching`. With 5 s ledger
+ticks every background refetch would flip `isFetching` true and any
+`{isLoading ? <Spinner/> : <Stats/>}` consumer wipes content from the screen.
+Show stale data, refetch silently, swap when ready. Pages must not gate
+content rendering on `isRefreshing`.
+
 ### Anti-patterns to delete on sight
 
-- `refetchInterval: N_000` on any chain-data query → replace with `tick` in queryKey.
+- `refetchInterval: N_000` on any chain-data query → replace with the stable-queryKey + invalidate-on-tick pattern in #1 above.
+- `queryKey: [..., tick]` → changing the queryKey on every tick creates fresh cache slots and forces `isLoading: true` every ledger close. Use the invalidate-on-tick pattern instead.
 - `setInterval(..., 30_000)` for chain refresh → use a `useEffect` on `tick` if a
   one-shot side effect is needed.
+- `isLoading: query.isLoading || query.isFetching` → drop the OR. See pattern #3 above.
 - `refreshKey` reads from `useBlendStore` → these are being torn out across
   Phase 2 D8–11. Don't add new ones.
 - `useState({ type: '', text: '' })` toast patterns in mutation callers → being
