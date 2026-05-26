@@ -35,7 +35,6 @@ const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
 const formatUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 type Modes = "Deposit" | "Borrow";
 
 // Helper to generate unique ID for collateral
@@ -224,7 +223,7 @@ export const LeverageAssetsTab = () => {
       const price = MB_TOKEN_PRICES[item.asset] ?? 1;
       return sum + item.amount * price;
     }, 0);
-  }, [isMBMode, mbCollateralItems, mbSelectedIds]);
+  }, [isMBMode, mbCollateralItems, mbSelectedIds, MB_TOKEN_PRICES]);
 
   const handleMbToggleSelection = useCallback((itemId: string) => {
     setMbSelectedIds((prev) => {

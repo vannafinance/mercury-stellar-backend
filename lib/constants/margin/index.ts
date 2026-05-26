@@ -94,6 +94,9 @@ export const FIELD_FORMAT_MAP: Record<string, FormatType> = {
   fees: "number",
   totalDeposit: "number",
   updatedCollateral: "number",
+  updatedBorrowedAmount: "number",
+  updatedHealthFactor: "health-factor",
+  updatedLeverage: "leverage",
   
   // Percentage values
   borrowRate: "percentage",

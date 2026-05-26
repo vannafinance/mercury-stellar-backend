@@ -5,6 +5,7 @@ import {
   NETWORK_PASSPHRASE,
   SOROBAN_RPC_URL,
 } from './stellar-utils';
+import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
 
 // ── Soroswap Testnet Constants ────────────────────────────────────────────────
 const SOROSWAP_ROUTER = CONTRACT_ADDRESSES.SOROSWAP_ROUTER;
@@ -18,7 +19,7 @@ const WAD = 1e18;
 const STROOP = 1e7; // Stellar 7-decimal precision
 
 const toWad  = (amount: number): bigint => BigInt(Math.floor(amount * WAD));
-const toStroop = (amount: number): bigint => BigInt(Math.round(amount * STROOP));
+const toStroop = (amount: number): bigint => BigInt(Math.floor(amount * STROOP + 1e-9));
 const makeKey  = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -660,11 +661,16 @@ export class SoroswapService {
       const routerAddress = await SoroswapService.getEffectiveRouterAddress();
       const tokenOut: 'XLM' | 'USDC' = tokenIn === 'XLM' ? 'USDC' : 'XLM';
 
+      const amountStroops = floorAmountToStroops(amountIn);
+      if (amountStroops <= BigInt(0)) {
+        return { success: false, error: 'Invalid swap amount' };
+      }
+
       const callBytes = SoroswapService.buildExternalProtocolCallBytes(
         routerAddress,
         'Swap',
         [tokenIn, tokenOut],
-        [toWad(amountIn), BigInt(0)], // amount_out[0] = amountIn WAD, [1] = min_out
+        [stroopsToWad(amountStroops), BigInt(0)],
         marginAccountAddress,
         false,
       );

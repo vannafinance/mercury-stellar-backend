@@ -241,6 +241,7 @@ export default function Earn() {
   const setSelectedVault = useEarnVaultStore((state) => state.set);
   const router = useRouter();
   const [activeTab, setActiveTab] = useState("vaults");
+  // const { getPrice } = useTokenPrices();
 
   // Live data from on-chain contracts (auto-refreshes every 30s)
   const { pools, isLoading: poolsLoading } = usePoolData();

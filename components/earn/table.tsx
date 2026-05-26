@@ -832,6 +832,20 @@ export const Table = memo((props: TableProps) => {
     ]
   );
 
+  const parseNumericValue = useCallback((raw: string): number | null => {
+    const match = raw.match(/(\d+\.?\d*)([KMBT%])?(?:\s|$)/i);
+    if (!match) return null;
+    const num = parseFloat(match[1]);
+    const suffix = (match[2] || "").toUpperCase();
+    switch (suffix) {
+      case "T": return num * 1e12;
+      case "B": return num * 1e9;
+      case "M": return num * 1e6;
+      case "K": return num * 1e3;
+      default: return num;
+    }
+  }, []);
+
   const sortedData = useMemo(() => {
     if (!sortConfig.columnId) return filteredData;
 
@@ -844,25 +858,20 @@ export const Table = memo((props: TableProps) => {
       const aCell = a.cell[columnIndex];
       const bCell = b.cell[columnIndex];
 
-      let aValue: string | number = aCell?.title || aCell?.tag || "";
-      let bValue: string | number = bCell?.title || bCell?.tag || "";
+      const aRaw = String(aCell?.title || aCell?.tag || "");
+      const bRaw = String(bCell?.title || bCell?.tag || "");
 
-      const aNumMatch = String(aValue).match(/(\d+\.?\d*)/);
-      const bNumMatch = String(bValue).match(/(\d+\.?\d*)/);
+      const aNum = parseNumericValue(aRaw);
+      const bNum = parseNumericValue(bRaw);
 
-      if (aNumMatch && bNumMatch) {
-        aValue = parseFloat(aNumMatch[1]);
-        bValue = parseFloat(bNumMatch[1]);
-      }
-
-      if (typeof aValue === "number" && typeof bValue === "number") {
+      if (aNum !== null && bNum !== null) {
         return sortConfig.direction === "asc"
-          ? aValue - bValue
-          : bValue - aValue;
+          ? aNum - bNum
+          : bNum - aNum;
       }
 
-      const aStr = String(aValue).toLowerCase();
-      const bStr = String(bValue).toLowerCase();
+      const aStr = aRaw.toLowerCase();
+      const bStr = bRaw.toLowerCase();
 
       if (sortConfig.direction === "asc") {
         return aStr < bStr ? -1 : aStr > bStr ? 1 : 0;
@@ -870,7 +879,7 @@ export const Table = memo((props: TableProps) => {
         return aStr > bStr ? -1 : aStr < bStr ? 1 : 0;
       }
     });
-  }, [filteredData, sortConfig, props.tableHeadings]);
+  }, [filteredData, sortConfig, props.tableHeadings, parseNumericValue]);
 
   useEffect(() => {
     setCurrentPage(1);

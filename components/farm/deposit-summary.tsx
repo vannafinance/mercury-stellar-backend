@@ -14,6 +14,10 @@ interface DepositSummaryProps {
   tokenPriceUsd: number;
   /** Pool's supply APY, as a percentage (e.g. 4.09 for 4.09%). */
   supplyApyPct: number | null;
+  /** Margin: XLM taken from borrow proceeds (deployed before own collateral). */
+  fromBorrowAmount?: number;
+  /** Margin: XLM taken from own deposit collateral. */
+  fromOwnCollateralAmount?: number;
   /** Network label shown on the first row (defaults to "Stellar Testnet"). */
   networkLabel?: string;
   /** Network swatch colour for the small dot left of the label. */
@@ -33,6 +37,8 @@ export const DepositSummary = ({
   depositAmount,
   tokenPriceUsd,
   supplyApyPct,
+  fromBorrowAmount = 0,
+  fromOwnCollateralAmount = 0,
   networkLabel = "Stellar Testnet",
   networkAccent = "#703AE6",
 }: DepositSummaryProps) => {
@@ -77,6 +83,21 @@ export const DepositSummary = ({
           </span>
         </div>
       </div>
+
+      {(fromBorrowAmount > 0 || fromOwnCollateralAmount > 0) && (
+        <div className="flex items-center justify-between">
+          <span className={`text-[12px] font-medium ${labelClass}`}>Source</span>
+          <span className={`text-[12px] font-semibold text-right ${valueClass}`}>
+            {fromBorrowAmount > 0
+              ? `${fmtToken(fromBorrowAmount)} borrow`
+              : ""}
+            {fromBorrowAmount > 0 && fromOwnCollateralAmount > 0 ? " · " : ""}
+            {fromOwnCollateralAmount > 0
+              ? `${fmtToken(fromOwnCollateralAmount)} collateral`
+              : ""}
+          </span>
+        </div>
+      )}
 
       {/* Deposit row: 0.00 → amount */}
       <div className="flex items-center justify-between">
