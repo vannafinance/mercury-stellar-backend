@@ -2,11 +2,22 @@
 
 > **Sprint 1 v3 — Vanna Backend Implementation**
 > **Duration:** 30 calendar days · **Start:** 2026-05-19 · **Target end:** 2026-06-17
-> **Team:** Phase 1 (Days 1–7) — Sanujit solo · Phase 2 (Days 8–30) — Sanujit + Divyansh in parallel
+> **Team:** Phase 1 (Days 1–7) — Sanujit solo · Phase 2 (Days 8–30) — Sanujit (Dev A) + Rohit (Dev B) in parallel
 > **Goal:** Zero `setInterval` for chain data. Zero `refetchInterval`. Ledger-tick drives every read. Every mutation migrated to `useMutation` with `onSuccess: invalidateQueries`. Plus: test infrastructure, optimistic updates, analytics perf, dual-write consolidation, type safety.
 > **Companion doc:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
-> **Trunk:** `main` of mercury-stellar-backend (merged with Stellar_frontend's `new-contract-update` on 2026-05-19 via merge commit `7c25ac7`; carries multi-pool contracts XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC, Reflector oracle, Risk Dashboard, the HF/net-earning fix, one-click APY-live, Blend liquidity HF bug fix, and LP-token deposit tracking fix).
+> **Trunk:** `main` of mercury-stellar-backend (merged with Stellar_frontend's `new-contract-update` on 2026-05-19 via merge commit `7c25ac7`; carries multi-pool contracts XLM/USDC/AQUARIUS_USDC/SOROSWAP_USDC, Reflector oracle, Risk Dashboard, the HF/net-earning fix, one-click APY-live, Blend liquidity HF bug fix, and LP-token deposit tracking fix). **Re-synced 2026-05-27** with `new-contract-update` through `de77db7` (PR #13 into `feat/stellar-rewire`): BigInt collateral math, Aquarius reserve-order fix, positions/repay calc updates, `capAmountToMaxBalance`. The sync also added a polling `PriceProvider` — see D12.
 > **Notion source of truth:** https://www.notion.so/Sprint-1-Plan-Frontend-Rewire-2-Dev-Split-36042874c59b80e7a81fdec4d85eb0d7
+
+---
+
+## 🚦 Status — updated 2026-05-27
+
+- **Phase 1 (D1–7):** ✅ complete (PR #10 merged 2026-05-25).
+- **D8–10 hook tick migration:** ✅ complete. PR #11 (earn+margin) + PR #12 (farm+soroswap) merged into `feat/stellar-rewire`. 18 read hooks on the stable-queryKey + invalidate-on-tick pattern. `refetchInterval` count: **0**. `isLoading || isFetching`: **0**.
+- **Sync (PR #13, 2026-05-27):** ✅ merged. `new-contract-update` @ `de77db7` layered under the rewire; build green, calc changes manually verified.
+- **Open debt from the sync (→ D12):** `contexts/price-context.tsx` polls XLM price on a 60s `setInterval`; two `useTokenPrices` systems coexist. D12 collapses them.
+- **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling` + `PriceProvider`).
+- **Pattern source of truth:** repo [CLAUDE.md](CLAUDE.md) §1–3. (The "Hook tick pattern" recipe lower in this doc shows the superseded `tick`-in-queryKey form — use CLAUDE.md.)
 
 ---
 
@@ -14,7 +25,7 @@
 
 v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 stretches that to **30 days** for two reasons:
 
-1. **Dev A unavailable for first 7 days** — Sanujit owns the entire foundation + mutation surface solo before Divyansh joins on Day 8.
+1. **Dev B unavailable for first 7 days** — Sanujit (Dev A) owns the entire foundation + mutation surface solo before Rohit (Dev B) joins on Day 8.
 2. **Scope expansion** — original 6-sprint roadmap compressed into this single 30-day sprint: test infra, unified error UX, optimistic updates, analytics perf, dual-write consolidation, type safety pass, and documentation.
 
 **Mutation strategy stays per v1/v2: full `useMutation` migration.** This decision is locked.
@@ -29,9 +40,9 @@ v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 
 
 | Item | Where | Free-tier OK? | Adapted for current code |
 | --- | --- | --- | --- |
-| Hook tick migration (refetchInterval → ledger tick) | D8–10 | n/a | All 4 pools |
+| Hook tick migration (refetchInterval → ledger tick) | D8–10 | n/a | ✅ shipped — PR #11 + #12 |
 | `refreshKey` teardown + 4-pool verify | D11 | n/a | ✓ |
-| `useSmartPolling` delete + first smoke | D12 | n/a | ✓ |
+| `useSmartPolling` delete **+ `PriceProvider` 60s-poll reconcile (sync debt)** + first smoke | D12 | n/a | ✓ |
 | Test infra (vitest + RTL) | D13–15 | n/a | ✓ |
 | Unified mutation error/toast UX | D16–17 | n/a | ✓ |
 | Optimistic updates (earn + margin) | D18–19 | n/a | ✓ |
@@ -97,7 +108,7 @@ Every mutation gets migrated to `@tanstack/react-query`'s `useMutation`. Each on
 
 **Phase 1 (Days 1–7) — Solo:** Sanujit owns the entire foundation. The work is independent and well-bounded: build `LedgerSubscriberProvider`, migrate all hook-level + inline mutations, rewire `token-prices` tick. No pairing required, no upstream blockers after Day 2 once the provider is merged.
 
-**Phase 2 (Days 8–30) — Two-dev parallel:** Divyansh joins. Both devs work in parallel tracks. The hook `refetchInterval` migration splits cleanly (earn+margin vs farm+soroswap), and from Day 13 onward the work fans out into independent optimization streams (test infra, optimistic updates, analytics perf, etc.) that don't share files.
+**Phase 2 (Days 8–30) — Two-dev parallel:** Rohit joins. Both devs work in parallel tracks. The hook `refetchInterval` migration splits cleanly (earn+margin vs farm+soroswap), and from Day 13 onward the work fans out into independent optimization streams (test infra, optimistic updates, analytics perf, etc.) that don't share files.
 
 **Net vs v2:** v2 budgeted 10 dev-days for 2 devs over 5 calendar days. v3.1 budgets ~7 solo dev-days (Phase 1) + ~46 dev-days for 2 devs over 23 calendar days (Phase 2) = ~53 dev-days total. Phase 2 split: test infra (~6), unified error UX (~4), optimistic updates (~4 — reduced), **Mercury indexer (~6) NEW**, **Hubble analytics (~4) NEW**, analytics+risk perf (~2 — reduced), dual-write consolidation (~2), docs (~2), bug bash + e2e (~4), buffer (~12). Type safety pass cut (folded into PR review discipline).
 
@@ -118,7 +129,7 @@ main                                                  (mercury-stellar-backend �
        ├─ s1/token-prices-tick                        (D5)     🔄 IN PROGRESS
        ├─ s1/mutations-inline                         (D6–7 — 8 inline component mutations)
        │
-       │  ── Phase 2 (Sanujit + Divyansh, parallel) ──
+       │  ── Phase 2 (Sanujit + Rohit, parallel) ──
        ├─ s1/hooks-tick-earn-margin                   (D8–10  · Dev A)
        ├─ s1/hooks-tick-farm-soroswap                 (D8–10  · Dev B)
        ├─ s1/cleanup-refreshkey                       (D11)
@@ -236,11 +247,12 @@ main                                                  (mercury-stellar-backend �
 - Final grep: `grep -rn "refreshKey\|triggerRefresh" .` returns nothing.
 - **Joint PR `s1/cleanup-refreshkey`**.
 
-### Day 12 — `useSmartPolling` decision + first integration smoke
+### Day 12 — Kill remaining polling (`useSmartPolling` + `PriceProvider`) + first integration smoke
 
 - Dev A: Delete `lib/hooks/useSmartPolling.ts`. Remove import from `app/margin/page.tsx`. Update JSDoc in `contexts/query-provider.tsx:11`.
+- Dev A: **Reconcile the price system** (debt from the 2026-05-27 sync). `contexts/price-context.tsx` polls XLM price on a 60s `setInterval` — the chain-data polling anti-pattern this sprint removes. Collapse it onto the ledger tick (or retire `PriceProvider` in favour of `hooks/use-token-prices.ts`), then drop the dual `useTokenPrices` API (7 files currently import both, aliased `useTokenPricesFromHook`) so there is one source of truth. Target: `grep -rn "setInterval" contexts/` returns nothing.
 - Dev B: First full integration smoke pass on testnet (supply, borrow, swap, add liquidity, remove liquidity across all 4 pools). Document any bugs surfaced.
-- **PR `s1/cleanup-smartpolling`**.
+- **PR `s1/cleanup-smartpolling`** (covers both polling removals).
 
 ### Days 13–15 — Test infrastructure
 
@@ -519,4 +531,4 @@ useMutation({
 
 ---
 
-*Updated 2026-05-19 as v3.1. v2 (2026-05-14) was a 5-day plan for 2 devs in parallel. v3 (2026-05-19 AM) expanded to 30 days because Dev A (Divyansh) is unavailable for the first 7 days. **v3.1 (2026-05-19 PM)** additionally promotes Mercury indexer + Hubble BigQuery analytics from "deferred" to "in Phase 2" by running both on **free tiers** ($0/mo). The 30-day budget now ships: ledger-tick foundation + full `useMutation` migration + test infra + optimistic updates + error UX + Mercury event indexing + Hubble historical analytics + analytics perf + dual-write cleanup + docs. Type safety pass cut (folded into PR review discipline). **Mutation strategy is unchanged from v1/v2: full `useMutation` migration for all hook-level + inline mutations.***
+*Updated 2026-05-19 as v3.1. v2 (2026-05-14) was a 5-day plan for 2 devs in parallel. v3 (2026-05-19 AM) expanded to 30 days because Dev A (Rohit) is unavailable for the first 7 days. **v3.1 (2026-05-19 PM)** additionally promotes Mercury indexer + Hubble BigQuery analytics from "deferred" to "in Phase 2" by running both on **free tiers** ($0/mo). The 30-day budget now ships: ledger-tick foundation + full `useMutation` migration + test infra + optimistic updates + error UX + Mercury event indexing + Hubble historical analytics + analytics perf + dual-write cleanup + docs. Type safety pass cut (folded into PR review discipline). **Mutation strategy is unchanged from v1/v2: full `useMutation` migration for all hook-level + inline mutations.***

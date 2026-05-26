@@ -4,7 +4,7 @@
 >
 > This document was originally a 6-sprint, 30-working-day roadmap (S1–S6) for 1 frontend
 > eng + 1 Soroban dev (S2) + 1 DevOps (S6). The **active plan is now** `SPRINT_1_GUIDE.md` v3
-> (2026-05-19) — a 30-**calendar**-day Sprint 1 with 2 frontend devs (Sanujit + Divyansh
+> (2026-05-19) — a 30-**calendar**-day Sprint 1 with 2 frontend devs (Sanujit + Rohit
 > joining D8) that **absorbs the original S2–S6 scope** (test infra, optimistic updates,
 > analytics perf, type safety, docs, dual-write consolidation) into Phase 2 (Days 8–30).
 >

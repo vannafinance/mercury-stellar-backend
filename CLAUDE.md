@@ -21,11 +21,38 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
   - All 12 mutation sites on `useMutation` with `onSuccess: invalidateQueries`
   - `hooks/use-token-prices.ts` driven by ledger tick
   - `app/page.tsx` 30s `setInterval(refreshBorrowedBalances)` deleted
-- **Phase 2 (D8–30)** — Sanujit (Dev A) + Divyansh (Dev B) parallel.
-  - Starts D8 = 2026-05-26.
+- **Phase 2 (D8–30)** — Sanujit (Dev A) + Rohit (Dev B) parallel. Started D8 = 2026-05-26.
+  - **D8–10 — complete.** Hook tick migration shipped: PR #11 (earn+margin) and
+    PR #12 (farm+soroswap) merged into `feat/stellar-rewire`. All 18 read hooks on
+    the stable-queryKey + invalidate-on-tick pattern. `refetchInterval` count: 0.
+  - **Sync (2026-05-27) — landed.** PR #13 merged `stellar-frontend/new-contract-update`
+    (through `de77db7`) into the rewire: BigInt collateral math, Aquarius reserve-order
+    fix, positions/repay calc updates, `capAmountToMaxBalance` swap helper. See the
+    "Known debt from the sync" note below — it added a polling `PriceProvider` that
+    D12 will reconcile.
+  - **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling`
+    **and** the new `PriceProvider` 60s poll).
 
 See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for the day-by-day plan and Phase 2
 track assignments.
+
+## Known debt from the new-contract-update sync (reconcile in D12)
+
+The 2026-05-27 sync brought in upstream's `contexts/price-context.tsx` — a
+`PriceProvider` that polls XLM price on a **60s `setInterval`** (the exact
+chain-data polling anti-pattern this sprint removes). It is currently mounted in
+[app/layout.tsx](app/layout.tsx) nested inside `LedgerSubscriberProvider`, and we
+kept it intact so the sync's calc changes work. Result: **two token-price systems
+coexist** —
+
+- `hooks/use-token-prices.ts` — tick-driven, our pattern (16 consumers, `useTokenPrices(tokens[])` → price map).
+- `contexts/price-context.tsx` — 60s poll, upstream (7 consumers, `useTokenPrices()` → `{prices,getPrice,xlmUsd,…}`).
+- 7 files import **both** (the second aliased `useTokenPricesFromHook`).
+
+**D12 plan:** collapse `PriceProvider`'s 60s poll onto the ledger tick (or retire it
+in favour of `hooks/use-token-prices.ts`), then drop the dual `useTokenPrices` API
+so there is one source of truth. Until then, **do not add new `PriceProvider`
+consumers** — use `hooks/use-token-prices.ts`.
 
 ## Two locked patterns — match these exactly in new code
 
@@ -100,8 +127,11 @@ content rendering on `isRefreshing`.
 - `refetchInterval: N_000` on any chain-data query → replace with the stable-queryKey + invalidate-on-tick pattern in #1 above.
 - `queryKey: [..., tick]` → changing the queryKey on every tick creates fresh cache slots and forces `isLoading: true` every ledger close. Use the invalidate-on-tick pattern instead.
 - `setInterval(..., 30_000)` for chain refresh → use a `useEffect` on `tick` if a
-  one-shot side effect is needed.
+  one-shot side effect is needed. **Known exception today:** `contexts/price-context.tsx`
+  still has a 60s `setInterval` from the sync — slated for removal in D12, don't copy it.
 - `isLoading: query.isLoading || query.isFetching` → drop the OR. See pattern #3 above.
+- New `PriceProvider` (`@/contexts/price-context`) consumers → use the tick-driven
+  `hooks/use-token-prices.ts` instead. The two coexist post-sync; D12 collapses them.
 - `refreshKey` reads from `useBlendStore` → these are being torn out across
   Phase 2 D8–11. Don't add new ones.
 - `useState({ type: '', text: '' })` toast patterns in mutation callers → being
@@ -147,7 +177,11 @@ content rendering on `isRefreshing`.
 | Margin hooks | [hooks/use-margin.ts](hooks/use-margin.ts) |
 | Farm hooks (Blend + Aquarius) | [hooks/use-farm.ts](hooks/use-farm.ts) |
 | Soroswap hooks | [hooks/use-soroswap.ts](hooks/use-soroswap.ts) |
-| Token prices (tick-driven) | [hooks/use-token-prices.ts](hooks/use-token-prices.ts) |
+| Token prices (tick-driven, our pattern) | [hooks/use-token-prices.ts](hooks/use-token-prices.ts) |
+| Token prices (60s poll, from sync — D12 reconcile) | [contexts/price-context.tsx](contexts/price-context.tsx) |
+| XLM price fetch/cache (used by PriceProvider) | [lib/prices.ts](lib/prices.ts) |
+| Swap amount math (`capAmountToMaxBalance`, stroops) | [lib/utils/swap-amount.ts](lib/utils/swap-amount.ts) |
+| Margin token attribution (borrow-vs-own split) | [lib/utils/margin-token-attribution.ts](lib/utils/margin-token-attribution.ts) |
 | Wallet hooks (deposit/withdraw) | [hooks/use-wallet.ts](hooks/use-wallet.ts) |
 | Margin store (Zustand) | [store/margin-account-info-store.ts](store/margin-account-info-store.ts) |
 | Earn pool store (Zustand, dual-write) | [store/earn-pool-store.ts](store/earn-pool-store.ts) |

@@ -3,7 +3,7 @@
 > ⚠️ **HISTORICAL ARCHITECTURE SNAPSHOT — Superseded by [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) + [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)**
 >
 > This was the locked-in 6-week roadmap. The **active plan is now** `SPRINT_1_GUIDE.md` v3
-> (2026-05-19) — a 30-calendar-day Sprint 1 with 2 frontend devs (Sanujit + Divyansh joining D8)
+> (2026-05-19) — a 30-calendar-day Sprint 1 with 2 frontend devs (Sanujit + Rohit joining D8)
 > that absorbs the original Sprint 2–6 scope into Phase 2 (Days 8–30).
 >
 > **Read this doc for:** macro architecture context, 6-week cost model, decision rationale
