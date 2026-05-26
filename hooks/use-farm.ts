@@ -1,6 +1,7 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BlendService,
   BlendReserveData,
@@ -15,7 +16,7 @@ import {
   AquariusPoolConfig,
 } from '@/lib/aquarius-utils';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
-import { useBlendStore } from '@/store/blend-store';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool stats
@@ -29,6 +30,10 @@ export interface FarmPoolStats {
 const EMPTY_STATS: FarmPoolStats = { XLM: null, USDC: null };
 
 export const useBlendPoolStats = (enabled = true) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'blend', 'poolStats'],
     enabled,
@@ -36,13 +41,19 @@ export const useBlendPoolStats = (enabled = true) => {
       const data = await BlendService.getAllBlendReserveStats();
       return { XLM: data.XLM, USDC: data.USDC };
     },
-    refetchInterval: enabled ? 60_000 : false,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'poolStats'] });
+  }, [tick, qc]);
 
   return {
     stats: query.data ?? EMPTY_STATS,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -67,11 +78,12 @@ const EMPTY_USER: UserBlendPositions = {
 
 export const useUserBlendPositions = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    // refreshKey is included so mutations can bump the store → invalidate.
-    queryKey: ['farm', 'blend', 'userPositions', marginAccountAddress, refreshKey],
+    queryKey: ['farm', 'blend', 'userPositions', marginAccountAddress],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<UserBlendPositions> => {
       if (!marginAccountAddress) return EMPTY_USER;
@@ -84,11 +96,19 @@ export const useUserBlendPositions = () => {
         totalValueXLM: (xlmVal + usdcVal).toFixed(4),
       };
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'userPositions'] });
+  }, [tick, qc]);
 
   return {
     positions: query.data ?? EMPTY_USER,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -100,24 +120,32 @@ export const useUserBlendPositions = () => {
 
 export const useBlendEvents = (tokenSymbol?: string) => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'blend', 'events', marginAccountAddress, tokenSymbol ?? null, refreshKey],
+    queryKey: ['farm', 'blend', 'events', marginAccountAddress, tokenSymbol ?? null],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<BlendEvent[]> => {
       if (!marginAccountAddress) return [];
       const all = await BlendService.getBlendEvents(marginAccountAddress);
       return tokenSymbol ? all.filter((e) => e.tokenSymbol === tokenSymbol) : all;
     },
-    refetchInterval: marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
-    staleTime: 5_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'events'] });
+  }, [tick, qc]);
 
   return {
     events: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -134,6 +162,10 @@ export interface AquariusPoolWithStats {
 }
 
 export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'aquarius', 'allPoolStats'],
     queryFn: async () => {
@@ -148,9 +180,14 @@ export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
       });
       return map;
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'allPoolStats'] });
+  }, [tick, qc]);
 
   const statsMap = query.data ?? {};
   const loading = query.isLoading;
@@ -167,6 +204,10 @@ export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useAquariusPoolStats = (poolAddress: string | null) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'aquarius', 'poolStats', poolAddress],
     enabled: Boolean(poolAddress),
@@ -174,13 +215,19 @@ export const useAquariusPoolStats = (poolAddress: string | null) => {
       if (!poolAddress) return null;
       return AquariusService.getAquariusPoolStats(poolAddress);
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'poolStats'] });
+  }, [tick, qc]);
 
   return {
     stats: query.data ?? null,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
@@ -192,20 +239,30 @@ export const useAquariusLpPosition = (
   marginAccountAddress: string | null,
   poolAddress: string | null,
 ) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'lpPosition', marginAccountAddress, poolAddress, refreshKey],
+    queryKey: ['farm', 'aquarius', 'lpPosition', marginAccountAddress, poolAddress],
     enabled: Boolean(marginAccountAddress && poolAddress),
     queryFn: async () => {
       if (!marginAccountAddress || !poolAddress) return '0';
       return AquariusService.getUserLpBalance(marginAccountAddress, poolAddress);
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'lpPosition'] });
+  }, [tick, qc]);
 
   return {
     lpBalance: query.data ?? '0',
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
@@ -214,10 +271,12 @@ export const useAquariusLpPosition = (
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useAllAquariusLpPositions = (marginAccountAddress: string | null) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'allLpPositions', marginAccountAddress, refreshKey],
+    queryKey: ['farm', 'aquarius', 'allLpPositions', marginAccountAddress],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<Record<string, string>> => {
       if (!marginAccountAddress) return {};
@@ -238,11 +297,21 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
       });
       return map;
     },
-    staleTime: 30_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
   });
 
-  return { positions: query.data ?? {}, isLoading: query.isLoading || query.isFetching };
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'allLpPositions'] });
+  }, [tick, qc]);
+
+  return {
+    positions: query.data ?? {},
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,23 +319,31 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'events', poolAddress, marginAccountAddress ?? null, refreshKey],
+    queryKey: ['farm', 'aquarius', 'events', poolAddress, marginAccountAddress ?? null],
     enabled: Boolean(poolAddress && marginAccountAddress),
     queryFn: async (): Promise<AquariusLpEvent[]> => {
       if (!poolAddress || !marginAccountAddress) return [];
       return AquariusService.getAquariusEvents(poolAddress, marginAccountAddress);
     },
-    refetchInterval: poolAddress && marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
-    staleTime: 5_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'events'] });
+  }, [tick, qc]);
 
   return {
     events: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
