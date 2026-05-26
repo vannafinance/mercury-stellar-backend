@@ -121,9 +121,22 @@ API so there's one source of truth.
   and its import in `app/margin/page.tsx`; **reconcile the price system** (section 4);
   then a full testnet smoke across all 4 pools. Target: `grep -rn "setInterval" contexts/` empty.
 
+- **D25 — stats snapshot-cache layer (NEW, pulled into S1).** The cold-load of
+  *every* stats panel (Margin HF/collateral/borrowed, Earn vault stats + positions,
+  Farm pool stats + LP, Portfolio summary) is slow because each reads live chain
+  state on first paint. Fix: edge-cached snapshot routes — `/api/account/[addr]`
+  (per-user) + `/api/pools` (shared) — read via the ledger-tick RQ pattern so the
+  client gets an instant cached snapshot and refreshes silently. **Goal: all stats
+  render < 1 s on warm cache.** Dev A = account snapshot; Dev B = pool snapshot +
+  analytics memoization.
+
 Full day-by-day (D13 test infra → D30 integration) is in
 [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md). Mercury (D20–22) and Hubble (D23–24) both run
 on **free tiers** — no payment decisions in this sprint.
+
+> **Note on stats speed:** Mercury/Hubble do **not** speed up the live stats panels —
+> Mercury is event *history*, Hubble is protocol-wide *analytics*. The live per-account
+> stats fetch fast only via the D25 snapshot-cache layer above.
 
 ---
 

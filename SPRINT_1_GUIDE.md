@@ -16,6 +16,7 @@
 - **D8–10 hook tick migration:** ✅ complete. PR #11 (earn+margin) + PR #12 (farm+soroswap) merged into `feat/stellar-rewire`. 18 read hooks on the stable-queryKey + invalidate-on-tick pattern. `refetchInterval` count: **0**. `isLoading || isFetching`: **0**.
 - **Sync (PR #13, 2026-05-27):** ✅ merged. `new-contract-update` @ `de77db7` layered under the rewire; build green, calc changes manually verified.
 - **Open debt from the sync (→ D12):** `contexts/price-context.tsx` polls XLM price on a 60s `setInterval`; two `useTokenPrices` systems coexist. D12 collapses them.
+- **New scope pulled into S1 (→ D25):** stats snapshot-cache layer (`/api/account/[addr]` + `/api/pools`) — the real fix for the slow cold-load of **all** stats panels (Margin, Earn, Farm, Portfolio), not just margin. Was deferred to S2/S3; pulled in so every stat fetches fast by EOD. Reuses Hubble's edge-API patterns; parallel across both devs.
 - **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling` + `PriceProvider`).
 - **Pattern source of truth:** repo [CLAUDE.md](CLAUDE.md) §1–3. (The "Hook tick pattern" recipe lower in this doc shows the superseded `tick`-in-queryKey form — use CLAUDE.md.)
 
@@ -48,7 +49,7 @@ v2 of this doc (2026-05-14) was a 5-day plan for 2 devs working in parallel. v3 
 | Optimistic updates (earn + margin) | D18–19 | n/a | ✓ |
 | **Mercury indexer integration** | **D20–22** | ✅ free dev tier | Includes new Aquarius/Soroswap LP events, not just original 12 |
 | **Hubble BigQuery analytics** | **D23–24** | ✅ free (1TB/mo) | Queries hit `crypto-stellar.crypto_stellar.contract_events` for all 4 pools |
-| Analytics + Risk Dashboard perf | D25 | n/a | Memoize `PositionsMonitor`, `BadDebtMonitorSummary` |
+| **Stats snapshot-cache layer** (fast cold-load for ALL stats) + Analytics/Risk perf | D25 | ✅ free (own edge routes) | NEW — `/api/account/[addr]` + `/api/pools` edge snapshots fix slow Margin/Earn/Farm/Portfolio stats; pulled in from S2/S3 |
 | Zustand dual-write cleanup | D26 | n/a | ✓ |
 | Docs + `ARCHITECTURE.md` | D27 | n/a | ✓ |
 | Bug bash + e2e (now covers Mercury+Hubble) | D28–29 | n/a | ✓ |
@@ -328,12 +329,42 @@ Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation 
 - Verify: BigQuery month-to-date cost in GCP console reads $0.
 - **Joint PR `s4/hubble-ui`**.
 
-### Day 25 — Analytics + Risk Dashboard perf (reduced from 3 days)
+### Day 25 — Stats snapshot-cache layer (fast cold-load for ALL stats) + analytics perf
 
-- Dev A: Memoize heavy reduce/map chains in `lib/analytics/onchain/derivations.ts`. Profile `PositionsMonitor.tsx` with React DevTools — eliminate redundant re-renders (likely missing `useMemo` on derived rows).
-- Dev B: Audit `components/analytics/risk-explorer/BadDebtMonitorSummary.tsx` — derive once per render, not per row. Confirm event feed pagination doesn't re-fetch on every tick.
-- Confirm `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays untouched (allowlist).
-- **Joint PR `s4/perf-analytics-risk`**.
+The slow cold-load is **every** stat panel that reads live chain state — Margin
+(HF / collateral / borrowed), Earn (vault stats + user positions), Farm (pool stats +
+LP positions), Portfolio summary. The fix is a **server-side snapshot-cache layer**:
+read the chain once on the edge, cache it, serve clients an instant snapshot, and let
+the ledger tick + the user's own mutations invalidate. Reuses the edge-API-route +
+`Cache-Control` + RQ-wiring patterns established by Hubble (D23). Two parallel tracks.
+
+**Dev A — `s4/account-snapshot-cache` (per-user stats):**
+- Edge route `app/api/account/[addr]/route.ts` → one cached payload with the user's
+  live state across pages: margin `{ avgHealthFactor, totalCollateralValue, netAvailableCollateral, totalBorrowedValue }`,
+  earn positions, farm LP positions, portfolio totals. Edge runtime.
+  `Cache-Control: s-maxage=15, stale-while-revalidate=60`.
+- Hook `hooks/use-account-snapshot.ts` on the **ledger-tick stable-queryKey +
+  invalidate-on-tick** pattern (CLAUDE.md §1). First paint serves the cached snapshot
+  (instant on warm cache); ledger tick + the user's borrow/repay/transfer/supply/
+  withdraw mutations invalidate it.
+- Wire the Margin stats bar, `/portfolio` summary, and Earn/Farm user-position panels
+  to the snapshot. The imperative chain-read paths become the cache-miss fallback only.
+
+**Dev B — `s4/pool-snapshot-cache` (shared pool stats) + analytics perf:**
+- Edge route `app/api/pools/route.ts` → pool-level stats shared across all users
+  (TVL, APY, reserves, utilisation for all 4 pools + Aquarius/Soroswap). Longer TTL
+  (`s-maxage=30, stale-while-revalidate=120`) since pool stats move slower than a
+  single account. Wire Earn vault-stat cards + Farm pool-stat cards to read it.
+- Then the original D25 perf: memoize `lib/analytics/onchain/derivations.ts`, profile
+  `PositionsMonitor.tsx`, fix `BadDebtMonitorSummary.tsx` per-render derivation.
+  `lib/analytics/oracle-agents/store.ts` simulation `setInterval` stays (allowlist).
+
+**Done when:** every stats panel (Margin / Earn / Farm / Portfolio) renders in
+**< 1 s on a warm edge cache** — the absolute first cache-miss per account/pool is
+still bounded by one server-side chain read; all panels update within ~5 s post-tx
+with no manual refresh. (If the layer needs more than one day, it shares the
+D28–29 bug-bash buffer — it's a hard requirement, the analytics memoization is the
+drop-first.)
 
 ### Day 26 — Zustand dual-write consolidation
 

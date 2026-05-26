@@ -32,6 +32,10 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
     D12 will reconcile.
   - **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling`
     **and** the new `PriceProvider` 60s poll).
+  - **New S1 scope (D25):** stats snapshot-cache layer (`/api/account/[addr]` +
+    `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow
+    cold-load of **all** stats panels (Margin/Earn/Farm/Portfolio). Pulled in from
+    S2/S3. See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) D25.
 
 See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for the day-by-day plan and Phase 2
 track assignments.
