@@ -8,6 +8,7 @@ import {
   TokenPrices,
   XLM_FALLBACK_PRICE,
 } from "@/lib/prices";
+import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
 interface PriceContextValue {
   prices: TokenPrices;
@@ -20,13 +21,13 @@ interface PriceContextValue {
 
 const PriceContext = createContext<PriceContextValue | undefined>(undefined);
 
-const REFRESH_INTERVAL_MS = 60_000;
-
 export const PriceProvider = ({ children }: { children: React.ReactNode }) => {
   const [xlmUsd, setXlmUsd] = useState<number>(() => readCachedXlmPrice() ?? XLM_FALLBACK_PRICE);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const mountedRef = useRef(true);
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const refresh = useMemo(
     () => async () => {
@@ -36,7 +37,7 @@ export const PriceProvider = ({ children }: { children: React.ReactNode }) => {
         setXlmUsd(price);
         setLastUpdated(Date.now());
       } catch {
-        // keep last known value; next interval will retry
+        // keep last known value; next tick will retry
       } finally {
         if (mountedRef.current) setIsLoading(false);
       }
@@ -44,18 +45,22 @@ export const PriceProvider = ({ children }: { children: React.ReactNode }) => {
     []
   );
 
+  // Initial price load on mount.
   useEffect(() => {
     mountedRef.current = true;
     refresh();
-    const id = setInterval(refresh, REFRESH_INTERVAL_MS);
-    const onFocus = () => refresh();
-    window.addEventListener("focus", onFocus);
     return () => {
       mountedRef.current = false;
-      clearInterval(id);
-      window.removeEventListener("focus", onFocus);
     };
   }, [refresh]);
+
+  // Refresh price on each ledger close. Skips the initial mount so the
+  // effect above handles the first fetch without a duplicate call.
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    refresh();
+  }, [tick, refresh]);
 
   const value = useMemo<PriceContextValue>(() => {
     const prices = buildPrices(xlmUsd);

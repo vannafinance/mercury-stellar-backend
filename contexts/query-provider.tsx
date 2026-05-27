@@ -8,7 +8,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
  * Mirrors the defaults in the Vanna web-app:
  *   staleTime:            15 s (no refetch if another consumer mounts inside window)
  *   gcTime:               5 min (keep unused entries across page navigation)
- *   refetchOnWindowFocus: off  (we poll via useSmartPolling where we want freshness)
+ *   refetchOnWindowFocus: off  (ledger-tick invalidation drives all chain-data freshness)
  *   retry:                2 with exponential backoff (capped at 10 s)
  */
 export function QueryProvider({ children }: { children: React.ReactNode }) {
