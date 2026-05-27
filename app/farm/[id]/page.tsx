@@ -35,7 +35,6 @@ import {
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useBlendStore } from "@/store/blend-store";
 import { buildFarmPoolKey, getFarmHistory } from "@/lib/farm-history";
 
 // Compact human-readable number: "62.44M", "1.23K", "987.65".
@@ -273,7 +272,6 @@ export default function FarmDetailPage() {
   const { positions: userPositions, isLoading: posLoading } = useUserBlendPositions();
   const { events, isLoading: eventsLoading } = useBlendEvents(tokenSymbol ?? undefined);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
 
   // Real data hooks — Aquarius (multi-asset)
   const { stats: aqStats, isLoading: aqStatsLoading } = useAquariusPoolStats(aquariusPoolAddress);
@@ -295,7 +293,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(tokenSymbol ?? "XLM"),
         marginAccountAddress,
       }),
-    [tokenSymbol, marginAccountAddress, refreshKey]
+    [tokenSymbol, marginAccountAddress]
   );
 
   const aquariusLocalHistory = useMemo(
@@ -305,7 +303,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC"),
         marginAccountAddress,
       }),
-    [matchedPool, marginAccountAddress, refreshKey]
+    [matchedPool, marginAccountAddress]
   );
 
   const soroswapLocalHistory = useMemo(
@@ -315,7 +313,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(ssTokenA, ssTokenB),
         marginAccountAddress,
       }),
-    [ssTokenA, ssTokenB, marginAccountAddress, refreshKey]
+    [ssTokenA, ssTokenB, marginAccountAddress]
   );
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;

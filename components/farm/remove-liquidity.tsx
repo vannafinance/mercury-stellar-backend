@@ -16,7 +16,6 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { iconPaths } from "@/lib/constants";
 import { PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
-import { useBlendStore } from "@/store/blend-store";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -29,7 +28,6 @@ const PERCENTAGE_OPTIONS = [25, 50, 75, 100] as const;
 export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const { isDark } = useTheme();
   const userAddress = useUserStore((state) => state.address);
-  const triggerBlendRefresh = useBlendStore((s) => s.triggerRefresh);
   const selectedRow = useFarmStore((state) => state.selectedRow);
   const tabType = useFarmStore((state) => state.tabType);
   const isAquariusPool =
@@ -195,7 +193,6 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       setSelectedPercentage(0);
       qc.invalidateQueries({ queryKey: ['farm'] });
       setTimeout(() => {
-        triggerBlendRefresh();
         BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken).then((info) =>
           setBlendBalance(info.underlyingBalance),
         ).catch(() => {});
@@ -248,7 +245,6 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
         ? SoroswapService.getLpBalance(marginAccountAddress!)
         : AquariusService.getUserLpBalance(marginAccountAddress!, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL);
       refreshLpBalance.then(setLpBalance).catch(() => {});
-      triggerBlendRefresh();
     },
     onError: (error) => {
       setTxStatus("error");

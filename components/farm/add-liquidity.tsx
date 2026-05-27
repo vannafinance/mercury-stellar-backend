@@ -17,7 +17,6 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { useBlendPoolStats } from "@/hooks/use-farm";
-import { useBlendStore } from "@/store/blend-store";
 import { useTokenPrice } from "@/hooks/use-token-prices";
 import { DepositSummary } from "./deposit-summary";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
@@ -59,8 +58,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
     }
     return "XLM";
   }, [tabType, selectedRow]);
-
-  const triggerBlendRefresh = useBlendStore((s) => s.triggerRefresh);
 
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>(getInitialToken);
   const [value, setValue] = useState<string>("");
@@ -312,8 +309,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
           .catch(() => {});
       }
       qc.invalidateQueries({ queryKey: ['farm'] });
-      refreshBorrowedBalances(marginAccountAddress!, true);
-      triggerBlendRefresh();
     },
     onError: (error) => {
       setTxStatus("error");
@@ -365,7 +360,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
       qc.invalidateQueries({ queryKey: ['farm'] });
       refreshBorrowedBalances(marginAccountAddress!, true);
       setTimeout(() => {
-        triggerBlendRefresh();
         BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken)
           .then((info) => setBlendBalance(info.underlyingBalance))
           .catch(() => {});
