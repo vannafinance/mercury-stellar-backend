@@ -24,7 +24,7 @@ import { useUserStore } from "@/store/user";
 import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
-import { useSmartPolling } from "@/lib/hooks/useSmartPolling";
+import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
 const Margin = () => {
   const { isDark } = useTheme();
@@ -120,14 +120,23 @@ const Margin = () => {
     }
   }, [userAddress]);
 
-  // Poll every 15s while connected. Smart-polling pauses when the tab is
-  // hidden or the user has been idle for 2+ minutes, and fires an immediate
-  // refresh when the tab becomes visible again.
-  useSmartPolling(
-    reloadMarginState,
-    [isWalletConnected, userAddress],
-    { enabled: Boolean(isWalletConnected && userAddress), interval: 15_000 },
-  );
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
+  // Initial load when wallet connects or address changes.
+  useEffect(() => {
+    if (!isWalletConnected || !userAddress) return;
+    reloadMarginState();
+  }, [isWalletConnected, userAddress, reloadMarginState]);
+
+  // Refresh on each ledger close (~5 s). Skips the initial mount so the
+  // effect above handles the first load without a duplicate call.
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    if (!isWalletConnected || !userAddress) return;
+    reloadMarginState();
+  }, [tick, isWalletConnected, userAddress, reloadMarginState]);
 
   const accountStats = useMemo(() => {
     const hasAnyMarginData =

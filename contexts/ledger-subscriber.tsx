@@ -16,9 +16,13 @@ export const useLedgerTick = () => useContext(LedgerContext);
 
 /**
  * Subscribes to Horizon's ledger-close stream and exposes a tick counter
- * plus the latest ledger sequence through React Context. Consumer hooks
- * include the tick in their queryKey to drive ledger-paced cache
- * invalidation in TanStack Query.
+ * plus the latest ledger sequence through React Context.
+ *
+ * Consumer hooks use a STABLE queryKey and call
+ * `qc.invalidateQueries({ queryKey: [...] })` inside a `useEffect` on
+ * `tick`. Do NOT put `tick` in the queryKey — a new key on every tick
+ * creates fresh cache slots, forcing `isLoading: true` every ~5 s and
+ * flickering the UI. See CLAUDE.md §1 for the canonical pattern.
  *
  * Reconnect is handled by the browser's EventSource: on transient network
  * failures it retries automatically and resumes the stream from the last

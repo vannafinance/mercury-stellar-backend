@@ -15,10 +15,11 @@
 - **Phase 1 (D1–7):** ✅ complete (PR #10 merged 2026-05-25).
 - **D8–10 hook tick migration:** ✅ complete. PR #11 (earn+margin) + PR #12 (farm+soroswap) merged into `feat/stellar-rewire`. 18 read hooks on the stable-queryKey + invalidate-on-tick pattern. `refetchInterval` count: **0**. `isLoading || isFetching`: **0**.
 - **Sync (PR #13, 2026-05-27):** ✅ merged. `new-contract-update` @ `de77db7` layered under the rewire; build green, calc changes manually verified.
-- **Open debt from the sync (→ D12):** `contexts/price-context.tsx` polls XLM price on a 60s `setInterval`; two `useTokenPrices` systems coexist. D12 collapses them.
+- **D11 — complete (2026-05-27).** `refreshKey`/`triggerRefresh` fully deleted: `store/blend-store.ts` removed; all call-sites in `app/farm/[id]/page.tsx`, `components/farm/add-liquidity.tsx`, `components/farm/remove-liquidity.tsx` cleared. `grep -rn "refreshKey|triggerRefresh" .` → empty. PR `s1/cleanup-refreshkey`.
+- **D12 — complete (2026-05-27).** All remaining polling killed: `lib/hooks/useSmartPolling.ts` deleted; `app/margin/page.tsx` migrated to ledger-tick `useEffect` pattern; `contexts/price-context.tsx` 60s `setInterval` replaced with tick-driven refresh (sync debt resolved); JSDoc anti-pattern fixed in `contexts/ledger-subscriber.tsx`; `contexts/query-provider.tsx` updated. `grep -rn "setInterval" contexts/` → empty. PR `s1/cleanup-smartpolling`.
 - **New scope pulled into S1 (→ D25):** stats snapshot-cache layer (`/api/account/[addr]` + `/api/pools`) — the real fix for the slow cold-load of **all** stats panels (Margin, Earn, Farm, Portfolio), not just margin. Was deferred to S2/S3; pulled in so every stat fetches fast by EOD. Reuses Hubble's edge-API patterns; parallel across both devs.
 - **Codebase audit (2026-05-27):** full health audit done — see [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md). Hook layer (D8–10) is clean; all remaining issues cluster in the margin Zustand path, farm/repay/lite components, and the analytics island. Items folded into D11/D12/D16–17/D22/D25/D26 with a drop-first buffer. **The full analytics-island rework (5 polling pages + bespoke store + unbounded all-accounts read) is pulled into S1 (D22)**, riding Mercury/Hubble.
-- **Next:** D11 (refreshKey teardown + farm read cleanup), D12 (kill remaining polling — `useSmartPolling` + `PriceProvider`).
+- **Next:** D13–15 (test infrastructure — vitest + RTL).
 - **Pattern source of truth:** repo [CLAUDE.md](CLAUDE.md) §1–3. (The "Hook tick pattern" recipe lower in this doc shows the superseded `tick`-in-queryKey form — use CLAUDE.md.)
 
 ---
