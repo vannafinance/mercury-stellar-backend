@@ -138,6 +138,8 @@ const EMPTY_POSITIONS = {
   SOROSWAP_USDC: { ...EMPTY_POSITION },
 };
 
+type UserPositions = typeof EMPTY_POSITIONS;
+
 export const useUserPositions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
@@ -257,19 +259,54 @@ export const useSupplyLiquidity = () => {
       }
       return { hash: result.hash, amount, assetType };
     },
+
+    onMutate: async ({ amount, assetType }) => {
+      // Cancel any in-flight position refetch so it doesn't overwrite our write
+      await qc.cancelQueries({ queryKey: ['earn', 'userPositions'] });
+
+      const posKey = ['earn', 'userPositions', address ?? null] as const;
+      const prevPositions = qc.getQueryData<UserPositions>(posKey);
+
+      // Read exchange rate from pools cache (avoids an extra RPC call)
+      const poolKey = assetType === ASSET_TYPES.BLEND_USDC ? 'USDC' : assetType;
+      type PoolEntry = { exchangeRate: string };
+      const poolsCache = qc.getQueryData<Record<string, PoolEntry>>(['earn', 'pools']);
+      const exchangeRate = Math.max(parseFloat(poolsCache?.[poolKey]?.exchangeRate ?? '1'), 1e-9);
+
+      qc.setQueryData<UserPositions>(posKey, (old) => {
+        if (!old) return old;
+        const key = poolKey as keyof UserPositions;
+        const cur = old[key];
+        if (!cur) return old;
+        return {
+          ...old,
+          [key]: {
+            ...cur,
+            deposited: (parseFloat(cur.deposited) + amount).toFixed(7),
+            vTokenBalance: (parseFloat(cur.vTokenBalance) + amount / exchangeRate).toFixed(7),
+          },
+        };
+      });
+
+      return { prevPositions };
+    },
+
+    onError: (_err, _vars, ctx) => {
+      // Restore snapshot so stale optimistic data never lingers on failure
+      if (ctx?.prevPositions !== undefined) {
+        qc.setQueryData(['earn', 'userPositions', address ?? null], ctx.prevPositions);
+      }
+    },
+
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('supply', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({
-          asset: assetType,
-          type: 'supply',
-          amount: amount.toString(),
-          hash,
-          status: 'success',
-        });
+        appendEarnHistory({ asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
       }
-      qc.invalidateQueries({ queryKey: ['earn'] });
     },
+
+    // Invalidate on both success and error so the cache reconciles with chain state
+    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
   });
 };
 
@@ -295,19 +332,51 @@ export const useWithdrawLiquidity = () => {
       }
       return { hash: result.hash, amount, assetType };
     },
+
+    onMutate: async ({ amount, assetType }) => {
+      await qc.cancelQueries({ queryKey: ['earn', 'userPositions'] });
+
+      const posKey = ['earn', 'userPositions', address ?? null] as const;
+      const prevPositions = qc.getQueryData<UserPositions>(posKey);
+
+      const poolKey = assetType === ASSET_TYPES.BLEND_USDC ? 'USDC' : assetType;
+      type PoolEntry = { exchangeRate: string };
+      const poolsCache = qc.getQueryData<Record<string, PoolEntry>>(['earn', 'pools']);
+      const exchangeRate = Math.max(parseFloat(poolsCache?.[poolKey]?.exchangeRate ?? '1'), 1e-9);
+
+      // Burning `amount` vTokens redeems approximately `amount * exchangeRate` underlying
+      qc.setQueryData<UserPositions>(posKey, (old) => {
+        if (!old) return old;
+        const key = poolKey as keyof UserPositions;
+        const cur = old[key];
+        if (!cur) return old;
+        return {
+          ...old,
+          [key]: {
+            ...cur,
+            vTokenBalance: Math.max(0, parseFloat(cur.vTokenBalance) - amount).toFixed(7),
+            deposited: Math.max(0, parseFloat(cur.deposited) - amount * exchangeRate).toFixed(7),
+          },
+        };
+      });
+
+      return { prevPositions };
+    },
+
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prevPositions !== undefined) {
+        qc.setQueryData(['earn', 'userPositions', address ?? null], ctx.prevPositions);
+      }
+    },
+
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({
-          asset: assetType,
-          type: 'withdraw',
-          amount: amount.toString(),
-          hash,
-          status: 'success',
-        });
+        appendEarnHistory({ asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
       }
-      qc.invalidateQueries({ queryKey: ['earn'] });
     },
+
+    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
   });
 
   return Object.assign(mutation, {
