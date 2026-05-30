@@ -26,6 +26,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
+import { normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 
@@ -40,23 +41,6 @@ type Modes = "Deposit" | "Borrow";
 // Helper to generate unique ID for collateral
 const generateCollateralId = () => `collateral-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-// Map common create-account failure modes to actionable user-facing copy.
-// Without this the toast is always "Failed to create margin account. Please
-// try again." even when the wallet just has 0 XLM and the fix is one click.
-const humanizeCreateAccountError = (msg: string): string => {
-  const m = (msg || "").toLowerCase();
-  if (!m) return "Failed to create margin account. Please try again.";
-  if (m.includes("account not found") || m.includes("not found on network")) {
-    return "Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.";
-  }
-  if (m.includes("insufficient") || m.includes("balance") || m.includes("fee")) {
-    return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
-  }
-  if (m.includes("rejected") || m.includes("cancelled") || m.includes("user denied")) {
-    return "Transaction was cancelled in Freighter.";
-  }
-  return "Failed to create margin account. Please try again.";
-};
 
 // Helper to ensure collateral has ID
 const ensureCollateralId = (collateral: Collaterals): Collaterals => {
@@ -99,28 +83,6 @@ export const LeverageAssetsTab = () => {
 
   const userAddress = useUserStore((state) => state.address);
   const tokenBalances = useUserStore((state) => state.tokenBalances);
-
-  const getFriendlyDepositError = useCallback((rawError?: string) => {
-    const compact = (rawError || "").split("\nEvent log")[0]?.trim() || "";
-    const text = compact.toLowerCase();
-
-    if (
-      text.includes("error(contract, #10)") ||
-      text.includes("resulting balance is not within the allowed range")
-    ) {
-      return "You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.";
-    }
-
-    if (text.includes("insufficient")) {
-      return "Insufficient wallet balance for this deposit.";
-    }
-
-    if (text.includes("hosterror")) {
-      return "Deposit failed on-chain. Please retry with a slightly smaller amount.";
-    }
-
-    return compact || "Deposit and borrow failed. Please try again.";
-  }, []);
 
   useEffect(() => {
     if (!userAddress) return;
@@ -708,7 +670,7 @@ export const LeverageAssetsTab = () => {
             if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
               toast.error(`Contract configuration error: ${atomicResult.error}`);
             } else {
-              toast.error(getFriendlyDepositError(atomicResult.error));
+              toast.error(normalizeDepositCollateralError(atomicResult.error));
             }
             setIsProcessing(false);
             return;
@@ -758,7 +720,7 @@ export const LeverageAssetsTab = () => {
                   toast.error('Setup error: ' + (setupError instanceof Error ? setupError.message : 'Unknown error'));
                 }
               } else {
-                toast.error(getFriendlyDepositError(depositResult.error));
+                toast.error(normalizeDepositCollateralError(depositResult.error));
               }
               setIsProcessing(false);
               return;
@@ -782,7 +744,7 @@ export const LeverageAssetsTab = () => {
             const borrowResult = await borrowTokens(userAddress, normalizedBorrowToken, borrowAmountTokens);
             if (!borrowResult.success) {
               console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
-              toast.error(getFriendlyDepositError(
+              toast.error(normalizeDepositCollateralError(
                 `Deposits were successful. Borrow failed: ${borrowResult.error || "Unknown borrow error"}`
               ));
               try {
@@ -826,7 +788,7 @@ export const LeverageAssetsTab = () => {
       } catch (error) {
         console.error('❌ Error in deposit and borrow:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        toast.error(getFriendlyDepositError(errorMessage));
+        toast.error(normalizeDepositCollateralError(errorMessage));
       } finally {
         setIsProcessing(false);
       }
@@ -850,12 +812,12 @@ export const LeverageAssetsTab = () => {
         toast.success("Margin account created successfully.");
       } else {
         const reason = useMarginAccountInfoStore.getState().accountCreationError || "";
-        toast.error(humanizeCreateAccountError(reason));
+        toast.error(normalizeCreateAccountError(reason));
       }
     } catch (error) {
       console.error("Failed to create margin account:", error);
       const msg = error instanceof Error ? error.message : "";
-      toast.error(humanizeCreateAccountError(msg));
+      toast.error(normalizeCreateAccountError(msg));
     }
   };
 

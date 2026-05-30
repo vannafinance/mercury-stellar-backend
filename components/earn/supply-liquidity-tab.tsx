@@ -10,6 +10,7 @@ import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/contexts/price-context";
 import { useSupplyLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType, ContractService } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
@@ -27,6 +28,12 @@ export const SupplyLiquidityTab = () => {
   const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
   const { refresh: refreshPositions } = useUserPositions();
+
+  useMutationToast(supply, {
+    loading: (v) => `Supplying ${v.amount} ${v.assetType} to the lending pool…`,
+    success: (d) => `Successfully supplied ${d.amount} ${d.assetType}! You received v${d.assetType} tokens.`,
+    error: (e) => e.message,
+  });
 
   // Fetch all token balances when user connects
   const refreshTokenBalances = useCallback(async () => {
@@ -99,19 +106,16 @@ export const SupplyLiquidityTab = () => {
         return;
       }
 
-      const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
       try {
         await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
-        toast.success(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`, { id: toastId });
         setValue("");
         setSelectedPercentage(null);
-        // Refresh positions and balances after successful deposit
         setTimeout(() => {
           refreshPositions();
           refreshTokenBalances();
         }, 2000);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : `Failed to supply ${selectedOption}. Please try again.`, { id: toastId });
+      } catch {
+        // toast fired by useMutationToast
       }
     }
   };

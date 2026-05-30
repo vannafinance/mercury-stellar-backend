@@ -18,7 +18,7 @@ import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMargi
 import { useUserStore } from "@/store/user";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
-import toast from "react-hot-toast";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -307,8 +307,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           hash,
         });
       }
-      toast.success(`Loan repayment successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
-
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
       // can transiently throw when Freighter's getAddress returns undefined
@@ -326,12 +324,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
     },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : 'Repay failed');
-    },
     onSettled: () => {
       setIsPayNowPopupOpen(false);
     },
+  });
+
+  useMutationToast(repayMutation, {
+    success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
+    error: (e) => e.message,
   });
 
   // Handler for pay now click
