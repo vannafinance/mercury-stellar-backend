@@ -263,6 +263,51 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   };
 
   const repayMutation = useMutation({
+    onMutate: async () => {
+      // Snapshot current Zustand margin state for rollback on error
+      const store = useMarginAccountInfoStore.getState();
+      const snapshot = {
+        borrowedBalances: { ...store.borrowedBalances },
+        totalBorrowedValue: store.totalBorrowedValue,
+        avgHealthFactor: store.avgHealthFactor,
+      };
+
+      // Write predicted post-repay debt and HF immediately
+      const normToken = normalizeContractTokenSymbol(selectedRepayCurrency);
+      const currentDebt = parseFloat(store.borrowedBalances[normToken]?.amount ?? '0');
+      const predictedDebt = Math.max(0, currentDebt - repayAmount);
+      const repaidUsd = repayAmount * selectedTokenPrice;
+      const newTotalBorrowed = Math.max(0, store.totalBorrowedValue - repaidUsd);
+      const newHF = newTotalBorrowed > 0
+        ? store.totalCollateralValue / newTotalBorrowed
+        : 999; // ∞ sentinel: no debt
+
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: {
+          ...store.borrowedBalances,
+          [normToken]: {
+            amount: predictedDebt.toFixed(7),
+            usdValue: (predictedDebt * selectedTokenPrice).toFixed(2),
+          },
+        },
+        totalBorrowedValue: newTotalBorrowed,
+        avgHealthFactor: newHF,
+      });
+
+      return { snapshot };
+    },
+
+    onError: (_err, _vars, ctx) => {
+      // Restore the snapshot so the UI snaps back if the tx fails
+      if (ctx?.snapshot) {
+        useMarginAccountInfoStore.getState().set({
+          borrowedBalances: ctx.snapshot.borrowedBalances,
+          totalBorrowedValue: ctx.snapshot.totalBorrowedValue,
+          avgHealthFactor: ctx.snapshot.avgHealthFactor,
+        });
+      }
+    },
+
     mutationFn: async () => {
       if (!marginAccount || repayAmount <= 0) {
         throw new Error('Please enter a valid repay amount');
