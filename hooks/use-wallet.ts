@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
@@ -146,11 +147,11 @@ export const useWallet = () => {
         toast.success('Wallet connected successfully!');
       } else {
         console.error('Wallet connection failed:', result.error);
-        toast.error(result.error || 'Failed to connect wallet');
+        toast.error(normalizeContractError(result.error, 'Failed to connect wallet'));
       }
     } catch (error: any) {
       console.error('Wallet connection error:', error);
-      toast.error(error?.message || 'Failed to connect wallet');
+      toast.error(normalizeContractError(error?.message, 'Failed to connect wallet'));
     } finally {
       setIsLoading(false);
       useUserStore.getState().set({ isLoading: false });

@@ -14,7 +14,11 @@ function isCancel(text: string): boolean {
     text.includes('canceled') ||
     text.includes('rejected by user') ||
     text.includes('user denied') ||
-    text.includes('rejected')
+    text.includes('rejected') ||
+    // Freighter sometimes throws an XDR parse error when the user hits
+    // "Reject" — the wallet closes before the SDK can read the response.
+    text.includes('xdr read error') ||
+    text.includes('boundary of the buffer')
   );
 }
 
