@@ -8,6 +8,7 @@ import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
 import { computeBorrowApr } from '@/lib/utils/borrow-rate';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
+import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool data
@@ -241,43 +242,6 @@ export const useUserPositions = () => {
   };
 };
 
-const normalizeSupplyError = (rawError: string | undefined, assetType: AssetType) => {
-  const fallback = `Failed to supply ${assetType}. Please try again.`;
-  if (!rawError) return fallback;
-
-  const text = rawError.replace(/\s+/g, ' ').trim();
-  const lowerText = text.toLowerCase();
-
-  if (
-    lowerText.includes('cancelled') ||
-    lowerText.includes('canceled') ||
-    lowerText.includes('rejected by user')
-  ) {
-    return 'Transaction cancelled by user.';
-  }
-
-  if (
-    lowerText.includes('insufficient') ||
-    lowerText.includes('underfunded') ||
-    lowerText.includes('insufficientbalance') ||
-    lowerText.includes('balance is not sufficient')
-  ) {
-    return `You cannot supply all your ${assetType}. Keep a small balance and try again.`;
-  }
-
-  if (
-    lowerText.includes('diagnostic event') ||
-    lowerText.includes('hosterror') ||
-    lowerText.includes('sorobanrpcerror') ||
-    lowerText.includes('transaction failed') ||
-    lowerText.includes('error(contract')
-  ) {
-    return `Supply failed for ${assetType}. Please reduce the amount and try again.`;
-  }
-
-  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-};
-
 export const useSupplyLiquidity = () => {
   const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
@@ -307,43 +271,6 @@ export const useSupplyLiquidity = () => {
       qc.invalidateQueries({ queryKey: ['earn'] });
     },
   });
-};
-
-const normalizeWithdrawError = (rawError: string | undefined, assetType: AssetType) => {
-  const fallback = `Failed to withdraw ${assetType}. Please try again.`;
-  if (!rawError) return fallback;
-
-  const text = rawError.replace(/\s+/g, ' ').trim();
-  const lowerText = text.toLowerCase();
-
-  if (
-    lowerText.includes('cancelled') ||
-    lowerText.includes('canceled') ||
-    lowerText.includes('rejected by user')
-  ) {
-    return 'Transaction cancelled by user.';
-  }
-
-  if (
-    lowerText.includes('insufficient') ||
-    lowerText.includes('underfunded') ||
-    lowerText.includes('insufficientbalance') ||
-    lowerText.includes('balance is not sufficient')
-  ) {
-    return `You cannot withdraw all your v${assetType}. Keep a small balance and try again.`;
-  }
-
-  if (
-    lowerText.includes('diagnostic event') ||
-    lowerText.includes('hosterror') ||
-    lowerText.includes('sorobanrpcerror') ||
-    lowerText.includes('transaction failed') ||
-    lowerText.includes('error(contract')
-  ) {
-    return `Withdraw failed for ${assetType}. Please reduce the amount and try again.`;
-  }
-
-  return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 };
 
 export const useWithdrawLiquidity = () => {

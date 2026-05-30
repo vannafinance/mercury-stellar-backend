@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useWithdraw } from "@/hooks/use-wallet";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { ASSET_TYPES, AssetType } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
-import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 interface WithdrawModalProps {
@@ -40,17 +40,21 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
   const { depositedBalances } = useUserStore();
   const { isDark } = useTheme();
 
+  useMutationToast(withdraw, {
+    loading: (v) => `Withdrawing ${v.amount} ${v.assetType}…`,
+    success: (d) => `Successfully withdrew ${d.amount} ${d.assetType}!`,
+    error: (e) => e.message,
+  });
+
   const handleWithdraw = async () => {
     const numAmount = parseFloat(amount);
     if (numAmount > 0) {
-      const toastId = toast.loading('Processing withdrawal...');
       try {
         await withdraw.mutateAsync({ amount: numAmount, assetType: selectedAsset });
-        toast.success(`Successfully withdrew ${numAmount} ${selectedAsset}!`, { id: toastId });
         setAmount("");
         setTimeout(() => onClose(), 2000);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Withdrawal failed', { id: toastId });
+      } catch {
+        // toast fired by useMutationToast
       }
     }
   };

@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useWithdrawLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
@@ -62,6 +63,12 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const { pools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
 
+  useMutationToast(withdraw, {
+    loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool…`,
+    success: (d) => `Successfully withdrew ${d.assetType}! Transaction confirmed.`,
+    error: (e) => e.message,
+  });
+
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
   const userPosition = positions[normalizedAsset as keyof typeof positions];
@@ -103,15 +110,13 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
       // No frontend hardcoded "100% blocked" guard — let the contract
       // decide. A previous version unconditionally toasted "cannot
       // withdraw all" on 100%, which made full withdrawals impossible.
-      const toastId = toast.loading(`Withdrawing ${numAmount} v${selectedOption} from the lending pool...`);
       try {
         await withdraw.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
-        toast.success(`Successfully withdrew ${selectedOption}! Transaction confirmed.`, { id: toastId });
         setShares("");
         setSelectedPercentage(0);
         refreshPositions();
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : `Failed to withdraw ${selectedOption}. Please try again.`, { id: toastId });
+      } catch {
+        // toast fired by useMutationToast
       }
     }
   };

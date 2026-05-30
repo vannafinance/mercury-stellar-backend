@@ -16,6 +16,7 @@ import {
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
+import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
@@ -162,54 +163,17 @@ export const TransferCollateral = () => {
     return Math.max(0, balance);
   }
 
-  const getFriendlyTransferError = (rawError?: string, maxSafeWithdrawAmount?: number) => {
-    const compact = (rawError || "").split("\nEvent log")[0]?.trim() || "";
-    const text = compact.toLowerCase();
-    if (
-      text.includes("error(contract, #10)") ||
-      text.includes("resulting balance is not within the allowed range")
-    ) {
-      return "You cannot transfer all your wallet balance. Please keep at least 1 XLM in your wallet.";
-    }
-    if (
-      text.includes("invalidaction") ||
-      text.includes("is_withdraw_allowed") ||
-      text.includes("unreachablecodereached")
-    ) {
-      if (typeof maxSafeWithdrawAmount === "number" && maxSafeWithdrawAmount > 0) {
-        return `Withdrawal blocked by Risk Engine. Max transferable right now: ${maxSafeWithdrawAmount.toFixed(2)} ${selectedCurrency}.`;
-      }
-      return "Withdrawal blocked by Risk Engine. Repay some debt first, then try again.";
-    }
-    if (text.includes("insufficient")) {
-      return "Insufficient balance for this transfer.";
-    }
-    if (
-      text.includes("withdraw transaction failed on-chain") ||
-      text.includes("withdraw collateral failed with status")
-    ) {
-      if (
-        selectedTransferType === "WB" &&
-        normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
-        totalBorrowedValue <= XLM_TRANSFER_EPSILON
-      ) {
-        // The margin smart account itself has to keep ~8 XLM on-chain to
-        // satisfy Stellar's base-reserve rule and Soroban storage rent.
-        // Make this explicit so the user stops blaming a phantom debt.
-        return `~${XLM_MARGIN_WITHDRAW_BUFFER} XLM stay locked in the margin account as Stellar base reserve (needed to keep the smart account alive). You can withdraw at most ${maxExecutableWithdraw.toFixed(2)} XLM.`;
-      }
-      if (typeof maxSafeWithdrawAmount === "number" && maxSafeWithdrawAmount > 0) {
-        return `Withdrawal failed on-chain. Max transferable right now: ${maxSafeWithdrawAmount.toFixed(2)} ${selectedCurrency}.`;
-      }
-      return "Withdrawal failed on-chain. Please retry with a slightly smaller amount.";
-    }
-    if (text.includes("hosterror")) {
-      if (selectedTransferType === "WB" && !hasMeaningfulDebt) {
-        return `Full withdrawal can fail due to on-chain rounding/state dust. Try up to ${maxExecutableWithdraw.toFixed(2)} ${selectedCurrency}.`;
-      }
-      return "Transfer failed on-chain. Please retry in a moment.";
-    }
-    return compact || "Transfer failed. Please try again.";
+  const getFriendlyTransferError = (rawError?: string, maxSafeWithdrawAmount?: number): string => {
+    const isXlmNoDebt =
+      selectedTransferType === "WB" &&
+      normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
+      totalBorrowedValue <= XLM_TRANSFER_EPSILON;
+    return normalizeTransferCollateralError(rawError, selectedCurrency, {
+      maxSafe: maxSafeWithdrawAmount,
+      isFullWithdraw: isXlmNoDebt || (selectedTransferType === "WB" && !hasMeaningfulDebt),
+      maxExecutableWithdraw,
+      xlmBuffer: XLM_MARGIN_WITHDRAW_BUFFER,
+    });
   };
 
   const getSelectedWalletBalance = async (address: string, tokenSymbol: string): Promise<number> => {

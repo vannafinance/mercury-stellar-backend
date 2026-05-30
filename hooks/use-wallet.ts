@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import toast from 'react-hot-toast';
+import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
@@ -12,7 +14,6 @@ export const useWallet = () => {
   const isLoadingStore = useUserStore((state) => state.isLoading);
   
   const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
   // Force reset loading state on mount to fix stuck "Connecting..." state
   useEffect(() => {
@@ -143,14 +144,14 @@ export const useWallet = () => {
           console.error('Error refreshing balances after connection:', error);
         });
         
-        setMessage({ type: 'success', text: 'Wallet connected successfully!' });
+        toast.success('Wallet connected successfully!');
       } else {
         console.error('Wallet connection failed:', result.error);
-        setMessage({ type: 'error', text: result.error || 'Failed to connect wallet' });
+        toast.error(normalizeContractError(result.error, 'Failed to connect wallet'));
       }
     } catch (error: any) {
       console.error('Wallet connection error:', error);
-      setMessage({ type: 'error', text: error?.message || 'Failed to connect wallet' });
+      toast.error(normalizeContractError(error?.message, 'Failed to connect wallet'));
     } finally {
       setIsLoading(false);
       useUserStore.getState().set({ isLoading: false });
@@ -177,23 +178,18 @@ export const useWallet = () => {
     // instead of the old user's HF / collateral / debt.
     clearMarginAccount();
     setIsLoading(false);
-    setMessage({ type: 'info', text: 'Wallet disconnected' });
+    toast('Wallet disconnected');
   }, []);
 
   return {
-    // State
     address,
     isConnected,
     balance,
     depositedBalances,
     isLoading: isLoading || isLoadingStore,
-    message,
-    
-    // Actions
     connectWallet,
     disconnectWallet,
     refreshBalances,
-    clearMessage: () => setMessage({ type: '', text: '' }),
   };
 };
 
