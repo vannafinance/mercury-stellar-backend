@@ -1,13 +1,8 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import {
-  buildPrices,
-  fetchXlmPriceUsd,
-  readCachedXlmPrice,
-  TokenPrices,
-  XLM_FALLBACK_PRICE,
-} from "@/lib/prices";
+import { buildPrices, TokenPrices } from "@/lib/prices";
+import { fetchTokenPrice, getCachedTokenPrice } from "@/lib/oracle-price";
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
 interface PriceContextValue {
@@ -22,7 +17,7 @@ interface PriceContextValue {
 const PriceContext = createContext<PriceContextValue | undefined>(undefined);
 
 export const PriceProvider = ({ children }: { children: React.ReactNode }) => {
-  const [xlmUsd, setXlmUsd] = useState<number>(() => readCachedXlmPrice() ?? XLM_FALLBACK_PRICE);
+  const [xlmUsd, setXlmUsd] = useState<number>(() => getCachedTokenPrice("XLM"));
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const mountedRef = useRef(true);
@@ -32,7 +27,7 @@ export const PriceProvider = ({ children }: { children: React.ReactNode }) => {
   const refresh = useMemo(
     () => async () => {
       try {
-        const price = await fetchXlmPriceUsd(true);
+        const price = await fetchTokenPrice("XLM");
         if (!mountedRef.current) return;
         setXlmUsd(price);
         setLastUpdated(Date.now());

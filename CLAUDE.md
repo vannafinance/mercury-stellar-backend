@@ -30,8 +30,29 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
     fix, positions/repay calc updates, `capAmountToMaxBalance` swap helper. See the
     "Known debt from the sync" note below — it added a polling `PriceProvider` that
     D12 will reconcile.
-  - **Next:** D11 (refreshKey teardown), D12 (kill remaining polling — `useSmartPolling`
-    **and** the new `PriceProvider` 60s poll).
+  - **D11 — complete.** PR #15 `s1/cleanup-refreshkey`: `store/blend-store.ts` deleted;
+    all `refreshKey`/`triggerBlendRefresh` callers removed. `grep refreshKey|triggerRefresh` → empty.
+  - **D12 — complete (poll killed; dual API debt remains).** PR #14 `s1/cleanup-smartpolling`:
+    `lib/hooks/useSmartPolling.ts` deleted; `app/margin/page.tsx` on ledger tick;
+    `contexts/price-context.tsx` 60s `setInterval` replaced with `useLedgerTick`.
+    `grep setInterval contexts/` → empty. **NOT done: the dual `useTokenPrices` API was
+    never collapsed** — see the "Known debt" note below.
+  - **D13–15 — complete.** PR #16 `s2/test-infra-services`: vitest v4 + happy-dom + RTL,
+    `vitest.config.ts`, 80 tests across 7 files in `tests/`, `npm run test` wired.
+  - **D16–17 — complete.** PR #17 `s2/error-ux`: `lib/errors/normalize.ts` (6 normalize fns)
+    + `hooks/use-mutation-toast.ts` (declarative loading→success→error). 11 caller files
+    migrated; `components/ui/message.tsx` deleted; `useState({type,text})` removed from use-wallet.
+  - **D18–19 — complete.** Optimistic updates. PR #18 `s3/optimistic-earn`:
+    `onMutate/onError/onSettled` on `useSupplyLiquidity`/`useWithdrawLiquidity`
+    ([hooks/use-earn.ts](hooks/use-earn.ts)). PR #19 `s3/optimistic-margin`:
+    `onMutate/onError` on `repayMutation` ([components/margin/repay-loan-tab.tsx](components/margin/repay-loan-tab.tsx)).
+  - **Solo-coverage note:** Sanujit (Dev A) stepped away after D10; **Rohit (Dev B) carried
+    D11–D19 solo** (PRs #14–#19), including the earn/optimistic-earn work nominally in Dev A's
+    lane. Sanujit resumed 2026-06-01 at D20.
+  - **Next:** D20–22 — Mercury indexer integration (prereq: sign up Mercury **free dev tier**).
+    Dev A lane: D20 Mercury setup/entities/GraphQL queries → D21 margin+farm event hooks
+    (`useMarginHistory`, `useBlendEvents`, `useAquariusEvents`) → D22 joint analytics-island rework.
+    **Also still owed:** collapse the dual `useTokenPrices` API (D12 leftover, below).
   - **New S1 scope (D25):** stats snapshot-cache layer (`/api/account/[addr]` +
     `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow
     cold-load of **all** stats panels (Margin/Earn/Farm/Portfolio). Pulled in from
@@ -45,23 +66,24 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
 See [SPRINT_1_GUIDE.md](SPRINT_1_GUIDE.md) for the day-by-day plan and Phase 2
 track assignments.
 
-## Known debt from the new-contract-update sync (reconcile in D12)
+## Open debt — dual `useTokenPrices` API (D12 leftover, API-shape only)
 
-The 2026-05-27 sync brought in upstream's `contexts/price-context.tsx` — a
-`PriceProvider` that polls XLM price on a **60s `setInterval`** (the exact
-chain-data polling anti-pattern this sprint removes). It is currently mounted in
-[app/layout.tsx](app/layout.tsx) nested inside `LedgerSubscriberProvider`, and we
-kept it intact so the sync's calc changes work. Result: **two token-price systems
-coexist** —
+D12 killed `PriceProvider`'s 60s `setInterval` (now refreshes off `useLedgerTick`)
+**and** its price source has since been migrated off CoinGecko onto the on-chain
+Reflector oracle (`PriceProvider` → `fetchTokenPrice("XLM")` from `lib/oracle-price.ts`;
+`grep -rni coingecko` → empty). So both `useTokenPrices` now read the **same** oracle —
+no more price disagreement, no CoinGecko 429s. What remains is purely the **duplicate
+API shape**:
 
-- `hooks/use-token-prices.ts` — tick-driven, our pattern (16 consumers, `useTokenPrices(tokens[])` → price map).
-- `contexts/price-context.tsx` — 60s poll, upstream (7 consumers, `useTokenPrices()` → `{prices,getPrice,xlmUsd,…}`).
-- 7 files import **both** (the second aliased `useTokenPricesFromHook`).
+- `hooks/use-token-prices.ts` — tick-driven, our pattern (`useTokenPrices(tokens[])` → price map).
+- `contexts/price-context.tsx` — `PriceProvider`, tick-driven, oracle-backed (`useTokenPrices()` → `{prices,getPrice,xlmUsd,…}`).
+- **7 files still import BOTH** (the second aliased `useTokenPricesFromHook`):
+  `components/earn/{acitivity-tab,details-tab,margin-managers-tab,your-positions}.tsx`,
+  `components/margin/{borrow-box,collateral-box,transfer-collateral}.tsx`.
 
-**D12 plan:** collapse `PriceProvider`'s 60s poll onto the ledger tick (or retire it
-in favour of `hooks/use-token-prices.ts`), then drop the dual `useTokenPrices` API
-so there is one source of truth. Until then, **do not add new `PriceProvider`
-consumers** — use `hooks/use-token-prices.ts`.
+**Still to do (low-risk now):** collapse the two `useTokenPrices` into one — retire
+`PriceProvider` in favour of `hooks/use-token-prices.ts` and migrate the 7 dual importers.
+Until then, **do not add new `PriceProvider` consumers** — use `hooks/use-token-prices.ts`.
 
 ## Two locked patterns — match these exactly in new code
 
@@ -136,15 +158,16 @@ content rendering on `isRefreshing`.
 - `refetchInterval: N_000` on any chain-data query → replace with the stable-queryKey + invalidate-on-tick pattern in #1 above.
 - `queryKey: [..., tick]` → changing the queryKey on every tick creates fresh cache slots and forces `isLoading: true` every ledger close. Use the invalidate-on-tick pattern instead.
 - `setInterval(..., 30_000)` for chain refresh → use a `useEffect` on `tick` if a
-  one-shot side effect is needed. **Known exception today:** `contexts/price-context.tsx`
-  still has a 60s `setInterval` from the sync — slated for removal in D12, don't copy it.
+  one-shot side effect is needed. (The `contexts/price-context.tsx` 60s poll was removed
+  in D12 — it now refreshes off `useLedgerTick`.)
 - `isLoading: query.isLoading || query.isFetching` → drop the OR. See pattern #3 above.
 - New `PriceProvider` (`@/contexts/price-context`) consumers → use the tick-driven
-  `hooks/use-token-prices.ts` instead. The two coexist post-sync; D12 collapses them.
-- `refreshKey` reads from `useBlendStore` → these are being torn out across
-  Phase 2 D8–11. Don't add new ones.
-- `useState({ type: '', text: '' })` toast patterns in mutation callers → being
-  replaced with a single mutation-toast hook in D16–17.
+  `hooks/use-token-prices.ts` instead. The two still coexist (poll removed in D12 but the
+  dual API isn't collapsed yet — see "Open debt" above).
+- `refreshKey` reads from `useBlendStore` → the store is **deleted** (D11). `useBlendStore`
+  no longer exists; don't reintroduce it.
+- `useState({ type: '', text: '' })` toast patterns in mutation callers → **deleted** (D16–17).
+  Use `hooks/use-mutation-toast.ts` instead.
 
 ## Branching + PR conventions
 
@@ -187,14 +210,15 @@ content rendering on `isRefreshing`.
 | Farm hooks (Blend + Aquarius) | [hooks/use-farm.ts](hooks/use-farm.ts) |
 | Soroswap hooks | [hooks/use-soroswap.ts](hooks/use-soroswap.ts) |
 | Token prices (tick-driven, our pattern) | [hooks/use-token-prices.ts](hooks/use-token-prices.ts) |
-| Token prices (60s poll, from sync — D12 reconcile) | [contexts/price-context.tsx](contexts/price-context.tsx) |
+| Token prices (PriceProvider, now tick-driven — dual API still owed) | [contexts/price-context.tsx](contexts/price-context.tsx) |
 | XLM price fetch/cache (used by PriceProvider) | [lib/prices.ts](lib/prices.ts) |
 | Swap amount math (`capAmountToMaxBalance`, stroops) | [lib/utils/swap-amount.ts](lib/utils/swap-amount.ts) |
 | Margin token attribution (borrow-vs-own split) | [lib/utils/margin-token-attribution.ts](lib/utils/margin-token-attribution.ts) |
 | Wallet hooks (deposit/withdraw) | [hooks/use-wallet.ts](hooks/use-wallet.ts) |
 | Margin store (Zustand) | [store/margin-account-info-store.ts](store/margin-account-info-store.ts) |
 | Earn pool store (Zustand, dual-write) | [store/earn-pool-store.ts](store/earn-pool-store.ts) |
-| Blend store (refreshKey — being deleted in D11) | [store/blend-store.ts](store/blend-store.ts) |
+| Error normalization (6 Soroban normalize fns) | [lib/errors/normalize.ts](lib/errors/normalize.ts) |
+| Mutation toast hook (declarative loading→success→error) | [hooks/use-mutation-toast.ts](hooks/use-mutation-toast.ts) |
 | Contract service | [lib/stellar-utils.ts](lib/stellar-utils.ts) |
 | Margin service | [lib/margin-utils.ts](lib/margin-utils.ts) |
 | Blend service | [lib/blend-utils.ts](lib/blend-utils.ts) |
