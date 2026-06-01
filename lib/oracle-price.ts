@@ -26,7 +26,11 @@ const FALLBACK_PRICES: Record<string, number> = {
   SS_XLM_USDC: 0.4,
 };
 
-const PRICE_TTL_MS = 30_000;
+// Aligned to the ledger cadence (~5 s) so the price tracks the on-chain oracle
+// per ledger close, matching the app-wide tick pattern. Just under one ledger so
+// each tick reads fresh while still de-duping multiple same-ledger reads (with
+// the inflight map). Revisit on mainnet if oracle RPC cost warrants a longer TTL.
+const PRICE_TTL_MS = 4_000;
 // On error we cache the fallback briefly so a flaky RPC doesn't trigger a
 // flood of retries from every component on the page.
 const ERROR_TTL_MS = 5_000;
