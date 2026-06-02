@@ -20,6 +20,7 @@ import { useBlendPoolStats } from "@/hooks/use-farm";
 import { useTokenPrice } from "@/hooks/use-token-prices";
 import { DepositSummary } from "./deposit-summary";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { attributeFarmDeposit } from "@/lib/utils/margin-token-attribution";
@@ -312,7 +313,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
     },
     onError: (error) => {
       setTxStatus("error");
-      const message = error instanceof Error ? error.message : "Add liquidity failed";
+      const message = normalizeContractError(error instanceof Error ? error.message : undefined, "Add liquidity failed");
       setTxError(message);
       toast.error(message);
     },
@@ -367,7 +368,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
     },
     onError: (error) => {
       setTxStatus("error");
-      const errorMsg = error instanceof Error ? error.message : "Deposit failed";
+      const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Deposit failed");
       setTxError(errorMsg);
       toast.error(errorMsg);
     },

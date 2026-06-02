@@ -17,6 +17,7 @@ import { iconPaths } from "@/lib/constants";
 import { PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
@@ -200,7 +201,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     },
     onError: (error) => {
       setTxStatus("error");
-      const errorMsg = error instanceof Error ? error.message : "Withdrawal failed";
+      const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Withdrawal failed");
       setTxError(errorMsg);
       toast.error(errorMsg);
     },
@@ -248,7 +249,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     },
     onError: (error) => {
       setTxStatus("error");
-      const errorMsg = error instanceof Error ? error.message : "Remove liquidity failed";
+      const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Remove liquidity failed");
       setTxError(errorMsg);
       toast.error(errorMsg);
     },

@@ -14,6 +14,7 @@ function isCancel(text: string): boolean {
     text.includes('canceled') ||
     text.includes('rejected by user') ||
     text.includes('user denied') ||
+    text.includes('declined') ||
     text.includes('rejected') ||
     // Freighter sometimes throws an XDR parse error when the user hits
     // "Reject" — the wallet closes before the SDK can read the response.
@@ -105,6 +106,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   const compact = (raw ?? '').split('\nEvent log')[0]?.trim() ?? '';
   const lower = compact.toLowerCase();
 
+  if (isCancel(lower)) return 'Transaction cancelled by user.';
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
@@ -132,6 +134,7 @@ export function normalizeTransferCollateralError(
   const compact = (raw ?? '').split('\nEvent log')[0]?.trim() ?? '';
   const lower = compact.toLowerCase();
 
+  if (isCancel(lower)) return 'Transaction cancelled by user.';
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
@@ -176,11 +179,10 @@ export function normalizeTransferCollateralError(
 export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
   if (!m) return 'Failed to create margin account. Please try again.';
+  if (isCancel(m)) return 'Transaction was cancelled in Freighter.';
   if (m.includes('account not found') || m.includes('not found on network'))
     return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))
     return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
-  if (m.includes('cancelled') || m.includes('rejected') || m.includes('user denied'))
-    return 'Transaction was cancelled in Freighter.';
   return 'Failed to create margin account. Please try again.';
 }
