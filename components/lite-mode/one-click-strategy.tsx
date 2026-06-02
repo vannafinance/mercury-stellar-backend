@@ -7,6 +7,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, createMarginAccount } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
+import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -343,7 +344,7 @@ export const OneClickStrategy = () => {
         throw new Error("Failed to create margin account");
       }
     } catch (err: any) {
-      setTxModal({ open: true, status: "error", title: "Failed", message: err?.message || "Failed to create margin account" });
+      setTxModal({ open: true, status: "error", title: "Failed", message: normalizeCreateAccountError(err?.message) });
     } finally {
       setLoading(false);
     }
@@ -414,14 +415,12 @@ export const OneClickStrategy = () => {
       setCollateralAmount("");
       setLeverage(1);
     } catch (err: any) {
-      const rejected =
-        err?.message?.includes("cancelled") ||
-        err?.message?.includes("rejected") ||
-        err?.message?.includes("denied");
+      const message = normalizeContractError(err?.message, "Operation failed");
+      const rejected = message === "Transaction cancelled by user.";
       setTxModal({
         open: true, status: "error",
         title: rejected ? "Cancelled" : "Failed",
-        message: rejected ? "Transaction cancelled" : err?.message || "Operation failed",
+        message,
       });
     } finally {
       setLoading(false);

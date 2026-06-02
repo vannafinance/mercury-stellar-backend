@@ -13,6 +13,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useSupplyLiquidity, usePoolData } from "@/hooks/use-earn";
 import { AssetType } from "@/lib/stellar-utils";
+import { normalizeSupplyError } from "@/lib/errors/normalize";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -112,7 +113,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
         setAmount("");
         setSelectedPercentage(0);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : `Failed to supply ${selectedOption}. Please try again.`, { id: toastId });
+        toast.error(normalizeSupplyError(err instanceof Error ? err.message : undefined, selectedOption), { id: toastId });
       }
     }
   };

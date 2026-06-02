@@ -19,6 +19,7 @@ import { useUserStore } from "@/store/user";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { useMutationToast } from "@/hooks/use-mutation-toast";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -376,7 +377,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
   useMutationToast(repayMutation, {
     success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
-    error: (e) => e.message,
+    error: (e) => normalizeContractError(e.message),
   });
 
   // Handler for pay now click

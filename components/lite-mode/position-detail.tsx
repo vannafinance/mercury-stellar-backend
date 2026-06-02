@@ -17,7 +17,17 @@ import { applyLiteExit } from "@/lib/lite-positions";
 
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";
-  if (msg.includes("cancelled") || msg.includes("rejected")) return "Transaction cancelled by user.";
+  const lower = msg.toLowerCase();
+  // Freighter throws an XDR parse error when the user hits "Reject".
+  if (
+    lower.includes("cancelled") ||
+    lower.includes("canceled") ||
+    lower.includes("rejected") ||
+    lower.includes("denied") ||
+    lower.includes("xdr read error") ||
+    lower.includes("boundary of the buffer")
+  )
+    return "Transaction cancelled by user.";
   if (msg.includes("MissingValue") || msg.includes("map key not found"))
     return "Position not found on-chain. It may already be closed or the balance is insufficient.";
   if (msg.includes("InsufficientBalance") || msg.includes("insufficient"))
@@ -184,12 +194,12 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       onExitSuccess?.();
     },
     onError: (error: Error) => {
-      const msg = error?.message || "Close position failed.";
-      const cancelled = msg.includes("cancelled") || msg.includes("rejected");
+      const parsed = parseContractError(error?.message || "Close position failed.");
+      const cancelled = parsed === "Transaction cancelled by user.";
       setTxModal({
         open: true, status: "error",
         title: cancelled ? "Cancelled" : "Transaction Failed",
-        message: parseContractError(msg),
+        message: parsed,
       });
     },
   });

@@ -26,7 +26,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
-import { normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
+import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 
@@ -449,7 +449,7 @@ export const LeverageAssetsTab = () => {
       qc.invalidateQueries({ queryKey: ['margin'] });
     },
     onError: (error) => {
-      toast.error('Borrow failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      toast.error(normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.'));
     },
     onSettled: () => {
       setIsProcessing(false);
@@ -717,7 +717,7 @@ export const LeverageAssetsTab = () => {
                     toast.error('Contract setup failed: ' + configResult.error);
                   }
                 } catch (setupError) {
-                  toast.error('Setup error: ' + (setupError instanceof Error ? setupError.message : 'Unknown error'));
+                  toast.error(normalizeContractError(setupError instanceof Error ? setupError.message : undefined, 'Setup error. Please try again.'));
                 }
               } else {
                 toast.error(normalizeDepositCollateralError(depositResult.error));

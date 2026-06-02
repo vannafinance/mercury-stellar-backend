@@ -10,6 +10,7 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { SwapInput } from "./SwapInput";
 import { SwapDirectionButton } from "./SwapDirectionButton";
@@ -618,7 +619,7 @@ export const SwapCard = ({
     },
     onError: (error) => {
       setTxStatus("error");
-      const errorMsg = error instanceof Error ? error.message : "Swap failed";
+      const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Swap failed");
       setTxError(errorMsg);
       toast.error(errorMsg);
     },
