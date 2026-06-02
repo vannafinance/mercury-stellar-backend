@@ -458,7 +458,6 @@ export const LeverageAssetsTab = () => {
 
   const handleButtonClick = async () => {
     if (!userAddress) {
-      console.log('No user address available');
       return;
     }
 
@@ -525,7 +524,6 @@ export const LeverageAssetsTab = () => {
           return;
         }
 
-        console.log('🚀 MB mode: borrow-only', { normalizedBorrowToken, borrowAmountTokens, borrowAmountUsd });
 
         mbBorrowMutation.mutate({ userAddress, normalizedBorrowToken, borrowAmountTokens });
         return;
@@ -621,14 +619,6 @@ export const LeverageAssetsTab = () => {
           }
         }
 
-        console.log('🚀 Executing deposit flow:', {
-          userAddress,
-          deposits: wbDeposits,
-          totalDepositAmountUsd,
-          multiplier,
-          borrowToken,
-          marginAccountAddress
-        });
 
         const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken || wbDeposits[0]?.asset || "XLM");
 
@@ -779,7 +769,6 @@ export const LeverageAssetsTab = () => {
         }
 
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
-        console.log('✅ Deposit and borrow successful:', { depositHashes, borrowHash });
         toast.success(
           `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
         );

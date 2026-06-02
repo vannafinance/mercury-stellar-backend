@@ -257,12 +257,6 @@ export const borrowTokens = async (
   try {
     const normalizedTokenSymbol = canonicalMarginToken(tokenSymbol);
 
-    console.log('🏦 === MARGIN STORE: BORROW OPERATION ===');
-    console.log('📊 Borrow parameters:', {
-      userAddress,
-      tokenSymbol: normalizedTokenSymbol,
-      borrowAmount
-    });
 
     // Get current margin account
     const account = MarginAccountService.getStoredMarginAccount(userAddress);
@@ -274,7 +268,6 @@ export const borrowTokens = async (
       };
     }
 
-    console.log('✅ Found active margin account:', account.address);
 
     // Convert borrow amount to WAD (18 decimals). Splitting the multiplication
     // through BigInt avoids the JS Number `toString()` falling back to
@@ -283,10 +276,6 @@ export const borrowTokens = async (
     const borrowAmountWad = (
       BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
     ).toString();
-    console.log('🔢 Converting to WAD:', {
-      originalAmount: borrowAmount,
-      wadAmount: borrowAmountWad
-    });
 
     // Update loading state
     useMarginAccountInfoStore.getState().set({ 
@@ -300,13 +289,10 @@ export const borrowTokens = async (
       borrowAmountWad
     );
 
-    console.log('📈 Borrow operation result:', result);
 
     // Always refresh borrowed balances after operation (success or failure)
     try {
-      console.log('🔄 Refreshing borrowed balances...');
       await refreshBorrowedBalances(account.address);
-      console.log('✅ Borrowed balances refreshed');
     } catch (refreshError) {
       console.warn('⚠️ Failed to refresh borrowed balances:', refreshError);
     }
@@ -365,13 +351,11 @@ export const checkUserMarginAccount = async (
 
   const run = (async () => {
     try {
-      console.log('🔍 Checking margin account for user:', userAddress);
 
       // Step 1: Check localStorage first (fastest)
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
 
       if (accountInfo.hasAccount) {
-        console.log('✅ Found margin account in localStorage:', accountInfo.accountAddress);
         useMarginAccountInfoStore.getState().set({
           hasMarginAccount: true,
           marginAccountAddress: accountInfo.accountAddress || null,
@@ -380,19 +364,16 @@ export const checkUserMarginAccount = async (
       }
 
       // Step 2: No account in localStorage - check blockchain
-      console.log('🌐 No account in localStorage, searching blockchain...');
 
       try {
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
         if (blockchainAccount) {
-          console.log('✅ Recovered margin account from blockchain:', blockchainAccount);
           useMarginAccountInfoStore.getState().set({
             hasMarginAccount: true,
             marginAccountAddress: blockchainAccount,
           });
         } else {
-          console.log('❌ No margin account found - user needs to create one');
           clearMarginAccount();
         }
       } catch (blockchainError) {

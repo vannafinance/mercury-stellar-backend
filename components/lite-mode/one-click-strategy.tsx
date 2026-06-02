@@ -19,6 +19,7 @@ import {
   RISK_ENGINE_LIQUIDATION_HF,
 } from "@/components/lite-mode/lite-position-math";
 import { usePoolData } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -147,7 +148,11 @@ export const OneClickStrategy = () => {
   const [collateralAmount, setCollateralAmount] = useState("");
   const [leverage, setLeverage] = useState(1);
   const [scenario, setScenario] = useState<StrategyScenario>("same-asset");
-  const [prices, setPrices] = useState<Record<string, number>>({ XLM: 1.0, USDC: 1.0 });
+  const oraclePrices = useTokenPrices(["XLM", "USDC"]);
+  const prices: Record<string, number> = {
+    XLM: oraclePrices.XLM ?? 1.0,
+    USDC: 1.0,
+  };
   const [loading, setLoading] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [txModal, setTxModal] = useState<{
@@ -157,13 +162,6 @@ export const OneClickStrategy = () => {
     message: string;
     txHash?: string;
   }>({ open: false, status: "pending", title: "", message: "" });
-
-  useEffect(() => {
-    fetch("/api/prices")
-      .then((r) => r.json())
-      .then((d) => setPrices((p) => ({ ...p, ...d })))
-      .catch(() => {});
-  }, []);
 
   const formatTvl = (tokens: string, priceUsd: number): string => {
     const usd = (parseFloat(tokens) || 0) * priceUsd;

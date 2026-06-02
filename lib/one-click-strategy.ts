@@ -43,7 +43,6 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
   } = params;
 
   const step = (msg: string) => {
-    console.log('[ClosePosition]', msg);
     onStep?.(msg);
   };
 
@@ -141,7 +140,6 @@ export async function executeOneClickStrategy(
   } = params;
 
   const step = (msg: string) => {
-    console.log('[OneClick]', msg);
     onStep?.(msg);
   };
 

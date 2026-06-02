@@ -241,7 +241,6 @@ export class ContractService {
       let contractAddress: string;
       let methodName: string;
       
-      // Select appropriate contract and method based on asset type
       switch (assetType) {
         case ASSET_TYPES.XLM:
           contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
@@ -278,7 +277,6 @@ export class ContractService {
 
       const contract = new StellarSdk.Contract(contractAddress);
 
-      // Convert amount to appropriate format (WAD - 18 decimals)
       const amountWAD = (BigInt(Math.floor(amount * 1e18))).toString();
       
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -295,11 +293,9 @@ export class ContractService {
         .setTimeout(30)
         .build();
 
-      console.log('Preparing transaction with required authorizations...');
       const preparedTx = await server.prepareTransaction(transaction);
 
       const operation = preparedTx.operations[0] as StellarSdk.Operation.InvokeHostFunction;
-      console.log('Transaction prepared. Auth entries count:', operation?.auth?.length || 0);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -310,11 +306,9 @@ export class ContractService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('Sending transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
-        console.log('Transaction pending, polling for status...');
         await ContractService.pollTransactionStatus(server, result.hash);
         return { success: true, hash: result.hash };
       } else {
@@ -338,7 +332,6 @@ export class ContractService {
       let contractAddress: string;
       let methodName: string;
       
-      // Select appropriate contract and method based on asset type
       switch (assetType) {
         case ASSET_TYPES.XLM:
           contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
@@ -375,7 +368,6 @@ export class ContractService {
       
       const contract = new StellarSdk.Contract(contractAddress);
       
-      // Convert amount to appropriate format (WAD - 18 decimals)
       const amountWAD = (BigInt(Math.floor(amount * 1e18))).toString();
       
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -427,7 +419,6 @@ export class ContractService {
       
       let contractAddress: string;
       
-      // Select appropriate vToken contract based on asset type
       switch (assetType) {
         case ASSET_TYPES.XLM:
           contractAddress = CONTRACT_ADDRESSES.VXLM_TOKEN;
@@ -516,7 +507,6 @@ export class ContractService {
     throw new Error('Transaction timeout');
   }
 
-  // Get total liquidity in pool
   static async getPoolLiquidity(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -545,7 +535,6 @@ export class ContractService {
           throw new Error('Unsupported asset type');
       }
 
-      // Create a temporary account for simulation
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
       
@@ -577,7 +566,6 @@ export class ContractService {
     }
   }
 
-  // Get total borrows in pool
   static async getPoolBorrows(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -636,7 +624,6 @@ export class ContractService {
     }
   }
 
-  // Get total assets (liquidity + borrows)
   static async getTotalAssets(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -695,7 +682,6 @@ export class ContractService {
     }
   }
 
-  // Get vToken total supply
   static async getVTokenTotalSupply(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -755,7 +741,6 @@ export class ContractService {
     }
   }
 
-  // Get complete pool statistics
   static async getPoolStats(assetType: AssetType = ASSET_TYPES.XLM): Promise<{
     totalSupply: string;
     totalBorrowed: string;
@@ -798,7 +783,6 @@ export class ContractService {
     }
   }
 
-  // Get user borrow balance
   static async getUserBorrowBalance(
     address: string,
     assetType: AssetType = ASSET_TYPES.XLM
@@ -960,7 +944,6 @@ export class ContractService {
     }
   }
 
-  // Get all token balances for a wallet (XLM, USDC, AqUSDC, SoUSDC)
   static async getAllTokenBalances(address: string): Promise<{
     XLM: string;
     USDC: string;
