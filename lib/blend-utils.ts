@@ -138,7 +138,6 @@ export class BlendService {
       }
 
       const address = StellarSdk.scValToNative(getSim.result.retval);
-      console.log('[BlendService] Blend pool address from Registry:', address);
       return address as string;
     } catch (error: any) {
       console.error('[BlendService] getBlendPoolAddressFromRegistry error:', error);
@@ -260,7 +259,6 @@ export class BlendService {
         };
       }
       const blendPoolAddress = registryAddr;
-      console.log('[BlendService] Using Blend pool address:', blendPoolAddress, '(from Registry)');
 
       // Convert amount to WAD (18 decimals)
       const amountWad = BigInt(Math.floor(amount * 1e18));
@@ -291,7 +289,6 @@ export class BlendService {
         .setTimeout(30)
         .build();
 
-      console.log('[BlendService] Preparing deposit transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -303,7 +300,6 @@ export class BlendService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('[BlendService] Sending deposit transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -348,7 +344,6 @@ export class BlendService {
         };
       }
       const blendPoolAddress = registryAddr;
-      console.log('[BlendService] Using Blend pool address:', blendPoolAddress, '(from Registry)');
 
       // Convert amount to WAD (18 decimals)
       const amountWad = BigInt(Math.floor(amount * 1e18));
@@ -379,7 +374,6 @@ export class BlendService {
         .setTimeout(30)
         .build();
 
-      console.log('[BlendService] Preparing withdraw transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -391,7 +385,6 @@ export class BlendService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('[BlendService] Sending withdraw transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -593,7 +586,6 @@ export class BlendService {
         .setTimeout(30)
         .build();
 
-      console.log('[BlendService] Preparing set_blend_pool_address transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -608,7 +600,6 @@ export class BlendService {
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status === 'PENDING') {
         await BlendService.pollTransactionStatus(server, result.hash);
-        console.log('[BlendService] ✓ Blend pool address set in Registry:', CONTRACT_ADDRESSES.BLEND_POOL);
         return { success: true, hash: result.hash };
       } else {
         throw new Error('Transaction rejected by network');
@@ -782,23 +773,6 @@ export class BlendService {
     const supplyAprDecimal = borrowAprDecimal * utilization * (1 - BACKSTOP_TAKE_RATE);
     // Blend UI compounds supply APR weekly (52 periods/yr).
     const supplyApyDecimal = Math.pow(1 + supplyAprDecimal / 52, 52) - 1;
-
-    if (typeof window !== "undefined") {
-      // Diagnostic log: lets us spot-check raw on-chain vs derived APYs
-      // against testnet.blend.capital. Safe to leave on (small payload, dev
-      // console only) until APY parity is verified across all pools.
-      console.log("[BlendService] reserve rates", {
-        rBase, rOne, rTwo, rThree,
-        targetUtilDecimal,
-        irMod,
-        utilization,
-        baseRate_or_curIr_SCALAR_7: curIrSCALAR_7,
-        borrowAprDecimal,
-        borrowApyPct: (borrowApyDecimal * 100).toFixed(2),
-        supplyAprDecimal,
-        supplyApyPct: (supplyApyDecimal * 100).toFixed(2),
-      });
-    }
 
     return {
       totalSupply: totalSupplyRaw.toFixed(decimals > 4 ? 4 : decimals),

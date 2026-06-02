@@ -17,7 +17,6 @@ export const useWallet = () => {
 
   // Force reset loading state on mount to fix stuck "Connecting..." state
   useEffect(() => {
-    console.log('[useWallet] Initializing, resetting loading state', { address, isLoadingStore, isLoading });
     setIsLoading(false);
     if (isLoadingStore) {
       useUserStore.getState().set({ isLoading: false });
@@ -125,11 +124,9 @@ export const useWallet = () => {
       setIsLoading(true);
       useUserStore.getState().set({ isLoading: true, manuallyDisconnected: false });
       
-      console.log('Starting wallet connection...');
       const result = await WalletService.connectWallet();
       
       if (result.success) {
-        console.log('Wallet connected successfully:', result.address);
         
         // Set address and connected state immediately - don't wait for balance refresh
         useUserStore.getState().set({
@@ -139,7 +136,6 @@ export const useWallet = () => {
         });
         
         // Refresh balances asynchronously with timeout to prevent hanging
-        console.log('Refreshing balances asynchronously...');
         refreshBalances(result.address).catch((error) => {
           console.error('Error refreshing balances after connection:', error);
         });
@@ -159,7 +155,6 @@ export const useWallet = () => {
   }, [refreshBalances]);
 
   const disconnectWallet = useCallback(() => {
-    console.log('Disconnecting wallet (keeping margin account data in localStorage)');
 
     // Don't clear localStorage - margin accounts should persist across wallet
     // connections (the address-stored mapping is keyed by user pubkey).
