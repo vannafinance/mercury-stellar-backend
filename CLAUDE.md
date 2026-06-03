@@ -169,6 +169,32 @@ content rendering on `isRefreshing`.
 - `useState({ type: '', text: '' })` toast patterns in mutation callers → **deleted** (D16–17).
   Use `hooks/use-mutation-toast.ts` instead.
 
+## Mercury integration (D20+)
+
+On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
+scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
+`getEvents` calls in `lib/{blend,margin,aquarius,soroswap}-utils.ts`, capped at ~7 days
+RPC retention).
+
+- **Query endpoint (testnet):** `https://testnet.mercurydata.app/graphql` (PostGraphile;
+  standard contract-event indexing, NOT a Retroshade — exposes a generic `allContractEvents`
+  table with `contractId, topic1…topic10, data, tx`).
+- **Auth = server-side proxy.** The Mercury JWT is **never** shipped to the browser. The
+  client calls our same-origin **`/api/mercury`** ([app/api/mercury/route.ts](app/api/mercury/route.ts)),
+  which attaches `Authorization: Bearer <MERCURY_KEY>` server-side and forwards to `MERCURY_URL`.
+  Env (server-only, in `.env.local`, **no `NEXT_PUBLIC_`**): `MERCURY_URL`, `MERCURY_KEY`.
+  This deliberately deviates from the sprint's original `NEXT_PUBLIC_` plan — hardened so the
+  key can't leak from the client bundle.
+- **Client:** [lib/mercury-client.ts](lib/mercury-client.ts) → `mercuryQuery<T>(query, vars)` POSTs to `/api/mercury`.
+- **Subscription required first.** Mercury returns events ONLY for contracts it's actively
+  indexing. Querying `allContractEvents` before a subscription exists errors server-side
+  (this is expected, not a bug). Subscriptions are created via the Mercury dashboard / subscribe
+  API (NOT the GraphQL endpoint — its mutations are table CRUD only), keyed by public contract ID.
+- **Free tier:** testnet only, entity cap. Priority to index = the margin `Trader_*` events
+  (borrow/repay/liquidate/settle) + account creation. LP/earn events stay on RPC if capped.
+- **Debug scripts** (gitignored-friendly, read `.env.local` at runtime): `scripts/mercury-probe.mjs`
+  (connectivity), `mercury-events.mjs` (event/schema check), `mercury-endpoint-test.mjs`.
+
 ## Branching + PR conventions
 
 - Trunk: `main`. Integration: `feat/stellar-rewire` — every phase branch PRs here.

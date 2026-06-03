@@ -54,3 +54,10 @@ TEST_PLAN_DEV_A.md
 TEST_PLAN_DEV_B.md
 TEST_PLAN_SYNC.md
 SPRINT_1_EOD_GOALS.txt
+MERCURY_INDEXING_REQUEST.txt
+MERCURY_TEAM_REQUEST.txt
+scripts/mercury-probe.mjs
+scripts/mercury-events.mjs
+scripts/mercury-endpoint-test.mjs
+scripts/mercury-mutations.mjs
+scripts/debug-env.mjs
