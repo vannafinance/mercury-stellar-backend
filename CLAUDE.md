@@ -171,6 +171,9 @@ content rendering on `isRefreshing`.
 
 ## Mercury integration (D20+)
 
+> **Status (2026-06-01):** foundation merged — PR #23 `s4/mercury-setup` (branch kept).
+> Proxy + client live. **Next:** create the contract-event subscription, then D21 hooks.
+
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
 `getEvents` calls in `lib/{blend,margin,aquarius,soroswap}-utils.ts`, capped at ~7 days
