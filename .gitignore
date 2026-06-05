@@ -61,3 +61,12 @@ scripts/mercury-events.mjs
 scripts/mercury-endpoint-test.mjs
 scripts/mercury-mutations.mjs
 scripts/debug-env.mjs
+
+scripts/decode-these.mjs
+scripts/mercury-decode.mjs
+scripts/mercury-find-subscribe.mjs
+scripts/mercury-margin-test.mjs
+scripts/mercury-rest.mjs
+scripts/mercury-subscribe.mjs
+scripts/mercury-topicfilter-test.mjs
+scripts/rpc-events.mjs
