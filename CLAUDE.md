@@ -171,8 +171,11 @@ content rendering on `isRefreshing`.
 
 ## Mercury integration (D20+)
 
-> **Status (2026-06-01):** foundation merged — PR #23 `s4/mercury-setup` (branch kept).
-> Proxy + client live. **Next:** create the contract-event subscription, then D21 hooks.
+> **Status (2026-06-05):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
+> `s4/mercury-events`, branch kept) merged. `useMarginHistory` is Mercury-sourced via the
+> **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
+> all contracts; query `GET /rest/events/by-ledger/contracts`). **Next:** D21 Dev B
+> (`useSoroswapEvents` + `useEarnTransactions`) + act on Federico's per-account scale answer.
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
