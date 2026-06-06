@@ -9,6 +9,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
 import { useMarginHistory } from "@/hooks/use-margin";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { buildBorrowAttributionFromHistory } from "@/lib/margin-position-attribution";
 
 interface PositionstableProps {
   onRepayClick?: (asset?: string) => void;
@@ -59,15 +60,19 @@ export const Positionstable = ({
   const { isDark } = useTheme();
   const {
     borrowedBalances,
+    collateralBalances,
     totalBorrowedValue,
     netAvailableCollateral,
     hasMarginAccount,
+    marginAccountAddress,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       borrowedBalances: state.borrowedBalances,
+      collateralBalances: state.collateralBalances,
       totalBorrowedValue: state.totalBorrowedValue,
       netAvailableCollateral: state.netAvailableCollateral,
       hasMarginAccount: state.hasMarginAccount,
+      marginAccountAddress: state.marginAccountAddress,
     })),
   );
 
@@ -75,18 +80,12 @@ export const Positionstable = ({
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
-    const borrowedEntries = Object.entries(borrowedBalances) as [string, BorrowedBalance][];
+    // ── Step 1: Deduplicate borrowed tokens by canonical symbol ──────────────
     const dedupedBorrowed = new Map<string, { token: string; balance: BorrowedBalance }>();
-
-    for (const [token, bal] of borrowedEntries) {
+    for (const [token, bal] of Object.entries(borrowedBalances) as [string, BorrowedBalance][]) {
       const amount = parseFloat(bal.amount || '0');
       const usd = parseFloat(bal.usdValue || '0');
-      // Drop dust by both axes: the token amount must be non-zero AND the
-      // USD value must clear the cent floor. Either alone leaks: a 0.001
-      // XLM dust passes the amount check but is worth $0; a $0.005 amount
-      // passes the USD check but is below the cent floor.
       if (!(amount > BORROW_DUST_EPSILON) || !(usd > BORROW_DUST_USD)) continue;
-
       const canonical = canonicalToken(token);
       const existing = dedupedBorrowed.get(canonical);
       if (!existing || amount > parseFloat(existing.balance.amount || '0')) {
@@ -94,41 +93,41 @@ export const Positionstable = ({
       }
     }
 
-    const borrowedEntriesClean: [string, BorrowedBalance][] = Array.from(dedupedBorrowed.values()).map(
-      ({ token, balance }) => [token, balance]
-    );
+    // ── Step 2: Net deposited collateral per token ───────────────────────────
+    // SAC reconcile includes borrowed tokens sitting in the margin wallet (e.g.
+    // BLUSDC from a cross-asset borrow). Subtract same-token debt so we only
+    // anchor positions on assets the user actually deposited — not on borrowed
+    // proceeds that happen to share a wallet balance key.
+    const dedupedCollateral = new Map<string, { token: string; balance: BorrowedBalance }>();
+    for (const [token, bal] of Object.entries(collateralBalances) as [string, BorrowedBalance][]) {
+      const grossAmount = parseFloat(bal.amount || '0');
+      const grossUsd = parseFloat(bal.usdValue || '0');
+      if (!(grossAmount > BORROW_DUST_EPSILON) || !(grossUsd > BORROW_DUST_USD)) continue;
 
-    const totalBorrowUsd = borrowedEntriesClean.reduce(
-      (sum: number, [, bal]: [string, BorrowedBalance]) => sum + parseFloat(bal.usdValue || '0'), 0
-    );
+      const canonical = canonicalToken(token);
+      const sameTokenBorrow = dedupedBorrowed.get(canonical);
+      const borrowedAmount = sameTokenBorrow
+        ? parseFloat(sameTokenBorrow.balance.amount || '0')
+        : 0;
+      const borrowedUsd = sameTokenBorrow
+        ? parseFloat(sameTokenBorrow.balance.usdValue || '0')
+        : 0;
 
-    const borrowedArray: Position['borrowed'] = borrowedEntriesClean
-      .map(([token, bal]) => ({
-        assetData: { asset: token, amount: parseFloat(bal.amount).toFixed(2) },
-        percentage: totalBorrowUsd > 0
-          ? Math.round((parseFloat(bal.usdValue) / totalBorrowUsd) * 100)
-          : 0,
-        usdValue: parseFloat(bal.usdValue),
-      }));
+      const netAmount = Math.max(0, grossAmount - borrowedAmount);
+      const netUsd = Math.max(0, grossUsd - borrowedUsd);
+      if (!(netAmount > BORROW_DUST_EPSILON) || !(netUsd > BORROW_DUST_USD)) continue;
 
-    const hasAnyDebt = borrowedArray.length > 0;
+      const netBalance: BorrowedBalance = {
+        amount: netAmount.toFixed(7),
+        usdValue: netUsd.toFixed(2),
+      };
+      const existing = dedupedCollateral.get(canonical);
+      if (!existing || netUsd > parseFloat(existing.balance.usdValue || '0')) {
+        dedupedCollateral.set(canonical, { token, balance: netBalance });
+      }
+    }
 
-    const equityUsd =
-      netAvailableCollateral > BORROW_DUST_USD ? netAvailableCollateral : 0;
-    const leverage =
-      equityUsd > BORROW_DUST_USD
-        ? parseFloat((1 + totalBorrowedValue / equityUsd).toFixed(2))
-        : 1;
-
-    // Interest accrued = current debt − net principal still owed, in USD.
-    // Net principal per token = sum(borrow events) − sum(repay events). The
-    // pool's b_rate accrual makes current debt drift above net principal; that
-    // drift is the user-visible interest. Negative diffs (e.g. when local
-    // history is incomplete) are clamped to 0 so we never show "credit".
-    //
-    // Guard: while history is still fetching, netPrincipalByToken is empty,
-    // which would make diff = full borrowed amount and produce a false reading
-    // of "interest = borrow USD value". Skip the calculation until loaded.
+    // ── Step 3: Build per-token interest principal from history ──────────────
     const netPrincipalByToken: Record<string, number> = {};
     if (!historyInitialLoading) {
       for (const item of history) {
@@ -143,55 +142,194 @@ export const Positionstable = ({
       }
     }
 
-    let interestAccruedUsd = 0;
-    if (!historyInitialLoading) {
-      for (const [, bal] of dedupedBorrowed) {
-        const canonical = canonicalToken(bal.token);
-        const currentAmt = parseFloat(bal.balance.amount || '0');
-        const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
-        const diff = currentAmt - principalAmt;
-        if (diff > 0) {
-          const price = tokenPrices[canonical] ?? 1;
-          interestAccruedUsd += diff * price;
-        }
+    // ── Step 4: Group borrows under the deposit collateral that opened them ──
+    // Use local margin history (deposit + borrow share the same tx hash) so
+    // cross-asset borrows attach to the correct deposit row — e.g. deposit XLM
+    // → borrow BLUSDC stays on the XLM row, while deposit BLUSDC → borrow
+    // BLUSDC gets its own BLUSDC row.
+    const { borrowsByCollateral: historyAttribution, principalByPair } =
+      buildBorrowAttributionFromHistory(marginAccountAddress);
+
+    const collateralKeys = Array.from(dedupedCollateral.keys());
+    const borrowsByPosition = new Map<string, string[]>();
+    for (const key of collateralKeys) borrowsByPosition.set(key, []);
+
+    for (const [collateralCanonical, borrowSet] of historyAttribution.entries()) {
+      if (!borrowsByPosition.has(collateralCanonical)) continue;
+      for (const borrowCanonical of borrowSet) {
+        const list = borrowsByPosition.get(collateralCanonical)!;
+        if (!list.includes(borrowCanonical)) list.push(borrowCanonical);
       }
     }
 
-    // A margin account is ONE leveraged position even when collateral and
-    // borrow are different assets (e.g. deposit XLM, borrow BLUSDC). The old
-    // logic filtered the borrows-list down to only debts that matched the
-    // current row's collateral symbol — that hid every cross-asset borrow.
-    // Now each collateral row shows the full borrow list; with a single
-    // collateral (the typical case) you see exactly your real debt.
+    let largestCollateralKey = collateralKeys[0] ?? "XLM";
+    let largestCollateralUsd = 0;
+    for (const key of collateralKeys) {
+      const usd = parseFloat(dedupedCollateral.get(key)!.balance.usdValue || "0");
+      if (usd > largestCollateralUsd) {
+        largestCollateralUsd = usd;
+        largestCollateralKey = key;
+      }
+    }
+
+    const assignedBorrows = new Set<string>();
+    for (const list of borrowsByPosition.values()) {
+      for (const b of list) assignedBorrows.add(b);
+    }
+
+    for (const borrowCanonical of dedupedBorrowed.keys()) {
+      if (assignedBorrows.has(borrowCanonical)) continue;
+
+      if (borrowsByPosition.has(borrowCanonical)) {
+        borrowsByPosition.get(borrowCanonical)!.push(borrowCanonical);
+      } else if (borrowsByPosition.has(largestCollateralKey)) {
+        borrowsByPosition.get(largestCollateralKey)!.push(borrowCanonical);
+      }
+      assignedBorrows.add(borrowCanonical);
+    }
+
+    // ── Step 5: Build one Position per collateral token ──────────────────────
     const positionRows: Position[] = [];
+    let positionId = 1;
 
-    if (hasAnyDebt || equityUsd > BORROW_DUST_USD) {
-      const underlying = canonicalToken(
-        borrowedEntriesClean[0]?.[0] ?? "XLM",
+    // Sort collateral keys so XLM (typically largest) comes first
+    const sortedCollateralKeys = collateralKeys.sort((a, b) => {
+      const usdA = parseFloat(dedupedCollateral.get(a)?.balance.usdValue || '0');
+      const usdB = parseFloat(dedupedCollateral.get(b)?.balance.usdValue || '0');
+      return usdB - usdA;
+    });
+
+    for (const collateralCanonical of sortedCollateralKeys) {
+      const collateralEntry = dedupedCollateral.get(collateralCanonical)!;
+      const collateralUsd = parseFloat(collateralEntry.balance.usdValue || '0');
+      const collateralAmt = parseFloat(collateralEntry.balance.amount || '0');
+
+      const thisBorrowKeys = borrowsByPosition.get(collateralCanonical) ?? [];
+      const thisBorrows = thisBorrowKeys
+        .map((k) => dedupedBorrowed.get(k))
+        .filter((b): b is { token: string; balance: BorrowedBalance } => !!b);
+
+      const borrowedArray: Position["borrowed"] = [];
+      let thisBorrowUsd = 0;
+
+      for (const b of thisBorrows) {
+        const borrowCanonical = canonicalToken(b.token);
+        const pairKey = `${collateralCanonical}:${borrowCanonical}`;
+        const onChainAmt = parseFloat(b.balance.amount || "0");
+        const onChainUsd = parseFloat(b.balance.usdValue || "0");
+
+        let displayAmt = onChainAmt;
+        const totalHistoryForToken = Array.from(principalByPair.entries())
+          .filter(([key]) => key.endsWith(`:${borrowCanonical}`))
+          .reduce((sum, [, amt]) => sum + amt, 0);
+
+        if (totalHistoryForToken > 0 && onChainAmt > 0) {
+          const historyPrincipal = principalByPair.get(pairKey) ?? 0;
+          displayAmt = onChainAmt * (historyPrincipal / totalHistoryForToken);
+        }
+
+        if (!(displayAmt > BORROW_DUST_EPSILON)) continue;
+
+        const price = onChainAmt > 0 ? onChainUsd / onChainAmt : (tokenPrices[borrowCanonical] ?? 1);
+        const displayUsd = displayAmt * price;
+        thisBorrowUsd += displayUsd;
+
+        borrowedArray.push({
+          assetData: {
+            asset: b.token,
+            amount: displayAmt.toFixed(2),
+          },
+          percentage: 0,
+          usdValue: parseFloat(displayUsd.toFixed(2)),
+        });
+      }
+
+      if (thisBorrowUsd > 0) {
+        for (const item of borrowedArray) {
+          item.percentage = Math.round((item.usdValue / thisBorrowUsd) * 100);
+        }
+      }
+
+      const hasDebt = borrowedArray.length > 0;
+
+      // Equity for this position = collateral USD value (from chain)
+      // Leverage = 1 + borrows / collateral
+      const equityUsd = collateralUsd > BORROW_DUST_USD ? collateralUsd : 0;
+      const leverage = equityUsd > BORROW_DUST_USD
+        ? parseFloat((1 + thisBorrowUsd / equityUsd).toFixed(2))
+        : 1;
+
+      // Interest accrued for this position's borrows only
+      let interestAccruedUsd = 0;
+      if (!historyInitialLoading) {
+        for (const b of thisBorrows) {
+          const canonical = canonicalToken(b.token);
+          const currentAmt = parseFloat(b.balance.amount || '0');
+          const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
+          const diff = currentAmt - principalAmt;
+          if (diff > 0) {
+            const price = tokenPrices[canonical] ?? 1;
+            interestAccruedUsd += diff * price;
+          }
+        }
+      }
+
+      if (hasDebt || collateralAmt > BORROW_DUST_EPSILON) {
+        positionRows.push({
+          positionId: positionId++,
+          collateral: {
+            asset: collateralEntry.token,
+            amount: collateralAmt.toFixed(2),
+          },
+          collateralUsdValue: parseFloat(collateralUsd.toFixed(2)),
+          borrowed: borrowedArray,
+          leverage,
+          interestAccrued: hasDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
+          isOpen: hasDebt || collateralAmt > BORROW_DUST_EPSILON,
+          user: "",
+        });
+      }
+    }
+
+    // Edge case: borrowed tokens but no collateral in dedupedCollateral
+    // (e.g. account has debt but collateralBalances hasn't loaded yet) →
+    // fall back to a single aggregated position using netAvailableCollateral
+    if (positionRows.length === 0 && dedupedBorrowed.size > 0) {
+      const allBorrows = Array.from(dedupedBorrowed.values());
+      const totalBorrowUsd = allBorrows.reduce(
+        (sum, b) => sum + parseFloat(b.balance.usdValue || '0'), 0
       );
+      const equityUsd = netAvailableCollateral > BORROW_DUST_USD ? netAvailableCollateral : 0;
+      const underlying = canonicalToken(allBorrows[0]?.token ?? 'XLM');
       const price = tokenPrices[underlying] ?? tokenPrices.XLM ?? 0;
-      const depositedUsd = equityUsd;
-      const depositedAmt =
-        price > 0 && depositedUsd > BORROW_DUST_USD
-          ? depositedUsd / price
-          : 0;
-
       positionRows.push({
         positionId: 1,
-        collateral: { asset: underlying, amount: depositedAmt.toFixed(2) },
-        collateralUsdValue: parseFloat(depositedUsd.toFixed(2)),
-        borrowed: borrowedArray,
-        leverage,
-        interestAccrued: hasAnyDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
-        isOpen: hasAnyDebt || depositedAmt > BORROW_DUST_EPSILON,
+        collateral: {
+          asset: underlying,
+          amount: price > 0 ? (equityUsd / price).toFixed(2) : '0',
+        },
+        collateralUsdValue: equityUsd,
+        borrowed: allBorrows.map(b => ({
+          assetData: { asset: b.token, amount: parseFloat(b.balance.amount).toFixed(2) },
+          percentage: totalBorrowUsd > 0
+            ? Math.round((parseFloat(b.balance.usdValue) / totalBorrowUsd) * 100) : 0,
+          usdValue: parseFloat(b.balance.usdValue),
+        })),
+        leverage: equityUsd > BORROW_DUST_USD
+          ? parseFloat((1 + totalBorrowedValue / equityUsd).toFixed(2)) : 1,
+        interestAccrued: 0,
+        isOpen: true,
         user: "",
       });
     }
+
     return positionRows;
   }, [
     borrowedBalances,
+    collateralBalances,
     totalBorrowedValue,
     netAvailableCollateral,
+    marginAccountAddress,
     history,
     historyInitialLoading,
     tokenPrices,

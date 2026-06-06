@@ -114,6 +114,9 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
     return 'You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.';
   }
   if (lower.includes('insufficient')) return 'Insufficient wallet balance for this deposit.';
+  if (lower.includes('trustline entry is missing')) {
+    return 'Your wallet is missing the USDC trustline required to deposit BLUSDC. Open the Faucet, mint Blend USDC, then retry.';
+  }
   if (lower.includes('hosterror'))
     return 'Deposit failed on-chain. Please retry with a slightly smaller amount.';
 

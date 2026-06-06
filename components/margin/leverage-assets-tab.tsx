@@ -583,6 +583,45 @@ export const LeverageAssetsTab = () => {
           return;
         }
 
+        const walletBalanceForAsset = (asset: string): number => {
+          switch (normalizeContractTokenSymbol(asset)) {
+            case "BLUSDC":
+              return parseFloat(tokenBalances.USDC || tokenBalances.BLEND_USDC || "0") || 0;
+            case "AQUSDC":
+              return parseFloat(tokenBalances.AQUARIUS_USDC || "0") || 0;
+            case "SOUSDC":
+              return parseFloat(tokenBalances.SOROSWAP_USDC || "0") || 0;
+            default:
+              return parseFloat(tokenBalances.XLM || "0") || 0;
+          }
+        };
+
+        for (const item of wbDeposits) {
+          if (item.asset === "XLM") continue;
+          const available = walletBalanceForAsset(item.asset);
+          if (item.amount > available + XLM_DEPOSIT_EPSILON) {
+            if (available <= XLM_DEPOSIT_EPSILON) {
+              const faucetHint =
+                item.asset === "BLUSDC"
+                  ? "Blend USDC"
+                  : item.asset === "AQUSDC"
+                    ? "Aquarius USDC"
+                    : item.asset === "SOUSDC"
+                      ? "Soroswap USDC"
+                      : item.asset;
+              toast.error(
+                `You have no ${item.asset} in your wallet. Use the Faucet to mint ${faucetHint} first, then retry.`,
+              );
+            } else {
+              toast.error(
+                `Insufficient ${item.asset} wallet balance. Available: ${available.toFixed(2)} ${item.asset}.`,
+              );
+            }
+            setIsProcessing(false);
+            return;
+          }
+        }
+
         // Pre-validate borrow against the Risk Engine's formula before submitting.
         // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.1, where grossAssets
         // = priced collateral + outstanding debt (borrowed funds still in the account).

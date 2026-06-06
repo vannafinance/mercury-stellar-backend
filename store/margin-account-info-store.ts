@@ -576,11 +576,18 @@ export const refreshBorrowedBalances = async (
       .filter(([sym]) => isTrackingSymbol(sym))
       .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
 
-    // Gross assets = all tokens in the margin account (Blend/AQ/SS farm + SAC).
+    // Non-SAC direct-deposit tokens (AQUSDC, SOUSDC) are not read by the SAC
+    // reconcile (which only covers XLM and BLUSDC). Their stored WAD values in
+    // collateralBalances are real deposited collateral and must be included so
+    // the header Total Value / Net Available Collateral matches the positions table.
+    const nonSacCollateralValue = Object.entries(collateralBalances)
+      .filter(([sym]) => sym !== 'XLM' && sym !== 'BLUSDC' && !isTrackingSymbol(sym))
+      .reduce((sum, [, bal]) => sum + (parseFloat(bal.usdValue) || 0), 0);
+
+    // Gross assets = all tokens in the margin account (farm + SAC + non-SAC direct).
     // Borrowed XLM/USDC already appear in those balances — never add debt again
-    // or HF jumps after farm deposits (e.g. 1.5 → 2.5 when moving 2000 XLM to
-    // Blend) and Net Available Collateral is overstated.
-    let grossCollateralValue = farmPositionValue + rawAssetValue;
+    // or HF jumps after farm deposits.
+    let grossCollateralValue = farmPositionValue + rawAssetValue + nonSacCollateralValue;
     if (grossCollateralValue <= USD_DUST_EPSILON && totalCollateralValue > USD_DUST_EPSILON) {
       // SAC reconcile failed — fall back to priced ledger collateral only.
       grossCollateralValue = totalCollateralValue;

@@ -1,6 +1,6 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
+import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
@@ -41,6 +41,58 @@ export class MarginAccountService {
       return 'SOUSDC';
     }
     return normalized;
+  }
+
+  private static async checkWalletBalanceForDeposit(
+    walletAddress: string,
+    contractTokenSymbol: string,
+    depositAmount: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (contractTokenSymbol === "XLM") {
+      return { ok: true };
+    }
+
+    let tokenContract: string | undefined;
+    let displaySymbol = contractTokenSymbol;
+    if (contractTokenSymbol === "USDC") {
+      tokenContract = CONTRACT_ADDRESSES.BLEND_USDC;
+      displaySymbol = "BLUSDC";
+    } else if (contractTokenSymbol === "AQUSDC") {
+      tokenContract = CONTRACT_ADDRESSES.AQUARIUS_USDC;
+    } else if (contractTokenSymbol === "SOUSDC") {
+      tokenContract = CONTRACT_ADDRESSES.SOROSWAP_USDC;
+    }
+
+    if (!tokenContract) return { ok: true };
+
+    const balanceStr = await ContractService.getSorobanTokenWalletBalance(
+      tokenContract,
+      walletAddress,
+    );
+    const available = parseFloat(balanceStr) || 0;
+    if (available + 1e-7 < depositAmount) {
+      if (available <= 1e-7) {
+        const faucetHint =
+          displaySymbol === "BLUSDC"
+            ? "Blend USDC"
+            : displaySymbol === "AQUSDC"
+              ? "Aquarius USDC"
+              : displaySymbol === "SOUSDC"
+                ? "Soroswap USDC"
+                : displaySymbol;
+        return {
+          ok: false,
+          error:
+            `You have no ${displaySymbol} in your wallet. Use the Faucet to mint ${faucetHint} (establishes the required trustline), then retry.`,
+        };
+      }
+      return {
+        ok: false,
+        error: `Insufficient ${displaySymbol} wallet balance. Available: ${available.toFixed(2)} ${displaySymbol}.`,
+      };
+    }
+
+    return { ok: true };
   }
 
   private static parseBorrowNotAllowedMessage(raw: any, tokenSymbol: string): string {
@@ -2236,6 +2288,15 @@ export class MarginAccountService {
       const userAddress = await getAddress();
       if (userAddress.error || !userAddress.address) {
         return { success: false, error: 'Failed to get user address' };
+      }
+
+      const walletCheck = await this.checkWalletBalanceForDeposit(
+        userAddress.address,
+        contractDepositSymbol,
+        depositAmount,
+      );
+      if (!walletCheck.ok) {
+        return { success: false, error: walletCheck.error };
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);

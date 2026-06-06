@@ -56,6 +56,13 @@ describe('non-cancel errors still pass through their domain message', () => {
   it('deposit: contract #10 stays the keep-1-XLM message', () => {
     expect(normalizeDepositCollateralError('Error(Contract, #10)')).toMatch(/keep at least 1 XLM/i);
   });
+  it('deposit: missing trustline points to Faucet', () => {
+    expect(
+      normalizeDepositCollateralError(
+        'trustline entry is missing for account GDPMCPUXAHICI4SPGSXG5YXQI2OECTD5A3OCEDKDL3YOOPZ475OSM6YH',
+      ),
+    ).toMatch(/Faucet/i);
+  });
   it('transfer: risk-engine block stays informative', () => {
     expect(normalizeTransferCollateralError('is_withdraw_allowed failed', 'USDC')).toMatch(/Risk Engine/i);
   });
