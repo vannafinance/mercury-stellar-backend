@@ -13,7 +13,6 @@ import { InfoCard } from "@/components/margin/info-card";
 import { LeverageCollateral } from "@/components/margin/leverage-collateral";
 import { Positionstable } from "@/components/margin/positions-table";
 import { AccountStats } from "@/components/margin/account-stats";
-import { useQueryClient } from "@tanstack/react-query";
 import { useMarginAccountInfoStore, checkUserMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
@@ -107,7 +106,6 @@ export default function Home() {
   }, [userAddress, isConnected]);
 
   const { tick } = useLedgerTick();
-  const queryClient = useQueryClient();
 
   // Initial load when margin account becomes available.
   useEffect(() => {
@@ -116,17 +114,18 @@ export default function Home() {
     }
   }, [isConnected, hasMarginAccount, marginAccountAddress]);
 
-  // Ledger-tick driven refresh — replaces the prior 30s setInterval. Invalidates
-  // the ['margin'] query cache so RQ-backed hooks refetch on each ledger close.
-  // The imperative `refreshBorrowedBalances` call is kept until the margin
-  // store's dual-write is consolidated alongside the RQ migration of
-  // useMarginHistory and useUserPositions.
+  // Ledger-tick driven refresh — replaces the prior 30s setInterval. Refreshes
+  // the margin store (balances/positions) on each ledger close. It deliberately
+  // does NOT invalidate the ['margin'] query cache: the only RQ query under that
+  // prefix is ['margin','history'] (Mercury-backed, full-pagination, heavy), and
+  // D21 fixed that to refresh on mount / window-focus / borrow-repay mutation —
+  // never on the ~5s tick. A broad tick invalidate here re-triggered the history
+  // refetch every close (a refetch loop), undoing that.
   useEffect(() => {
     if (isConnected && hasMarginAccount && marginAccountAddress && marginAccountAddress.length > 10) {
       refreshBorrowedBalances(marginAccountAddress);
-      queryClient.invalidateQueries({ queryKey: ['margin'] });
     }
-  }, [tick, isConnected, hasMarginAccount, marginAccountAddress, queryClient]);
+  }, [tick, isConnected, hasMarginAccount, marginAccountAddress]);
 
 
   // ── Live account stats derived from store (contract-aligned formulas) ──────
