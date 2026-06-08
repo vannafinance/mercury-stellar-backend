@@ -110,38 +110,56 @@ export const decodeMercuryEvent = (e: RawMercuryEvent): DecodedMercuryEvent => {
   };
 };
 
-/**
- * Fetch + decode contract events from Mercury Classic over a ledger range.
- * No subscription needed — Mercury indexes all contracts. Goes through our
- * server-side /api/mercury/events proxy (JWT stays server-side).
- */
-export async function fetchContractEvents(opts: {
-  contracts: string[];
-  from?: number | string;
-  to?: number | string;
-  /** Filter to a single account SERVER-SIDE (matched on topic2). */
-  account?: string;
-  /** Page size forwarded to Mercury (default raised server-side to beat the ~100 cap). */
-  limit?: number;
-}): Promise<DecodedMercuryEvent[]> {
-  const params = new URLSearchParams({ contracts: opts.contracts.join(",") });
-  if (opts.from != null) params.set("from", String(opts.from));
-  if (opts.to != null) params.set("to", String(opts.to));
-  if (opts.account) params.set("account", opts.account);
-  if (opts.limit != null) params.set("limit", String(opts.limit));
-
+async function fetchEventsPage(
+  params: URLSearchParams,
+): Promise<RawMercuryEvent[]> {
   const res = await fetch(`/api/mercury/events?${params.toString()}`);
   const json = (await res.json().catch(() => null)) as
     | RawMercuryEvent[]
     | { events?: RawMercuryEvent[]; data?: RawMercuryEvent[]; error?: string }
     | null;
-
   if (!json) throw new Error(`Mercury events: non-JSON response (HTTP ${res.status}).`);
   if (!Array.isArray(json) && json.error) {
     throw new Error(`Mercury events failed: ${json.error}`);
   }
-  const arr: RawMercuryEvent[] = Array.isArray(json)
-    ? json
-    : json.events ?? json.data ?? [];
-  return arr.map(decodeMercuryEvent);
+  return Array.isArray(json) ? json : json.events ?? json.data ?? [];
+}
+
+/**
+ * Fetch + decode a contract's events from Mercury Classic, scoped to one
+ * `account` server-side (Mercury matches the encoded address in any topic
+ * column) and walking the FULL history via cursor pagination.
+ *
+ * No subscription needed. Goes through our /api/mercury/events proxy (JWT
+ * server-side). Mercury returns newest→oldest, capped at `limit`; we pass the
+ * last event's `id` as `cursor` until a short/empty page (no more history).
+ */
+export async function fetchContractEvents(opts: {
+  /** Single contract whose events to read (path param to /rest/events/by-contract). */
+  contract: string;
+  /** Filter to one account server-side (encoded → `topics` by the proxy). */
+  account?: string;
+  /** Page size (default 100). */
+  limit?: number;
+  /** Safety cap on pages walked (default 50 → up to limit*50 events). */
+  maxPages?: number;
+}): Promise<DecodedMercuryEvent[]> {
+  const limit = opts.limit ?? 100;
+  const maxPages = opts.maxPages ?? 50;
+  const all: DecodedMercuryEvent[] = [];
+  let cursor: number | undefined;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const params = new URLSearchParams({ contract: opts.contract, limit: String(limit) });
+    if (opts.account) params.set("account", opts.account);
+    if (cursor != null) params.set("cursor", String(cursor));
+
+    const raw = await fetchEventsPage(params);
+    all.push(...raw.map(decodeMercuryEvent));
+
+    if (raw.length < limit) break; // short page → end of history
+    cursor = raw[raw.length - 1].id; // bookmark = oldest id in this page
+  }
+
+  return all;
 }

@@ -1,19 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Address, xdr } from "@stellar/stellar-sdk";
 
-// Server-side proxy for Mercury Classic's REST events endpoint.
-//   GET /api/mercury/events?contracts=<csv>&from=<ledger>&to=<ledger>&account=<C…>&limit=<n>
-// forwards to {REST_BASE}/rest/events/by-ledger/contracts with the Bearer key
+// Server-side proxy for Mercury Classic's per-contract events endpoint.
+//   GET /api/mercury/events?contract=<C>&account=<C>&limit=100&cursor=<id>
+// forwards to {REST_BASE}/rest/events/by-contract/<contract> with the Bearer key
 // attached server-side (JWT never reaches the browser).
 //
-// Scale/scope hardening:
-//   - `limit` is passed through (Mercury caps responses ~100; we raise it so
-//     full history is returned). Default 1000.  TODO: real pagination / Mercury
-//     `by-topics` endpoint when volume outgrows a single high-limit page.
-//   - `account` filters events to a single account SERVER-SIDE (Mercury's
-//     by-ledger endpoint ignores topic filters), so the browser only ever
-//     receives that account's events — smaller payload + no other accounts' data
-//     on the client. The account lives in topic2 as a base64-XDR Address ScVal.
+// Per-account filtering is done BY MERCURY: passing `account` encodes it to an
+// ScVal Address (base64 XDR) and sends it as `topics=` — Mercury matches it in
+// any topic column (our account lives in topic2), returning only that account's
+// events. No global pull + client/server filtering.
+//
+// Pagination: Mercury caps each response at `limit` and returns events newest→
+// oldest (descending id). The client walks history by passing the last event's
+// `id` as `cursor` on the next call (see lib/mercury-client.ts fetchContractEvents).
 
 export const runtime = "nodejs";
 
@@ -21,21 +21,16 @@ const MERCURY_URL = process.env.MERCURY_URL;
 const MERCURY_KEY = process.env.MERCURY_KEY;
 const REST_BASE = MERCURY_URL?.replace(/\/graphql\/?$/, "");
 
-const DEFAULT_LIMIT = "1000";
+const DEFAULT_LIMIT = "100";
 
-// Encode a contract/account address as the base64-XDR ScVal Address that Mercury
-// stores in topic2. Returns null for malformed input.
+// Encode an account/contract address as the base64-XDR ScVal Address Mercury
+// stores in its topic columns. Returns null for malformed input.
 function accountTopicXdr(account: string): string | null {
   try {
     return xdr.ScVal.scvAddress(new Address(account).toScAddress()).toXDR("base64");
   } catch {
     return null;
   }
-}
-
-interface RawEvent {
-  topic2?: string;
-  [k: string]: unknown;
 }
 
 export async function GET(req: NextRequest) {
@@ -47,21 +42,25 @@ export async function GET(req: NextRequest) {
   }
 
   const sp = req.nextUrl.searchParams;
-  const contracts = sp.get("contracts");
-  const from = sp.get("from");
-  const to = sp.get("to");
+  const contract = sp.get("contract");
   const account = sp.get("account");
   const limit = sp.get("limit") ?? DEFAULT_LIMIT;
+  const cursor = sp.get("cursor");
 
-  if (!contracts) {
-    return NextResponse.json({ error: "Missing `contracts` query param." }, { status: 400 });
+  if (!contract) {
+    return NextResponse.json({ error: "Missing `contract` query param." }, { status: 400 });
   }
 
-  const url = new URL(`${REST_BASE}/rest/events/by-ledger/contracts`);
-  url.searchParams.set("contracts", contracts);
-  if (from) url.searchParams.set("from", from);
-  if (to) url.searchParams.set("to", to);
+  const url = new URL(`${REST_BASE}/rest/events/by-contract/${contract}`);
   url.searchParams.set("limit", limit);
+  if (cursor) url.searchParams.set("cursor", cursor);
+  if (account) {
+    const topics = accountTopicXdr(account);
+    if (!topics) {
+      return NextResponse.json({ error: "Invalid `account` address." }, { status: 400 });
+    }
+    url.searchParams.set("topics", topics);
+  }
 
   const upstream = await fetch(url, {
     headers: { Authorization: `Bearer ${MERCURY_KEY}` },
@@ -73,15 +72,6 @@ export async function GET(req: NextRequest) {
       { error: `Mercury returned ${upstream.status}.` },
       { status: upstream.ok ? 502 : upstream.status },
     );
-  }
-
-  // Server-side account filter (Mercury can't filter by topic on this endpoint).
-  if (account && Array.isArray(json)) {
-    const want = accountTopicXdr(account);
-    if (want) {
-      const filtered = (json as RawEvent[]).filter((e) => e.topic2 === want);
-      return NextResponse.json(filtered, { status: 200 });
-    }
   }
 
   return NextResponse.json(json, { status: 200 });

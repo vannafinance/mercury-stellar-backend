@@ -38,17 +38,15 @@ const wadToHuman = (raw: unknown): number => {
 export async function getMarginHistoryFromMercury(
   marginAccountAddress: string,
 ): Promise<MarginTxEntry[]> {
-  // Mercury stores all history permanently; pull the full range, scoped to this
-  // account SERVER-SIDE (the proxy filters by topic2) and returned newest-first
-  // (descending event id), so the order is already chronological.
+  // Mercury filters to this account SERVER-SIDE (by-contract + topics) and
+  // returns full history via cursor pagination, newest-first — so the order is
+  // already chronological and there is no global-limit cap.
   const events = await fetchContractEvents({
-    contracts: [CONTRACT_ADDRESSES.ACCOUNT_MANAGER],
+    contract: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
     account: marginAccountAddress,
-    from: 0,
-    to: 999_999_999,
   });
 
-  // Account already filtered by the proxy; just keep the event types we render.
+  // Account already filtered by Mercury; just keep the event types we render.
   const mine = events.filter(
     (e) => e.eventName === "Trader_Borrow" || e.eventName === "Trader_Repay_Event",
   );
