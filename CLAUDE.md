@@ -182,24 +182,30 @@ scraping + per-browser localStorage history — see `lib/margin-history.ts` and 
 `getEvents` calls in `lib/{blend,margin,aquarius,soroswap}-utils.ts`, capped at ~7 days
 RPC retention).
 
-- **Query endpoint (testnet):** `https://testnet.mercurydata.app/graphql` (PostGraphile;
-  standard contract-event indexing, NOT a Retroshade — exposes a generic `allContractEvents`
-  table with `contractId, topic1…topic10, data, tx`).
-- **Auth = server-side proxy.** The Mercury JWT is **never** shipped to the browser. The
-  client calls our same-origin **`/api/mercury`** ([app/api/mercury/route.ts](app/api/mercury/route.ts)),
-  which attaches `Authorization: Bearer <MERCURY_KEY>` server-side and forwards to `MERCURY_URL`.
-  Env (server-only, in `.env.local`, **no `NEXT_PUBLIC_`**): `MERCURY_URL`, `MERCURY_KEY`.
-  This deliberately deviates from the sprint's original `NEXT_PUBLIC_` plan — hardened so the
-  key can't leak from the client bundle.
-- **Client:** [lib/mercury-client.ts](lib/mercury-client.ts) → `mercuryQuery<T>(query, vars)` POSTs to `/api/mercury`.
-- **Subscription required first.** Mercury returns events ONLY for contracts it's actively
-  indexing. Querying `allContractEvents` before a subscription exists errors server-side
-  (this is expected, not a bug). Subscriptions are created via the Mercury dashboard / subscribe
-  API (NOT the GraphQL endpoint — its mutations are table CRUD only), keyed by public contract ID.
-- **Free tier:** testnet only, entity cap. Priority to index = the margin `Trader_*` events
-  (borrow/repay/liquidate/settle) + account creation. LP/earn events stay on RPC if capped.
-- **Debug scripts** (gitignored-friendly, read `.env.local` at runtime): `scripts/mercury-probe.mjs`
-  (connectivity), `mercury-events.mjs` (event/schema check), `mercury-endpoint-test.mjs`.
+- **NO subscription needed** (confirmed by Mercury team). Mercury auto-indexes all contracts;
+  the old subscribe/`/event` API is deprecated, and the GraphQL `allContractEvents` table errors —
+  **don't use GraphQL for events.** Use the **REST** endpoint.
+- **Events endpoint (testnet):** per-account, server-side-filtered, cursor-paginated:
+  `GET https://testnet.mercurydata.app/rest/events/by-contract/<contract>?topics=<encodedAccount>&limit=100&cursor=<lastId>`.
+  `topics` = the account address as a base64-XDR ScVal (`xdr.ScVal.scvAddress(new Address(addr).toScAddress()).toXDR('base64')`);
+  Mercury matches it in any topic column → returns ONLY that account's events. Mercury returns
+  newest→oldest capped at `limit`; walk full history by passing the last event's `id` as `cursor`.
+  Event row: `{ id, contract_id, topic1…topic10, data, tx }`; decode base64-XDR with `scValToNative`
+  (`topic1`=event name, `topic2`=account, `data`=payload; amounts i128 ÷ 1e18).
+- **Auth = server-side proxy.** The JWT is **never** shipped to the browser. The client calls our
+  same-origin **`/api/mercury/events`** ([app/api/mercury/events/route.ts](app/api/mercury/events/route.ts))
+  (`?contract=&account=&limit=&cursor=`), which encodes the account → `topics`, attaches
+  `Authorization: Bearer <MERCURY_KEY>`, and forwards to the REST endpoint. Env (server-only, in
+  `.env.local`, **no `NEXT_PUBLIC_`**): `MERCURY_URL`, `MERCURY_KEY`. (A separate `/api/mercury`
+  GraphQL POST proxy + `mercuryQuery` exists for non-event queries.)
+- **Client:** [lib/mercury-client.ts](lib/mercury-client.ts) → `fetchContractEvents({contract, account})`
+  loops the `cursor` for full history + `decodeMercuryEvent()`. `lib/mercury-margin.ts`
+  `getMarginHistoryFromMercury()` feeds `useMarginHistory`.
+- **Free tier:** testnet only; mainnet = $79 Builder (post-launch). Scale is fine on Classic with
+  the per-account `topics` filter + cursor pagination; a Retroshade (per-account table) is the
+  longer-term cleanup (also fixes the `Trader_Borrow` no-amount/timestamp contract gap — see below).
+- **Debug scripts** (gitignored, read `.env.local` at runtime): `scripts/mercury-bycontract-test.mjs`
+  (per-account + cursor), `mercury-decode.mjs`, `mercury-rest.mjs`, `mercury-probe.mjs`.
 
 ## Branching + PR conventions
 

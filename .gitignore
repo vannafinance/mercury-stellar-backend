@@ -70,3 +70,4 @@ scripts/mercury-rest.mjs
 scripts/mercury-subscribe.mjs
 scripts/mercury-topicfilter-test.mjs
 scripts/rpc-events.mjs
+scripts/mercury-bycontract-test.mjs
