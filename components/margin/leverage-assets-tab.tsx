@@ -431,7 +431,7 @@ export const LeverageAssetsTab = () => {
     onMutate: () => {
       setIsProcessing(true);
     },
-    onSuccess: ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
+    onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
       if (hash && marginAccountAddress) {
         appendMarginHistory({
           marginAccountAddress,
@@ -442,11 +442,20 @@ export const LeverageAssetsTab = () => {
         });
       }
       toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
-      if (marginAccountAddress) {
-        refreshBorrowedBalances(marginAccountAddress);
-      }
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
+      // Force past the 3s throttle so the new debt shows immediately — the tx is
+      // already confirmed in a closed ledger (pollTransactionStatus). Without
+      // `true` a ledger-tick refresh moments earlier suppresses this one and the
+      // position only updates on a later cycle. Swallow transient post-popup
+      // throws (Freighter getAddress undefined); the ledger tick reconciles.
+      if (marginAccountAddress) {
+        try {
+          await refreshBorrowedBalances(marginAccountAddress, true);
+        } catch (e) {
+          console.warn('Post-borrow refresh failed; ledger tick will reconcile:', e);
+        }
+      }
     },
     onError: (error) => {
       toast.error(normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.'));
@@ -782,7 +791,7 @@ export const LeverageAssetsTab = () => {
                 console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
               }
               if (marginAccountAddress) {
-                await refreshBorrowedBalances(marginAccountAddress);
+                await refreshBorrowedBalances(marginAccountAddress, true);
               }
               setIsProcessing(false);
               return;
@@ -804,7 +813,7 @@ export const LeverageAssetsTab = () => {
           console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
         }
         if (marginAccountAddress) {
-          await refreshBorrowedBalances(marginAccountAddress);
+          await refreshBorrowedBalances(marginAccountAddress, true);
         }
 
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
