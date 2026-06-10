@@ -174,10 +174,13 @@ content rendering on `isRefreshing`.
 > **Status (2026-06-10):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
 > `s4/mercury-events`, branch kept) merged. `useMarginHistory` is Mercury-sourced via the
 > **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
-> all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B (in progress,
-> `s4/mercury-events-soroswap-earn`):** `useSoroswapEvents` now Mercury-sourced via
-> `lib/mercury-soroswap.ts` — see the Soroswap note below; its event shape forced a different
-> approach than margin. **Next:** `useEarnTransactions` + act on Federico's per-account scale answer.
+> all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B:**
+> `useSoroswapEvents` Mercury-sourced via `lib/mercury-soroswap.ts` (PR #28, merged) — see the
+> Soroswap note below; `useEarnTransactions` Mercury-sourced via `lib/mercury-earn.ts`
+> (`s4/mercury-earn-events`) — a clean per-pool, server-scoped read (the earn event payload
+> carries its own `timestamp`, so NO Horizon enrichment, unlike Soroswap). The old RPC scrapers
+> `ContractService.getEarnPoolEvents` + `SoroswapService.getSoroswapLpEvents` are deleted.
+> **Next:** `useBlendEvents`/`useAquariusEvents` (still RPC) + act on Federico's GraphQL/close-time answer.
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
