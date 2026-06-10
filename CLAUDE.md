@@ -171,11 +171,13 @@ content rendering on `isRefreshing`.
 
 ## Mercury integration (D20+)
 
-> **Status (2026-06-05):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
+> **Status (2026-06-10):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
 > `s4/mercury-events`, branch kept) merged. `useMarginHistory` is Mercury-sourced via the
 > **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
-> all contracts; query `GET /rest/events/by-ledger/contracts`). **Next:** D21 Dev B
-> (`useSoroswapEvents` + `useEarnTransactions`) + act on Federico's per-account scale answer.
+> all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B (in progress,
+> `s4/mercury-events-soroswap-earn`):** `useSoroswapEvents` now Mercury-sourced via
+> `lib/mercury-soroswap.ts` — see the Soroswap note below; its event shape forced a different
+> approach than margin. **Next:** `useEarnTransactions` + act on Federico's per-account scale answer.
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
@@ -185,13 +187,24 @@ RPC retention).
 - **NO subscription needed** (confirmed by Mercury team). Mercury auto-indexes all contracts;
   the old subscribe/`/event` API is deprecated, and the GraphQL `allContractEvents` table errors —
   **don't use GraphQL for events.** Use the **REST** endpoint.
+- **GraphQL is broadly broken on the testnet instance (verified 2026-06-10):** not just
+  `allContractEvents` — `txInfoByTxHash`, `ledgerBySequence`, and `allLedgers` all return opaque
+  server errors too. Consequence: **Mercury cannot supply an event's ledger close-time** (the REST
+  row has no time column, and the GraphQL `ContractEvent → txInfoByTx → ledgerByLedger.closeTime`
+  join errors). Event **timestamps must come from Horizon** (`/transactions/{hash}` → `created_at`;
+  full history, unlike Soroban RPC's ~days retention). See `lib/mercury-soroswap.ts`. A Retroshade
+  table indexing events WITH `closeTime` is the eventual zero-external-call fix.
 - **Events endpoint (testnet):** per-account, server-side-filtered, cursor-paginated:
   `GET https://testnet.mercurydata.app/rest/events/by-contract/<contract>?topics=<encodedAccount>&limit=100&cursor=<lastId>`.
   `topics` = the account address as a base64-XDR ScVal (`xdr.ScVal.scvAddress(new Address(addr).toScAddress()).toXDR('base64')`);
   Mercury matches it in any topic column → returns ONLY that account's events. Mercury returns
   newest→oldest capped at `limit`; walk full history by passing the last event's `id` as `cursor`.
-  Event row: `{ id, contract_id, topic1…topic10, data, tx }`; decode base64-XDR with `scValToNative`
-  (`topic1`=event name, `topic2`=account, `data`=payload; amounts i128 ÷ 1e18).
+  Event row: `{ id, contract_id, topic1…topic10, data, tx }` (NO ledger/timestamp column);
+  decode base64-XDR with `scValToNative`. **The topic layout is contract-specific:** for
+  AccountManager `topic1`=event name, `topic2`=account, amounts i128 ÷ 1e18 (WAD). Soroswap
+  differs — see the Soroswap note below. The `topics=<account>` filter only scopes server-side
+  when the account is actually in a topic column (it is for AccountManager; it is NOT for the
+  Soroswap pair's rich events).
 - **Auth = server-side proxy.** The JWT is **never** shipped to the browser. The client calls our
   same-origin **`/api/mercury/events`** ([app/api/mercury/events/route.ts](app/api/mercury/events/route.ts))
   (`?contract=&account=&limit=&cursor=`), which encodes the account → `topics`, attaches
@@ -200,12 +213,25 @@ RPC retention).
   GraphQL POST proxy + `mercuryQuery` exists for non-event queries.)
 - **Client:** [lib/mercury-client.ts](lib/mercury-client.ts) → `fetchContractEvents({contract, account})`
   loops the `cursor` for full history + `decodeMercuryEvent()`. `lib/mercury-margin.ts`
-  `getMarginHistoryFromMercury()` feeds `useMarginHistory`.
+  `getMarginHistoryFromMercury()` feeds `useMarginHistory`; `lib/mercury-soroswap.ts`
+  `getSoroswapLpEventsFromMercury()` feeds `useSoroswapEvents`.
+- **Soroswap LP events differ from margin (verified on testnet, pair `CDVAIOYH…`):** the pair's
+  rich `deposit`/`withdraw` events carry the account in `data.to` (a payload field, NOT a topic),
+  so the `topics=<account>` server-side filter does NOT match them — and `topic1`=`"SoroswapPair"`
+  (namespace), `topic2`=event name, `data`={amount_0, amount_1, liquidity, …, to} (i128 ÷ 1e7,
+  token_0=XLM). The topic-scopable `mint`/`burn` events don't reliably identify the user
+  (`mint`→user in topic3, `burn`→pair). So `getSoroswapLpEventsFromMercury()` fetches the pair's
+  events **un-scoped** and filters `data.to === account` **client-side**. Because Mercury rows have
+  no timestamp, it recovers each event's time via `getTransaction` (deduped by tx — LP actions are
+  sparse). This is a deliberate divergence from margin (which dropped per-event RPC); the chart in
+  `app/farm/[id]/page.tsx` filters `timestamp <= 0`, so timestamps are mandatory here. Mainnet scale
+  → Retroshade per-account table (restores server-side scoping).
 - **Free tier:** testnet only; mainnet = $79 Builder (post-launch). Scale is fine on Classic with
   the per-account `topics` filter + cursor pagination; a Retroshade (per-account table) is the
   longer-term cleanup (also fixes the `Trader_Borrow` no-amount/timestamp contract gap — see below).
 - **Debug scripts** (gitignored, read `.env.local` at runtime): `scripts/mercury-bycontract-test.mjs`
-  (per-account + cursor), `mercury-decode.mjs`, `mercury-rest.mjs`, `mercury-probe.mjs`.
+  (per-account + cursor), `mercury-decode.mjs`, `mercury-rest.mjs`, `mercury-probe.mjs`,
+  `mercury-soroswap-probe.mjs` (dumps pair row shape + event vocab).
 
 ## Branching + PR conventions
 

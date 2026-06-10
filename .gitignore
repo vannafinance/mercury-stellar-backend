@@ -56,6 +56,7 @@ TEST_PLAN_SYNC.md
 SPRINT_1_EOD_GOALS.txt
 MERCURY_INDEXING_REQUEST.txt
 MERCURY_TEAM_REQUEST.txt
+FEDERICO_CALL_NOTES.md
 scripts/mercury-probe.mjs
 scripts/mercury-events.mjs
 scripts/mercury-endpoint-test.mjs
@@ -71,3 +72,5 @@ scripts/mercury-subscribe.mjs
 scripts/mercury-topicfilter-test.mjs
 scripts/rpc-events.mjs
 scripts/mercury-bycontract-test.mjs
+scripts/mercury-earn-probe.mjs
+scripts/mercury-soroswap-probe.mjs
