@@ -10,6 +10,7 @@ import { useShallow } from "zustand/shallow";
 import { useMarginHistory } from "@/hooks/use-margin";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { buildBorrowAttributionFromHistory } from "@/lib/margin-position-attribution";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
 interface PositionstableProps {
   onRepayClick?: (asset?: string) => void;
@@ -64,7 +65,6 @@ export const Positionstable = ({
     totalBorrowedValue,
     netAvailableCollateral,
     hasMarginAccount,
-    marginAccountAddress,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       borrowedBalances: state.borrowedBalances,
@@ -72,7 +72,6 @@ export const Positionstable = ({
       totalBorrowedValue: state.totalBorrowedValue,
       netAvailableCollateral: state.netAvailableCollateral,
       hasMarginAccount: state.hasMarginAccount,
-      marginAccountAddress: state.marginAccountAddress,
     })),
   );
 
@@ -100,6 +99,12 @@ export const Positionstable = ({
     // proceeds that happen to share a wallet balance key.
     const dedupedCollateral = new Map<string, { token: string; balance: BorrowedBalance }>();
     for (const [token, bal] of Object.entries(collateralBalances) as [string, BorrowedBalance][]) {
+      // Farm/LP receipts (BLEND_XLM, SS_XLM_USDC, AQ_*) live in collateralBalances
+      // for the header HF/value calc but are NOT margin positions — skip them so
+      // they don't render as collateral rows. Real collateral uses canonical keys
+      // (XLM, USDC, BLUSDC, AQUSDC, SOUSDC), for which isTrackingSymbol is false.
+      if (isTrackingSymbol(token)) continue;
+
       const grossAmount = parseFloat(bal.amount || '0');
       const grossUsd = parseFloat(bal.usdValue || '0');
       if (!(grossAmount > BORROW_DUST_EPSILON) || !(grossUsd > BORROW_DUST_USD)) continue;
@@ -148,7 +153,7 @@ export const Positionstable = ({
     // → borrow BLUSDC stays on the XLM row, while deposit BLUSDC → borrow
     // BLUSDC gets its own BLUSDC row.
     const { borrowsByCollateral: historyAttribution, principalByPair } =
-      buildBorrowAttributionFromHistory(marginAccountAddress);
+      buildBorrowAttributionFromHistory(history);
 
     const collateralKeys = Array.from(dedupedCollateral.keys());
     const borrowsByPosition = new Map<string, string[]>();
@@ -329,7 +334,6 @@ export const Positionstable = ({
     collateralBalances,
     totalBorrowedValue,
     netAvailableCollateral,
-    marginAccountAddress,
     history,
     historyInitialLoading,
     tokenPrices,
@@ -340,9 +344,9 @@ export const Positionstable = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Current Positions = non-zero **cash / pool deposit** collateral (XLM, USDC,
-  // BLUSDC, …). Blend b-token and LP *receipt* symbols (BLEND_*, AQ_*, SS_*)
-  // are excluded — they are not separate positions and were duplicating the
-  // same borrow/leverage on every row after farm-tracking enrichment.
+  // BLUSDC, …). Farm receipt symbols (BLEND_*, AQ_*, SS_*) are excluded upstream
+  // in the collateral loop via isTrackingSymbol — they are farm positions, not
+  // margin collateral, and only live in collateralBalances for the HF/value calc.
   const filteredPositions = useMemo(() => {
     if (activeTab === "currentPositions") return positions;
     return [];

@@ -431,7 +431,7 @@ export const LeverageAssetsTab = () => {
     onMutate: () => {
       setIsProcessing(true);
     },
-    onSuccess: ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
+    onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
       if (hash && marginAccountAddress) {
         appendMarginHistory({
           marginAccountAddress,
@@ -442,11 +442,20 @@ export const LeverageAssetsTab = () => {
         });
       }
       toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
-      if (marginAccountAddress) {
-        refreshBorrowedBalances(marginAccountAddress);
-      }
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
+      // Force past the 3s throttle so the new debt shows immediately — the tx is
+      // already confirmed in a closed ledger (pollTransactionStatus). Without
+      // `true` a ledger-tick refresh moments earlier suppresses this one and the
+      // position only updates on a later cycle. Swallow transient post-popup
+      // throws (Freighter getAddress undefined); the ledger tick reconciles.
+      if (marginAccountAddress) {
+        try {
+          await refreshBorrowedBalances(marginAccountAddress, true);
+        } catch (e) {
+          console.warn('Post-borrow refresh failed; ledger tick will reconcile:', e);
+        }
+      }
     },
     onError: (error) => {
       toast.error(normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.'));
@@ -666,6 +675,9 @@ export const LeverageAssetsTab = () => {
         // cross-asset). One wallet signature instead of two in either case.
         const canUseAtomic = wbDeposits.length === 1;
         const isCrossAsset = wbDeposits[0]?.asset !== normalizedBorrowToken;
+        // Flipped to true when the atomic deposit+borrow overflows Soroban's
+        // per-tx budget, routing execution to the 2-tx split flow below.
+        let useSplitFlow = !canUseAtomic;
 
         const depositHashes: string[] = [];
         let borrowHash = "";
@@ -695,39 +707,53 @@ export const LeverageAssetsTab = () => {
             item.asset,
             borrowOptions
           );
-          if (!atomicResult.success) {
-            if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
-              toast.error(`Contract configuration error: ${atomicResult.error}`);
-            } else {
-              toast.error(normalizeDepositCollateralError(atomicResult.error));
+          if (atomicResult.success) {
+            if (atomicResult.hash) {
+              depositHashes.push(atomicResult.hash);
+              if (multiplier > 1) borrowHash = atomicResult.hash;
             }
-            setIsProcessing(false);
-            return;
-          }
-          if (atomicResult.hash) {
-            depositHashes.push(atomicResult.hash);
-            if (multiplier > 1) borrowHash = atomicResult.hash;
-          }
-          appendMarginHistory({
-            marginAccountAddress: marginAccountAddress!,
-            type: "deposit",
-            asset: item.asset,
-            amount: item.amount.toFixed(7),
-            hash: atomicResult.hash ?? "",
-          });
-          if (multiplier > 1) {
-            const borrowAmountTokens = item.amount * (multiplier - 1);
             appendMarginHistory({
               marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: normalizedBorrowToken,
-              amount: borrowAmountTokens.toFixed(7),
+              type: "deposit",
+              asset: item.asset,
+              amount: item.amount.toFixed(7),
               hash: atomicResult.hash ?? "",
             });
+            if (multiplier > 1) {
+              const borrowAmountTokens = item.amount * (multiplier - 1);
+              appendMarginHistory({
+                marginAccountAddress: marginAccountAddress!,
+                type: "borrow",
+                asset: normalizedBorrowToken,
+                amount: borrowAmountTokens.toFixed(7),
+                hash: atomicResult.hash ?? "",
+              });
+            }
+          } else {
+            // Error(Budget, ExceededLimit): the chained deposit→borrow overflowed
+            // Soroban's per-tx CPU/resource cap. It grows with pool population and
+            // is a hard network limit (not a fee), so retrying the same atomic tx
+            // can't help — split it into two transactions instead. The atomic tx
+            // failed wholesale, so nothing was deposited; the split flow is clean.
+            const isBudgetError = /budget|exceededlimit|resource/i.test(atomicResult.error ?? '');
+            if (isBudgetError) {
+              console.warn('[leverage] atomic deposit_and_borrow hit Soroban budget; falling back to split 2-tx flow');
+              useSplitFlow = true;
+            } else if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
+              toast.error(`Contract configuration error: ${atomicResult.error}`);
+              setIsProcessing(false);
+              return;
+            } else {
+              toast.error(normalizeDepositCollateralError(atomicResult.error));
+              setIsProcessing(false);
+              return;
+            }
           }
-        } else {
-          // Multi-collateral or cross-asset borrow: fall back to per-token deposit
-          // followed by a separate borrow.
+        }
+
+        if (useSplitFlow) {
+          // Per-token deposit, then a separate borrow. Used for multi-collateral and
+          // as the fallback when the atomic deposit+borrow exceeds the Soroban budget.
           for (const item of wbDeposits) {
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
@@ -782,7 +808,7 @@ export const LeverageAssetsTab = () => {
                 console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
               }
               if (marginAccountAddress) {
-                await refreshBorrowedBalances(marginAccountAddress);
+                await refreshBorrowedBalances(marginAccountAddress, true);
               }
               setIsProcessing(false);
               return;
@@ -804,7 +830,7 @@ export const LeverageAssetsTab = () => {
           console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
         }
         if (marginAccountAddress) {
-          await refreshBorrowedBalances(marginAccountAddress);
+          await refreshBorrowedBalances(marginAccountAddress, true);
         }
 
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";

@@ -1,5 +1,3 @@
-import { getMarginHistoryByAccount } from "@/lib/margin-history";
-
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
   if (normalized === "BLEND_USDC" || normalized === "USDC") return "BLUSDC";
@@ -15,23 +13,31 @@ export type BorrowAttribution = {
   principalByPair: Map<string, number>;
 };
 
+/** Minimal shape this needs from a history entry. Mercury's MarginTxEntry
+ *  (borrow|repay) is assignable; `type` is widened to string so a future
+ *  `deposit` entry compiles without a cast. */
+export interface AttributionHistoryEntry {
+  type: string;
+  asset: string;
+  amount: string;
+  hash: string;
+}
+
 /**
- * Derive which borrows belong to which deposit-collateral row from local
- * margin history (deposit + borrow entries sharing the same tx hash).
+ * Derive which borrows belong to which deposit-collateral row by matching a
+ * deposit and a borrow that share the same tx hash (an atomic cross-asset open).
+ *
+ * Pure: pass the same Mercury history the Position History tab uses. NOTE the
+ * grouping is deposit-driven — Mercury currently indexes only borrow/repay (no
+ * deposit events), so the returned maps are empty today and the caller falls
+ * back to attaching all borrows to the largest collateral row. Multi-collateral
+ * attribution lights up automatically once deposit events land in Mercury.
  */
 export function buildBorrowAttributionFromHistory(
-  marginAccountAddress: string | null | undefined,
+  history: AttributionHistoryEntry[],
 ): BorrowAttribution {
   const borrowsByCollateral = new Map<string, Set<string>>();
   const principalByPair = new Map<string, number>();
-
-  if (!marginAccountAddress) {
-    return { borrowsByCollateral, principalByPair };
-  }
-
-  const history = getMarginHistoryByAccount(marginAccountAddress)
-    .slice()
-    .sort((a, b) => a.timestamp - b.timestamp);
 
   const depositCollateralByHash = new Map<string, string>();
 

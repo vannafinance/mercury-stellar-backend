@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useWithdrawLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -62,6 +63,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const withdraw = useWithdrawLiquidity();
   const { pools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   useMutationToast(withdraw, {
     loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool…`,
@@ -123,6 +125,17 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
 
   const sharesNum = parseFloat(shares) || 0;
   const assetsPreview = sharesNum * exchangeRate;
+  // USD value of what's being withdrawn: vTokens → underlying (× exchangeRate,
+  // already in assetsPreview) → USD (× oracle price). USDC-family falls back to $1.
+  const unitPriceUsd =
+    tokenPrices[
+      normalizedAsset === 'XLM' ? 'XLM'
+        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
+        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
+        : 'BLUSDC'
+    ] || (normalizedAsset === 'XLM' ? 0 : 1);
+  const usdValue = assetsPreview * unitPriceUsd;
+  const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const infoData = useMemo(() => ({
     youGetAsset: assetsPreview,
@@ -272,6 +285,9 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
               } ${withdraw.isPending ? "opacity-50" : ""}`}
             />
+            <div className={`text-right text-[12px] font-medium mt-0.5 ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+              ≈ {formattedUsd}
+            </div>
           </div>
         </div>
 
