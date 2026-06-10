@@ -72,8 +72,9 @@ export const useWallet = () => {
       }
       
     } catch (error) {
-      console.error('Error refreshing balances:', error);
-      // Don't throw - just log the error so connection isn't blocked
+      // Non-fatal: a transient RPC/Horizon failure shouldn't block the wallet or
+      // light up the dev error overlay — warn and let the next refresh recover.
+      console.warn('Error refreshing balances (non-fatal, will retry):', error);
     }
   }, [address]);
 
