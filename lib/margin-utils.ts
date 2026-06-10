@@ -2354,6 +2354,16 @@ export class MarginAccountService {
                `If the borrow leg was rejected by the Risk Engine, try a lower leverage or more collateral.`,
       };
     } catch (error: any) {
+      const raw = String(error?.message ?? error ?? '');
+      // Budget overflow is expected on populated pools — the chained deposit→borrow
+      // can exceed Soroban's per-tx CPU cap. Surface a BUDGET-IDENTIFIABLE error
+      // (not formatUserFacingContractError, which collapses HostError into a generic
+      // string and would hide the signal) so the WB caller can fall back to the
+      // 2-tx split flow. Warn, not error — it's recoverable via the fallback.
+      if (/Budget|ExceededLimit|resource/i.test(raw)) {
+        console.warn('[deposit_and_borrow] Soroban budget exceeded; caller will split into 2 txs:', raw);
+        return { success: false, error: `Budget exceeded — ${raw}` };
+      }
       console.error('❌ Error in deposit_and_borrow:', error);
       return {
         success: false,
