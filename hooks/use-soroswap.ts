@@ -8,6 +8,7 @@ import {
   SOROSWAP_POOLS,
   SoroswapPoolConfig,
 } from '@/lib/soroswap-utils';
+import { getSoroswapLpEventsFromMercury } from '@/lib/mercury-soroswap';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,7 +138,7 @@ export const useSoroswapEvents = (
     enabled: Boolean(pairAddress && marginAccountAddress),
     queryFn: async () => {
       if (!pairAddress || !marginAccountAddress) return [];
-      return SoroswapService.getSoroswapLpEvents(pairAddress, marginAccountAddress);
+      return getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,
