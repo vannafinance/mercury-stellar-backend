@@ -506,6 +506,34 @@ export const refreshBorrowedBalances = async (
       });
     }
 
+    // ── Progressive render ────────────────────────────────────────────────────
+    // Publish the core position (debt + ledger collateral) now, so the positions
+    // table appears in ~1-2s instead of waiting on the heavier farm-tracking + SAC
+    // reconcile + borrow-rate RPCs below (~5s total cold load). The stats here are
+    // a preliminary estimate from priced ledger collateral; the final set() at the
+    // end of this function overwrites them with farm/SAC-accurate values.
+    {
+      const prelimDebt = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
+      const prelimGross = totalCollateralValue;
+      const prelimNet = Math.max(0, prelimGross - prelimDebt);
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: { ...borrowedBalances },
+        collateralBalances: { ...collateralBalances },
+        totalBorrowedValue,
+        totalCollateralValue,
+        grossCollateralValue: prelimGross,
+        avgHealthFactor:
+          prelimDebt > 0
+            ? prelimGross / prelimDebt
+            : prelimGross > 0
+              ? HEALTH_FACTOR_INFINITY_SENTINEL
+              : 0,
+        netAvailableCollateral: prelimNet,
+        totalValue: prelimNet + totalBorrowedValue,
+        isLoadingBorrowedBalances: false,
+      });
+    }
+
     // Enrich collateralBalances with Blend bTokens and Aquarius/Soroswap LP tokens.
     // The chain's CollateralBalanceWAD for tracking tokens is 0 by design — Farm
     // UIs read tracking balances directly from the protocol services. We do the
