@@ -176,6 +176,19 @@ content rendering on `isRefreshing`.
 > **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
 > all contracts; query `GET /rest/events/by-ledger/contracts`). **Next:** D21 Dev B
 > (`useSoroswapEvents` + `useEarnTransactions`) + act on Federico's per-account scale answer.
+>
+> **Update (2026-06-10) — margin/earn fixes, PR #27 → `feat/stellar-rewire`:**
+> - **No optimistic UI anywhere** — margin (borrow/repay) + earn (supply/withdraw) update
+>   only after the tx confirms; cancel/fail leaves the UI untouched. (Only earn + repay had
+>   optimistic writes; both removed. All other `onMutate` are loading flags.)
+> - **Deposit+borrow budget fix** — atomic `deposit_and_borrow` that overflows Soroban's
+>   per-tx CPU cap now surfaces a budget-tagged error and the WB flow auto-splits into 2 txs.
+> - **Farm receipts excluded** from Current Positions (`isTrackingSymbol`); attribution now
+>   Mercury-sourced (was localStorage); borrow refresh forced past the 3s throttle.
+> - **Cold-load ~5s → ~1-2s** via progressive position render; **USD value** added under earn
+>   supply/withdraw inputs.
+> - Owed to contract side: SoUSDC pool on-chain wiring + trim atomic `deposit_and_borrow` CPU.
+> - **Dev B D21 still not started** — `useSoroswapEvents` + `useEarnTransactions` remain on RPC.
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
