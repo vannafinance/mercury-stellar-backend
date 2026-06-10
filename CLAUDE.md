@@ -50,8 +50,8 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
     D11–D19 solo** (PRs #14–#19), including the earn/optimistic-earn work nominally in Dev A's
     lane. Sanujit resumed 2026-06-01 at D20.
   - **Next:** D20–22 — Mercury indexer integration (prereq: sign up Mercury **free dev tier**).
-    Dev A lane: D20 Mercury setup/entities/GraphQL queries → D21 margin+farm event hooks
-    (`useMarginHistory`, `useBlendEvents`, `useAquariusEvents`) → D22 joint analytics-island rework.
+    Dev A lane: ~~D20 Mercury setup/entities/GraphQL queries~~ ✅ → ~~D21 margin+farm event hooks
+    (`useMarginHistory` Mercury; `useBlendEvents`/`useAquariusEvents` RPC+TODO)~~ ✅ done → D22 joint analytics-island rework.
     **Also still owed:** collapse the dual `useTokenPrices` API (D12 leftover, below).
   - **New S1 scope (D25):** stats snapshot-cache layer (`/api/account/[addr]` +
     `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow

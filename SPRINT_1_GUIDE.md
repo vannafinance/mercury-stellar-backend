@@ -310,9 +310,9 @@ Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation 
 
 | Dev A (margin + farm) | Dev B (soroswap + earn) |
 | --- | --- |
-| `useMarginHistory` (use-margin.ts:7) — replace localStorage merge with Mercury query. Drop ledger-tick refetch (Mercury push-driven). | `useSoroswapEvents` (use-soroswap.ts:97) — replace RPC pagination with Mercury query. |
-| `useBlendEvents` + `useAquariusEvents` (use-farm.ts) — same. If Aquarius events not in free-tier entity set, keep on RPC + add TODO. | `useEarnTransactions` (use-earn.ts:514) — same. If event not indexed, keep on RPC. |
-| **PR `s4/mercury-events-margin-farm`** | **PR `s4/mercury-events-soroswap-earn`** |
+| ~~`useMarginHistory` — Mercury query; drop localStorage merge + ledger-tick refetch.~~ ✅ done (PR #24, merged) | `useSoroswapEvents` (use-soroswap.ts:127) — replace RPC pagination with Mercury query. |
+| ~~`useBlendEvents` + `useAquariusEvents` (use-farm.ts) — same.~~ ✅ kept on RPC + TODO per plan | `useEarnTransactions` (use-earn.ts:324, RPC `getEarnPoolEvents`) — same. If event not indexed, keep on RPC. |
+| ~~**PR `s4/mercury-events-margin-farm`**~~ ✅ merged (PR #24) | **PR `s4/mercury-events-soroswap-earn`** — ⏳ pending |
 
 **D22 — Reclaim the analytics island (audit item 14) — full rework, pulled into S1**
 
