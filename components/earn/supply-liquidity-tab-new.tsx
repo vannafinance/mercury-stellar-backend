@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useSupplyLiquidity, usePoolData } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AssetType } from "@/lib/stellar-utils";
 import { normalizeSupplyError } from "@/lib/errors/normalize";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
@@ -63,6 +64,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
 
   const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -122,6 +124,17 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const exchangeRate = parseFloat(selectedPool?.exchangeRate || '1');
   const supplyAPY = parseFloat(selectedPool?.supplyAPY || '0');
   const amountNum = parseFloat(amount) || 0;
+  // USD value of the amount being supplied. Underlying price from the oracle;
+  // USDC-family pools fall back to $1 if the oracle cache is momentarily empty.
+  const unitPriceUsd =
+    tokenPrices[
+      normalizedAsset === 'XLM' ? 'XLM'
+        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
+        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
+        : 'BLUSDC'
+    ] || (normalizedAsset === 'XLM' ? 0 : 1);
+  const usdValue = amountNum * unitPriceUsd;
+  const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const sharesPreview = exchangeRate > 0 ? amountNum / exchangeRate : 0;
   const monthlyEarnings = (amountNum * supplyAPY) / 100 / 12;
   const yearlyEarnings = (amountNum * supplyAPY) / 100;
@@ -278,6 +291,9 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
               } ${supply.isPending ? "opacity-50" : ""}`}
             />
+            <div className={`text-right text-[12px] font-medium mt-0.5 ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+              ≈ {formattedUsd}
+            </div>
           </div>
         </div>
 
