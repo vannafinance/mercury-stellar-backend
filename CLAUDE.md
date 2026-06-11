@@ -174,10 +174,13 @@ content rendering on `isRefreshing`.
 > **Status (2026-06-10):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
 > `s4/mercury-events`, branch kept) merged. `useMarginHistory` is Mercury-sourced via the
 > **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
-> all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B (in progress,
-> `s4/mercury-events-soroswap-earn`):** `useSoroswapEvents` now Mercury-sourced via
-> `lib/mercury-soroswap.ts` — see the Soroswap note below; its event shape forced a different
-> approach than margin. **Next:** `useEarnTransactions` + act on Federico's per-account scale answer.
+> all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B:**
+> `useSoroswapEvents` Mercury-sourced via `lib/mercury-soroswap.ts` (PR #28, merged) — see the
+> Soroswap note below; `useEarnTransactions` Mercury-sourced via `lib/mercury-earn.ts`
+> (`s4/mercury-earn-events`) — a clean per-pool, server-scoped read (the earn event payload
+> carries its own `timestamp`, so NO Horizon enrichment, unlike Soroswap). The old RPC scrapers
+> `ContractService.getEarnPoolEvents` + `SoroswapService.getSoroswapLpEvents` are deleted.
+> **Next:** `useBlendEvents`/`useAquariusEvents` (still RPC) + act on Federico's GraphQL/close-time answer.
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
@@ -194,6 +197,24 @@ RPC retention).
   join errors). Event **timestamps must come from Horizon** (`/transactions/{hash}` → `created_at`;
   full history, unlike Soroban RPC's ~days retention). See `lib/mercury-soroswap.ts`. A Retroshade
   table indexing events WITH `closeTime` is the eventual zero-external-call fix.
+- **Federico's verdict (2026-06-10) — confirmed + decided:** Classic events mirror on-chain exactly;
+  ledger/close-time lives one layer up (tx/ledger), so the event itself never carries it. **GraphQL is
+  gone for good** (not just broken — deprecated/removed; the PostGraphile `event→tx→ledger→close_time`
+  path we tried would have worked, but it's not coming back). So two valid paths: **(a)** keep the
+  per-tx **Horizon** lookup (batch/dedupe by tx — what `lib/mercury-soroswap.ts` does), or **(b)**
+  **Retroshade**: capture event data + `close_time` (it's in the close meta) into one table → one query,
+  no extra calls. Federico recommends **Retroshade for the LP charts, scoped to the 4 LendingPool
+  contracts** (same data also feeds protocol-level risk metrics — cover both at once), and **keep
+  AccountManager events in Classic** for now while per-user HF/position logic is still evolving (retroshade
+  it separately once that data model settles).
+- **DECIDED (2026-06-10, team lead) — per-tx fetch + Mercury, NO Retroshade, NO contract changes:**
+  timestamps come per-tx from **Horizon** where Mercury lacks them; everything else from Mercury. This is the
+  permanent approach for now — Retroshade and any "make contracts emit timestamps" work are explicitly
+  **off the table**. Per adapter: **Soroswap** = Mercury events + Horizon timestamps (the pair is an external
+  contract anyway, so Horizon is the only option). **Earn** = stays pure-Mercury: the LendingPool
+  `deposit_event`/`withdraw_event` ALREADY carry a payload `timestamp`, so we just read it (the "fetch from
+  Horizon" rule only applies where Mercury can't supply it — we don't add calls we don't need). Don't
+  reintroduce the Retroshade/contract-interface track unless the lead revisits it.
 - **Events endpoint (testnet):** per-account, server-side-filtered, cursor-paginated:
   `GET https://testnet.mercurydata.app/rest/events/by-contract/<contract>?topics=<encodedAccount>&limit=100&cursor=<lastId>`.
   `topics` = the account address as a base64-XDR ScVal (`xdr.ScVal.scvAddress(new Address(addr).toScAddress()).toXDR('base64')`);

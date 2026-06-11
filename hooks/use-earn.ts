@@ -6,6 +6,7 @@ import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
+import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
 import { computeBorrowApr } from '@/lib/utils/borrow-rate';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
@@ -333,7 +334,7 @@ export const useEarnTransactions = () => {
     enabled: Boolean(address && isConnected),
     queryFn: async () => {
       if (!address) return [];
-      return ContractService.getEarnPoolEvents(address);
+      return getEarnTransactionsFromMercury(address);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,
