@@ -74,3 +74,4 @@ scripts/rpc-events.mjs
 scripts/mercury-bycontract-test.mjs
 scripts/mercury-earn-probe.mjs
 scripts/mercury-soroswap-probe.mjs
+scripts/mercury-blend-probe.mjs

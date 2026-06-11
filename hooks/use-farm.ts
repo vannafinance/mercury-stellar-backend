@@ -15,6 +15,7 @@ import {
   AQUARIUS_POOLS,
   AquariusPoolConfig,
 } from '@/lib/aquarius-utils';
+import { getBlendEventsFromMercury } from '@/lib/mercury-blend';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
@@ -118,12 +119,6 @@ export const useUserBlendPositions = () => {
 // Blend events / position history
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TODO(mercury, D21): migrate off RPC `getBlendEvents` to Mercury Classic.
-// Mercury indexes all contracts, so the Blend pool's events are queryable via
-// fetchContractEvents([blendPool], ...) the same way as margin history — it just
-// needs the Blend event names/shapes reverse-engineered + decoded (separate from
-// the AccountManager Trader_* events). Deferred to keep the D21 PR focused on the
-// priority margin-history migration; stays on RPC (≤7-day window) until then.
 export const useBlendEvents = (tokenSymbol?: string) => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const qc = useQueryClient();
@@ -135,7 +130,7 @@ export const useBlendEvents = (tokenSymbol?: string) => {
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<BlendEvent[]> => {
       if (!marginAccountAddress) return [];
-      const all = await BlendService.getBlendEvents(marginAccountAddress);
+      const all = await getBlendEventsFromMercury(marginAccountAddress);
       return tokenSymbol ? all.filter((e) => e.tokenSymbol === tokenSymbol) : all;
     },
     refetchOnWindowFocus: true,
@@ -324,10 +319,16 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
 // Aquarius LP events
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TODO(mercury, D21): migrate off RPC `getAquariusEvents` to Mercury Classic.
-// Same as useBlendEvents — Mercury indexes the Aquarius AMM pools too; this needs
-// the Aquarius event names/shapes reverse-engineered + decoded. Deferred to keep
-// the D21 PR focused on margin history; stays on RPC (≤7-day window) until then.
+// NOT migrated to Mercury — blocked on the event shape, not on effort. The
+// Aquarius pool's deposit_liquidity / withdraw_liquidity events carry only the
+// two pool-token addresses in topics and [share, amountA, amountB] in data — the
+// DEPOSITOR's address is nowhere in the event. So Mercury can't scope by account
+// (it isn't in any topic), and there's no payload field to filter on either.
+// (The RPC path here already returns nothing for the same reason: its client-side
+// filter rejects every event because the only address topics are the tokens.)
+// A tx-hash join against AccountManager events was probed — no overlap in the
+// sampled window — so attribution isn't reliably recoverable from Mercury today.
+// Left on RPC pending a contract that emits the depositor (or a Retroshade).
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
