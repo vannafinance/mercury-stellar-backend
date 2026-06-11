@@ -207,13 +207,14 @@ RPC retention).
   contracts** (same data also feeds protocol-level risk metrics — cover both at once), and **keep
   AccountManager events in Classic** for now while per-user HF/position logic is still evolving (retroshade
   it separately once that data model settles).
-- **OPEN PRE-MAINNET DECISION — contract-emits-timestamp vs Retroshade:** our own contracts can just
-  emit the timestamp in the event payload — the **LendingPool `deposit_event`/`withdraw_event` ALREADY do**
-  (that's why `lib/mercury-earn.ts` is pure-Mercury, no Horizon). If mainnet contracts keep emitting it,
-  that's a permanent zero-call solution and Retroshade isn't needed for those. **But the Soroswap pair is
-  an EXTERNAL Soroswap-protocol contract — we can't make it emit our timestamp**, so Soroswap LP charts are
-  stuck with Horizon-enrich OR Retroshade regardless. Settle "do mainnet contracts emit event timestamps?"
-  before launch — it fixes the definitive contract interface.
+- **DECIDED (2026-06-10, team lead) — per-tx fetch + Mercury, NO Retroshade, NO contract changes:**
+  timestamps come per-tx from **Horizon** where Mercury lacks them; everything else from Mercury. This is the
+  permanent approach for now — Retroshade and any "make contracts emit timestamps" work are explicitly
+  **off the table**. Per adapter: **Soroswap** = Mercury events + Horizon timestamps (the pair is an external
+  contract anyway, so Horizon is the only option). **Earn** = stays pure-Mercury: the LendingPool
+  `deposit_event`/`withdraw_event` ALREADY carry a payload `timestamp`, so we just read it (the "fetch from
+  Horizon" rule only applies where Mercury can't supply it — we don't add calls we don't need). Don't
+  reintroduce the Retroshade/contract-interface track unless the lead revisits it.
 - **Events endpoint (testnet):** per-account, server-side-filtered, cursor-paginated:
   `GET https://testnet.mercurydata.app/rest/events/by-contract/<contract>?topics=<encodedAccount>&limit=100&cursor=<lastId>`.
   `topics` = the account address as a base64-XDR ScVal (`xdr.ScVal.scvAddress(new Address(addr).toScAddress()).toXDR('base64')`);
