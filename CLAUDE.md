@@ -197,6 +197,23 @@ RPC retention).
   join errors). Event **timestamps must come from Horizon** (`/transactions/{hash}` → `created_at`;
   full history, unlike Soroban RPC's ~days retention). See `lib/mercury-soroswap.ts`. A Retroshade
   table indexing events WITH `closeTime` is the eventual zero-external-call fix.
+- **Federico's verdict (2026-06-10) — confirmed + decided:** Classic events mirror on-chain exactly;
+  ledger/close-time lives one layer up (tx/ledger), so the event itself never carries it. **GraphQL is
+  gone for good** (not just broken — deprecated/removed; the PostGraphile `event→tx→ledger→close_time`
+  path we tried would have worked, but it's not coming back). So two valid paths: **(a)** keep the
+  per-tx **Horizon** lookup (batch/dedupe by tx — what `lib/mercury-soroswap.ts` does), or **(b)**
+  **Retroshade**: capture event data + `close_time` (it's in the close meta) into one table → one query,
+  no extra calls. Federico recommends **Retroshade for the LP charts, scoped to the 4 LendingPool
+  contracts** (same data also feeds protocol-level risk metrics — cover both at once), and **keep
+  AccountManager events in Classic** for now while per-user HF/position logic is still evolving (retroshade
+  it separately once that data model settles).
+- **OPEN PRE-MAINNET DECISION — contract-emits-timestamp vs Retroshade:** our own contracts can just
+  emit the timestamp in the event payload — the **LendingPool `deposit_event`/`withdraw_event` ALREADY do**
+  (that's why `lib/mercury-earn.ts` is pure-Mercury, no Horizon). If mainnet contracts keep emitting it,
+  that's a permanent zero-call solution and Retroshade isn't needed for those. **But the Soroswap pair is
+  an EXTERNAL Soroswap-protocol contract — we can't make it emit our timestamp**, so Soroswap LP charts are
+  stuck with Horizon-enrich OR Retroshade regardless. Settle "do mainnet contracts emit event timestamps?"
+  before launch — it fixes the definitive contract interface.
 - **Events endpoint (testnet):** per-account, server-side-filtered, cursor-paginated:
   `GET https://testnet.mercurydata.app/rest/events/by-contract/<contract>?topics=<encodedAccount>&limit=100&cursor=<lastId>`.
   `topics` = the account address as a base64-XDR ScVal (`xdr.ScVal.scvAddress(new Address(addr).toScAddress()).toXDR('base64')`);
