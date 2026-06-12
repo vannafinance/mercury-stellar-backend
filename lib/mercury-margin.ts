@@ -1,24 +1,23 @@
 import { CONTRACT_ADDRESSES } from "./stellar-utils";
 import { fetchContractEvents } from "./mercury-client";
+import { fetchTxTimestamps } from "./mercury-timestamps";
 
 // Margin transaction history sourced from Mercury (full history — no ~7-day RPC
 // cap). Same output shape as the old RPC path, so it's a drop-in for
 // useMarginHistory.
 //
-// Event data fidelity (decoded from AccountManager):
-//   Trader_Repay_Event → { token_symbol, token_amount (1e18 WAD), timestamp }  → full
-//   Trader_Borrow      → asset symbol only (no amount, no timestamp in event)
-//                        → amount "—" (parity with the old RPC path); display
-//                          time uses carry-forward ordering (below).
-//
-// PERF: this is ONE Mercury REST call — no per-event RPC enrichment. (An earlier
-// version resolved each borrow's timestamp via getTransaction; that was 1 RPC per
-// borrow, which slowed page load and contended with margin-state RPC. Dropped.)
-// Exact borrow timestamps will arrive for free once the contract emits
-// timestamp+amount on Trader_Borrow (see the contract-gap note / Notion).
+// Event data fidelity (decoded from AccountManager) — forward-compatible across the
+// 2026-06 contract upgrade (PR #4: Trader_Borrow gains token_amount, new Trader_Deposit,
+// timestamps dropped by design — ledgerClosedAt is recovered from Horizon):
+//   Trader_Repay_Event → { token_symbol, token_amount (WAD), timestamp }      → full
+//   Trader_Deposit     → { token_symbol, amount (WAD) }                       → new event
+//   Trader_Borrow      → OLD build: bare asset-symbol string (no amount) → "—", local
+//                        overlay fills it; NEW build: { token_symbol, token_amount } (WAD).
+// None of borrow/deposit carry a timestamp → enriched per-tx from Horizon (created_at),
+// full history, deduped — same helper as the Soroswap/Blend adapters.
 
 export interface MarginTxEntry {
-  type: "borrow" | "repay";
+  type: "borrow" | "repay" | "deposit";
   asset: string;
   amount: string;
   timestamp: number;
@@ -48,7 +47,10 @@ export async function getMarginHistoryFromMercury(
 
   // Account already filtered by Mercury; just keep the event types we render.
   const mine = events.filter(
-    (e) => e.eventName === "Trader_Borrow" || e.eventName === "Trader_Repay_Event",
+    (e) =>
+      e.eventName === "Trader_Borrow" ||
+      e.eventName === "Trader_Repay_Event" ||
+      e.eventName === "Trader_Deposit",
   );
 
   const mapped: MarginTxEntry[] = mine.map((e) => {
@@ -62,6 +64,32 @@ export async function getMarginHistoryFromMercury(
         hash: e.tx ?? "",
       };
     }
+    if (e.eventName === "Trader_Deposit") {
+      // New contract: { smart_account, token_symbol, amount } (WAD, no timestamp).
+      const d = (e.data ?? {}) as Record<string, unknown>;
+      return {
+        type: "deposit",
+        asset: String(d.token_symbol ?? ""),
+        amount: wadToHuman(d.amount).toFixed(7),
+        timestamp: 0,
+        hash: e.tx ?? "",
+      };
+    }
+    // Trader_Borrow — forward-compatible across the contract upgrade:
+    //   OLD (live now): data is the bare asset symbol string → amount unknown ("—",
+    //     filled by the useMarginHistory local overlay).
+    //   NEW (post-deploy): data is { smart_account, token_symbol, token_amount } (WAD).
+    // Neither carries a timestamp → Horizon enrich below.
+    if (e.data && typeof e.data === "object") {
+      const d = e.data as Record<string, unknown>;
+      return {
+        type: "borrow",
+        asset: String(d.token_symbol ?? ""),
+        amount: wadToHuman(d.token_amount).toFixed(7),
+        timestamp: 0,
+        hash: e.tx ?? "",
+      };
+    }
     return {
       type: "borrow",
       asset: typeof e.data === "string" ? e.data : "",
@@ -71,13 +99,18 @@ export async function getMarginHistoryFromMercury(
     };
   });
 
-  // Carry-forward (list is newest-first): a borrow has no timestamp in its event,
-  // so it inherits the nearest more-recent event's time. Keeps chronological
-  // ordering without any RPC. Exact times come with the contract fix.
-  let lastTs = Date.now();
-  for (const entry of mapped) {
-    if (entry.timestamp > 0) lastTs = entry.timestamp;
-    else entry.timestamp = lastTs;
+  // Borrows + deposits carry no timestamp in the event — resolve the real ledger
+  // close time per-tx from Horizon (full history, deduped). Repays already have a
+  // payload timestamp, so only entries left at 0 need it.
+  const pendingHashes = mapped.filter((e) => e.timestamp <= 0 && e.hash).map((e) => e.hash);
+  if (pendingHashes.length > 0) {
+    const byHash = await fetchTxTimestamps(pendingHashes);
+    for (const entry of mapped) {
+      if (entry.timestamp <= 0) {
+        const hit = byHash.get(entry.hash);
+        if (hit) entry.timestamp = hit.ts;
+      }
+    }
   }
 
   return mapped;

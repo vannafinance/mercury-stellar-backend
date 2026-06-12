@@ -133,28 +133,14 @@ export const LeverageAssetsTab = () => {
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
-  // Map dropdown asset name → canonical key used in collateralBalances.
-  // Mirrors canonicalMarginToken() in margin-account-info-store.ts.
-  const toCanonicalAsset = (asset: string | undefined): string | null => {
-    if (!asset) return null;
-    const u = asset.toUpperCase();
-    if (u === 'BLEND_USDC' || u === 'USDC') return 'BLUSDC';
-    if (u === 'AQUIRESUSDC' || u === 'AQUARIUS_USDC') return 'AQUSDC';
-    if (u === 'SOROSWAPUSDC' || u === 'SOROSWAP_USDC') return 'SOUSDC';
-    return u;
-  };
-
-  // Build Collaterals[] from real on-chain margin account collateral (used in MB mode grid).
-  // Only show the asset the user selected in the dropdown when toggling to MB —
-  // showing every margin balance regardless of selection was confusing.
+  // Build Collaterals[] from real on-chain margin account collateral (used in MB
+  // mode grid). Show EVERY collateral token the margin account holds (balance > 0)
+  // so the user can borrow against their full margin balance — not just the asset
+  // currently picked in the dropdown. (The pre-select-all effect below ticks them
+  // all by default, so this matches that intent.)
   const mbCollateralItems = useMemo((): Collaterals[] => {
-    const selectedAsset = toCanonicalAsset(collateralList[0]?.asset);
     return (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([token, bal]) => {
-        if (parseFloat(bal.amount) <= 0) return false;
-        if (selectedAsset && token !== selectedAsset) return false;
-        return true;
-      })
+      .filter(([, bal]) => parseFloat(bal.amount) > 0)
       .map(([token, bal]): Collaterals => ({
         asset: token,
         amount: parseFloat(parseFloat(bal.amount).toFixed(7)),
@@ -162,7 +148,7 @@ export const LeverageAssetsTab = () => {
         balanceType: "mb",
         unifiedBalance: parseFloat(bal.usdValue),
       }));
-  }, [collateralBalances, collateralList]);
+  }, [collateralBalances]);
 
   // When entering MB mode (or when margin-account collaterals first appear),
   // pre-select every available collateral so the user can borrow against the
@@ -824,20 +810,35 @@ export const LeverageAssetsTab = () => {
           }
         }
 
-        try {
-          await refreshBalances(userAddress);
-        } catch (refreshErr) {
-          console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
-        }
-        if (marginAccountAddress) {
-          await refreshBorrowedBalances(marginAccountAddress, true);
-        }
-
+        // The tx is already confirmed in a closed ledger (pollTransactionStatus),
+        // so unblock the UI NOW — toast, reset, drop the "Processing…" state — and
+        // run the refresh in the BACKGROUND. Awaiting the heavy refresh
+        // (SAC reconcile + borrow-rate RPCs) here was what kept the button stuck on
+        // "Processing…" long after the position had already rendered. The store's
+        // progressive set() updates the position/collateral within ~1-2s; any
+        // refresh failure reconciles on the next ledger tick.
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
         toast.success(
           `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
         );
         resetForm();
+        setIsProcessing(false);
+
+        qc.invalidateQueries({ queryKey: ['margin'] });
+        void (async () => {
+          try {
+            await refreshBalances(userAddress);
+          } catch (refreshErr) {
+            console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
+          }
+          if (marginAccountAddress) {
+            try {
+              await refreshBorrowedBalances(marginAccountAddress, true);
+            } catch (e) {
+              console.warn("Post-deposit refresh failed; ledger tick will reconcile:", e);
+            }
+          }
+        })();
 
       } catch (error) {
         console.error('❌ Error in deposit and borrow:', error);

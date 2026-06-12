@@ -458,11 +458,13 @@ export const Positionstable = ({
           </span>
         </div>
 
-        {/* Asset */}
+        {/* Asset — normalize so long-form / variant symbols (e.g. AQUARIUS_USDC,
+            BLEND_USDC) resolve to the right icon instead of the eth-icon fallback,
+            matching the Current Positions table. */}
         <div className="w-full flex items-center gap-[8px] py-[16px] px-[12px]">
           {item.asset && (
             <Image
-              src={getTokenIcon(item.asset)}
+              src={getTokenIcon(canonicalToken(item.asset))}
               alt={item.asset}
               width={20}
               height={20}
@@ -470,7 +472,7 @@ export const Positionstable = ({
             />
           )}
           <span className={`text-[13px] font-medium ${isDark ? "text-white" : ""}`}>
-            {item.asset || '—'}
+            {item.asset ? canonicalToken(item.asset) : '—'}
           </span>
         </div>
 

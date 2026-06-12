@@ -13,14 +13,14 @@ interface HorizonTx {
   ledger?: number;
 }
 
-export async function enrichTimestampsByTx(
-  events: { txHash: string; timestamp: number; ledger: number }[],
-): Promise<void> {
-  const hashes = Array.from(new Set(events.map((e) => e.txHash).filter(Boolean)));
-
+/** Resolve { ts (ms), ledger } per tx hash from Horizon, deduped. Misses omitted. */
+export async function fetchTxTimestamps(
+  hashes: string[],
+): Promise<Map<string, { ts: number; ledger: number }>> {
+  const unique = Array.from(new Set(hashes.filter(Boolean)));
   const byHash = new Map<string, { ts: number; ledger: number }>();
   await Promise.allSettled(
-    hashes.map(async (hash) => {
+    unique.map(async (hash) => {
       const res = await fetch(`${HORIZON_URL}/transactions/${hash}`);
       if (!res.ok) return;
       const tx = (await res.json()) as HorizonTx;
@@ -29,7 +29,13 @@ export async function enrichTimestampsByTx(
       }
     }),
   );
+  return byHash;
+}
 
+export async function enrichTimestampsByTx(
+  events: { txHash: string; timestamp: number; ledger: number }[],
+): Promise<void> {
+  const byHash = await fetchTxTimestamps(events.map((e) => e.txHash));
   for (const e of events) {
     const hit = byHash.get(e.txHash);
     if (hit) {
