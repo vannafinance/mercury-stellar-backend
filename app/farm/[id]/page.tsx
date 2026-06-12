@@ -36,6 +36,7 @@ import {
 import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { buildFarmPoolKey, getFarmHistory } from "@/lib/farm-history";
+import { formatTokenAmount } from "@/lib/utils/format-amount";
 
 // Compact human-readable number: "62.44M", "1.23K", "987.65".
 // Used for large pool/reserve totals where full digit grouping ("62,438,184.70")
@@ -338,8 +339,8 @@ export default function FarmDetailPage() {
   const POSITION_DUST = 0.001;
   const currentPositionBody = useMemo(() => {
     if (!tokenSymbol || myUnderlying <= POSITION_DUST) return { rows: [] };
-    const bTokens = (parseFloat(myPosition?.bTokenBalance ?? '0') || 0).toFixed(2);
-    const underlying = (parseFloat(myPosition?.underlyingValue ?? '0') || 0).toFixed(2);
+    const bTokens = formatTokenAmount(parseFloat(myPosition?.bTokenBalance ?? '0') || 0);
+    const underlying = formatTokenAmount(parseFloat(myPosition?.underlyingValue ?? '0') || 0);
     const apy = reserveData ? (parseFloat(reserveData.supplyAPY) || 0).toFixed(2) : '—';
     const bRate = reserveData?.bRate ? (parseFloat(reserveData.bRate) || 0).toFixed(2) : '—';
     return {

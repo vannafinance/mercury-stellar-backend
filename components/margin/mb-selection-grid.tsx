@@ -7,6 +7,7 @@ import { Radio } from "../ui/radio-button";
 import { iconPaths } from "@/lib/constants";
 import { Collaterals } from "@/lib/types";
 import { useTheme } from "@/contexts/theme-context";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 type Mode = "Deposit" | "Borrow";
 
@@ -59,12 +60,12 @@ const MBSelectionGridComponent = ({
             <div className={`text-[16px] font-semibold ${
               isDark ? "text-white" : ""
             }`}>
-              {(Number(item.amount) || 0).toFixed(2)} {item.asset}
+              {formatTokenAmount(Number(item.amount) || 0)} {item.asset}
             </div>
             <div className={`rounded-[4px] py-[2px] px-[4px] text-[10px] font-medium ${
               isDark ? "bg-[#111111] text-white" : "bg-[#FFFFFF]"
             }`}>
-              {(Number(item.amountInUsd) || 0).toFixed(2)} USD
+              {formatUsdValue(Number(item.amountInUsd) || 0).replace("$", "")} USD
             </div>
           </article>
         );

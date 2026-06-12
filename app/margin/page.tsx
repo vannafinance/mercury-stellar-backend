@@ -281,13 +281,18 @@ const Margin = () => {
       showZeroAsDash: false,
     });
 
+    // Sub-cent (but non-zero) → "<$0.01" rather than a misleading "$0.00", so the
+    // header agrees with the Repay tab when only dust debt/collateral remains.
+    const isDust = Math.abs(value) > 0 && Math.abs(value) < 0.01;
+
     if (itemId === "netProfitAndLoss") {
       // Signed display: +$X for gains, -$X for losses, $0.00 at exactly zero.
-      if (value > 0) return `+$${usdText}`;
-      if (value < 0) return `-$${usdText}`;
+      if (value > 0) return isDust ? "+<$0.01" : `+$${usdText}`;
+      if (value < 0) return isDust ? "-<$0.01" : `-$${usdText}`;
       return `$${usdText}`;
     }
 
+    if (isDust) return "<$0.01";
     return `$${usdText}`;
   };
 

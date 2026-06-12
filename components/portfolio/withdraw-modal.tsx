@@ -8,6 +8,7 @@ import { ASSET_TYPES, AssetType } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { formatTokenAmount } from "@/lib/utils/format-amount";
 
 interface WithdrawModalProps {
   isOpen: boolean;
@@ -193,7 +194,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
                     Available to withdraw
                   </span>
                   <span className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#0f172a]"}`}>
-                    {(parseFloat(String(availableBalance)) || 0).toFixed(2)}{" "}
+                    {formatTokenAmount(parseFloat(String(availableBalance)) || 0)}{" "}
                     <span className={`text-[13px] font-medium ${isDark ? "text-[#A0A0A0]" : "text-[#6b7280]"}`}>
                       {cfg.label}
                     </span>
