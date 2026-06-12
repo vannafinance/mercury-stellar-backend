@@ -29,6 +29,7 @@ import toast from "react-hot-toast";
 import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -134,13 +135,15 @@ export const LeverageAssetsTab = () => {
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   // Build Collaterals[] from real on-chain margin account collateral (used in MB
-  // mode grid). Show EVERY collateral token the margin account holds (balance > 0)
-  // so the user can borrow against their full margin balance — not just the asset
-  // currently picked in the dropdown. (The pre-select-all effect below ticks them
-  // all by default, so this matches that intent.)
+  // mode grid). Show every REAL collateral token the account holds (XLM / USDC
+  // family) so the user can borrow against their full balance. Exclude farm /
+  // Blend tracking receipts (BLEND_*, AQ_*, SS_*, *_LP) — those are enriched into
+  // collateralBalances for HF math but are farm positions, not borrowable margin
+  // collateral (and have no token icon). Mirrors the positions table's filter.
+  // Dust is shown via adaptive formatting, not hidden.
   const mbCollateralItems = useMemo((): Collaterals[] => {
     return (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([, bal]) => parseFloat(bal.amount) > 0)
+      .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
       .map(([token, bal]): Collaterals => ({
         asset: token,
         amount: parseFloat(parseFloat(bal.amount).toFixed(7)),

@@ -11,6 +11,7 @@ import { useMarginHistory } from "@/hooks/use-margin";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { buildBorrowAttributionFromHistory } from "@/lib/margin-position-attribution";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 interface PositionstableProps {
   onRepayClick?: (asset?: string) => void;
@@ -48,11 +49,9 @@ const formatTokenName = (asset: string): string => {
   return asset;
 };
 
-const formatInterestUsd = (value: number): string => {
-  if (!Number.isFinite(value) || value <= 0) return "$0";
-  if (value < 0.01) return "<$0.01";
-  return `$${value.toFixed(2)}`;
-};
+// Delegate to the shared adaptive formatter: "$0.00" for true zero, "<$0.01" for
+// sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
+const formatInterestUsd = (value: number): string => formatUsdValue(value);
 
 export const Positionstable = ({
   onRepayClick,
@@ -83,8 +82,10 @@ export const Positionstable = ({
     const dedupedBorrowed = new Map<string, { token: string; balance: BorrowedBalance }>();
     for (const [token, bal] of Object.entries(borrowedBalances) as [string, BorrowedBalance][]) {
       const amount = parseFloat(bal.amount || '0');
-      const usd = parseFloat(bal.usdValue || '0');
-      if (!(amount > BORROW_DUST_EPSILON) || !(usd > BORROW_DUST_USD)) continue;
+      // Keep any real (non-zero) debt — including sub-$0.01 dust — so the user can
+      // see and repay it. (Previously a $0.01 USD floor hid residual debt and left
+      // the Repay button disabled while debt still existed on-chain.)
+      if (!(amount > BORROW_DUST_EPSILON)) continue;
       const canonical = canonicalToken(token);
       const existing = dedupedBorrowed.get(canonical);
       if (!existing || amount > parseFloat(existing.balance.amount || '0')) {
@@ -242,7 +243,7 @@ export const Positionstable = ({
         borrowedArray.push({
           assetData: {
             asset: b.token,
-            amount: displayAmt.toFixed(2),
+            amount: formatTokenAmount(displayAmt),
           },
           percentage: 0,
           usdValue: parseFloat(displayUsd.toFixed(2)),
@@ -284,7 +285,7 @@ export const Positionstable = ({
           positionId: positionId++,
           collateral: {
             asset: collateralEntry.token,
-            amount: collateralAmt.toFixed(2),
+            amount: formatTokenAmount(collateralAmt),
           },
           collateralUsdValue: parseFloat(collateralUsd.toFixed(2)),
           borrowed: borrowedArray,
@@ -311,11 +312,11 @@ export const Positionstable = ({
         positionId: 1,
         collateral: {
           asset: underlying,
-          amount: price > 0 ? (equityUsd / price).toFixed(2) : '0',
+          amount: price > 0 ? formatTokenAmount(equityUsd / price) : '0',
         },
         collateralUsdValue: equityUsd,
         borrowed: allBorrows.map(b => ({
-          assetData: { asset: b.token, amount: parseFloat(b.balance.amount).toFixed(2) },
+          assetData: { asset: b.token, amount: formatTokenAmount(parseFloat(b.balance.amount)) },
           percentage: totalBorrowUsd > 0
             ? Math.round((parseFloat(b.balance.usdValue) / totalBorrowUsd) * 100) : 0,
           usdValue: parseFloat(b.balance.usdValue),
@@ -478,7 +479,7 @@ export const Positionstable = ({
 
         {/* Amount */}
         <div className={`w-full flex items-center py-[16px] px-[12px] text-[13px] font-medium ${isDark ? "text-white" : ""}`}>
-          {(parseFloat(String(item.amount ?? '0')) || 0).toFixed(2)}
+          {formatTokenAmount(parseFloat(String(item.amount ?? '0')) || 0)}
         </div>
 
         {/* Tx Hash */}
@@ -541,7 +542,7 @@ export const Positionstable = ({
                 isDark ? "text-[#919191]" : "text-[#76737B]"
               }`}
             >
-              ${item.collateralUsdValue}
+              {formatUsdValue(item.collateralUsdValue)}
             </div>
           </div>
         </motion.div>
@@ -589,7 +590,7 @@ export const Positionstable = ({
                     isDark ? "text-[#919191]" : "text-[#76737B]"
                   }`}
                 >
-                  ${borrowedItem.usdValue}
+                  {formatUsdValue(borrowedItem.usdValue)}
                 </div>
               </div>
               {borrowedItem.percentage > 0 && (
@@ -706,7 +707,7 @@ export const Positionstable = ({
                   {item.collateral.amount} {formatTokenName(item.collateral.asset)}
                 </div>
                 <div className={`text-[10px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-                  ${item.collateralUsdValue}
+                  {formatUsdValue(item.collateralUsdValue)}
                 </div>
               </div>
             </div>
@@ -730,7 +731,7 @@ export const Positionstable = ({
                       </div>
                       <div className="flex items-center gap-1">
                         <span className={`text-[10px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-                          ${borrowedItem.usdValue}
+                          {formatUsdValue(borrowedItem.usdValue)}
                         </span>
                         {borrowedItem.percentage > 0 && (
                           <span className="bg-[#F1EBFD] rounded px-1 text-[9px] font-medium text-[#703AE6]">
