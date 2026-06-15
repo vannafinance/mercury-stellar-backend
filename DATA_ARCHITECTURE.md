@@ -22,6 +22,43 @@ The mistake to avoid is thinking one of them can do it all. They can't — each 
 *wrong* tool for the other two's job, and forcing it creates the exact problems we spent
 the sprint removing.
 
+### Diagram — the three layers around our protocol
+
+```
+                  ┌──────────────────────────────────────────────────────────┐
+                  │              VANNA STELLAR FRONTEND  (Next.js)             │
+                  │   margin · earn · farm · portfolio · /analytics · /stats   │
+                  └──────────────────────────────────────────────────────────┘
+                        ▲                     ▲                       ▲
+       "what does X     │     "what did       │      "what's the      │
+        hold RIGHT NOW?"│   THIS ACCOUNT do?" │    WHOLE PROTOCOL      │
+                        │                     │     doing over time?"  │
+                ┌───────┴───────┐    ┌────────┴───────┐     ┌──────────┴───────┐
+                │      RPC       │    │    MERCURY     │     │      HUBBLE      │
+                │  Soroban node  │    │ event indexer  │     │   SDF BigQuery   │
+                ├────────────────┤    ├────────────────┤     ├──────────────────┤
+                │ live state     │    │ per-account    │     │ protocol-wide    │
+                │ real-time      │    │ history,       │     │ aggregates (SQL) │
+                │                │    │ real-time      │     │ batch (~mins)    │
+                ├────────────────┤    ├────────────────┤     ├──────────────────┤
+                │ stat cards,    │    │ history tabs   │     │ /stats page      │
+                │ /analytics     │    │ (4/5 hooks;    │     │ (D23–24, new —   │
+                │ snapshot       │    │ Aquarius TODO) │     │ not built yet)   │
+                └───────┬────────┘    └───────┬────────┘     └────────┬─────────┘
+                        │ simulate            │ indexes               │ indexes
+                        │ (read state)        │ events  ┌─ timestamps │ events
+                        ▼                     ▼         │ via Horizon ▼
+                  ┌──────────────────────────────────────────────────────────┐
+                  │           STELLAR / SOROBAN  —  OUR PROTOCOL               │
+                  │   AccountManager · LendingPool{ XLM · USDC · AQ · SO }     │
+                  │   (Horizon supplies event close-times Mercury lacks)       │
+                  └──────────────────────────────────────────────────────────┘
+
+   RPC    = "now"     · the only source of current balances/HF · bounded scan (D22)
+   Mercury= "history" · one account's events, real-time · timestamps from Horizon
+   Hubble = "totals"  · SUM/GROUP BY over ALL accounts & time · one cached SQL query
+```
+
 ---
 
 ## 2. RPC — live on-chain state
