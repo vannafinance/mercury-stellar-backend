@@ -51,6 +51,12 @@ const formatFieldValue = (
   const formatType = FIELD_FORMAT_MAP[id] as FormatType | undefined;
   const isUsdField = USD_FIELDS.includes(id as (typeof USD_FIELDS)[number]);
 
+  // Sub-cent USD dust → "<$0.01" instead of a misleading "$0.00", consistent with
+  // the header stats / repay tab.
+  if (isUsdField && typeof value === "number" && value > 0 && value < 0.01) {
+    return "<$0.01";
+  }
+
   if (!formatType) {
     // Fallback to default number formatting
     const formatted = formatValue(value, { type: "number" });

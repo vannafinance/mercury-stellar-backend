@@ -18,6 +18,7 @@ import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { formatUsdValue } from "@/lib/utils/format-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
@@ -38,8 +39,9 @@ const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
 const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
-const formatUsd = (n: number): string =>
-  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// Shared adaptive formatter — "<$0.01" for sub-cent dust, consistent with the
+// header / positions / repay views.
+const formatUsd = (n: number): string => formatUsdValue(n);
 
 export const TransferCollateral = () => {
   const { isDark } = useTheme();

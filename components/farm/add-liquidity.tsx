@@ -23,6 +23,7 @@ import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { formatUsdValue } from "@/lib/utils/format-amount";
 import { attributeFarmDeposit } from "@/lib/utils/margin-token-attribution";
 
 const SUPPORTED_TOKENS = ["XLM", "USDC"] as const;
@@ -618,6 +619,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
               )}
             </AnimatePresence>
           </div>
+        </div>
+        {/* USD equivalent of the entered amount (matches the earn supply/withdraw UX) */}
+        <div className="px-3 -mt-1 pb-1">
+          <span className={`text-[12px] font-medium ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+            ≈ {formatUsdValue((parseFloat(value) || 0) * (tokenPriceUsd || 0))}
+          </span>
         </div>
         <div className="flex items-center justify-between px-3 pb-3">
           <div className="flex items-center gap-1">

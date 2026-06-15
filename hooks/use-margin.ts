@@ -3,15 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { getMarginHistoryFromMercury } from '@/lib/mercury-margin';
 
-// Margin transaction history from Mercury (full history — no ~7-day RPC cap).
+// Margin transaction history — pure Mercury (full history, no ~7-day RPC cap).
 //
-// D21 migration: source is Mercury (no localStorage merge), and there is NO
-// ledger-tick refetch. History is append-only and the query is comparatively
-// heavy (full ledger range + per-borrow tx timestamp enrichment), so re-polling
-// every ~5s is wasteful. Freshness comes from: mount, account change, window
-// focus, and margin-mutation invalidation — borrow/repay mutations invalidate
-// ['margin'], which prefix-matches ['margin','history'] and triggers a refetch
-// exactly when the history actually changes.
+// The redeployed AccountManager (2026-06-13) now emits self-describing events:
+// Trader_Borrow{token_symbol, token_amount}, Trader_Deposit{token_symbol, amount},
+// Trader_Repay_Event{token_symbol, token_amount, timestamp}. So borrow amounts and
+// deposits come straight from Mercury — the earlier localStorage overlay (which
+// filled the old symbol-only Trader_Borrow gap) is no longer needed and was removed.
+// Timestamps: repay from its payload; borrow/deposit per-tx from Horizon (the
+// contract emits none, by design) — handled in getMarginHistoryFromMercury.
+//
+// NO ledger-tick refetch: the query is heavy (full ledger range + per-tx timestamp
+// enrichment). Freshness comes from mount, account change, window focus, and the
+// margin-mutation invalidation of ['margin'] (prefix-matches ['margin','history']).
 export const useMarginHistory = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 

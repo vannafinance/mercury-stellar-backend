@@ -61,7 +61,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const userAddress = useUserStore((state) => state.address);
 
   const withdraw = useWithdrawLiquidity();
-  const { pools } = usePoolData();
+  const { pools, refresh: refreshPools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
   const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
@@ -116,7 +116,17 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
         await withdraw.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
         setShares("");
         setSelectedPercentage(0);
-        refreshPositions();
+        // The simulation-based balance read can briefly return the pre-burn
+        // balance right after the tx confirms (the burn takes a few seconds to
+        // reflect on-chain). Re-sync position + pool stats across that window so
+        // the reduced balance appears ON ITS OWN — the user never has to reload.
+        // (Ledger ticks also invalidate, but these guarantee a prompt catch-up.)
+        const resync = () => {
+          refreshPositions();
+          refreshPools();
+        };
+        resync();
+        [3000, 6000, 10000, 15000].forEach((d) => setTimeout(resync, d));
       } catch {
         // toast fired by useMutationToast
       }

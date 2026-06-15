@@ -10,6 +10,7 @@ import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 const tabs = [
   { id: "current-positions", label: "Current Position" },
@@ -105,9 +106,9 @@ export const YourPositions = memo(function YourPositions() {
                 title: asset,
                 tags: ["Vanna", "Vault"],
               },
-              { title: `${vTokenBalance.toFixed(2)} v${asset}` },
-              { title: `${deposited.toFixed(2)} ${asset}` },
-              { title: `$${(deposited * price).toFixed(2)}` },
+              { title: `${formatTokenAmount(vTokenBalance)} v${asset}` },
+              { title: `${formatTokenAmount(deposited)} ${asset}` },
+              { title: formatUsdValue(deposited * price) },
               { title: `${supplyAPY.toFixed(2)}%` },
             ],
           },

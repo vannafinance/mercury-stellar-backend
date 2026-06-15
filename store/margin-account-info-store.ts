@@ -120,8 +120,11 @@ export const useMarginAccountInfoStore = createNewStore(initialState, {
   devTools: true,
   persist: {
     name: "margin-account-info-store",
-    version: 3,
+    version: 5,
     migrate: (persistedState: any, _version: number) => {
+      // Reset balances/derived metrics on every load — they must come fresh from
+      // the chain. (v4 briefly persisted balances; this clears any such residue so
+      // a previous account's numbers can't bleed into a different wallet.)
       return {
         ...persistedState,
         isCreatingAccount: false,
@@ -131,13 +134,15 @@ export const useMarginAccountInfoStore = createNewStore(initialState, {
         totalBorrowedValue: 0,
         totalCollateralValue: 0,
         totalValue: 0,
+        grossCollateralValue: 0,
+        netAvailableCollateral: 0,
+        collateralLeftBeforeLiquidation: 0,
         avgHealthFactor: 0,
       };
     },
-    // Persist only the account identity. Balances and derived metrics must be
-    // re-fetched from the chain on every load — otherwise a previous wallet's
-    // residual entries (e.g. a 40 XLM borrow from a different test session)
-    // bleed into a freshly connected wallet's UI until the async refresh lands.
+    // Persist ONLY the account identity. Balances/derived metrics are deliberately
+    // NOT persisted — persisting them bled one account's positions into another
+    // wallet on reload. The ~2-5s cold-load is the accepted cost of correctness.
     partialize: (state) => ({
       hasMarginAccount: state.hasMarginAccount,
       marginAccountAddress: state.marginAccountAddress,
@@ -155,6 +160,32 @@ export const setMarginAccount = (account: MarginAccount) => {
     // stuck on "Creating Account..." and the next open-position attempt is
     // blocked. (setAccountCreationError already resets it on the error path.)
     isCreatingAccount: false,
+  });
+};
+
+// Balance/derived fields to wipe when a DIFFERENT wallet's margin account is
+// resolved, so persisted (stale-while-revalidate) balances from a prior session
+// can't bleed into the newly connected wallet before its refresh lands.
+const STALE_BALANCE_RESET = {
+  borrowedBalances: {},
+  collateralBalances: {},
+  totalBorrowedValue: 0,
+  totalCollateralValue: 0,
+  totalValue: 0,
+  grossCollateralValue: 0,
+  netAvailableCollateral: 0,
+  collateralLeftBeforeLiquidation: 0,
+  avgHealthFactor: 0,
+} as const;
+
+// Set the resolved margin account; if it differs from what's currently stored
+// (e.g. a different wallet connected), drop the stale persisted balances.
+const applyResolvedMarginAccount = (address: string | null) => {
+  const prev = useMarginAccountInfoStore.getState().marginAccountAddress;
+  useMarginAccountInfoStore.getState().set({
+    hasMarginAccount: true,
+    marginAccountAddress: address,
+    ...(address !== prev ? STALE_BALANCE_RESET : {}),
   });
 };
 
@@ -356,10 +387,7 @@ export const checkUserMarginAccount = async (
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
 
       if (accountInfo.hasAccount) {
-        useMarginAccountInfoStore.getState().set({
-          hasMarginAccount: true,
-          marginAccountAddress: accountInfo.accountAddress || null,
-        });
+        applyResolvedMarginAccount(accountInfo.accountAddress || null);
         return;
       }
 
@@ -369,10 +397,7 @@ export const checkUserMarginAccount = async (
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
         if (blockchainAccount) {
-          useMarginAccountInfoStore.getState().set({
-            hasMarginAccount: true,
-            marginAccountAddress: blockchainAccount,
-          });
+          applyResolvedMarginAccount(blockchainAccount);
         } else {
           clearMarginAccount();
         }
@@ -507,32 +532,22 @@ export const refreshBorrowedBalances = async (
     }
 
     // ── Progressive render ────────────────────────────────────────────────────
-    // Publish the core position (debt + ledger collateral) now, so the positions
-    // table appears in ~1-2s instead of waiting on the heavier farm-tracking + SAC
-    // reconcile + borrow-rate RPCs below (~5s total cold load). The stats here are
-    // a preliminary estimate from priced ledger collateral; the final set() at the
-    // end of this function overwrites them with farm/SAC-accurate values.
-    {
-      const prelimDebt = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
-      const prelimGross = totalCollateralValue;
-      const prelimNet = Math.max(0, prelimGross - prelimDebt);
-      useMarginAccountInfoStore.getState().set({
-        borrowedBalances: { ...borrowedBalances },
-        collateralBalances: { ...collateralBalances },
-        totalBorrowedValue,
-        totalCollateralValue,
-        grossCollateralValue: prelimGross,
-        avgHealthFactor:
-          prelimDebt > 0
-            ? prelimGross / prelimDebt
-            : prelimGross > 0
-              ? HEALTH_FACTOR_INFINITY_SENTINEL
-              : 0,
-        netAvailableCollateral: prelimNet,
-        totalValue: prelimNet + totalBorrowedValue,
-        isLoadingBorrowedBalances: false,
-      });
-    }
+    // Publish the fast, already-accurate fields now (debt + balances) so the
+    // positions table / MB collateral list appear in ~1-2s instead of waiting on
+    // the heavier farm-tracking + SAC reconcile + borrow-rate RPCs below.
+    //
+    // We deliberately DON'T publish a preliminary HF / gross / net / total here.
+    // For a leveraged position the borrowed funds sit RAW in the smart account and
+    // are only added to gross collateral by reconcileMarginRawSacCollateral below;
+    // computing HF from the pre-reconcile gross flashed a wrong low value
+    // (e.g. 1.16 → 0.36 → 1.16). Those metrics are published once, accurately, in
+    // the final set() — until then the header keeps its last-known value (no flicker).
+    useMarginAccountInfoStore.getState().set({
+      borrowedBalances: { ...borrowedBalances },
+      collateralBalances: { ...collateralBalances },
+      totalBorrowedValue,
+      isLoadingBorrowedBalances: false,
+    });
 
     // Enrich collateralBalances with Blend bTokens and Aquarius/Soroswap LP tokens.
     // The chain's CollateralBalanceWAD for tracking tokens is 0 by design — Farm

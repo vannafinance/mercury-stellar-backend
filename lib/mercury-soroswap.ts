@@ -1,5 +1,5 @@
 import { fetchContractEvents } from "./mercury-client";
-import { HORIZON_URL } from "./stellar-utils";
+import { enrichTimestampsByTx } from "./mercury-timestamps";
 import type { SoroswapLpEvent } from "./soroswap-utils";
 
 // Soroswap LP history sourced from Mercury (full history — no ~30-day RPC
@@ -72,41 +72,6 @@ export async function getSoroswapLpEventsFromMercury(
     })
     .filter((e): e is SoroswapLpEvent => e !== null);
 
-  await enrichTimestamps(mine);
+  await enrichTimestampsByTx(mine);
   return mine.sort((a, b) => b.timestamp - a.timestamp);
-}
-
-// Mercury REST event rows carry no ledger-close time. Resolve it from Horizon
-// (full history, unlike Soroban RPC), deduped by hash — deposit + its paired
-// sync/mint share one tx. Misses are tolerated (timestamp stays 0).
-interface HorizonTx {
-  created_at?: string;
-  ledger?: number;
-}
-
-async function enrichTimestamps(events: SoroswapLpEvent[]): Promise<void> {
-  const hashes = Array.from(new Set(events.map((e) => e.txHash).filter(Boolean)));
-
-  const byHash = new Map<string, { ts: number; ledger: number }>();
-  await Promise.allSettled(
-    hashes.map(async (hash) => {
-      const res = await fetch(`${HORIZON_URL}/transactions/${hash}`);
-      if (!res.ok) return;
-      const tx = (await res.json()) as HorizonTx;
-      if (tx.created_at) {
-        byHash.set(hash, {
-          ts: new Date(tx.created_at).getTime(),
-          ledger: tx.ledger ?? 0,
-        });
-      }
-    }),
-  );
-
-  for (const e of events) {
-    const hit = byHash.get(e.txHash);
-    if (hit) {
-      e.timestamp = hit.ts;
-      e.ledger = hit.ledger;
-    }
-  }
 }

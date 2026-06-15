@@ -47,7 +47,6 @@ export const BorrowBox = ({
   const config = MODE_CONFIG[mode];
 
   // Store access
-  const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
   const borrowedBalances = useMarginAccountInfoStore((state) => state.borrowedBalances);
 
   // Form state
@@ -244,14 +243,10 @@ export const BorrowBox = ({
               isDark ? "text-[#777777]" : "text-[#A7A7A7]"
             }`}
           >
+            {/* No "Balance:" here — when borrowing, the user's collateral balance of
+                the borrow token is irrelevant (and flickered between wallet/margin
+                sources). Keep just the live price ratio. */}
             <div className="flex items-center gap-2 min-w-0">
-              <span className="truncate">
-                Balance:{" "}
-                {collateralBalances[selectedCollateralKey]
-                  ? parseFloat(collateralBalances[selectedCollateralKey].amount).toFixed(2)
-                  : "0.00"}{" "}
-                {selectedToken}
-              </span>
               <ConversionRatio
                 tokenSymbol={selectedToken}
                 tokenPrice={selectedTokenPrice}

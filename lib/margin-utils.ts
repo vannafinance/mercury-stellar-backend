@@ -1800,6 +1800,53 @@ export class MarginAccountService {
   }
 
   /**
+   * Read how much of `tokenSymbol` the margin (smart) account actually holds,
+   * returned as a u256 WAD string (token is 7-dec stroops → WAD = stroops * 1e11).
+   *
+   * Repay pulls the funds FROM the smart account, so a "repay all" must be capped
+   * at this — the accrued-interest portion of the debt isn't held by the account,
+   * and repaying the raw debt overspends → Error(Contract,#10) "balance is not
+   * sufficient to spend". Returns null on any read failure (caller then doesn't cap).
+   */
+  static async getMarginAccountTokenBalanceWad(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+  ): Promise<string | null> {
+    try {
+      const norm = this.normalizeContractTokenSymbol(tokenSymbol);
+      const tokenIdBySymbol: Record<string, string> = {
+        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+      };
+      const tokenId = tokenIdBySymbol[norm];
+      if (!tokenId) return null;
+
+      const userAddress = await getAddress();
+      if (userAddress.error || !userAddress.address) return null;
+
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(userAddress.address);
+      const token = new StellarSdk.Contract(tokenId);
+      const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(token.call('balance', StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })))
+        .setTimeout(30)
+        .build();
+
+      const sim = await server.simulateTransaction(tx);
+      if ('error' in sim || !('result' in sim) || !sim.result?.retval) return null;
+      const stroops = BigInt(StellarSdk.scValToNative(sim.result.retval).toString());
+      return (stroops * BigInt(100_000_000_000)).toString(); // stroops (1e7) → WAD (1e18)
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get collateral balances for a margin account
    * @param marginAccountAddress - The margin account address
    * @returns Object with collateral token balances
@@ -1982,9 +2029,16 @@ export class MarginAccountService {
             hash: result.hash
           };
         } else {
+          // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
+          // real on-chain reason is inspectable instead of a generic "failed".
+          console.error('❌ Repay tx did not succeed:', {
+            hash: result.hash,
+            status: finalResult.status,
+            result: JSON.stringify(finalResult, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+          });
           return {
             success: false,
-            error: `Repay transaction failed: ${finalResult.status}`
+            error: `Repay failed on-chain (${finalResult.status}). Tx: ${result.hash}`
           };
         }
       } else if (result.status === 'ERROR') {

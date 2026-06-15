@@ -29,6 +29,7 @@ import toast from "react-hot-toast";
 import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -133,28 +134,16 @@ export const LeverageAssetsTab = () => {
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
-  // Map dropdown asset name → canonical key used in collateralBalances.
-  // Mirrors canonicalMarginToken() in margin-account-info-store.ts.
-  const toCanonicalAsset = (asset: string | undefined): string | null => {
-    if (!asset) return null;
-    const u = asset.toUpperCase();
-    if (u === 'BLEND_USDC' || u === 'USDC') return 'BLUSDC';
-    if (u === 'AQUIRESUSDC' || u === 'AQUARIUS_USDC') return 'AQUSDC';
-    if (u === 'SOROSWAPUSDC' || u === 'SOROSWAP_USDC') return 'SOUSDC';
-    return u;
-  };
-
-  // Build Collaterals[] from real on-chain margin account collateral (used in MB mode grid).
-  // Only show the asset the user selected in the dropdown when toggling to MB —
-  // showing every margin balance regardless of selection was confusing.
+  // Build Collaterals[] from real on-chain margin account collateral (used in MB
+  // mode grid). Show every REAL collateral token the account holds (XLM / USDC
+  // family) so the user can borrow against their full balance. Exclude farm /
+  // Blend tracking receipts (BLEND_*, AQ_*, SS_*, *_LP) — those are enriched into
+  // collateralBalances for HF math but are farm positions, not borrowable margin
+  // collateral (and have no token icon). Mirrors the positions table's filter.
+  // Dust is shown via adaptive formatting, not hidden.
   const mbCollateralItems = useMemo((): Collaterals[] => {
-    const selectedAsset = toCanonicalAsset(collateralList[0]?.asset);
     return (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([token, bal]) => {
-        if (parseFloat(bal.amount) <= 0) return false;
-        if (selectedAsset && token !== selectedAsset) return false;
-        return true;
-      })
+      .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
       .map(([token, bal]): Collaterals => ({
         asset: token,
         amount: parseFloat(parseFloat(bal.amount).toFixed(7)),
@@ -162,7 +151,7 @@ export const LeverageAssetsTab = () => {
         balanceType: "mb",
         unifiedBalance: parseFloat(bal.usdValue),
       }));
-  }, [collateralBalances, collateralList]);
+  }, [collateralBalances]);
 
   // When entering MB mode (or when margin-account collaterals first appear),
   // pre-select every available collateral so the user can borrow against the
@@ -521,7 +510,7 @@ export const LeverageAssetsTab = () => {
         );
 
         if (maxAdditionalBorrowUsd <= 0) {
-          toast.error('Borrow blocked by Risk Engine: debt too high for current collateral. Repay first.');
+          toast.error("You've reached the safe borrow limit for your current collateral. Add more collateral or repay part of your loan to borrow more.");
           return;
         }
 
@@ -529,7 +518,7 @@ export const LeverageAssetsTab = () => {
           const maxSafeLeverage = totalCollateralUsd > 0
             ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
             : 1;
-          toast.error(`Selected leverage (${leverage}x) exceeds safe limit. Max safe leverage: ~${maxSafeLeverage}x.`);
+          toast.error(`Selected leverage (${leverage}x) is above the safe limit for your collateral. Lower it to ~${maxSafeLeverage}x or add more collateral.`);
           return;
         }
 
@@ -824,20 +813,53 @@ export const LeverageAssetsTab = () => {
           }
         }
 
-        try {
-          await refreshBalances(userAddress);
-        } catch (refreshErr) {
-          console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
-        }
-        if (marginAccountAddress) {
-          await refreshBorrowedBalances(marginAccountAddress, true);
-        }
-
+        // The tx is already confirmed in a closed ledger (pollTransactionStatus),
+        // so unblock the UI NOW — toast, reset, drop the "Processing…" state — and
+        // run the refresh in the BACKGROUND. Awaiting the heavy refresh
+        // (SAC reconcile + borrow-rate RPCs) here was what kept the button stuck on
+        // "Processing…" long after the position had already rendered. The store's
+        // progressive set() updates the position/collateral within ~1-2s; any
+        // refresh failure reconciles on the next ledger tick.
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
         toast.success(
           `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
         );
         resetForm();
+        setIsProcessing(false);
+
+        // Optimistic, post-confirmation: merge the just-deposited collateral into
+        // the store NOW so switching to MB shows it instantly instead of waiting on
+        // the ~2-5s refresh. Safe — the tx is already confirmed; the background
+        // refresh below reconciles to exact on-chain values. (Not persisted, so no
+        // cross-account bleed.)
+        {
+          const store = useMarginAccountInfoStore.getState();
+          const nextCollateral = { ...store.collateralBalances };
+          for (const item of wbDeposits) {
+            const key = normalizeContractTokenSymbol(item.asset);
+            const price = MB_TOKEN_PRICES[key] ?? 1;
+            const prevAmt = parseFloat(nextCollateral[key]?.amount || '0') || 0;
+            const newAmt = prevAmt + item.amount;
+            nextCollateral[key] = { amount: newAmt.toFixed(7), usdValue: (newAmt * price).toFixed(2) };
+          }
+          store.set({ collateralBalances: nextCollateral });
+        }
+
+        qc.invalidateQueries({ queryKey: ['margin'] });
+        void (async () => {
+          try {
+            await refreshBalances(userAddress);
+          } catch (refreshErr) {
+            console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
+          }
+          if (marginAccountAddress) {
+            try {
+              await refreshBorrowedBalances(marginAccountAddress, true);
+            } catch (e) {
+              console.warn("Post-deposit refresh failed; ledger tick will reconcile:", e);
+            }
+          }
+        })();
 
       } catch (error) {
         console.error('❌ Error in deposit and borrow:', error);
