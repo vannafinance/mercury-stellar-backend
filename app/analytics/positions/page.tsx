@@ -1,20 +1,15 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import PositionsMonitor from "@/components/analytics/positions/PositionsMonitor";
 import { mapSnapshotsToWallets } from "@/components/analytics/risk-explorer/constants";
-import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useAnalyticsSnapshot } from "@/hooks/use-analytics";
 import { useUserStore } from "@/store/user";
 
 export default function PositionsPage() {
   const userAddress = useUserStore((s) => s.address);
-  const snapshot = useAnalyticsOnchainStore((s) => s.result);
-  const load = useAnalyticsOnchainStore((s) => s.load);
-
-  useEffect(() => {
-    void load(userAddress);
-  }, [load, userAddress]);
+  const { result: snapshot } = useAnalyticsSnapshot(userAddress);
 
   const wallets = useMemo(
     () => (snapshot ? mapSnapshotsToWallets(snapshot.accounts) : []),

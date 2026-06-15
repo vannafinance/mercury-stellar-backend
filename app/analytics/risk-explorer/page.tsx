@@ -1,50 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import RiskExplorer from "@/components/analytics/risk-explorer/RiskExplorer";
 import { mapSnapshotsToWallets, TOKEN_PRICES } from "@/components/analytics/risk-explorer/constants";
-import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useAnalyticsSnapshot, useOracleSnapshot } from "@/hooks/use-analytics";
 import { useUserStore } from "@/store/user";
-import { readOracleSnapshot } from "@/lib/analytics/stellar/rpcReader";
 import { ACTIVE_ASSETS, type StellarAsset } from "@/lib/analytics/stellar/canon";
 
 export default function RiskExplorerPage() {
   const userAddress = useUserStore((s) => s.address);
-  const snapshot = useAnalyticsOnchainStore((s) => s.result);
-  const load = useAnalyticsOnchainStore((s) => s.load);
-  const [livePrices, setLivePrices] = useState<Record<StellarAsset, number>>(TOKEN_PRICES);
+  const { result: snapshot } = useAnalyticsSnapshot(userAddress);
+  const { data: oracle } = useOracleSnapshot();
 
-  useEffect(() => {
-    void load(userAddress);
-  }, [load, userAddress]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const pull = async () => {
-      try {
-        const oracle = await readOracleSnapshot();
-        if (cancelled) return;
-        const next: Record<StellarAsset, number> = { ...TOKEN_PRICES };
-        for (const p of oracle.prices) next[p.symbol] = p.priceUsd;
-        setLivePrices(next);
-      } catch {
-        // keep fallback prices
-      } finally {
-        if (!cancelled) {
-          timer = setTimeout(pull, 30_000);
-        }
-      }
-    };
-
-    void pull();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  const livePrices = useMemo<Record<StellarAsset, number>>(() => {
+    const next: Record<StellarAsset, number> = { ...TOKEN_PRICES };
+    if (oracle) for (const p of oracle.prices) next[p.symbol] = p.priceUsd;
+    return next;
+  }, [oracle]);
 
   const wallets = useMemo(
     () => (snapshot ? mapSnapshotsToWallets(snapshot.accounts) : []),
