@@ -510,7 +510,7 @@ export const LeverageAssetsTab = () => {
         );
 
         if (maxAdditionalBorrowUsd <= 0) {
-          toast.error('Borrow blocked by Risk Engine: debt too high for current collateral. Repay first.');
+          toast.error("You've reached the safe borrow limit for your current collateral. Add more collateral or repay part of your loan to borrow more.");
           return;
         }
 
@@ -518,7 +518,7 @@ export const LeverageAssetsTab = () => {
           const maxSafeLeverage = totalCollateralUsd > 0
             ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
             : 1;
-          toast.error(`Selected leverage (${leverage}x) exceeds safe limit. Max safe leverage: ~${maxSafeLeverage}x.`);
+          toast.error(`Selected leverage (${leverage}x) is above the safe limit for your collateral. Lower it to ~${maxSafeLeverage}x or add more collateral.`);
           return;
         }
 
@@ -826,6 +826,24 @@ export const LeverageAssetsTab = () => {
         );
         resetForm();
         setIsProcessing(false);
+
+        // Optimistic, post-confirmation: merge the just-deposited collateral into
+        // the store NOW so switching to MB shows it instantly instead of waiting on
+        // the ~2-5s refresh. Safe — the tx is already confirmed; the background
+        // refresh below reconciles to exact on-chain values. (Not persisted, so no
+        // cross-account bleed.)
+        {
+          const store = useMarginAccountInfoStore.getState();
+          const nextCollateral = { ...store.collateralBalances };
+          for (const item of wbDeposits) {
+            const key = normalizeContractTokenSymbol(item.asset);
+            const price = MB_TOKEN_PRICES[key] ?? 1;
+            const prevAmt = parseFloat(nextCollateral[key]?.amount || '0') || 0;
+            const newAmt = prevAmt + item.amount;
+            nextCollateral[key] = { amount: newAmt.toFixed(7), usdValue: (newAmt * price).toFixed(2) };
+          }
+          store.set({ collateralBalances: nextCollateral });
+        }
 
         qc.invalidateQueries({ queryKey: ['margin'] });
         void (async () => {
