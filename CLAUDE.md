@@ -330,5 +330,6 @@ RPC retention).
 - Codebase health audit + per-issue day mapping: [CODEBASE_AUDIT.md](CODEBASE_AUDIT.md)
 - Implementation details + code recipes: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)
 - Backend choices (Mercury, Hubble): [BACKEND_OPTIONS.md](BACKEND_OPTIONS.md), [BACKEND_RESEARCH.md](BACKEND_RESEARCH.md)
+- **Data layers — why RPC vs Mercury vs Hubble (teaching/justification doc):** [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md)
 - Protocol-side roadmap: [PROTOCOL_BACKEND_PLAN.md](PROTOCOL_BACKEND_PLAN.md)
 - Notion source of truth for the sprint: https://www.notion.so/Sprint-1-Plan-Frontend-Rewire-2-Dev-Split-36042874c59b80e7a81fdec4d85eb0d7
