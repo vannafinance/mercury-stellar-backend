@@ -20,6 +20,7 @@ import { useUserStore } from "@/store/user";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { useMutationToast } from "@/hooks/use-mutation-toast";
+import toast from "react-hot-toast";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
@@ -283,14 +284,30 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       const debtWad = latestDebt.success && latestDebt.debtWad
         ? BigInt(latestDebt.debtWad)
         : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-      // "Repay Max" (100%) repays the EXACT on-chain debt so the position clears to
-      // zero — industry standard. Using the float input would floor at 6dp and
-      // leave a stroop of residual dust. Otherwise cap the input at the debt.
-      const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+      // "Repay Max" (100%) targets the full on-chain debt; otherwise cap the input
+      // at the debt.
+      let finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
         ? debtWad
         : debtWad > BigInt(0)
           ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
           : inputRepayWad;
+
+      // Repay pulls FROM the smart account, which holds the borrowed funds but NOT
+      // the accrued-interest portion of the debt. Repaying the raw debt overspends
+      // → Error(Contract,#10) "balance is not sufficient to spend". Cap at the
+      // account's actual token balance so the tx can't overspend.
+      const spendable = await MarginAccountService.getMarginAccountTokenBalanceWad(
+        marginAccount,
+        normalizeContractTokenSymbol(selectedRepayCurrency),
+      );
+      let cappedToBalance = false;
+      if (spendable != null) {
+        const spendableWad = BigInt(spendable);
+        if (finalRepayWad > spendableWad) {
+          finalRepayWad = spendableWad;
+          cappedToBalance = true;
+        }
+      }
 
       if (finalRepayWad <= BigInt(0)) {
         throw new Error('Nothing to repay for this token');
@@ -306,9 +323,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error(result.error || 'Loan repayment failed');
       }
 
-      return { hash: result.hash, finalRepayWad };
+      return { hash: result.hash, finalRepayWad, cappedToBalance };
     },
-    onSuccess: async ({ hash, finalRepayWad }) => {
+    onSuccess: async ({ hash, finalRepayWad, cappedToBalance }) => {
       if (hash) {
         appendMarginHistory({
           marginAccountAddress: marginAccount,
@@ -317,6 +334,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           amount: wadToFixed7(finalRepayWad),
           hash,
         });
+      }
+      if (cappedToBalance) {
+        // Repaid everything the account held; the accrued-interest sliver remains.
+        toast(`Repaid the max your account holds. A small accrued-interest amount remains — deposit a little more ${selectedRepayCurrency} to fully clear it.`);
       }
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
