@@ -306,13 +306,13 @@ Both devs: replace ad-hoc `useState({type:'',text:''})` patterns in 12 mutation 
 | Configure free-tier entities — **prioritize** `Trader_Borrow`, `Trader_Repay_Event`, `Trader_Liquidate_Event`, `Trader_SettleAccount_Event`, `Smart_account_creation`. If free entity cap allows: add `deposit_event`, `withdraw_event` per pool, Aquarius LP `add/remove_liquidity`, Soroswap `swap`/`add/remove_liquidity`. | Build `lib/mercury-client.ts` (GraphQL client using `graphql-request`). Add `NEXT_PUBLIC_MERCURY_URL` + `NEXT_PUBLIC_MERCURY_KEY` to env. |
 | Write GraphQL queries: `HISTORY_QUERY` (borrows/repays/liquidations), `EVENTS_QUERY` (pool-level), `LEADERBOARD_QUERY` (top borrowers). | Test client end-to-end against testnet account that has some real history. |
 
-**D21 — Migrate event hooks**
+**D21 — Migrate event hooks — ✅ 4 of 5 done (Aquarius blocked on contract)**
 
 | Dev A (margin + farm) | Dev B (soroswap + earn) |
 | --- | --- |
-| `useMarginHistory` (use-margin.ts:7) — replace localStorage merge with Mercury query. Drop ledger-tick refetch (Mercury push-driven). | `useSoroswapEvents` (use-soroswap.ts:97) — replace RPC pagination with Mercury query. |
-| `useBlendEvents` + `useAquariusEvents` (use-farm.ts) — same. If Aquarius events not in free-tier entity set, keep on RPC + add TODO. | `useEarnTransactions` (use-earn.ts:514) — same. If event not indexed, keep on RPC. |
-| **PR `s4/mercury-events-margin-farm`** | **PR `s4/mercury-events-soroswap-earn`** |
+| ✅ `useMarginHistory` — pure-Mercury via `getMarginHistoryFromMercury` (PR #24); localStorage overlay dropped after the new contract emitted `Trader_Borrow.token_amount` + `Trader_Deposit` (PR #31). | ✅ `useSoroswapEvents` — Mercury via `getSoroswapLpEventsFromMercury`, `data.to` client-filter + Horizon timestamps (PR #28). |
+| ✅ `useBlendEvents` — Mercury via `getBlendEventsFromMercury` (PR #32). ⛔ `useAquariusEvents` — **still RPC**; the Aquarius pool event has no depositor, so it needs a margin-side `Trader_Aquarius*` contract event (MERCURY_STATUS.md §5.1 / SPRINT_2 #2). | ✅ `useEarnTransactions` — pure-Mercury via `getEarnTransactionsFromMercury`; payload carries its own `timestamp`, no Horizon enrichment (PR #29). |
+| Decided: **per-tx Horizon timestamps + Mercury, no Retroshade, no contract timestamp work** (team lead, 2026-06-10). GraphQL is gone for good — REST events + Horizon close-time is the permanent S1 approach. | |
 
 **D22 — Reclaim the analytics island (audit item 14) — full rework, pulled into S1**
 
@@ -330,6 +330,22 @@ Hubble block + the D28–29 buffer; see the "Drop-first buffer" note below to pr
 - **Joint PR `s4/mercury-analytics-migration`**.
 
 > **Risk note:** If Mercury free tier caps entities below what we need, the lowest-priority hooks (Aquarius/Soroswap LP events) stay on RPC. The high-value migration (margin history + liquidations) is non-negotiable.
+
+**✅ D22 done — 2026-06-15 (PR #33 `s4/analytics-island`, squash-merged `106c5b9`).**
+Shipped the **data-layer** rework; deeper analytics improvements deferred to S2 (team call).
+- `hooks/use-analytics.ts`: `useAnalyticsSnapshot` + shared `useOracleSnapshot` / `usePoolStats` /
+  `useLiveEventFeed` on the stable-queryKey + invalidate-on-tick pattern. Bespoke
+  `lib/analytics/onchain/store.ts` **deleted**.
+- All **7 polling pages** (overview2/positions/risk-explorer/oracles/alerts/liquidations/whales)
+  off `setTimeout(30s)`/store onto the hooks. `grep setTimeout app/analytics/` → only the
+  allowlisted oracle-agents fixture animation remains.
+- `allMarginAccounts.ts` unbounded fan-out **bounded** (not Mercury-backed): RPC concurrency
+  pooled at 8 + deep-scan capped at 200 accounts (overflow logged).
+- **Reality vs plan:** the analytics snapshot is *live state* (current collateral/debt/HF), which
+  Mercury **cannot** serve (it indexes events, not state) — so the snapshot stays RPC, now bounded.
+  The protocol-wide *event* feeds (`readLiveEventFeed` liquidations/whales) also stayed RPC
+  (~24h window) → Mercury/Hubble migration deferred to S2 #1 (low user-visible payoff: panels show
+  only ~25–40 recent rows). Lint net-zero vs baseline (234); `tsc --noEmit` clean.
 
 ### Days 23–24 — Hubble analytics (NEW in v3.1)
 

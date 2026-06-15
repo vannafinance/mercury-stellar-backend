@@ -49,10 +49,15 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
   - **Solo-coverage note:** Sanujit (Dev A) stepped away after D10; **Rohit (Dev B) carried
     D11–D19 solo** (PRs #14–#19), including the earn/optimistic-earn work nominally in Dev A's
     lane. Sanujit resumed 2026-06-01 at D20.
-  - **Next:** D20–22 — Mercury indexer integration (prereq: sign up Mercury **free dev tier**).
-    Dev A lane: D20 Mercury setup/entities/GraphQL queries → D21 margin+farm event hooks
-    (`useMarginHistory`, `useBlendEvents`, `useAquariusEvents`) → D22 joint analytics-island rework.
-    **Also still owed:** collapse the dual `useTokenPrices` API (D12 leftover, below).
+  - **D20–22 — complete (2026-06-15).** Mercury integration + analytics rework. D20 foundation
+    (PR #23). D21 event hooks **4/5 on Mercury** — `useMarginHistory` (#24), `useSoroswapEvents`
+    (#28), `useEarnTransactions` (#29), `useBlendEvents` (#32); only `useAquariusEvents` left on RPC
+    (blocked on a `Trader_Aquarius*` contract event — see the Mercury section + SPRINT_2 #2).
+    D22 analytics island → ledger-tick + RQ, all-accounts RPC scan bounded, bespoke store deleted
+    (PR #33). See the Mercury section below for the per-adapter detail.
+  - **Next:** D23–24 Hubble (BigQuery) — prereq: a GCP BigQuery service-account JSON
+    (`GOOGLE_CREDS_JSON`). **Also still owed:** collapse the dual `useTokenPrices` API (D12 leftover,
+    below) — now tracked as SPRINT_2_GUIDE.md #4.
   - **New S1 scope (D25):** stats snapshot-cache layer (`/api/account/[addr]` +
     `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow
     cold-load of **all** stats panels (Margin/Earn/Farm/Portfolio). Pulled in from
@@ -171,7 +176,7 @@ content rendering on `isRefreshing`.
 
 ## Mercury integration (D20+)
 
-> **Status (2026-06-10):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
+> **Status (2026-06-15):** D20 foundation (PR #23) + **D21 Dev A margin-history** (PR #24
 > `s4/mercury-events`, branch kept) merged. `useMarginHistory` is Mercury-sourced via the
 > **REST** `/api/mercury/events` proxy (NO subscription — Federico confirmed Mercury indexes
 > all contracts; query `GET /rest/events/by-ledger/contracts`). **D21 Dev B:**
@@ -180,7 +185,15 @@ content rendering on `isRefreshing`.
 > (`s4/mercury-earn-events`) — a clean per-pool, server-scoped read (the earn event payload
 > carries its own `timestamp`, so NO Horizon enrichment, unlike Soroswap). The old RPC scrapers
 > `ContractService.getEarnPoolEvents` + `SoroswapService.getSoroswapLpEvents` are deleted.
-> **Next:** `useBlendEvents`/`useAquariusEvents` (still RPC) + act on Federico's GraphQL/close-time answer.
+> **D21 done (4/5):** `useBlendEvents` now Mercury via `lib/mercury-blend.ts` (PR #32). Only
+> `useAquariusEvents` is left on RPC — blocked on a margin-side `Trader_Aquarius*` contract event
+> (the Aquarius pool event has no depositor; see MERCURY_STATUS.md §5.1 / SPRINT_2_GUIDE.md #2).
+> **D22 done (PR #33, 2026-06-15):** analytics island on ledger-tick + React Query; the
+> all-accounts RPC scan is **bounded** (pooled concurrency 8 + 200-account cap), and the bespoke
+> `lib/analytics/onchain/store.ts` is deleted. The analytics snapshot stays RPC by nature (it's
+> live state, which Mercury can't serve); deeper analytics work + Mercury-ifying the
+> liquidation/whale event feeds are deferred to S2 (SPRINT_2_GUIDE.md #1).
+> **Next: D23 Hubble** — needs a GCP BigQuery service-account JSON (`GOOGLE_CREDS_JSON`, server-only).
 
 On-chain **history/events** come from the Mercury indexer (replaces RPC `getEvents`
 scraping + per-browser localStorage history — see `lib/margin-history.ts` and the
