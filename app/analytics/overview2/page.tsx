@@ -4,7 +4,7 @@ import { Fragment, useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useAnalyticsSnapshot } from "@/hooks/use-analytics";
 import {
   deriveProtocolOverview,
   deriveHfDistribution,
@@ -315,13 +315,7 @@ export default function Overview2Page() {
   const [histTick, setHistTick] = useState(0);
 
   const userAddress = useUserStore((s) => s.address);
-  const snapshot = useAnalyticsOnchainStore((s) => s.result);
-  const isLoadingSnapshot = useAnalyticsOnchainStore((s) => s.isLoading);
-  const load = useAnalyticsOnchainStore((s) => s.load);
-
-  useEffect(() => {
-    void load(userAddress);
-  }, [userAddress, load]);
+  const { result: snapshot, isLoading: isLoadingSnapshot, refresh } = useAnalyticsSnapshot(userAddress);
 
   useEffect(() => {
     if (!snapshot?.accounts.length) {
@@ -448,7 +442,7 @@ export default function Overview2Page() {
         </div>
         <button
           type="button"
-          onClick={() => void load(userAddress, { force: true })}
+          onClick={() => void refresh()}
           disabled={isLoadingSnapshot}
           className="rounded-full border border-vgray-200 bg-vgray-50 px-3 py-1 font-semibold text-vgray-600 hover:bg-vgray-100 disabled:opacity-50 disabled:cursor-not-allowed"
         >

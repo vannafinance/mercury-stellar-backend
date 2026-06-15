@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 type Chain = "stellar";
 import {
@@ -12,10 +12,10 @@ import {
   hfColor,
 } from "@/lib/analytics/utils";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
-import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useAnalyticsSnapshot, useLiveEventFeed } from "@/hooks/use-analytics";
 import { derivePositionRows } from "@/lib/analytics/onchain/derivations";
 import { useUserStore } from "@/store/user";
-import { readLiveEventFeed, type LiveLiquidationRow } from "@/lib/analytics/stellar/eventFeed";
+import { type LiveLiquidationRow } from "@/lib/analytics/stellar/eventFeed";
 
 const PAGE_SIZE = 5;
 
@@ -157,41 +157,11 @@ function usePagedSlice<T>(items: T[], page: number, pageSize: number) {
 export default function LiquidationsPage() {
   const [recentPage, setRecentPage] = useState(1);
   const [eligiblePage, setEligiblePage] = useState(1);
-  const [liveHistory, setLiveHistory] = useState<LiveLiquidationRow[]>([]);
-  const [isEventFeedLoading, setIsEventFeedLoading] = useState(true);
   const userAddress = useUserStore((s) => s.address);
-  const snapshot = useAnalyticsOnchainStore((s) => s.result);
-  const isLoading = useAnalyticsOnchainStore((s) => s.isLoading);
-  const load = useAnalyticsOnchainStore((s) => s.load);
+  const { result: snapshot, isLoading } = useAnalyticsSnapshot(userAddress);
+  const { data: eventFeed, isLoading: isEventFeedLoading } = useLiveEventFeed();
 
-  useEffect(() => {
-    void load(userAddress);
-  }, [userAddress, load]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const pull = async () => {
-      try {
-        const feed = await readLiveEventFeed();
-        if (!cancelled) setLiveHistory(feed.liquidations);
-      } catch {
-        // keep fallback
-      } finally {
-        if (!cancelled) {
-          setIsEventFeedLoading(false);
-          timer = setTimeout(pull, 30_000);
-        }
-      }
-    };
-    void pull();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
-
-  const history: LiveLiquidationRow[] = liveHistory;
+  const history = useMemo<LiveLiquidationRow[]>(() => eventFeed?.liquidations ?? [], [eventFeed]);
   const liveEligible = useMemo(() => {
     if (!snapshot) return [];
     return derivePositionRows(snapshot.accounts).filter((p) => p.healthFactor < 1.1).map((p) => ({

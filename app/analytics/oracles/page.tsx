@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import OraclesAgentsPanel from "@/components/analytics/oracles/OraclesAgentsPanel";
 import { oracleData } from "@/lib/analytics/data/mock";
 import { formatPercent, cn } from "@/lib/analytics/utils";
 import { useChartColors } from "@/lib/analytics/theme";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
-import { readOracleSnapshot, type StellarOracleSnapshot } from "@/lib/analytics/stellar/rpcReader";
+import { useOracleSnapshot } from "@/hooks/use-analytics";
+import { type StellarOracleSnapshot } from "@/lib/analytics/stellar/rpcReader";
 import { ORACLE } from "@/lib/analytics/stellar/canon";
 import {
   LineChart,
@@ -188,45 +189,7 @@ function TrackTokenDeviationChart() {
 }
 
 export default function OraclePage() {
-  const [oracleLive, setOracleLive] = useState<{
-    fetchedAt: number;
-    prices: StellarOracleSnapshot[];
-    expectedHeartbeatSec: number;
-  } | null>(null);
-  const [isLiveLoading, setIsLiveLoading] = useState(true);
-  const [liveError, setLiveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const pull = async () => {
-      try {
-        const snapshot = await readOracleSnapshot();
-        if (cancelled) return;
-        setOracleLive({
-          fetchedAt: snapshot.fetchedAt,
-          prices: snapshot.prices,
-          expectedHeartbeatSec: snapshot.expectedHeartbeatSec,
-        });
-        setLiveError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setLiveError(err instanceof Error ? err.message : "oracle rpc error");
-      } finally {
-        if (!cancelled) {
-          setIsLiveLoading(false);
-          timer = setTimeout(pull, 30_000);
-        }
-      }
-    };
-
-    void pull();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  const { data: oracleLive, isLoading: isLiveLoading, error: liveError } = useOracleSnapshot();
 
   const oracleAssets = useMemo(() => {
     if (oracleLive?.prices?.length) return oracleLive.prices;
@@ -239,9 +202,10 @@ export default function OraclePage() {
 
   const historyByAsset = useMemo<Record<string, OraclePoint[]>>(() => {
     const out: Record<string, OraclePoint[]> = {};
+    const baseTime = oracleLive?.fetchedAt ?? 0;
     for (const asset of oracleAssets) {
       const points: OraclePoint[] = Array.from({ length: 24 }, (_, i) => {
-        const t = Date.now() - (23 - i) * 60_000;
+        const t = baseTime - (23 - i) * 60_000;
         const jitter = (Math.sin(i * 1.7 + asset.priceUsd * 13) * 0.008);
         const oracle = Math.max(0, asset.priceUsd * (1 + jitter));
         const cex = oracle * (1 + (Math.cos(i * 1.3) * 0.004));
@@ -257,7 +221,7 @@ export default function OraclePage() {
       out[asset.symbol] = points;
     }
     return out;
-  }, [oracleAssets]);
+  }, [oracleAssets, oracleLive]);
 
   const hasLive = Boolean(oracleLive && !liveError);
   const staleCount = oracleAssets.filter((p) => p.isFallback).length;

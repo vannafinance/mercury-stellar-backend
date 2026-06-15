@@ -75,6 +75,41 @@ let lastResult: { accounts: AccountSnapshot[]; ownerByAccount: Map<string, strin
 let inflight: Promise<{ accounts: AccountSnapshot[]; ownerByAccount: Map<string, string> }> | null = null;
 const ALL_ACCOUNTS_TTL_MS = 30_000;
 
+// Hard ceiling on how many open accounts we deep-scan in a single pass. The
+// per-account read costs `2 + collateral_tokens + debt_tokens + farm` RPC
+// calls, so without a cap the protocol-wide scan grows O(accounts × tokens)
+// and will overwhelm RPC at mainnet scale. We keep the most recently
+// registered accounts (the tail of SmartAccountsList, which `add_account`
+// appends to) and log how many were omitted — never silently truncate.
+// The permanent fix is a Mercury per-account table; this bound makes the
+// RPC path safe until then.
+const MAX_DEEP_SCAN_ACCOUNTS = 200;
+
+// Cap simultaneous in-flight RPC requests. The previous code fanned out every
+// account (and every token within it) through one unbounded `Promise.all`,
+// firing hundreds of concurrent `simulateTransaction` calls. Pooling keeps
+// RPC pressure flat regardless of roster size.
+const SCAN_CONCURRENCY = 8;
+
+/** Run `fn` over `items` with at most `limit` promises in flight at once. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /** Read RegistryKey::SmartAccountsList from persistent storage. Returns
  *  every smart account address ever registered (open + closed). Use
  *  {@link readSmartAccountOwner} to filter the closed ones out. */
@@ -320,11 +355,11 @@ function buildSnapshotFromState(state: MarginAccountChainState): AccountSnapshot
  * roster from the Registry, snapshots each open account, and rolls them up
  * into the `AccountSnapshot[]` shape consumed by every `derive*` helper.
  *
- * Concurrency: `getContractData` calls and per-account view-call fan-outs
- * run in parallel (Promise.all). For a deployment with N margin accounts
- * the total RPC count is roughly:
- *     1 (list)  +  N (owner)  +  N (active)  +  N×(2 + col_tokens + debt_tokens)
- * which is fine for the testnet's typical few-dozen-account scale.
+ * Load is bounded two ways: at most {@link SCAN_CONCURRENCY} RPC requests are
+ * in flight at once (a pool, not an unbounded `Promise.all`), and the deep
+ * per-account scan is capped at {@link MAX_DEEP_SCAN_ACCOUNTS} (most-recent
+ * accounts kept, overflow logged). Together these keep RPC pressure flat
+ * regardless of how large the account roster grows.
  */
 export async function fetchAllMarginAccountSnapshots(opts?: {
   force?: boolean;
@@ -353,25 +388,37 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
       return { accounts: [] as AccountSnapshot[], ownerByAccount: new Map<string, string>() };
     }
 
-    // Resolve owners + filter closed accounts in parallel.
-    const ownerResults = await Promise.all(
-      allSmartAccounts.map(async (account) => ({
-        account,
-        owner: await readSmartAccountOwner(server, account),
-      })),
+    // Resolve owners + filter closed accounts, pooled to keep RPC pressure flat.
+    const ownerResults = await mapWithConcurrency(
+      allSmartAccounts,
+      SCAN_CONCURRENCY,
+      async (account) => ({ account, owner: await readSmartAccountOwner(server, account) }),
     );
     const openPairs = ownerResults.filter(
       (p): p is { account: string; owner: string } => Boolean(p.owner),
     );
 
-    const stateResults = await Promise.all(
-      openPairs.map(({ account, owner }) =>
-        readSingleAccountState(server, account, owner)
-          .catch((err) => {
-            console.warn(`[allMarginAccounts] state read failed for ${account}:`, err);
-            return null;
-          }),
-      ),
+    // Cap the expensive deep-scan. Keep the most recently registered accounts
+    // (tail of the append-only SmartAccountsList) and log the omission.
+    let scanPairs = openPairs;
+    if (openPairs.length > MAX_DEEP_SCAN_ACCOUNTS) {
+      const omitted = openPairs.length - MAX_DEEP_SCAN_ACCOUNTS;
+      scanPairs = openPairs.slice(-MAX_DEEP_SCAN_ACCOUNTS);
+      console.warn(
+        `[allMarginAccounts] ${openPairs.length} open accounts exceed the ` +
+          `${MAX_DEEP_SCAN_ACCOUNTS} deep-scan cap — snapshotting the ${MAX_DEEP_SCAN_ACCOUNTS} ` +
+          `most recent, omitting ${omitted}. (Move to a Mercury per-account table to lift this.)`,
+      );
+    }
+
+    const stateResults = await mapWithConcurrency(
+      scanPairs,
+      SCAN_CONCURRENCY,
+      ({ account, owner }) =>
+        readSingleAccountState(server, account, owner).catch((err) => {
+          console.warn(`[allMarginAccounts] state read failed for ${account}:`, err);
+          return null;
+        }),
     );
 
     const ownerByAccount = new Map<string, string>();
