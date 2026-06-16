@@ -55,9 +55,17 @@ Integration branch: `feat/stellar-rewire`. Trunk: `main`.
     (blocked on a `Trader_Aquarius*` contract event — see the Mercury section + SPRINT_2 #2).
     D22 analytics island → ledger-tick + RQ, all-accounts RPC scan bounded, bespoke store deleted
     (PR #33). See the Mercury section below for the per-adapter detail.
-  - **Next:** D23–24 Hubble (BigQuery) — prereq: a GCP BigQuery service-account JSON
-    (`GOOGLE_CREDS_JSON`). **Also still owed:** collapse the dual `useTokenPrices` API (D12 leftover,
-    below) — now tracked as SPRINT_2_GUIDE.md #4.
+  - **D23–24 — complete (2026-06-16, PR #35 `26878ac`).** Hubble (BigQuery) `/stats`: BigQuery
+    client + 4 queries + 4 `/api/analytics/*` routes (Node runtime) + `/stats` recharts page +
+    branded animated 404 (`app/not-found.tsx`). **Feature-gated** (`STATS_ENABLED`, off by default →
+    page + routes 404). **Hubble is PUBNET-ONLY** (verified): no testnet data, so `/stats` can't
+    populate until mainnet — integration is verified + mainnet-ready; real table is
+    `history_contract_events`, event = `topics_decoded[0].symbol`. GCP project `vanna-hubble`,
+    `hubble-reader` SA key in `.env.local`. See [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md).
+  - **Next:** D25 stats snapshot-cache (`/api/account/[addr]` + `/api/pools` edge caches over live
+    RPC reads) — the real testnet cold-load speedup. **Also still owed:** collapse the dual
+    `useTokenPrices` API (D12 leftover) — SPRINT_2_GUIDE.md #4; `useAquariusEvents` → Mercury when
+    Rohit ships `Trader_Aquarius*`.
   - **New S1 scope (D25):** stats snapshot-cache layer (`/api/account/[addr]` +
     `/api/pools` edge routes, read via the ledger-tick RQ pattern) to fix slow
     cold-load of **all** stats panels (Margin/Earn/Farm/Portfolio). Pulled in from

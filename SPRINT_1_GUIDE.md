@@ -367,6 +367,22 @@ Shipped the **data-layer** rework; deeper analytics improvements deferred to S2 
 - Verify: BigQuery month-to-date cost in GCP console reads $0.
 - **Joint PR `s4/hubble-ui`**.
 
+**✅ D23–24 done — 2026-06-16 (PR #35 `s4/hubble-api`, squash-merged `26878ac`).** Built both
+lanes: BigQuery client + 4 queries + 4 API routes (`/api/analytics/{tvl,top-borrowers,volume,liquidations}`,
+`s-maxage=300, swr=900`, **Node** runtime — the BigQuery SDK can't run on Edge) + `/stats` page
+(recharts, 4 panels) + a branded animated 404 (`app/not-found.tsx`, Vanna logo as the "0").
+- **Feature-gated:** page + routes `404` unless `STATS_ENABLED="true"` (server-only flag, OFF by
+  default) — not publicly reachable until we turn it on.
+- **⚠️ Plan premise was wrong — Hubble is PUBNET-ONLY.** SDF's public dataset
+  (`crypto-stellar.crypto_stellar`) indexes **mainnet only**; there is **no public testnet Hubble**.
+  Our testnet contracts → **0 rows** (vs ~131M mainnet rows/2 days). Real table is
+  **`history_contract_events`** (not `contract_events`); event name = `topics_decoded[0].symbol`;
+  amounts in `data_decoded`. **So D24's "populate `/stats` on testnet in <2s" is NOT achievable** —
+  it can only populate at mainnet. Integration is verified (auth + schema) + **mainnet-ready** (lights
+  up at launch, no code change); on testnet it shows an honest "available at mainnet" banner.
+- **$0 cost** holds (free 1 TB/mo tier; our queries are tiny). GCP: project `vanna-hubble`,
+  `hubble-reader` SA (Job User + Data Viewer), key in `.env.local`. See [DATA_ARCHITECTURE.md](DATA_ARCHITECTURE.md).
+
 ### Day 25 — Stats snapshot-cache layer (fast cold-load for ALL stats) + analytics perf
 
 The slow cold-load is **every** stat panel that reads live chain state — Margin
