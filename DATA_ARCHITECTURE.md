@@ -126,8 +126,17 @@ the browser — i.e. re-introduce the §5 fan-out. Mercury has no `SUM`/`GROUP B
 
 ## 4. Hubble — protocol-wide analytical aggregates
 
-**What it is:** SDF's public **BigQuery** dataset (`crypto-stellar.crypto_stellar.contract_events`).
+**What it is:** SDF's public **BigQuery** dataset (`crypto-stellar.crypto_stellar.history_contract_events`).
 A data warehouse of *all* Stellar contract events, queried with SQL. Not a service we run.
+
+> **⚠️ Network caveat (verified 2026-06-16):** the public Hubble dataset indexes
+> **PUBNET (mainnet) ONLY** — there is no public testnet Hubble. Our protocol is on
+> testnet, so Hubble has **zero** rows for our contracts today. The integration is
+> built and the credentials/queries are verified, but `/stats` only populates once we
+> deploy to mainnet. (Confirmed: our AccountManager = 0 rows all-time, while the table
+> holds ~131M mainnet rows per 2 days.) For testnet-time protocol stats, the only
+> source that indexes our contracts is **Mercury** (client-side aggregation, fine at
+> testnet scale) — deliberately deferred.
 
 **Why we use it (and not Mercury):** the `/stats` page needs protocol-wide, historical
 *aggregates* — 90-day TVL, top-100 borrowers, daily volume, recent liquidations. Those are
