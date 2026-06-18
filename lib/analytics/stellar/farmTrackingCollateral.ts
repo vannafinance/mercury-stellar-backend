@@ -152,45 +152,53 @@ export async function mergeFarmTrackingCollateralIntoBalances(
 ): Promise<Record<string, { amount: string; usdValue: string }>> {
   const out: Record<string, { amount: string; usdValue: string }> = { ...balances };
 
-  try {
-    const blend = await BlendService.getAllUserBlendPositions(marginAccountAddress);
-    for (const sym of ["XLM", "USDC"] as const) {
-      const pos = blend[sym];
-      const underlying = parseFloat(pos?.underlyingValue ?? "0");
-      if (underlying <= DUST) continue;
-      const trackSym = sym === "XLM" ? "BLEND_XLM" : "BLEND_USDC";
-      const price = await fetchTokenPrice(sym);
-      out[trackSym] = {
-        amount: underlying.toFixed(7),
-        usdValue: (underlying * price).toFixed(2),
-      };
-    }
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Blend enrichment failed:", e);
-  }
-
-  try {
-    const xlmUsdcPool = AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc");
-    if (xlmUsdcPool) {
-      const row = await aquariusLpCollateralRow(
-        marginAccountAddress,
-        xlmUsdcPool.tokens[0],
-        xlmUsdcPool.tokens[1],
-        xlmUsdcPool.poolAddress,
-        priceForToken,
-      );
-      if (row) out.AQ_XLM_USDC = row;
-    }
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Aquarius enrichment failed:", e);
-  }
-
-  try {
-    const row = await soroswapLpCollateralRow(marginAccountAddress, priceForToken);
-    if (row) out.SS_XLM_USDC = row;
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Soroswap enrichment failed:", e);
-  }
+  // The three protocol reads are independent and write disjoint keys
+  // (BLEND_* / AQ_* / SS_*), so run them concurrently instead of serially.
+  await Promise.all([
+    (async () => {
+      try {
+        const blend = await BlendService.getAllUserBlendPositions(marginAccountAddress);
+        for (const sym of ["XLM", "USDC"] as const) {
+          const pos = blend[sym];
+          const underlying = parseFloat(pos?.underlyingValue ?? "0");
+          if (underlying <= DUST) continue;
+          const trackSym = sym === "XLM" ? "BLEND_XLM" : "BLEND_USDC";
+          const price = await fetchTokenPrice(sym);
+          out[trackSym] = {
+            amount: underlying.toFixed(7),
+            usdValue: (underlying * price).toFixed(2),
+          };
+        }
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Blend enrichment failed:", e);
+      }
+    })(),
+    (async () => {
+      try {
+        const xlmUsdcPool = AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc");
+        if (xlmUsdcPool) {
+          const row = await aquariusLpCollateralRow(
+            marginAccountAddress,
+            xlmUsdcPool.tokens[0],
+            xlmUsdcPool.tokens[1],
+            xlmUsdcPool.poolAddress,
+            priceForToken,
+          );
+          if (row) out.AQ_XLM_USDC = row;
+        }
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Aquarius enrichment failed:", e);
+      }
+    })(),
+    (async () => {
+      try {
+        const row = await soroswapLpCollateralRow(marginAccountAddress, priceForToken);
+        if (row) out.SS_XLM_USDC = row;
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Soroswap enrichment failed:", e);
+      }
+    })(),
+  ]);
 
   return out;
 }
