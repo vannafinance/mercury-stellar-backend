@@ -90,39 +90,17 @@ const initialState: MarginAccountInfoStateType = {
 };
 
 // Export Store
+//
+// NOT persisted. The account identity has a single cache — MarginAccountService's
+// wallet-keyed, AccountManager-guarded localStorage (STORAGE_KEY). On reload,
+// checkUserMarginAccount reads that cache synchronously for an instant paint, then
+// reconciles against on-chain discovery (the source of truth). Persisting identity
+// here too was a second, wallet-agnostic cache that could rehydrate the previously
+// connected wallet's account and disagree with the chain. Balances are never
+// persisted (they bled across accounts on reload) — they always come fresh.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
-  persist: {
-    name: "margin-account-info-store",
-    version: 5,
-    migrate: (persistedState: any, _version: number) => {
-      // Reset balances/derived metrics on every load — they must come fresh from
-      // the chain. (v4 briefly persisted balances; this clears any such residue so
-      // a previous account's numbers can't bleed into a different wallet.)
-      return {
-        ...persistedState,
-        isCreatingAccount: false,
-        isLoadingBorrowedBalances: false,
-        borrowedBalances: {},
-        collateralBalances: {},
-        totalBorrowedValue: 0,
-        totalCollateralValue: 0,
-        totalValue: 0,
-        grossCollateralValue: 0,
-        netAvailableCollateral: 0,
-        collateralLeftBeforeLiquidation: 0,
-        avgHealthFactor: 0,
-      };
-    },
-    // Persist ONLY the account identity. Balances/derived metrics are deliberately
-    // NOT persisted — persisting them bled one account's positions into another
-    // wallet on reload. The ~2-5s cold-load is the accepted cost of correctness.
-    partialize: (state) => ({
-      hasMarginAccount: state.hasMarginAccount,
-      marginAccountAddress: state.marginAccountAddress,
-    }),
-  },
 });
 
 // Action functions
@@ -135,6 +113,10 @@ export const setMarginAccount = (account: MarginAccount) => {
     // stuck on "Creating Account..." and the next open-position attempt is
     // blocked. (setAccountCreationError already resets it on the error path.)
     isCreatingAccount: false,
+    // A freshly created account is empty on-chain. Clear any balances left over
+    // from a previously-loaded account so they don't bleed into the new one
+    // during the window before refreshBorrowedBalances lands.
+    ...STALE_BALANCE_RESET,
   });
 };
 
@@ -358,27 +340,32 @@ export const checkUserMarginAccount = async (
   const run = (async () => {
     try {
 
-      // Step 1: Check localStorage first (fastest)
+      // Step 1: localStorage gives an instant first paint, but it is only a
+      // hint — a stale entry must never pin an old account. So we apply the
+      // cached address for speed, then ALWAYS reconcile against the chain.
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
-
-      if (accountInfo.hasAccount) {
-        applyResolvedMarginAccount(accountInfo.accountAddress || null);
-        return;
+      const cachedAddress = accountInfo.hasAccount ? accountInfo.accountAddress ?? null : null;
+      if (cachedAddress) {
+        applyResolvedMarginAccount(cachedAddress);
       }
 
-      // Step 2: No account in localStorage - check blockchain
-
+      // Step 2: on-chain discovery is authoritative — it resolves the NEWEST
+      // active account (see getMarginAccountFromRegistry). Adopt it even when a
+      // cached account exists, so the cache can't keep showing an older one.
       try {
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
         if (blockchainAccount) {
           applyResolvedMarginAccount(blockchainAccount);
-        } else {
+        } else if (!cachedAddress) {
+          // Chain has no active account and nothing was cached → none exists.
           clearMarginAccount();
         }
+        // If discovery returns null but we had a cached account, keep the cached
+        // one rather than wiping the section on a single empty/failed lookup.
       } catch (blockchainError) {
         console.error('❌ Error checking blockchain for existing account:', blockchainError);
-        clearMarginAccount();
+        if (!cachedAddress) clearMarginAccount();
       }
     } catch (error) {
       console.error('❌ Error in checkUserMarginAccount:', error);
