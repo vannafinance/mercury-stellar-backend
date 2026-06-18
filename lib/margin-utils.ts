@@ -1,5 +1,6 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
+import { getReadSourceAddress } from '@/lib/read-source';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
@@ -1635,17 +1636,12 @@ export class MarginAccountService {
       }
       
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
-      
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: connected wallet on client, public fallback on
+      // server / pre-connect (source doesn't affect the view result).
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
-      
+
       // Get all borrowed tokens
       const getAllBorrowedTokensTx = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
@@ -1862,16 +1858,10 @@ export class MarginAccountService {
         };
       }
 
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
-
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: wallet on client, public fallback on server / pre-connect.
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
 
       const listTx = new StellarSdk.TransactionBuilder(sourceAccount, {

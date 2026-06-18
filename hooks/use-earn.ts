@@ -7,7 +7,7 @@ import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
 import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
-import { computeBorrowApr } from '@/lib/utils/borrow-rate';
+import { calculateExchangeRateFromPool, type AllPoolStats } from '@/lib/pool-stats';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
 
@@ -19,30 +19,6 @@ import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/norma
 // We still write into `useEarnPoolStore` so components that read the pools
 // from the store directly keep working unchanged (dual-write pattern).
 // ─────────────────────────────────────────────────────────────────────────────
-const calculateSupplyAPY = (utilizationRate: string) => {
-  const utilization = parseFloat(utilizationRate) / 100;
-  return (2.0 + utilization * 10).toFixed(2);
-};
-
-const calculateBorrowAPY = (utilizationRate: string) => {
-  const utilizationPct = parseFloat(utilizationRate) || 0;
-  return computeBorrowApr(utilizationPct).toFixed(2);
-};
-
-const calculateExchangeRateFromPool = (totalAssets: string, vTokenSupply: string) => {
-  const assets = parseFloat(totalAssets) || 0;
-  const supply = parseFloat(vTokenSupply) || 0;
-
-  // Rate = total_assets / vToken_supply, where total_assets = available cash +
-  // outstanding borrows (+ accrued interest). Borrows alone don't move the rate
-  // since the loan is still owed back to the pool — cash drops but borrows rise
-  // by the same amount. Interest pushes the rate above 1, so 1 vToken > 1 asset.
-
-
-  if (assets <= 0 || supply <= 0) return '1';
-  return (assets / supply).toFixed(7);
-};
-
 export const usePoolData = () => {
   const storePools = useEarnPoolStore((s) => s.pools);
   const lastUpdated = useEarnPoolStore((s) => s.lastUpdated);
@@ -52,42 +28,18 @@ export const usePoolData = () => {
 
   const query = useQuery({
     queryKey: ['earn', 'pools'],
-    queryFn: async () => {
+    queryFn: async (): Promise<AllPoolStats> => {
       useEarnPoolStore.getState().set({ isLoadingPools: true });
 
-      const [xlmStats, usdcStats, aquiresUsdcStats, soroswapUsdcStats] = await Promise.all([
-        ContractService.getPoolStats(ASSET_TYPES.XLM),
-        ContractService.getPoolStats(ASSET_TYPES.USDC),
-        ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      const mapped = {
-        XLM: {
-          ...xlmStats,
-          supplyAPY: calculateSupplyAPY(xlmStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(xlmStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(xlmStats.totalSupply, xlmStats.vTokenSupply),
-        },
-        USDC: {
-          ...usdcStats,
-          supplyAPY: calculateSupplyAPY(usdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(usdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(usdcStats.totalSupply, usdcStats.vTokenSupply),
-        },
-        AQUARIUS_USDC: {
-          ...aquiresUsdcStats,
-          supplyAPY: calculateSupplyAPY(aquiresUsdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(aquiresUsdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(aquiresUsdcStats.totalSupply, aquiresUsdcStats.vTokenSupply),
-        },
-        SOROSWAP_USDC: {
-          ...soroswapUsdcStats,
-          supplyAPY: calculateSupplyAPY(soroswapUsdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(soroswapUsdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(soroswapUsdcStats.totalSupply, soroswapUsdcStats.vTokenSupply),
-        },
-      };
+      // Pool stats now come from the cached /api/pools edge route (shared across
+      // all users; APY/exchange-rate computed server-side). Still dual-written
+      // into the earn store so direct store readers keep working.
+      const res = await fetch('/api/pools');
+      if (!res.ok) {
+        useEarnPoolStore.getState().set({ isLoadingPools: false });
+        throw new Error(`pool stats failed (${res.status})`);
+      }
+      const mapped = (await res.json()) as AllPoolStats;
 
       useEarnPoolStore.getState().set({
         pools: mapped,

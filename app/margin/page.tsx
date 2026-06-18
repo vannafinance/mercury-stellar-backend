@@ -17,14 +17,13 @@ import { AccountStats } from "@/components/margin/account-stats";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import {
   useMarginAccountInfoStore,
-  refreshBorrowedBalances,
-  checkUserMarginAccount,
+  isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
-import { useLedgerTick } from "@/contexts/ledger-subscriber";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 
 const Margin = () => {
   const { isDark } = useTheme();
@@ -76,7 +75,6 @@ const Margin = () => {
     netAvailableCollateral,
     timeToLiquidation,
     storeBorrowRate,
-    storeIsLoading,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       hasMarginAccount: state.hasMarginAccount,
@@ -89,54 +87,56 @@ const Margin = () => {
       netAvailableCollateral: state.netAvailableCollateral,
       timeToLiquidation: state.timeToLiquidation,
       storeBorrowRate: state.borrowRate,
-      storeIsLoading: state.isLoadingBorrowedBalances,
     })),
   );
 
-  // Keep local loading state in sync with the store's loading state
+  // D25: per-user stats come from the cached /api/account/[addr] snapshot —
+  // instant first paint on a warm edge cache, and the ledger-tick revalidation
+  // is absorbed by the route's 15s s-maxage (so spamming refresh ≈ 1 RPC / 15s,
+  // not one full chain read per load). The snapshot is fed into the store so
+  // every existing consumer stays unchanged. The imperative client read
+  // (refreshBorrowedBalances) is now the mutation / cache-miss fallback only —
+  // mutations still call it directly (and force-suppress this feed briefly so
+  // a lagging cached snapshot can't clobber a fresh post-mutation result).
+  const { snapshot, isLoading: snapshotLoading, error: snapshotError } =
+    useAccountSnapshot(userAddress);
+
+  // Show the loading state until the FIRST snapshot lands — never render the
+  // empty store as if it were real zeros. RQ's isLoading is true only on the
+  // initial fetch (false during background refetch), so this never flickers
+  // back to a spinner once we have data.
   useEffect(() => {
-    setIsLoadingMargin(storeIsLoading);
-  }, [storeIsLoading]);
+    setIsLoadingMargin(snapshotLoading && !snapshot);
+  }, [snapshotLoading, snapshot]);
 
-  // Reload margin data using Stellar backend functions.
-  // The store's checkUserMarginAccount / refreshBorrowedBalances are rate-limited
-  // internally, so polling here is safe and won't storm the RPC.
-  const reloadMarginState = useCallback(async () => {
-    if (!userAddress) return;
-
-    setMarginError(null);
-
-    try {
-      await checkUserMarginAccount(userAddress);
-      const accountAddress =
-        useMarginAccountInfoStore.getState().marginAccountAddress;
-      if (accountAddress) {
-        await refreshBorrowedBalances(accountAddress);
-      }
-    } catch (error: unknown) {
-      const msg =
-        error instanceof Error ? error.message : "Failed to load margin data";
-      setMarginError(msg);
+  useEffect(() => {
+    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    const store = useMarginAccountInfoStore.getState();
+    if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
+      store.set({
+        hasMarginAccount: true,
+        marginAccountAddress: snapshot.marginAccountAddress,
+        borrowedBalances: snapshot.borrowedBalances ?? {},
+        collateralBalances: snapshot.collateralBalances ?? {},
+        totalBorrowedValue: snapshot.totalBorrowedValue ?? 0,
+        totalCollateralValue: snapshot.totalCollateralValue ?? 0,
+        grossCollateralValue: snapshot.grossCollateralValue ?? 0,
+        totalValue: snapshot.totalValue ?? 0,
+        avgHealthFactor: snapshot.avgHealthFactor ?? 0,
+        collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation ?? 0,
+        netAvailableCollateral: snapshot.netAvailableCollateral ?? 0,
+        borrowRate: snapshot.borrowRate ?? 0,
+        debtLimit: snapshot.debtLimit ?? 0,
+        isLoadingBorrowedBalances: false,
+      });
+    } else if (snapshot.hasMarginAccount === false) {
+      store.set({ hasMarginAccount: false });
     }
-  }, [userAddress]);
+  }, [snapshot]);
 
-  const { tick } = useLedgerTick();
-  const lastTickRef = useRef(tick);
-
-  // Initial load when wallet connects or address changes.
   useEffect(() => {
-    if (!isWalletConnected || !userAddress) return;
-    reloadMarginState();
-  }, [isWalletConnected, userAddress, reloadMarginState]);
-
-  // Refresh on each ledger close (~5 s). Skips the initial mount so the
-  // effect above handles the first load without a duplicate call.
-  useEffect(() => {
-    if (tick === lastTickRef.current) return;
-    lastTickRef.current = tick;
-    if (!isWalletConnected || !userAddress) return;
-    reloadMarginState();
-  }, [tick, isWalletConnected, userAddress, reloadMarginState]);
+    setMarginError(snapshotError);
+  }, [snapshotError]);
 
   const accountStats = useMemo(() => {
     const hasAnyMarginData =

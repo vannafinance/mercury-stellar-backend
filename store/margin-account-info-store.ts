@@ -22,6 +22,17 @@ const inflightCheckByUser = new Map<string, Promise<void>>();
 const lastRefreshByAccount = new Map<string, number>();
 const inflightRefreshByAccount = new Map<string, Promise<void>>();
 
+// D25: when a mutation force-refreshes the store directly (authoritative client
+// read), pause the cached /api/account snapshot from feeding the store for a
+// window just past the route's 15s edge TTL — otherwise the still-cached
+// (pre-mutation) snapshot could clobber the fresh post-mutation values. After
+// the window the edge cache has caught up, so the snapshot feed resumes safely.
+let snapshotFeedSuppressedUntil = 0;
+export const suppressSnapshotFeed = (ms = 20_000) => {
+  snapshotFeedSuppressedUntil = Date.now() + ms;
+};
+export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
+
 // Live token prices via the on-chain Reflector oracle. The cached helper
 // returns the most recently fetched price (or a static fallback the very
 // first time) so synchronous reducers stay synchronous; refresh paths await
@@ -267,7 +278,7 @@ export const depositAndBorrow = async (
 
     // Refresh borrowed balances after successful deposit (even if borrow fails, deposit might still succeed)
     if (result.success || result.error?.includes('Deposit was successful')) {
-      await refreshBorrowedBalances(account.address);
+      await refreshBorrowedBalances(account.address, true);
     }
 
     return result;
@@ -323,7 +334,7 @@ export const borrowTokens = async (
 
     // Always refresh borrowed balances after operation (success or failure)
     try {
-      await refreshBorrowedBalances(account.address);
+      await refreshBorrowedBalances(account.address, true);
     } catch (refreshError) {
       console.warn('⚠️ Failed to refresh borrowed balances:', refreshError);
     }
@@ -466,6 +477,10 @@ export const refreshBorrowedBalances = async (
   const age = Date.now() - last;
   if (!forceRefresh && age < CACHE_DURATION_MS) return;
   if (!forceRefresh && age < MIN_FETCH_INTERVAL_MS) return;
+
+  // A forced refresh means a mutation just changed state — protect the result
+  // from the lagging cached snapshot for one TTL window.
+  if (forceRefresh) suppressSnapshotFeed();
 
   const run = (async () => {
   try {
