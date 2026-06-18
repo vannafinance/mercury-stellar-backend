@@ -115,39 +115,17 @@ const initialState: MarginAccountInfoStateType = {
 };
 
 // Export Store
+//
+// NOT persisted. The account identity has a single cache — MarginAccountService's
+// wallet-keyed, AccountManager-guarded localStorage (STORAGE_KEY). On reload,
+// checkUserMarginAccount reads that cache synchronously for an instant paint, then
+// reconciles against on-chain discovery (the source of truth). Persisting identity
+// here too was a second, wallet-agnostic cache that could rehydrate the previously
+// connected wallet's account and disagree with the chain. Balances are never
+// persisted (they bled across accounts on reload) — they always come fresh.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
-  persist: {
-    name: "margin-account-info-store",
-    version: 5,
-    migrate: (persistedState: any, _version: number) => {
-      // Reset balances/derived metrics on every load — they must come fresh from
-      // the chain. (v4 briefly persisted balances; this clears any such residue so
-      // a previous account's numbers can't bleed into a different wallet.)
-      return {
-        ...persistedState,
-        isCreatingAccount: false,
-        isLoadingBorrowedBalances: false,
-        borrowedBalances: {},
-        collateralBalances: {},
-        totalBorrowedValue: 0,
-        totalCollateralValue: 0,
-        totalValue: 0,
-        grossCollateralValue: 0,
-        netAvailableCollateral: 0,
-        collateralLeftBeforeLiquidation: 0,
-        avgHealthFactor: 0,
-      };
-    },
-    // Persist ONLY the account identity. Balances/derived metrics are deliberately
-    // NOT persisted — persisting them bled one account's positions into another
-    // wallet on reload. The ~2-5s cold-load is the accepted cost of correctness.
-    partialize: (state) => ({
-      hasMarginAccount: state.hasMarginAccount,
-      marginAccountAddress: state.marginAccountAddress,
-    }),
-  },
 });
 
 // Action functions
