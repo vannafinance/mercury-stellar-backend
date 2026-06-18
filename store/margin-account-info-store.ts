@@ -387,27 +387,32 @@ export const checkUserMarginAccount = async (
   const run = (async () => {
     try {
 
-      // Step 1: Check localStorage first (fastest)
+      // Step 1: localStorage gives an instant first paint, but it is only a
+      // hint — a stale entry must never pin an old account. So we apply the
+      // cached address for speed, then ALWAYS reconcile against the chain.
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
-
-      if (accountInfo.hasAccount) {
-        applyResolvedMarginAccount(accountInfo.accountAddress || null);
-        return;
+      const cachedAddress = accountInfo.hasAccount ? accountInfo.accountAddress ?? null : null;
+      if (cachedAddress) {
+        applyResolvedMarginAccount(cachedAddress);
       }
 
-      // Step 2: No account in localStorage - check blockchain
-
+      // Step 2: on-chain discovery is authoritative — it resolves the NEWEST
+      // active account (see getMarginAccountFromRegistry). Adopt it even when a
+      // cached account exists, so the cache can't keep showing an older one.
       try {
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
         if (blockchainAccount) {
           applyResolvedMarginAccount(blockchainAccount);
-        } else {
+        } else if (!cachedAddress) {
+          // Chain has no active account and nothing was cached → none exists.
           clearMarginAccount();
         }
+        // If discovery returns null but we had a cached account, keep the cached
+        // one rather than wiping the section on a single empty/failed lookup.
       } catch (blockchainError) {
         console.error('❌ Error checking blockchain for existing account:', blockchainError);
-        clearMarginAccount();
+        if (!cachedAddress) clearMarginAccount();
       }
     } catch (error) {
       console.error('❌ Error in checkUserMarginAccount:', error);
