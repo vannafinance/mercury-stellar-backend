@@ -1,13 +1,6 @@
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
-import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
-import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
-import { computeBorrowApr } from "@/lib/utils/borrow-rate";
-import {
-  mergeFarmTrackingCollateralIntoBalances,
-  reconcileMarginRawSacCollateral,
-  sumCollateralBalancesUsd,
-} from "@/lib/analytics/stellar/farmTrackingCollateral";
+import { computeMarginSnapshot } from "@/lib/account-snapshot";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -33,41 +26,12 @@ export const suppressSnapshotFeed = (ms = 20_000) => {
 };
 export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
 
-// Live token prices via the on-chain Reflector oracle. The cached helper
-// returns the most recently fetched price (or a static fallback the very
-// first time) so synchronous reducers stay synchronous; refresh paths await
-// `fetchTokenPrices` to keep the cache warm before recomputing USD totals.
-const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC'] as const;
-const tokenPrice = (token: string): number => getCachedTokenPrice(token);
-
-// Liquidation threshold from RiskEngine contract: BALANCE_TO_BORROW_THRESHOLD = 1.1 * WAD
-// Account is liquidatable when: (totalCollateral / totalDebt) < 1.1
-const LIQUIDATION_THRESHOLD = 1.1;
-const HEALTH_FACTOR_INFINITY_SENTINEL = 999;
-// Sub-cent residuals (interest dust, rounding remainders from a fully-repaid
-// loan) shouldn't poison the HF / borrow-rate / time-to-liquidation displays
-// by pretending the user still has real debt. A penny is a sane floor: below
-// this we treat the position as having zero debt for UI calculations.
-const USD_DUST_EPSILON = 0.01;
-
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
   if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
   if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
   if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
   return normalized;
-};
-
-// Map a canonical debt symbol back to the lending pool's AssetType so we can
-// fetch its on-chain utilization for borrow-rate computation.
-const debtSymbolToAssetType = (symbol: string): AssetType | null => {
-  switch (symbol.toUpperCase()) {
-    case 'XLM': return ASSET_TYPES.XLM;
-    case 'BLUSDC': return ASSET_TYPES.USDC;
-    case 'AQUSDC': return ASSET_TYPES.AQUARIUS_USDC;
-    case 'SOUSDC': return ASSET_TYPES.SOROSWAP_USDC;
-    default: return null;
-  }
 };
 
 // Types
@@ -486,237 +450,37 @@ export const refreshBorrowedBalances = async (
   try {
     useMarginAccountInfoStore.getState().set({ isLoadingBorrowedBalances: true });
 
-    // Fetch borrowed balances, collateral balances, and live oracle prices in
-    // parallel. The oracle warm-up is what makes downstream `tokenPrice()`
-    // calls return real-time values instead of static fallbacks.
-    const [borrowedResult, collateralResult] = await Promise.all([
-      MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress),
-      MarginAccountService.getCollateralBalances(marginAccountAddress),
-      fetchTokenPrices([...PRICEABLE_TOKENS]),
-    ]);
-
-    let totalBorrowedValue = 0;
-    let totalCollateralValue = 0;
-    const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
-    const collateralBalances: Record<string, { amount: string; usdValue: string }> = {};
-
-    // ── Borrowed totals ───────────────────────────────────────────────────────
-    if (borrowedResult.success && borrowedResult.data) {
-      const dedupedBorrowed: Record<string, { amount: string; usdValue: string }> = {};
-      Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
-        const canonical = canonicalMarginToken(token);
-        const current = dedupedBorrowed[canonical];
-        if (!current || parseFloat(amount) > parseFloat(current.amount)) {
-          dedupedBorrowed[canonical] = { amount, usdValue };
-        }
-      });
-
-      Object.entries(dedupedBorrowed).forEach(([token, { amount }]) => {
-        // Always recompute USD from the live oracle cache. The upstream
-        // getCurrentBorrowedBalances sometimes returns a 1:1 placeholder
-        // (token amount as USD) which would make XLM debt look 10× too big
-        // and tank the displayed Health Factor / Net Available Collateral.
-        const price = tokenPrice(token);
-        const usd = parseFloat(amount) * price;
-        totalBorrowedValue += usd;
-        borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
-      });
-    }
-
-    // ── Collateral totals ─────────────────────────────────────────────────────
-    if (collateralResult.success && collateralResult.data) {
-      const dedupedCollateral: Record<string, string> = {};
-      Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
-        const canonical = canonicalMarginToken(token);
-        const current = dedupedCollateral[canonical];
-        if (!current || parseFloat(amount) > parseFloat(current)) {
-          dedupedCollateral[canonical] = amount;
-        }
-      });
-
-      Object.entries(dedupedCollateral).forEach(([token, amount]) => {
-        const price = tokenPrice(token);
-        const tokenAmount = parseFloat(amount);
-        const usd = tokenAmount * price;
-        totalCollateralValue += usd;
-        collateralBalances[token] = {
-          amount,
-          usdValue: usd.toFixed(2),
-        };
-      });
-    }
-
-    // ── Progressive render ────────────────────────────────────────────────────
-    // Publish the fast, already-accurate fields now (debt + balances) so the
-    // positions table / MB collateral list appear in ~1-2s instead of waiting on
-    // the heavier farm-tracking + SAC reconcile + borrow-rate RPCs below.
-    //
-    // We deliberately DON'T publish a preliminary HF / gross / net / total here.
-    // For a leveraged position the borrowed funds sit RAW in the smart account and
-    // are only added to gross collateral by reconcileMarginRawSacCollateral below;
-    // computing HF from the pre-reconcile gross flashed a wrong low value
-    // (e.g. 1.16 → 0.36 → 1.16). Those metrics are published once, accurately, in
-    // the final set() — until then the header keeps its last-known value (no flicker).
-    useMarginAccountInfoStore.getState().set({
-      borrowedBalances: { ...borrowedBalances },
-      collateralBalances: { ...collateralBalances },
-      totalBorrowedValue,
-      isLoadingBorrowedBalances: false,
+    // Single source of truth for the HF / collateral / borrowed / net math —
+    // shared with the cached /api/account route (lib/account-snapshot.ts) so the
+    // mutation/fallback path and the server route can never diverge. onPartial
+    // publishes the fast debt/balances first (progressive render); the heavier
+    // farm/SAC/borrow-rate work resolves concurrently and lands in the final set.
+    const snap = await computeMarginSnapshot(marginAccountAddress, {
+      onPartial: (p) => {
+        useMarginAccountInfoStore.getState().set({
+          borrowedBalances: { ...p.borrowedBalances },
+          collateralBalances: { ...p.collateralBalances },
+          totalBorrowedValue: p.totalBorrowedValue,
+          isLoadingBorrowedBalances: false,
+        });
+      },
     });
 
-    // Enrich collateralBalances with Blend bTokens and Aquarius/Soroswap LP tokens.
-    // The chain's CollateralBalanceWAD for tracking tokens is 0 by design — Farm
-    // UIs read tracking balances directly from the protocol services. We do the
-    // same here so hasTrackingTokenCollateral fires and HF stays stable after
-    // add-liquidity (user gets bXLM/LP, not raw tokens — should not drop HF).
-    // We also handle the withdrawal case: after full removal the tracking token
-    // key stays in the chain response with WAD=0. We must NOT treat that as an
-    // active farm position, so we override chain zeros with live protocol values
-    // and then gate hasTrackingTokenCollateral on meaningful USD value.
-    try {
-      const enriched = await mergeFarmTrackingCollateralIntoBalances(
-        marginAccountAddress,
-        collateralBalances,
-        tokenPrice,
-      );
-      for (const [sym, val] of Object.entries(enriched)) {
-        const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? '0');
-        const newUsd = parseFloat(val.usdValue);
-        // Override stale/zero chain entry with live protocol value when better.
-        if (newUsd > existingUsd) {
-          totalCollateralValue += newUsd - existingUsd;
-          collateralBalances[sym] = val;
-        }
-      }
-    } catch (e) {
-      console.warn('[refreshBorrowedBalances] farm tracking collateral enrichment failed:', e);
-    }
-
-    // Live SAC balances — swaps on Aquarius/Soroswap change tokens in the margin
-    // account but not the collateral ledger WAD entries. Always reconcile raw
-    // XLM/USDC so HF and collateral rows match economic reality (with or without
-    // a Blend farm position).
-    let rawAssetValue = 0;
-    try {
-      rawAssetValue = await reconcileMarginRawSacCollateral(
-        marginAccountAddress,
-        collateralBalances,
-        tokenPrice,
-      );
-      totalCollateralValue = sumCollateralBalancesUsd(collateralBalances);
-    } catch (e) {
-      console.warn('[refreshBorrowedBalances] raw SAC collateral reconcile failed:', e);
-    }
-
-    // ── Derived calculations (matching RiskEngine contract math) ──────────────
-    //
-    // Contract check is effectively:
-    //   (totalCollateral / totalDebt) > 1.1    (when debt > 0)
-    // We keep a finite sentinel for "infinite" HF to avoid giant unreadable UI numbers.
-    const effectiveDebtValue =
-      totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
-
-    // IMPORTANT: After a full withdrawal the contract still lists the tracking
-    // token key with WAD=0. Gate on USD value > dust so a zero-value residual
-    // key doesn't falsely trigger the tracking branch (which drops HF to 0.5).
-    const isTrackingSymbol = (sym: string) => {
-      const upper = sym.toUpperCase();
-      return (
-        upper.startsWith('BLEND_') ||
-        upper.startsWith('AQ_') ||
-        upper.startsWith('SS_') ||
-        upper.endsWith('_LP') ||
-        upper.includes('AQUARIUS') ||
-        upper.includes('SOROSWAP')
-      );
-    };
-    const farmPositionValue = Object.entries(collateralBalances)
-      .filter(([sym]) => isTrackingSymbol(sym))
-      .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
-
-    // Non-SAC direct-deposit tokens (AQUSDC, SOUSDC) are not read by the SAC
-    // reconcile (which only covers XLM and BLUSDC). Their stored WAD values in
-    // collateralBalances are real deposited collateral and must be included so
-    // the header Total Value / Net Available Collateral matches the positions table.
-    const nonSacCollateralValue = Object.entries(collateralBalances)
-      .filter(([sym]) => sym !== 'XLM' && sym !== 'BLUSDC' && !isTrackingSymbol(sym))
-      .reduce((sum, [, bal]) => sum + (parseFloat(bal.usdValue) || 0), 0);
-
-    // Gross assets = all tokens in the margin account (farm + SAC + non-SAC direct).
-    // Borrowed XLM/USDC already appear in those balances — never add debt again
-    // or HF jumps after farm deposits.
-    let grossCollateralValue = farmPositionValue + rawAssetValue + nonSacCollateralValue;
-    if (grossCollateralValue <= USD_DUST_EPSILON && totalCollateralValue > USD_DUST_EPSILON) {
-      // SAC reconcile failed — fall back to priced ledger collateral only.
-      grossCollateralValue = totalCollateralValue;
-    }
-
-    const avgHealthFactor =
-      effectiveDebtValue > 0
-        ? grossCollateralValue / effectiveDebtValue
-        : grossCollateralValue > 0
-          ? HEALTH_FACTOR_INFINITY_SENTINEL
-          : 0;
-
-    //  Collateral Left Before Liquidation:
-    //    = grossCollateral - (totalDebt × LIQUIDATION_THRESHOLD)
-    //    i.e. how much collateral value can fall before HF hits 1.1
-    const collateralLeftBeforeLiquidation = Math.max(
-      0,
-      grossCollateralValue - effectiveDebtValue * LIQUIDATION_THRESHOLD
-    );
-
-    // Net Available Collateral = unencumbered equity (deposit not backing debt).
-    // For a leveraged position this equals the user's initial collateral —
-    // the borrowed assets sit in the account but they're owed, not free.
-    const netAvailableCollateral = Math.max(0, grossCollateralValue - effectiveDebtValue);
-
-    // Total Value (InfoCard) = Net Available Collateral + Total Borrowed.
-    // Matches the two rows above it; equals grossCollateralValue when HF math
-    // is consistent, but must not use raw chain collateral + debt (double-counts).
-    const totalValue = netAvailableCollateral + totalBorrowedValue;
-
-    //  Debt limit = maximum safe debt at liquidation threshold
-    const debtLimit = grossCollateralValue > 0
-      ? grossCollateralValue / LIQUIDATION_THRESHOLD
-      : 0;
-
-    //  Borrow rate — derive from the lending pool's live on-chain utilization
-    // for the user's largest debt asset, then apply the documented two-slope
-    // rate model (see lib/utils/borrow-rate.ts). Falls back to 0 when there
-    // is no real debt or the pool stats RPC fails.
-    let borrowRate = 0;
-    if (effectiveDebtValue > 0) {
-      const primaryDebtSymbol = Object.entries(borrowedBalances)
-        .map(([symbol, b]) => ({ symbol, usd: parseFloat(b.usdValue) || 0 }))
-        .sort((a, b) => b.usd - a.usd)[0]?.symbol;
-      const assetType = primaryDebtSymbol ? debtSymbolToAssetType(primaryDebtSymbol) : null;
-      if (assetType) {
-        try {
-          const stats = await ContractService.getPoolStats(assetType);
-          const utilizationPct = parseFloat(stats.utilizationRate) || 0;
-          borrowRate = parseFloat(computeBorrowApr(utilizationPct).toFixed(2));
-        } catch (rateErr) {
-          console.warn('⚠️ Borrow rate fetch failed, leaving as 0:', rateErr);
-        }
-      }
-    }
-
     useMarginAccountInfoStore.getState().set({
-      borrowedBalances,
-      collateralBalances,
-      totalBorrowedValue,
-      totalCollateralValue,
-      grossCollateralValue,
-      totalValue,
-      avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
+      borrowedBalances: snap.borrowedBalances,
+      collateralBalances: snap.collateralBalances,
+      totalBorrowedValue: snap.totalBorrowedValue,
+      totalCollateralValue: snap.totalCollateralValue,
+      grossCollateralValue: snap.grossCollateralValue,
+      totalValue: snap.totalValue,
+      avgHealthFactor: snap.avgHealthFactor,
+      collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
+      netAvailableCollateral: snap.netAvailableCollateral,
       timeToLiquidation: 0,
-      borrowRate,
-      debtLimit,
+      borrowRate: snap.borrowRate,
+      debtLimit: snap.debtLimit,
       minDebt: 0,
-      maxDebt: debtLimit,
+      maxDebt: snap.debtLimit,
       isLoadingBorrowedBalances: false,
     });
   } catch (error: any) {
