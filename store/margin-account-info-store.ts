@@ -160,6 +160,10 @@ export const setMarginAccount = (account: MarginAccount) => {
     // stuck on "Creating Account..." and the next open-position attempt is
     // blocked. (setAccountCreationError already resets it on the error path.)
     isCreatingAccount: false,
+    // A freshly created account is empty on-chain. Clear any balances left over
+    // from a previously-loaded account so they don't bleed into the new one
+    // during the window before refreshBorrowedBalances lands.
+    ...STALE_BALANCE_RESET,
   });
 };
 

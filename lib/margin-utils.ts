@@ -738,10 +738,13 @@ export class MarginAccountService {
   private static async getRecentLedger(server: StellarSdk.rpc.Server): Promise<number> {
     try {
       const latestLedger = await server.getLatestLedger();
-      // Soroban testnet RPC retains events for ~7 days; go back as far as we
-      // can so accounts created earlier in the deployment lifetime are still
-      // discoverable on a fresh origin (deployed URL without localStorage).
-      const lookBackLedgers = 17280 * 7; // ~7 days of ledgers (5s blocks)
+      // Soroban testnet RPC retains events for ~7 days. Going back the full 7
+      // days (17280*7) lands ~1 ledger BELOW the retention floor as the chain
+      // advances, which makes getEvents throw "startLedger must be within the
+      // ledger range". Use ~6 days so startLedger stays comfortably inside the
+      // window. (Accounts older than the retention window are recovered via the
+      // Registry storage read / localStorage, not event scraping.)
+      const lookBackLedgers = 17280 * 6; // ~6 days of ledgers (5s blocks)
       const startLedger = Math.max(1, latestLedger.sequence - lookBackLedgers);
       return startLedger;
     } catch (error) {
