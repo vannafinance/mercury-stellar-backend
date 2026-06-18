@@ -7,7 +7,7 @@ import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
 import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
-import { calculateExchangeRateFromPool, type AllPoolStats } from '@/lib/pool-stats';
+import { type AllPoolStats } from '@/lib/pool-stats';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
 
@@ -113,24 +113,37 @@ export const useUserPositions = () => {
 
       useEarnPoolStore.getState().set({ isLoadingPositions: true });
 
-      const [xlmVBalance, usdcVBalance, aquiresUsdcVBalance, soroswapUsdcVBalance] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+      // Collapse the 3 serial RPC waves (deposits → pool stats → borrows) into a
+      // single concurrent batch, and reuse the cached /api/pools route for
+      // exchange rates instead of re-reading getPoolStats ×4.
+      const [vBalances, poolsRes, borrows] = await Promise.all([
+        Promise.all([
+          ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+        ]),
+        fetch('/api/pools')
+          .then((r) => (r.ok ? (r.json() as Promise<AllPoolStats>) : null))
+          .catch(() => null),
+        Promise.all([
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.XLM),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.USDC),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+        ]),
       ]);
 
-      const [xlmStats, usdcStats, aquiresUsdcStats, soroswapUsdcStats] = await Promise.all([
-        ContractService.getPoolStats(ASSET_TYPES.XLM),
-        ContractService.getPoolStats(ASSET_TYPES.USDC),
-        ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
-      ]);
+      const [xlmVBalance, usdcVBalance, aquiresUsdcVBalance, soroswapUsdcVBalance] = vBalances;
+      const [xlmBorrow, usdcBorrow, aquiresUsdcBorrow, soroswapUsdcBorrow] = borrows;
 
-      const xlmExchangeRate = parseFloat(calculateExchangeRateFromPool(xlmStats.totalSupply, xlmStats.vTokenSupply));
-      const usdcExchangeRate = parseFloat(calculateExchangeRateFromPool(usdcStats.totalSupply, usdcStats.vTokenSupply));
-      const aquiresUsdcExchangeRate = parseFloat(calculateExchangeRateFromPool(aquiresUsdcStats.totalSupply, aquiresUsdcStats.vTokenSupply));
-      const soroswapUsdcExchangeRate = parseFloat(calculateExchangeRateFromPool(soroswapUsdcStats.totalSupply, soroswapUsdcStats.vTokenSupply));
+      // Exchange rate from the cached pool stats; 1:1 fallback if the route is unavailable.
+      const exRate = (k: keyof AllPoolStats) =>
+        poolsRes ? parseFloat(poolsRes[k].exchangeRate) || 1 : 1;
+      const xlmExchangeRate = exRate('XLM');
+      const usdcExchangeRate = exRate('USDC');
+      const aquiresUsdcExchangeRate = exRate('AQUARIUS_USDC');
+      const soroswapUsdcExchangeRate = exRate('SOROSWAP_USDC');
 
       const xlmVBalanceNum = parseFloat(xlmVBalance) || 0;
       const usdcVBalanceNum = parseFloat(usdcVBalance) || 0;
@@ -141,13 +154,6 @@ export const useUserPositions = () => {
       const usdcDeposited = (usdcVBalanceNum * usdcExchangeRate).toFixed(7);
       const aquiresUsdcDeposited = (aquiresUsdcVBalanceNum * aquiresUsdcExchangeRate).toFixed(7);
       const soroswapUsdcDeposited = (soroswapUsdcVBalanceNum * soroswapUsdcExchangeRate).toFixed(7);
-
-      const [xlmBorrow, usdcBorrow, aquiresUsdcBorrow, soroswapUsdcBorrow] = await Promise.all([
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.XLM),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.USDC),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
 
       const positions = {
         XLM: { deposited: xlmDeposited, vTokenBalance: xlmVBalance, borrowed: xlmBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
