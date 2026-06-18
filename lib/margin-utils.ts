@@ -1,5 +1,6 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
+import { getReadSourceAddress } from '@/lib/read-source';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
@@ -519,27 +520,30 @@ export class MarginAccountService {
         candidates = await this.getAccountsFromEvents(userAddress, server);
       }
 
-      // Step 3: filter by activity. Newest-first so we prefer the most recent
-      // account when a trader has reused inactive slots.
+      // Step 3: resolve to the NEWEST account, deterministically. Walk
+      // newest-first and take the first one the contract definitively reports
+      // active. Crucially, if a candidate's status is undetermined (RPC error),
+      // we resolve to it anyway rather than skipping to an older account — the
+      // newest account is the intended one, and on a clean tick it would win.
+      // Skipping on a transient error is exactly what made the resolved account
+      // (and the displayed collateral) flip between accounts every ledger close.
       for (let i = candidates.length - 1; i >= 0; i--) {
         const accountAddress = candidates[i];
-        try {
-          const isActive = await this.isAccountActive(accountAddress, server, userAddress);
+        const isActive = await this.isAccountActive(accountAddress, server, userAddress);
 
-          if (isActive) {
-            const marginAccount: MarginAccount = {
-              address: accountAddress,
-              owner: userAddress,
-              isActive: true,
-              createdAt: Date.now(),
-            };
+        // Definitively inactive → this slot was abandoned; try the next-newest.
+        if (isActive === false) continue;
 
-            this.storeMarginAccount(userAddress, marginAccount);
-            return accountAddress;
-          }
-        } catch (accountError) {
-          console.warn('⚠️ Error checking account activity for:', accountAddress, accountError);
-        }
+        // Active (true) or undetermined (null) → this is our account. Resolving
+        // on null keeps selection stable across transient RPC failures.
+        const marginAccount: MarginAccount = {
+          address: accountAddress,
+          owner: userAddress,
+          isActive: true,
+          createdAt: Date.now(),
+        };
+        this.storeMarginAccount(userAddress, marginAccount);
+        return accountAddress;
       }
 
       return null;
@@ -690,18 +694,20 @@ export class MarginAccountService {
    * inside the SDK's StrKey check. We use the trader's wallet address since
    * it's always available at the call site and is a valid G-address.
    */
+  // Returns true/false when the contract gives a definitive answer, or null when
+  // the status could not be determined (RPC/simulation error). The null case is
+  // critical: callers must NOT treat "couldn't reach RPC" as "inactive", or a
+  // transient error silently demotes a live account and discovery flips to a
+  // different one on the next ledger tick.
   private static async isAccountActive(
     accountAddress: string,
     server: StellarSdk.rpc.Server,
     sourceUserAddress: string,
-  ): Promise<boolean> {
+  ): Promise<boolean | null> {
     try {
-
-      // Create contract client for the smart account
       const contract = new StellarSdk.Contract(accountAddress);
       const call = contract.call('is_account_active');
 
-      // Create a transaction to simulate the call
       const transaction = new StellarSdk.TransactionBuilder(
         new StellarSdk.Account(sourceUserAddress, '0'),
         { fee: '100', networkPassphrase: NETWORK_PASSPHRASE }
@@ -709,26 +715,24 @@ export class MarginAccountService {
       .addOperation(call)
       .setTimeout(30)
       .build();
-      
+
       const result = await server.simulateTransaction(transaction);
-      
-      // Check for simulation errors
+
+      // A simulation error is "undetermined", not "inactive".
       if ('error' in result && result.error) {
         console.warn('⚠️ Contract simulation failed for account:', accountAddress, result.error);
-        return false;
+        return null;
       }
-      
-      // Check for successful simulation result
+
       if ('result' in result && result.result) {
-        const isActive = StellarSdk.scValToNative(result.result.retval) === true;
-        return isActive;
+        return StellarSdk.scValToNative(result.result.retval) === true;
       }
-      
+
       console.warn('⚠️ No valid result from account activity check');
-      return false;
+      return null;
     } catch (error) {
       console.error('❌ Error checking account active status:', error);
-      return false;
+      return null;
     }
   }
 
@@ -738,10 +742,13 @@ export class MarginAccountService {
   private static async getRecentLedger(server: StellarSdk.rpc.Server): Promise<number> {
     try {
       const latestLedger = await server.getLatestLedger();
-      // Soroban testnet RPC retains events for ~7 days; go back as far as we
-      // can so accounts created earlier in the deployment lifetime are still
-      // discoverable on a fresh origin (deployed URL without localStorage).
-      const lookBackLedgers = 17280 * 7; // ~7 days of ledgers (5s blocks)
+      // Soroban testnet RPC retains events for ~7 days. Going back the full 7
+      // days (17280*7) lands ~1 ledger BELOW the retention floor as the chain
+      // advances, which makes getEvents throw "startLedger must be within the
+      // ledger range". Use ~6 days so startLedger stays comfortably inside the
+      // window. (Accounts older than the retention window are recovered via the
+      // Registry storage read / localStorage, not event scraping.)
+      const lookBackLedgers = 17280 * 6; // ~6 days of ledgers (5s blocks)
       const startLedger = Math.max(1, latestLedger.sequence - lookBackLedgers);
       return startLedger;
     } catch (error) {
@@ -1635,17 +1642,12 @@ export class MarginAccountService {
       }
       
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
-      
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: connected wallet on client, public fallback on
+      // server / pre-connect (source doesn't affect the view result).
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
-      
+
       // Get all borrowed tokens
       const getAllBorrowedTokensTx = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
@@ -1862,16 +1864,10 @@ export class MarginAccountService {
         };
       }
 
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
-
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: wallet on client, public fallback on server / pre-connect.
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
 
       const listTx = new StellarSdk.TransactionBuilder(sourceAccount, {
