@@ -16,6 +16,7 @@ import {
   AquariusPoolConfig,
 } from '@/lib/aquarius-utils';
 import { getBlendEventsFromMercury } from '@/lib/mercury-blend';
+import { getAquariusEventsFromMercury } from '@/lib/mercury-aquarius';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
@@ -319,27 +320,23 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
 // Aquarius LP events
 // ─────────────────────────────────────────────────────────────────────────────
 
-// NOT migrated to Mercury — blocked on the event shape, not on effort. The
-// Aquarius pool's deposit_liquidity / withdraw_liquidity events carry only the
-// two pool-token addresses in topics and [share, amountA, amountB] in data — the
-// DEPOSITOR's address is nowhere in the event. So Mercury can't scope by account
-// (it isn't in any topic), and there's no payload field to filter on either.
-// (The RPC path here already returns nothing for the same reason: its client-side
-// filter rejects every event because the only address topics are the tokens.)
-// A tx-hash join against AccountManager events was probed — no overlap in the
-// sampled window — so attribution isn't reliably recoverable from Mercury today.
-// Left on RPC pending a contract that emits the depositor (or a Retroshade).
+// Mercury-sourced. The Aquarius *pool* event has no depositor, so it's
+// unattributable per-account. Instead we read the AccountManager's margin-side
+// Trader_AquariusDeposit / Trader_AquariusWithdraw events, which carry the smart
+// account in a topic → Mercury scopes by account server-side (see
+// lib/mercury-aquarius.ts). poolAddress is no longer needed for the query (the
+// AM events aren't pool-scoped) but is kept in the signature for the call sites.
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'events', poolAddress, marginAccountAddress ?? null],
-    enabled: Boolean(poolAddress && marginAccountAddress),
+    queryKey: ['farm', 'aquarius', 'events', marginAccountAddress ?? null],
+    enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<AquariusLpEvent[]> => {
-      if (!poolAddress || !marginAccountAddress) return [];
-      return AquariusService.getAquariusEvents(poolAddress, marginAccountAddress);
+      if (!marginAccountAddress) return [];
+      return getAquariusEventsFromMercury(marginAccountAddress);
     },
     refetchOnWindowFocus: true,
     staleTime: 4_000,
