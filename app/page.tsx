@@ -107,6 +107,7 @@ export default function Home() {
   const effCollateralLeft =
     snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
   const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
+  const effBorrowRate = snapshot?.borrowRate ?? borrowRate;
 
   // Check for margin account when user address changes or wallet connects
   useEffect(() => {
@@ -164,12 +165,12 @@ export default function Home() {
   // (gross assets − debt), matching ACCOUNT_STATS_ITEMS — not raw chain collateral.
   const infoCardData = useMemo(
     () => ({
-      totalBorrowedValue,
-      totalCollateralValue: netAvailableCollateral,
-      totalValue: totalBorrowedValue + netAvailableCollateral,
-      avgHealthFactor,
+      totalBorrowedValue: effBorrowed,
+      totalCollateralValue: effNetAvailable,
+      totalValue: effBorrowed + effNetAvailable,
+      avgHealthFactor: effHealthFactor,
       timeToLiquidation,
-      borrowRate,
+      borrowRate: effBorrowRate,
       liquidationPremium,
       liquidationFee,
       debtLimit,
@@ -180,16 +181,16 @@ export default function Home() {
       riskEngine: CONTRACT_ADDRESSES.RISK_ENGINE,
     }),
     [
-      avgHealthFactor,
-      borrowRate,
+      effHealthFactor,
+      effBorrowRate,
       debtLimit,
       liquidationFee,
       liquidationPremium,
       maxDebt,
       minDebt,
-      netAvailableCollateral,
+      effNetAvailable,
       timeToLiquidation,
-      totalBorrowedValue,
+      effBorrowed,
     ],
   );
 
@@ -359,6 +360,7 @@ export default function Home() {
             <InfoCard
               data={infoCardData}
               items={[...MARGIN_ACCOUNT_INFO_ITEMS]}
+              loading={showStatsSkeleton}
               showExpandable={true}
               expandableSections={[
                 {
