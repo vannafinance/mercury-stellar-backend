@@ -138,19 +138,38 @@ const Margin = () => {
     setMarginError(snapshotError);
   }, [snapshotError]);
 
+  // Source the displayed stats from the snapshot directly — it's available on
+  // the first paint via the per-account cache, so values render immediately on
+  // reload instead of waiting a frame for the store feed (which caused the 0
+  // flash). Falls back to the store for the post-mutation refresh path. `??`
+  // preserves a legitimate 0 (e.g. an empty account) rather than masking it.
+  const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
+  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
+  const effGrossCollateral = snapshot?.grossCollateralValue ?? grossCollateralValue;
+  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
+  const effCollateralLeft =
+    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
+  const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
+  const effBorrowRate = snapshot?.borrowRate ?? storeBorrowRate;
+
+  // Shimmer (never a 0 or spinner) until we have a snapshot to show. Once it
+  // resolves — from the per-account cache on reload (instant) or the network on
+  // first-ever load — real values render directly.
+  const showStatsSkeleton = isWalletConnected && !snapshot;
+
   const accountStats = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
+      effHasAccount || effGrossCollateral > 0 || effBorrowed > 0;
 
     if (!hasAnyMarginData) {
       return null;
     }
 
     return {
-      netHealthFactor: avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
-      netAmountBorrowed: totalBorrowedValue,
+      netHealthFactor: effHealthFactor,
+      collateralLeftBeforeLiquidation: effCollateralLeft,
+      netAvailableCollateral: effNetAvailable,
+      netAmountBorrowed: effBorrowed,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // showing totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -158,22 +177,22 @@ const Margin = () => {
       netProfitAndLoss: 0,
     };
   }, [
-    avgHealthFactor,
-    collateralLeftBeforeLiquidation,
-    netAvailableCollateral,
-    totalBorrowedValue,
-    hasMarginAccount,
-    totalCollateralValue,
+    effHealthFactor,
+    effCollateralLeft,
+    effNetAvailable,
+    effBorrowed,
+    effGrossCollateral,
+    effHasAccount,
   ]);
 
   // Format data for InfoCard component (numeric values for Stellar backend's InfoCard)
   const marginAccountInfo = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
+      effHasAccount || effGrossCollateral > 0 || effBorrowed > 0;
 
     // Actual max debt = gross collateral / liquidation threshold (1.1)
-    const actualDebtLimit = grossCollateralValue > 0
-      ? parseFloat((grossCollateralValue / 1.1).toFixed(2))
+    const actualDebtLimit = effGrossCollateral > 0
+      ? parseFloat((effGrossCollateral / 1.1).toFixed(2))
       : 0;
 
     if (!hasAnyMarginData) {
@@ -193,12 +212,12 @@ const Margin = () => {
     }
 
     return {
-      totalBorrowedValue,
-      totalCollateralValue: netAvailableCollateral,
-      totalValue: totalBorrowedValue + netAvailableCollateral,
-      avgHealthFactor,
+      totalBorrowedValue: effBorrowed,
+      totalCollateralValue: effNetAvailable,
+      totalValue: effBorrowed + effNetAvailable,
+      avgHealthFactor: effHealthFactor,
       timeToLiquidation,
-      borrowRate: storeBorrowRate,
+      borrowRate: effBorrowRate,
       liquidationPremium: 0,
       liquidationFee: 0,
       debtLimit: actualDebtLimit,
@@ -206,14 +225,13 @@ const Margin = () => {
       maxDebt: actualDebtLimit,
     };
   }, [
-    avgHealthFactor,
-    grossCollateralValue,
-    hasMarginAccount,
-    netAvailableCollateral,
-    storeBorrowRate,
+    effHasAccount,
+    effGrossCollateral,
+    effBorrowed,
+    effNetAvailable,
+    effHealthFactor,
+    effBorrowRate,
     timeToLiquidation,
-    totalBorrowedValue,
-    totalCollateralValue,
   ]);
 
   // Real on-chain contract addresses — InfoCard auto-renders Stellar contract
@@ -296,34 +314,21 @@ const Margin = () => {
     return `$${usdText}`;
   };
 
-  // Prepare account stats values for AccountStats component.
-  // While the on-chain refresh is in flight AND we don't yet have any real
-  // data (collateral + debt both 0), render a spinner instead of "$0.00" so
-  // a freshly-connected wallet doesn't briefly look empty during the ~12s
-  // RPC round-trip. Once data lands we keep showing the last-known values
-  // through subsequent refreshes (no flicker on the polling interval).
+  // Prepare account stats values for AccountStats component. The loading state
+  // is handled by the shimmer (showStatsSkeleton) — when not loading we always
+  // render real values (or 0 for a genuinely empty account), never a spinner.
   const accountStatsValues = useMemo(() => {
-    const noDataYet =
-      grossCollateralValue <= 0 && totalBorrowedValue <= 0;
-    const showSpinner = isLoadingMargin && noDataYet;
-
     return ACCOUNT_STATS_ITEMS.reduce(
       (acc, item) => {
-        if (showSpinner) {
-          acc[item.id] = "⟳";
-          return acc;
-        }
-        if (!accountStats) {
-          acc[item.id] = formatAccountStatValue(item.id, 0);
-          return acc;
-        }
-        const value = accountStats[item.id as keyof typeof accountStats] ?? 0;
+        const value = accountStats
+          ? (accountStats[item.id as keyof typeof accountStats] ?? 0)
+          : 0;
         acc[item.id] = formatAccountStatValue(item.id, value);
         return acc;
       },
       {} as Record<string, string>,
     );
-  }, [accountStats, isLoadingMargin, totalBorrowedValue, grossCollateralValue]);
+  }, [accountStats]);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
   // neutral (default) at exactly zero.
@@ -436,6 +441,7 @@ const Margin = () => {
             values={accountStatsValues}
             valueColors={accountStatsValueColors}
             gridCols="grid-cols-4"
+            loading={showStatsSkeleton}
           />
         </motion.section>
       )}
@@ -454,41 +460,6 @@ const Margin = () => {
           <h1 className={`text-[20px] font-bold ${isDark ? "text-white" : ""}`}>
             Leverage your Collateral
           </h1>
-          {/* Loading Spinner Icon */}
-          {isLoadingMargin && (
-            <motion.div
-              className="flex items-center gap-2"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-            >
-              <svg
-                className="animate-spin h-6 w-6 text-[#703AE6]"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                ></circle>
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-              <span
-                className={`text-sm ${isDark ? "text-gray-400" : "text-gray-600"}`}
-              >
-                Loading...
-              </span>
-            </motion.div>
-          )}
         </motion.header>
 
         {/* Responsive layout — stacked on mobile/tablet, side-by-side on desktop */}
@@ -539,33 +510,9 @@ const Margin = () => {
                   >
                     Margin Account Info
                   </h2>
-                  {isLoadingMargin && (
-                    <svg
-                      className="animate-spin h-5 w-5 text-[#703AE6]"
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      />
-                    </svg>
-                  )}
                 </div>
                 <p className="w-full text-sm font-medium text-gray-400">
-                  {isLoadingMargin
-                    ? "Fetching latest data..."
-                    : "Stay updated details and status."}
+                  Stay updated details and status.
                 </p>
               </div>
             </motion.header>
@@ -575,6 +522,7 @@ const Margin = () => {
               items={MARGIN_ACCOUNT_INFO_ITEMS}
               showExpandable={true}
               expandableSections={infoCardExpandableSections}
+              loading={showStatsSkeleton}
             />
           </motion.aside>
         </div>
