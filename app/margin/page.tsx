@@ -138,6 +138,13 @@ const Margin = () => {
     setMarginError(snapshotError);
   }, [snapshotError]);
 
+  // Shimmer the stat values until the first real snapshot has populated the
+  // store — never a raw 0 / "$0.00" or a spinner. `hasMarginAccount` flips true
+  // only after the snapshot feed runs; a confirmed no-account snapshot stops the
+  // shimmer so the empty/create state can render instead.
+  const showStatsSkeleton =
+    isWalletConnected && !hasMarginAccount && snapshot?.hasMarginAccount !== false;
+
   const accountStats = useMemo(() => {
     const hasAnyMarginData =
       hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
@@ -575,6 +582,7 @@ const Margin = () => {
               items={MARGIN_ACCOUNT_INFO_ITEMS}
               showExpandable={true}
               expandableSections={infoCardExpandableSections}
+              loading={showStatsSkeleton}
             />
           </motion.aside>
         </div>
