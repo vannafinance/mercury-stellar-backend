@@ -138,26 +138,38 @@ const Margin = () => {
     setMarginError(snapshotError);
   }, [snapshotError]);
 
-  // Shimmer the stat values until the first real snapshot has populated the
-  // store — never a raw 0 / "$0.00" or a spinner. `hasMarginAccount` flips true
-  // only after the snapshot feed runs; a confirmed no-account snapshot stops the
-  // shimmer so the empty/create state can render instead.
-  const showStatsSkeleton =
-    isWalletConnected && !hasMarginAccount && snapshot?.hasMarginAccount !== false;
+  // Source the displayed stats from the snapshot directly — it's available on
+  // the first paint via the per-account cache, so values render immediately on
+  // reload instead of waiting a frame for the store feed (which caused the 0
+  // flash). Falls back to the store for the post-mutation refresh path. `??`
+  // preserves a legitimate 0 (e.g. an empty account) rather than masking it.
+  const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
+  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
+  const effGrossCollateral = snapshot?.grossCollateralValue ?? grossCollateralValue;
+  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
+  const effCollateralLeft =
+    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
+  const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
+  const effBorrowRate = snapshot?.borrowRate ?? storeBorrowRate;
+
+  // Shimmer (never a 0 or spinner) until we have a snapshot to show. Once it
+  // resolves — from the per-account cache on reload (instant) or the network on
+  // first-ever load — real values render directly.
+  const showStatsSkeleton = isWalletConnected && !snapshot;
 
   const accountStats = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
+      effHasAccount || effGrossCollateral > 0 || effBorrowed > 0;
 
     if (!hasAnyMarginData) {
       return null;
     }
 
     return {
-      netHealthFactor: avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
-      netAmountBorrowed: totalBorrowedValue,
+      netHealthFactor: effHealthFactor,
+      collateralLeftBeforeLiquidation: effCollateralLeft,
+      netAvailableCollateral: effNetAvailable,
+      netAmountBorrowed: effBorrowed,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // showing totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -165,22 +177,22 @@ const Margin = () => {
       netProfitAndLoss: 0,
     };
   }, [
-    avgHealthFactor,
-    collateralLeftBeforeLiquidation,
-    netAvailableCollateral,
-    totalBorrowedValue,
-    hasMarginAccount,
-    totalCollateralValue,
+    effHealthFactor,
+    effCollateralLeft,
+    effNetAvailable,
+    effBorrowed,
+    effGrossCollateral,
+    effHasAccount,
   ]);
 
   // Format data for InfoCard component (numeric values for Stellar backend's InfoCard)
   const marginAccountInfo = useMemo(() => {
     const hasAnyMarginData =
-      hasMarginAccount || grossCollateralValue > 0 || totalBorrowedValue > 0;
+      effHasAccount || effGrossCollateral > 0 || effBorrowed > 0;
 
     // Actual max debt = gross collateral / liquidation threshold (1.1)
-    const actualDebtLimit = grossCollateralValue > 0
-      ? parseFloat((grossCollateralValue / 1.1).toFixed(2))
+    const actualDebtLimit = effGrossCollateral > 0
+      ? parseFloat((effGrossCollateral / 1.1).toFixed(2))
       : 0;
 
     if (!hasAnyMarginData) {
@@ -200,12 +212,12 @@ const Margin = () => {
     }
 
     return {
-      totalBorrowedValue,
-      totalCollateralValue: netAvailableCollateral,
-      totalValue: totalBorrowedValue + netAvailableCollateral,
-      avgHealthFactor,
+      totalBorrowedValue: effBorrowed,
+      totalCollateralValue: effNetAvailable,
+      totalValue: effBorrowed + effNetAvailable,
+      avgHealthFactor: effHealthFactor,
       timeToLiquidation,
-      borrowRate: storeBorrowRate,
+      borrowRate: effBorrowRate,
       liquidationPremium: 0,
       liquidationFee: 0,
       debtLimit: actualDebtLimit,
@@ -213,14 +225,13 @@ const Margin = () => {
       maxDebt: actualDebtLimit,
     };
   }, [
-    avgHealthFactor,
-    grossCollateralValue,
-    hasMarginAccount,
-    netAvailableCollateral,
-    storeBorrowRate,
+    effHasAccount,
+    effGrossCollateral,
+    effBorrowed,
+    effNetAvailable,
+    effHealthFactor,
+    effBorrowRate,
     timeToLiquidation,
-    totalBorrowedValue,
-    totalCollateralValue,
   ]);
 
   // Real on-chain contract addresses — InfoCard auto-renders Stellar contract
@@ -303,34 +314,21 @@ const Margin = () => {
     return `$${usdText}`;
   };
 
-  // Prepare account stats values for AccountStats component.
-  // While the on-chain refresh is in flight AND we don't yet have any real
-  // data (collateral + debt both 0), render a spinner instead of "$0.00" so
-  // a freshly-connected wallet doesn't briefly look empty during the ~12s
-  // RPC round-trip. Once data lands we keep showing the last-known values
-  // through subsequent refreshes (no flicker on the polling interval).
+  // Prepare account stats values for AccountStats component. The loading state
+  // is handled by the shimmer (showStatsSkeleton) — when not loading we always
+  // render real values (or 0 for a genuinely empty account), never a spinner.
   const accountStatsValues = useMemo(() => {
-    const noDataYet =
-      grossCollateralValue <= 0 && totalBorrowedValue <= 0;
-    const showSpinner = isLoadingMargin && noDataYet;
-
     return ACCOUNT_STATS_ITEMS.reduce(
       (acc, item) => {
-        if (showSpinner) {
-          acc[item.id] = "⟳";
-          return acc;
-        }
-        if (!accountStats) {
-          acc[item.id] = formatAccountStatValue(item.id, 0);
-          return acc;
-        }
-        const value = accountStats[item.id as keyof typeof accountStats] ?? 0;
+        const value = accountStats
+          ? (accountStats[item.id as keyof typeof accountStats] ?? 0)
+          : 0;
         acc[item.id] = formatAccountStatValue(item.id, value);
         return acc;
       },
       {} as Record<string, string>,
     );
-  }, [accountStats, isLoadingMargin, totalBorrowedValue, grossCollateralValue]);
+  }, [accountStats]);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
   // neutral (default) at exactly zero.
