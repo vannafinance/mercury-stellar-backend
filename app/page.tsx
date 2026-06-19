@@ -14,6 +14,7 @@ import { LeverageCollateral } from "@/components/margin/leverage-collateral";
 import { Positionstable } from "@/components/margin/positions-table";
 import { AccountStats } from "@/components/margin/account-stats";
 import { useMarginAccountInfoStore, checkUserMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
@@ -96,6 +97,17 @@ export default function Home() {
     (state) => state.isLoadingBorrowedBalances
   );
 
+  // Per-account snapshot (cached) — gives the stats instantly on reload and a
+  // clean loading signal, same as the margin page. Values are sourced from it
+  // (falling back to the store) so the first paint shows real numbers, not 0.
+  const { snapshot } = useAccountSnapshot(userAddress);
+  const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
+  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
+  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
+  const effCollateralLeft =
+    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
+  const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
+
   // Check for margin account when user address changes or wallet connects
   useEffect(() => {
     if (userAddress && isConnected) {
@@ -131,10 +143,10 @@ export default function Home() {
   // ── Live account stats derived from store (contract-aligned formulas) ──────
   const accountStats = useMemo(() => {
     return {
-      netHealthFactor: avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
-      netAmountBorrowed: totalBorrowedValue,
+      netHealthFactor: effHealthFactor,
+      collateralLeftBeforeLiquidation: effCollateralLeft,
+      netAvailableCollateral: effNetAvailable,
+      netAmountBorrowed: effBorrowed,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // mapping totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -142,10 +154,10 @@ export default function Home() {
       netProfitAndLoss: 0,
     };
   }, [
-    avgHealthFactor,
-    collateralLeftBeforeLiquidation,
-    netAvailableCollateral,
-    totalBorrowedValue,
+    effHealthFactor,
+    effCollateralLeft,
+    effNetAvailable,
+    effBorrowed,
   ]);
 
   // InfoCard row keyed `totalCollateralValue` shows Net Available Collateral
@@ -216,13 +228,10 @@ export default function Home() {
   // a freshly-connected wallet doesn't briefly look empty during the ~12s
   // RPC round-trip. Once data lands we keep showing the last-known values
   // through subsequent polling refreshes (no flicker every 30s).
-  const noDataYet = totalCollateralValue <= 0 && totalBorrowedValue <= 0;
-  const showSpinner = isLoadingBorrowedBalances && noDataYet;
+  // Shimmer (Aave style) until the snapshot resolves; then render real values
+  // directly. Never a raw 0 or a spinner glyph.
+  const showStatsSkeleton = Boolean(userAddress) && !snapshot;
   const accountStatsValues = ACCOUNT_STATS_ITEMS.reduce((acc, item) => {
-    if (showSpinner) {
-      acc[item.id] = "⟳";
-      return acc;
-    }
     const value = accountStats[item.id as keyof typeof accountStats] ?? 0;
     acc[item.id] = formatAccountStatValue(item.id, value);
     return acc;
@@ -274,6 +283,7 @@ export default function Home() {
             values={accountStatsValues}
             valueColors={accountStatsValueColors}
             gridCols="grid-cols-4"
+            loading={showStatsSkeleton}
           />
         </motion.section>
       )}
