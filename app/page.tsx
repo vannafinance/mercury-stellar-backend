@@ -13,11 +13,10 @@ import { InfoCard } from "@/components/margin/info-card";
 import { LeverageCollateral } from "@/components/margin/leverage-collateral";
 import { Positionstable } from "@/components/margin/positions-table";
 import { AccountStats } from "@/components/margin/account-stats";
-import { useMarginAccountInfoStore, checkUserMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, checkUserMarginAccount, isSnapshotFeedSuppressed } from "@/store/margin-account-info-store";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
-import { useLedgerTick } from "@/contexts/ledger-subscriber";
 import { formatValue } from "@/lib/utils/format-value";
 import { ACCOUNT_STATS_ITEMS } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
@@ -118,27 +117,35 @@ export default function Home() {
     // Note: We don't clear margin account on disconnect to preserve localStorage data
   }, [userAddress, isConnected]);
 
-  const { tick } = useLedgerTick();
-
-  // Initial load when margin account becomes available.
+  // Feed the store from the per-account snapshot — the single source of truth,
+  // same as the margin page. This replaces the per-tick refreshBorrowedBalances:
+  // the snapshot is ledger-tick driven (revalidated inside useAccountSnapshot)
+  // and is now the ONLY writer of balances here, so the positions table can no
+  // longer flip between two independent account-resolution paths.
   useEffect(() => {
-    if (isConnected && hasMarginAccount && marginAccountAddress && marginAccountAddress.length > 10) {
-      refreshBorrowedBalances(marginAccountAddress);
+    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    const store = useMarginAccountInfoStore.getState();
+    if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
+      store.set({
+        hasMarginAccount: true,
+        marginAccountAddress: snapshot.marginAccountAddress,
+        borrowedBalances: snapshot.borrowedBalances ?? {},
+        collateralBalances: snapshot.collateralBalances ?? {},
+        totalBorrowedValue: snapshot.totalBorrowedValue ?? 0,
+        totalCollateralValue: snapshot.totalCollateralValue ?? 0,
+        grossCollateralValue: snapshot.grossCollateralValue ?? 0,
+        totalValue: snapshot.totalValue ?? 0,
+        avgHealthFactor: snapshot.avgHealthFactor ?? 0,
+        collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation ?? 0,
+        netAvailableCollateral: snapshot.netAvailableCollateral ?? 0,
+        borrowRate: snapshot.borrowRate ?? 0,
+        debtLimit: snapshot.debtLimit ?? 0,
+        isLoadingBorrowedBalances: false,
+      });
+    } else if (snapshot.hasMarginAccount === false) {
+      store.set({ hasMarginAccount: false });
     }
-  }, [isConnected, hasMarginAccount, marginAccountAddress]);
-
-  // Ledger-tick driven refresh — replaces the prior 30s setInterval. Refreshes
-  // the margin store (balances/positions) on each ledger close. It deliberately
-  // does NOT invalidate the ['margin'] query cache: the only RQ query under that
-  // prefix is ['margin','history'] (Mercury-backed, full-pagination, heavy), and
-  // D21 fixed that to refresh on mount / window-focus / borrow-repay mutation —
-  // never on the ~5s tick. A broad tick invalidate here re-triggered the history
-  // refetch every close (a refetch loop), undoing that.
-  useEffect(() => {
-    if (isConnected && hasMarginAccount && marginAccountAddress && marginAccountAddress.length > 10) {
-      refreshBorrowedBalances(marginAccountAddress);
-    }
-  }, [tick, isConnected, hasMarginAccount, marginAccountAddress]);
+  }, [snapshot]);
 
 
   // ── Live account stats derived from store (contract-aligned formulas) ──────
