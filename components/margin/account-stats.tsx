@@ -23,6 +23,10 @@ interface AccountStatsProps {
   gridRows?: string;
   backgroundColor?: string;
   darkBackgroundColor?: string;
+  // When true, every value renders a shimmer placeholder (Uniswap/Aave style)
+  // instead of a number — so a not-yet-loaded account shows a skeleton rather
+  // than a misleading "0" or a spinner.
+  loading?: boolean;
 }
 
 export const AccountStats = ({
@@ -33,9 +37,19 @@ export const AccountStats = ({
   gridRows,
   backgroundColor = "#F7F7F7",
   darkBackgroundColor = "#222222",
+  loading = false,
 }: AccountStatsProps) => {
   const { isDark } = useTheme();
   const calculatedGridRows = gridRows || "";
+
+  const renderShimmer = (className: string) => (
+    <span
+      className={`inline-block rounded animate-pulse ${className} ${
+        isDark ? "bg-[#3a3a3a]" : "bg-[#E5E7EB]"
+      }`}
+      aria-hidden="true"
+    />
+  );
 
   const renderLoadingSpinner = () => (
     <svg
@@ -99,7 +113,11 @@ export const AccountStats = ({
                   valueColors?.[item.id] ?? (isDark ? "text-white" : "text-neutral-800")
                 }`}
               >
-                {isLoading ? renderLoadingSpinner() : displayValue}
+                {loading
+                  ? renderShimmer("h-4 w-14 align-middle")
+                  : isLoading
+                    ? renderLoadingSpinner()
+                    : displayValue}
               </p>
             </motion.article>
           );
@@ -152,7 +170,11 @@ export const AccountStats = ({
                 viewport={{ once: true }}
                 transition={{ duration: 0.3, delay: idx * 0.06 + 0.15 }}
               >
-                {isLoading ? renderLoadingSpinner() : displayValue}
+                {loading
+                  ? renderShimmer("h-7 w-24")
+                  : isLoading
+                    ? renderLoadingSpinner()
+                    : displayValue}
               </motion.div>
             </motion.article>
           );
