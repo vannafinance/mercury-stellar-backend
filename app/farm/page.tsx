@@ -7,6 +7,7 @@ import {
   FARM_STATS_ITEMS,
   farmTableHeadings,
   singleAssetTableHeadings,
+  positionsTableHeadings,
 } from "@/lib/constants/farm";
 import { useUserStore } from "@/store/user";
 import { useState, useMemo, useCallback } from "react";
@@ -118,8 +119,8 @@ export default function FarmPage() {
             { title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0' },
             { title: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : '0' },
             { title: poolStats[sym]?.supplyAPY ? `${poolStats[sym]!.supplyAPY}%` : '0' },
-            { title: '0' },
-            { title: '0' },
+            { title: '' },
+            { title: '' },
           ],
         });
       });
@@ -138,8 +139,8 @@ export default function FarmPage() {
           { title: `${mySSLpBalance.toFixed(2)} LP` },
           { title: `${xlmShare} XLM + ${usdcShare} USDC` },
           { title: ssStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
-          { title: '0' },
+          { title: '' },
+          { title: '' },
         ],
       });
     }
@@ -165,8 +166,8 @@ export default function FarmPage() {
           { title: `${lpBal.toFixed(2)} LP` },
           { title: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}` },
           { title: aqPoolStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
-          { title: '0' },
+          { title: '' },
+          { title: '' },
         ],
       });
     });
@@ -346,7 +347,7 @@ export default function FarmPage() {
   const tableData = useMemo(() => {
     if (activeTab === "positions") {
       return {
-        headings: singleAssetTableHeadings,
+        headings: positionsTableHeadings,
         body: positionsTableBody,
       };
     }
