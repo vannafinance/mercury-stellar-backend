@@ -7,6 +7,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, createMarginAccount } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
@@ -201,6 +202,25 @@ export const OneClickStrategy = () => {
   // Wallet balance from Stellar user store
   const walletBalance = tokenBalances?.[collateralAsset] ?? "0";
   const balanceNum = Number(walletBalance) || 0;
+
+  // Real on-chain XLM minimum reserve (base + subentries). A native-XLM deposit
+  // that drops the wallet below this traps with Contract #10 ("resulting balance
+  // not within allowed range"), so MAX / validation must respect it — not a flat
+  // 0.5. Non-XLM assets spend their full balance.
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
+
+  const maxDeposit =
+    collateralAsset === "XLM" ? maxSpendableXlm(balanceNum, xlmMinReserve) : balanceNum;
 
   /* ═══════════════════════════════════════
      Scenario Detection
@@ -427,7 +447,7 @@ export const OneClickStrategy = () => {
 
   const isValid =
     collateralNum > 0 &&
-    collateralNum <= balanceNum &&
+    collateralNum <= maxDeposit &&
     (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > 1.2)) &&
     !!userAddress &&
     !!marginAccountAddress;
@@ -436,7 +456,10 @@ export const OneClickStrategy = () => {
     if (!userAddress) return "Connect Wallet";
     if (!hasMarginAccount) return "Create Margin Account";
     if (collateralNum <= 0) return "Enter Deposit Amount";
-    if (collateralNum > balanceNum) return "Insufficient Balance";
+    if (collateralNum > maxDeposit)
+      return collateralAsset === "XLM" && collateralNum <= balanceNum
+        ? "Keep XLM for fees & reserve"
+        : "Insufficient Balance";
     if (borrowedAmount > 0 && borrowUsd > maxBorrowUsd) return "Exceeds Borrow Limit";
     if (borrowedAmount > 0 && newHF > 0 && newHF <= 1.2) return "Position Too Risky";
     if (loading) return "Processing...";
@@ -624,8 +647,7 @@ export const OneClickStrategy = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      const val = collateralAsset === "XLM" ? Math.max(balanceNum - 0.5, 0) : balanceNum;
-                      setCollateralAmount(val.toFixed(2));
+                      setCollateralAmount(maxDeposit.toFixed(2));
                     }}
                     className="ml-1.5 text-[10px] font-bold text-[#703AE6] bg-[#F1EBFD] rounded px-1.5 py-[1px] cursor-pointer hover:bg-[#703AE6]/20 transition-colors"
                   >
