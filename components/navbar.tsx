@@ -64,8 +64,9 @@ export const Navbar = (props: Navbar) => {
   const appMode = useAppModeStore((s) => s.mode);
   const setAppMode = useAppModeStore((s) => s.set);
 
-  // In lite mode, hide Trade and Farm from navigation
-  const LITE_HIDDEN_TITLES = ["Trade", "Farm"];
+  // In lite mode, hide these pro-only routes from navigation (and redirect away
+  // from them below). Lite keeps the simplified home + Margin only.
+  const LITE_HIDDEN_TITLES = ["Trade", "Farm", "Earn"];
   const filteredItems =
     appMode === "lite"
       ? props.items.filter((item) => !LITE_HIDDEN_TITLES.includes(item.title))
