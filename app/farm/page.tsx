@@ -116,11 +116,11 @@ export default function FarmPage() {
           cell: [
             { chain: sym, title: sym, tags: ['Blend', 'Supply'] },
             { title: 'Blend' },
-            { title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0' },
-            { title: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : '0' },
+            {
+              title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0',
+              description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
+            },
             { title: poolStats[sym]?.supplyAPY ? `${poolStats[sym]!.supplyAPY}%` : '0' },
-            { title: '' },
-            { title: '' },
           ],
         });
       });
@@ -136,11 +136,11 @@ export default function FarmPage() {
         cell: [
           { chain: 'XLM', titles: ['XLM', 'USDC'], tags: ['Soroswap', 'LP'] },
           { title: 'Soroswap' },
-          { title: `${mySSLpBalance.toFixed(2)} LP` },
-          { title: `${xlmShare} XLM + ${usdcShare} USDC` },
+          {
+            title: `${mySSLpBalance.toFixed(2)} LP`,
+            description: `${xlmShare} XLM + ${usdcShare} USDC`,
+          },
           { title: ssStats?.feeFraction ?? '0.30%' },
-          { title: '' },
-          { title: '' },
         ],
       });
     }
@@ -163,11 +163,11 @@ export default function FarmPage() {
         cell: [
           { chain: tokenA, titles: [tokenA, tokenB], tags: ['Aquarius', 'LP'] },
           { title: 'Aquarius' },
-          { title: `${lpBal.toFixed(2)} LP` },
-          { title: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}` },
+          {
+            title: `${lpBal.toFixed(2)} LP`,
+            description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}`,
+          },
           { title: aqPoolStats?.feeFraction ?? '0.30%' },
-          { title: '' },
-          { title: '' },
         ],
       });
     });
