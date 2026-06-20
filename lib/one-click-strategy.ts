@@ -144,6 +144,64 @@ export async function executeOneClickStrategy(
   };
 
   try {
+    // ── Deposit-only (1x, no borrow): pure deposit + deploy ──────────────────
+    // A 1x position borrows nothing, so it must NOT route through the borrow-
+    // coupled contract calls. Both `deposit_and_borrow` and the atomic
+    // `deposit_borrow_and_deploy_blend` invoke the contract's internal borrow
+    // (lend_to) even when the borrow amount is 0, so a plain deposit otherwise
+    // inherits any borrow-path failure. The standalone `deposit_collateral_tokens`
+    // path below never touches borrow, so a deposit works independently of it.
+    if (borrowAmount <= 0) {
+      step(`Step 1/2: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
+      const depositResult = await MarginAccountService.depositCollateralTokens(
+        marginAccountAddress,
+        collateralAsset,
+        toWad(collateralAmount)
+      );
+      if (!depositResult.success) {
+        return { success: false, error: `Deposit failed: ${depositResult.error}` };
+      }
+
+      if (poolType === 'lp') {
+        // LP: swap half the deposit to the other token, then add liquidity.
+        const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
+        const half = collateralAmount / 2;
+        const other = half * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
+        step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} → ${otherAsset}...`);
+        const sw = await SoroswapService.swapFromMargin(
+          userAddress, marginAccountAddress, collateralAsset, half
+        );
+        if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
+        const xlmAmt = collateralAsset === 'XLM' ? half : other;
+        const usdcAmt = collateralAsset === 'USDC' ? half : other;
+        step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
+        const r = await SoroswapService.addLiquidity(
+          userAddress, marginAccountAddress, xlmAmt, usdcAmt
+        );
+        return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
+      }
+
+      // Single-asset pool. Swap first only when the pool token differs from the
+      // deposited asset (cross-asset-swap); otherwise deploy the collateral directly.
+      const poolToken = poolTokens[0] as TokenAsset;
+      let deployAmount = collateralAmount;
+      if (scenario === 'cross-asset-swap' && poolToken !== collateralAsset) {
+        step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} → ${poolToken} via Soroswap...`);
+        const sw = await SoroswapService.swapFromMargin(
+          userAddress, marginAccountAddress, collateralAsset, collateralAmount
+        );
+        if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
+        deployAmount = collateralAmount * (prices[collateralAsset] / (prices[poolToken] || 1)) * 0.99;
+        step(`Step 3/3: Deploying ~${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+      } else {
+        step(`Step 2/2: Deploying ${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+      }
+      const r = await BlendService.depositToBlendPool(
+        userAddress, marginAccountAddress, poolToken, deployAmount
+      );
+      return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
+    }
+
     // ── Atomic path: Blend single-asset + same-asset scenario in one tx ──────
     // Backed by AccountManager::deposit_borrow_and_deploy_blend, which collapses
     // the entire open-position flow into one Soroban op = one wallet signature.
