@@ -414,6 +414,32 @@ const Margin = () => {
         )}
       </AnimatePresence>
 
+      {/* Liquidation danger banner — shown when own HF drops below 1.1 */}
+      <AnimatePresence>
+        {isWalletConnected && effHasAccount && effHealthFactor > 0 && effHealthFactor < 1.1 && (
+          <motion.div
+            className="w-full pt-5"
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+          >
+            <div className="bg-rose-100 border border-rose-400 text-rose-800 px-4 py-3 rounded-xl flex items-start gap-3">
+              <svg className="w-6 h-6 shrink-0 mt-0.5 text-rose-600" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <div className="flex-1">
+                <p className="font-bold text-[14px]">
+                  Liquidation Risk — Health Factor {effHealthFactor.toFixed(2)} (below 1.10)
+                </p>
+                <p className="text-[13px] mt-0.5">
+                  Your account is undercollateralised and can be liquidated by anyone. Repay debt or add collateral immediately to restore your Health Factor above 1.1.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Carousel section - displays promotional items */}
       <motion.section
         className="w-full h-fit pt-4 sm:pt-6 pb-3 sm:pb-4"

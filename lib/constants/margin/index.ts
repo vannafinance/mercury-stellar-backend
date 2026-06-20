@@ -55,6 +55,11 @@ export const LEVERAGE_TABS = [
     label: "Transfer Collateral",
     shortLabel: "Transfer",
   },
+  {
+    id: "liquidate",
+    label: "Liquidate Account",
+    shortLabel: "Liquidate",
+  },
 ] as const;
 
 // ============================================
