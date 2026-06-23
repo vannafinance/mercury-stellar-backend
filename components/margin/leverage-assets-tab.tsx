@@ -8,7 +8,7 @@ import { DropdownOptions } from "@/lib/constants";
 import { BALANCE_TYPE_OPTIONS } from "@/lib/constants/margin";
 import { Button } from "@/components/ui/button";
 import { Collateral } from "./collateral-box";
-import { BorrowBox } from "./borrow-box";
+import { DualBorrow, type DualBorrowState } from "./dual-borrow";
 import { MBSelectionGrid } from "./mb-selection-grid";
 import { Dialogue } from "@/components/ui/dialogue";
 import {
@@ -37,7 +37,6 @@ const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
 const formatUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-type Modes = "Deposit" | "Borrow";
 
 // Helper to generate unique ID for collateral
 const generateCollateralId = () => `collateral-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -85,9 +84,12 @@ export const LeverageAssetsTab = () => {
   const hasMarginAccount = useMarginAccountInfoStore((state) => state.hasMarginAccount);
   const marginAccountAddress = useMarginAccountInfoStore((state) => state.marginAccountAddress);
   const isCreatingAccount = useMarginAccountInfoStore((state) => state.isCreatingAccount);
+  const isLoadingBorrowedBalances = useMarginAccountInfoStore((state) => state.isLoadingBorrowedBalances);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const mode: Modes = "Deposit";
   const [borrowItems, setBorrowItems] = useState<BorrowInfo[]>([]);
+  // Validated dual-borrow output (items + Total/Max + red-text error). Gates
+  // the submit button; null until the user touches the borrow inputs.
+  const [borrowState, setBorrowState] = useState<DualBorrowState | null>(null);
   const [leverage, setLeverage] = useState(2);
   const feesCurrency = "USDT";
   
@@ -172,6 +174,16 @@ export const LeverageAssetsTab = () => {
       }));
   }, [collateralBalances]);
 
+  // Entering MB with no collateral loaded yet → pull the margin-account balances
+  // so the grid fills in instead of flashing the "no collateral" empty state
+  // during the gap. refreshBorrowedBalances dedups/throttles internally, so this
+  // is safe to call on every MB enter.
+  useEffect(() => {
+    if (isMBMode && marginAccountAddress && mbCollateralItems.length === 0) {
+      refreshBorrowedBalances(marginAccountAddress).catch(() => {});
+    }
+  }, [isMBMode, marginAccountAddress, mbCollateralItems.length]);
+
   // When entering MB mode (or when margin-account collaterals first appear),
   // pre-select every available collateral so the user can borrow against the
   // full margin account without having to re-tick boxes manually.
@@ -245,6 +257,16 @@ export const LeverageAssetsTab = () => {
   // Borrow preview/input should use pure collateral USD (no fee uplift).
   const effectiveTotalForBorrow = isMBMode ? mbSelectedUsd : depositAmount;
   const projectedBorrowUsd = Math.max(0, effectiveTotalForBorrow * (leverage - 1));
+
+  // Capture the validated dual-borrow output: feed the assembled items into the
+  // existing borrow flow and keep the full state for submit-gating + red text.
+  const handleBorrowChange = useCallback((s: DualBorrowState) => {
+    setBorrowState(s);
+    setBorrowItems(s.items);
+    // Keep the legacy single-borrow execution path pointed at the user's first
+    // chosen asset (the WB/MB submit handlers still read `borrowToken`).
+    setBorrowToken(s.items[0]?.assetData.asset ?? DropdownOptions[0]);
+  }, []);
 
   // Memoized callbacks
   const handleAddCollateral = useCallback(() => {
@@ -999,6 +1021,19 @@ export const LeverageAssetsTab = () => {
                       </span>
                     </div>
                   </>
+                ) : isLoadingBorrowedBalances ? (
+                  // Loading skeleton — don't show the "no collateral" empty state
+                  // while the margin-account balances are still being read, or
+                  // switching WB→MB flashes "no collateral" for an account that
+                  // actually has some.
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-busy="true">
+                    {[0, 1].map((i) => (
+                      <div
+                        key={i}
+                        className={`h-[52px] rounded-xl animate-pulse ${isDark ? "bg-[#2A2A2A]" : "bg-[#ECECEC]"}`}
+                      />
+                    ))}
+                  </div>
                 ) : (
                   <p className={`text-center text-sm py-2 ${isDark ? "text-[#777777]" : "text-[#AAAAAA]"}`}>
                     No collateral in your margin account. Switch to WB to deposit first.
@@ -1116,22 +1151,11 @@ export const LeverageAssetsTab = () => {
           viewport={{ once: true }}
           transition={{ duration: 0.4, delay: 0.1, ease: "easeOut" }}
         >
-          <motion.h2
-            className={`w-full text-[16px] font-medium ${isDark ? "text-white" : ""}`}
-            initial={{ opacity: 0, x: -10 }}
-            whileInView={{ opacity: 1, x: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.3 }}
-          >
-            Borrow
-          </motion.h2>
-          <BorrowBox
-            mode={mode}
+          <DualBorrow
+            depositUsd={effectiveTotalForBorrow}
             leverage={leverage}
             setLeverage={setLeverage}
-            totalDeposit={effectiveTotalForBorrow}
-            onBorrowItemsChange={setBorrowItems}
-            onTokenChange={setBorrowToken}
+            onChange={handleBorrowChange}
           />
         </motion.section>
 
@@ -1154,7 +1178,7 @@ export const LeverageAssetsTab = () => {
           transition={{ duration: 0.4, delay: 0.3, ease: "easeOut" }}
         >
           <Button
-            disabled={isProcessing || editingId !== null}
+            disabled={isProcessing || editingId !== null || !!borrowState?.error}
             size="large"
             text={
               isProcessing ? "Processing..." :

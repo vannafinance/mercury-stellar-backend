@@ -77,11 +77,20 @@ export type MarginSnapshot = {
 /**
  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
  * debt/collateral totals are known, before the heavier farm/SAC/rate reads —
- * lets the client render progressively. Omits all health-derived fields.
+ * lets the client render progressively. Carries a PROVISIONAL health set
+ * derived from the raw collateral total so the health factor can never lag the
+ * debt it's emitting (otherwise the store shows fresh debt next to a stale ∞).
+ * The full snapshot refines these once gross collateral (SAC/farm) is known.
  */
 export type PartialSnapshot = Pick<
   MarginSnapshot,
-  "borrowedBalances" | "collateralBalances" | "totalBorrowedValue"
+  | "borrowedBalances"
+  | "collateralBalances"
+  | "totalBorrowedValue"
+  | "avgHealthFactor"
+  | "grossCollateralValue"
+  | "netAvailableCollateral"
+  | "collateralLeftBeforeLiquidation"
 >;
 
 /** Borrow rate for the largest debt asset (independent of collateral reads). */
@@ -149,13 +158,26 @@ export async function computeMarginSnapshot(
     });
   }
 
+  const effectiveDebtValue = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
+
+  // Provisional health from the raw collateral total (gross is refined below by
+  // the SAC/farm reads). Emitting it alongside the debt keeps the health factor
+  // coherent with the debt at every render — never a stale ∞ over fresh debt.
+  const provisional = deriveMarginHealth({
+    grossCollateralValue: totalCollateralValue,
+    effectiveDebtValue,
+    totalBorrowedValue,
+  });
+
   opts?.onPartial?.({
     borrowedBalances: { ...borrowedBalances },
     collateralBalances: { ...collateralBalances },
     totalBorrowedValue,
+    avgHealthFactor: provisional.avgHealthFactor,
+    grossCollateralValue: totalCollateralValue,
+    netAvailableCollateral: provisional.netAvailableCollateral,
+    collateralLeftBeforeLiquidation: provisional.collateralLeftBeforeLiquidation,
   });
-
-  const effectiveDebtValue = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
 
   // All three remaining reads are independent — run them concurrently:
   //  • borrow rate  (uses borrowedBalances only)

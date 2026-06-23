@@ -56,6 +56,37 @@ const formatTokenName = (asset: string): string => {
 const formatInterestUsd = (value: number): string => formatUsdValue(value);
 
 /**
+ * Collateral cell for a borrow-only position row — a borrow that is
+ * cross-collateralized against the whole margin account (typical of an MB
+ * borrow against several selected assets) rather than tied to one deposit.
+ * Reads "Portfolio" instead of guessing a single backing token, so the row is
+ * honest about what secures the debt.
+ */
+const PortfolioCollateralCell = ({ isDark, compact }: { isDark: boolean; compact?: boolean }) => (
+  <div className="flex items-center gap-2">
+    <span
+      className={`shrink-0 rounded-full flex items-center justify-center ${compact ? "w-4 h-4" : "w-5 h-5"}`}
+      style={{ background: "linear-gradient(135deg, #FC5457 10%, #703AE6 80%)" }}
+      aria-hidden="true"
+    >
+      <svg width={compact ? 9 : 11} height={compact ? 9 : 11} viewBox="0 0 12 12" fill="none">
+        <circle cx="4" cy="4" r="2.1" fill="white" />
+        <circle cx="8" cy="4" r="2.1" fill="white" fillOpacity="0.75" />
+        <circle cx="6" cy="8" r="2.1" fill="white" fillOpacity="0.55" />
+      </svg>
+    </span>
+    <div className="flex flex-col gap-px">
+      <span className={`${compact ? "text-[12px]" : "text-[13px]"} font-medium leading-tight ${isDark ? "text-white" : ""}`}>
+        Portfolio
+      </span>
+      <span className={`${compact ? "text-[10px]" : "text-[11px]"} font-medium ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
+        Cross-collateral
+      </span>
+    </div>
+  </div>
+);
+
+/**
  * Margin positions panel with two tabs: Current Positions and Positions
  * History. Current positions are derived from on-chain state in the margin
  * store — borrowed and collateral balances are deduplicated by canonical
@@ -181,28 +212,31 @@ export const Positionstable = ({
       }
     }
 
-    let largestCollateralKey = collateralKeys[0] ?? "XLM";
-    let largestCollateralUsd = 0;
-    for (const key of collateralKeys) {
-      const usd = parseFloat(dedupedCollateral.get(key)!.balance.usdValue || "0");
-      if (usd > largestCollateralUsd) {
-        largestCollateralUsd = usd;
-        largestCollateralKey = key;
-      }
-    }
-
     const assignedBorrows = new Set<string>();
     for (const list of borrowsByPosition.values()) {
       for (const b of list) assignedBorrows.add(b);
     }
 
+    // Borrows Mercury's tx-hash join (Step 4) hasn't yet tied to a deposit.
+    // Attribution precedence — we NEVER guess "the largest collateral" anymore
+    // (that showed a borrow on an unrelated row, e.g. an XLM-collateral borrow
+    // appearing under a $500 AQUSDC deposit, until Mercury caught up):
+    //   1. Same-asset self-position — deposit BLUSDC → borrow BLUSDC.
+    //   2. Exactly one collateral → unambiguous, attach to it.
+    //   3. Otherwise leave UNATTRIBUTED → its own "reconciling" row, so it
+    //      snaps onto the correct deposit row once Mercury sends the data
+    //      (the borrow/repay/deposit mutations invalidate ['margin'], which
+    //      refetches the Mercury history and re-runs this attribution).
+    const unattributedBorrows: string[] = [];
     for (const borrowCanonical of dedupedBorrowed.keys()) {
       if (assignedBorrows.has(borrowCanonical)) continue;
 
       if (borrowsByPosition.has(borrowCanonical)) {
         borrowsByPosition.get(borrowCanonical)!.push(borrowCanonical);
-      } else if (borrowsByPosition.has(largestCollateralKey)) {
-        borrowsByPosition.get(largestCollateralKey)!.push(borrowCanonical);
+      } else if (collateralKeys.length === 1) {
+        borrowsByPosition.get(collateralKeys[0])!.push(borrowCanonical);
+      } else {
+        unattributedBorrows.push(borrowCanonical);
       }
       assignedBorrows.add(borrowCanonical);
     }
@@ -308,6 +342,39 @@ export const Positionstable = ({
           user: "",
         });
       }
+    }
+
+    // Borrows that can't be tied to a single deposit — e.g. an MB borrow
+    // cross-collateralized against several selected assets, or a cross-asset
+    // borrow whose own token isn't deposited. Rather than parent them onto an
+    // arbitrary collateral row (the old "largest collateral" guess) or duplicate
+    // them across rows, surface ONE borrow-only row per such borrow, backed by
+    // the portfolio. collateralUsdValue stays 0 so it is never double-counted
+    // against the real collateral rows above. Once Mercury attributes the tx
+    // (WB deposit+borrow share a hash), this collapses onto the right row.
+    for (const borrowCanonical of unattributedBorrows) {
+      const entry = dedupedBorrowed.get(borrowCanonical);
+      if (!entry) continue;
+      const amt = parseFloat(entry.balance.amount || "0");
+      const usd = parseFloat(entry.balance.usdValue || "0");
+      if (!(amt > BORROW_DUST_EPSILON)) continue;
+      positionRows.push({
+        positionId: positionId++,
+        // Empty asset → rendered as a neutral "Portfolio" collateral cell.
+        collateral: { asset: "", amount: "" },
+        collateralUsdValue: 0,
+        borrowed: [{
+          assetData: { asset: entry.token, amount: formatTokenAmount(amt) },
+          percentage: 100,
+          usdValue: parseFloat(usd.toFixed(2)),
+        }],
+        // 0 → leverage column renders "-"; per-row leverage is undefined when
+        // collateral is the whole portfolio (collateralUsdValue stays 0 here).
+        leverage: 0,
+        interestAccrued: 0,
+        isOpen: true,
+        user: "",
+      });
     }
 
     // Edge case: borrowed tokens but no collateral in dedupedCollateral
@@ -535,6 +602,10 @@ export const Positionstable = ({
           viewport={{ once: true }}
           transition={{ duration: 0.3, delay: idx * 0.08 + 0.1 }}
         >
+          {!item.collateral.asset ? (
+            <PortfolioCollateralCell isDark={isDark} />
+          ) : (
+          <>
           <Image
             src={getTokenIcon(item.collateral.asset)}
             alt={item.collateral.asset}
@@ -558,6 +629,8 @@ export const Positionstable = ({
               {formatUsdValue(item.collateralUsdValue)}
             </div>
           </div>
+          </>
+          )}
         </motion.div>
       </div>
 
@@ -708,6 +781,11 @@ export const Positionstable = ({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <p className={`${lbl} mb-1`}>Collateral Deposited</p>
+            {!item.collateral.asset ? (
+              <div className="flex gap-1.5 items-center">
+                <PortfolioCollateralCell isDark={isDark} compact />
+              </div>
+            ) : (
             <div className="flex gap-1.5 items-center">
               <Image
                 src={getTokenIcon(item.collateral.asset)}
@@ -725,6 +803,7 @@ export const Positionstable = ({
                 </div>
               </div>
             </div>
+            )}
           </div>
           <div>
             <p className={`${lbl} mb-1`}>Borrowed Assets</p>
