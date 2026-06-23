@@ -78,3 +78,5 @@ scripts/mercury-blend-probe.mjs
 
 # Claude Code project guide — kept local, not shipped in the repo
 CLAUDE.md
+
+testsprite_tests\tmp\config.json
