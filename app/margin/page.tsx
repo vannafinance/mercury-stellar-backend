@@ -24,6 +24,7 @@ import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
+import { deriveMarginHealth } from "@/lib/margin-health";
 
 const Margin = () => {
   const { isDark } = useTheme();
@@ -66,24 +67,16 @@ const Margin = () => {
   // Margin account data — single shallow-compared read.
   const {
     hasMarginAccount,
-    marginAccountAddress,
-    avgHealthFactor,
-    totalCollateralValue,
     grossCollateralValue,
     totalBorrowedValue,
-    collateralLeftBeforeLiquidation,
     netAvailableCollateral,
     timeToLiquidation,
     storeBorrowRate,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       hasMarginAccount: state.hasMarginAccount,
-      marginAccountAddress: state.marginAccountAddress,
-      avgHealthFactor: state.avgHealthFactor,
-      totalCollateralValue: state.totalCollateralValue,
       grossCollateralValue: state.grossCollateralValue,
       totalBorrowedValue: state.totalBorrowedValue,
-      collateralLeftBeforeLiquidation: state.collateralLeftBeforeLiquidation,
       netAvailableCollateral: state.netAvailableCollateral,
       timeToLiquidation: state.timeToLiquidation,
       storeBorrowRate: state.borrowRate,
@@ -144,13 +137,24 @@ const Margin = () => {
   // flash). Falls back to the store for the post-mutation refresh path. `??`
   // preserves a legitimate 0 (e.g. an empty account) rather than masking it.
   const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
-  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
   const effGrossCollateral = snapshot?.grossCollateralValue ?? grossCollateralValue;
-  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
-  const effCollateralLeft =
-    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
   const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
   const effBorrowRate = snapshot?.borrowRate ?? storeBorrowRate;
+
+  // The risk trio (HF, net-available, collateral-left) is RECOMPUTED from the
+  // gross collateral + debt being displayed — never read from a separately
+  // stored avgHealthFactor that can lag the debt. That stored-vs-derived skew is
+  // what showed ∞ next to a real $16.12 borrow: the cached snapshot's HF came
+  // from a pre-borrow read while the debt was fresh. Deriving here keeps all
+  // four KPI cards (and the InfoCard) coherent with the borrow by construction.
+  const derivedHealth = deriveMarginHealth({
+    grossCollateralValue: effGrossCollateral,
+    effectiveDebtValue: effBorrowed > 0.01 ? effBorrowed : 0,
+    totalBorrowedValue: effBorrowed,
+  });
+  const effHealthFactor = derivedHealth.avgHealthFactor;
+  const effNetAvailable = derivedHealth.netAvailableCollateral;
+  const effCollateralLeft = derivedHealth.collateralLeftBeforeLiquidation;
 
   // Shimmer (never a 0 or spinner) until we have a snapshot to show. Once it
   // resolves — from the per-account cache on reload (instant) or the network on

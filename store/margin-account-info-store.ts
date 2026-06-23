@@ -8,6 +8,7 @@
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
+import { deriveMarginHealth } from "@/lib/margin-health";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -482,6 +483,7 @@ export const updateAccountData = (data: Partial<MarginAccountInfoStateType>) => 
   useMarginAccountInfoStore.getState().set(data);
 };
 
+
 /**
  * Recompute and commit the account's balances and derived risk fields via the
  * shared `computeMarginSnapshot` (the single source of truth shared with the
@@ -528,32 +530,90 @@ export const refreshBorrowedBalances = async (
     // farm/SAC/borrow-rate work resolves concurrently and lands in the final set.
     const snap = await computeMarginSnapshot(marginAccountAddress, {
       onPartial: (p) => {
+        const prev = useMarginAccountInfoStore.getState();
+        // MERGE collateral, don't replace. The partial read only has the
+        // non-SAC collateral (AQUSDC/SOUSDC); XLM/BLUSDC arrive later in the
+        // full pass via the SAC reconcile. Replacing here briefly blanked a
+        // still-valid collateral list — and wiped the optimistic deposit —
+        // which left the MB collateral grid stuck in its loading skeleton for
+        // the whole reconcile window. Preserving prior keys keeps the grid
+        // populated; the full snapshot below sets the authoritative set.
+        const mergedCollateral = { ...prev.collateralBalances, ...p.collateralBalances };
+        // Re-derive provisional health from the MERGED collateral so the health
+        // factor stays coherent with the debt (never a stale ∞ over fresh debt)
+        // without dipping when the partial read is missing SAC collateral.
+        const mergedGross = Object.values(mergedCollateral).reduce(
+          (sum, b) => sum + (parseFloat(b.usdValue) || 0),
+          0,
+        );
+        const debt = p.totalBorrowedValue;
+        const health = deriveMarginHealth({
+          grossCollateralValue: Math.max(mergedGross, prev.grossCollateralValue || 0),
+          effectiveDebtValue: debt > 0.01 ? debt : 0,
+          totalBorrowedValue: debt,
+        });
         useMarginAccountInfoStore.getState().set({
           borrowedBalances: { ...p.borrowedBalances },
-          collateralBalances: { ...p.collateralBalances },
-          totalBorrowedValue: p.totalBorrowedValue,
+          collateralBalances: mergedCollateral,
+          totalBorrowedValue: debt,
+          avgHealthFactor: health.avgHealthFactor,
+          grossCollateralValue: Math.max(mergedGross, prev.grossCollateralValue || 0),
+          netAvailableCollateral: health.netAvailableCollateral,
+          collateralLeftBeforeLiquidation: health.collateralLeftBeforeLiquidation,
           isLoadingBorrowedBalances: false,
         });
       },
     });
 
-    useMarginAccountInfoStore.getState().set({
-      borrowedBalances: snap.borrowedBalances,
-      collateralBalances: snap.collateralBalances,
-      totalBorrowedValue: snap.totalBorrowedValue,
-      totalCollateralValue: snap.totalCollateralValue,
-      grossCollateralValue: snap.grossCollateralValue,
-      totalValue: snap.totalValue,
-      avgHealthFactor: snap.avgHealthFactor,
-      collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
-      netAvailableCollateral: snap.netAvailableCollateral,
-      timeToLiquidation: 0,
-      borrowRate: snap.borrowRate,
-      debtLimit: snap.debtLimit,
-      minDebt: 0,
-      maxDebt: snap.debtLimit,
-      isLoadingBorrowedBalances: false,
-    });
+    // Guard against a degraded client read blanking collateral. XLM/BLUSDC
+    // collateral comes ONLY from the SAC reconcile, which can fail in the browser
+    // (it succeeds server-side in /api/account). When it fails, snap.collateralBalances
+    // drops those keys — which blanked the MB grid + Positions for an account that
+    // demonstrably still holds collateral. If the fresh read shows ZERO collateral
+    // but we already had some, treat it as degraded: update only the debt-side
+    // fields and PRESERVE the prior collateral/health, letting the reliable server
+    // snapshot feed (/api/account) reconcile. A genuine full withdrawal self-heals
+    // on the next read/ledger tick.
+    const prevState = useMarginAccountInfoStore.getState();
+    const snapHasCollateral = Object.values(snap.collateralBalances).some(
+      (b) => (parseFloat(b.amount) || 0) > 0,
+    );
+    const prevHadCollateral = Object.values(prevState.collateralBalances).some(
+      (b) => (parseFloat(b.amount) || 0) > 0,
+    );
+    const collateralDegraded = !snapHasCollateral && prevHadCollateral;
+
+    if (collateralDegraded) {
+      console.warn(
+        "[margin] client snapshot returned no collateral but account holds some " +
+          "(likely a SAC reconcile failure); preserved prior collateral — the " +
+          "server snapshot feed will reconcile.",
+      );
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: snap.borrowedBalances,
+        totalBorrowedValue: snap.totalBorrowedValue,
+        borrowRate: snap.borrowRate,
+        isLoadingBorrowedBalances: false,
+      });
+    } else {
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: snap.borrowedBalances,
+        collateralBalances: snap.collateralBalances,
+        totalBorrowedValue: snap.totalBorrowedValue,
+        totalCollateralValue: snap.totalCollateralValue,
+        grossCollateralValue: snap.grossCollateralValue,
+        totalValue: snap.totalValue,
+        avgHealthFactor: snap.avgHealthFactor,
+        collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
+        netAvailableCollateral: snap.netAvailableCollateral,
+        timeToLiquidation: 0,
+        borrowRate: snap.borrowRate,
+        debtLimit: snap.debtLimit,
+        minDebt: 0,
+        maxDebt: snap.debtLimit,
+        isLoadingBorrowedBalances: false,
+      });
+    }
   } catch (error: any) {
     console.error('❌ Error refreshing balances:', error);
     useMarginAccountInfoStore.getState().set({ isLoadingBorrowedBalances: false });
