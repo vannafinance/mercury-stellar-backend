@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { motion } from "framer-motion";
 
 import { Dropdown } from "../ui/dropdown";
@@ -72,6 +72,40 @@ export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: Dual
 
   const maxUsd = useMemo(() => Math.max(0, depositUsd * (leverage - 1)), [depositUsd, leverage]);
 
+  // Leverage-driven auto-calc. The borrow follows the deposit × (leverage − 1)
+  // ceiling: single mode puts the whole amount on the one asset; dual mode
+  // splits it 50/50. So saving the deposit (or moving the slider) fills the
+  // borrow automatically — no Max Value click needed. The user can still type to
+  // override a card; a manual edit pauses auto-fill (so a price tick doesn't
+  // clobber it) until a driving input — deposit, leverage, mode, or asset —
+  // changes, which returns control to auto-calc.
+  const manualRef = useRef(false);
+  const fmtAmt = (amt: number) => (amt > 0 ? amt.toFixed(7).replace(/\.?0+$/, "") : "");
+  const fillFromLeverage = useCallback(() => {
+    if (mode === "single") {
+      const p0 = priceOf(tokens[0]);
+      setAmounts([p0 > 0 ? fmtAmt(maxUsd / p0) : "", ""]);
+    } else {
+      const half = maxUsd / 2;
+      const p0 = priceOf(tokens[0]);
+      const p1 = priceOf(tokens[1]);
+      setAmounts([p0 > 0 ? fmtAmt(half / p0) : "", p1 > 0 ? fmtAmt(half / p1) : ""]);
+    }
+  }, [mode, maxUsd, tokens, priceOf]);
+
+  // Driving inputs (deposit/leverage via maxUsd, mode, asset) → reset to auto.
+  useEffect(() => {
+    manualRef.current = false;
+    fillFromLeverage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, maxUsd, tokens[0], tokens[1]]);
+
+  // Price tick → keep the auto amounts in sync, but never clobber a manual edit.
+  useEffect(() => {
+    if (!manualRef.current) fillFromLeverage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prices]);
+
   const usds = useMemo(
     () => [0, 1].map((i) => (i < slotCount ? (parseFloat(amounts[i]) || 0) * priceOf(tokens[i]) : 0)),
     [amounts, tokens, slotCount, priceOf],
@@ -87,7 +121,10 @@ export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: Dual
     if (duplicate) {
       return { error: "Pick two different assets to borrow.", exceeds: false, duplicate };
     }
-    if (totalUsd > maxUsd) {
+    // 1-cent tolerance: the leverage auto-fill targets exactly maxUsd, and
+    // amount→USD rounding can land a hair above it — don't flag that as an
+    // over-borrow. Only a real manual overshoot trips the red text.
+    if (totalUsd > maxUsd + 0.01) {
       return {
         error: `Total borrow ${fmtUsd(totalUsd)} exceeds your limit of ${fmtUsd(maxUsd)}. Lower an amount or raise leverage.`,
         exceeds: true,
@@ -128,6 +165,7 @@ export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: Dual
   const setAmount = (i: number) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
     if (raw !== "" && !/^\d*\.?\d*$/.test(raw)) return; // numeric only
+    manualRef.current = true; // user override → pause leverage auto-fill
     setAmounts((prev) => {
       const next: [string, string] = [...prev];
       next[i] = raw;
@@ -135,18 +173,10 @@ export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: Dual
     });
   };
 
-  // "Max Value": fill this slot to the remaining headroom under the cap.
-  const fillMax = (i: number) => () => {
-    const other = usds[i === 0 ? 1 : 0];
-    const remainingUsd = Math.max(0, maxUsd - other);
-    const px = priceOf(tokens[i]);
-    const amt = px > 0 ? remainingUsd / px : 0;
-    setAmounts((prev) => {
-      const next: [string, string] = [...prev];
-      next[i] = amt > 0 ? amt.toFixed(7).replace(/\.?0+$/, "") : "";
-      return next;
-    });
-  };
+  // "Max Value" (single mode): snap leverage to the max. The borrow is
+  // leverage-driven, so this maxes the slider and the auto-fill then fills the
+  // amount to deposit × (MAX_LEVERAGE − 1) — one click for the largest position.
+  const handleMaxValue = () => setLeverage(MAX_LEVERAGE);
 
   const cardBase = isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#EEEEEE]";
   const labelMuted = isDark ? "text-[#A7A7A7]" : "text-[#888888]";
@@ -166,24 +196,29 @@ export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: Dual
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.25, delay: i * 0.06 }}
       >
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between min-h-[26px]">
           <span className={`text-sm font-medium ${labelMuted}`}>Borrow</span>
-          <motion.button
-            type="button"
-            onClick={fillMax(i)}
-            className={`px-3 py-1 rounded-lg shrink-0 text-[11px] font-semibold whitespace-nowrap cursor-pointer ${
-              isDark ? "text-white" : "text-[#111111]"
-            }`}
-            style={{
-              background: `linear-gradient(${bgColor}, ${bgColor}) padding-box, ${GRADIENT} border-box`,
-              border: "1.2px solid transparent",
-            }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            aria-label={`Borrow the maximum of ${tokens[i]}`}
-          >
-            Max Value
-          </motion.button>
+          {/* Max Value only in single mode. In dual mode the amount is auto-split
+              50/50 from leverage, so a per-card "max" would overfill one side
+              and zero the other — it has no meaning here. */}
+          {mode === "single" && (
+            <motion.button
+              type="button"
+              onClick={handleMaxValue}
+              className={`px-3 py-1 rounded-lg shrink-0 text-[11px] font-semibold whitespace-nowrap cursor-pointer ${
+                isDark ? "text-white" : "text-[#111111]"
+              }`}
+              style={{
+                background: `linear-gradient(${bgColor}, ${bgColor}) padding-box, ${GRADIENT} border-box`,
+                border: "1.2px solid transparent",
+              }}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              aria-label="Borrow the maximum — set leverage to 10X"
+            >
+              Max Value
+            </motion.button>
+          )}
         </div>
 
         <div className="flex items-center justify-between gap-2">
