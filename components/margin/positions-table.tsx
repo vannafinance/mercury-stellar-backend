@@ -63,8 +63,8 @@ const formatInterestUsd = (value: number): string => formatUsdValue(value);
  * attributed back to the deposit that opened them (via shared tx hashes in local
  * margin history) so each row reads as one collateral-anchored position with its
  * leverage and Repay action. Renders a desktop table, mobile cards, paginated
- * history, and per-tab empty states. Repay is disabled when only sub-cent dust
- * debt remains.
+ * history, and per-tab empty states. Repay is enabled whenever any real debt
+ * remains — including sub-cent dust — so a residual balance can be fully cleared.
  */
 export const Positionstable = ({
   onRepayClick,
@@ -670,8 +670,9 @@ export const Positionstable = ({
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.3 }}
       >
         {(() => {
-          const totalBorrowUsd = item.borrowed.reduce((s, b) => s + (b.usdValue || 0), 0);
-          const canRepay = item.borrowed.length > 0 && totalBorrowUsd > BORROW_DUST_USD;
+          // Any real (≥1e-6) debt is repayable — including sub-cent dust — so the
+          // user can fully clear a residual balance instead of being stuck with it.
+          const canRepay = item.borrowed.length > 0;
           return (
             <div className="w-fit">
               <Button
@@ -779,8 +780,7 @@ export const Positionstable = ({
         {/* Action */}
         <div className="flex justify-end">
           {(() => {
-            const totalBorrowUsd = item.borrowed.reduce((s, b) => s + (b.usdValue || 0), 0);
-            const canRepay = item.borrowed.length > 0 && totalBorrowUsd > BORROW_DUST_USD;
+            const canRepay = item.borrowed.length > 0;
             return (
               <Button
                 size="small"
