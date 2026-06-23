@@ -6,7 +6,8 @@
 // public Soroban RPC. We keep call fan-out tight (Promise.all batches)
 // and rely on the existing oracle-price cache to dedupe price lookups.
 
-import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
+import { ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
+import { getAllPoolStats, type AllPoolStats } from "@/lib/pool-stats";
 import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
 import { ACTIVE_ASSETS, FALLBACK_PRICES, ORACLE, type StellarAsset } from "./canon";
 
@@ -73,51 +74,41 @@ export type StellarAnalyticsSource = {
  *  failure degrades gracefully to zeros (so the dashboard still loads
  *  if one pool's RPC times out). */
 export async function readAllPoolStats(): Promise<StellarPoolStats[]> {
-  // Warm the price cache for everything we're about to need.
+  // Warm the price cache for the USD conversion below.
   await fetchTokenPrices([...ACTIVE_ASSETS]).catch(() => undefined);
 
-  const results = await Promise.allSettled(
-    POOL_ASSETS.map(async (a) => {
-      const stats = await ContractService.getPoolStats(a);
-      const sym = ASSET_TYPE_TO_SYMBOL[a];
-      const priceUsd = getCachedTokenPrice(sym) || FALLBACK_PRICES[sym] || 0;
-      const totalSupply = parseFloat(stats.totalSupply) || 0;
-      const totalBorrowed = parseFloat(stats.totalBorrowed) || 0;
-      const availableLiquidity = parseFloat(stats.availableLiquidity) || 0;
-      const utilizationRate = parseFloat(stats.utilizationRate) || 0;
-      const vTokenSupply = parseFloat(stats.vTokenSupply) || 0;
-      return {
-        symbol: sym,
-        assetType: a,
-        totalSupply,
-        totalBorrowed,
-        availableLiquidity,
-        utilizationRate,
-        vTokenSupply,
-        totalSupplyUsd: totalSupply * priceUsd,
-        totalBorrowedUsd: totalBorrowed * priceUsd,
-        availableLiquidityUsd: availableLiquidity * priceUsd,
-        priceUsd,
-      } satisfies StellarPoolStats;
-    }),
-  );
+  // Derive from the shared, memoized pool-stats (the same source `/api/pools`
+  // uses) instead of re-reading the 4 pools — dedupes the RPC. `getAllPoolStats`
+  // already degrades each failing pool to zeros, so we only add the USD/price
+  // re-shaping the analytics consumers need.
+  let all: AllPoolStats | null = null;
+  try {
+    all = await getAllPoolStats();
+  } catch {
+    all = null;
+  }
 
-  return results.map((r, i) => {
-    if (r.status === "fulfilled") return r.value;
-    const a = POOL_ASSETS[i];
+  return POOL_ASSETS.map((a) => {
     const sym = ASSET_TYPE_TO_SYMBOL[a];
+    const priceUsd = getCachedTokenPrice(sym) || FALLBACK_PRICES[sym] || 0;
+    const stats = all?.[a as keyof AllPoolStats];
+    const totalSupply = stats ? parseFloat(stats.totalSupply) || 0 : 0;
+    const totalBorrowed = stats ? parseFloat(stats.totalBorrowed) || 0 : 0;
+    const availableLiquidity = stats ? parseFloat(stats.availableLiquidity) || 0 : 0;
+    const utilizationRate = stats ? parseFloat(stats.utilizationRate) || 0 : 0;
+    const vTokenSupply = stats ? parseFloat(stats.vTokenSupply) || 0 : 0;
     return {
       symbol: sym,
       assetType: a,
-      totalSupply: 0,
-      totalBorrowed: 0,
-      availableLiquidity: 0,
-      utilizationRate: 0,
-      vTokenSupply: 0,
-      totalSupplyUsd: 0,
-      totalBorrowedUsd: 0,
-      availableLiquidityUsd: 0,
-      priceUsd: FALLBACK_PRICES[sym] || 0,
+      totalSupply,
+      totalBorrowed,
+      availableLiquidity,
+      utilizationRate,
+      vTokenSupply,
+      totalSupplyUsd: totalSupply * priceUsd,
+      totalBorrowedUsd: totalBorrowed * priceUsd,
+      availableLiquidityUsd: availableLiquidity * priceUsd,
+      priceUsd,
     } satisfies StellarPoolStats;
   });
 }

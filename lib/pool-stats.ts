@@ -79,3 +79,26 @@ export async function computeAllPoolStats(): Promise<AllPoolStats> {
     SOROSWAP_USDC: enrich(soroswap),
   };
 }
+
+// Shared 30s in-memory memo so the two edge routes that need pool stats
+// (`/api/pools` and `/api/analytics/pool-stats`) don't each fire their own
+// 4-pool RPC read within the same serverless instance — the first call scans,
+// the second reuses it. The per-route edge cache (s-maxage 30s) shares across
+// instances/visitors; this collapses the duplicate read within one instance.
+let poolStatsCache: { data: AllPoolStats; ts: number } | null = null;
+const POOL_STATS_TTL_MS = 30_000;
+
+/**
+ * `computeAllPoolStats` behind a 30s in-memory memo — the single source of pool
+ * stats for every caller (the `/api/pools` route and the analytics pool-stats
+ * reader), so the 4-pool RPC read isn't duplicated.
+ */
+export async function getAllPoolStats(): Promise<AllPoolStats> {
+  const now = Date.now();
+  if (poolStatsCache && now - poolStatsCache.ts < POOL_STATS_TTL_MS) {
+    return poolStatsCache.data;
+  }
+  const data = await computeAllPoolStats();
+  poolStatsCache = { data, ts: now };
+  return data;
+}
