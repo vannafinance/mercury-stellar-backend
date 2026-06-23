@@ -3,17 +3,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /**
  * Contract tests for the GET /api/pools route handler.
  *
- * The route is a thin cache+error wrapper over computeAllPoolStats (whose math
+ * The route is a thin cache+error wrapper over getAllPoolStats (whose math
  * is covered by tests/lib/pool-stats.test.ts). These tests pin the parts the
  * handler itself owns: the success passthrough shape, the edge Cache-Control
  * header (high-hit-rate s-maxage=30), and the 502/no-store error contract.
  */
 const mocks = vi.hoisted(() => ({
-  computeAllPoolStats: vi.fn(),
+  getAllPoolStats: vi.fn(),
 }));
 
 vi.mock("@/lib/pool-stats", () => ({
-  computeAllPoolStats: mocks.computeAllPoolStats,
+  getAllPoolStats: mocks.getAllPoolStats,
 }));
 
 import { GET } from "@/app/api/pools/route";
@@ -42,7 +42,7 @@ describe("GET /api/pools", () => {
 
   it("200s and passes the AllPoolStats shape through unchanged", async () => {
     const pools = allPools();
-    mocks.computeAllPoolStats.mockResolvedValue(pools);
+    mocks.getAllPoolStats.mockResolvedValue(pools);
 
     const res = await GET();
     expect(res.status).toBe(200);
@@ -61,7 +61,7 @@ describe("GET /api/pools", () => {
   });
 
   it("sets the long edge-cache header (pool stats are identical per user)", async () => {
-    mocks.computeAllPoolStats.mockResolvedValue(allPools());
+    mocks.getAllPoolStats.mockResolvedValue(allPools());
     const res = await GET();
     expect(res.headers.get("Cache-Control")).toBe(
       "public, s-maxage=30, stale-while-revalidate=120",
@@ -69,7 +69,7 @@ describe("GET /api/pools", () => {
   });
 
   it("502s with pool_stats_failed + no-store when the chain read throws", async () => {
-    mocks.computeAllPoolStats.mockRejectedValue(new Error("rpc timeout"));
+    mocks.getAllPoolStats.mockRejectedValue(new Error("rpc timeout"));
 
     const res = await GET();
     expect(res.status).toBe(502);
@@ -81,7 +81,7 @@ describe("GET /api/pools", () => {
   });
 
   it("502 detail falls back to a string when a non-Error is thrown", async () => {
-    mocks.computeAllPoolStats.mockRejectedValue("boom");
+    mocks.getAllPoolStats.mockRejectedValue("boom");
     const res = await GET();
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toBe("pool stats failed");

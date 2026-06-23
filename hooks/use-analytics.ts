@@ -9,18 +9,26 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 import { buildAnalyticsSnapshots } from "@/lib/analytics/stellar/buildSnapshots";
-import { invalidateAllMarginAccountsCache } from "@/lib/analytics/stellar/allMarginAccounts";
-import {
-  readOracleSnapshot,
-  readAllPoolStats,
-  type StellarPoolStats,
-  type StellarAnalyticsSource,
+import type {
+  StellarPoolStats,
+  StellarAnalyticsSource,
 } from "@/lib/analytics/stellar/rpcReader";
-import { readLiveEventFeed, type LiveEventFeed } from "@/lib/analytics/stellar/eventFeed";
+import type { LiveEventFeed } from "@/lib/analytics/stellar/eventFeed";
 import type { AllAccountsResult } from "@/lib/analytics/onchain/types";
 
 const STELLAR_CHAIN_ID = 0;
 const QUERY_KEY = ["analytics", "snapshot"] as const;
+
+/**
+ * Fetch a protocol-wide analytics payload from its shared edge-cached route.
+ * These reads are identical for every viewer, so they run server-side once per
+ * the route's TTL instead of as a client RPC read in each browser.
+ */
+async function fetchAnalytics<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} failed (${res.status})`);
+  return (await res.json()) as T;
+}
 
 /**
  * Shared ledger-tick + React Query primitive for the analytics live feeds.
@@ -57,19 +65,25 @@ function useTickQuery<T>(key: readonly unknown[], queryFn: () => Promise<T>) {
 
 type OracleSnapshot = StellarAnalyticsSource["oracle"];
 
-/** Live oracle snapshot (prices + heartbeat). Polled by oracles/alerts/risk-explorer. */
+/** Live oracle snapshot (prices + heartbeat) from the edge cache. Polled by oracles/alerts/risk-explorer. */
 export function useOracleSnapshot() {
-  return useTickQuery<OracleSnapshot>(["analytics", "oracle"], readOracleSnapshot);
+  return useTickQuery<OracleSnapshot>(["analytics", "oracle"], () =>
+    fetchAnalytics<OracleSnapshot>("/api/analytics/oracle"),
+  );
 }
 
-/** Live lending-pool stats. Polled by the alerts page. */
+/** Live lending-pool stats from the edge cache. Polled by the alerts page. */
 export function usePoolStats() {
-  return useTickQuery<StellarPoolStats[]>(["analytics", "poolStats"], readAllPoolStats);
+  return useTickQuery<StellarPoolStats[]>(["analytics", "poolStats"], () =>
+    fetchAnalytics<StellarPoolStats[]>("/api/analytics/pool-stats"),
+  );
 }
 
-/** Live Soroban event feed (liquidations + whale activity). Polled by liquidations/whales. */
+/** Live Soroban event feed (liquidations + whale activity) from the edge cache. Polled by liquidations/whales. */
 export function useLiveEventFeed() {
-  return useTickQuery<LiveEventFeed>(["analytics", "eventFeed"], () => readLiveEventFeed());
+  return useTickQuery<LiveEventFeed>(["analytics", "eventFeed"], () =>
+    fetchAnalytics<LiveEventFeed>("/api/analytics/events"),
+  );
 }
 
 /**
@@ -77,11 +91,12 @@ export function useLiveEventFeed() {
  * pattern. Replaces the bespoke `useAnalyticsOnchainStore` (manual TTL +
  * inflight dedup).
  *
- * The underlying `fetchAllMarginAccountSnapshots` keeps a 30s internal TTL,
- * which acts as the refresh throttle: the ~5s ledger tick invalidates the
- * query, but most ticks resolve to a near-free cache hit rather than a fresh
- * protocol-wide RPC scan. Data genuinely refreshes ~every 30s; the manual
- * `refresh()` busts the TTL for an immediate re-read.
+ * The protocol-wide scan is fetched from the shared edge-cached route
+ * `/api/analytics/accounts` (s-maxage 30s), so the bounded RPC fan-out runs
+ * ~once per 30s GLOBALLY rather than in every visitor's browser. The ~5s ledger
+ * tick invalidates the client query, but most ticks resolve to a near-free edge
+ * cache hit. The connected wallet's own account is refreshed live each time
+ * (from the in-memory store) and merged over the cached protocol snapshot.
  */
 export function useAnalyticsSnapshot(userAddress: string | null) {
   const qc = useQueryClient();
@@ -114,9 +129,9 @@ export function useAnalyticsSnapshot(userAddress: string | null) {
     result: query.data ?? null,
     isLoading: query.isLoading,
     isRefreshing: query.isFetching && !query.isLoading,
-    refresh: () => {
-      invalidateAllMarginAccountsCache();
-      return query.refetch();
-    },
+    // The protocol-wide scan is now server-cached (/api/analytics/accounts); a
+    // refetch re-runs the connected-wallet self-refresh immediately and pulls
+    // the protocol snapshot from the edge cache (≤30s old).
+    refresh: () => query.refetch(),
   };
 }
