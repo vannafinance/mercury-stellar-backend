@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { LeverageAssetsTab } from "./leverage-assets-tab";
 import { RepayLoanTab } from "./repay-loan-tab";
 import { TransferCollateral } from "./transfer-collateral";
+import { LiquidateTab } from "./liquidate-tab";
 import { AnimatedTabs, TabItem } from "../ui/animated-tabs";
 import { LEVERAGE_TABS } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
@@ -60,6 +61,8 @@ export const LeverageCollateral = ({
         return <RepayLoanTab prefilledAsset={prefilledRepayAsset} />;
       case "transfer-collateral":
         return <TransferCollateral />;
+      case "liquidate":
+        return <LiquidateTab />;
       default:
         return <LeverageAssetsTab />;
     }

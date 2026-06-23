@@ -2251,6 +2251,86 @@ export class MarginAccountService {
   }
 
   /**
+   * Liquidate an undercollateralised margin account.
+   *
+   * The caller (liquidator) must:
+   *   - Hold enough of each borrowed token in their wallet to repay every open debt.
+   *   - Have approved the AccountManager to spend those tokens (handled by Soroban auth).
+   *
+   * On success the liquidator pays all outstanding debt and receives the smart account's
+   * entire collateral balance as profit.  The transaction must be signed by the liquidator.
+   *
+   * @param liquidatorAddress  Stellar address that will pay the debt and receive collateral.
+   * @param marginAccountAddress  The smart-account (margin account) address to liquidate.
+   */
+  static async liquidateMarginAccount(
+    liquidatorAddress: string,
+    marginAccountAddress: string
+  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    try {
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(liquidatorAddress);
+
+      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: (parseInt(StellarSdk.BASE_FEE) * 100).toString(), // higher fee — multi-token repay
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'liquidate',
+            StellarSdk.nativeToScVal(liquidatorAddress, { type: 'address' }),
+            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await server.prepareTransaction(transaction);
+
+      const signResult = await signTransaction(preparedTx.toXDR(), {
+        networkPassphrase: NETWORK_PASSPHRASE,
+      });
+
+      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+        signResult.signedTxXdr,
+        NETWORK_PASSPHRASE
+      );
+
+      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+
+      if (result.status === 'PENDING') {
+        const finalResult = await this.pollTransactionStatus(server, result.hash);
+
+        if (finalResult.status === 'SUCCESS') {
+          return { success: true, hash: result.hash };
+        } else {
+          console.error('❌ Liquidate tx did not succeed:', {
+            hash: result.hash,
+            status: finalResult.status,
+            result: JSON.stringify(finalResult, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+          });
+          return {
+            success: false,
+            error: `Liquidation failed on-chain (${finalResult.status}). Tx: ${result.hash}`,
+          };
+        }
+      } else if (result.status === 'ERROR') {
+        return { success: false, error: 'Liquidate transaction failed with ERROR status' };
+      } else {
+        return { success: false, error: `Unexpected status: ${result.status}` };
+      }
+    } catch (error: any) {
+      console.error('❌ Error liquidating margin account:', error);
+      return {
+        success: false,
+        error: this.formatUserFacingContractError(error?.message || error, 'generic'),
+      };
+    }
+  }
+
+  /**
    * Fetch a margin account's recent borrow/repay history from contract events.
    *
    * Pulls `Trader_Borrow` and `Trader_Repay_Event` from the AccountManager over
