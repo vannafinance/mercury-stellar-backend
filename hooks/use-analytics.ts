@@ -9,7 +9,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 import { buildAnalyticsSnapshots } from "@/lib/analytics/stellar/buildSnapshots";
-import { invalidateAllMarginAccountsCache } from "@/lib/analytics/stellar/allMarginAccounts";
 import {
   readOracleSnapshot,
   readAllPoolStats,
@@ -77,11 +76,12 @@ export function useLiveEventFeed() {
  * pattern. Replaces the bespoke `useAnalyticsOnchainStore` (manual TTL +
  * inflight dedup).
  *
- * The underlying `fetchAllMarginAccountSnapshots` keeps a 30s internal TTL,
- * which acts as the refresh throttle: the ~5s ledger tick invalidates the
- * query, but most ticks resolve to a near-free cache hit rather than a fresh
- * protocol-wide RPC scan. Data genuinely refreshes ~every 30s; the manual
- * `refresh()` busts the TTL for an immediate re-read.
+ * The protocol-wide scan is fetched from the shared edge-cached route
+ * `/api/analytics/accounts` (s-maxage 30s), so the bounded RPC fan-out runs
+ * ~once per 30s GLOBALLY rather than in every visitor's browser. The ~5s ledger
+ * tick invalidates the client query, but most ticks resolve to a near-free edge
+ * cache hit. The connected wallet's own account is refreshed live each time
+ * (from the in-memory store) and merged over the cached protocol snapshot.
  */
 export function useAnalyticsSnapshot(userAddress: string | null) {
   const qc = useQueryClient();
@@ -114,9 +114,9 @@ export function useAnalyticsSnapshot(userAddress: string | null) {
     result: query.data ?? null,
     isLoading: query.isLoading,
     isRefreshing: query.isFetching && !query.isLoading,
-    refresh: () => {
-      invalidateAllMarginAccountsCache();
-      return query.refetch();
-    },
+    // The protocol-wide scan is now server-cached (/api/analytics/accounts); a
+    // refetch re-runs the connected-wallet self-refresh immediately and pulls
+    // the protocol snapshot from the edge cache (≤30s old).
+    refresh: () => query.refetch(),
   };
 }

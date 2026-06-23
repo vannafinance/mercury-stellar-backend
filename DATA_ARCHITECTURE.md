@@ -73,7 +73,11 @@ for it — an indexer stores *events*, not current balances.
 **Where it lives in our app:**
 - `lib/stellar-utils.ts`, `lib/margin-utils.ts` — the contract-view calls.
 - `lib/analytics/stellar/allMarginAccounts.ts` — the protocol-wide account scan that feeds
-  `buildAnalyticsSnapshots` → the `/analytics/*` dashboards.
+  `buildAnalyticsSnapshots` → the `/analytics/*` dashboards. It now runs **server-side behind
+  the shared edge-cached route `/api/analytics/accounts`** (`s-maxage 30s`, the D25 pattern), so
+  the bounded fan-out runs **~once per 30s globally** instead of in every visitor's browser; the
+  client only does the cheap connected-wallet self-refresh + merge. (Mercury is deliberately
+  NOT used here — it indexes *events*, not the *current* balances/HF this scan needs; see §5/§7.)
 - The Margin/Earn/Farm/Portfolio **stat cards** (current HF, balances, pool stats).
 
 **What it CANNOT do:** give you history cheaply. RPC `getEvents` only retains ~7 days and
@@ -194,7 +198,9 @@ Hubble (aggregate) or it's the wrong question.
   `/analytics/*` is the existing RPC+Mercury island (D22, done).
 - **"Hubble speeds up the app."** It speeds up / enables the **`/stats`** page only. The broad
   "make every existing stat card cold-load fast" win is **D25** — a separate edge-cache layer
-  (`/api/account/[addr]` + `/api/pools`) over the *live* reads, not Hubble.
+  (`/api/account/[addr]` + `/api/pools`, and `/api/analytics/accounts` for the protocol-wide
+  scan) over the *live* reads, not Hubble. The shared edge cache means heavy reads run ~once per
+  TTL globally rather than per visitor — the win is *caching*, not switching data layers.
 - **"Mercury gives timestamps."** No — Horizon does (except where the event payload carries one).
 
 ---
