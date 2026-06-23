@@ -9,17 +9,26 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 import { buildAnalyticsSnapshots } from "@/lib/analytics/stellar/buildSnapshots";
-import {
-  readOracleSnapshot,
-  readAllPoolStats,
-  type StellarPoolStats,
-  type StellarAnalyticsSource,
+import type {
+  StellarPoolStats,
+  StellarAnalyticsSource,
 } from "@/lib/analytics/stellar/rpcReader";
-import { readLiveEventFeed, type LiveEventFeed } from "@/lib/analytics/stellar/eventFeed";
+import type { LiveEventFeed } from "@/lib/analytics/stellar/eventFeed";
 import type { AllAccountsResult } from "@/lib/analytics/onchain/types";
 
 const STELLAR_CHAIN_ID = 0;
 const QUERY_KEY = ["analytics", "snapshot"] as const;
+
+/**
+ * Fetch a protocol-wide analytics payload from its shared edge-cached route.
+ * These reads are identical for every viewer, so they run server-side once per
+ * the route's TTL instead of as a client RPC read in each browser.
+ */
+async function fetchAnalytics<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} failed (${res.status})`);
+  return (await res.json()) as T;
+}
 
 /**
  * Shared ledger-tick + React Query primitive for the analytics live feeds.
@@ -56,19 +65,25 @@ function useTickQuery<T>(key: readonly unknown[], queryFn: () => Promise<T>) {
 
 type OracleSnapshot = StellarAnalyticsSource["oracle"];
 
-/** Live oracle snapshot (prices + heartbeat). Polled by oracles/alerts/risk-explorer. */
+/** Live oracle snapshot (prices + heartbeat) from the edge cache. Polled by oracles/alerts/risk-explorer. */
 export function useOracleSnapshot() {
-  return useTickQuery<OracleSnapshot>(["analytics", "oracle"], readOracleSnapshot);
+  return useTickQuery<OracleSnapshot>(["analytics", "oracle"], () =>
+    fetchAnalytics<OracleSnapshot>("/api/analytics/oracle"),
+  );
 }
 
-/** Live lending-pool stats. Polled by the alerts page. */
+/** Live lending-pool stats from the edge cache. Polled by the alerts page. */
 export function usePoolStats() {
-  return useTickQuery<StellarPoolStats[]>(["analytics", "poolStats"], readAllPoolStats);
+  return useTickQuery<StellarPoolStats[]>(["analytics", "poolStats"], () =>
+    fetchAnalytics<StellarPoolStats[]>("/api/analytics/pool-stats"),
+  );
 }
 
-/** Live Soroban event feed (liquidations + whale activity). Polled by liquidations/whales. */
+/** Live Soroban event feed (liquidations + whale activity) from the edge cache. Polled by liquidations/whales. */
 export function useLiveEventFeed() {
-  return useTickQuery<LiveEventFeed>(["analytics", "eventFeed"], () => readLiveEventFeed());
+  return useTickQuery<LiveEventFeed>(["analytics", "eventFeed"], () =>
+    fetchAnalytics<LiveEventFeed>("/api/analytics/events"),
+  );
 }
 
 /**

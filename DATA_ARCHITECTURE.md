@@ -198,9 +198,11 @@ Hubble (aggregate) or it's the wrong question.
   `/analytics/*` is the existing RPC+Mercury island (D22, done).
 - **"Hubble speeds up the app."** It speeds up / enables the **`/stats`** page only. The broad
   "make every existing stat card cold-load fast" win is **D25** — a separate edge-cache layer
-  (`/api/account/[addr]` + `/api/pools`, and `/api/analytics/accounts` for the protocol-wide
-  scan) over the *live* reads, not Hubble. The shared edge cache means heavy reads run ~once per
-  TTL globally rather than per visitor — the win is *caching*, not switching data layers.
+  (`/api/account/[addr]` + `/api/pools`, plus the full protocol-wide analytics suite
+  `/api/analytics/{accounts,pool-stats,oracle,events}`) over the *live* reads, not Hubble. The
+  shared edge cache means heavy reads run ~once per TTL globally rather than per visitor — the
+  win is *caching*, not switching data layers. **All `/analytics/*` data now flows through these
+  shared routes**, so analytics RPC load is flat regardless of how many people view it.
 - **"Mercury gives timestamps."** No — Horizon does (except where the event payload carries one).
 
 ---
