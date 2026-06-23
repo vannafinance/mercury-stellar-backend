@@ -466,10 +466,11 @@ export default function Earn() {
           <article className="flex-1 min-w-0">
             <CollapsibleChart
               label="Overall Deposit"
-              statValue={`$${(liveDepositData.length > 0
-                ? liveDepositData[liveDepositData.length - 1].amount
-                : 0
-              ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              // Headline reads the LIVE total (same source as the Positions
+              // table) so it updates instantly on deposit/withdraw. The chart
+              // curve still uses the throttled snapshots so the long-range shape
+              // stays smooth — only the number is decoupled from the throttle.
+              statValue={`$${totalDepositedUSD.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
               chartProps={{
                 type: "overall-deposit",
                 customData: liveDepositData,
