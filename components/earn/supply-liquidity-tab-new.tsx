@@ -1,5 +1,14 @@
 'use client';
 
+/**
+ * Supply panel for the earn form (current implementation). Lets the user pick a
+ * pool, enter an amount (with %-of-balance pills), previews the vToken shares
+ * and projected earnings via {@link InfoCard}, and submits the supply mutation.
+ *
+ * Available balance is asset-aware: native XLM reserves ~1 XLM for fees; USDC
+ * variants read from the corresponding token-balance entry. Supplying the full
+ * balance is blocked to keep a usable residual.
+ */
 import { useState, useEffect, useMemo, useRef, memo } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -35,6 +44,7 @@ const toDisplayAsset = (value: string) => {
   return value;
 };
 
+/** Memoized supply-liquidity panel; selected pool is driven by the route/store. */
 export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const { isDark } = useTheme();
   const router = useRouter();

@@ -12,6 +12,7 @@ import { SoroswapService } from './soroswap-utils';
    user to withdraw manually via the Pro-mode withdraw flow.
    ───────────────────────────────────────────────────────────────────────── */
 
+/** Inputs to {@link closePosition}. `exitPct` (1–100) scales how much to unwind. */
 export interface ClosePositionParams {
   userAddress: string;
   marginAccountAddress: string;
@@ -27,6 +28,15 @@ export interface ClosePositionParams {
   onStep?: (msg: string) => void;
 }
 
+/**
+ * Unwind a leveraged-yield position (full or partial via `exitPct`): withdraw
+ * from the external pool (Blend single-asset, or Soroswap LP) then repay that
+ * fraction of the Vanna loan. Same-asset positions deploy collateral+borrow into
+ * the pool, so the withdraw covers both; cross-asset positions leave collateral
+ * in the margin account (freed on repay) and only the borrow lives in the pool.
+ * Freed collateral is NOT auto-withdrawn — the user pulls it via Pro-mode.
+ * Returns `{ success:false, error }` on the first failing leg; never throws.
+ */
 export async function closePosition(params: ClosePositionParams): Promise<OneClickStrategyResult> {
   const {
     userAddress,
@@ -90,10 +100,19 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
   }
 }
 
+/** Assets supported by the one-click flows. */
 export type TokenAsset = 'XLM' | 'USDC';
+/**
+ * Relationship between the deposited collateral and what gets deployed:
+ * - `same-asset`: collateral and pool token are identical (deploy directly).
+ * - `cross-asset-keep`: deploy collateral and borrow into their own pools.
+ * - `cross-asset-swap`: swap collateral to the pool token before deploying.
+ */
 export type Scenario = 'same-asset' | 'cross-asset-keep' | 'cross-asset-swap';
+/** `single` = one-sided lending pool (Blend); `lp` = two-token AMM pool. */
 export type PoolType = 'single' | 'lp';
 
+/** Inputs to {@link executeOneClickStrategy}. `leverage` of 1 means deposit-only. */
 export interface OneClickStrategyParams {
   userAddress: string;
   marginAccountAddress: string;
@@ -110,6 +129,7 @@ export interface OneClickStrategyParams {
   onStep?: (msg: string) => void;
 }
 
+/** Result of a one-click open/close: success plus the final tx hash or an error. */
 export interface OneClickStrategyResult {
   success: boolean;
   hash?: string;
@@ -120,6 +140,21 @@ function toWad(amount: number): string {
   return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
 }
 
+/**
+ * Open a leveraged-yield position in one user-facing action, branching on
+ * leverage / pool type / scenario:
+ *  - `leverage <= 1` (deposit-only): deposit collateral, then deploy/LP it
+ *    WITHOUT touching the borrow-coupled contract calls (those invoke the
+ *    internal borrow even at amount 0 and would inherit borrow-path failures).
+ *  - Blend single-asset + same-asset: tries the atomic
+ *    `deposit_borrow_and_deploy_blend` (one signature), falling back to the
+ *    split deposit/borrow/deploy path when the per-tx CPU budget is too tight.
+ *  - Otherwise: deposit (+ borrow), then deploy — swapping first for
+ *    cross-asset-swap, or splitting across two pools for cross-asset-keep.
+ * Amounts are human-readable; `prices` drives swap-output estimates (×0.99 for
+ * fee/slippage). Reports progress via `onStep`. Returns the final deploy/repay
+ * tx result; never throws (errors are captured into the result).
+ */
 export async function executeOneClickStrategy(
   params: OneClickStrategyParams
 ): Promise<OneClickStrategyResult> {

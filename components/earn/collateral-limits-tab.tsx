@@ -1,5 +1,9 @@
 'use client';
 
+/**
+ * "Collateral & Limits" tab: lists each Stellar pool's supply usage against its
+ * configured supply cap, rendered as a progress bar in the shared {@link Table}.
+ */
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
@@ -28,6 +32,10 @@ const SUPPLY_CAPS: Record<string, number> = {
   SOROSWAP_USDC: 1000000,
 };
 
+/**
+ * Builds per-asset supply-usage rows (supply / cap, clamped to 100%) and renders
+ * them with progress bars. Shows a loading placeholder while pool data resolves.
+ */
 export const CollateralLimitsTab = () => {
   const { isDark } = useTheme();
   const { pools, isLoading } = usePoolData();

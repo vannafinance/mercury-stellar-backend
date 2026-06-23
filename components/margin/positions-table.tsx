@@ -14,7 +14,9 @@ import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 interface PositionstableProps {
+  /** Fired from a row's Repay button; passes the borrowed asset to prefill the Repay tab. */
   onRepayClick?: (asset?: string) => void;
+  /** Fired from the empty-state CTA to start opening a new position. */
   onOpenPositionClick?: () => void;
 }
 
@@ -53,6 +55,17 @@ const formatTokenName = (asset: string): string => {
 // sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
 const formatInterestUsd = (value: number): string => formatUsdValue(value);
 
+/**
+ * Margin positions panel with two tabs: Current Positions and Positions
+ * History. Current positions are derived from on-chain state in the margin
+ * store — borrowed and collateral balances are deduplicated by canonical
+ * symbol, dust is filtered, farm/LP receipt tokens are excluded, and borrows are
+ * attributed back to the deposit that opened them (via shared tx hashes in local
+ * margin history) so each row reads as one collateral-anchored position with its
+ * leverage and Repay action. Renders a desktop table, mobile cards, paginated
+ * history, and per-tab empty states. Repay is disabled when only sub-cent dust
+ * debt remains.
+ */
 export const Positionstable = ({
   onRepayClick,
   onOpenPositionClick,

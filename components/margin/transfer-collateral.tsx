@@ -43,6 +43,18 @@ const formatHF = (hf: number): string =>
 // header / positions / repay views.
 const formatUsd = (n: number): string => formatUsdValue(n);
 
+/**
+ * Transfer tab for moving a token between the user's wallet and their margin
+ * account in either direction (MB = wallet → margin deposit, WB = margin →
+ * wallet withdraw). Computes several distinct caps: the source balance, the
+ * risk-safe withdraw limit derived from the store's health factor (so a
+ * withdrawal can't push HF below the 1.1 liquidation threshold), and an
+ * executable cap that reserves XLM for the margin account's on-chain base
+ * reserve and rounding drift. The Transfer button and an inline warning block
+ * unsafe WB withdrawals; on a failed on-chain withdraw the entered amount is
+ * stepped down to a safer value. Balances reset on wallet disconnect, and
+ * {@link TransferPreviewSection} renders the before → after impact.
+ */
 export const TransferCollateral = () => {
   const { isDark } = useTheme();
   const normalizeContractTokenSymbol = (symbol: string) =>
@@ -653,7 +665,9 @@ export const TransferCollateral = () => {
 };
 
 interface TransferPreviewSectionProps {
+  /** Transfer amount in token units (converted to USD via `selectedTokenPrice`). */
   transferAmount: number;
+  /** Live oracle price of the selected token. */
   selectedTokenPrice: number;
   /** "MB" = wallet → margin (collateral grows). "WB" = margin → wallet (collateral shrinks). */
   transferType: "MB" | "WB";

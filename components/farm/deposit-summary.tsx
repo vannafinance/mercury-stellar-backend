@@ -1,5 +1,6 @@
 "use client";
 
+// Projected-earnings confirmation panel shown before a farm deposit is submitted.
 import { motion } from "framer-motion";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";

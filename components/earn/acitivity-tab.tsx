@@ -1,5 +1,11 @@
 'use client';
 
+/**
+ * "Activity" tab for an earn pool: shows the pool's distribution and a merged
+ * transaction feed. On-chain transactions (from the indexer) are de-duplicated
+ * against locally-recorded history by tx hash so a just-submitted action shows
+ * immediately and isn't double-listed once it lands on-chain.
+ */
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
@@ -25,6 +31,7 @@ const distributionHeadings = [
   { label: "Supply (%)", id: "supply-percent" },
 ];
 
+/** Empty, mutable table-body scaffold for transaction rows; populated per-render. */
 export const transactionTableBody = {
   rows: [] as {
     cell: {
@@ -39,6 +46,7 @@ export const transactionTableBody = {
   }[],
 };
 
+/** Column definitions for the recent-transactions table (shared with other earn views). */
 export const transactionTableHeadings = [
   { label: "Date", id: "date" },
   { label: "Type", id: "type" },
@@ -78,6 +86,10 @@ const normalizeTimestamp = (value: number | string | undefined): number => {
   return ts < 1_000_000_000_000 ? ts * 1000 : ts;
 };
 
+/**
+ * Renders pool distribution + a merged (on-chain ∪ local) transaction table for
+ * the currently selected pool, with USD values derived from oracle prices.
+ */
 export const ActivityTab = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();

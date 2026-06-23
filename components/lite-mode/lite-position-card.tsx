@@ -4,6 +4,13 @@ import { motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 
+/**
+ * Compact position-summary card driven directly off the margin store's
+ * aggregate totals (collateral, borrowed, net value) with a derived health
+ * label (Safe / Caution / At Risk). Renders nothing when the account has no
+ * collateral or debt. This is the read-only backend-snapshot view; advanced
+ * partial-exit controls are intentionally disabled here.
+ */
 export const LitePositionCard = () => {
   const { isDark } = useTheme();
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);

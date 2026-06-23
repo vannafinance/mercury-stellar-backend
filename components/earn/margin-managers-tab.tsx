@@ -1,5 +1,10 @@
 'use client';
 
+/**
+ * "Margin Managers" tab: lists each pool's lending tier (current debt + asset
+ * liquidation-threshold count) in the shared {@link Table}. Gated behind a
+ * connected wallet; shows connect/loading placeholders otherwise.
+ */
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
@@ -25,6 +30,7 @@ const tableHeadings = [
 const shortenAddr = (addr: string) =>
   `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
+/** Builds per-tier debt rows from pool data + oracle prices and renders them in the table. */
 export const MarginManagersTab = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();

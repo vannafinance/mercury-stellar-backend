@@ -36,6 +36,7 @@ const REPAY_DUST_EPSILON = 1e-6;
 const WAD = BigInt("1000000000000000000");
 
 interface RepayLoanTabProps {
+  /** Asset to preselect on mount / when changed (e.g. from a positions-row Repay click). */
   prefilledAsset?: string;
 }
 
@@ -49,6 +50,19 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   return null;
 };
 
+/**
+ * Repay tab for paying down an outstanding margin loan in a chosen asset. Shows
+ * the net outstanding debt and the wallet's available balance (both in token
+ * units with a live USD line), and a form with quick-% chips and a free-text
+ * amount. Repayment runs through a React Query mutation that, before signing,
+ * re-reads the on-chain debt and caps the WAD amount at both the real debt and
+ * the smart account's spendable balance — the latter avoids Contract #10
+ * overspend when accrued interest exceeds the funds the account holds. 100%
+ * targets the full on-chain debt; any leftover accrued-interest sliver is
+ * surfaced via a toast. State is reset on wallet disconnect, and the preview
+ * (before → after debt / HF / liquidation buffer) is rendered by
+ * {@link RepayPreviewSection}.
+ */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
   const normalizeContractTokenSymbol = (symbol: string) =>
@@ -625,7 +639,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 };
 
 interface RepayPreviewSectionProps {
+  /** Repay amount in token units (converted to USD via `selectedTokenPrice`). */
   repayAmount: number;
+  /** Live oracle price of the selected repay token. */
   selectedTokenPrice: number;
 }
 

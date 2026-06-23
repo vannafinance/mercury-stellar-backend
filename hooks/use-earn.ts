@@ -19,6 +19,16 @@ import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/norma
 // We still write into `useEarnPoolStore` so components that read the pools
 // from the store directly keep working unchanged (dual-write pattern).
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Lending-pool market stats from the cached `/api/pools` edge route.
+ *
+ * Shared across consumers via React Query; ledger-tick invalidates and
+ * staleTime 4s gives stale-while-revalidate (data stays on screen during
+ * background refetch). Dual-writes into `useEarnPoolStore`.
+ *
+ * @returns `{ pools, isLoading, isRefreshing, lastUpdated, error, refresh }` —
+ *   `pools` falls back to the store snapshot until the first fetch resolves.
+ */
 export const usePoolData = () => {
   const storePools = useEarnPoolStore((s) => s.pools);
   const lastUpdated = useEarnPoolStore((s) => s.lastUpdated);
@@ -91,6 +101,17 @@ const EMPTY_POSITIONS = {
   SOROSWAP_USDC: { ...EMPTY_POSITION },
 };
 
+/**
+ * The connected user's per-pool positions (deposited, vToken balance, borrowed).
+ *
+ * Enabled only when a wallet is connected. Collapses the deposit/pool-stats/
+ * borrow reads into one concurrent batch and derives `deposited` from the cached
+ * exchange rate. Ledger-tick invalidated; dual-writes positions into the earn
+ * store and deposited balances into the user store. Returns EMPTY_POSITIONS when
+ * disconnected.
+ *
+ * @returns `{ positions, isLoading, isRefreshing, error, refresh }`.
+ */
 export const useUserPositions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
@@ -201,6 +222,12 @@ export const useUserPositions = () => {
   };
 };
 
+/**
+ * Mutation to supply (deposit) liquidity into a pool. Variables:
+ * `{ amount, assetType }`. No optimistic write — `ContractService.deposit`
+ * waits for SUCCESS, then `onSettled` invalidates `['earn']` to refetch the real
+ * balance. Records the tx in the store/earn-history and normalizes errors.
+ */
 export const useSupplyLiquidity = () => {
   const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
@@ -231,6 +258,12 @@ export const useSupplyLiquidity = () => {
   });
 };
 
+/**
+ * Mutation to withdraw liquidity from a pool. Variables: `{ amount, assetType }`.
+ * Guards against withdrawing more than the deposited vToken balance, waits for
+ * SUCCESS, then invalidates `['earn']`. The returned object is augmented with a
+ * `depositedBalances` map (per-asset vToken balances) for max-amount UIs.
+ */
 export const useWithdrawLiquidity = () => {
   const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
@@ -277,9 +310,14 @@ export const useWithdrawLiquidity = () => {
   });
 };
 
-// Hook to load on-chain earn pool transactions for the connected user.
-// Uses react-query so the fetch re-fires automatically when the wallet
-// reconnects after a page reload (enabled transitions false → true).
+/**
+ * On-chain earn-pool transaction history for the connected user, sourced from
+ * Mercury. Enabled only when connected, so the fetch re-fires automatically on
+ * reconnect (enabled false → true). Ledger-tick invalidated; refetches on window
+ * focus.
+ *
+ * @returns `{ transactions, isLoading, isRefreshing, refresh }`.
+ */
 export const useEarnTransactions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
@@ -313,7 +351,12 @@ export const useEarnTransactions = () => {
   };
 };
 
-// Combined hook for earn page
+/**
+ * Aggregate hook for the Earn page: composes `usePoolData` + `useUserPositions`
+ * + wallet/store state and derives totals (total deposited/borrowed, deposit-
+ * weighted APY). Exposes a single `refresh` that refetches pools and positions
+ * together.
+ */
 export const useEarnPage = () => {
   const wallet = useUserStore();
   const poolData = usePoolData();

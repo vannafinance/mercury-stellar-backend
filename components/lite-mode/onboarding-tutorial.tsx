@@ -390,6 +390,13 @@ const PoolVisual = ({ isDark }: { isDark: boolean }) => {
   );
 };
 
+/**
+ * First-run, multi-step onboarding modal for Lite mode (welcome → pool →
+ * leverage → deploy), each step pairing a themed illustration with copy and a
+ * progress bar. Auto-opens once per browser (gated by a `localStorage` flag set
+ * via `markSeen`) shortly after mount; the user can step forward/back, skip, or
+ * dismiss — all of which mark it seen so it won't reappear.
+ */
 export const OnboardingTutorial = () => {
   const { isDark } = useTheme();
   const [isOpen, setIsOpen] = useState(false);

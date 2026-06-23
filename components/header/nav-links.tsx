@@ -1,5 +1,10 @@
 "use client";
 
+/**
+ * Desktop primary navigation. Renders the top-level nav items with active-route
+ * underlines derived from the current pathname, and a hover dropdown of
+ * {@link FeatureCard}s for the "Trade" entry (reflecting the active sub-route).
+ */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronDown } from "lucide-react";
@@ -33,9 +38,11 @@ const tradeSubMeta: Record<
   },
 };
 
+/** Joins truthy class names into a single space-separated string. */
 const cx = (...classes: Array<string | false | undefined | null>) =>
   classes.filter(Boolean).join(" ");
 
+/** Desktop nav bar with active-route highlighting and the Trade hover dropdown. */
 export default function NavLinks() {
   const pathname = usePathname();
 

@@ -1,5 +1,17 @@
 'use client';
 
+/**
+ * Withdraw panel for the earn form. Burns vToken shares back to the underlying
+ * asset, with %-of-balance pills and an {@link InfoCard} preview of assets
+ * received. Unlike supply, full (100%) withdrawals are allowed — the contract
+ * is the source of truth.
+ *
+ * Two precision guards matter here: the 100% pill pins to the exact balance
+ * string (partial pills floor to 2dp) and the button uses a ~1 stroop (1e-7)
+ * tolerance, both to stop float-reformatting drift from misfiring
+ * "Insufficient Balance". After a withdrawal it re-syncs position/pool stats on
+ * a staggered schedule so the reduced balance appears without a manual reload.
+ */
 import { useState, useMemo, useEffect, useRef, memo } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -35,6 +47,7 @@ const toDisplayAsset = (value: string) => {
   return value;
 };
 
+/** Memoized withdraw-liquidity panel; selected pool is driven by the route/store. */
 export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const { isDark } = useTheme();
   const router = useRouter();

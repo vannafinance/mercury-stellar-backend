@@ -1,3 +1,9 @@
+// Soroswap (AMM) integration: XLM/USDC pool stats, LP positions, swap quotes,
+// and add/remove-liquidity + swap, both from the Vanna margin account (via
+// AccountManager.execute) and directly from the user's wallet. Reads use a
+// throwaway sim source; the XDR call struct sends amounts in WAD (1e18) while
+// on-chain reserves/LP balances are 7-decimal (STROOP).
+
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@stellar/freighter-api';
 import {
@@ -24,6 +30,7 @@ const makeKey  = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/** A historical Soroswap add/remove-liquidity event (amounts 7-decimal strings). */
 export interface SoroswapLpEvent {
   type: 'deposit' | 'withdraw';
   shareAmount: string;  // LP shares (7 decimals)
@@ -34,6 +41,7 @@ export interface SoroswapLpEvent {
   ledger: number;
 }
 
+/** Reserves, total LP supply, and fee for the XLM/USDC pool (display strings). */
 export interface SoroswapPoolStats {
   reserveXLM:   string; // human-readable (7 decimals)
   reserveUSDC:  string;
@@ -42,16 +50,19 @@ export interface SoroswapPoolStats {
   pairAddress:  string;
 }
 
+/** A margin account's Soroswap LP position (LP shares, 7-decimal string). */
 export interface SoroswapLpPosition {
   lpBalance: string; // LP shares held by margin account (7 decimals)
 }
 
+/** Outcome of a Soroswap tx: success plus the hash, or an error message. */
 export interface SoroswapTransactionResult {
   success: boolean;
   hash?:   string;
   error?:  string;
 }
 
+/** Static config for a supported Soroswap pool (display + fee in bps×10). */
 export interface SoroswapPoolConfig {
   id:          string;
   tokens:      [string, string];
@@ -59,6 +70,7 @@ export interface SoroswapPoolConfig {
   feeFraction: number;
 }
 
+/** Supported Soroswap pools (currently the single XLM/USDC pair). */
 export const SOROSWAP_POOLS: SoroswapPoolConfig[] = [
   {
     id:          'soroswap-xlm-usdc',
@@ -94,6 +106,13 @@ function tempAccount(): [StellarSdk.rpc.Server, StellarSdk.Account] {
 
 // ── SoroswapService ───────────────────────────────────────────────────────────
 
+/**
+ * Stateless façade over the Soroswap router + XLM/USDC pair. Resolves effective
+ * router/token addresses from Registry (with hardcoded fallbacks), reads pool
+ * stats and LP balances via simulation, and routes liquidity/swap writes either
+ * through the margin account (AccountManager.execute, amounts in WAD) or the
+ * user's wallet directly. All methods are static.
+ */
 export class SoroswapService {
 
   // ── Registry helpers ───────────────────────────────────────────────────────

@@ -26,8 +26,10 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
    Pool & Token types
    ═══════════════════════════════════════════════════════════════ */
 
+/** "single" = a single-asset lending pool (Blend); "lp" = a two-asset AMM pool. */
 type PoolType = "lp" | "single";
 
+/** A selectable yield pool in the strategy picker, with its store key for live rate lookups. */
 interface PoolOption {
   id: string;
   type: PoolType;
@@ -72,6 +74,12 @@ const getTokenIcon = (symbol: string) => {
 };
 
 /* ─── Scenario types ─── */
+/**
+ * How borrowed funds are deployed relative to the collateral asset:
+ *  - `same-asset`        — collateral and pool asset match; deposit + borrow supplied to one pool.
+ *  - `cross-asset-keep`  — keep collateral exposure; supply collateral and borrow to two separate pools.
+ *  - `cross-asset-swap`  — swap collateral into the target asset and supply everything to one pool.
+ */
 type StrategyScenario = "same-asset" | "cross-asset-keep" | "cross-asset-swap";
 
 /* ─── animation variants ─── */
@@ -113,6 +121,25 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
    Main Component
    ═══════════════════════════════════════════════════════════════ */
 
+/**
+ * The "Deposit & Deploy" flow — the heart of Lite mode. Guides the user through
+ * picking a curated yield pool, depositing collateral (XLM or USDC), and setting
+ * leverage, then opens the leveraged position in one action.
+ *
+ * Detects the deployment {@link StrategyScenario} from the pool/collateral pair
+ * and computes the borrow amount, blended net APR per leg, projected health
+ * factor / LTV, liquidation price (for cross-asset borrows), and earnings
+ * estimates live as inputs change. Pool APRs/TVL come from `usePoolData`; prices
+ * from the oracle hook. XLM deposits respect the wallet's real on-chain minimum
+ * reserve (fetched via `getXlmMinReserve`) so a deposit can't trap the account.
+ *
+ * The CTA is context-aware (connect wallet → create margin account → enter
+ * amount → deploy) and validation blocks over-deposit, over-borrow, and unsafe
+ * (HF ≤ 1.2) positions. Execution runs `executeOneClickStrategy` with progress
+ * streamed into a status modal; on success the deployment is recorded in the
+ * Lite-only registry (`appendLitePosition`) so it surfaces in the Position tab
+ * separately from any Pro-mode borrows.
+ */
 export const OneClickStrategy = () => {
   const { isDark } = useTheme();
   const { pools: earnPools } = usePoolData();

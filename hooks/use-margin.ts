@@ -16,6 +16,15 @@ import { getMarginHistoryFromMercury } from '@/lib/mercury-margin';
 // NO ledger-tick refetch: the query is heavy (full ledger range + per-tx timestamp
 // enrichment). Freshness comes from mount, account change, window focus, and the
 // margin-mutation invalidation of ['margin'] (prefix-matches ['margin','history']).
+/**
+ * Full margin transaction history for the connected margin account, sourced
+ * purely from Mercury (no ~7-day RPC cap). Gated on the margin account address;
+ * intentionally NOT ledger-tick refetched (see note above) — refreshed on mount,
+ * account change, window focus, and `['margin']` mutation invalidation. Results
+ * are returned newest-first.
+ *
+ * @returns `{ history, isLoading, isRefreshing }`.
+ */
 export const useMarginHistory = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 

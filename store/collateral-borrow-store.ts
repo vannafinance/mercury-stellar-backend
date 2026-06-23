@@ -2,7 +2,11 @@ import createNewStore from "@/zustand/index";
 import { BorrowInfo, Collaterals, Position } from "@/lib/types";
 import { POSITION } from "@/lib/constants/margin";
 
+// Collateral/borrow UI state for the margin builder: the chosen collaterals, the
+// borrow legs, and the resulting position rows. Seeded with demo values.
+
 // Types
+/** Slice shape: selected collaterals, borrow legs, and derived position rows. */
 export interface CollateralBorrowStateType {
   collaterals: Collaterals[];
   borrowItems: BorrowInfo[];
@@ -50,6 +54,10 @@ const initialState: CollateralBorrowStateType = {
 };
 
 // Export Store
+//
+// Persisted with a versioned migration: bumping `version` clears stale persisted
+// state and the migrate fn reseeds `position` from the canonical POSITION
+// constant when upgrading from v1.
 export const useCollateralBorrowStore = createNewStore(initialState, {
   name: "collateral-borrow-store",
   devTools: true,

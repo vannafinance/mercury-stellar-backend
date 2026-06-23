@@ -1,5 +1,10 @@
 "use client";
 
+/**
+ * Full-screen mobile navigation overlay. Renders the primary nav items, with the
+ * "Trade" entry expanding into its sub-links. Selecting any link invokes
+ * `onClose` to dismiss the menu.
+ */
 import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
@@ -7,6 +12,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import { navbarItems, tradeItems } from "@/lib/constants";
 
 interface BurgerMenuProps {
+  /** Called when the menu should close (e.g. after a nav link is tapped). */
   onClose: () => void;
 }
 
@@ -17,6 +23,7 @@ const subIconFor: Record<string, string> = {
   "Defi Greeks": "/coins/xlmbg.png",
 };
 
+/** Mobile burger navigation overlay with an expandable Trade submenu. */
 export default function BurgerMenu({ onClose }: BurgerMenuProps) {
   const [isTradeExpanded, setIsTradeExpanded] = useState(false);
 

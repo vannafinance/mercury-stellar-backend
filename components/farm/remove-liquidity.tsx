@@ -1,5 +1,16 @@
 "use client";
 
+/**
+ * Farm "Remove Liquidity" panel — mirror of add-liquidity for withdrawals.
+ * Handles single-asset withdraws from a Blend pool and dual-asset removals from
+ * an Aquarius/Soroswap LP pool, with %-of-balance pills and a per-protocol
+ * balance source.
+ *
+ * Two precision guards: the 100% pill pins to the exact balance string (so
+ * toFixed drift doesn't trip "Insufficient/Exceeds balance"), and a full
+ * Blend withdrawal re-fetches the latest accrued underlying balance immediately
+ * before submitting so it targets the true amount including interest.
+ */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -26,6 +37,11 @@ type TokenSymbol = (typeof SUPPORTED_TOKENS)[number];
 
 const PERCENTAGE_OPTIONS = [25, 50, 75, 100] as const;
 
+/**
+ * Memoized remove-liquidity panel. Resolves the selected pool's protocol +
+ * tokens from the farm store, loads the relevant balance (Blend underlying or
+ * LP token), and dispatches the matching withdraw/remove mutation.
+ */
 export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const { isDark } = useTheme();
   const userAddress = useUserStore((state) => state.address);

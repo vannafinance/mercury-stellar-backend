@@ -1,3 +1,9 @@
+// USD price oracle reads with a short, ledger-aligned cache. Resolves token
+// aliases (BLUSDC→USDC, BLEND_XLM→XLM, …) to a base symbol, then reads
+// `get_price_latest` off the on-chain oracle via simulation. A per-symbol cache
+// (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe the many concurrent
+// reads a single page issues; static fallbacks cover the unreachable-oracle case.
+
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
 
@@ -108,6 +114,13 @@ async function fetchOnce(symbol: string): Promise<number> {
   }
 }
 
+/**
+ * Resolve a token's USD price, preferring the fresh cache, then an in-flight
+ * read, then a new oracle simulation. Aliases are resolved first, so e.g.
+ * `BLUSDC` and `USDC` share one cache entry / one network read. Never throws —
+ * on oracle failure it returns the last good price (or a static fallback) and
+ * caches that briefly to dampen retry storms.
+ */
 export async function fetchTokenPrice(token: string): Promise<number> {
   const symbol = resolveSymbol(token);
   const cached = cache.get(symbol);
@@ -119,6 +132,11 @@ export async function fetchTokenPrice(token: string): Promise<number> {
   return p;
 }
 
+/**
+ * Batch variant of {@link fetchTokenPrice}. Upper-cases + de-dupes the input
+ * symbols and resolves them concurrently; returns a `symbol → price` map keyed
+ * by the de-duped (uppercased) symbol, not the alias-resolved base.
+ */
 export async function fetchTokenPrices(tokens: string[]): Promise<Record<string, number>> {
   const unique = Array.from(new Set(tokens.map((t) => (t || '').toUpperCase().trim()).filter(Boolean)));
   const entries = await Promise.all(
@@ -127,9 +145,12 @@ export async function fetchTokenPrices(tokens: string[]): Promise<Record<string,
   return Object.fromEntries(entries);
 }
 
-// Synchronous read for places that can't await (render paths, formatters).
-// Returns the last cached price even if expired, falling back to the static
-// table only when nothing has ever been fetched for this symbol.
+/**
+ * Synchronous price read for code that can't await (render paths, formatters).
+ * Returns the last cached price even if expired — staleness is acceptable here
+ * — and falls back to the static table only when nothing was ever fetched for
+ * this symbol. Does not trigger a network read; pair with {@link primeTokenPrices}.
+ */
 export function getCachedTokenPrice(token: string): number {
   const symbol = resolveSymbol(token);
   const cached = cache.get(symbol);
@@ -137,14 +158,22 @@ export function getCachedTokenPrice(token: string): number {
   return FALLBACK_PRICES[symbol] ?? 1;
 }
 
-// Kick off background refreshes for a known set of symbols without awaiting.
-// Useful from non-React contexts (stores, page roots) to warm the cache.
+/**
+ * Fire-and-forget cache warm-up: kicks off background reads for the given
+ * symbols without awaiting. Use from non-React contexts (stores, page roots) so
+ * a later {@link getCachedTokenPrice} has fresh data.
+ */
 export function primeTokenPrices(tokens: string[]): void {
   for (const t of tokens) {
     void fetchTokenPrice(t);
   }
 }
 
+/**
+ * Subscribe to price-cache updates; `cb` fires after each successful oracle
+ * fetch. Returns an unsubscribe function. Used by React stores to re-render
+ * when a background refresh lands a new price.
+ */
 export function subscribePriceUpdates(cb: () => void): () => void {
   subscribers.add(cb);
   return () => { subscribers.delete(cb); };

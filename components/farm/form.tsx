@@ -1,3 +1,8 @@
+/**
+ * Farm liquidity form shell. Hosts the Add / Remove Liquidity tabs with an
+ * inline desktop layout and a draggable mobile bottom sheet; the panels
+ * cross-fade on tab change.
+ */
 import { AnimatedTabs } from "../ui/animated-tabs"
 import { useState, memo } from "react"
 import { AddLiquidity } from "./add-liquidity"
@@ -10,6 +15,7 @@ const tabs = [
   { id: "remove-liquidity", label: "Remove Liquidity" }
 ]
 
+/** Memoized Add/Remove liquidity tab container; the mobile sheet auto-opens on tab change. */
 export const Form = memo(function Form() {
   const [activeTab, setActiveTab] = useState<string>("add-liquidity")
   const [isOpen, setIsOpen] = useState(false)

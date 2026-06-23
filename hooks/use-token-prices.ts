@@ -1,4 +1,9 @@
 'use client';
+
+// React Query hooks over the shared Reflector-oracle price cache. Seed prices
+// synchronously from the cache for the first render, then refresh on each ledger
+// close and on external cache updates from other consumers.
+
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {

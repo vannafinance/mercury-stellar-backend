@@ -1,3 +1,8 @@
+/**
+ * Earn liquidity form shell. Hosts the Supply / Withdraw tabs and renders two
+ * responsive layouts: an inline card on desktop (xl+) and a draggable bottom
+ * sheet on mobile/tablet whose peek height keeps the tab bar always visible.
+ */
 import { useState } from "react";
 import { AnimatedTabs } from "../ui/animated-tabs";
 import { SupplyLiquidityTab } from "./supply-liquidity-tab-new";
@@ -10,6 +15,10 @@ const tabs = [
   { label: "Withdraw Liquidity", id: "withdraw-liquidity" },
 ];
 
+/**
+ * Tab container switching between the supply and withdraw liquidity panels.
+ * On mobile the bottom sheet auto-opens when a tab is selected.
+ */
 export const Form = () => {
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<string>("supply-liquidity");

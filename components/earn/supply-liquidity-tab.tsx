@@ -1,5 +1,11 @@
 'use client';
 
+/**
+ * Legacy supply-liquidity panel (predecessor of supply-liquidity-tab-new).
+ * Self-contained asset selector + amount input with pool-stats and
+ * "you will receive" preview cards. Retained for reference/fallback; the active
+ * earn form uses the InfoCard-based variant.
+ */
 import { useState, useMemo, useEffect, useCallback } from "react";
 import toast from "react-hot-toast";
 import { Dropdown } from "../ui/dropdown";
@@ -14,6 +20,7 @@ import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType, ContractService } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
+/** Legacy supply panel; manages its own asset selection and balance refresh. */
 export const SupplyLiquidityTab = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();

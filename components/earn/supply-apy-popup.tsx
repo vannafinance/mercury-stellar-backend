@@ -1,3 +1,8 @@
+/**
+ * Popover breaking the supply APY into its components (organic yield +
+ * incentives) with 1D / 7D columns and an overall total. Content is currently
+ * static placeholder data.
+ */
 import { Button } from "../ui/button";
 
 const supplyApyPopupItem = [
@@ -16,9 +21,11 @@ const supplyApyPopupItem = [
 ];
 
 interface SupplyApyPopupProps {
+  /** Invoked when the user dismisses the popup via the Close button. */
   onClose?: () => void;
 }
 
+/** APY breakdown popover card. */
 export const SupplyApyPopup = ({ onClose }: SupplyApyPopupProps) => {
   return (
     <article 

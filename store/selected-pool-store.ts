@@ -1,6 +1,10 @@
 import createNewStore from "@/zustand/index";
 import { AssetType, ASSET_TYPES } from "@/lib/stellar-utils";
 
+// Tracks which lending pool/asset the user has selected, shared across the
+// pool list and any deposit/withdraw panels that act on that pool.
+
+/** Slice shape: the selected asset and optional pool metadata for the detail view. */
 export interface SelectedPoolState {
   selectedAsset: AssetType;
   selectedPoolData: {
@@ -16,6 +20,9 @@ const initialState: SelectedPoolState = {
   selectedPoolData: null,
 };
 
+/**
+ * Selected-pool store. Defaults to XLM; not persisted (transient selection).
+ */
 export const useSelectedPoolStore = createNewStore(initialState, {
   name: "selected-pool-store",
   devTools: true,
@@ -23,6 +30,10 @@ export const useSelectedPoolStore = createNewStore(initialState, {
 });
 
 // Helper functions
+/**
+ * Sets the active asset and its pool metadata. When `poolData` is omitted,
+ * synthesizes a default entry from the asset symbol (tagged "Active").
+ */
 export const setSelectedPool = (
   asset: AssetType,
   poolData?: {
@@ -43,6 +54,7 @@ export const setSelectedPool = (
   });
 };
 
+/** Non-reactive read of the currently selected asset (for use outside React render). */
 export const getSelectedAsset = (): AssetType => {
   return useSelectedPoolStore.getState().selectedAsset;
 };

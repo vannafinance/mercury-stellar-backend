@@ -11,16 +11,26 @@ import {
 import { getSoroswapLpEventsFromMercury } from '@/lib/mercury-soroswap';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
+// Farm-page Soroswap data hooks. Same pattern as use-farm.ts: React Query with a
+// 4s stale-while-revalidate window and ledger-tick invalidation; per-account
+// hooks gate on the margin account address, event hooks add window-focus refetch.
+
 // ─────────────────────────────────────────────────────────────────────────────
 // All Soroswap pools stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** One configured Soroswap pool paired with its fetched stats (null until loaded) and a loading flag. */
 export interface SoroswapPoolWithStats {
   pool: SoroswapPoolConfig;
   stats: SoroswapPoolStats | null;
   isLoading: boolean;
 }
 
+/**
+ * Stats for every configured Soroswap pool, fetched with `Promise.allSettled`
+ * (one failure doesn't sink the rest). Ledger-tick invalidated. Returns one
+ * {@link SoroswapPoolWithStats} per pool in config order.
+ */
 export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -63,6 +73,11 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
 // Soroswap pool stats (single)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Stats for the (single) Soroswap pool. Ledger-tick invalidated. Returns
+ * `{ stats, isLoading, isRefreshing, refresh }`.
+ * @param enabled - Gate the query (e.g. only when the Soroswap tab is visible).
+ */
 export const useSoroswapPoolStats = (enabled = true) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -95,6 +110,10 @@ export const useSoroswapPoolStats = (enabled = true) => {
 // Soroswap LP position
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's Soroswap LP balance. Gated on the account address;
+ * ledger-tick invalidated. Returns `{ lpBalance, isLoading, isRefreshing }`.
+ */
 export const useSoroswapLpPosition = (marginAccountAddress: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -125,6 +144,12 @@ export const useSoroswapLpPosition = (marginAccountAddress: string | null) => {
 
 // ---------- Soroswap LP events (position history + chart) ----------
 
+/**
+ * The margin account's Soroswap LP event history from Mercury (for position
+ * history + charts). Gated on both `pairAddress` and the account address;
+ * ledger-tick invalidated and refetches on window focus. Returns
+ * `{ events, isLoading, isRefreshing }`.
+ */
 export const useSoroswapEvents = (
   pairAddress?: string | null,
   marginAccountAddress?: string | null,
@@ -160,6 +185,11 @@ export const useSoroswapEvents = (
 
 // ---------- Soroswap token balance in margin account ----------
 
+/**
+ * A single token's (XLM/USDC) balance held in the margin account, for Soroswap
+ * flows. Gated on both the account address and `tokenSymbol`; ledger-tick
+ * invalidated. Returns `{ balance, isLoading, isRefreshing }`.
+ */
 export const useSoroswapTokenBalance = (
   marginAccountAddress: string | null,
   tokenSymbol: 'XLM' | 'USDC' | null,

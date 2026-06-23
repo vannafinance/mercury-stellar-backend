@@ -1,11 +1,34 @@
+/**
+ * Core Stellar/Soroban integration layer for the Vanna lending protocol.
+ *
+ * Bundles the network constants, deployed contract addresses, and the two
+ * service classes (`WalletService`, `ContractService`) that the frontend uses
+ * to talk to the lending pools — wallet connection via Freighter, on-chain
+ * reads via simulated transactions, and write operations (deposit/withdraw).
+ * All on-chain amounts are handled in WAD (18-decimal fixed point) on the
+ * lending-pool side, while SAC token balances use each token's own decimals.
+ */
 import { requestAccess, getAddress, signTransaction } from '@stellar/freighter-api';
 import * as StellarSdk from '@stellar/stellar-sdk';
 
 // Soroban Network Constants
+/** Network passphrase identifying the Stellar testnet for transaction signing. */
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'; // Testnet
+/** Soroban RPC endpoint used for contract simulation, prepare, and submission. */
 export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+/** Horizon endpoint used for classic account/balance reads (native XLM, trustlines). */
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
+/**
+ * Canonical registry of all deployed Soroban contract IDs the frontend depends
+ * on — core protocol infrastructure, vToken (receipt) contracts, the four
+ * lending pools, the margin/account-manager stack, and the third-party DeFi
+ * integrations (Blend, Aquarius, Soroswap) used as farm/strategy venues.
+ *
+ * Declared `as const` so each address is a string literal type. Treat this as
+ * the single source of truth: addresses change on every redeploy (see inline
+ * dated comments), and a stale value silently routes calls to a dead contract.
+ */
 // Contract Addresses (deployed to Stellar testnet)
 // Freshly redeployed on 2026-04-28 by vanna_deployer: GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D
 export const CONTRACT_ADDRESSES = {
@@ -78,6 +101,11 @@ export const CONTRACT_ADDRESSES = {
   SOROSWAP_XLM_USDC_POOL: 'CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB',
 } as const;
 
+/**
+ * Supported asset identifiers used throughout the deposit/withdraw APIs. Each
+ * value selects a specific lending pool + vToken pair. `as const` so the values
+ * narrow to string literals (see {@link AssetType}).
+ */
 // Asset Types
 export const ASSET_TYPES = {
   XLM: 'XLM',
@@ -87,6 +115,11 @@ export const ASSET_TYPES = {
   SOROSWAP_USDC: 'SOROSWAP_USDC',
 } as const;
 
+/**
+ * Stellar testnet issuer G-addresses for the classic (non-native) assets.
+ * Distinct from the Soroban SAC contract IDs in {@link CONTRACT_ADDRESSES};
+ * these identify the asset on the classic side (trustlines, Horizon balances).
+ */
 // Asset Issuers (Stellar Testnet)
 export const ASSET_ISSUERS = {
   USDC: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
@@ -94,10 +127,23 @@ export const ASSET_ISSUERS = {
   AQUA: 'GBNZILSTVQZ4R7IKQDGHYGY2QXL5QOFJYQMXPKWRRM5PAV7Y4M67AQUA',
 } as const;
 
+/** Union of the supported asset identifiers (values of {@link ASSET_TYPES}). */
 export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
 
-// Wallet connection utilities
+/**
+ * Freighter wallet helpers: connection, connection-status, and native XLM
+ * balance. All methods are static and resolve (never reject) — failures are
+ * reported via the returned shape so callers don't need try/catch.
+ */
 export class WalletService {
+  /**
+   * Request access to the user's Freighter wallet and return its address.
+   * Triggers the Freighter approval popup on first use.
+   *
+   * @returns `{ address, success, error? }`; `success` is false (with a
+   *          user-facing `error`) when the user declines, the wallet is locked,
+   *          or Freighter is unavailable.
+   */
   static async connectWallet(): Promise<{ address: string; success: boolean; error?: string }> {
     try {
       const accessGranted = await requestAccess();
@@ -120,6 +166,12 @@ export class WalletService {
     }
   }
 
+  /**
+   * Check whether Freighter is already connected without prompting the user.
+   *
+   * @returns `{ address, connected }`; `connected` is false when no address is
+   *          available or the read errors.
+   */
   static async checkConnection(): Promise<{ address: string; connected: boolean }> {
     try {
       const result = await getAddress();
@@ -132,6 +184,14 @@ export class WalletService {
     }
   }
 
+  /**
+   * Read an account's native XLM balance from Horizon.
+   *
+   * @param address - Stellar G-address to query.
+   * @returns The balance fixed to 7 decimals, `'0'` when no native balance is
+   *          present, `'0 (Not funded)'` for an unfunded (404) account, or
+   *          `'Error'` on any other failure. Always resolves.
+   */
   static async getBalance(address: string): Promise<string> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -151,8 +211,19 @@ export class WalletService {
   }
 }
 
-// Contract interaction utilities
+/**
+ * Lending-pool contract helpers: deposit/withdraw writes and pool/balance
+ * reads against the four Vanna pools and their vToken receipt contracts.
+ *
+ * Reads use simulated transactions (often from a throwaway random source
+ * account, since simulation needs no real signer); writes prepare → sign via
+ * Freighter → submit → poll. Pool-level amounts are WAD (÷1e18); SAC/vToken
+ * balances are scaled by each token's own decimals (cached, default 7). All
+ * methods are static and resolve to safe fallbacks ('0' / 'Error') rather than
+ * rejecting.
+ */
 export class ContractService {
+  /** Per-contract cache of token `decimals()` to avoid repeat on-chain reads. */
   private static tokenDecimalsCache: Record<string, number> = {};
 
   private static async getTokenDecimals(tokenContract: string): Promise<number> {
@@ -231,6 +302,16 @@ export class ContractService {
     }
   }
 
+  /**
+   * Deposit into a lending pool (`deposit_xlm` / `deposit_usdc`) and receive
+   * vTokens. Prepares → signs via Freighter → submits → polls to completion.
+   *
+   * @param walletAddress - Depositor's G-address and tx source.
+   * @param amount - Human amount; converted to WAD as `floor(amount × 1e18)`.
+   * @param assetType - Target pool (default XLM). Pools that aren't deployed
+   *                    return a descriptive error rather than throwing.
+   * @returns `{ success, hash?, error? }`.
+   */
   static async deposit(
     walletAddress: string, 
     amount: number, 
@@ -322,6 +403,16 @@ export class ContractService {
     }
   }
 
+  /**
+   * Withdraw from a lending pool by redeeming vTokens (`redeem_vxlm` /
+   * `redeem_vusdc`). Prepares → signs via Freighter → submits → polls.
+   *
+   * @param walletAddress - Redeemer's G-address and tx source.
+   * @param amount - Human amount; converted to WAD as `floor(amount × 1e18)`.
+   * @param assetType - Target pool (default XLM); undeployed pools return an
+   *                    error rather than throwing.
+   * @returns `{ success, hash?, error? }`.
+   */
   static async withdraw(
     walletAddress: string, 
     amount: number, 
@@ -411,6 +502,15 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a holder's vToken (deposit-receipt) balance for a pool via simulation,
+   * scaled by the vToken's own decimals.
+   *
+   * @param address - Holder G-address; also the simulation source.
+   * @param assetType - Which pool's vToken to read (default XLM).
+   * @returns Balance fixed to 7 decimals, `'0'` when empty/undeployed/sim-fail,
+   *          or `'Error'` on exception.
+   */
   static async getDepositedBalance(
     address: string,
     assetType: AssetType = ASSET_TYPES.XLM
@@ -481,6 +581,17 @@ export class ContractService {
     }
   }
 
+  /**
+   * Poll a submitted transaction until it leaves NOT_FOUND, retrying every 2s up
+   * to 30 times (~60s). Soroban submission is async, so this is how callers wait
+   * for finality after `sendTransaction`.
+   *
+   * @param server - Soroban RPC server to poll.
+   * @param hash - Transaction hash returned by `sendTransaction`.
+   * @returns Resolves once the tx is SUCCESS.
+   * @throws If the tx reports a failed status, or if it never resolves within
+   *         the attempt budget ("Transaction timeout").
+   */
   static async pollTransactionStatus(server: StellarSdk.rpc.Server, hash: string): Promise<void> {
     let attempts = 0;
     const maxAttempts = 30;
@@ -509,6 +620,14 @@ export class ContractService {
     throw new Error('Transaction timeout');
   }
 
+  /**
+   * Read a pool's available (un-borrowed) liquidity via
+   * `get_total_liquidity_in_pool`, converting the returned WAD to a decimal.
+   * Simulated from a throwaway random source account (no signer needed).
+   *
+   * @param assetType - Pool to query (default XLM).
+   * @returns Liquidity fixed to 7 decimals; `'0'` when undeployed or on error.
+   */
   static async getPoolLiquidity(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -568,6 +687,13 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a pool's total outstanding borrows via `get_borrows` (WAD → decimal).
+   * Simulated from a throwaway random source account.
+   *
+   * @param assetType - Pool to query (default XLM).
+   * @returns Borrows fixed to 7 decimals; `'0'` when undeployed or on error.
+   */
   static async getPoolBorrows(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -626,6 +752,13 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a pool's total managed assets (liquidity + borrows) via `total_assets`
+   * (WAD → decimal). Simulated from a throwaway random source account.
+   *
+   * @param assetType - Pool to query (default XLM).
+   * @returns Total assets fixed to 7 decimals; `'0'` when undeployed or on error.
+   */
   static async getTotalAssets(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -684,6 +817,13 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a pool vToken's `total_supply`, scaled by the vToken's decimals.
+   * Simulated from a throwaway random source account.
+   *
+   * @param assetType - Pool whose vToken to query (default XLM).
+   * @returns Supply fixed to 7 decimals; `'0'` when undeployed or on error.
+   */
   static async getVTokenTotalSupply(assetType: AssetType = ASSET_TYPES.XLM): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -743,6 +883,15 @@ export class ContractService {
     }
   }
 
+  /**
+   * Aggregate a pool's headline stats in one call, fetching liquidity, borrows
+   * and vToken supply in parallel. `totalSupply` is liquidity + borrows;
+   * `utilizationRate` is borrows / totalSupply as a percentage string.
+   *
+   * @param assetType - Pool to summarize (default XLM).
+   * @returns `{ totalSupply, totalBorrowed, availableLiquidity, utilizationRate,
+   *          vTokenSupply }` — all stringified; an all-zero object on error.
+   */
   static async getPoolStats(assetType: AssetType = ASSET_TYPES.XLM): Promise<{
     totalSupply: string;
     totalBorrowed: string;
@@ -785,6 +934,14 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a user's outstanding borrow balance for a pool via
+   * `get_borrow_balance` (WAD ÷ 1e18). Simulated from the user's own account.
+   *
+   * @param address - Borrower G-address; also the simulation source.
+   * @param assetType - Pool to query (default XLM).
+   * @returns Borrow balance fixed to 7 decimals; `'0'` when undeployed or on error.
+   */
   static async getUserBorrowBalance(
     address: string,
     assetType: AssetType = ASSET_TYPES.XLM
@@ -849,6 +1006,20 @@ export class ContractService {
     }
   }
 
+  /**
+   * Read a wallet's spendable balances for every supported asset.
+   *
+   * Native XLM comes from Horizon; the USDC variants are read directly from
+   * their Soroban SAC contracts rather than Horizon trustlines — collateral
+   * transfers move SAC tokens, so showing the contract balance avoids
+   * false-positive "available" amounts from a trustline that isn't the real
+   * source. `USDC` and `BLEND_USDC` intentionally mirror the same Blend balance.
+   *
+   * @param address - Wallet G-address to query.
+   * @returns Per-asset balances fixed to 7 decimals. On a transient
+   *          Horizon/RPC failure it warns (not errors) and returns all zeros,
+   *          since the next refresh typically recovers.
+   */
   static async getAllTokenBalances(address: string): Promise<{
     XLM: string;
     USDC: string;

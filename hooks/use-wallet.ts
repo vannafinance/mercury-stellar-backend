@@ -6,6 +6,19 @@ import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/st
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
 
+/**
+ * Wallet connection lifecycle and balances, backed by `useUserStore`.
+ *
+ * Auto-checks the connection on mount and window focus (unless the user manually
+ * disconnected), refreshes wallet + per-pool deposited balances (each guarded by
+ * a 15s timeout so a stalled RPC never blocks the UI), and exposes connect/
+ * disconnect actions. Disconnect resets in-memory state and clears the cached
+ * margin-account stats (via `clearMarginAccount`) but preserves the wallet-keyed
+ * localStorage margin mapping. Balance-refresh failures are non-fatal and retried.
+ *
+ * @returns `{ address, isConnected, balance, depositedBalances, isLoading,
+ *   connectWallet, disconnectWallet, refreshBalances }`.
+ */
 export const useWallet = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
@@ -189,6 +202,12 @@ export const useWallet = () => {
   };
 };
 
+/**
+ * Mutation to deposit into a pool. Variables: `{ amount, assetType }`. Requires a
+ * connected wallet and a positive amount; on success invalidates `['earn']` and
+ * `['margin']` to refetch real balances. (Lower-level than `useSupplyLiquidity` —
+ * no toast/history side effects.)
+ */
 export const useDeposit = () => {
   const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
@@ -211,6 +230,11 @@ export const useDeposit = () => {
   });
 };
 
+/**
+ * Mutation to withdraw from a pool. Variables: `{ amount, assetType }`. Requires
+ * a connected wallet, a positive amount, and that the amount not exceed the
+ * deposited balance; on success invalidates `['earn']` and `['margin']`.
+ */
 export const useWithdraw = () => {
   const qc = useQueryClient();
   const address = useUserStore((state) => state.address);

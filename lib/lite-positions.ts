@@ -14,6 +14,11 @@
  * borrow was deployed into). On full exit we drop the record.
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/**
+ * One Lite-mode leveraged-yield position, persisted to localStorage. Carries
+ * the open-time snapshot (amounts + USD values + APR assumptions) needed to
+ * render a position row without re-deriving which pool a margin borrow funded.
+ */
 export interface LitePositionRecord {
   id: string;                   // unique id for this strategy deployment
   marginAccountAddress: string; // owning margin account
@@ -64,6 +69,11 @@ const writeAll = (records: LitePositionRecord[]): void => {
   window.dispatchEvent(new CustomEvent(CHANGE_EVENT));
 };
 
+/**
+ * Subscribe to Lite-position changes. Listens to both the same-tab custom event
+ * and cross-tab `storage` events. Returns an unsubscribe function; no-op on the
+ * server (SSR-safe).
+ */
 export const subscribeLitePositions = (cb: () => void): (() => void) => {
   if (!isBrowser()) return () => {};
   const handler = () => cb();
@@ -75,6 +85,11 @@ export const subscribeLitePositions = (cb: () => void): (() => void) => {
   };
 };
 
+/**
+ * Persist a new Lite position. Fills in `id` and `openedAt` when not supplied,
+ * appends to the stored list, and notifies subscribers. Returns the full record
+ * (with generated fields). No-op on the server.
+ */
 export const appendLitePosition = (record: Omit<LitePositionRecord, "id" | "openedAt"> & { id?: string; openedAt?: number }): LitePositionRecord => {
   const full: LitePositionRecord = {
     ...record,
@@ -85,6 +100,10 @@ export const appendLitePosition = (record: Omit<LitePositionRecord, "id" | "open
   return full;
 };
 
+/**
+ * Return the Lite positions for one margin account, newest first. Empty array
+ * for a null/undefined address or on the server.
+ */
 export const getLitePositions = (marginAccountAddress: string | null | undefined): LitePositionRecord[] => {
   if (!marginAccountAddress) return [];
   return readAll()
@@ -117,10 +136,12 @@ export const applyLiteExit = (id: string, exitPct: number): void => {
   writeAll(all);
 };
 
+/** Delete a single tracked position by id (regardless of exit state). */
 export const removeLitePosition = (id: string): void => {
   writeAll(readAll().filter((r) => r.id !== id));
 };
 
+/** Delete every tracked position for a given margin account. */
 export const clearLitePositions = (marginAccountAddress: string): void => {
   writeAll(readAll().filter((r) => r.marginAccountAddress !== marginAccountAddress));
 };

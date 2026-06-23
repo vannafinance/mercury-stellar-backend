@@ -1,6 +1,11 @@
 import createNewStore from "@/zustand/index";
 
+// Earn-page store: lending-pool statistics, the connected user's per-pool
+// positions, and a short recent-transaction log. Written by the React Query
+// earn hooks (dual-write) and read by components that consume the store directly.
+
 // Pool Data Types
+/** Per-pool market statistics (supply/borrow totals, APYs, vToken exchange rate). All values are decimal strings. */
 export interface PoolStats {
   totalSupply: string;
   totalBorrowed: string;
@@ -12,6 +17,7 @@ export interface PoolStats {
   exchangeRate: string; // vToken to underlying ratio
 }
 
+/** The connected user's position in a single pool. All values are decimal strings. */
 export interface UserPoolPosition {
   deposited: string;          // Amount deposited (underlying asset)
   vTokenBalance: string;      // vToken balance
@@ -21,6 +27,7 @@ export interface UserPoolPosition {
   accruedDebt: string;        // Debt accrued from borrowing
 }
 
+/** Full earn-store slice: per-pool stats, per-pool user positions, recent tx log, loading flags, and the selected pool. */
 export interface EarnPoolState {
   // Pool Statistics
   pools: {
@@ -101,6 +108,9 @@ const initialState: EarnPoolState = {
 };
 
 // Export Store
+//
+// NOT persisted — pool stats and positions are always refreshed from chain so a
+// reload never shows stale numbers.
 export const useEarnPoolStore = createNewStore(initialState, {
   name: "earn-pool-store",
   devTools: true,
@@ -108,6 +118,10 @@ export const useEarnPoolStore = createNewStore(initialState, {
 });
 
 // Helper functions
+/**
+ * Prepends a transaction to `recentTransactions`, capping the log at 20 entries.
+ * `timestamp` is set to now. Call after a supply/withdraw/borrow/repay confirms.
+ */
 export const addTransaction = (
   type: 'deposit' | 'withdraw' | 'borrow' | 'repay' | 'supply',
   asset: string,
@@ -131,6 +145,7 @@ export const addTransaction = (
 };
 
 // Calculate derived values
+/** Sums the user's deposited amounts across all pools; returns a 2-dp decimal string. */
 export const calculateUserTotalDeposited = (): string => {
   const { userPositions } = useEarnPoolStore.getState();
   const xlmValue = parseFloat(userPositions.XLM.deposited) || 0;
@@ -141,6 +156,7 @@ export const calculateUserTotalDeposited = (): string => {
   return (xlmValue + usdcValue + aquiresUsdcValue + soroswapUsdcValue).toFixed(2);
 };
 
+/** Sums the user's borrowed amounts across all pools; returns a 2-dp decimal string. */
 export const calculateUserTotalBorrowed = (): string => {
   const { userPositions } = useEarnPoolStore.getState();
   const xlmValue = parseFloat(userPositions.XLM.borrowed) || 0;

@@ -1,5 +1,16 @@
 "use client";
 
+/**
+ * Farm "Add Liquidity" panel. Handles two flows from the user's margin account:
+ * - Single-asset supply into a Blend lending pool (with a projected-earnings
+ *   {@link DepositSummary} and borrow-vs-collateral source attribution).
+ * - Dual-asset add into an Aquarius or Soroswap LP pool, auto-computing the
+ *   paired amount from live pool reserves to keep the deposit on-ratio.
+ *
+ * Requires a connected wallet and an existing margin account; the submit button
+ * surfaces the specific gating reason. Pool type (Blend vs Aquarius/Soroswap) is
+ * inferred from the selected farm row.
+ */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -29,6 +40,11 @@ import { attributeFarmDeposit } from "@/lib/utils/margin-token-attribution";
 const SUPPORTED_TOKENS = ["XLM", "USDC"] as const;
 type TokenSymbol = (typeof SUPPORTED_TOKENS)[number];
 
+/**
+ * Memoized add-liquidity panel. Resolves the selected pool's protocol + tokens
+ * from the farm store, loads the relevant margin-account balances, and dispatches
+ * either the Blend deposit or the DEX add-liquidity mutation.
+ */
 export const AddLiquidity = memo(function AddLiquidity() {
   const { isDark } = useTheme();
   const userAddress = useUserStore((state) => state.address);

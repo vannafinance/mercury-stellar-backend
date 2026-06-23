@@ -1,5 +1,8 @@
 "use client";
 
+// Light/dark theme context. Persists the choice in localStorage and toggles the
+// `dark` class on <html> so Tailwind's dark variants apply globally.
+
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 type Theme = "light" | "dark";
@@ -12,6 +15,12 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
+/**
+ * Provides the active theme to the tree. Defaults to "light", hydrates the
+ * persisted choice from localStorage on mount, and keeps the `dark` class on
+ * `document.documentElement` in sync. Mount near the app root so every consumer
+ * shares one theme.
+ */
 export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
   const [theme, setTheme] = useState<Theme>("light");
 
@@ -48,6 +57,10 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
+/**
+ * Reads the theme context: `{ theme, isDark, toggleTheme }`.
+ * Throws if used outside a {@link ThemeProvider}.
+ */
 export const useTheme = () => {
   const ctx = useContext(ThemeContext);
   if (!ctx) {

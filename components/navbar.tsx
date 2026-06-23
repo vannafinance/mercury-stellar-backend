@@ -15,6 +15,7 @@ import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { FaucetPopup } from "./faucet/faucet-popup";
 
 interface Navbar {
+  /** Nav entries; `group` ("primary" | "bordered" | "secondary") controls placement/styling. */
   items: {
     title: string;
     link: string;
@@ -22,7 +23,11 @@ interface Navbar {
   }[];
 }
 
-/** Margin lives at `/` and remains available at `/margin` for existing links. */
+/**
+ * Resolves whether a nav item is the active route. Handles the special cases:
+ * Trade is active for any `/trade/*` route or sub-item, Margin lives at both `/`
+ * and `/margin`, and Analytics matches its whole subtree.
+ */
 function isNavItemActive(
   pathname: string,
   item: { title: string; link: string }
@@ -46,6 +51,18 @@ function isNavItemActive(
   );
 }
 
+/**
+ * Top application navigation bar. Renders the logo, the Pro/Lite mode toggle,
+ * grouped nav items (with a hover/focus Trade dropdown), and the right-hand
+ * cluster: testnet faucet (wallet-gated), wallet connect / account menu, theme
+ * toggle, and the responsive mobile hamburger panel.
+ *
+ * Mode-aware: in Lite mode the pro-only routes (Trade, Farm, Earn) are filtered
+ * out of the nav and the user is redirected to Margin (`/`) if they land on one.
+ * The wallet menu surfaces the connected address plus the derived margin account
+ * address (copyable, with an explorer link). The whole bar is scaled via
+ * `useViewportScale` for consistent layout across zoom levels.
+ */
 export const Navbar = (props: Navbar) => {
   const pathname = usePathname();
   const router = useRouter();

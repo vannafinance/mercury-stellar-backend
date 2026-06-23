@@ -20,10 +20,17 @@ import { getAquariusEventsFromMercury } from '@/lib/mercury-aquarius';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
+// Farm-page data hooks for the Blend, Aquarius, and Soroswap integrations. All
+// the query hooks follow the same shape: a React Query keyed by resource, a 4s
+// staleTime for stale-while-revalidate, and ledger-tick invalidation so data
+// refreshes when the chain advances without flicker. Event hooks add window-focus
+// refetch; per-account hooks gate on the margin account address.
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Blend reserve stats for the two supported assets, or null until loaded. */
 export interface FarmPoolStats {
   XLM: BlendReserveData | null;
   USDC: BlendReserveData | null;
@@ -31,6 +38,11 @@ export interface FarmPoolStats {
 
 const EMPTY_STATS: FarmPoolStats = { XLM: null, USDC: null };
 
+/**
+ * Blend XLM/USDC reserve stats. Ledger-tick invalidated, 4s stale-while-
+ * revalidate. Returns `{ stats, isLoading, isRefreshing, error, refresh }`.
+ * @param enabled - Gate the query (e.g. only when the Blend tab is visible).
+ */
 export const useBlendPoolStats = (enabled = true) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -65,6 +77,7 @@ export const useBlendPoolStats = (enabled = true) => {
 // User Blend positions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The margin account's Blend positions per asset plus their combined value in XLM. */
 export interface UserBlendPositions {
   XLM: BlendUserPosition;
   USDC: BlendUserPosition;
@@ -78,6 +91,11 @@ const EMPTY_USER: UserBlendPositions = {
   totalValueXLM: '0',
 };
 
+/**
+ * The connected margin account's Blend positions (XLM + USDC, plus total XLM
+ * value). Gated on the margin account address; ledger-tick invalidated. Returns
+ * `{ positions, isLoading, isRefreshing, error, refresh }`.
+ */
 export const useUserBlendPositions = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const qc = useQueryClient();
@@ -120,6 +138,13 @@ export const useUserBlendPositions = () => {
 // Blend events / position history
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's Blend supply/withdraw event history from Mercury,
+ * optionally filtered to one token. Gated on the margin account address;
+ * ledger-tick invalidated and refetches on window focus. Returns
+ * `{ events, isLoading, isRefreshing, error, refresh }`.
+ * @param tokenSymbol - Optional token filter (e.g. "XLM").
+ */
 export const useBlendEvents = (tokenSymbol?: string) => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const qc = useQueryClient();
@@ -157,12 +182,18 @@ export const useBlendEvents = (tokenSymbol?: string) => {
 // All Aquarius pools stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** One configured Aquarius pool paired with its fetched stats (null until loaded) and a loading flag. */
 export interface AquariusPoolWithStats {
   pool: AquariusPoolConfig;
   stats: AquariusPoolStats | null;
   isLoading: boolean;
 }
 
+/**
+ * Stats for every configured Aquarius pool, fetched concurrently
+ * (`Promise.allSettled`, so one failing pool doesn't sink the rest). Ledger-tick
+ * invalidated. Returns one {@link AquariusPoolWithStats} per pool in config order.
+ */
 export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -205,6 +236,10 @@ export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
 // Aquarius pool stats (single)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Stats for a single Aquarius pool. Gated on `poolAddress`; ledger-tick
+ * invalidated. Returns `{ stats, isLoading, isRefreshing }`.
+ */
 export const useAquariusPoolStats = (poolAddress: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -237,6 +272,10 @@ export const useAquariusPoolStats = (poolAddress: string | null) => {
 // Aquarius LP position
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's LP balance in a single Aquarius pool. Gated on both
+ * addresses; ledger-tick invalidated. Returns `{ lpBalance, isLoading, isRefreshing }`.
+ */
 export const useAquariusLpPosition = (
   marginAccountAddress: string | null,
   poolAddress: string | null,
@@ -272,6 +311,12 @@ export const useAquariusLpPosition = (
 // All Aquarius LP positions (one query for all pools)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's LP balances across all Aquarius pools in one query
+ * (concurrent `Promise.allSettled`, keyed by pool id). Gated on the account
+ * address; ledger-tick invalidated. Returns `{ positions, isLoading, isRefreshing }`
+ * where `positions` maps pool id → balance string.
+ */
 export const useAllAquariusLpPositions = (marginAccountAddress: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -320,12 +365,18 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
 // Aquarius LP events
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Mercury-sourced. The Aquarius *pool* event has no depositor, so it's
-// unattributable per-account. Instead we read the AccountManager's margin-side
-// Trader_AquariusDeposit / Trader_AquariusWithdraw events, which carry the smart
-// account in a topic → Mercury scopes by account server-side (see
-// lib/mercury-aquarius.ts). poolAddress is no longer needed for the query (the
-// AM events aren't pool-scoped) but is kept in the signature for the call sites.
+/**
+ * The margin account's Aquarius deposit/withdraw event history from Mercury.
+ *
+ * Mercury-sourced and scoped by account: the Aquarius *pool* event has no
+ * depositor, so it's unattributable per-account. Instead we read the
+ * AccountManager's margin-side Trader_AquariusDeposit / Trader_AquariusWithdraw
+ * events, which carry the smart account in a topic → Mercury scopes by account
+ * server-side (see lib/mercury-aquarius.ts). `poolAddress` is no longer needed
+ * for the query (the AM events aren't pool-scoped) but is kept in the signature
+ * for the call sites. Gated on the account address; ledger-tick invalidated and
+ * refetches on window focus. Returns `{ events, isLoading, isRefreshing }`.
+ */
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -356,8 +407,14 @@ export const useAquariusEvents = (poolAddress: string | null, marginAccountAddre
 };
 
 // ---------- Aquarius LP chart helper ----------
-// Builds cumulative LP balance chart from deposit/withdraw events.
-// Accepts any event type that has type, shareAmount, and timestamp.
+/**
+ * Builds a cumulative LP-balance time series from deposit/withdraw events, for
+ * charting. Accepts any event with `{ type, shareAmount, timestamp }`. With no
+ * events but a positive balance, emits a 12-month flat line so all time-range
+ * filters render. Running balance is floored at 0.
+ *
+ * @returns Sorted `{ date, amount }[]` (date = YYYY-MM-DD).
+ */
 export const buildLpChartData = (
   events: Array<{ type: 'deposit' | 'withdraw'; shareAmount: string; timestamp: number }>,
   currentLpBalance: number
@@ -406,6 +463,13 @@ export const buildLpChartData = (
   return points;
 };
 
+/**
+ * Builds a cumulative supplied-value time series from Blend supply/withdraw
+ * events, for charting. With no events but a positive value, emits a 12-month
+ * flat line so all time-range filters render. Running value is floored at 0.
+ *
+ * @returns Sorted `{ date, amount }[]` (date = YYYY-MM-DD).
+ */
 export const buildSupplyChartData = (
   events: BlendEvent[],
   currentValue: number,

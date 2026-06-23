@@ -21,14 +21,18 @@ import { ConversionRatio } from "@/components/ui/conversion-ratio";
 
 interface Collateral {
   id?: string;
+  /** The collateral being rendered. `null` (or `isEditing`) puts the card into edit mode. */
   collaterals: Collaterals | null;
   isEditing?: boolean;
+  /** True when a sibling row is being edited — disables this row's edit affordances. */
   isAnyOtherEditing?: boolean;
   onEdit?: (id: string) => void;
   onSave?: (id: string, collateral: Collaterals) => void;
   onCancel?: () => void;
   onDelete?: (id: string) => void;
+  /** Notifies the parent when the WB/MB source toggle changes (MB is single-collateral). */
   onBalanceTypeChange?: (id: string, balanceType: string) => void;
+  /** Row position; index 0 is the anchor row and cannot be deleted. */
   index?: number;
 }
 
@@ -518,7 +522,16 @@ const CollateralComponent = (props: Collateral) => {
   );
 };
 
-// Memoized component with custom comparison
+/**
+ * A single collateral row in the Leverage Assets form. Renders two mutually
+ * exclusive views via {@link AnimatePresence}: an edit view (token + amount
+ * input, deposit-% quick chips, WB/MB source toggle, live balance/ratio) and a
+ * read-only standard view with edit/delete affordances. USD values are derived
+ * from live oracle prices, falling back to the stored amount when unavailable.
+ *
+ * Wrapped in {@link memo} with a custom comparator so unrelated parent
+ * re-renders (or sibling edits) don't re-render every row.
+ */
 export const Collateral = memo(CollateralComponent, (prevProps, nextProps) => {
   const prevCollateral = prevProps.collaterals;
   const nextCollateral = nextProps.collaterals;

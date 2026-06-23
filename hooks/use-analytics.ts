@@ -1,5 +1,9 @@
 "use client";
 
+// Analytics live-feed hooks. A shared `useTickQuery` primitive centralises the
+// oracle/pool-stats/event-feed readers onto the ledger tick (replacing per-page
+// setTimeout polling) so they dedupe across pages and refresh without flicker.
+
 import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 

@@ -1,3 +1,24 @@
+/**
+ * Margin / smart-account integration layer for the Vanna lending protocol.
+ *
+ * Wraps the on-chain AccountManager + per-trader SmartAccount contracts behind
+ * one service class (`MarginAccountService`): account discovery/creation,
+ * collateral deposit/withdraw, borrow/repay, and the one-signature "open
+ * position" flows (deposit + borrow + deploy to Blend). Reads go through
+ * simulated transactions; writes are signed via Freighter.
+ *
+ * Amount conventions are deliberate and load-bearing:
+ *   - The contract stores and accepts amounts in WAD (18-decimal fixed point);
+ *     all `*_wad` params/returns use this scale.
+ *   - SAC tokens on this deployment are 7-decimal (stroops), so a stroop→WAD
+ *     conversion multiplies by 1e11 (see `getMarginAccountTokenBalanceWad`).
+ *   - Symbol normalization (`normalizeContractTokenSymbol`) maps the several UI
+ *     aliases (USDC/BLUSDC, AQUSDC, SOUSDC) onto the exact symbols the contract
+ *     expects per call site — these differ between deposit and repay.
+ *
+ * Discovery favors permanent on-chain storage over RPC events because Soroban
+ * testnet only retains events for ~7 days.
+ */
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
 import { getReadSourceAddress } from '@/lib/read-source';
@@ -7,6 +28,14 @@ import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
 
 // Types
+/**
+ * A trader's deployed margin smart account, as tracked client-side.
+ *
+ * `address` is the on-chain SmartAccount C-address; `owner` is the trader's
+ * G-address. `accountManagerAddress` records which AccountManager deployment
+ * minted it — used to invalidate cached accounts after a redeploy (a stale
+ * account points at a dead manager).
+ */
 export interface MarginAccount {
   address: string;
   owner: string;
@@ -15,6 +44,13 @@ export interface MarginAccount {
   accountManagerAddress?: string;
 }
 
+/**
+ * Outcome of {@link MarginAccountService.createMarginAccount}. On success,
+ * `marginAccountAddress` is set; `hash` is present only when a creation tx was
+ * actually submitted (absent when an existing account was recovered). `error`
+ * may be populated even when `success` is true to carry an informational note
+ * (e.g. "account already exists").
+ */
 export interface MarginAccountCreationResult {
   success: boolean;
   marginAccountAddress?: string;
@@ -22,7 +58,15 @@ export interface MarginAccountCreationResult {
   error?: string;
 }
 
-// Margin account management class
+/**
+ * Service for managing a trader's margin smart account against the on-chain
+ * AccountManager. All methods are static; the class holds no instance state.
+ *
+ * Read methods simulate transactions (no signature, no fee); write methods
+ * prepare → sign via Freighter → submit → poll. Most writes bump the fee well
+ * above BASE_FEE (20x–120x) because the chained collateral/borrow/deploy paths
+ * are resource-heavy. Account discovery results are cached to localStorage.
+ */
 export class MarginAccountService {
   // Local storage key for margin accounts
   private static STORAGE_KEY = 'vanna_margin_accounts';
@@ -323,7 +367,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Get stored margin account for a user
+   * Read the cached margin account for a trader from localStorage.
+   *
+   * @param userAddress - Trader's G-address (the localStorage map key).
+   * @returns The cached {@link MarginAccount}, or null if none is stored,
+   *          parsing fails, or the entry was minted by a different (older)
+   *          AccountManager deployment — stale entries are deliberately
+   *          discarded so callers re-discover against the live contract.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
     try {
@@ -346,7 +396,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Store margin account for a user
+   * Cache a trader's margin account in localStorage, stamping it with the
+   * current AccountManager address so {@link getStoredMarginAccount} can later
+   * invalidate it after a redeploy. Swallows storage errors (logs only).
+   *
+   * @param userAddress - Trader's G-address (map key).
+   * @param marginAccount - Account to persist; its `accountManagerAddress` is
+   *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
     try {
@@ -364,7 +420,11 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if user has a margin account
+   * Whether the trader has an active, locally-cached margin account.
+   * Checks localStorage only — does not hit the chain. Use
+   * {@link discoverExistingAccount} to recover one that isn't cached.
+   *
+   * @param userAddress - Trader's G-address.
    */
   static hasMarginAccount(userAddress: string): boolean {
     const account = this.getStoredMarginAccount(userAddress);
@@ -372,8 +432,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Create a new margin account by calling the smart contract
-   * STRICT ENFORCEMENT: Only creates if no existing account found
+   * Create a margin smart account for a trader via AccountManager
+   * `create_account`, enforcing one-account-per-trader.
+   *
+   * Idempotent by design: checks localStorage, then the chain
+   * ({@link discoverExistingAccount}), and returns the existing account if
+   * found — only signs/submits a creation tx when none exists anywhere. On a
+   * successful tx it extracts the new C-address from the result (or re-reads it
+   * from the registry as a fallback) and caches it.
+   *
+   * @param userAddress - Trader's G-address; becomes the account owner and the
+   *                       tx source (Freighter will prompt for a signature).
+   * @returns {@link MarginAccountCreationResult}. When an existing account is
+   *          returned, `success` is true and `error` carries an informational
+   *          note; `hash` is set only when a new account was actually minted.
    */
   static async createMarginAccount(
     userAddress: string
@@ -861,15 +933,24 @@ export class MarginAccountService {
   }
 
   /**
-   * Public method to discover existing margin account from blockchain
-   * Used when localStorage is empty but user might have account on blockchain
+   * Discover a trader's existing margin account directly from the chain (used
+   * when localStorage is empty — e.g. a fresh browser or the deployed origin
+   * after creating the account on localhost). Reads AccountManager persistent
+   * storage first, falling back to creation events, and re-caches the resolved
+   * account. Public wrapper over the registry lookup.
+   *
+   * @param userAddress - Trader's G-address.
+   * @returns The newest active SmartAccount C-address, or null if none found.
    */
   static async discoverExistingAccount(userAddress: string): Promise<string | null> {
     return await this.getMarginAccountFromRegistry(userAddress);
   }
 
   /**
-   * Get margin account info (for display)
+   * Summarize the cached margin account for UI display. localStorage-only (no
+   * chain read). Returns `{ hasAccount: false }` when nothing is cached.
+   *
+   * @param userAddress - Trader's G-address.
    */
   static getMarginAccountInfo(userAddress: string): {
     hasAccount: boolean;
@@ -892,7 +973,9 @@ export class MarginAccountService {
   }
 
   /**
-   * Format margin account address for display
+   * Truncate an address to `XXXXXX...XXXX` for compact display.
+   *
+   * @param address - Any Stellar address; empty input yields an empty string.
    */
   static formatAccountAddress(address: string): string {
     if (!address) return '';
@@ -900,7 +983,11 @@ export class MarginAccountService {
   }
 
   /**
-   * Clear stored margin account (for testing/reset)
+   * Remove a trader's cached margin account from localStorage (testing/reset).
+   * Does not touch the chain — the account still exists on-chain and will be
+   * re-discovered. Swallows storage errors (logs only).
+   *
+   * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
     try {
@@ -915,7 +1002,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if a token is allowed as collateral
+   * Whether the AccountManager currently accepts a token as collateral
+   * (`get_iscollateral_allowed`). Read-only simulation against the connected
+   * wallet. The symbol is normalized first, so any UI alias is accepted.
+   *
+   * @param tokenSymbol - Token symbol or UI alias (XLM, USDC/BLUSDC, AQUSDC, SOUSDC).
+   * @returns true if allowed; false on "not allowed", missing wallet, or any
+   *          simulation error (fail-closed).
    */
   static async isCollateralAllowed(tokenSymbol: string): Promise<boolean> {
     try {
@@ -960,7 +1053,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Get max asset cap from contract
+   * Read the AccountManager's per-asset deposit cap (`get_max_asset_cap`) via
+   * read-only simulation.
+   *
+   * @returns The cap as a number, or 0 when the wallet is unavailable, the view
+   *          is unimplemented on this deployment, or the call errors. Callers
+   *          treat 0 as "unknown — let the contract enforce limits on execute"
+   *          rather than a hard block.
    */
   static async getMaxAssetCap(): Promise<number> {
     try {
@@ -1001,7 +1100,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if a token is properly configured in the Registry
+   * Verify that the Registry has a contract address set for a token, by calling
+   * the per-token getter (e.g. `get_usdc_contract_address`; note XLM's getter
+   * `get_xlm_contract_adddress` carries a typo that exists on-chain). A missing
+   * address is the most common cause of "deposit/borrow fails for no obvious
+   * reason" after a fresh Registry deploy.
+   *
+   * @param tokenSymbol - Token symbol or UI alias; normalized before lookup.
+   * @returns `{ configured: true }` when the address is set, otherwise
+   *          `{ configured: false, error }` with an admin-actionable message.
+   *          Fail-closed: unknown tokens and errors report not-configured.
    */
   static async isTokenConfigured(tokenSymbol: string): Promise<{ configured: boolean; error?: string }> {
     const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
@@ -1067,7 +1175,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Deposit collateral tokens to margin account
+   * Deposit collateral into a margin account via AccountManager
+   * `deposit_collateral_tokens`. Runs cheap pre-flight reads (Registry config,
+   * collateral-allowed, optional asset cap) to surface admin/config problems
+   * before prompting for a signature, then prepares → signs → submits → polls.
+   * Uses 20x BASE_FEE for the resource-heavy transfer+accounting path.
+   *
+   * @param marginAccountAddress - Target SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param amountWad - Deposit amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash? , error? }`. A failed pre-flight returns an
+   *          admin-actionable `error` without signing anything.
    */
   static async depositCollateralTokens(
     marginAccountAddress: string,
@@ -1181,7 +1299,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Withdraw collateral tokens from margin account back to trader wallet
+   * Withdraw collateral from a margin account back to the trader's wallet via
+   * AccountManager `withdraw_collateral_balance` (50x BASE_FEE).
+   *
+   * Budget handling is deliberate: this op routinely trips a budget-like
+   * simulation/prepare error that still succeeds once submitted, so a
+   * budget-class error is logged and the original envelope is sent anyway;
+   * only a genuine contract error (e.g. Risk Engine blocking the withdraw
+   * while debt is open) aborts with a user-facing message.
+   *
+   * @param marginAccountAddress - Source SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param amountWad - Withdraw amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash?, error? }`; errors are mapped to friendly
+   *          'withdraw'-context messages.
    */
   static async withdrawCollateralBalance(
     marginAccountAddress: string,
@@ -1302,7 +1433,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Borrow tokens from lending pool to margin account - SIMPLIFIED VERSION
+   * Borrow from a lending pool into a margin account via AccountManager
+   * `borrow` (50x BASE_FEE).
+   *
+   * Verifies the account is active, then handles the borrow path's quirk that a
+   * budget-like simulation error can still assemble/prepare successfully — in
+   * that case it assembles from the sim result rather than aborting. Genuine
+   * "borrow not allowed" failures (Risk Engine health/debt-limit, missing
+   * oracle price, treasury trustline) are mapped to specific messages via
+   * {@link parseBorrowNotAllowedMessage}.
+   *
+   * @param marginAccountAddress - Borrowing SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param borrowAmountWad - Borrow amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash?, error? }`.
    */
   static async borrowTokens(
     marginAccountAddress: string,
@@ -1465,7 +1609,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Helper function to setup contract configuration (for admin use)
+   * One-time admin bootstrap: sets the max asset cap and enables XLM, BLUSDC,
+   * AQUSDC and SOUSDC as collateral on the AccountManager.
+   *
+   * Each step is a separate signed transaction (Soroban allows one host-fn op
+   * per tx), executed sequentially with a fresh sequence number and a 1s gap to
+   * avoid sequence collisions. Aborts on the first failed step. Intended for
+   * admin/dev setup, not the trader flow — the connected wallet must be the
+   * contract admin or the calls will revert.
+   *
+   * @returns `{ success, error?, transactionHashes? }` listing the hashes of
+   *          the steps that completed.
    */
   static async setupContractConfiguration(): Promise<{ success: boolean; error?: string; transactionHashes?: string[] }> {
     try {
@@ -1595,7 +1749,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Test if basic contract interaction works with minimal operations
+   * Lightweight liveness probe for a margin account: simulates
+   * `is_account_active` and reports whether the call simulated without error.
+   * Used as a borrow pre-check.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to probe.
+   * @returns true if the simulation succeeded (account reachable/active),
+   *          false on any error or missing wallet.
    */
   static async testContractInteraction(marginAccountAddress: string): Promise<boolean> {
     try {
@@ -1625,9 +1785,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Get current borrowed token balances for a margin account
-   * @param marginAccountAddress - The margin account address
-   * @returns Object with borrowed token balances
+   * Read a margin account's current per-token debt.
+   *
+   * Lists the account's borrowed symbols (`get_all_borrowed_tokens`), then reads
+   * each one's `get_borrowed_token_debt` (a WAD value, divided by 1e18 here) and
+   * prices it via the on-chain Reflector oracle so event-driven callers see live
+   * USD values without re-running the store's recompute. USDC/BLUSDC aliases are
+   * mirrored so both keys stay populated for the UI.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @returns `{ success, data?, error? }` where `data` maps token symbol →
+   *          `{ amount, usdValue }`; an account with no debt yields `{}`.
    */
   static async getCurrentBorrowedBalances(
     marginAccountAddress: string
@@ -1742,8 +1910,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Get exact borrowed debt for a token in raw WAD precision.
-   * This is used by repay flow to avoid rounded overpay values.
+   * Read the exact outstanding debt for one token at full WAD precision.
+   *
+   * The repay flow needs the unrounded value: passing a human-rounded amount can
+   * overshoot the live debt (interest accrues every ledger) and trap on-chain.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @param tokenSymbol - Token symbol or UI alias; normalized before the read.
+   * @returns `{ success, debtWad?, amount?, error? }` — `debtWad` is the raw
+   *          u256 WAD string; `amount` is the same value divided by 1e18 for
+   *          display. Errors are mapped with 'repay' context.
    */
   static async getBorrowedTokenDebtWad(
     marginAccountAddress: string,
@@ -1849,9 +2025,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Get collateral balances for a margin account
-   * @param marginAccountAddress - The margin account address
-   * @returns Object with collateral token balances
+   * Read a margin account's collateral holdings, priced in USD.
+   *
+   * Lists collateral symbols (`get_all_collateral_tokens`), reads each
+   * `get_collateral_token_balance` (WAD ÷ 1e18) and prices it via the oracle,
+   * then merges in farm-tracking collateral (assets deployed to external
+   * venues, tracked separately on-chain) and mirrors USDC/BLUSDC aliases.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @returns `{ success, data?, error? }` where `data` maps token symbol →
+   *          `{ amount, usdValue }`; empty collateral yields `{}`.
    */
   static async getCollateralBalances(
     marginAccountAddress: string
@@ -1953,11 +2136,21 @@ export class MarginAccountService {
   }
 
   /**
-   * Repay borrowed tokens to margin account
-   * @param marginAccountAddress - The margin account address
-  * @param tokenSymbol - Token symbol to repay (XLM, USDC)
-   * @param repayAmountWad - Amount to repay in WAD format
-   * @returns Result with success status and transaction hash
+   * Repay debt on a margin account via AccountManager `repay` (50x BASE_FEE).
+   *
+   * Symbol gotcha: the contract's `borrow()` always stores BLEND-pool debt under
+   * `BLUSDC` regardless of whether USDC or BLUSDC was passed, and `repay()`
+   * validates against the stored borrowed-token list — so this maps USDC→BLUSDC
+   * before calling (the opposite of the deposit path, which prefers USDC).
+   *
+   * @param marginAccountAddress - SmartAccount C-address being repaid.
+   * @param tokenSymbol - Token symbol or UI alias; normalized (USDC→BLUSDC).
+   * @param repayAmountWad - Repay amount as a u256 WAD (18-decimal) string;
+   *                         use {@link getBorrowedTokenDebtWad} to avoid overpay.
+   * @returns `{ success, hash?, error? }`. On-chain failures log the full result
+   *          (incl. tx hash) and surface 'repay'-context messages — an
+   *          ArithDomain/u256_sub error typically means the amount edged just
+   *          above the live debt.
    */
   static async repayLoan(
     marginAccountAddress: string,
@@ -2058,8 +2251,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Get on-chain borrow/repay transaction history for a margin account.
-   * Queries Trader_Borrow and Trader_Repay_Event events from the ACCOUNT_MANAGER contract.
+   * Fetch a margin account's recent borrow/repay history from contract events.
+   *
+   * Pulls `Trader_Borrow` and `Trader_Repay_Event` from the AccountManager over
+   * roughly the last ~30 days of ledgers (capped by Soroban testnet's event
+   * retention), filters to this account, sorts newest-first and returns at most
+   * 50 entries. Borrow events carry no amount on-chain, so `amount` is `'—'` for
+   * borrows; repay amounts are WAD-decoded to human units. Tolerant of malformed
+   * events and RPC hiccups — returns `[]` rather than throwing.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to filter events by.
+   * @returns Up to 50 `{ type, asset, amount, timestamp, hash }` rows.
    */
   static async getMarginTransactionHistory(
     marginAccountAddress: string
@@ -2154,8 +2356,26 @@ export class MarginAccountService {
   }
 
   /**
-   * Atomic one-click flow for Blend single-asset pools:
-   * deposit collateral + optional borrow + deploy to Blend in one wallet signature.
+   * One-signature "open position" for Blend single-asset pools: deposit
+   * collateral, optionally borrow, and deploy the combined amount into Blend —
+   * all inside one Soroban op (`deposit_borrow_and_deploy_blend`).
+   *
+   * Because Soroban permits only one host-function op per tx, the three steps
+   * must live behind a single contract wrapper; this also reads the Blend pool
+   * address from the Registry and pre-builds the external-protocol call bytes.
+   * Uses 120x BASE_FEE. Human amounts are converted to WAD via an intermediate
+   * 1e6 floor × 1e12 (i.e. 6-dp precision scaled to 18) to avoid float drift.
+   *
+   * Gotcha: the chained deposit→borrow→deploy can exceed Soroban's per-tx CPU
+   * budget on populated pools. On a budget error this returns
+   * `success: false` (warning, not error) so the caller in one-click-strategy.ts
+   * can fall back to its 2-tx split flow.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to open the position on.
+   * @param collateralAmount - Collateral to deposit, in token units (> 0).
+   * @param borrowAmount - Amount to borrow, in token units (0 = deposit-only 1x).
+   * @param tokenSymbol - Token symbol or UI alias (default 'XLM'); normalized.
+   * @returns `{ success, hash?, error? }`.
    */
   static async depositBorrowAndDeployBlendAtomic(
     marginAccountAddress: string,
@@ -2295,6 +2515,23 @@ export class MarginAccountService {
    * `depositAmount × (multiplier - 1)`. For cross-asset the caller supplies an
    * explicit borrow amount in `borrow_token` units (USD-equivalent priced by
    * the caller).
+   *
+   * Runs config/collateral/wallet-balance pre-flight checks before signing, and
+   * uses 50x BASE_FEE. Like the atomic Blend flow, a Soroban budget overflow is
+   * returned as a budget-identifiable error (deliberately not collapsed by the
+   * generic formatter) so the caller can fall back to a 2-tx split.
+   *
+   * @param marginAccountAddress - SmartAccount C-address.
+   * @param depositAmount - Collateral to deposit, in deposit-token units.
+   * @param multiplier - Leverage multiplier; borrow defaults to
+   *                      `depositAmount × (multiplier - 1)` when no explicit
+   *                      `borrowAmountTokens` is given.
+   * @param tokenSymbol - Deposit token symbol or UI alias (default 'XLM').
+   * @param options.borrowTokenSymbol - Borrow token when it differs from the
+   *                      deposit token (triggers the cross-asset path).
+   * @param options.borrowAmountTokens - Explicit borrow amount in borrow-token
+   *                      units; overrides the multiplier-derived amount.
+   * @returns `{ success, hash?, error? }`.
    */
   static async depositAndBorrow(
     marginAccountAddress: string,

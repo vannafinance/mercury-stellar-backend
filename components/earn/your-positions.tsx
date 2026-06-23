@@ -1,5 +1,17 @@
 'use client';
 
+/**
+ * "Your Positions" panel for the selected earn pool. Shows a my-supply value
+ * chart built from the user's real transaction history, plus tabbed Current
+ * Position / Position History tables. Falls back to an illustrated empty state
+ * when there's neither an active position nor any history.
+ *
+ * The supply chart accumulates a running USD balance from per-day signed
+ * deltas (supply +, withdraw −), then overrides the final point with the live
+ * current value so the tip always matches the on-chain balance. A dust
+ * threshold (>1e-4) distinguishes a real position from stroop-level rounding
+ * residue left after a full withdrawal.
+ */
 import { useState, useMemo, memo } from "react";
 import { Chart } from "./chart";
 import { Table } from "./table";
@@ -59,6 +71,7 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   SOROSWAP_USDC: 'USDC',
 };
 
+/** Memoized positions panel; merges on-chain + local history (de-duped by hash) for the selected pool. */
 export const YourPositions = memo(function YourPositions() {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();

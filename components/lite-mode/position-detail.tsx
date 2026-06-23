@@ -39,7 +39,9 @@ function parseContractError(msg: string): string {
 }
 
 interface PositionDetailProps {
+  /** The position being managed. */
   position: LitePosition;
+  /** Returns to the positions list. */
   onBack: () => void;
   /** Called after a successful close so the parent can refresh the list. */
   onExitSuccess?: () => void;
@@ -83,6 +85,23 @@ const aprColor = (apr: number) => (apr >= 0 ? "#10B981" : "#FC5457");
 
 const EXIT_PRESETS = [25, 50, 75, 100] as const;
 
+/**
+ * Detail and exit screen for a single Lite position. Left column drives a
+ * two-step exit flow: choose an exit percentage (preset pills + slider) and
+ * review the computed repay / withdraw / net-received amounts and projected
+ * health factor (via {@link calcExitPreview}). The right column shows the APR
+ * breakdown and position attributes.
+ *
+ * Confirming runs `closePosition` through a React Query mutation that streams
+ * progress into a status modal; on success it scales the local Lite registry
+ * record to the new state (`applyLiteExit`), invalidates the margin/earn caches,
+ * and refreshes balances. Contract/Freighter errors are mapped to friendly
+ * copy (including treating user-reject XDR parse errors as a cancellation).
+ *
+ * Exit math note: a proportional partial exit preserves the collateral/debt
+ * ratio so HF is unchanged; a 100% exit clears the debt and the modal reflects
+ * the freed collateral.
+ */
 export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDetailProps) => {
   const { isDark } = useTheme();
   const userAddress = useUserStore((s) => s.address);

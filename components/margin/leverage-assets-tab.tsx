@@ -51,6 +51,25 @@ const ensureCollateralId = (collateral: Collaterals): Collaterals => {
   return collateral;
 };
 
+/**
+ * Primary deposit + borrow surface of the margin panel. Lets the user assemble
+ * collateral rows from wallet balances (WB mode) or pick existing margin-account
+ * collateral (MB mode), set a leverage multiplier, and open a leveraged
+ * position. The submit handler branches by mode and account state:
+ *
+ *  - No margin account → opens the create-account / sign-agreement dialog flow.
+ *  - MB mode → borrow-only against already-deposited collateral.
+ *  - WB mode → deposit + borrow. Single-collateral uses the atomic
+ *    `deposit_and_borrow(_cross)` contract call (one signature); it falls back
+ *    to a split 2-tx flow for multi-collateral or when the atomic call overflows
+ *    Soroban's per-tx budget.
+ *
+ * Borrow size is pre-validated against the on-chain RiskEngine formula before
+ * signing, XLM deposits respect the wallet's min-reserve, and after a confirmed
+ * tx the UI is unblocked immediately (toast + form reset + optimistic store
+ * merge) while balances refresh in the background. Deposit/borrow preview is
+ * delegated to {@link LeveragePreviewSection}.
+ */
 export const LeverageAssetsTab = () => {
   const XLM_WALLET_RESERVE = 1;
   const XLM_DEPOSIT_EPSILON = 1e-7;
@@ -1272,14 +1291,25 @@ export const LeverageAssetsTab = () => {
 };
 
 interface LeveragePreviewSectionProps {
+  /** Pure collateral USD being deposited (excludes fee uplift). */
   depositAmount: number;
+  /** USD to be borrowed at the selected leverage. */
   projectedBorrowUsd: number;
+  /** True in MB mode, where collateral is already on-account (no fresh deposit). */
   isMBMode: boolean;
   leverage: number;
   fees: number;
+  /** Deposit including fees. */
   totalDeposit: number;
 }
 
+/**
+ * Renders the before → after transaction preview for the Leverage Assets action
+ * (leverage, deposit, fees, collateral, debt, health factor, liquidation
+ * buffer). The "before" state is read from the margin store; the "after" state
+ * projects the deposit and borrow onto the gross-asset / debt risk math. Returns
+ * null until there is something to preview.
+ */
 const LeveragePreviewSection = ({
   depositAmount,
   projectedBorrowUsd,

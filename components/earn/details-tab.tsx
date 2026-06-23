@@ -1,5 +1,11 @@
 'use client';
 
+/**
+ * "Details" tab for an earn pool: a statistics panel (supplied/borrowed pie
+ * cards + key metrics like APY, utilization, oracle price, exchange rate) and a
+ * grid of the relevant on-chain contract addresses with explorer links.
+ * Renders responsive desktop-grid vs. mobile key/value-row layouts.
+ */
 import { useMemo } from "react";
 import { StatsCard } from "../ui/stats-card";
 import { formatValue } from "@/lib/utils/format-value";
@@ -19,6 +25,10 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   SOROSWAP_USDC: 'USDC',
 };
 
+/**
+ * Placeholder statistics descriptors (with em-dash values) exported for reuse
+ * on other pages (e.g. the farm detail page) where live pool data isn't wired.
+ */
 // Static export for use in other pages (e.g. farm detail page)
 export const items = [
   { heading: "Available Liquidity", mainInfo: "—", subInfo: "—", tooltip: "Total assets available for borrowing" },
@@ -66,6 +76,11 @@ const getAddresses = (selectedAssetKey: string, selectedAssetLabel: string) => {
   ];
 };
 
+/**
+ * Vault details view for the selected pool. Computes supplied/borrowed splits
+ * and USD values from live pool data + oracle prices, and resolves the relevant
+ * contract addresses for the explorer-linked address grid.
+ */
 export const Details = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();

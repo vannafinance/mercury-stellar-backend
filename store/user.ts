@@ -1,6 +1,11 @@
 import createNewStore from "@/zustand/index"
 
+// Connected-wallet store: connection status, native XLM balance, per-token wallet
+// balances, and per-pool deposited balances. The single source of truth for "who
+// is connected" across the app; written by the wallet hooks.
+
 // Types
+/** Connected-wallet slice: address/connection flags plus wallet and deposited balances (decimal strings). */
 export interface User {
   address: string | null;
   isConnected: boolean;
@@ -45,6 +50,10 @@ const initialState: User = {
 };
 
 // Export Store
+//
+// Persisted (versioned) for an instant first paint of the last-connected wallet.
+// The migrate fn always forces `isLoading` back to false on rehydrate so a
+// reload mid-connect never leaves the UI stuck on "Connecting...".
 export const useUserStore = createNewStore(initialState, {
   name: "user-store",
   devTools: true,

@@ -1,5 +1,14 @@
 'use client';
 
+/**
+ * Analytics tab for an earn pool: renders the deposit/borrow APY chart driven
+ * by a locally-persisted, throttled snapshot of the live supply APY.
+ *
+ * History is sampled into `localStorage` (keyed per asset) so the chart shows a
+ * real trend line across sessions rather than a single flat point. Samples are
+ * rate-limited (see SAMPLE_MIN_GAP_MS / change threshold) to avoid one point
+ * per refresh tick, and capped at HISTORY_MAX_ITEMS.
+ */
 import { useEffect, useMemo, useState } from "react";
 import { Chart } from "./chart";
 import { usePoolData } from "@/hooks/use-earn";
@@ -67,6 +76,11 @@ const toApyChartData = (snapshots: ApySnapshot[]): Array<{ date: string; amount:
   ];
 };
 
+/**
+ * Reads the currently selected pool's live supply APY, appends a throttled
+ * snapshot to per-asset history, and feeds the accumulated series into the
+ * deposit-APY {@link Chart}.
+ */
 export const AnalyticsTab = () => {
   const { pools } = usePoolData();
   const selectedAsset = useSelectedPoolStore((state) => state.selectedAsset);

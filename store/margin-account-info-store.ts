@@ -1,3 +1,10 @@
+// Margin-account store: the connected user's smart margin account (identity +
+// health-factor / collateral / borrowed / derived-risk fields) plus the action
+// functions that discover, create, and mutate it on-chain. Account resolution is
+// cache-then-reconcile (localStorage hint → authoritative on-chain discovery),
+// and all reads share computeMarginSnapshot with the cached /api/account route so
+// the client and server can never diverge.
+
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
@@ -21,9 +28,16 @@ const inflightRefreshByAccount = new Map<string, Promise<void>>();
 // (pre-mutation) snapshot could clobber the fresh post-mutation values. After
 // the window the edge cache has caught up, so the snapshot feed resumes safely.
 let snapshotFeedSuppressedUntil = 0;
+/**
+ * Pause the cached /api/account snapshot from feeding the store for `ms`
+ * (default 20s, just past the route's 15s edge TTL). Called after a mutation
+ * does an authoritative client read so the lagging cached snapshot can't clobber
+ * the fresh post-mutation values.
+ */
 export const suppressSnapshotFeed = (ms = 20_000) => {
   snapshotFeedSuppressedUntil = Date.now() + ms;
 };
+/** True while the snapshot feed is suppressed; consumers should skip writing snapshot data into the store. */
 export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
 
 const canonicalMarginToken = (token: string): string => {
@@ -35,11 +49,18 @@ const canonicalMarginToken = (token: string): string => {
 };
 
 // Types
+/** A per-token balance entry: raw `amount` and its `usdValue` (both decimal strings). */
 export interface BorrowedBalance {
   amount: string;
   usdValue: string;
 }
 
+/**
+ * Full margin-account slice: account identity (`hasMarginAccount`,
+ * `marginAccountAddress`), creation flags/errors, per-token borrowed/collateral
+ * balances, and the derived risk fields (health factor, debt limits, liquidation
+ * metrics) produced by `computeMarginSnapshot`.
+ */
 export interface MarginAccountInfoStateType {
   totalBorrowedValue: number;
   totalCollateralValue: number;
@@ -104,6 +125,11 @@ export const useMarginAccountInfoStore = createNewStore(initialState, {
 });
 
 // Action functions
+/**
+ * Adopt a freshly created/known margin account: marks it present, stores its
+ * address, clears creation flags, and wipes any leftover balances so a prior
+ * account's values can't bleed in before the first refresh lands.
+ */
 export const setMarginAccount = (account: MarginAccount) => {
   useMarginAccountInfoStore.getState().set({
     hasMarginAccount: true,
@@ -146,6 +172,11 @@ const applyResolvedMarginAccount = (address: string | null) => {
   });
 };
 
+/**
+ * Reset the store to "no margin account" (used on disconnect or when discovery
+ * finds none): zeroes all identity, balance, and derived-risk fields AND clears
+ * every rate-limit/dedup cache so a later reconnect refetches from scratch.
+ */
 export const clearMarginAccount = () => {
   useMarginAccountInfoStore.getState().set({
     hasMarginAccount: false,
@@ -181,6 +212,7 @@ export const clearMarginAccount = () => {
   inflightRefreshByAccount.clear();
 };
 
+/** Toggle the account-creation loading flag; clears any prior error when entering the loading state. */
 export const setAccountCreationLoading = (loading: boolean) => {
   useMarginAccountInfoStore.getState().set({
     isCreatingAccount: loading,
@@ -188,6 +220,7 @@ export const setAccountCreationLoading = (loading: boolean) => {
   });
 };
 
+/** Record an account-creation error (or clear it with null) and reset the loading flag. */
 export const setAccountCreationError = (error: string | null) => {
   useMarginAccountInfoStore.getState().set({
     accountCreationError: error,
@@ -196,10 +229,21 @@ export const setAccountCreationError = (error: string | null) => {
 };
 
 // Add deposit and borrow action
+/**
+ * Deposit collateral and open a leveraged borrow in one flow against the user's
+ * active margin account. Refreshes borrowed balances afterwards (even on a
+ * partial success where the deposit landed but the borrow failed).
+ *
+ * @param userAddress - Owner wallet; used to look up the active margin account.
+ * @param depositAmount - Collateral amount to deposit (token units).
+ * @param multiplier - Leverage multiplier for the borrow leg.
+ * @param tokenSymbol - Collateral/borrow token; normalized to its canonical margin symbol. Defaults to XLM.
+ * @returns `{ success, hash?, error? }`.
+ */
 export const depositAndBorrow = async (
-  userAddress: string, 
-  depositAmount: number, 
-  multiplier: number, 
+  userAddress: string,
+  depositAmount: number,
+  multiplier: number,
   tokenSymbol: string = 'XLM'
 ): Promise<{ success: boolean; hash?: string; error?: string }> => {
   try {
@@ -237,6 +281,17 @@ export const depositAndBorrow = async (
 };
 
 // Add standalone borrow function
+/**
+ * Borrow against an existing margin account (no deposit leg). Converts the amount
+ * to WAD (18 decimals) via BigInt to avoid Number scientific-notation parse
+ * failures, toggles `isLoadingBorrowedBalances`, and always refreshes balances
+ * after the operation (success or failure).
+ *
+ * @param userAddress - Owner wallet; used to look up the active margin account.
+ * @param tokenSymbol - Token to borrow; normalized to its canonical margin symbol.
+ * @param borrowAmount - Amount to borrow (token units).
+ * @returns `{ success, hash?, error? }`.
+ */
 export const borrowTokens = async (
   userAddress: string,
   tokenSymbol: string,
@@ -307,6 +362,7 @@ export const borrowTokens = async (
 };
 
 // Add contract setup action (for admin/testing purposes)
+/** Admin/testing helper: runs the one-time on-chain contract configuration. Returns `{ success, error? }`. */
 export const setupContractConfiguration = async (): Promise<{ success: boolean; error?: string }> => {
   try {
     const result = await MarginAccountService.setupContractConfiguration();
@@ -319,6 +375,16 @@ export const setupContractConfiguration = async (): Promise<{ success: boolean; 
   }
 };
 
+/**
+ * Resolve the user's margin account into the store (cache-then-reconcile):
+ * applies the localStorage-cached address for an instant paint, then ALWAYS
+ * reconciles against authoritative on-chain discovery (adopting the newest active
+ * account). Concurrent calls for the same user are deduped, and results are
+ * throttled by CACHE_DURATION_MS / MIN_FETCH_INTERVAL_MS unless `forceRefresh`.
+ *
+ * @param userAddress - Owner wallet to resolve.
+ * @param forceRefresh - Bypass the throttle caches when true.
+ */
 export const checkUserMarginAccount = async (
   userAddress: string,
   forceRefresh = false,
@@ -380,6 +446,11 @@ export const checkUserMarginAccount = async (
   return run;
 };
 
+/**
+ * Create a new on-chain margin account for the wallet, toggling the creation
+ * loading flag and committing the resolved account (or recording an error) into
+ * the store. Returns true on success.
+ */
 export const createMarginAccount = async (userAddress: string): Promise<boolean> => {
   try {
     setAccountCreationLoading(true);
@@ -406,10 +477,23 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
   }
 };
 
+/** Shallow-merge an arbitrary partial into the margin-account slice. */
 export const updateAccountData = (data: Partial<MarginAccountInfoStateType>) => {
   useMarginAccountInfoStore.getState().set(data);
 };
 
+/**
+ * Recompute and commit the account's balances and derived risk fields via the
+ * shared `computeMarginSnapshot` (the single source of truth shared with the
+ * /api/account route). Publishes fast debt/balances first via `onPartial`
+ * (progressive render), then the full snapshot. Concurrent calls per account are
+ * deduped and throttled unless `forceRefresh`; a forced refresh also suppresses
+ * the cached snapshot feed for one TTL window so the lagging edge cache can't
+ * overwrite the fresh post-mutation values.
+ *
+ * @param marginAccountAddress - Account to refresh (validated for basic shape).
+ * @param forceRefresh - Bypass throttle caches and suppress the snapshot feed.
+ */
 export const refreshBorrowedBalances = async (
   marginAccountAddress: string,
   forceRefresh = false,
@@ -483,10 +567,12 @@ export const refreshBorrowedBalances = async (
   return run;
 };
 
+/** Reset the entire slice back to its initial (empty) state. */
 export const resetToInitialState = () => {
   useMarginAccountInfoStore.getState().reset();
 };
 
+/** Clear just the account-creation flags (loading + error), e.g. when reopening the create dialog. */
 export const resetCreationState = () => {
   useMarginAccountInfoStore.getState().set({
     isCreatingAccount: false,
