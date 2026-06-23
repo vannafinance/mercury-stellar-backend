@@ -642,8 +642,8 @@ export const Positionstable = ({
             : "flex items-center"
         }`}
       >
-        {item.borrowed.length > 0 ? (
-          item.borrowed.map((borrowedItem, borrowedIdx) => (
+        {item.borrowed.filter((b) => b.usdValue >= 0.01).length > 0 ? (
+          item.borrowed.filter((b) => b.usdValue >= 0.01).map((borrowedItem, borrowedIdx) => (
             <motion.div
               key={borrowedIdx}
               className="flex gap-[8px] items-center"
@@ -807,9 +807,9 @@ export const Positionstable = ({
           </div>
           <div>
             <p className={`${lbl} mb-1`}>Borrowed Assets</p>
-            {hasBorrow ? (
+            {hasBorrow && item.borrowed.filter((b) => b.usdValue >= 0.01).length > 0 ? (
               <div className="flex flex-col gap-1">
-                {item.borrowed.map((borrowedItem, borrowedIdx) => (
+                {item.borrowed.filter((b) => b.usdValue >= 0.01).map((borrowedItem, borrowedIdx) => (
                   <div key={borrowedIdx} className="flex gap-1.5 items-center">
                     <Image
                       src={getTokenIcon(borrowedItem.assetData.asset)}
