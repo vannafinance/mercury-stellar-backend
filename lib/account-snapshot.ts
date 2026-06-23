@@ -17,10 +17,9 @@ import {
   reconcileMarginRawSacCollateral,
   sumCollateralBalancesUsd,
 } from "@/lib/analytics/stellar/farmTrackingCollateral";
+import { deriveMarginHealth } from "@/lib/margin-health";
 
 const PRICEABLE_TOKENS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
-const LIQUIDATION_THRESHOLD = 1.1;
-const HEALTH_FACTOR_INFINITY_SENTINEL = 999;
 const USD_DUST_EPSILON = 0.01;
 
 const tokenPrice = (token: string): number => getCachedTokenPrice(token);
@@ -54,6 +53,13 @@ const isTrackingSymbol = (sym: string): boolean => {
 type Balance = { amount: string; usdValue: string };
 type Balances = Record<string, Balance>;
 
+/**
+ * Full derived view of a margin account: per-token borrowed/collateral balances
+ * plus the rolled-up USD totals and health figures (HF, debt limit, net
+ * available) from {@link deriveMarginHealth}. `grossCollateralValue` is the
+ * risk-weighted collateral the HF math uses; `totalCollateralValue` is the raw
+ * sum. USD fields are JS numbers; the per-balance `usdValue` strings are pre-formatted.
+ */
 export type MarginSnapshot = {
   borrowedBalances: Balances;
   collateralBalances: Balances;
@@ -68,6 +74,11 @@ export type MarginSnapshot = {
   debtLimit: number;
 };
 
+/**
+ * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
+ * debt/collateral totals are known, before the heavier farm/SAC/rate reads —
+ * lets the client render progressively. Omits all health-derived fields.
+ */
 export type PartialSnapshot = Pick<
   MarginSnapshot,
   "borrowedBalances" | "collateralBalances" | "totalBorrowedValue"
@@ -187,17 +198,13 @@ export async function computeMarginSnapshot(
     grossCollateralValue = totalCollateralValue;
   }
 
-  const avgHealthFactor =
-    effectiveDebtValue > 0
-      ? grossCollateralValue / effectiveDebtValue
-      : grossCollateralValue > 0
-        ? HEALTH_FACTOR_INFINITY_SENTINEL
-        : 0;
-
-  const collateralLeftBeforeLiquidation = Math.max(0, grossCollateralValue - effectiveDebtValue * LIQUIDATION_THRESHOLD);
-  const netAvailableCollateral = Math.max(0, grossCollateralValue - effectiveDebtValue);
-  const totalValue = netAvailableCollateral + totalBorrowedValue;
-  const debtLimit = grossCollateralValue > 0 ? grossCollateralValue / LIQUIDATION_THRESHOLD : 0;
+  const {
+    avgHealthFactor,
+    collateralLeftBeforeLiquidation,
+    netAvailableCollateral,
+    totalValue,
+    debtLimit,
+  } = deriveMarginHealth({ grossCollateralValue, effectiveDebtValue, totalBorrowedValue });
 
   return {
     borrowedBalances,
