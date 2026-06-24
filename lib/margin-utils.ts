@@ -22,7 +22,7 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
 import { getReadSourceAddress } from '@/lib/read-source';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
+import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService, ASSET_TYPES, type AssetType } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
@@ -138,6 +138,42 @@ export class MarginAccountService {
     }
 
     return { ok: true };
+  }
+
+  private static async checkPoolLiquidity(
+    contractBorrowSymbol: string,
+    borrowAmountTokens: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    type PoolEntry = { assetType: AssetType; displayName: string };
+    const poolMap: Record<string, PoolEntry> = {
+      XLM:    { assetType: ASSET_TYPES.XLM,           displayName: 'XLM' },
+      USDC:   { assetType: ASSET_TYPES.USDC,          displayName: 'USDC' },
+      AQUSDC: { assetType: ASSET_TYPES.AQUARIUS_USDC, displayName: 'Aquarius USDC' },
+      SOUSDC: { assetType: ASSET_TYPES.SOROSWAP_USDC, displayName: 'Soroswap USDC' },
+    };
+
+    const entry = poolMap[contractBorrowSymbol];
+    if (!entry) return { ok: true };
+
+    try {
+      const poolLiqStr = await ContractService.getPoolLiquidity(entry.assetType);
+      const poolBalance = parseFloat(poolLiqStr) || 0;
+
+      if (borrowAmountTokens > poolBalance) {
+        return {
+          ok: false,
+          error:
+            `The ${entry.displayName} lending pool does not have enough liquidity. ` +
+            `Available: ${poolBalance.toFixed(2)} ${entry.displayName}, ` +
+            `you need: ${borrowAmountTokens.toFixed(2)} ${entry.displayName}. ` +
+            `Please reduce your leverage or wait for more liquidity to be supplied to the pool.`,
+        };
+      }
+
+      return { ok: true };
+    } catch {
+      return { ok: true };
+    }
   }
 
   private static parseBorrowNotAllowedMessage(raw: any, tokenSymbol: string): string {
@@ -2180,8 +2216,91 @@ export class MarginAccountService {
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
-      // Build the transaction to call repay
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+      // ── Interest shortfall top-up ─────────────────────────────────────────
+      // Same-asset leverage: the smart account holds borrowed tokens as raw SAC
+      // balances. WAD debt accumulates interest at sub-stroop precision, so by
+      // repay time the required stroop amount can exceed what sits in the account.
+      // Detect the gap; if present, submit a separate single-op top-up transfer
+      // first (Freighter rejects multi-op transactions), then do the repay.
+      const REPAY_TOKEN_CONTRACT: Record<string, string> = {
+        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+      };
+      const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
+      let interestTopUp = BigInt(0);
+
+      if (repayTokenContractAddr) {
+        try {
+          const dummyKp = StellarSdk.Keypair.random();
+          const dummyAcct = new StellarSdk.Account(dummyKp.publicKey(), '0');
+          const tokenContract = new StellarSdk.Contract(repayTokenContractAddr);
+          const balanceTx = new StellarSdk.TransactionBuilder(dummyAcct, {
+            fee: StellarSdk.BASE_FEE,
+            networkPassphrase: NETWORK_PASSPHRASE,
+          })
+            .addOperation(
+              tokenContract.call(
+                'balance',
+                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+              ),
+            )
+            .setTimeout(10)
+            .build();
+
+          const balanceSim = await server.simulateTransaction(balanceTx);
+          if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
+            const smartAcctBalance = StellarSdk.scValToNative(balanceSim.result.retval) as bigint;
+            // Convert WAD repay amount → stroops (7-decimal token units)
+            const repayInStroops = (BigInt(repayAmountWad) * BigInt(10 ** 7)) / BigInt(10 ** 18);
+            if (repayInStroops > smartAcctBalance) {
+              interestTopUp = repayInStroops - smartAcctBalance + BigInt(100); // 100-stroop safety buffer
+            }
+          }
+        } catch {
+          // Balance simulation failure is non-fatal — proceed; contract will
+          // surface the real error if tokens are still short.
+        }
+      }
+
+      // ── Tx 1 (conditional): single-op top-up to cover accrued interest gap ──
+      // Freighter only allows one operation per transaction, so we submit the
+      // top-up as a separate transaction and wait for confirmation before repay.
+      let currentAccount = sourceAccount;
+      if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
+        const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
+        const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
+          fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
+          networkPassphrase: NETWORK_PASSPHRASE,
+        })
+          .addOperation(
+            topUpContract.call(
+              'transfer',
+              StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
+              StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+              StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
+            ),
+          )
+          .setTimeout(30)
+          .build();
+
+        const preparedTopUp = await server.prepareTransaction(topUpTx);
+        const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
+          networkPassphrase: NETWORK_PASSPHRASE,
+        });
+        const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
+          topUpSignResult.signedTxXdr,
+          NETWORK_PASSPHRASE,
+        );
+        const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
+        if (topUpSubmit.status === 'PENDING') {
+          await this.pollTransactionStatus(server, topUpSubmit.hash);
+        }
+        // Refresh the sequence number for the follow-up repay transaction.
+        currentAccount = await server.getAccount(userAddress.address);
+      }
+
+      // ── Tx 2: repay ──────────────────────────────────────────────────────────
+      const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
       })
@@ -2190,8 +2309,8 @@ export class MarginAccountService {
             'repay',
             StellarSdk.nativeToScVal(repayAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })
-          )
+            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+          ),
         )
         .setTimeout(30)
         .build();
@@ -2664,6 +2783,13 @@ export class MarginAccountService {
       );
       if (!walletCheck.ok) {
         return { success: false, error: walletCheck.error };
+      }
+
+      if (borrowAmountTokens > 0) {
+        const liquidityCheck = await this.checkPoolLiquidity(contractBorrowSymbol, borrowAmountTokens);
+        if (!liquidityCheck.ok) {
+          return { success: false, error: liquidityCheck.error };
+        }
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);

@@ -42,6 +42,16 @@ export const LiquidateTab = () => {
       setCheckError(null);
       setHealthInfo(null);
       const addr = targetAddress.trim();
+
+      // Block self-liquidation before even hitting the API
+      const { address: walletAddr } = await getAddress();
+      if (walletAddr) {
+        const ownAccount = await MarginAccountService.discoverExistingAccount(walletAddr);
+        if (ownAccount && ownAccount === addr) {
+          throw new Error("You cannot liquidate your own margin account.");
+        }
+      }
+
       const res = await fetch(`/api/account/${encodeURIComponent(addr)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json() as Promise<AccountHealthInfo>;
@@ -65,6 +75,13 @@ export const LiquidateTab = () => {
       if (error || !liquidatorAddress) throw new Error("Connect your wallet first.");
 
       const smartAccount = healthInfo?.marginAccountAddress ?? targetAddress.trim();
+
+      // Safety net: block self-liquidation even if the button somehow appears
+      const ownAccount = await MarginAccountService.discoverExistingAccount(liquidatorAddress);
+      if (ownAccount && ownAccount === smartAccount) {
+        throw new Error("You cannot liquidate your own margin account.");
+      }
+
       const result = await MarginAccountService.liquidateMarginAccount(
         liquidatorAddress,
         smartAccount

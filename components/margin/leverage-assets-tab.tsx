@@ -699,6 +699,8 @@ export const LeverageAssetsTab = () => {
 
 
         const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken || wbDeposits[0]?.asset || "XLM");
+        // True when the DualBorrow component has produced two distinct borrow assets.
+        const isDualBorrow = borrowState != null && borrowState.items.length === 2;
 
         // Fast path: single-collateral → use the atomic contract method
         // (deposit_and_borrow for same-asset, deposit_and_borrow_cross for
@@ -714,21 +716,28 @@ export const LeverageAssetsTab = () => {
 
         if (canUseAtomic) {
           const item = wbDeposits[0];
-          // For cross-asset borrow, convert the leverage USD target into the
-          // borrow token's units using the same flat price map the rest of
-          // the page uses. Same-asset case lets MarginAccountService compute
-          // the borrow amount from the multiplier.
-          const borrowOptions = isCrossAsset && multiplier > 1
-            ? (() => {
-                const depositUsd = item.amount * (MB_TOKEN_PRICES[item.asset] ?? 1);
-                const borrowUsd = depositUsd * (multiplier - 1);
-                const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-                return {
-                  borrowTokenSymbol: normalizedBorrowToken,
-                  borrowAmountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
-                };
-              })()
-            : undefined;
+          // For dual borrow, use the first item's explicit amount from the DualBorrow state.
+          // For cross-asset single borrow, convert the leverage USD target into borrow token units.
+          // Same-asset single borrow leaves options undefined so MarginAccountService uses the multiplier.
+          const borrowOptions = (() => {
+            if (isDualBorrow && borrowState!.items.length > 0) {
+              const b0 = borrowState!.items[0];
+              return {
+                borrowTokenSymbol: normalizeContractTokenSymbol(b0.assetData.asset),
+                borrowAmountTokens: parseFloat(b0.assetData.amount) || 0,
+              };
+            }
+            if (isCrossAsset && multiplier > 1) {
+              const depositUsd = item.amount * (MB_TOKEN_PRICES[item.asset] ?? 1);
+              const borrowUsd = depositUsd * (multiplier - 1);
+              const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+              return {
+                borrowTokenSymbol: normalizedBorrowToken,
+                borrowAmountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
+              };
+            }
+            return undefined;
+          })();
 
           const atomicResult = await MarginAccountService.depositAndBorrow(
             marginAccountAddress!,
@@ -758,6 +767,29 @@ export const LeverageAssetsTab = () => {
                 amount: borrowAmountTokens.toFixed(7),
                 hash: atomicResult.hash ?? "",
               });
+            }
+            // Dual borrow second leg: borrow the second asset as a separate tx.
+            if (isDualBorrow && borrowState!.items.length > 1 && multiplier > 1) {
+              const b1 = borrowState!.items[1];
+              const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
+              const amt1 = parseFloat(b1.assetData.amount) || 0;
+              if (amt1 > 0) {
+                const borrow2Result = await borrowTokens(userAddress, sym1, amt1);
+                if (borrow2Result.success) {
+                  borrowHash = borrow2Result.hash ?? borrowHash;
+                  appendMarginHistory({
+                    marginAccountAddress: marginAccountAddress!,
+                    type: "borrow",
+                    asset: sym1,
+                    amount: amt1.toFixed(7),
+                    hash: borrow2Result.hash ?? "",
+                  });
+                } else {
+                  toast.error(normalizeDepositCollateralError(
+                    `First asset borrowed. Second borrow (${b1.assetData.asset}) failed: ${borrow2Result.error ?? "Unknown error"}`
+                  ));
+                }
+              }
             }
           } else {
             // Error(Budget, ExceededLimit): the chained deposit→borrow overflowed
@@ -822,35 +854,47 @@ export const LeverageAssetsTab = () => {
           }
 
           if (multiplier > 1) {
-            const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-            const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
-            const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
+            // Dual borrow: execute each item separately. Single borrow: compute from leverage.
+            const borrowsToExecute = isDualBorrow
+              ? borrowState!.items
+                  .map((b) => ({
+                    token: normalizeContractTokenSymbol(b.assetData.asset),
+                    amount: parseFloat(b.assetData.amount) || 0,
+                  }))
+                  .filter((b) => b.amount > 0)
+              : (() => {
+                  const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                  const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
+                  return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
+                })();
 
-            const borrowResult = await borrowTokens(userAddress, normalizedBorrowToken, borrowAmountTokens);
-            if (!borrowResult.success) {
-              console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
-              toast.error(normalizeDepositCollateralError(
-                `Deposits were successful. Borrow failed: ${borrowResult.error || "Unknown borrow error"}`
-              ));
-              try {
-                await refreshBalances(userAddress);
-              } catch (refreshErr) {
-                console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
+            for (const bItem of borrowsToExecute) {
+              const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
+              if (!borrowResult.success) {
+                console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
+                toast.error(normalizeDepositCollateralError(
+                  `Deposits were successful. Borrow ${bItem.token} failed: ${borrowResult.error || "Unknown borrow error"}`
+                ));
+                try {
+                  await refreshBalances(userAddress);
+                } catch (refreshErr) {
+                  console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
+                }
+                if (marginAccountAddress) {
+                  await refreshBorrowedBalances(marginAccountAddress, true);
+                }
+                setIsProcessing(false);
+                return;
               }
-              if (marginAccountAddress) {
-                await refreshBorrowedBalances(marginAccountAddress, true);
-              }
-              setIsProcessing(false);
-              return;
+              borrowHash = borrowResult.hash ?? "";
+              appendMarginHistory({
+                marginAccountAddress: marginAccountAddress!,
+                type: "borrow",
+                asset: bItem.token,
+                amount: bItem.amount.toFixed(7),
+                hash: borrowHash,
+              });
             }
-            borrowHash = borrowResult.hash ?? "";
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: normalizedBorrowToken,
-              amount: borrowAmountTokens.toFixed(7),
-              hash: borrowHash,
-            });
           }
         }
 

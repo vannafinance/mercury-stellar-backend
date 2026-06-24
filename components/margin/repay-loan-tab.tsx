@@ -151,10 +151,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     _key: string,
   ): { token: string; usd: string | null } => {
     const cleaned = clampRepayDust(value);
-    // Adaptive precision: ≥1 → 2dp, <1 → up to 7dp so dust stays visible; USD
-    // shows "<$0.01" for tiny-but-nonzero rather than a misleading "$0.00".
-    const token = `${formatTokenAmount(cleaned)} ${selectedRepayCurrency}`;
-    const usd = selectedTokenPrice > 0 ? `≈ ${formatUsdValue(cleaned * selectedTokenPrice)}` : null;
+    // Treat as zero if the USD equivalent is below $0.01 (post-repay dust).
+    const usdEquiv = selectedTokenPrice > 0 ? cleaned * selectedTokenPrice : 0;
+    const display = usdEquiv > 0 && usdEquiv < 0.01 ? 0 : cleaned;
+    const token = `${formatTokenAmount(display)} ${selectedRepayCurrency}`;
+    const usd = selectedTokenPrice > 0 ? `≈ ${formatUsdValue(display * selectedTokenPrice)}` : null;
     return { token, usd };
   };
 
