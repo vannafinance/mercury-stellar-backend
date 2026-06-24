@@ -68,13 +68,13 @@ Replace per-account-per-token `simulateTransaction` with batched **`getLedgerEnt
 - **Accept:** scan RPC calls **< 50**; true cold scan **< 5s**; output shape + values verified identical to the current simulate-based reads (diff a snapshot before/after).
 - **Investigate first:** contract storage layout — key encoding, durability (persistent vs temporary), and how `simulateTransaction` currently derives each value — so the batched keys map 1:1.
 
-### WS-3 · Env-configurable + dedicated RPC — `s5/analytics-rpc-env`
-Make `SOROBAN_RPC_URL` read `process.env.SOROBAN_RPC_URL` (fallback to the public node). Add retry/backoff on 429/5xx. Raise `SCAN_CONCURRENCY` when a dedicated endpoint is configured.
-- **Accept:** RPC endpoint swappable via env (no code change to switch providers); with a dedicated node, no throttling and higher concurrency.
-- **Note:** dedicated RPC is an *amplifier* for WS-2, not a replacement — pick a provider (Validation Cloud / QuickNode / Blockdaemon / Ankr, or self-host).
+### WS-3 · Env-configurable RPC — purchased endpoint as default — `s5/analytics-rpc-env`
+Make `SOROBAN_RPC_URL` read `process.env.SOROBAN_RPC_URL`, and treat a **purchased/paid RPC endpoint as the default in production** (set it in Vercel env). The public node (`soroban-testnet.stellar.org`) drops to a **dev/fallback only**. Add retry/backoff on 429/5xx. Raise `SCAN_CONCURRENCY` automatically when a non-public endpoint is configured.
+- **Accept:** RPC endpoint is swappable via env with **zero code change**; production points at the purchased RPC by default; public node is only the fallback when the env var is unset.
+- **Decision:** we may **not buy a dedicated RPC immediately** — but the wiring lands now so switching to a purchased endpoint is a one-line env change, not a code/deploy task. A dedicated RPC is an *amplifier* for WS-2 (batching), not a replacement. Candidate providers if/when purchased: Validation Cloud / QuickNode / Blockdaemon / Ankr, or self-host.
 
-### WS-4 · Hubble for protocol-wide aggregates — **correct long-term** — `s5/analytics-hubble-aggregates`
-Serve the overview KPIs (TVL, total borrowed, utilisation, account count) from **Hubble (BigQuery)** on pubnet — milliseconds, no fan-out. Keep the (now-batched) RPC scan as the **testnet** fallback, gated the same way as `/stats`.
+### WS-4 · Hubble for protocol-wide aggregates — **correct long-term (MAINNET ONLY)** — `s5/analytics-hubble-aggregates`
+**Hubble (BigQuery) is mainnet/pubnet only** — it indexes the public network, not testnet. So this is the production path. Serve the overview KPIs (TVL, total borrowed, utilisation, account count) from Hubble on pubnet — milliseconds, no fan-out. **Testnet always uses the (now-batched) RPC scan** as there is no Hubble data for it; gate exactly like `/stats` (`STATS_ENABLED` + Google creds).
 - **Accept:** pubnet overview reads from Hubble; testnet falls back to the batched scan; values reconcile.
 
 ---
