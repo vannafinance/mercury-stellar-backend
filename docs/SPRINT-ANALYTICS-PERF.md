@@ -77,25 +77,50 @@ Make `SOROBAN_RPC_URL` read `process.env.SOROBAN_RPC_URL`, and treat a **purchas
 **Hubble (BigQuery) is mainnet/pubnet only** — it indexes the public network, not testnet. So this is the production path. Serve the overview KPIs (TVL, total borrowed, utilisation, account count) from Hubble on pubnet — milliseconds, no fan-out. **Testnet always uses the (now-batched) RPC scan** as there is no Hubble data for it; gate exactly like `/stats` (`STATS_ENABLED` + Google creds).
 - **Accept:** pubnet overview reads from Hubble; testnet falls back to the batched scan; values reconcile.
 
+### WS-5 · Mercury webhooks → materialized analytics DB — **THE STRATEGIC FIX (supersedes the RPC scan)** — `s5/analytics-mercury-webhooks`
+The correct long-term architecture per Mercury (Federico): stop scanning the protocol over RPC for analytics. Let **Mercury PUSH events** to us and maintain our own current-state DB; the dashboard reads our DB (ms), not the chain.
+
+**Flow**
+1. **Register** a Mercury webhook for the protocol contracts (AccountManager/Registry + pools) with optional XDR topic filters (deposit / borrow / repay / liquidate / transfer): `POST {network}.mercurydata.app/rest/webhooks/new` (JWT auth, `webhook_endpoint`, `contract_ids`). **Save the returned secret — shown once.**
+2. **Endpoint** (`/api/mercury/webhook`, Next.js route): verify `X-Mercury-Signature` (HMAC-SHA256, timing-safe) + `X-Mercury-Timestamp`; parse `{ event.body.v0.{topics,data}, tx_hash }`; **idempotent** (dedupe by `tx_hash` + event index); apply the delta; return 2xx fast.
+3. **Materialized state** in our DB (Vercel Postgres / Neon / Supabase): per-account positions (collateral/debt amounts per token) + protocol aggregates (TVL units, total borrowed, account count, utilisation), updated incrementally.
+4. **Read path:** dashboard reads our DB and layers **live oracle prices** (cached) at read time to compute USD / HF / utilisation. Real-time via PUSH — **no polling, no RPC fan-out.**
+
+**Why it's the real fix:** the ~30s disappears because we never scan — we already hold every account's position. It works on **testnet AND pubnet** (Mercury indexes both), unlike Hubble.
+
+**Must-cover (or it's wrong in prod):**
+- **Backfill:** bootstrap the DB once from current state (reuse WS-2's batched `getLedgerEntries`), then webhooks keep it live.
+- **Reconciliation:** periodic light re-sync to catch any missed webhook AND continuous interest accrual (`b_rate` drifts with no event) — or compute debt-with-interest from the pool rate at read time.
+- **Ordering/idempotency:** apply by ledger sequence; dedupe by `(tx_hash, event_index)`.
+- **Security/ops:** HMAC verify every payload, store the secret as a server env var, fast 2xx (process async), monitor delivery failures/retries.
+
+- **Accept:** dashboard reads current-state analytics from our DB in **< 200ms with zero protocol RPC scan**; positions reflect on-chain events within seconds of a webhook; a missed webhook is corrected by reconciliation within one cycle.
+- **Trade-off:** adds a stateful component (webhook route + serverless Postgres + projection logic) — standard event-sourcing/CQRS; the interim WS-1/WS-2 buy time while it's built.
+
 ---
 
 ## 4. Sequencing
 
 ```
-WS-0 (measure)
-  └─> WS-1 (cron warm → instant relief for users)
-        └─> WS-2 (getLedgerEntries batch → real fix, ~30s → <5s)
-              ├─> WS-3 (dedicated RPC → reliability + headroom)
-              └─> WS-4 (Hubble aggregates → correct pubnet source)
+INTERIM (ship this week — make the current scan bearable)
+  WS-0 (measure) ─> WS-1 (cron warm → instant relief) ─> WS-2 (getLedgerEntries batch → ~30s→<5s)
+
+STRATEGIC (the real architecture — eliminates the scan for analytics)
+  WS-5 (Mercury webhooks → own DB)   ← live current-state, testnet + pubnet, real-time push
+     ↑ backfill + reconcile reuse WS-2's batched reader
+
+COMPLEMENTARY
+  WS-4 (Hubble)        → pubnet HISTORICAL/time-series aggregates (TVL over time, volume)
+  WS-3 (purchased RPC) → on-demand current-state reads (single-account HF) + backfill amplifier
 ```
-WS-1 ships value on day one (users stop waiting). WS-2 is the core engineering fix. WS-3/WS-4 harden and finalize.
+WS-1 ships value on day one. WS-2 is the interim engineering fix **and** the backfill/reconcile reader. **WS-5 is the destination** for live analytics; WS-3/WS-4 complement it.
 
 ---
 
 ## 5. Branching strategy (mirrors current flow)
 
 - **One feature branch per workstream**, branched off `feat/stellar-rewire`:
-  `s5/analytics-instrumentation`, `s5/analytics-cron-warm`, `s5/analytics-ledger-batch`, `s5/analytics-rpc-env`, `s5/analytics-hubble-aggregates`.
+  `s5/analytics-instrumentation`, `s5/analytics-cron-warm`, `s5/analytics-ledger-batch`, `s5/analytics-rpc-env`, `s5/analytics-hubble-aggregates`, `s5/analytics-mercury-webhooks`.
 - Each branch → **PR into `feat/stellar-rewire`**. CI must be green: `tsc --noEmit`, ESLint, `vitest run` (161+). Review, then squash/merge.
 - Deploy previews are limited to `main` + `feat/stellar-rewire` (Ignored Build Step), so WS branches don't pile up deployments.
 - When the sprint is green on `feat/stellar-rewire`, open a **`feat/stellar-rewire` → `main` PR** (like #42), merge, and cut a release (`v0.2.0`).
