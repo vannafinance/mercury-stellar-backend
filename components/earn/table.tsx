@@ -1,3 +1,15 @@
+/**
+ * Generic data table shared across the earn/farm surfaces. A single `tableBody`
+ * of cell descriptors drives both a horizontal desktop row and a collapsible
+ * mobile accordion. Built-in behaviours:
+ * - Debounced text search + a suite of value/tag/column filters (see
+ *   {@link applyFilters}).
+ * - Optional supply-APY threshold filter and per-column numeric/string sorting.
+ * - Client-side pagination (ITEMS_PER_PAGE per page) with horizontal
+ *   scroll-shadow indicators.
+ * Cells are polymorphic: they can render text, icons, tags/badges, pie charts,
+ * progress bars, and explorer links depending on which fields are present.
+ */
 import {
   useCallback,
   useEffect,
@@ -39,6 +51,11 @@ const FILTER_OPTIONS = {
   protocol: ["v1"]
 };
 
+/**
+ * Props for {@link Table}. `tableHeadings` and `tableBody.rows[].cell` are
+ * positionally aligned; a heading with `icon: true` becomes a sortable column.
+ * The `filters` block toggles which filter dropdowns appear in the toolbar.
+ */
 interface TableProps {
   tableBodyBackground?: string;
   tableHeadingTextColor?: string;
@@ -105,6 +122,13 @@ type SupplyApyFilter = {
 
 /* ---------- FILTER LOGIC (unchanged behavior) ---------- */
 
+/**
+ * Pure row filter combining the search term with every active filter facet
+ * (chains, deposit/collateral, supply-APY threshold, vaults, curator, provider,
+ * protocol). Returns the input unchanged when nothing is active. The supply-APY
+ * facet parses human-formatted cell text (e.g. "5.5%", "$1.2M", "1.2K") into a
+ * number before comparing against the threshold.
+ */
 const applyFilters = (
   rows: TableProps["tableBody"]["rows"],
   searchLower: string,
@@ -309,11 +333,17 @@ const applyFilters = (
 
 /* ---------- SIMPLE CELL RENDER HELPERS ---------- */
 
+/** True for status keywords (active, paused, liquidated, …); these render as accent pills, other tags as muted value chips. */
 // Status words render as pills; numeric/value strings render as muted secondary text
 const isStatusTag = (tag: string | number): boolean => {
   return /^(active|inactive|stable|paused|deprecated|live|closed|pending|liquidated)$/i.test(String(tag).trim());
 };
 
+/**
+ * Renders a single cell's contents, dispatching on which descriptor fields are
+ * present: icon-only rows, pie/progress visualizations, title + description with
+ * optional explorer link, and status/value tag chips.
+ */
 const CellContent = ({
   cell,
   showPieChart,
@@ -553,6 +583,12 @@ const CellContent = ({
   );
 };
 
+/**
+ * One table row. Desktop renders all visible cells in a horizontal layout;
+ * mobile renders the first cell as a tappable header that expands into a
+ * key/value accordion of the remaining cells (with an optional "View Details"
+ * action). Memoized to avoid re-rendering unaffected rows.
+ */
 const TableRow = memo(
   ({
     row,
@@ -734,6 +770,13 @@ TableRow.displayName = "TableRow";
 
 /* ---------- MAIN TABLE COMPONENT ---------- */
 
+/**
+ * Memoized generic table. Owns search/filter/sort/pagination state and derives
+ * the visible page via filter → sort → paginate. Renders the toolbar
+ * (tabs + filter dropdowns + search), the header (with sort toggles), the row
+ * list, an empty state, and pagination controls. `parseNumericValue` powers
+ * suffix-aware numeric sorting (K/M/B/T/%).
+ */
 export const Table = memo((props: TableProps) => {
   const { isDark } = useTheme();
   const activeTab = props.activeTab || props.heading.tabsItems?.[0]?.id || "";
@@ -832,6 +875,20 @@ export const Table = memo((props: TableProps) => {
     ]
   );
 
+  const parseNumericValue = useCallback((raw: string): number | null => {
+    const match = raw.match(/(\d+\.?\d*)([KMBT%])?(?:\s|$)/i);
+    if (!match) return null;
+    const num = parseFloat(match[1]);
+    const suffix = (match[2] || "").toUpperCase();
+    switch (suffix) {
+      case "T": return num * 1e12;
+      case "B": return num * 1e9;
+      case "M": return num * 1e6;
+      case "K": return num * 1e3;
+      default: return num;
+    }
+  }, []);
+
   const sortedData = useMemo(() => {
     if (!sortConfig.columnId) return filteredData;
 
@@ -844,25 +901,20 @@ export const Table = memo((props: TableProps) => {
       const aCell = a.cell[columnIndex];
       const bCell = b.cell[columnIndex];
 
-      let aValue: string | number = aCell?.title || aCell?.tag || "";
-      let bValue: string | number = bCell?.title || bCell?.tag || "";
+      const aRaw = String(aCell?.title || aCell?.tag || "");
+      const bRaw = String(bCell?.title || bCell?.tag || "");
 
-      const aNumMatch = String(aValue).match(/(\d+\.?\d*)/);
-      const bNumMatch = String(bValue).match(/(\d+\.?\d*)/);
+      const aNum = parseNumericValue(aRaw);
+      const bNum = parseNumericValue(bRaw);
 
-      if (aNumMatch && bNumMatch) {
-        aValue = parseFloat(aNumMatch[1]);
-        bValue = parseFloat(bNumMatch[1]);
-      }
-
-      if (typeof aValue === "number" && typeof bValue === "number") {
+      if (aNum !== null && bNum !== null) {
         return sortConfig.direction === "asc"
-          ? aValue - bValue
-          : bValue - aValue;
+          ? aNum - bNum
+          : bNum - aNum;
       }
 
-      const aStr = String(aValue).toLowerCase();
-      const bStr = String(bValue).toLowerCase();
+      const aStr = aRaw.toLowerCase();
+      const bStr = bRaw.toLowerCase();
 
       if (sortConfig.direction === "asc") {
         return aStr < bStr ? -1 : aStr > bStr ? 1 : 0;
@@ -870,7 +922,7 @@ export const Table = memo((props: TableProps) => {
         return aStr > bStr ? -1 : aStr < bStr ? 1 : 0;
       }
     });
-  }, [filteredData, sortConfig, props.tableHeadings]);
+  }, [filteredData, sortConfig, props.tableHeadings, parseNumericValue]);
 
   useEffect(() => {
     setCurrentPage(1);

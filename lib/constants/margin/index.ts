@@ -55,6 +55,11 @@ export const LEVERAGE_TABS = [
     label: "Transfer Collateral",
     shortLabel: "Transfer",
   },
+  {
+    id: "liquidate",
+    label: "Liquidate Account",
+    shortLabel: "Liquidate",
+  },
 ] as const;
 
 // ============================================
@@ -94,6 +99,9 @@ export const FIELD_FORMAT_MAP: Record<string, FormatType> = {
   fees: "number",
   totalDeposit: "number",
   updatedCollateral: "number",
+  updatedBorrowedAmount: "number",
+  updatedHealthFactor: "health-factor",
+  updatedLeverage: "leverage",
   
   // Percentage values
   borrowRate: "percentage",

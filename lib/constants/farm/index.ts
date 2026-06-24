@@ -366,6 +366,18 @@ export const singleAssetTableHeadings = [
   { label: "Utilization", id: "utilization", icon: true },
 ];
 
+// The Positions tab shows the user's own positions, not pool totals — so the
+// pool columns (Total Borrow / Borrow APY / Utilization) don't apply. Each row
+// is a single "Holdings" value (the position amount) with its breakdown as a
+// wrapping subtext, plus APY. Keeping it to four columns avoids the long LP
+// composition string overflowing into the next column.
+export const positionsTableHeadings = [
+  { label: "Asset", id: "asset", icon: true },
+  { label: "Protocol", id: "protocol", icon: true },
+  { label: "Holdings", id: "holdings", icon: true },
+  { label: "APY", id: "apy", icon: true },
+];
+
 // Blend Capital uses a SINGLE pool contract for all assets.
 // The pool address is CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF (TestnetV2).
 // The asset to deposit/withdraw is specified via the `tokens_out` field in ExternalProtocolCall.

@@ -7,6 +7,8 @@ import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, createMarginAccount } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
+import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -18,13 +20,16 @@ import {
   RISK_ENGINE_LIQUIDATION_HF,
 } from "@/components/lite-mode/lite-position-math";
 import { usePoolData } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
    ═══════════════════════════════════════════════════════════════ */
 
+/** "single" = a single-asset lending pool (Blend); "lp" = a two-asset AMM pool. */
 type PoolType = "lp" | "single";
 
+/** A selectable yield pool in the strategy picker, with its store key for live rate lookups. */
 interface PoolOption {
   id: string;
   type: PoolType;
@@ -69,6 +74,12 @@ const getTokenIcon = (symbol: string) => {
 };
 
 /* ─── Scenario types ─── */
+/**
+ * How borrowed funds are deployed relative to the collateral asset:
+ *  - `same-asset`        — collateral and pool asset match; deposit + borrow supplied to one pool.
+ *  - `cross-asset-keep`  — keep collateral exposure; supply collateral and borrow to two separate pools.
+ *  - `cross-asset-swap`  — swap collateral into the target asset and supply everything to one pool.
+ */
 type StrategyScenario = "same-asset" | "cross-asset-keep" | "cross-asset-swap";
 
 /* ─── animation variants ─── */
@@ -110,6 +121,25 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
    Main Component
    ═══════════════════════════════════════════════════════════════ */
 
+/**
+ * The "Deposit & Deploy" flow — the heart of Lite mode. Guides the user through
+ * picking a curated yield pool, depositing collateral (XLM or USDC), and setting
+ * leverage, then opens the leveraged position in one action.
+ *
+ * Detects the deployment {@link StrategyScenario} from the pool/collateral pair
+ * and computes the borrow amount, blended net APR per leg, projected health
+ * factor / LTV, liquidation price (for cross-asset borrows), and earnings
+ * estimates live as inputs change. Pool APRs/TVL come from `usePoolData`; prices
+ * from the oracle hook. XLM deposits respect the wallet's real on-chain minimum
+ * reserve (fetched via `getXlmMinReserve`) so a deposit can't trap the account.
+ *
+ * The CTA is context-aware (connect wallet → create margin account → enter
+ * amount → deploy) and validation blocks over-deposit, over-borrow, and unsafe
+ * (HF ≤ 1.2) positions. Execution runs `executeOneClickStrategy` with progress
+ * streamed into a status modal; on success the deployment is recorded in the
+ * Lite-only registry (`appendLitePosition`) so it surfaces in the Position tab
+ * separately from any Pro-mode borrows.
+ */
 export const OneClickStrategy = () => {
   const { isDark } = useTheme();
   const { pools: earnPools } = usePoolData();
@@ -146,7 +176,11 @@ export const OneClickStrategy = () => {
   const [collateralAmount, setCollateralAmount] = useState("");
   const [leverage, setLeverage] = useState(1);
   const [scenario, setScenario] = useState<StrategyScenario>("same-asset");
-  const [prices, setPrices] = useState<Record<string, number>>({ XLM: 1.0, USDC: 1.0 });
+  const oraclePrices = useTokenPrices(["XLM", "USDC"]);
+  const prices: Record<string, number> = {
+    XLM: oraclePrices.XLM ?? 1.0,
+    USDC: 1.0,
+  };
   const [loading, setLoading] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [txModal, setTxModal] = useState<{
@@ -156,13 +190,6 @@ export const OneClickStrategy = () => {
     message: string;
     txHash?: string;
   }>({ open: false, status: "pending", title: "", message: "" });
-
-  useEffect(() => {
-    fetch("/api/prices")
-      .then((r) => r.json())
-      .then((d) => setPrices((p) => ({ ...p, ...d })))
-      .catch(() => {});
-  }, []);
 
   const formatTvl = (tokens: string, priceUsd: number): string => {
     const usd = (parseFloat(tokens) || 0) * priceUsd;
@@ -202,6 +229,25 @@ export const OneClickStrategy = () => {
   // Wallet balance from Stellar user store
   const walletBalance = tokenBalances?.[collateralAsset] ?? "0";
   const balanceNum = Number(walletBalance) || 0;
+
+  // Real on-chain XLM minimum reserve (base + subentries). A native-XLM deposit
+  // that drops the wallet below this traps with Contract #10 ("resulting balance
+  // not within allowed range"), so MAX / validation must respect it — not a flat
+  // 0.5. Non-XLM assets spend their full balance.
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
+
+  const maxDeposit =
+    collateralAsset === "XLM" ? maxSpendableXlm(balanceNum, xlmMinReserve) : balanceNum;
 
   /* ═══════════════════════════════════════
      Scenario Detection
@@ -343,7 +389,7 @@ export const OneClickStrategy = () => {
         throw new Error("Failed to create margin account");
       }
     } catch (err: any) {
-      setTxModal({ open: true, status: "error", title: "Failed", message: err?.message || "Failed to create margin account" });
+      setTxModal({ open: true, status: "error", title: "Failed", message: normalizeCreateAccountError(err?.message) });
     } finally {
       setLoading(false);
     }
@@ -414,14 +460,12 @@ export const OneClickStrategy = () => {
       setCollateralAmount("");
       setLeverage(1);
     } catch (err: any) {
-      const rejected =
-        err?.message?.includes("cancelled") ||
-        err?.message?.includes("rejected") ||
-        err?.message?.includes("denied");
+      const message = normalizeContractError(err?.message, "Operation failed");
+      const rejected = message === "Transaction cancelled by user.";
       setTxModal({
         open: true, status: "error",
         title: rejected ? "Cancelled" : "Failed",
-        message: rejected ? "Transaction cancelled" : err?.message || "Operation failed",
+        message,
       });
     } finally {
       setLoading(false);
@@ -430,7 +474,7 @@ export const OneClickStrategy = () => {
 
   const isValid =
     collateralNum > 0 &&
-    collateralNum <= balanceNum &&
+    collateralNum <= maxDeposit &&
     (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > 1.2)) &&
     !!userAddress &&
     !!marginAccountAddress;
@@ -439,7 +483,10 @@ export const OneClickStrategy = () => {
     if (!userAddress) return "Connect Wallet";
     if (!hasMarginAccount) return "Create Margin Account";
     if (collateralNum <= 0) return "Enter Deposit Amount";
-    if (collateralNum > balanceNum) return "Insufficient Balance";
+    if (collateralNum > maxDeposit)
+      return collateralAsset === "XLM" && collateralNum <= balanceNum
+        ? "Keep XLM for fees & reserve"
+        : "Insufficient Balance";
     if (borrowedAmount > 0 && borrowUsd > maxBorrowUsd) return "Exceeds Borrow Limit";
     if (borrowedAmount > 0 && newHF > 0 && newHF <= 1.2) return "Position Too Risky";
     if (loading) return "Processing...";
@@ -627,8 +674,7 @@ export const OneClickStrategy = () => {
                   <button
                     type="button"
                     onClick={() => {
-                      const val = collateralAsset === "XLM" ? Math.max(balanceNum - 0.5, 0) : balanceNum;
-                      setCollateralAmount(val.toFixed(2));
+                      setCollateralAmount(maxDeposit.toFixed(2));
                     }}
                     className="ml-1.5 text-[10px] font-bold text-[#703AE6] bg-[#F1EBFD] rounded px-1.5 py-[1px] cursor-pointer hover:bg-[#703AE6]/20 transition-colors"
                   >

@@ -41,3 +41,42 @@ yarn-error.log*
 next-env.d.ts
 
 /.idea
+
+/.cursor
+
+.cursor
+
+# local-only notes / snapshots (do not commit)
+PHASE_1_SNAPSHOT.txt
+skills-lock.json
+.claude.md
+TEST_PLAN_DEV_A.md
+TEST_PLAN_DEV_B.md
+TEST_PLAN_SYNC.md
+SPRINT_1_EOD_GOALS.txt
+MERCURY_INDEXING_REQUEST.txt
+MERCURY_TEAM_REQUEST.txt
+FEDERICO_CALL_NOTES.md
+scripts/mercury-probe.mjs
+scripts/mercury-events.mjs
+scripts/mercury-endpoint-test.mjs
+scripts/mercury-mutations.mjs
+scripts/debug-env.mjs
+
+scripts/decode-these.mjs
+scripts/mercury-decode.mjs
+scripts/mercury-find-subscribe.mjs
+scripts/mercury-margin-test.mjs
+scripts/mercury-rest.mjs
+scripts/mercury-subscribe.mjs
+scripts/mercury-topicfilter-test.mjs
+scripts/rpc-events.mjs
+scripts/mercury-bycontract-test.mjs
+scripts/mercury-earn-probe.mjs
+scripts/mercury-soroswap-probe.mjs
+scripts/mercury-blend-probe.mjs
+
+# Claude Code project guide — kept local, not shipped in the repo
+CLAUDE.md
+
+testsprite_tests\tmp\config.json

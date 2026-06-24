@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Image from "next/image";
 import { motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
@@ -16,7 +17,17 @@ import { applyLiteExit } from "@/lib/lite-positions";
 
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";
-  if (msg.includes("cancelled") || msg.includes("rejected")) return "Transaction cancelled by user.";
+  const lower = msg.toLowerCase();
+  // Freighter throws an XDR parse error when the user hits "Reject".
+  if (
+    lower.includes("cancelled") ||
+    lower.includes("canceled") ||
+    lower.includes("rejected") ||
+    lower.includes("denied") ||
+    lower.includes("xdr read error") ||
+    lower.includes("boundary of the buffer")
+  )
+    return "Transaction cancelled by user.";
   if (msg.includes("MissingValue") || msg.includes("map key not found"))
     return "Position not found on-chain. It may already be closed or the balance is insufficient.";
   if (msg.includes("InsufficientBalance") || msg.includes("insufficient"))
@@ -28,7 +39,9 @@ function parseContractError(msg: string): string {
 }
 
 interface PositionDetailProps {
+  /** The position being managed. */
   position: LitePosition;
+  /** Returns to the positions list. */
   onBack: () => void;
   /** Called after a successful close so the parent can refresh the list. */
   onExitSuccess?: () => void;
@@ -72,13 +85,29 @@ const aprColor = (apr: number) => (apr >= 0 ? "#10B981" : "#FC5457");
 
 const EXIT_PRESETS = [25, 50, 75, 100] as const;
 
+/**
+ * Detail and exit screen for a single Lite position. Left column drives a
+ * two-step exit flow: choose an exit percentage (preset pills + slider) and
+ * review the computed repay / withdraw / net-received amounts and projected
+ * health factor (via {@link calcExitPreview}). The right column shows the APR
+ * breakdown and position attributes.
+ *
+ * Confirming runs `closePosition` through a React Query mutation that streams
+ * progress into a status modal; on success it scales the local Lite registry
+ * record to the new state (`applyLiteExit`), invalidates the margin/earn caches,
+ * and refreshes balances. Contract/Freighter errors are mapped to friendly
+ * copy (including treating user-reject XDR parse errors as a cancellation).
+ *
+ * Exit math note: a proportional partial exit preserves the collateral/debt
+ * ratio so HF is unchanged; a 100% exit clears the debt and the modal reflects
+ * the freed collateral.
+ */
 export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDetailProps) => {
   const { isDark } = useTheme();
   const userAddress = useUserStore((s) => s.address);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
   const [exitPct, setExitPct] = useState<number>(100);
-  const [loading, setLoading] = useState(false);
   const [txModal, setTxModal] = useState<{
     open: boolean;
     status: "pending" | "success" | "error";
@@ -135,14 +164,13 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const projectedLiquidity = exit.remainingBorrowUsd;
 
   /* ── Close position handler ────────────────────────────────────────────── */
-  const handleExit = async () => {
-    if (!userAddress || !marginAccountAddress) return;
-    setLoading(true);
-    setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
-    try {
+  const qc = useQueryClient();
+
+  const exitMutation = useMutation({
+    mutationFn: async () => {
       const result = await closePosition({
-        userAddress,
-        marginAccountAddress,
+        userAddress: userAddress!,
+        marginAccountAddress: marginAccountAddress!,
         borrowAsset: position.borrowAsset as "XLM" | "USDC",
         borrowAmount: position.borrowAmount,
         collateralAsset: position.collateralAsset as "XLM" | "USDC",
@@ -154,7 +182,15 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         exitPct,
         onStep: (msg) => setTxModal((p) => ({ ...p, message: msg })),
       });
-      if (!result.success) throw new Error(parseContractError(result.error ?? ""));
+      if (!result.success) {
+        throw new Error(result.error ?? "Close position failed.");
+      }
+      return result;
+    },
+    onMutate: () => {
+      setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
+    },
+    onSuccess: async (result) => {
       // Drop / scale the Lite registry record to match the on-chain state.
       // Without this the Position tab keeps showing the original numbers
       // even after a 100% close, which looks like the close failed.
@@ -165,20 +201,34 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         message: `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
         txHash: result.hash,
       });
-      await refreshBorrowedBalances(marginAccountAddress);
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      qc.invalidateQueries({ queryKey: ['earn'] });
+      if (marginAccountAddress) {
+        try {
+          await refreshBorrowedBalances(marginAccountAddress);
+        } catch (err) {
+          console.warn("Post-exit balance refresh failed; ledger tick will reconcile.", err);
+        }
+      }
       onExitSuccess?.();
-    } catch (err: any) {
-      const msg = err?.message || "Close position failed.";
-      const cancelled = msg.includes("cancelled") || msg.includes("rejected");
+    },
+    onError: (error: Error) => {
+      const parsed = parseContractError(error?.message || "Close position failed.");
+      const cancelled = parsed === "Transaction cancelled by user.";
       setTxModal({
         open: true, status: "error",
         title: cancelled ? "Cancelled" : "Transaction Failed",
-        message: parseContractError(msg),
+        message: parsed,
       });
-    } finally {
-      setLoading(false);
-    }
+    },
+  });
+
+  const handleExit = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    exitMutation.mutate();
   };
+
+  const loading = exitMutation.isPending;
 
   return (
     <>

@@ -5,16 +5,27 @@ import { useState, useEffect } from "react";
 import { LeverageAssetsTab } from "./leverage-assets-tab";
 import { RepayLoanTab } from "./repay-loan-tab";
 import { TransferCollateral } from "./transfer-collateral";
+import { LiquidateTab } from "./liquidate-tab";
 import { AnimatedTabs, TabItem } from "../ui/animated-tabs";
 import { LEVERAGE_TABS } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
 
 interface LeverageCollateralProps {
+  /** When toggled true, forces the panel onto the Repay tab (e.g. a row-level Repay click). */
   switchToRepayTab?: boolean;
+  /** Called after an external repay-tab switch is honoured, so the parent can reset its trigger. */
   onTabSwitched?: () => void;
+  /** Asset symbol to preselect in the Repay tab when the switch is triggered. */
   prefilledRepayAsset?: string;
 }
 
+/**
+ * Tabbed container for the three margin actions — Leverage Assets (deposit +
+ * borrow), Repay Loan, and Transfer Collateral. Owns only the active-tab state
+ * and renders the matching child tab; the per-action logic lives in those
+ * children. Supports being driven externally onto the Repay tab (with a
+ * prefilled asset) via {@link LeverageCollateralProps.switchToRepayTab}.
+ */
 export const LeverageCollateral = ({
   switchToRepayTab,
   onTabSwitched,
@@ -50,6 +61,8 @@ export const LeverageCollateral = ({
         return <RepayLoanTab prefilledAsset={prefilledRepayAsset} />;
       case "transfer-collateral":
         return <TransferCollateral />;
+      case "liquidate":
+        return <LiquidateTab />;
       default:
         return <LeverageAssetsTab />;
     }

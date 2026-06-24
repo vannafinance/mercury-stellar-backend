@@ -1,3 +1,10 @@
+// Aquarius (AMM) integration: multi-pool stats (live from the Aquarius AMM API
+// with an on-chain fallback), LP positions/events, swap quotes, and add/remove-
+// liquidity + chained swaps from both the margin account (AccountManager.execute,
+// amounts in WAD 1e18) and the user's wallet. On-chain reserves/LP shares are
+// 7-decimal (SCALAR_7). Pool reserve order is sorted by contract address, so
+// reserves are re-mapped onto each pool config's token order before display.
+
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@stellar/freighter-api';
 import {
@@ -7,6 +14,7 @@ import {
   SOROBAN_RPC_URL,
   ASSET_ISSUERS,
 } from './stellar-utils';
+import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
 
 // ── Aquarius Swap constants ─────────────────────────────────────────────────
 // XLM Soroban token contract (wrapped native XLM on testnet)
@@ -32,11 +40,20 @@ function buildSwapsChain(tokenInContract: string, poolIndexBytes?: Buffer): Stel
   return StellarSdk.xdr.ScVal.scvVec([hop]);
 }
 
+/** Aquarius action enum variant — must match the SmartAccount handler on-chain. */
 export type AquariusAction = 'AddLiquidity' | 'RemoveLiquidity' | 'Swap';
 
+/**
+ * Per-pool stats. `reserveA`/`reserveB` are ordered to match the pool config's
+ * `tokens`, NOT the on-chain sort. The `apy`/`volumeUsd`/etc. fields are only
+ * populated when stats come from the Aquarius AMM API; the on-chain fallback
+ * leaves them undefined.
+ */
 export interface AquariusPoolStats {
-  reserveA: string;   // XLM reserve, human-readable (7 decimals)
-  reserveB: string;   // USDC reserve, human-readable (7 decimals)
+  /** Matches `AquariusPoolConfig.tokens[0]` (human-readable, 7 decimals). */
+  reserveA: string;
+  /** Matches `AquariusPoolConfig.tokens[1]`. */
+  reserveB: string;
   totalShares: string; // total LP shares, human-readable
   feeFraction: string; // e.g., "0.30%"
   feeRaw: number;      // raw fee fraction (30 = 0.30%)
@@ -49,6 +66,7 @@ export interface AquariusPoolStats {
   poolType?: string;   // "constant_product" | "stable" | "concentrated"
 }
 
+/** A historical Aquarius deposit/withdraw-liquidity event (7-decimal strings). */
 export interface AquariusLpEvent {
   type: 'deposit' | 'withdraw';
   shareAmount: string;  // LP shares minted/burned
@@ -59,18 +77,26 @@ export interface AquariusLpEvent {
   ledger: number;
 }
 
+/** Static config for one Aquarius pool, including on-chain reserve index order. */
 export interface AquariusPoolConfig {
   id: string;
   tokens: [string, string];
+  /**
+   * `get_reserves()` index order on the pool contract (sorted by token address).
+   * When omitted, assumed equal to `tokens` (legacy — wrong for XLM/USDC).
+   */
+  onChainReserveSymbols?: [string, string];
   feeFraction: number; // 30 = 0.30%
   displayName: string;
   poolAddress: string;
 }
 
+/** Supported Aquarius pools (XLM/USDC, XLM/AQUA, XLM/USDT) with fee + addresses. */
 export const AQUARIUS_POOLS: AquariusPoolConfig[] = [
   {
     id: 'aquarius-xlm-usdc',
     tokens: ['XLM', 'USDC'],
+    onChainReserveSymbols: ['USDC', 'XLM'],
     feeFraction: 30,
     displayName: 'XLM / USDC',
     poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
@@ -91,6 +117,7 @@ export const AQUARIUS_POOLS: AquariusPoolConfig[] = [
   },
 ] as const;
 
+/** Outcome of an Aquarius tx: success plus the hash, or an error message. */
 export interface AquariusTransactionResult {
   success: boolean;
   hash?: string;
@@ -101,6 +128,8 @@ const WAD = 1e18;
 const LP_SHARE_SCALE = 1e7;
 const AQUARIUS_AMM_API_BASE = 'https://amm-api-testnet.aqua.network';
 const AQUARIUS_API_CACHE_TTL_MS = 60_000;
+/** Bump when reserve→config mapping changes so stale cache is not reused. */
+const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 3;
 
 interface AquariusApiPoolsResponse {
   items?: AquariusApiPoolItem[];
@@ -134,15 +163,83 @@ const toLpShareUnits = (amount: number): bigint => {
 
 const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
+const SCALAR_7 = 1e7;
+const fromStroopScalar = (raw: string | undefined): string => {
+  const n = parseFloat(raw ?? '0');
+  return Number.isFinite(n) ? (n / SCALAR_7).toFixed(7) : '0';
+};
+
+/** Map on-chain reserve indices to `AquariusPoolConfig.tokens` order. */
+export function mapAquariusReservesToConfig(
+  cfg: AquariusPoolConfig | undefined,
+  raw0: string | undefined,
+  raw1: string | undefined,
+): { reserveA: string; reserveB: string } {
+  const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? ['', ''];
+  const onChainOrder = cfg?.onChainReserveSymbols ?? cfg?.tokens ?? ['', ''];
+  const bySym: Record<string, string> = {};
+  onChainOrder.forEach((sym, idx) => {
+    const raw = idx === 0 ? raw0 : raw1;
+    if (sym) bySym[sym.toUpperCase()] = fromStroopScalar(raw);
+  });
+  let reserveA = bySym[cfgTokenA?.toUpperCase()] ?? fromStroopScalar(raw0);
+  let reserveB = bySym[cfgTokenB?.toUpperCase()] ?? fromStroopScalar(raw1);
+
+  // API `tokens_str` is sometimes [XLM, USDC] while reserves stay [USDC, XLM].
+  // For XLM/USDC, XLM reserve count should dwarf USDC (~96:1 on testnet).
+  if (cfg?.id === 'aquarius-xlm-usdc') {
+    const a = parseFloat(reserveA);
+    const b = parseFloat(reserveB);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a * 10) {
+      const tmp = reserveA;
+      reserveA = reserveB;
+      reserveB = tmp;
+    }
+  }
+
+  return { reserveA, reserveB };
+}
+
+/** Pro-rata underlying token amounts for an LP position (config token order). */
+export function aquariusLpUnderlyingAmounts(
+  lpShares: number,
+  stats: AquariusPoolStats,
+  tokenA: string,
+  tokenB: string,
+): { amountA: number; amountB: number } {
+  const totalShares = parseFloat(stats.totalShares);
+  if (!(lpShares > 0) || !(totalShares > 0)) {
+    return { amountA: 0, amountB: 0 };
+  }
+  const ratio = lpShares / totalShares;
+  return {
+    amountA: ratio * (parseFloat(stats.reserveA) || 0),
+    amountB: ratio * (parseFloat(stats.reserveB) || 0),
+  };
+}
+
+/**
+ * Stateless façade over the Aquarius router + pools. Reads pool stats (live API
+ * with on-chain fallback), LP balances/events, and swap quotes via simulation;
+ * routes liquidity/swap writes through the margin account (AccountManager.execute,
+ * WAD amounts) or the wallet directly. Resolves router/token/index from Registry
+ * with hardcoded fallbacks. Caches AMM-API pool stats for
+ * {@link AQUARIUS_API_CACHE_TTL_MS}. All methods are static.
+ */
 export class AquariusService {
   private static apiPoolStatsCache: {
+    version: number;
     expiresAt: number;
     byAddress: Record<string, AquariusPoolStats>;
   } | null = null;
 
   private static async getAquariusApiPoolStatsByAddress(): Promise<Record<string, AquariusPoolStats>> {
     const now = Date.now();
-    if (AquariusService.apiPoolStatsCache && AquariusService.apiPoolStatsCache.expiresAt > now) {
+    if (
+      AquariusService.apiPoolStatsCache &&
+      AquariusService.apiPoolStatsCache.version === AQUARIUS_API_POOL_STATS_CACHE_VERSION &&
+      AquariusService.apiPoolStatsCache.expiresAt > now
+    ) {
       return AquariusService.apiPoolStatsCache.byAddress;
     }
 
@@ -161,38 +258,27 @@ export class AquariusService {
     // the reserveA/reserveB labels would be flipped (XLM value shown under
     // USDC and vice versa). We map by symbol via `tokens_str` so the
     // returned reserveA always matches AQUARIUS_POOLS config tokens[0].
-    const SCALAR_7 = 1e7;
-    const fromStroop = (raw: string | undefined): string => {
-      const n = parseFloat(raw ?? '0');
-      return Number.isFinite(n) ? (n / SCALAR_7).toFixed(7) : '0';
-    };
-
     for (const pool of json.items ?? []) {
       const address = (pool.address ?? '').trim().toUpperCase();
       if (!address) continue;
 
-      // Resolve reserves by symbol so config order wins, not API sort order.
-      const apiTokens = (pool.tokens_str ?? []).map((s) => (s || '').toUpperCase());
-      const reservesByToken: Record<string, string> = {};
-      apiTokens.forEach((sym, idx) => {
-        const raw = pool.reserves?.[idx];
-        if (sym && raw !== undefined) reservesByToken[sym] = raw;
-      });
-
-      // Find this pool's AQUARIUS_POOLS config so we can return reserves in
-      // the config's token order. Falls back to raw API order for unknown
-      // pools (so we degrade gracefully instead of returning zeros).
       const cfg = AQUARIUS_POOLS.find((p) => p.poolAddress.toUpperCase() === address);
-      const [cfgTokenA, cfgTokenB] = cfg?.tokens ?? [apiTokens[0] ?? '', apiTokens[1] ?? ''];
-      const rawA = reservesByToken[cfgTokenA?.toUpperCase()] ?? pool.reserves?.[0];
-      const rawB = reservesByToken[cfgTokenB?.toUpperCase()] ?? pool.reserves?.[1];
 
-      const totalShare = fromStroop(pool.total_share);
+      // Always map via on-chain reserve index order when we know it (XLM/USDC).
+      // Do not trust tokens_str index alignment — API often lists symbols in
+      // display order while reserves[] stays sorted by contract address.
+      let mapped = mapAquariusReservesToConfig(
+        cfg,
+        pool.reserves?.[0],
+        pool.reserves?.[1],
+      );
+
+      const totalShare = fromStroopScalar(pool.total_share);
       const feeRaw = Math.round((parseFloat(pool.fee ?? '0.003') || 0.003) * 10_000);
 
       byAddress[address] = {
-        reserveA: fromStroop(rawA),
-        reserveB: fromStroop(rawB),
+        reserveA: mapped.reserveA,
+        reserveB: mapped.reserveB,
         totalShares: totalShare,
         feeFraction: `${(feeRaw / 100).toFixed(2)}%`,
         feeRaw,
@@ -205,6 +291,7 @@ export class AquariusService {
     }
 
     AquariusService.apiPoolStatsCache = {
+      version: AQUARIUS_API_POOL_STATS_CACHE_VERSION,
       expiresAt: now + AQUARIUS_API_CACHE_TTL_MS,
       byAddress,
     };
@@ -284,6 +371,10 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Wallet's Aquarius-issued USDC balance (matched by issuer), via Horizon.
+   * Returns "0" if there is no such trustline or on error.
+   */
   static async getAquariusUsdcWalletBalance(walletAddress: string): Promise<string> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -308,6 +399,10 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Whether the wallet holds the Aquarius USDC trustline — required before an
+   * XLM→USDC wallet swap can settle. Returns false on error.
+   */
   static async hasAquariusUsdcTrustline(walletAddress: string): Promise<boolean> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -346,6 +441,7 @@ export class AquariusService {
     return text || 'Swap failed';
   }
 
+  /** Registry-configured USDC contract address, or null if unset/unreadable. */
   static async getRegistryUsdcAddress(): Promise<string | null> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -373,6 +469,11 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Aquarius router address from Registry (checks `has_…` first, then `get_…`),
+   * or null if not configured/unreadable. Prefer {@link getEffectiveRouterAddress},
+   * which falls back to the hardcoded address.
+   */
   static async getAquariusRouterAddressFromRegistry(): Promise<string | null> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -422,6 +523,7 @@ export class AquariusService {
     }
   }
 
+  /** Whether the Registry has an Aquarius pool index configured. False on error. */
   static async hasAquariusPoolIndex(): Promise<boolean> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -444,6 +546,10 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Tracking-token contract address from Registry (the contract that stores LP
+   * share balances for margin accounts), or null if unset/unreadable.
+   */
   static async getTrackingTokenAddressFromRegistry(): Promise<string | null> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -488,6 +594,7 @@ export class AquariusService {
     }
   }
 
+  /** True only when BOTH the router address and pool index are set in Registry. */
   static async isAquariusConfigured(): Promise<boolean> {
     const [router, hasIndex] = await Promise.all([
       AquariusService.getAquariusRouterAddressFromRegistry(),
@@ -496,18 +603,22 @@ export class AquariusService {
     return !!router && hasIndex;
   }
 
-  // Always returns true — we always have hardcoded fallback addresses.
+  /** Always true: hardcoded fallback addresses make Aquarius usable even unconfigured. */
   static isAquariusUsable(): boolean {
     return true;
   }
 
-  // Returns router address from static protocol config.
+  /** Effective router address: Registry value if present, else the hardcoded fallback. */
   static async getEffectiveRouterAddress(): Promise<string> {
     const registryRouter = await AquariusService.getAquariusRouterAddressFromRegistry();
     if (registryRouter) return registryRouter;
     return CONTRACT_ADDRESSES.AQUARIUS_ROUTER;
   }
 
+  /**
+   * Registry tracking-token symbol for a pair (e.g. "AQ_XLM_USDC"), order-
+   * insensitive. Returns null for pairs without a tracking token (only XLM/USDC).
+   */
   static getLpTrackingSymbol(tokenA: string, tokenB: string): string | null {
     const a = tokenA.toUpperCase();
     const b = tokenB.toUpperCase();
@@ -517,6 +628,11 @@ export class AquariusService {
     return null;
   }
 
+  /**
+   * Margin account's LP balance via the Registry tracking token (7-decimal share
+   * units, not WAD). Returns "0" when the pair has no tracking token, none is
+   * configured, or on error. See {@link getUserLpBalance} for the pool-contract fallback.
+   */
   static async getLpBalance(
     marginAccountAddress: string,
     tokenA: string,
@@ -562,7 +678,12 @@ export class AquariusService {
     }
   }
 
-  // Fetch pool reserves, fee, and total shares directly from the Aquarius pool contract.
+  /**
+   * Pool stats for one pool address. Prefers the Aquarius AMM API (cached, gives
+   * APY/volume/TVL), falling back to a direct on-chain read of reserves/fee/total
+   * shares (no API-only fields). Reserves are mapped to config token order.
+   * Returns null if both paths fail.
+   */
   static async getAquariusPoolStats(poolAddress: string): Promise<AquariusPoolStats | null> {
     try {
       // Prefer Aquarius AMM API for live pool values shown on aqua.network.
@@ -596,13 +717,21 @@ export class AquariusService {
         makeSim('get_total_shares'),
       ]);
 
+      const cfg = AQUARIUS_POOLS.find(
+        (p) => p.poolAddress.toUpperCase() === poolAddress.trim().toUpperCase(),
+      );
       let reserveA = '0';
       let reserveB = '0';
       if (StellarSdk.rpc.Api.isSimulationSuccess(resSim) && resSim.result?.retval) {
         const resNative = StellarSdk.scValToNative(resSim.result.retval) as any[];
         if (Array.isArray(resNative) && resNative.length >= 2) {
-          reserveA = (Number(resNative[0].toString()) / 1e7).toFixed(7);
-          reserveB = (Number(resNative[1].toString()) / 1e7).toFixed(7);
+          const mapped = mapAquariusReservesToConfig(
+            cfg,
+            resNative[0]?.toString?.() ?? String(resNative[0]),
+            resNative[1]?.toString?.() ?? String(resNative[1]),
+          );
+          reserveA = mapped.reserveA;
+          reserveB = mapped.reserveB;
         }
       }
 
@@ -630,8 +759,11 @@ export class AquariusService {
     }
   }
 
-  // Get user's LP share balance directly from the pool contract.
-  // Falls back to tracking token approach first (for Registry-configured setups).
+  /**
+   * Margin account's LP share balance (7-decimal). Tries the Registry tracking
+   * token first ({@link getLpBalance}); if zero/unavailable, falls back to the
+   * pool's own `get_user_shares`. Returns "0" on error.
+   */
   static async getUserLpBalance(
     marginAccountAddress: string,
     poolAddress: string,
@@ -673,7 +805,12 @@ export class AquariusService {
     }
   }
 
-  // Fetch deposit_liquidity / withdraw_liquidity events from the Aquarius pool contract.
+  /**
+   * Fetch deposit/withdraw-liquidity events for a pool over the last ~30 days
+   * (518400 ledgers) via Soroban `getEvents`, newest first. When `userAddress`
+   * is given, keeps only events whose topics include it (events with no decodable
+   * address topic are kept, since the depositor topic index varies by version).
+   */
   static async getAquariusEvents(
     poolAddress: string,
     userAddress?: string,
@@ -753,6 +890,13 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Build the XDR `ExternalProtocolCall` payload bytes for AccountManager.execute().
+   * Serialized as an alphabetically-keyed ScVal::Map; `type_action` is encoded as
+   * `Vec([Symbol(action)])` (the Soroban unit-variant encoding — a bare symbol
+   * fails to decode). `amountsOutWad` is WAD (1e18) for AddLiquidity/Swap but
+   * 7-decimal LP share units for RemoveLiquidity (see {@link removeLiquidity}).
+   */
   static buildExternalProtocolCallBytes(
     routerAddress: string,
     action: AquariusAction,
@@ -899,6 +1043,11 @@ export class AquariusService {
     }
   }
 
+  /**
+   * Remove liquidity from an Aquarius pool from the margin account via
+   * AccountManager.execute(). `lpAmount` is in LP share units (7 decimals, not
+   * WAD). Returns once the tx is accepted (PENDING); does not poll to SUCCESS.
+   */
   static async removeLiquidity(
     walletAddress: string,
     marginAccountAddress: string,
@@ -1307,11 +1456,16 @@ export class AquariusService {
 
       const tokenOutSymbol: 'XLM' | 'USDC' = tokenInSymbol === 'XLM' ? 'USDC' : 'XLM';
 
+      const amountStroops = floorAmountToStroops(amountIn);
+      if (amountStroops <= BigInt(0)) {
+        return { success: false, error: 'Invalid swap amount' };
+      }
+
       const callBytes = AquariusService.buildSwapCallBytesForMargin(
         routerAddress,
         tokenInSymbol,
         tokenOutSymbol,
-        toWad(amountIn),
+        stroopsToWad(amountStroops),
         marginAccountAddress,
       );
 

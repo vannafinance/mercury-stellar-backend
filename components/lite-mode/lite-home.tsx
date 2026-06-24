@@ -32,6 +32,19 @@ const itemVariants: Variants = {
 
 type LiteTab = "deposit" | "position";
 
+/**
+ * Root screen for Lite mode. Presents an onboarding tutorial, a hero, and a two
+ * tab switcher: "Deposit & Deploy" (the {@link OneClickStrategy} flow) and
+ * "Position" (the user's open leveraged-yield positions).
+ *
+ * Positions are sourced exclusively from the Lite-only registry
+ * (`getLitePositions`, kept live via `subscribeLitePositions`), deliberately NOT
+ * from the margin store's borrowedBalances — so vanilla Pro-mode borrows never
+ * leak into the Lite Position tab. Each record is re-priced against live oracle
+ * prices to recompute collateral/borrow USD, a simple-APR earnings estimate, and
+ * a per-position health factor, then collapsed per-pool via `aggregateByPool`.
+ * The Position tab routes between a list, a detail/exit view, and an empty state.
+ */
 export const LiteHome = () => {
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<LiteTab>("deposit");

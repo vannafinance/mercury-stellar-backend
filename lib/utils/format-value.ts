@@ -9,6 +9,7 @@ export type FormatType =
   | "time-minutes"
   | "time-hours"
   | "number"
+  | "currency"
   | "health-factor"
   | "points";
 
@@ -104,6 +105,12 @@ export function formatValue(
       formatted = formatNumber(numValue, 1);
       suffix = "x";
       break;
+
+    case "currency":
+      formatted = useLargeFormat
+        ? formatLarge(numValue)
+        : formatNumber(numValue);
+      return `$${formatted}`;
 
     case "number":
     default:

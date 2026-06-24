@@ -2,36 +2,46 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DropdownOptions } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 import { Dropdown } from "../ui/dropdown";
 import { Popup } from "@/components/ui/popup";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
 import { getAddress } from "@stellar/freighter-api";
 import { ContractService } from "@/lib/stellar-utils";
-import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances } from "@/store/margin-account-info-store";
+import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useTokenPrices } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import toast from "react-hot-toast";
-import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { normalizeContractError } from "@/lib/errors/normalize";
+import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+
+/** Format a numeric amount for the editable input: clean string, no trailing
+ *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
+const amountToInputString = (n: number): string =>
+  Number.isFinite(n) && n > 0 ? String(parseFloat(n.toFixed(AMOUNT_MAX_DECIMALS))) : "";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
 const formatHF = (hf: number): string =>
   !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
-const formatUsd = (n: number): string =>
-  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// Delegate to the shared adaptive formatter so sub-cent values show "<$0.01"
+// instead of a misleading "$0.00" — consistent with the rest of the UI.
+const formatUsd = (n: number): string => formatUsdValue(n);
 
 const REPAY_DUST_EPSILON = 1e-6;
 const WAD = BigInt("1000000000000000000");
 
 interface RepayLoanTabProps {
+  /** Asset to preselect on mount / when changed (e.g. from a positions-row Repay click). */
   prefilledAsset?: string;
 }
 
@@ -45,6 +55,19 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   return null;
 };
 
+/**
+ * Repay tab for paying down an outstanding margin loan in a chosen asset. Shows
+ * the net outstanding debt and the wallet's available balance (both in token
+ * units with a live USD line), and a form with quick-% chips and a free-text
+ * amount. Repayment runs through a React Query mutation that, before signing,
+ * re-reads the on-chain debt and caps the WAD amount at both the real debt and
+ * the smart account's spendable balance — the latter avoids Contract #10
+ * overspend when accrued interest exceeds the funds the account holds. 100%
+ * targets the full on-chain debt; any leftover accrued-interest sliver is
+ * surfaced via a toast. State is reset on wallet disconnect, and the preview
+ * (before → after debt / HF / liquidation buffer) is rendered by
+ * {@link RepayPreviewSection}.
+ */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
   const normalizeContractTokenSymbol = (symbol: string) =>
@@ -58,7 +81,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // Wallet and margin account state
   const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(false);
+  const qc = useQueryClient();
   
   // Repay form state
   // Repay loan statistics
@@ -70,14 +93,19 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
     useState<number>(0);
-  const [repayAmount, setRepayAmount] = useState<number>(0);
+  // The amount field is held as a RAW STRING while editing — converting to a
+  // Number on each keystroke turned a partial "." into NaN and dropped trailing
+  // decimals (so 937.3325 couldn't be edited). `repayAmount` is derived for all
+  // numeric uses; the input shows `repayInput` verbatim.
+  const [repayInput, setRepayInput] = useState<string>("");
+  const repayAmount = parseFloat(repayInput) || 0;
 
   // Sync currency when caller asks to prefill (e.g. row-level Repay click)
   useEffect(() => {
     const mapped = toDropdownAsset(prefilledAsset);
     if (mapped) {
       setSelectedRepayCurrency(mapped);
-      setRepayAmount(0);
+      setRepayInput("");
       setSelectedRepayPercentage(0);
     }
   }, [prefilledAsset]);
@@ -92,7 +120,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
-      setRepayAmount(0);
+      setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
     }
@@ -105,6 +133,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
+
+  // Current margin account state for computing updated values
+  const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
+  const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
 
   // Popup visibility states
   const [isPayNowPopupOpen, setIsPayNowPopupOpen] = useState(false);
@@ -129,17 +161,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     _key: string,
   ): { token: string; usd: string | null } => {
     const cleaned = clampRepayDust(value);
-    const token = `${cleaned.toLocaleString(undefined, {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    })} ${selectedRepayCurrency}`;
-    const usd =
-      selectedTokenPrice > 0
-        ? `≈ $${(cleaned * selectedTokenPrice).toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}`
-        : null;
+    // Treat as zero if the USD equivalent is below $0.01 (post-repay dust).
+    const usdEquiv = selectedTokenPrice > 0 ? cleaned * selectedTokenPrice : 0;
+    const display = usdEquiv > 0 && usdEquiv < 0.01 ? 0 : cleaned;
+    const token = `${formatTokenAmount(display)} ${selectedRepayCurrency}`;
+    const usd = selectedTokenPrice > 0 ? `≈ ${formatUsdValue(display * selectedTokenPrice)}` : null;
     return { token, usd };
   };
 
@@ -174,12 +200,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         const address = await getAddress();
         if (!address.error && address.address) {
           setUserAddress(address.address);
-          
+
           // Get margin account
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
-            
+
             // Get borrowed balances
             await refreshSelectedTokenDebt(account.address);
 
@@ -191,7 +217,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         console.error("Error loading user data:", error);
       }
     };
-    
+
     loadUserData();
   }, []);
 
@@ -204,6 +230,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       );
 
       if (debtResult.success && debtResult.debtWad) {
+        // Show the real residual (even sub-cent dust) — adaptive formatting keeps
+        // it readable and the USD line renders "<$0.01" rather than a fake "$0.00".
         const outstanding = clampRepayDust(parseFloat(debtResult.amount || '0') || 0);
         setCurrentDebtWad(debtResult.debtWad);
         setRepayStats(prev => ({
@@ -242,31 +270,38 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
       const fullAmount = parseFloat(currentDebtWad) / 1e18;
       const clamped = clampRepayDust(Number.isFinite(fullAmount) ? fullAmount : 0);
-      setRepayAmount(parseFloat(clamped.toFixed(2)));
+      // Full precision (NOT toFixed(2)) — rounding dust to 2dp made it 0 and
+      // disabled Pay Now. The mutation caps the WAD at the on-chain debt, so 100%
+      // clears the position to zero with no leftover dust.
+      setRepayInput(amountToInputString(clamped));
       return;
     }
 
-    // Calculate amount based on percentage.
+    // Calculate amount based on percentage — keep 7dp so sub-cent debt survives.
     const calculatedAmount = clampRepayDust((repayStats.netOutstandingAmountToPay * item) / 100);
-    setRepayAmount(parseFloat(calculatedAmount.toFixed(2)));
+    setRepayInput(amountToInputString(calculatedAmount));
   };
 
   // Handler for input change
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = validateAmountChange(e.target.value);
     if (sanitized === null) return; // invalid char — toast already shown
-    setRepayAmount(sanitized === "" ? 0 : Number(sanitized));
+    // Keep the raw string; `repayAmount` is derived. This is what lets a partial
+    // "937." or "0.0000001" be typed without becoming NaN or being truncated.
+    setRepayInput(sanitized);
   };
 
-  // Handler for pay now click
-  const handlePayNowClick = async () => {
-    if (!marginAccount || repayAmount <= 0) {
-      toast.error("Please enter a valid repay amount");
-      return;
-    }
+  const repayMutation = useMutation({
+    // No optimistic write. Optimistically reducing the debt on onMutate made a
+    // cancelled/failed tx look like the token was repaid — and a full repay
+    // dropped it below the positions-table dust filter, removing the row before
+    // anything confirmed. The position must reflect ONLY confirmed on-chain state:
+    // onSuccess refreshes from chain, and a cancel now leaves the UI untouched.
+    mutationFn: async () => {
+      if (!marginAccount || repayAmount <= 0) {
+        throw new Error('Please enter a valid repay amount');
+      }
 
-    setIsLoading(true);
-    try {
       const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
         marginAccount,
         normalizeContractTokenSymbol(selectedRepayCurrency)
@@ -276,45 +311,91 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       const debtWad = latestDebt.success && latestDebt.debtWad
         ? BigInt(latestDebt.debtWad)
         : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-      const finalRepayWad = debtWad > BigInt(0)
-        ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
-        : inputRepayWad;
+      // "Repay Max" (100%) targets the full on-chain debt; otherwise cap the input
+      // at the debt.
+      let finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+        ? debtWad
+        : debtWad > BigInt(0)
+          ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
+          : inputRepayWad;
+
+      // Repay pulls FROM the smart account, which holds the borrowed funds but NOT
+      // the accrued-interest portion of the debt. Repaying the raw debt overspends
+      // → Error(Contract,#10) "balance is not sufficient to spend". Cap at the
+      // account's actual token balance so the tx can't overspend.
+      const spendable = await MarginAccountService.getMarginAccountTokenBalanceWad(
+        marginAccount,
+        normalizeContractTokenSymbol(selectedRepayCurrency),
+      );
+      let cappedToBalance = false;
+      if (spendable != null) {
+        const spendableWad = BigInt(spendable);
+        if (finalRepayWad > spendableWad) {
+          finalRepayWad = spendableWad;
+          cappedToBalance = true;
+        }
+      }
 
       if (finalRepayWad <= BigInt(0)) {
-        toast.error('Nothing to repay for this token');
-        return;
+        throw new Error('Nothing to repay for this token');
       }
-      
+
       const result = await MarginAccountService.repayLoan(
         marginAccount,
         normalizeContractTokenSymbol(selectedRepayCurrency),
         finalRepayWad.toString()
       );
 
-      if (result.success) {
-        if (result.hash) {
-          appendMarginHistory({
-            marginAccountAddress: marginAccount,
-            type: "repay",
-            asset: normalizeContractTokenSymbol(selectedRepayCurrency),
-            amount: wadToFixed7(finalRepayWad),
-            hash: result.hash,
-          });
-        }
-        toast.success(`Loan repayment successful! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      if (!result.success) {
+        throw new Error(result.error || 'Loan repayment failed');
+      }
+
+      return { hash: result.hash, finalRepayWad, cappedToBalance };
+    },
+    onSuccess: async ({ hash, finalRepayWad, cappedToBalance }) => {
+      if (hash) {
+        appendMarginHistory({
+          marginAccountAddress: marginAccount,
+          type: "repay",
+          asset: normalizeContractTokenSymbol(selectedRepayCurrency),
+          amount: wadToFixed7(finalRepayWad),
+          hash,
+        });
+      }
+      if (cappedToBalance) {
+        // Repaid everything the account held; the accrued-interest sliver remains.
+        toast(`Repaid the max your account holds. A small accrued-interest amount remains — deposit a little more ${selectedRepayCurrency} to fully clear it.`);
+      }
+      // Reset form and trigger RQ refresh first so the UI reflects the new
+      // state immediately. The imperative Zustand-store refresh calls below
+      // can transiently throw when Freighter's getAddress returns undefined
+      // right after a signed tx popup closes (strkey decode of an undefined
+      // address). Swallowing the error here keeps the mutation in its success
+      // state — the ledger tick will reconcile the store on the next close.
+      setRepayInput("");
+      qc.invalidateQueries({ queryKey: ['margin'] });
+
+      try {
         await refreshSelectedTokenDebt(marginAccount);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
         await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
-        setRepayAmount(0);
-      } else {
-        toast.error(result.error || 'Loan repayment failed');
+      } catch (error) {
+        console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : 'Repay failed');
-    } finally {
-      setIsLoading(false);
+    },
+    onSettled: () => {
       setIsPayNowPopupOpen(false);
-    }
+    },
+  });
+
+  useMutationToast(repayMutation, {
+    success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
+    error: (e) => normalizeContractError(e.message),
+  });
+
+  // Handler for pay now click
+  const handlePayNowClick = () => {
+    repayMutation.mutate();
   };
 
   // Handler for closing pay now popup
@@ -475,7 +556,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                 type="text"
                 inputMode="decimal"
                 placeholder="0"
-                value={repayAmount === 0 ? "" : repayAmount}
+                value={repayInput}
               />
             </div>
           </div>
@@ -493,12 +574,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               }`}
               aria-live="polite"
             >
-              ≈ {repayAmountInUsd.toFixed(2)} USD
+              ≈ {formatUsdValue(repayAmountInUsd)}
             </span>
           </div>
         </motion.article>
 
-        {/* Transaction preview — debt / HF / liquidation buffer before vs after */}
+        {/* Repay preview — before → after values (same style as Leverage/Transfer tabs) */}
         <RepayPreviewSection
           repayAmount={repayAmount}
           selectedTokenPrice={selectedTokenPrice}
@@ -525,11 +606,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
             whileTap={isInputEmpty ? {} : { scale: 0.98 }}
           >
             <Button
-              text={isLoading ? "Processing..." : "Pay Now"}
+              text={repayMutation.isPending ? "Processing..." : "Pay Now"}
               size="large"
               type="gradient"
               onClick={handlePayNowClick}
-              disabled={isInputEmpty || isLoading || !marginAccount}
+              disabled={isInputEmpty || repayMutation.isPending || !marginAccount}
             />
           </motion.div>
         </motion.section>
@@ -555,8 +636,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
             >
               <Popup
                 icon="/assets/exclamation.png"
-                description={`Are you sure you want to repay ${(Number(repayAmount) || 0).toFixed(2)} ${selectedRepayCurrency}? This will reduce your borrowed amount.`}
-                buttonText={isLoading ? "Processing..." : "Confirm Repayment"}
+                description={`Are you sure you want to repay ${formatTokenAmount(Number(repayAmount) || 0)} ${selectedRepayCurrency}? This will reduce your borrowed amount.`}
+                buttonText={repayMutation.isPending ? "Processing..." : "Confirm Repayment"}
                 buttonOnClick={handlePayNowClick}
                 closeButtonText="Cancel"
                 closeButtonOnClick={handleClosePayNowPopup}
@@ -571,7 +652,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 };
 
 interface RepayPreviewSectionProps {
+  /** Repay amount in token units (converted to USD via `selectedTokenPrice`). */
   repayAmount: number;
+  /** Live oracle price of the selected repay token. */
   selectedTokenPrice: number;
 }
 

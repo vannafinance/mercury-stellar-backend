@@ -1,5 +1,12 @@
+/**
+ * Static account-stats card used as a presentational shell for the earn
+ * overview metrics. Despite the "ghost" name it renders the supplied values
+ * directly; callers pass pre-formatted strings (and an optional skeleton/empty
+ * value) when the underlying snapshot is still loading.
+ */
 import { useTheme } from "@/contexts/theme-context";
 
+/** A single labelled metric: a formatted primary `amount` plus an optional token-denominated subline. */
 interface AccountStatsItem {
   id: string;
   name: string;
@@ -9,11 +16,18 @@ interface AccountStatsItem {
 
 interface AccountStatsGhostProps {
   items: AccountStatsItem[];
+  /** Layout preset. "background"/"background-light" force the grid layout; "standard" uses the responsive row/grid hybrid. */
   type?: "standard" | "background" | "background-light";
   gridCols?: string; // e.g., "grid-cols-3", "grid-cols-2", etc.
   gridRows?: string; // e.g., "grid-rows-1", "grid-rows-2", etc.
 }
 
+/**
+ * Renders a row/grid of labelled stat tiles. The layout switches to an explicit
+ * CSS grid when `type` is a background variant or when both `gridCols` and
+ * `gridRows` are provided; otherwise it falls back to a responsive
+ * two-column-to-flex arrangement.
+ */
 export const AccountStatsGhost = ({ items, type = "standard", gridCols, gridRows }: AccountStatsGhostProps) => {
   const { isDark } = useTheme();
 

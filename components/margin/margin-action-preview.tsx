@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 
+/** Colour hint for an after-value: neutral, green (improving), or red (worsening). */
 export type PreviewTone = "default" | "positive" | "negative";
 
 export interface PreviewRow {

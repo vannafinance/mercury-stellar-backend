@@ -9,9 +9,14 @@ import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
 import { useMarginHistory } from "@/hooks/use-margin";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { buildBorrowAttributionFromHistory } from "@/lib/margin-position-attribution";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 interface PositionstableProps {
+  /** Fired from a row's Repay button; passes the borrowed asset to prefill the Repay tab. */
   onRepayClick?: (asset?: string) => void;
+  /** Fired from the empty-state CTA to start opening a new position. */
   onOpenPositionClick?: () => void;
 }
 
@@ -33,16 +38,6 @@ const canonicalToken = (token: string): string => {
   return normalized;
 };
 
-/**
- * Registry tracking symbols for deployed Blend / LP capital — not separate
- * margin "positions". The account has one borrow basket; listing these as
- * extra rows duplicated the same debt/leverage on every line.
- */
-const isProtocolReceiptCollateral = (symbol: string): boolean => {
-  const u = symbol.toUpperCase();
-  return u.startsWith("BLEND_") || u.startsWith("AQ_") || u.startsWith("SS_");
-};
-
 const getTokenIcon = (asset: string): string => {
   return (
     COIN_ICONS[asset as keyof typeof COIN_ICONS] ||
@@ -56,54 +51,85 @@ const formatTokenName = (asset: string): string => {
   return asset;
 };
 
-const formatInterestUsd = (value: number): string => {
-  if (!Number.isFinite(value) || value <= 0) return "$0";
-  if (value < 0.01) return "<$0.01";
-  return `$${value.toFixed(2)}`;
-};
+// Delegate to the shared adaptive formatter: "$0.00" for true zero, "<$0.01" for
+// sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
+const formatInterestUsd = (value: number): string => formatUsdValue(value);
 
+/**
+ * Collateral cell for a borrow-only position row — a borrow that is
+ * cross-collateralized against the whole margin account (typical of an MB
+ * borrow against several selected assets) rather than tied to one deposit.
+ * Reads "Portfolio" instead of guessing a single backing token, so the row is
+ * honest about what secures the debt.
+ */
+const PortfolioCollateralCell = ({ isDark, compact }: { isDark: boolean; compact?: boolean }) => (
+  <div className="flex items-center gap-2">
+    <span
+      className={`shrink-0 rounded-full flex items-center justify-center ${compact ? "w-4 h-4" : "w-5 h-5"}`}
+      style={{ background: "linear-gradient(135deg, #FC5457 10%, #703AE6 80%)" }}
+      aria-hidden="true"
+    >
+      <svg width={compact ? 9 : 11} height={compact ? 9 : 11} viewBox="0 0 12 12" fill="none">
+        <circle cx="4" cy="4" r="2.1" fill="white" />
+        <circle cx="8" cy="4" r="2.1" fill="white" fillOpacity="0.75" />
+        <circle cx="6" cy="8" r="2.1" fill="white" fillOpacity="0.55" />
+      </svg>
+    </span>
+    <div className="flex flex-col gap-px">
+      <span className={`${compact ? "text-[12px]" : "text-[13px]"} font-medium leading-tight ${isDark ? "text-white" : ""}`}>
+        Portfolio
+      </span>
+      <span className={`${compact ? "text-[10px]" : "text-[11px]"} font-medium ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
+        Cross-collateral
+      </span>
+    </div>
+  </div>
+);
+
+/**
+ * Margin positions panel with two tabs: Current Positions and Positions
+ * History. Current positions are derived from on-chain state in the margin
+ * store — borrowed and collateral balances are deduplicated by canonical
+ * symbol, dust is filtered, farm/LP receipt tokens are excluded, and borrows are
+ * attributed back to the deposit that opened them (via shared tx hashes in local
+ * margin history) so each row reads as one collateral-anchored position with its
+ * leverage and Repay action. Renders a desktop table, mobile cards, paginated
+ * history, and per-tab empty states. Repay is enabled whenever any real debt
+ * remains — including sub-cent dust — so a residual balance can be fully cleared.
+ */
 export const Positionstable = ({
   onRepayClick,
   onOpenPositionClick,
 }: PositionstableProps) => {
   const { isDark } = useTheme();
   const {
-    collateralBalances,
     borrowedBalances,
-    totalCollateralValue,
+    collateralBalances,
     totalBorrowedValue,
+    netAvailableCollateral,
     hasMarginAccount,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
-      collateralBalances: state.collateralBalances,
       borrowedBalances: state.borrowedBalances,
-      totalCollateralValue: state.totalCollateralValue,
+      collateralBalances: state.collateralBalances,
       totalBorrowedValue: state.totalBorrowedValue,
+      netAvailableCollateral: state.netAvailableCollateral,
       hasMarginAccount: state.hasMarginAccount,
     })),
   );
 
-  const { history, isLoading: historyLoading } = useMarginHistory();
+  const { history, isLoading: historyInitialLoading } = useMarginHistory();
   const tokenPrices = useTokenPrices(PRICEABLE_TOKENS);
 
   const positions = useMemo<Position[]>(() => {
-    const collateralEntries = (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([, bal]) => parseFloat(bal.amount) > 0)
-      .filter(([token]) => !isProtocolReceiptCollateral(token));
-    if (collateralEntries.length === 0) return [];
-
-    const borrowedEntries = Object.entries(borrowedBalances) as [string, BorrowedBalance][];
+    // ── Step 1: Deduplicate borrowed tokens by canonical symbol ──────────────
     const dedupedBorrowed = new Map<string, { token: string; balance: BorrowedBalance }>();
-
-    for (const [token, bal] of borrowedEntries) {
+    for (const [token, bal] of Object.entries(borrowedBalances) as [string, BorrowedBalance][]) {
       const amount = parseFloat(bal.amount || '0');
-      const usd = parseFloat(bal.usdValue || '0');
-      // Drop dust by both axes: the token amount must be non-zero AND the
-      // USD value must clear the cent floor. Either alone leaks: a 0.001
-      // XLM dust passes the amount check but is worth $0; a $0.005 amount
-      // passes the USD check but is below the cent floor.
-      if (!(amount > BORROW_DUST_EPSILON) || !(usd > BORROW_DUST_USD)) continue;
-
+      // Keep any real (non-zero) debt — including sub-$0.01 dust — so the user can
+      // see and repay it. (Previously a $0.01 USD floor hid residual debt and left
+      // the Repay button disabled while debt still existed on-chain.)
+      if (!(amount > BORROW_DUST_EPSILON)) continue;
       const canonical = canonicalToken(token);
       const existing = dedupedBorrowed.get(canonical);
       if (!existing || amount > parseFloat(existing.balance.amount || '0')) {
@@ -111,50 +137,49 @@ export const Positionstable = ({
       }
     }
 
-    const borrowedEntriesClean: [string, BorrowedBalance][] = Array.from(dedupedBorrowed.values()).map(
-      ({ token, balance }) => [token, balance]
-    );
+    // ── Step 2: Net deposited collateral per token ───────────────────────────
+    // SAC reconcile includes borrowed tokens sitting in the margin wallet (e.g.
+    // BLUSDC from a cross-asset borrow). Subtract same-token debt so we only
+    // anchor positions on assets the user actually deposited — not on borrowed
+    // proceeds that happen to share a wallet balance key.
+    const dedupedCollateral = new Map<string, { token: string; balance: BorrowedBalance }>();
+    for (const [token, bal] of Object.entries(collateralBalances) as [string, BorrowedBalance][]) {
+      // Farm/LP receipts (BLEND_XLM, SS_XLM_USDC, AQ_*) live in collateralBalances
+      // for the header HF/value calc but are NOT margin positions — skip them so
+      // they don't render as collateral rows. Real collateral uses canonical keys
+      // (XLM, USDC, BLUSDC, AQUSDC, SOUSDC), for which isTrackingSymbol is false.
+      if (isTrackingSymbol(token)) continue;
 
-    const totalBorrowUsd = borrowedEntriesClean.reduce(
-      (sum: number, [, bal]: [string, BorrowedBalance]) => sum + parseFloat(bal.usdValue || '0'), 0
-    );
+      const grossAmount = parseFloat(bal.amount || '0');
+      const grossUsd = parseFloat(bal.usdValue || '0');
+      if (!(grossAmount > BORROW_DUST_EPSILON) || !(grossUsd > BORROW_DUST_USD)) continue;
 
-    const borrowedArray: Position['borrowed'] = borrowedEntriesClean
-      .map(([token, bal]) => ({
-        assetData: { asset: token, amount: parseFloat(bal.amount).toFixed(2) },
-        percentage: totalBorrowUsd > 0
-          ? Math.round((parseFloat(bal.usdValue) / totalBorrowUsd) * 100)
-          : 0,
-        usdValue: parseFloat(bal.usdValue),
-      }));
+      const canonical = canonicalToken(token);
+      const sameTokenBorrow = dedupedBorrowed.get(canonical);
+      const borrowedAmount = sameTokenBorrow
+        ? parseFloat(sameTokenBorrow.balance.amount || '0')
+        : 0;
+      const borrowedUsd = sameTokenBorrow
+        ? parseFloat(sameTokenBorrow.balance.usdValue || '0')
+        : 0;
 
-    // Leverage matches the slider semantic in leverage-assets-tab.tsx:
-    //   borrow_amount = own_deposit × (multiplier − 1)
-    // For a fresh position this means debt_USD == own × (m−1), so
-    //   m = 1 + debt_USD / own_USD  ≈  1 + debt / collateral
-    // when borrow proceeds aren't redeposited. This is the same as the
-    // standard "1 + LTV" leverage figure DeFi protocols display, and it
-    // stays finite & ≥ 1 even when debt exceeds collateral (e.g. user
-    // borrowed and withdrew the proceeds, making equity negative). The
-    // earlier collateral/equity formula divided by 0 / went negative in
-    // exactly those cases and fell through to "1x" — which is what
-    // surfaced as the user-reported "leverage shows 1x" bug.
-    const leverage =
-      totalCollateralValue > 0
-        ? parseFloat((1 + totalBorrowedValue / totalCollateralValue).toFixed(2))
-        : 1;
+      const netAmount = Math.max(0, grossAmount - borrowedAmount);
+      const netUsd = Math.max(0, grossUsd - borrowedUsd);
+      if (!(netAmount > BORROW_DUST_EPSILON) || !(netUsd > BORROW_DUST_USD)) continue;
 
-    // Interest accrued = current debt − net principal still owed, in USD.
-    // Net principal per token = sum(borrow events) − sum(repay events). The
-    // pool's b_rate accrual makes current debt drift above net principal; that
-    // drift is the user-visible interest. Negative diffs (e.g. when local
-    // history is incomplete) are clamped to 0 so we never show "credit".
-    //
-    // Guard: while history is still fetching, netPrincipalByToken is empty,
-    // which would make diff = full borrowed amount and produce a false reading
-    // of "interest = borrow USD value". Skip the calculation until loaded.
+      const netBalance: BorrowedBalance = {
+        amount: netAmount.toFixed(7),
+        usdValue: netUsd.toFixed(2),
+      };
+      const existing = dedupedCollateral.get(canonical);
+      if (!existing || netUsd > parseFloat(existing.balance.usdValue || '0')) {
+        dedupedCollateral.set(canonical, { token, balance: netBalance });
+      }
+    }
+
+    // ── Step 3: Build per-token interest principal from history ──────────────
     const netPrincipalByToken: Record<string, number> = {};
-    if (!historyLoading) {
+    if (!historyInitialLoading) {
       for (const item of history) {
         const canonical = canonicalToken(item.asset || '');
         const amt = parseFloat(String(item.amount ?? '0')) || 0;
@@ -167,49 +192,242 @@ export const Positionstable = ({
       }
     }
 
-    let interestAccruedUsd = 0;
-    if (!historyLoading) {
-      for (const [, bal] of dedupedBorrowed) {
-        const canonical = canonicalToken(bal.token);
-        const currentAmt = parseFloat(bal.balance.amount || '0');
-        const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
-        const diff = currentAmt - principalAmt;
-        if (diff > 0) {
-          const price = tokenPrices[canonical] ?? 1;
-          interestAccruedUsd += diff * price;
-        }
+    // ── Step 4: Group borrows under the deposit collateral that opened them ──
+    // Use local margin history (deposit + borrow share the same tx hash) so
+    // cross-asset borrows attach to the correct deposit row — e.g. deposit XLM
+    // → borrow BLUSDC stays on the XLM row, while deposit BLUSDC → borrow
+    // BLUSDC gets its own BLUSDC row.
+    const { borrowsByCollateral: historyAttribution, principalByPair } =
+      buildBorrowAttributionFromHistory(history);
+
+    const collateralKeys = Array.from(dedupedCollateral.keys());
+    const borrowsByPosition = new Map<string, string[]>();
+    for (const key of collateralKeys) borrowsByPosition.set(key, []);
+
+    for (const [collateralCanonical, borrowSet] of historyAttribution.entries()) {
+      if (!borrowsByPosition.has(collateralCanonical)) continue;
+      for (const borrowCanonical of borrowSet) {
+        const list = borrowsByPosition.get(collateralCanonical)!;
+        if (!list.includes(borrowCanonical)) list.push(borrowCanonical);
       }
     }
 
-    // A margin account is ONE leveraged position even when collateral and
-    // borrow are different assets (e.g. deposit XLM, borrow BLUSDC). The old
-    // logic filtered the borrows-list down to only debts that matched the
-    // current row's collateral symbol — that hid every cross-asset borrow.
-    // Now each collateral row shows the full borrow list; with a single
-    // collateral (the typical case) you see exactly your real debt.
-    const hasAnyDebt = borrowedArray.length > 0;
-    return collateralEntries.map(([token, bal], idx) => {
-      return {
-        positionId: idx + 1,
-        collateral: { asset: token, amount: parseFloat(bal.amount).toFixed(2) },
-        collateralUsdValue: parseFloat(bal.usdValue),
-        borrowed: borrowedArray,
-        leverage,
-        interestAccrued: hasAnyDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
-        isOpen: hasAnyDebt,
-        user: '',
-      };
+    const assignedBorrows = new Set<string>();
+    for (const list of borrowsByPosition.values()) {
+      for (const b of list) assignedBorrows.add(b);
+    }
+
+    // Borrows Mercury's tx-hash join (Step 4) hasn't yet tied to a deposit.
+    // Attribution precedence — we NEVER guess "the largest collateral" anymore
+    // (that showed a borrow on an unrelated row, e.g. an XLM-collateral borrow
+    // appearing under a $500 AQUSDC deposit, until Mercury caught up):
+    //   1. Same-asset self-position — deposit BLUSDC → borrow BLUSDC.
+    //   2. Exactly one collateral → unambiguous, attach to it.
+    //   3. Otherwise leave UNATTRIBUTED → its own "reconciling" row, so it
+    //      snaps onto the correct deposit row once Mercury sends the data
+    //      (the borrow/repay/deposit mutations invalidate ['margin'], which
+    //      refetches the Mercury history and re-runs this attribution).
+    const unattributedBorrows: string[] = [];
+    for (const borrowCanonical of dedupedBorrowed.keys()) {
+      if (assignedBorrows.has(borrowCanonical)) continue;
+
+      if (borrowsByPosition.has(borrowCanonical)) {
+        borrowsByPosition.get(borrowCanonical)!.push(borrowCanonical);
+      } else if (collateralKeys.length === 1) {
+        borrowsByPosition.get(collateralKeys[0])!.push(borrowCanonical);
+      } else {
+        unattributedBorrows.push(borrowCanonical);
+      }
+      assignedBorrows.add(borrowCanonical);
+    }
+
+    // ── Step 5: Build one Position per collateral token ──────────────────────
+    const positionRows: Position[] = [];
+    let positionId = 1;
+
+    // Sort collateral keys so XLM (typically largest) comes first
+    const sortedCollateralKeys = collateralKeys.sort((a, b) => {
+      const usdA = parseFloat(dedupedCollateral.get(a)?.balance.usdValue || '0');
+      const usdB = parseFloat(dedupedCollateral.get(b)?.balance.usdValue || '0');
+      return usdB - usdA;
     });
-  }, [collateralBalances, borrowedBalances, totalCollateralValue, totalBorrowedValue, history, historyLoading, tokenPrices]);
+
+    for (const collateralCanonical of sortedCollateralKeys) {
+      const collateralEntry = dedupedCollateral.get(collateralCanonical)!;
+      const collateralUsd = parseFloat(collateralEntry.balance.usdValue || '0');
+      const collateralAmt = parseFloat(collateralEntry.balance.amount || '0');
+
+      const thisBorrowKeys = borrowsByPosition.get(collateralCanonical) ?? [];
+      const thisBorrows = thisBorrowKeys
+        .map((k) => dedupedBorrowed.get(k))
+        .filter((b): b is { token: string; balance: BorrowedBalance } => !!b);
+
+      const borrowedArray: Position["borrowed"] = [];
+      let thisBorrowUsd = 0;
+
+      for (const b of thisBorrows) {
+        const borrowCanonical = canonicalToken(b.token);
+        const pairKey = `${collateralCanonical}:${borrowCanonical}`;
+        const onChainAmt = parseFloat(b.balance.amount || "0");
+        const onChainUsd = parseFloat(b.balance.usdValue || "0");
+
+        let displayAmt = onChainAmt;
+        const totalHistoryForToken = Array.from(principalByPair.entries())
+          .filter(([key]) => key.endsWith(`:${borrowCanonical}`))
+          .reduce((sum, [, amt]) => sum + amt, 0);
+
+        if (totalHistoryForToken > 0 && onChainAmt > 0) {
+          const historyPrincipal = principalByPair.get(pairKey) ?? 0;
+          displayAmt = onChainAmt * (historyPrincipal / totalHistoryForToken);
+        }
+
+        if (!(displayAmt > BORROW_DUST_EPSILON)) continue;
+
+        const price = onChainAmt > 0 ? onChainUsd / onChainAmt : (tokenPrices[borrowCanonical] ?? 1);
+        const displayUsd = displayAmt * price;
+        thisBorrowUsd += displayUsd;
+
+        borrowedArray.push({
+          assetData: {
+            asset: b.token,
+            amount: formatTokenAmount(displayAmt),
+          },
+          percentage: 0,
+          usdValue: parseFloat(displayUsd.toFixed(2)),
+        });
+      }
+
+      if (thisBorrowUsd > 0) {
+        for (const item of borrowedArray) {
+          item.percentage = Math.round((item.usdValue / thisBorrowUsd) * 100);
+        }
+      }
+
+      const hasDebt = borrowedArray.length > 0;
+
+      // Equity for this position = collateral USD value (from chain)
+      // Leverage = 1 + borrows / collateral
+      const equityUsd = collateralUsd > BORROW_DUST_USD ? collateralUsd : 0;
+      const leverage = equityUsd > BORROW_DUST_USD
+        ? parseFloat((1 + thisBorrowUsd / equityUsd).toFixed(2))
+        : 1;
+
+      // Interest accrued for this position's borrows only
+      let interestAccruedUsd = 0;
+      if (!historyInitialLoading) {
+        for (const b of thisBorrows) {
+          const canonical = canonicalToken(b.token);
+          const currentAmt = parseFloat(b.balance.amount || '0');
+          const principalAmt = Math.max(0, netPrincipalByToken[canonical] ?? 0);
+          const diff = currentAmt - principalAmt;
+          if (diff > 0) {
+            const price = tokenPrices[canonical] ?? 1;
+            interestAccruedUsd += diff * price;
+          }
+        }
+      }
+
+      if (hasDebt || collateralAmt > BORROW_DUST_EPSILON) {
+        positionRows.push({
+          positionId: positionId++,
+          collateral: {
+            asset: collateralEntry.token,
+            amount: formatTokenAmount(collateralAmt),
+          },
+          collateralUsdValue: parseFloat(collateralUsd.toFixed(2)),
+          borrowed: borrowedArray,
+          leverage,
+          interestAccrued: hasDebt ? parseFloat(interestAccruedUsd.toFixed(4)) : 0,
+          isOpen: hasDebt || collateralAmt > BORROW_DUST_EPSILON,
+          user: "",
+        });
+      }
+    }
+
+    // Borrows that can't be tied to a single deposit — e.g. an MB borrow
+    // cross-collateralized against several selected assets, or a cross-asset
+    // borrow whose own token isn't deposited. Rather than parent them onto an
+    // arbitrary collateral row (the old "largest collateral" guess) or duplicate
+    // them across rows, surface ONE borrow-only row per such borrow, backed by
+    // the portfolio. collateralUsdValue stays 0 so it is never double-counted
+    // against the real collateral rows above. Once Mercury attributes the tx
+    // (WB deposit+borrow share a hash), this collapses onto the right row.
+    for (const borrowCanonical of unattributedBorrows) {
+      const entry = dedupedBorrowed.get(borrowCanonical);
+      if (!entry) continue;
+      const amt = parseFloat(entry.balance.amount || "0");
+      const usd = parseFloat(entry.balance.usdValue || "0");
+      if (!(amt > BORROW_DUST_EPSILON)) continue;
+      positionRows.push({
+        positionId: positionId++,
+        // Empty asset → rendered as a neutral "Portfolio" collateral cell.
+        collateral: { asset: "", amount: "" },
+        collateralUsdValue: 0,
+        borrowed: [{
+          assetData: { asset: entry.token, amount: formatTokenAmount(amt) },
+          percentage: 100,
+          usdValue: parseFloat(usd.toFixed(2)),
+        }],
+        // 0 → leverage column renders "-"; per-row leverage is undefined when
+        // collateral is the whole portfolio (collateralUsdValue stays 0 here).
+        leverage: 0,
+        interestAccrued: 0,
+        isOpen: true,
+        user: "",
+      });
+    }
+
+    // Edge case: borrowed tokens but no collateral in dedupedCollateral
+    // (e.g. account has debt but collateralBalances hasn't loaded yet) →
+    // fall back to a single aggregated position using netAvailableCollateral
+    if (positionRows.length === 0 && dedupedBorrowed.size > 0) {
+      const allBorrows = Array.from(dedupedBorrowed.values());
+      const totalBorrowUsd = allBorrows.reduce(
+        (sum, b) => sum + parseFloat(b.balance.usdValue || '0'), 0
+      );
+      const equityUsd = netAvailableCollateral > BORROW_DUST_USD ? netAvailableCollateral : 0;
+      const underlying = canonicalToken(allBorrows[0]?.token ?? 'XLM');
+      const price = tokenPrices[underlying] ?? tokenPrices.XLM ?? 0;
+      positionRows.push({
+        positionId: 1,
+        collateral: {
+          asset: underlying,
+          amount: price > 0 ? formatTokenAmount(equityUsd / price) : '0',
+        },
+        collateralUsdValue: equityUsd,
+        borrowed: allBorrows.map(b => ({
+          assetData: { asset: b.token, amount: formatTokenAmount(parseFloat(b.balance.amount)) },
+          percentage: totalBorrowUsd > 0
+            ? Math.round((parseFloat(b.balance.usdValue) / totalBorrowUsd) * 100) : 0,
+          usdValue: parseFloat(b.balance.usdValue),
+        })),
+        leverage: equityUsd > BORROW_DUST_USD
+          ? parseFloat((1 + totalBorrowedValue / equityUsd).toFixed(2)) : 1,
+        interestAccrued: 0,
+        isOpen: true,
+        user: "",
+      });
+    }
+
+    return positionRows;
+  }, [
+    borrowedBalances,
+    collateralBalances,
+    totalBorrowedValue,
+    netAvailableCollateral,
+    history,
+    historyInitialLoading,
+    tokenPrices,
+  ]);
 
   const [activeTab, setActiveTab] = useState<string>("currentPositions");
   const [currentPage, setCurrentPage] = useState<number>(1);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Current Positions = non-zero **cash / pool deposit** collateral (XLM, USDC,
-  // BLUSDC, …). Blend b-token and LP *receipt* symbols (BLEND_*, AQ_*, SS_*)
-  // are excluded — they are not separate positions and were duplicating the
-  // same borrow/leverage on every row after farm-tracking enrichment.
+  // BLUSDC, …). Farm receipt symbols (BLEND_*, AQ_*, SS_*) are excluded upstream
+  // in the collateral loop via isTrackingSymbol — they are farm positions, not
+  // margin collateral, and only live in collateralBalances for the HF/value calc.
   const filteredPositions = useMemo(() => {
     if (activeTab === "currentPositions") return positions;
     return [];
@@ -321,11 +539,13 @@ export const Positionstable = ({
           </span>
         </div>
 
-        {/* Asset */}
+        {/* Asset — normalize so long-form / variant symbols (e.g. AQUARIUS_USDC,
+            BLEND_USDC) resolve to the right icon instead of the eth-icon fallback,
+            matching the Current Positions table. */}
         <div className="w-full flex items-center gap-[8px] py-[16px] px-[12px]">
           {item.asset && (
             <Image
-              src={getTokenIcon(item.asset)}
+              src={getTokenIcon(canonicalToken(item.asset))}
               alt={item.asset}
               width={20}
               height={20}
@@ -333,13 +553,13 @@ export const Positionstable = ({
             />
           )}
           <span className={`text-[13px] font-medium ${isDark ? "text-white" : ""}`}>
-            {item.asset || '—'}
+            {item.asset ? canonicalToken(item.asset) : '—'}
           </span>
         </div>
 
         {/* Amount */}
         <div className={`w-full flex items-center py-[16px] px-[12px] text-[13px] font-medium ${isDark ? "text-white" : ""}`}>
-          {(parseFloat(String(item.amount ?? '0')) || 0).toFixed(2)}
+          {formatTokenAmount(parseFloat(String(item.amount ?? '0')) || 0)}
         </div>
 
         {/* Tx Hash */}
@@ -382,6 +602,10 @@ export const Positionstable = ({
           viewport={{ once: true }}
           transition={{ duration: 0.3, delay: idx * 0.08 + 0.1 }}
         >
+          {!item.collateral.asset ? (
+            <PortfolioCollateralCell isDark={isDark} />
+          ) : (
+          <>
           <Image
             src={getTokenIcon(item.collateral.asset)}
             alt={item.collateral.asset}
@@ -402,9 +626,11 @@ export const Positionstable = ({
                 isDark ? "text-[#919191]" : "text-[#76737B]"
               }`}
             >
-              ${item.collateralUsdValue}
+              {formatUsdValue(item.collateralUsdValue)}
             </div>
           </div>
+          </>
+          )}
         </motion.div>
       </div>
 
@@ -416,8 +642,8 @@ export const Positionstable = ({
             : "flex items-center"
         }`}
       >
-        {item.borrowed.length > 0 ? (
-          item.borrowed.map((borrowedItem, borrowedIdx) => (
+        {item.borrowed.filter((b) => b.usdValue >= 0.01).length > 0 ? (
+          item.borrowed.filter((b) => b.usdValue >= 0.01).map((borrowedItem, borrowedIdx) => (
             <motion.div
               key={borrowedIdx}
               className="flex gap-[8px] items-center"
@@ -450,7 +676,7 @@ export const Positionstable = ({
                     isDark ? "text-[#919191]" : "text-[#76737B]"
                   }`}
                 >
-                  ${borrowedItem.usdValue}
+                  {formatUsdValue(borrowedItem.usdValue)}
                 </div>
               </div>
               {borrowedItem.percentage > 0 && (
@@ -517,8 +743,9 @@ export const Positionstable = ({
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.3 }}
       >
         {(() => {
-          const totalBorrowUsd = item.borrowed.reduce((s, b) => s + (b.usdValue || 0), 0);
-          const canRepay = item.borrowed.length > 0 && totalBorrowUsd > BORROW_DUST_USD;
+          // Any real (≥1e-6) debt is repayable — including sub-cent dust — so the
+          // user can fully clear a residual balance instead of being stuck with it.
+          const canRepay = item.borrowed.length > 0;
           return (
             <div className="w-fit">
               <Button
@@ -554,6 +781,11 @@ export const Positionstable = ({
         <div className="grid grid-cols-2 gap-3">
           <div>
             <p className={`${lbl} mb-1`}>Collateral Deposited</p>
+            {!item.collateral.asset ? (
+              <div className="flex gap-1.5 items-center">
+                <PortfolioCollateralCell isDark={isDark} compact />
+              </div>
+            ) : (
             <div className="flex gap-1.5 items-center">
               <Image
                 src={getTokenIcon(item.collateral.asset)}
@@ -567,16 +799,17 @@ export const Positionstable = ({
                   {item.collateral.amount} {formatTokenName(item.collateral.asset)}
                 </div>
                 <div className={`text-[10px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-                  ${item.collateralUsdValue}
+                  {formatUsdValue(item.collateralUsdValue)}
                 </div>
               </div>
             </div>
+            )}
           </div>
           <div>
             <p className={`${lbl} mb-1`}>Borrowed Assets</p>
-            {hasBorrow ? (
+            {hasBorrow && item.borrowed.filter((b) => b.usdValue >= 0.01).length > 0 ? (
               <div className="flex flex-col gap-1">
-                {item.borrowed.map((borrowedItem, borrowedIdx) => (
+                {item.borrowed.filter((b) => b.usdValue >= 0.01).map((borrowedItem, borrowedIdx) => (
                   <div key={borrowedIdx} className="flex gap-1.5 items-center">
                     <Image
                       src={getTokenIcon(borrowedItem.assetData.asset)}
@@ -591,7 +824,7 @@ export const Positionstable = ({
                       </div>
                       <div className="flex items-center gap-1">
                         <span className={`text-[10px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-                          ${borrowedItem.usdValue}
+                          {formatUsdValue(borrowedItem.usdValue)}
                         </span>
                         {borrowedItem.percentage > 0 && (
                           <span className="bg-[#F1EBFD] rounded px-1 text-[9px] font-medium text-[#703AE6]">
@@ -626,8 +859,7 @@ export const Positionstable = ({
         {/* Action */}
         <div className="flex justify-end">
           {(() => {
-            const totalBorrowUsd = item.borrowed.reduce((s, b) => s + (b.usdValue || 0), 0);
-            const canRepay = item.borrowed.length > 0 && totalBorrowUsd > BORROW_DUST_USD;
+            const canRepay = item.borrowed.length > 0;
             return (
               <Button
                 size="small"

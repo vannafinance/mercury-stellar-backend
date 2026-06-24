@@ -1,14 +1,28 @@
 'use client';
 
+/**
+ * "Your Positions" panel for the selected earn pool. Shows a my-supply value
+ * chart built from the user's real transaction history, plus tabbed Current
+ * Position / Position History tables. Falls back to an illustrated empty state
+ * when there's neither an active position nor any history.
+ *
+ * The supply chart accumulates a running USD balance from per-day signed
+ * deltas (supply +, withdraw −), then overrides the final point with the live
+ * current value so the tip always matches the on-chain balance. A dust
+ * threshold (>1e-4) distinguishes a real position from stroop-level rounding
+ * residue left after a full withdrawal.
+ */
 import { useState, useMemo, memo } from "react";
 import { Chart } from "./chart";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 const tabs = [
   { id: "current-positions", label: "Current Position" },
@@ -57,8 +71,10 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   SOROSWAP_USDC: 'USDC',
 };
 
+/** Memoized positions panel; merges on-chain + local history (de-duped by hash) for the selected pool. */
 export const YourPositions = memo(function YourPositions() {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const [activeTab, setActiveTab] = useState<string>("current-positions");
   const [chartNow] = useState<number>(() => Date.now());
 
@@ -81,7 +97,7 @@ export const YourPositions = memo(function YourPositions() {
   // (stroop-level) left over after a 100% withdrawal — not a real position.
   const hasPosition = deposited > 1e-4;
 
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[assetKey] ?? assetKey] ?? 1;
   const vTokenBalance = parseFloat(userPosition?.vTokenBalance || '0');
 
@@ -103,9 +119,9 @@ export const YourPositions = memo(function YourPositions() {
                 title: asset,
                 tags: ["Vanna", "Vault"],
               },
-              { title: `${vTokenBalance.toFixed(2)} v${asset}` },
-              { title: `${deposited.toFixed(2)} ${asset}` },
-              { title: `$${(deposited * price).toFixed(2)}` },
+              { title: `${formatTokenAmount(vTokenBalance)} v${asset}` },
+              { title: `${formatTokenAmount(deposited)} ${asset}` },
+              { title: formatUsdValue(deposited * price) },
               { title: `${supplyAPY.toFixed(2)}%` },
             ],
           },

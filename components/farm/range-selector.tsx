@@ -1,9 +1,22 @@
 "use client";
 
+/**
+ * Interactive concentrated-liquidity price-range selector (Uniswap-v3 style).
+ * Renders a liquidity-distribution histogram with two draggable min/max handles
+ * over an SVG, plus quick range/strategy presets (Full Range, Stable, Wide, …)
+ * and derived metrics (token ratio, capital efficiency, range-adjusted APR).
+ *
+ * Supports two pricing axes (token1/token2) selectable via pills, mouse + touch
+ * dragging, and full keyboard control (arrows/Home/End) on each handle. Handles
+ * a loading skeleton and an invalid-data error state. A legacy prop set
+ * (usdc/eth aliases) is accepted for backward compatibility and mapped onto the
+ * generic token1/token2 props.
+ */
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTheme } from "@/contexts/theme-context";
 import { ZoomInIcon, ZoomOutIcon, InfoIcon } from "@/components/icons";
 
+/** Props for {@link RangeSelector}; supports both the generic token1/token2 API and a deprecated usdc/eth alias set. */
 interface RangeSelectorProps {
   /**
    * Name of the first token (e.g., "USDC", "USDT", "ETH")
@@ -146,6 +159,11 @@ interface RangeSelectorProps {
   onEthRangeChange?: (min: number, max: number) => void;
 }
 
+/**
+ * Price-range selector. Maps legacy props onto the generic token1/token2 API,
+ * measures its container for pixel↔value conversion, and emits range changes via
+ * the relevant `onToken*RangeChange` (or legacy `onRangeChange`) callback.
+ */
 export const RangeSelector = ({
   token1Name,
   token2Name,

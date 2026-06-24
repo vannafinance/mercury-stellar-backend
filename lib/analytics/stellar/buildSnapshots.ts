@@ -24,10 +24,28 @@ import {
   refreshBorrowedBalances,
   type BorrowedBalance,
 } from "@/store/margin-account-info-store";
-import { fetchAllMarginAccountSnapshots } from "./allMarginAccounts";
 import { collateralPositionTypeForSymbol } from "@/lib/analytics/stellar/collateralClassification";
 
 const STELLAR_CHAIN_ID = 0;
+
+/**
+ * Fetch the protocol-wide account snapshots from the shared edge-cached route
+ * (`/api/analytics/accounts`) instead of running the bounded RPC fan-out in the
+ * browser — so the heavy scan runs ~once per 30s globally, not per visitor.
+ * `force` busts the server cache for an immediate fresh read. Restores the
+ * Infinity health factor the route wired as a marker string.
+ */
+async function fetchProtocolSnapshots(force: boolean): Promise<AccountSnapshot[]> {
+  const res = await fetch(`/api/analytics/accounts${force ? "?force=1" : ""}`);
+  if (!res.ok) throw new Error(`analytics accounts failed (${res.status})`);
+  const { accounts } = (await res.json()) as { accounts: AccountSnapshot[] };
+  return accounts.map((a) => ({
+    ...a,
+    healthFactor:
+      (a.healthFactor as unknown) === "Infinity" ? Number.POSITIVE_INFINITY : a.healthFactor,
+    leverage: (a.leverage as unknown) === "Infinity" ? Number.POSITIVE_INFINITY : a.leverage,
+  }));
+}
 
 const TOKEN_DECIMALS: Record<string, number> = {
   XLM: 7,
@@ -110,10 +128,9 @@ export async function buildAnalyticsSnapshots(
     selfSnapshot = buildSelfSnapshot(userAddress);
   }
 
-  // 2. Protocol-wide fan-out — every margin account ever registered, owners
-  //    resolved from RegistryKey::OwnerAddress, balances pulled with a
-  //    public read-source (no wallet auth required).
-  const { accounts: protocolSnapshots } = await fetchAllMarginAccountSnapshots({ force });
+  // 2. Protocol-wide snapshots — served from the shared edge-cached route so the
+  //    bounded RPC fan-out runs once per ~30s globally, not in every browser.
+  const protocolSnapshots = await fetchProtocolSnapshots(force);
 
   // 3. Merge — prefer the connected wallet's freshly-recomputed snapshot
   //    over the protocol-wide read for that same account, since the in-memory

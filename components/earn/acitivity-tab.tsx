@@ -1,13 +1,20 @@
 'use client';
 
+/**
+ * "Activity" tab for an earn pool: shows the pool's distribution and a merged
+ * transaction feed. On-chain transactions (from the indexer) are de-duplicated
+ * against locally-recorded history by tx hash so a just-submitted action shows
+ * immediately and isn't double-listed once it lands on-chain.
+ */
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 
 type EarnTx = {
   type: 'supply' | 'withdraw';
@@ -24,6 +31,7 @@ const distributionHeadings = [
   { label: "Supply (%)", id: "supply-percent" },
 ];
 
+/** Empty, mutable table-body scaffold for transaction rows; populated per-render. */
 export const transactionTableBody = {
   rows: [] as {
     cell: {
@@ -38,6 +46,7 @@ export const transactionTableBody = {
   }[],
 };
 
+/** Column definitions for the recent-transactions table (shared with other earn views). */
 export const transactionTableHeadings = [
   { label: "Date", id: "date" },
   { label: "Type", id: "type" },
@@ -77,14 +86,19 @@ const normalizeTimestamp = (value: number | string | undefined): number => {
   return ts < 1_000_000_000_000 ? ts * 1000 : ts;
 };
 
+/**
+ * Renders pool distribution + a merged (on-chain ∪ local) transaction table for
+ * the currently selected pool, with USD values derived from oracle prices.
+ */
 export const ActivityTab = () => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const { transactions: recentTransactions } = useEarnTransactions();
   const { pools } = usePoolData();
   const selectedAsset = useSelectedPoolStore((state) => state.selectedAsset);
   const assetKey = toInternalAsset(selectedAsset);
   const displaySymbol = DISPLAY_SYMBOL[assetKey] ?? assetKey;
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const priceForAsset = (key: string): number =>
     tokenPrices[PRICE_TOKEN_FOR_ASSET[key] ?? key] ?? 1;
 
@@ -143,7 +157,7 @@ export const ActivityTab = () => {
         },
       ],
     };
-  }, [pools, assetKey, displaySymbol]);
+  }, [pools, assetKey, displaySymbol, tokenPrices]);
 
   // Format transactions for table
   const txTableBody = useMemo(() => {
@@ -191,7 +205,7 @@ export const ActivityTab = () => {
         ],
       })),
     };
-  }, [filteredTransactions, assetKey]);
+  }, [filteredTransactions, assetKey, tokenPrices]);
 
   return (
     <section

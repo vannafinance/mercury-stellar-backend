@@ -13,26 +13,32 @@ import {
   BALANCE_TYPE_OPTIONS,
 } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { useUserStore } from "@/store/user";
-import { validateAmountChange } from "@/lib/utils/sanitize-amount";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 
 interface Collateral {
   id?: string;
+  /** The collateral being rendered. `null` (or `isEditing`) puts the card into edit mode. */
   collaterals: Collaterals | null;
   isEditing?: boolean;
+  /** True when a sibling row is being edited — disables this row's edit affordances. */
   isAnyOtherEditing?: boolean;
   onEdit?: (id: string) => void;
   onSave?: (id: string, collateral: Collaterals) => void;
   onCancel?: () => void;
   onDelete?: (id: string) => void;
+  /** Notifies the parent when the WB/MB source toggle changes (MB is single-collateral). */
   onBalanceTypeChange?: (id: string, balanceType: string) => void;
+  /** Row position; index 0 is the anchor row and cannot be deleted. */
   index?: number;
 }
 
 const CollateralComponent = (props: Collateral) => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const getTokenBalanceKey = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC") return "BLEND_USDC";
     if (symbol === "AqUSDC" || symbol === "AquiresUSDC") return "AQUARIUS_USDC";
@@ -93,7 +99,7 @@ const CollateralComponent = (props: Collateral) => {
   // Live oracle-backed prices. AqUSDC / SoUSDC fall through the canonicalize
   // step inside oracle-price.ts (alias → USDC), so we only request the base
   // symbols and then look the selection up directly.
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const priceFor = (symbol: string): number => {
     const upper = symbol.toUpperCase();
     if (upper === 'AQUSDC' || upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC') {
@@ -128,7 +134,7 @@ const CollateralComponent = (props: Collateral) => {
         )) || 0
       : 0;
     const calculatedAmount = (balance * item) / 100;
-    setValueInput(calculatedAmount.toFixed(2));
+    setValueInput(floorAmountToInput(calculatedAmount));
   };
 
   const handleSave = () => {
@@ -516,7 +522,16 @@ const CollateralComponent = (props: Collateral) => {
   );
 };
 
-// Memoized component with custom comparison
+/**
+ * A single collateral row in the Leverage Assets form. Renders two mutually
+ * exclusive views via {@link AnimatePresence}: an edit view (token + amount
+ * input, deposit-% quick chips, WB/MB source toggle, live balance/ratio) and a
+ * read-only standard view with edit/delete affordances. USD values are derived
+ * from live oracle prices, falling back to the stored amount when unavailable.
+ *
+ * Wrapped in {@link memo} with a custom comparator so unrelated parent
+ * re-renders (or sibling edits) don't re-render every row.
+ */
 export const Collateral = memo(CollateralComponent, (prevProps, nextProps) => {
   const prevCollateral = prevProps.collaterals;
   const nextCollateral = nextProps.collaterals;

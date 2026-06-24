@@ -6,61 +6,199 @@
  */
 
 import { BlendService } from "@/lib/blend-utils";
-import { AquariusService } from "@/lib/aquarius-utils";
+import {
+  AquariusService,
+  AQUARIUS_POOLS,
+  aquariusLpUnderlyingAmounts,
+} from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { fetchTokenPrice } from "@/lib/oracle-price";
 
 const DUST = 1e-8;
 
+/** Raw Stellar assets held by the margin smart account (not tracking tokens). */
+const MARGIN_SAC_TOKENS = [
+  { sac: "XLM" as const, balanceKey: "XLM" },
+  { sac: "USDC" as const, balanceKey: "BLUSDC" },
+];
+
+/**
+ * Read live XLM/USDC SAC balances on the margin account and overlay them onto
+ * `collateralBalances`. The on-chain collateral ledger (CollateralBalanceWAD)
+ * does not update when the user swaps via Aquarius/Soroswap — only raw balances
+ * reflect the post-swap portfolio, so HF must use these for display.
+ */
+export async function reconcileMarginRawSacCollateral(
+  marginAccountAddress: string,
+  balances: Record<string, { amount: string; usdValue: string }>,
+  priceForToken: (token: string) => number,
+): Promise<number> {
+  let rawUsdTotal = 0;
+  try {
+    const amounts = await Promise.all(
+      MARGIN_SAC_TOKENS.map(({ sac }) =>
+        BlendService.getMarginAccountTokenBalance(marginAccountAddress, sac),
+      ),
+    );
+    MARGIN_SAC_TOKENS.forEach(({ balanceKey }, i) => {
+      const amount = parseFloat(amounts[i]) || 0;
+      const price = priceForToken(balanceKey);
+      const usd = amount * price;
+      rawUsdTotal += usd;
+      balances[balanceKey] = {
+        amount: amount.toFixed(7),
+        usdValue: usd.toFixed(2),
+      };
+    });
+  } catch (e) {
+    console.warn("[farmTrackingCollateral] raw SAC reconcile failed:", e);
+  }
+  return rawUsdTotal;
+}
+
+export function sumCollateralBalancesUsd(
+  balances: Record<string, { amount: string; usdValue: string }>,
+): number {
+  return Object.values(balances).reduce(
+    (sum, b) => sum + (parseFloat(b.usdValue) || 0),
+    0,
+  );
+}
+
+/**
+ * LP share USD = pro-rata pool reserves priced at XLM/USDC oracle (same as Farm UI).
+ * Do not use the LP receipt oracle stub ($0.4/share) — that collapses HF after add-liquidity.
+ */
+async function resolvePrice(
+  sym: string,
+  priceForToken?: (token: string) => number,
+): Promise<number> {
+  if (priceForToken) {
+    const cached = priceForToken(sym);
+    if (cached > 0) return cached;
+  }
+  try {
+    return await fetchTokenPrice(sym);
+  } catch {
+    return 0;
+  }
+}
+
+async function soroswapLpCollateralRow(
+  marginAccountAddress: string,
+  priceForToken?: (token: string) => number,
+): Promise<{ amount: string; usdValue: string } | null> {
+  const lp = parseFloat(await SoroswapService.getLpBalance(marginAccountAddress));
+  if (!(lp > DUST)) return null;
+
+  const stats = await SoroswapService.getPoolStats();
+  const totalShares = parseFloat(stats?.totalShares ?? "0");
+  if (!(totalShares > DUST) || !stats) return null;
+
+  const ratio = lp / totalShares;
+  const xlm = ratio * parseFloat(stats.reserveXLM ?? "0");
+  const usdc = ratio * parseFloat(stats.reserveUSDC ?? "0");
+  const [xlmPx, usdcPx] = await Promise.all([
+    resolvePrice("XLM", priceForToken),
+    resolvePrice("USDC", priceForToken),
+  ]);
+  const usd = xlm * xlmPx + usdc * usdcPx;
+
+  return {
+    amount: lp.toFixed(7),
+    usdValue: usd.toFixed(2),
+  };
+}
+
+async function aquariusLpCollateralRow(
+  marginAccountAddress: string,
+  tokenA: string,
+  tokenB: string,
+  poolAddress: string,
+  priceForToken?: (token: string) => number,
+): Promise<{ amount: string; usdValue: string } | null> {
+  const lp = parseFloat(
+    await AquariusService.getLpBalance(marginAccountAddress, tokenA, tokenB),
+  );
+  if (!(lp > DUST)) return null;
+
+  const stats = await AquariusService.getAquariusPoolStats(poolAddress);
+  const totalShares = parseFloat(stats?.totalShares ?? "0");
+  if (!(totalShares > DUST) || !stats) return null;
+
+  const { amountA: amtA, amountB: amtB } = aquariusLpUnderlyingAmounts(
+    lp,
+    stats,
+    tokenA,
+    tokenB,
+  );
+  const [pxA, pxB] = await Promise.all([
+    resolvePrice(tokenA, priceForToken),
+    resolvePrice(tokenB, priceForToken),
+  ]);
+  const usd = amtA * pxA + amtB * pxB;
+
+  return {
+    amount: lp.toFixed(7),
+    usdValue: usd.toFixed(2),
+  };
+}
+
 /** USD-valued rows for margin store (`getCollateralBalances` / refreshBorrowedBalances). */
 export async function mergeFarmTrackingCollateralIntoBalances(
   marginAccountAddress: string,
   balances: Record<string, { amount: string; usdValue: string }>,
+  priceForToken?: (token: string) => number,
 ): Promise<Record<string, { amount: string; usdValue: string }>> {
   const out: Record<string, { amount: string; usdValue: string }> = { ...balances };
 
-  try {
-    const blend = await BlendService.getAllUserBlendPositions(marginAccountAddress);
-    for (const sym of ["XLM", "USDC"] as const) {
-      const pos = blend[sym];
-      const underlying = parseFloat(pos?.underlyingValue ?? "0");
-      if (underlying <= DUST) continue;
-      const trackSym = sym === "XLM" ? "BLEND_XLM" : "BLEND_USDC";
-      const price = await fetchTokenPrice(sym);
-      out[trackSym] = {
-        amount: underlying.toFixed(7),
-        usdValue: (underlying * price).toFixed(2),
-      };
-    }
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Blend enrichment failed:", e);
-  }
-
-  try {
-    const aq = parseFloat(await AquariusService.getLpBalance(marginAccountAddress, "XLM", "USDC"));
-    if (aq > DUST) {
-      const price = await fetchTokenPrice("AQ_XLM_USDC");
-      out.AQ_XLM_USDC = {
-        amount: aq.toFixed(7),
-        usdValue: (aq * price).toFixed(2),
-      };
-    }
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Aquarius enrichment failed:", e);
-  }
-
-  try {
-    const ss = parseFloat(await SoroswapService.getLpBalance(marginAccountAddress));
-    if (ss > DUST) {
-      const price = await fetchTokenPrice("SS_XLM_USDC");
-      out.SS_XLM_USDC = {
-        amount: ss.toFixed(7),
-        usdValue: (ss * price).toFixed(2),
-      };
-    }
-  } catch (e) {
-    console.warn("[farmTrackingCollateral] Soroswap enrichment failed:", e);
-  }
+  // The three protocol reads are independent and write disjoint keys
+  // (BLEND_* / AQ_* / SS_*), so run them concurrently instead of serially.
+  await Promise.all([
+    (async () => {
+      try {
+        const blend = await BlendService.getAllUserBlendPositions(marginAccountAddress);
+        for (const sym of ["XLM", "USDC"] as const) {
+          const pos = blend[sym];
+          const underlying = parseFloat(pos?.underlyingValue ?? "0");
+          if (underlying <= DUST) continue;
+          const trackSym = sym === "XLM" ? "BLEND_XLM" : "BLEND_USDC";
+          const price = await fetchTokenPrice(sym);
+          out[trackSym] = {
+            amount: underlying.toFixed(7),
+            usdValue: (underlying * price).toFixed(2),
+          };
+        }
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Blend enrichment failed:", e);
+      }
+    })(),
+    (async () => {
+      try {
+        const xlmUsdcPool = AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc");
+        if (xlmUsdcPool) {
+          const row = await aquariusLpCollateralRow(
+            marginAccountAddress,
+            xlmUsdcPool.tokens[0],
+            xlmUsdcPool.tokens[1],
+            xlmUsdcPool.poolAddress,
+            priceForToken,
+          );
+          if (row) out.AQ_XLM_USDC = row;
+        }
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Aquarius enrichment failed:", e);
+      }
+    })(),
+    (async () => {
+      try {
+        const row = await soroswapLpCollateralRow(marginAccountAddress, priceForToken);
+        if (row) out.SS_XLM_USDC = row;
+      } catch (e) {
+        console.warn("[farmTrackingCollateral] Soroswap enrichment failed:", e);
+      }
+    })(),
+  ]);
 
   return out;
 }

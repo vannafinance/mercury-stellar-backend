@@ -7,20 +7,35 @@ import { motion } from "framer-motion";
 import { MAX_LEVERAGE, MODE_CONFIG } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 
 type Mode = "Deposit" | "Borrow";
 
 interface BorrowBoxProps {
+  /** "Deposit" shows the leverage-derived borrow preview; "Borrow" shows editable borrow inputs. */
   mode?: Mode;
+  /** Current leverage multiplier (controlled by the parent). */
   leverage: number;
   setLeverage: (value: number) => void;
+  /** Total collateral USD the borrow preview is computed against. */
   totalDeposit: number;
+  /** Emits the assembled borrow line items (asset + amount + %) on every change. */
   onBorrowItemsChange?: (items: BorrowInfo[]) => void;
+  /** Emits the selected borrow token symbol so the parent can size the cross-asset borrow. */
   onTokenChange?: (token: string) => void;
 }
 
+/**
+ * Borrow input surface paired with the leverage slider. In "Deposit" mode it
+ * renders a single read-only preview of the borrowable amount (deposit ×
+ * (leverage − 1), priced via the live oracle); in "Borrow" mode it renders the
+ * per-token editable borrow cards. The +/− stepper, numeric field, and slider
+ * are kept in sync and clamped to [1, MAX_LEVERAGE].
+ *
+ * USD conversions use the shared token-price hook; aliased USDC variants
+ * (BLUSDC/AQUSDC/SOUSDC) are canonicalised before the price lookup.
+ */
 export const BorrowBox = ({
   mode = "Deposit",
   leverage,
@@ -30,7 +45,7 @@ export const BorrowBox = ({
   onTokenChange,
 }: BorrowBoxProps) => {
   const { isDark } = useTheme();
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   const getCollateralBalanceKey = (symbol: string) => {
     if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
@@ -47,7 +62,6 @@ export const BorrowBox = ({
   const config = MODE_CONFIG[mode];
 
   // Store access
-  const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
   const borrowedBalances = useMarginAccountInfoStore((state) => state.borrowedBalances);
 
   // Form state
@@ -244,14 +258,10 @@ export const BorrowBox = ({
               isDark ? "text-[#777777]" : "text-[#A7A7A7]"
             }`}
           >
+            {/* No "Balance:" here — when borrowing, the user's collateral balance of
+                the borrow token is irrelevant (and flickered between wallet/margin
+                sources). Keep just the live price ratio. */}
             <div className="flex items-center gap-2 min-w-0">
-              <span className="truncate">
-                Balance:{" "}
-                {collateralBalances[selectedCollateralKey]
-                  ? parseFloat(collateralBalances[selectedCollateralKey].amount).toFixed(2)
-                  : "0.00"}{" "}
-                {selectedToken}
-              </span>
               <ConversionRatio
                 tokenSymbol={selectedToken}
                 tokenPrice={selectedTokenPrice}

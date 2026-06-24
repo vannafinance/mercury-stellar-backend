@@ -1,14 +1,21 @@
 'use client';
 
+/**
+ * "Details" tab for an earn pool: a statistics panel (supplied/borrowed pie
+ * cards + key metrics like APY, utilization, oracle price, exchange rate) and a
+ * grid of the relevant on-chain contract addresses with explorer links.
+ * Renders responsive desktop-grid vs. mobile key/value-row layouts.
+ */
 import { useMemo } from "react";
 import { StatsCard } from "../ui/stats-card";
 import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData } from "@/hooks/use-earn";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 
 // Earn pool keys → oracle symbol (Aquarius/Soroswap USDC peg via alias).
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
@@ -18,6 +25,10 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   SOROSWAP_USDC: 'USDC',
 };
 
+/**
+ * Placeholder statistics descriptors (with em-dash values) exported for reuse
+ * on other pages (e.g. the farm detail page) where live pool data isn't wired.
+ */
 // Static export for use in other pages (e.g. farm detail page)
 export const items = [
   { heading: "Available Liquidity", mainInfo: "—", subInfo: "—", tooltip: "Total assets available for borrowing" },
@@ -65,8 +76,14 @@ const getAddresses = (selectedAssetKey: string, selectedAssetLabel: string) => {
   ];
 };
 
+/**
+ * Vault details view for the selected pool. Computes supplied/borrowed splits
+ * and USD values from live pool data + oracle prices, and resolves the relevant
+ * contract addresses for the explorer-linked address grid.
+ */
 export const Details = () => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const selectedAsset = useSelectedPoolStore((state) => state.selectedAsset);
   const selectedAssetKey = toInternalAsset(selectedAsset);
   const selectedAssetLabel = toDisplayAsset(selectedAssetKey);
@@ -74,7 +91,7 @@ export const Details = () => {
 
   const selectedPool = pools[selectedAssetKey as keyof typeof pools];
   const addresses = getAddresses(selectedAssetKey, selectedAssetLabel);
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const oraclePrice = tokenPrices[PRICE_TOKEN_FOR_ASSET[selectedAssetKey] ?? selectedAssetKey] ?? 1;
 
   const totalSupplied = useMemo(() => {

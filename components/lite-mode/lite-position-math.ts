@@ -37,12 +37,14 @@
  *   any partial exit. A 100% exit closes the debt entirely → HF → ∞ ("Safe").
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/** Rate inputs for the leveraged-yield math (percentages, not fractions). */
 export interface YieldRates {
   supplyApr: number;    // e.g. 5 for 5%
   vannaFeeApr: number;  // e.g. 6 for 6%
   leverage: number;     // e.g. 6 for 6×
 }
 
+/** Fully-resolved leverage projection: exposure, per-leg APRs, and 1y earnings. */
 export interface LeveragePreview {
   leverage: number;
   collateralUsd: number;

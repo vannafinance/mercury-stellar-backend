@@ -1,12 +1,18 @@
 'use client';
 
+/**
+ * "Margin Managers" tab: lists each pool's lending tier (current debt + asset
+ * liquidation-threshold count) in the shared {@link Table}. Gated behind a
+ * connected wallet; shows connect/loading placeholders otherwise.
+ */
 import { useMemo } from "react";
 import { Table } from "./table";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData } from "@/hooks/use-earn";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { useUserStore } from "@/store/user";
-import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
@@ -24,11 +30,13 @@ const tableHeadings = [
 const shortenAddr = (addr: string) =>
   `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
+/** Builds per-tier debt rows from pool data + oracle prices and renders them in the table. */
 export const MarginManagersTab = () => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const { pools, isLoading } = usePoolData();
   const userAddress = useUserStore((state) => state.address);
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
 
   const tableBody = useMemo(() => {
     return {

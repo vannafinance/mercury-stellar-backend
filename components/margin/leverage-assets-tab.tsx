@@ -2,12 +2,13 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Collaterals, BorrowInfo } from "@/lib/types";
 import { DropdownOptions } from "@/lib/constants";
 import { BALANCE_TYPE_OPTIONS } from "@/lib/constants/margin";
 import { Button } from "@/components/ui/button";
 import { Collateral } from "./collateral-box";
-import { BorrowBox } from "./borrow-box";
+import { DualBorrow, type DualBorrowState } from "./dual-borrow";
 import { MBSelectionGrid } from "./mb-selection-grid";
 import { Dialogue } from "@/components/ui/dialogue";
 import {
@@ -25,8 +26,11 @@ import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
+import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -35,28 +39,9 @@ const formatHF = (hf: number): string =>
 const formatUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-type Modes = "Deposit" | "Borrow";
-
 // Helper to generate unique ID for collateral
 const generateCollateralId = () => `collateral-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-// Map common create-account failure modes to actionable user-facing copy.
-// Without this the toast is always "Failed to create margin account. Please
-// try again." even when the wallet just has 0 XLM and the fix is one click.
-const humanizeCreateAccountError = (msg: string): string => {
-  const m = (msg || "").toLowerCase();
-  if (!m) return "Failed to create margin account. Please try again.";
-  if (m.includes("account not found") || m.includes("not found on network")) {
-    return "Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.";
-  }
-  if (m.includes("insufficient") || m.includes("balance") || m.includes("fee")) {
-    return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
-  }
-  if (m.includes("rejected") || m.includes("cancelled") || m.includes("user denied")) {
-    return "Transaction was cancelled in Freighter.";
-  }
-  return "Failed to create margin account. Please try again.";
-};
 
 // Helper to ensure collateral has ID
 const ensureCollateralId = (collateral: Collaterals): Collaterals => {
@@ -66,6 +51,25 @@ const ensureCollateralId = (collateral: Collaterals): Collaterals => {
   return collateral;
 };
 
+/**
+ * Primary deposit + borrow surface of the margin panel. Lets the user assemble
+ * collateral rows from wallet balances (WB mode) or pick existing margin-account
+ * collateral (MB mode), set a leverage multiplier, and open a leveraged
+ * position. The submit handler branches by mode and account state:
+ *
+ *  - No margin account → opens the create-account / sign-agreement dialog flow.
+ *  - MB mode → borrow-only against already-deposited collateral.
+ *  - WB mode → deposit + borrow. Single-collateral uses the atomic
+ *    `deposit_and_borrow(_cross)` contract call (one signature); it falls back
+ *    to a split 2-tx flow for multi-collateral or when the atomic call overflows
+ *    Soroban's per-tx budget.
+ *
+ * Borrow size is pre-validated against the on-chain RiskEngine formula before
+ * signing, XLM deposits respect the wallet's min-reserve, and after a confirmed
+ * tx the UI is unblocked immediately (toast + form reset + optimistic store
+ * merge) while balances refresh in the background. Deposit/borrow preview is
+ * delegated to {@link LeveragePreviewSection}.
+ */
 export const LeverageAssetsTab = () => {
   const XLM_WALLET_RESERVE = 1;
   const XLM_DEPOSIT_EPSILON = 1e-7;
@@ -81,9 +85,12 @@ export const LeverageAssetsTab = () => {
   const hasMarginAccount = useMarginAccountInfoStore((state) => state.hasMarginAccount);
   const marginAccountAddress = useMarginAccountInfoStore((state) => state.marginAccountAddress);
   const isCreatingAccount = useMarginAccountInfoStore((state) => state.isCreatingAccount);
+  const isLoadingBorrowedBalances = useMarginAccountInfoStore((state) => state.isLoadingBorrowedBalances);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const mode: Modes = "Deposit";
   const [borrowItems, setBorrowItems] = useState<BorrowInfo[]>([]);
+  // Validated dual-borrow output (items + Total/Max + red-text error). Gates
+  // the submit button; null until the user touches the borrow inputs.
+  const [borrowState, setBorrowState] = useState<DualBorrowState | null>(null);
   const [leverage, setLeverage] = useState(2);
   const feesCurrency = "USDT";
   
@@ -99,28 +106,6 @@ export const LeverageAssetsTab = () => {
 
   const userAddress = useUserStore((state) => state.address);
   const tokenBalances = useUserStore((state) => state.tokenBalances);
-
-  const getFriendlyDepositError = useCallback((rawError?: string) => {
-    const compact = (rawError || "").split("\nEvent log")[0]?.trim() || "";
-    const text = compact.toLowerCase();
-
-    if (
-      text.includes("error(contract, #10)") ||
-      text.includes("resulting balance is not within the allowed range")
-    ) {
-      return "You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.";
-    }
-
-    if (text.includes("insufficient")) {
-      return "Insufficient wallet balance for this deposit.";
-    }
-
-    if (text.includes("hosterror")) {
-      return "Deposit failed on-chain. Please retry with a slightly smaller amount.";
-    }
-
-    return compact || "Deposit and borrow failed. Please try again.";
-  }, []);
 
   useEffect(() => {
     if (!userAddress) return;
@@ -158,6 +143,12 @@ export const LeverageAssetsTab = () => {
 
   // Real collateral balances from margin account (on-chain data)
   const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
+  // Account-level collateral VALUE — the reliable "does this account hold
+  // collateral?" signal (same number the header shows as Net Available). The
+  // per-token `collateralBalances` map can be transiently blanked by an in-flight
+  // refresh; this value is the single source of truth that gates the MB empty
+  // state, so the grid never claims "no collateral" for an account that has some.
+  const grossCollateralValue = useMarginAccountInfoStore((state) => state.grossCollateralValue);
 
   // Convert Map to stable array for rendering
   const collateralList = useMemo(() => {
@@ -171,28 +162,39 @@ export const LeverageAssetsTab = () => {
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
-  // Map dropdown asset name → canonical key used in collateralBalances.
-  // Mirrors canonicalMarginToken() in margin-account-info-store.ts.
-  const toCanonicalAsset = (asset: string | undefined): string | null => {
-    if (!asset) return null;
-    const u = asset.toUpperCase();
-    if (u === 'BLEND_USDC' || u === 'USDC') return 'BLUSDC';
-    if (u === 'AQUIRESUSDC' || u === 'AQUARIUS_USDC') return 'AQUSDC';
-    if (u === 'SOROSWAPUSDC' || u === 'SOROSWAP_USDC') return 'SOUSDC';
-    return u;
-  };
+  // Same per-account /api/account snapshot the page HEADER reads (React Query
+  // dedupes by key — no extra fetch; it's already cached in memory + localStorage
+  // so it paints instantly). This is the reliable single source of truth for MB
+  // collateral. The live Zustand store is only an OVERLAY for optimistic
+  // mutations; after a deposit the snapshot feed is suppressed for ~20s and the
+  // store can go stale/blank while the header still shows the real value from
+  // this snapshot. Reading it here is exactly why the header showed $971 while
+  // the grid said "no collateral" — now the grid uses the same source.
+  const { snapshot } = useAccountSnapshot(userAddress);
 
-  // Build Collaterals[] from real on-chain margin account collateral (used in MB mode grid).
-  // Only show the asset the user selected in the dropdown when toggling to MB —
-  // showing every margin balance regardless of selection was confusing.
+  // Effective collateral = store when it has balances (live/optimistic), else the
+  // snapshot baseline. So the grid is never empty while the account holds value.
+  const effectiveCollateral = useMemo<Record<string, BorrowedBalance>>(() => {
+    const storeHas = Object.values(collateralBalances).some((b) => parseFloat(b.amount) > 0);
+    if (storeHas) return collateralBalances;
+    return (snapshot?.collateralBalances as Record<string, BorrowedBalance>) ?? collateralBalances;
+  }, [collateralBalances, snapshot]);
+
+  // Account-level collateral value from whichever source has it — gates the MB
+  // empty state so it matches the header's Net Available figure.
+  const effectiveGross =
+    grossCollateralValue > 0.01 ? grossCollateralValue : snapshot?.grossCollateralValue ?? 0;
+
+  // Build Collaterals[] from real on-chain margin account collateral (used in MB
+  // mode grid). Show every REAL collateral token the account holds (XLM / USDC
+  // family) so the user can borrow against their full balance. Exclude farm /
+  // Blend tracking receipts (BLEND_*, AQ_*, SS_*, *_LP) — those are enriched into
+  // collateralBalances for HF math but are farm positions, not borrowable margin
+  // collateral (and have no token icon). Mirrors the positions table's filter.
+  // Dust is shown via adaptive formatting, not hidden.
   const mbCollateralItems = useMemo((): Collaterals[] => {
-    const selectedAsset = toCanonicalAsset(collateralList[0]?.asset);
-    return (Object.entries(collateralBalances) as [string, BorrowedBalance][])
-      .filter(([token, bal]) => {
-        if (parseFloat(bal.amount) <= 0) return false;
-        if (selectedAsset && token !== selectedAsset) return false;
-        return true;
-      })
+    return (Object.entries(effectiveCollateral) as [string, BorrowedBalance][])
+      .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
       .map(([token, bal]): Collaterals => ({
         asset: token,
         amount: parseFloat(parseFloat(bal.amount).toFixed(7)),
@@ -200,7 +202,21 @@ export const LeverageAssetsTab = () => {
         balanceType: "mb",
         unifiedBalance: parseFloat(bal.usdValue),
       }));
-  }, [collateralBalances, collateralList]);
+  }, [effectiveCollateral]);
+
+  // Entering MB with no collateral loaded yet → pull the margin-account balances
+  // so the grid fills in instead of flashing the "no collateral" empty state
+  // during the gap. refreshBorrowedBalances dedups/throttles internally, so this
+  // is safe to call on every MB enter.
+  useEffect(() => {
+    if (isMBMode && marginAccountAddress && mbCollateralItems.length === 0) {
+      // Force the read when the account demonstrably holds collateral value but
+      // the per-token map is empty (the inconsistency the user hit): bypass the
+      // throttle so the grid fills in seconds, not after the next slow cycle.
+      refreshBorrowedBalances(marginAccountAddress, effectiveGross > 0.01).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMBMode, marginAccountAddress, mbCollateralItems.length, effectiveGross]);
 
   // When entering MB mode (or when margin-account collaterals first appear),
   // pre-select every available collateral so the user can borrow against the
@@ -223,7 +239,7 @@ export const LeverageAssetsTab = () => {
       const price = MB_TOKEN_PRICES[item.asset] ?? 1;
       return sum + item.amount * price;
     }, 0);
-  }, [isMBMode, mbCollateralItems, mbSelectedIds]);
+  }, [isMBMode, mbCollateralItems, mbSelectedIds, MB_TOKEN_PRICES]);
 
   const handleMbToggleSelection = useCallback((itemId: string) => {
     setMbSelectedIds((prev) => {
@@ -275,6 +291,16 @@ export const LeverageAssetsTab = () => {
   // Borrow preview/input should use pure collateral USD (no fee uplift).
   const effectiveTotalForBorrow = isMBMode ? mbSelectedUsd : depositAmount;
   const projectedBorrowUsd = Math.max(0, effectiveTotalForBorrow * (leverage - 1));
+
+  // Capture the validated dual-borrow output: feed the assembled items into the
+  // existing borrow flow and keep the full state for submit-gating + red text.
+  const handleBorrowChange = useCallback((s: DualBorrowState) => {
+    setBorrowState(s);
+    setBorrowItems(s.items);
+    // Keep the legacy single-borrow execution path pointed at the user's first
+    // chosen asset (the WB/MB submit handlers still read `borrowToken`).
+    setBorrowToken(s.items[0]?.assetData.asset ?? DropdownOptions[0]);
+  }, []);
 
   // Memoized callbacks
   const handleAddCollateral = useCallback(() => {
@@ -441,9 +467,70 @@ export const LeverageAssetsTab = () => {
     setCurrentBorrowItems([]);
   }, []);
 
+  const qc = useQueryClient();
+
+  // MB-mode borrow-only flow. WB-mode (deposit + borrow compound) stays
+  // imperative below because its multi-step orchestration with partial-success
+  // handling doesn't fit a single-promise useMutation cleanly.
+  const mbBorrowMutation = useMutation({
+    mutationFn: async (params: {
+      userAddress: string;
+      normalizedBorrowToken: string;
+      borrowAmountTokens: number;
+    }) => {
+      const result = await borrowTokens(
+        params.userAddress,
+        params.normalizedBorrowToken,
+        params.borrowAmountTokens
+      );
+      if (!result.success) {
+        throw new Error(result.error || 'Borrow failed');
+      }
+      return {
+        hash: result.hash,
+        normalizedBorrowToken: params.normalizedBorrowToken,
+        borrowAmountTokens: params.borrowAmountTokens,
+      };
+    },
+    onMutate: () => {
+      setIsProcessing(true);
+    },
+    onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
+      if (hash && marginAccountAddress) {
+        appendMarginHistory({
+          marginAccountAddress,
+          type: "borrow",
+          asset: normalizedBorrowToken,
+          amount: borrowAmountTokens.toFixed(7),
+          hash,
+        });
+      }
+      toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
+      resetForm();
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      // Force past the 3s throttle so the new debt shows immediately — the tx is
+      // already confirmed in a closed ledger (pollTransactionStatus). Without
+      // `true` a ledger-tick refresh moments earlier suppresses this one and the
+      // position only updates on a later cycle. Swallow transient post-popup
+      // throws (Freighter getAddress undefined); the ledger tick reconciles.
+      if (marginAccountAddress) {
+        try {
+          await refreshBorrowedBalances(marginAccountAddress, true);
+        } catch (e) {
+          console.warn('Post-borrow refresh failed; ledger tick will reconcile:', e);
+        }
+      }
+    },
+    onError: (error) => {
+      toast.error(normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.'));
+    },
+    onSettled: () => {
+      setIsProcessing(false);
+    },
+  });
+
   const handleButtonClick = async () => {
     if (!userAddress) {
-      console.log('No user address available');
       return;
     }
 
@@ -458,93 +545,60 @@ export const LeverageAssetsTab = () => {
     if (hasMarginAccount) {
       // ── MB mode: borrow-only (collateral already in margin account) ──────────
       if (isMBMode) {
-        try {
-          setIsProcessing(true);
-
-          if (mbCollateralItems.length === 0) {
-            toast.error('No collateral found in your margin account. Deposit collateral first using WB mode.');
-            setIsProcessing(false);
-            return;
-          }
-
-          // Sum the full balance of every selected MB collateral.
-          const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
-            const itemId = `${item.asset}-${item.amount}`;
-            if (!mbSelectedIds.has(itemId)) return sum;
-            const price = MB_TOKEN_PRICES[item.asset] ?? 1;
-            return sum + item.amount * price;
-          }, 0);
-
-          if (totalCollateralUsd <= 0) {
-            toast.error('Select at least one collateral from your margin account.');
-            setIsProcessing(false);
-            return;
-          }
-
-          if (leverage <= 1) {
-            toast.error('Please set leverage greater than 1x to borrow.');
-            setIsProcessing(false);
-            return;
-          }
-
-          const borrowAmountUsd = totalCollateralUsd * (leverage - 1);
-          const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken);
-          const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-          const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
-
-          // Pre-validate against risk engine before submitting
-          const latestMarginState = useMarginAccountInfoStore.getState();
-          const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
-          // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
-          const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
-          const threshold = 1.1;
-          const maxAdditionalBorrowUsd = Math.max(
-            0,
-            (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
-          );
-
-          if (maxAdditionalBorrowUsd <= 0) {
-            toast.error('Borrow blocked by Risk Engine: debt too high for current collateral. Repay first.');
-            setIsProcessing(false);
-            return;
-          }
-
-          if (borrowAmountUsd > maxAdditionalBorrowUsd) {
-            const maxSafeLeverage = totalCollateralUsd > 0
-              ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
-              : 1;
-            toast.error(`Selected leverage (${leverage}x) exceeds safe limit. Max safe leverage: ~${maxSafeLeverage}x.`);
-            setIsProcessing(false);
-            return;
-          }
-
-          console.log('🚀 MB mode: borrow-only', { normalizedBorrowToken, borrowAmountTokens, borrowAmountUsd });
-
-          const result = await borrowTokens(userAddress, normalizedBorrowToken, borrowAmountTokens);
-
-          if (result.success) {
-            if (result.hash && marginAccountAddress) {
-              appendMarginHistory({
-                marginAccountAddress,
-                type: "borrow",
-                asset: normalizedBorrowToken,
-                amount: borrowAmountTokens.toFixed(7),
-                hash: result.hash,
-              });
-            }
-            toast.success('Borrow successful! Tx: ' + (result.hash ? result.hash.slice(0, 16) + '…' : ''));
-            if (marginAccountAddress) {
-              await refreshBorrowedBalances(marginAccountAddress);
-            }
-            resetForm();
-          } else {
-            toast.error('Borrow failed: ' + result.error);
-          }
-        } catch (error) {
-          toast.error('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
-        } finally {
-          setIsProcessing(false);
+        if (mbCollateralItems.length === 0) {
+          toast.error('No collateral found in your margin account. Deposit collateral first using WB mode.');
+          return;
         }
+
+        // Sum the full balance of every selected MB collateral.
+        const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
+          const itemId = `${item.asset}-${item.amount}`;
+          if (!mbSelectedIds.has(itemId)) return sum;
+          const price = MB_TOKEN_PRICES[item.asset] ?? 1;
+          return sum + item.amount * price;
+        }, 0);
+
+        if (totalCollateralUsd <= 0) {
+          toast.error('Select at least one collateral from your margin account.');
+          return;
+        }
+
+        if (leverage <= 1) {
+          toast.error('Please set leverage greater than 1x to borrow.');
+          return;
+        }
+
+        const borrowAmountUsd = totalCollateralUsd * (leverage - 1);
+        const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken);
+        const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+        const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
+
+        // Pre-validate against risk engine before submitting
+        const latestMarginState = useMarginAccountInfoStore.getState();
+        const liveTotalBorrowedValue = latestMarginState.totalBorrowedValue;
+        // Match on-chain RiskEngine: gross assets = priced collateral + outstanding debt.
+        const liveGrossCollateralUsd = latestMarginState.grossCollateralValue;
+        const threshold = 1.1;
+        const maxAdditionalBorrowUsd = Math.max(
+          0,
+          (liveGrossCollateralUsd - threshold * liveTotalBorrowedValue) / (threshold - 1)
+        );
+
+        if (maxAdditionalBorrowUsd <= 0) {
+          toast.error("You've reached the safe borrow limit for your current collateral. Add more collateral or repay part of your loan to borrow more.");
+          return;
+        }
+
+        if (borrowAmountUsd > maxAdditionalBorrowUsd) {
+          const maxSafeLeverage = totalCollateralUsd > 0
+            ? parseFloat((1 + (maxAdditionalBorrowUsd * 0.95) / totalCollateralUsd).toFixed(2))
+            : 1;
+          toast.error(`Selected leverage (${leverage}x) is above the safe limit for your collateral. Lower it to ~${maxSafeLeverage}x or add more collateral.`);
+          return;
+        }
+
+
+        mbBorrowMutation.mutate({ userAddress, normalizedBorrowToken, borrowAmountTokens });
         return;
       }
 
@@ -602,6 +656,45 @@ export const LeverageAssetsTab = () => {
           return;
         }
 
+        const walletBalanceForAsset = (asset: string): number => {
+          switch (normalizeContractTokenSymbol(asset)) {
+            case "BLUSDC":
+              return parseFloat(tokenBalances.USDC || tokenBalances.BLEND_USDC || "0") || 0;
+            case "AQUSDC":
+              return parseFloat(tokenBalances.AQUARIUS_USDC || "0") || 0;
+            case "SOUSDC":
+              return parseFloat(tokenBalances.SOROSWAP_USDC || "0") || 0;
+            default:
+              return parseFloat(tokenBalances.XLM || "0") || 0;
+          }
+        };
+
+        for (const item of wbDeposits) {
+          if (item.asset === "XLM") continue;
+          const available = walletBalanceForAsset(item.asset);
+          if (item.amount > available + XLM_DEPOSIT_EPSILON) {
+            if (available <= XLM_DEPOSIT_EPSILON) {
+              const faucetHint =
+                item.asset === "BLUSDC"
+                  ? "Blend USDC"
+                  : item.asset === "AQUSDC"
+                    ? "Aquarius USDC"
+                    : item.asset === "SOUSDC"
+                      ? "Soroswap USDC"
+                      : item.asset;
+              toast.error(
+                `You have no ${item.asset} in your wallet. Use the Faucet to mint ${faucetHint} first, then retry.`,
+              );
+            } else {
+              toast.error(
+                `Insufficient ${item.asset} wallet balance. Available: ${available.toFixed(2)} ${item.asset}.`,
+              );
+            }
+            setIsProcessing(false);
+            return;
+          }
+        }
+
         // Pre-validate borrow against the Risk Engine's formula before submitting.
         // On-chain: (grossAssets + borrow) / (debt + borrow) > 1.1, where grossAssets
         // = priced collateral + outstanding debt (borrowed funds still in the account).
@@ -638,43 +731,47 @@ export const LeverageAssetsTab = () => {
           }
         }
 
-        console.log('🚀 Executing deposit flow:', {
-          userAddress,
-          deposits: wbDeposits,
-          totalDepositAmountUsd,
-          multiplier,
-          borrowToken,
-          marginAccountAddress
-        });
 
         const normalizedBorrowToken = normalizeContractTokenSymbol(borrowToken || wbDeposits[0]?.asset || "XLM");
+        // True when the DualBorrow component has produced two distinct borrow assets.
+        const isDualBorrow = borrowState != null && borrowState.items.length === 2;
 
         // Fast path: single-collateral → use the atomic contract method
         // (deposit_and_borrow for same-asset, deposit_and_borrow_cross for
         // cross-asset). One wallet signature instead of two in either case.
         const canUseAtomic = wbDeposits.length === 1;
         const isCrossAsset = wbDeposits[0]?.asset !== normalizedBorrowToken;
+        // Flipped to true when the atomic deposit+borrow overflows Soroban's
+        // per-tx budget, routing execution to the 2-tx split flow below.
+        let useSplitFlow = !canUseAtomic;
 
         const depositHashes: string[] = [];
         let borrowHash = "";
 
         if (canUseAtomic) {
           const item = wbDeposits[0];
-          // For cross-asset borrow, convert the leverage USD target into the
-          // borrow token's units using the same flat price map the rest of
-          // the page uses. Same-asset case lets MarginAccountService compute
-          // the borrow amount from the multiplier.
-          const borrowOptions = isCrossAsset && multiplier > 1
-            ? (() => {
-                const depositUsd = item.amount * (MB_TOKEN_PRICES[item.asset] ?? 1);
-                const borrowUsd = depositUsd * (multiplier - 1);
-                const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-                return {
-                  borrowTokenSymbol: normalizedBorrowToken,
-                  borrowAmountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
-                };
-              })()
-            : undefined;
+          // For dual borrow, use the first item's explicit amount from the DualBorrow state.
+          // For cross-asset single borrow, convert the leverage USD target into borrow token units.
+          // Same-asset single borrow leaves options undefined so MarginAccountService uses the multiplier.
+          const borrowOptions = (() => {
+            if (isDualBorrow && borrowState!.items.length > 0) {
+              const b0 = borrowState!.items[0];
+              return {
+                borrowTokenSymbol: normalizeContractTokenSymbol(b0.assetData.asset),
+                borrowAmountTokens: parseFloat(b0.assetData.amount) || 0,
+              };
+            }
+            if (isCrossAsset && multiplier > 1) {
+              const depositUsd = item.amount * (MB_TOKEN_PRICES[item.asset] ?? 1);
+              const borrowUsd = depositUsd * (multiplier - 1);
+              const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+              return {
+                borrowTokenSymbol: normalizedBorrowToken,
+                borrowAmountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
+              };
+            }
+            return undefined;
+          })();
 
           const atomicResult = await MarginAccountService.depositAndBorrow(
             marginAccountAddress!,
@@ -683,39 +780,76 @@ export const LeverageAssetsTab = () => {
             item.asset,
             borrowOptions
           );
-          if (!atomicResult.success) {
-            if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
-              toast.error(`Contract configuration error: ${atomicResult.error}`);
-            } else {
-              toast.error(getFriendlyDepositError(atomicResult.error));
+          if (atomicResult.success) {
+            if (atomicResult.hash) {
+              depositHashes.push(atomicResult.hash);
+              if (multiplier > 1) borrowHash = atomicResult.hash;
             }
-            setIsProcessing(false);
-            return;
-          }
-          if (atomicResult.hash) {
-            depositHashes.push(atomicResult.hash);
-            if (multiplier > 1) borrowHash = atomicResult.hash;
-          }
-          appendMarginHistory({
-            marginAccountAddress: marginAccountAddress!,
-            type: "deposit",
-            asset: item.asset,
-            amount: item.amount.toFixed(7),
-            hash: atomicResult.hash ?? "",
-          });
-          if (multiplier > 1) {
-            const borrowAmountTokens = item.amount * (multiplier - 1);
             appendMarginHistory({
               marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: normalizedBorrowToken,
-              amount: borrowAmountTokens.toFixed(7),
+              type: "deposit",
+              asset: item.asset,
+              amount: item.amount.toFixed(7),
               hash: atomicResult.hash ?? "",
             });
+            if (multiplier > 1) {
+              const borrowAmountTokens = item.amount * (multiplier - 1);
+              appendMarginHistory({
+                marginAccountAddress: marginAccountAddress!,
+                type: "borrow",
+                asset: normalizedBorrowToken,
+                amount: borrowAmountTokens.toFixed(7),
+                hash: atomicResult.hash ?? "",
+              });
+            }
+            // Dual borrow second leg: borrow the second asset as a separate tx.
+            if (isDualBorrow && borrowState!.items.length > 1 && multiplier > 1) {
+              const b1 = borrowState!.items[1];
+              const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
+              const amt1 = parseFloat(b1.assetData.amount) || 0;
+              if (amt1 > 0) {
+                const borrow2Result = await borrowTokens(userAddress, sym1, amt1);
+                if (borrow2Result.success) {
+                  borrowHash = borrow2Result.hash ?? borrowHash;
+                  appendMarginHistory({
+                    marginAccountAddress: marginAccountAddress!,
+                    type: "borrow",
+                    asset: sym1,
+                    amount: amt1.toFixed(7),
+                    hash: borrow2Result.hash ?? "",
+                  });
+                } else {
+                  toast.error(normalizeDepositCollateralError(
+                    `First asset borrowed. Second borrow (${b1.assetData.asset}) failed: ${borrow2Result.error ?? "Unknown error"}`
+                  ));
+                }
+              }
+            }
+          } else {
+            // Error(Budget, ExceededLimit): the chained deposit→borrow overflowed
+            // Soroban's per-tx CPU/resource cap. It grows with pool population and
+            // is a hard network limit (not a fee), so retrying the same atomic tx
+            // can't help — split it into two transactions instead. The atomic tx
+            // failed wholesale, so nothing was deposited; the split flow is clean.
+            const isBudgetError = /budget|exceededlimit|resource/i.test(atomicResult.error ?? '');
+            if (isBudgetError) {
+              console.warn('[leverage] atomic deposit_and_borrow hit Soroban budget; falling back to split 2-tx flow');
+              useSplitFlow = true;
+            } else if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
+              toast.error(`Contract configuration error: ${atomicResult.error}`);
+              setIsProcessing(false);
+              return;
+            } else {
+              toast.error(normalizeDepositCollateralError(atomicResult.error));
+              setIsProcessing(false);
+              return;
+            }
           }
-        } else {
-          // Multi-collateral or cross-asset borrow: fall back to per-token deposit
-          // followed by a separate borrow.
+        }
+
+        if (useSplitFlow) {
+          // Per-token deposit, then a separate borrow. Used for multi-collateral and
+          // as the fallback when the atomic deposit+borrow exceeds the Soroban budget.
           for (const item of wbDeposits) {
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
@@ -734,10 +868,10 @@ export const LeverageAssetsTab = () => {
                     toast.error('Contract setup failed: ' + configResult.error);
                   }
                 } catch (setupError) {
-                  toast.error('Setup error: ' + (setupError instanceof Error ? setupError.message : 'Unknown error'));
+                  toast.error(normalizeContractError(setupError instanceof Error ? setupError.message : undefined, 'Setup error. Please try again.'));
                 }
               } else {
-                toast.error(getFriendlyDepositError(depositResult.error));
+                toast.error(normalizeDepositCollateralError(depositResult.error));
               }
               setIsProcessing(false);
               return;
@@ -754,58 +888,102 @@ export const LeverageAssetsTab = () => {
           }
 
           if (multiplier > 1) {
-            const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-            const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
-            const borrowAmountTokens = borrowAmountUsd / borrowTokenPrice;
+            // Dual borrow: execute each item separately. Single borrow: compute from leverage.
+            const borrowsToExecute = isDualBorrow
+              ? borrowState!.items
+                  .map((b) => ({
+                    token: normalizeContractTokenSymbol(b.assetData.asset),
+                    amount: parseFloat(b.assetData.amount) || 0,
+                  }))
+                  .filter((b) => b.amount > 0)
+              : (() => {
+                  const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                  const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
+                  return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
+                })();
 
-            const borrowResult = await borrowTokens(userAddress, normalizedBorrowToken, borrowAmountTokens);
-            if (!borrowResult.success) {
-              console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
-              toast.error(getFriendlyDepositError(
-                `Deposits were successful. Borrow failed: ${borrowResult.error || "Unknown borrow error"}`
-              ));
-              try {
-                await refreshBalances(userAddress);
-              } catch (refreshErr) {
-                console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
+            for (const bItem of borrowsToExecute) {
+              const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
+              if (!borrowResult.success) {
+                console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
+                toast.error(normalizeDepositCollateralError(
+                  `Deposits were successful. Borrow ${bItem.token} failed: ${borrowResult.error || "Unknown borrow error"}`
+                ));
+                try {
+                  await refreshBalances(userAddress);
+                } catch (refreshErr) {
+                  console.warn("Failed to refresh wallet balances after borrow failure:", refreshErr);
+                }
+                if (marginAccountAddress) {
+                  await refreshBorrowedBalances(marginAccountAddress, true);
+                }
+                setIsProcessing(false);
+                return;
               }
-              if (marginAccountAddress) {
-                await refreshBorrowedBalances(marginAccountAddress);
-              }
-              setIsProcessing(false);
-              return;
+              borrowHash = borrowResult.hash ?? "";
+              appendMarginHistory({
+                marginAccountAddress: marginAccountAddress!,
+                type: "borrow",
+                asset: bItem.token,
+                amount: bItem.amount.toFixed(7),
+                hash: borrowHash,
+              });
             }
-            borrowHash = borrowResult.hash ?? "";
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: normalizedBorrowToken,
-              amount: borrowAmountTokens.toFixed(7),
-              hash: borrowHash,
-            });
           }
         }
 
-        try {
-          await refreshBalances(userAddress);
-        } catch (refreshErr) {
-          console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
-        }
-        if (marginAccountAddress) {
-          await refreshBorrowedBalances(marginAccountAddress);
-        }
-
+        // The tx is already confirmed in a closed ledger (pollTransactionStatus),
+        // so unblock the UI NOW — toast, reset, drop the "Processing…" state — and
+        // run the refresh in the BACKGROUND. Awaiting the heavy refresh
+        // (SAC reconcile + borrow-rate RPCs) here was what kept the button stuck on
+        // "Processing…" long after the position had already rendered. The store's
+        // progressive set() updates the position/collateral within ~1-2s; any
+        // refresh failure reconciles on the next ledger tick.
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
-        console.log('✅ Deposit and borrow successful:', { depositHashes, borrowHash });
         toast.success(
           `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
         );
         resetForm();
+        setIsProcessing(false);
+
+        // Optimistic, post-confirmation: merge the just-deposited collateral into
+        // the store NOW so switching to MB shows it instantly instead of waiting on
+        // the ~2-5s refresh. Safe — the tx is already confirmed; the background
+        // refresh below reconciles to exact on-chain values. (Not persisted, so no
+        // cross-account bleed.)
+        {
+          const store = useMarginAccountInfoStore.getState();
+          const nextCollateral = { ...store.collateralBalances };
+          for (const item of wbDeposits) {
+            const key = normalizeContractTokenSymbol(item.asset);
+            const price = MB_TOKEN_PRICES[key] ?? 1;
+            const prevAmt = parseFloat(nextCollateral[key]?.amount || '0') || 0;
+            const newAmt = prevAmt + item.amount;
+            nextCollateral[key] = { amount: newAmt.toFixed(7), usdValue: (newAmt * price).toFixed(2) };
+          }
+          store.set({ collateralBalances: nextCollateral });
+        }
+
+        qc.invalidateQueries({ queryKey: ['margin'] });
+        void (async () => {
+          try {
+            await refreshBalances(userAddress);
+          } catch (refreshErr) {
+            console.warn("Failed to refresh wallet balances after leverage action:", refreshErr);
+          }
+          if (marginAccountAddress) {
+            try {
+              await refreshBorrowedBalances(marginAccountAddress, true);
+            } catch (e) {
+              console.warn("Post-deposit refresh failed; ledger tick will reconcile:", e);
+            }
+          }
+        })();
 
       } catch (error) {
         console.error('❌ Error in deposit and borrow:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        toast.error(getFriendlyDepositError(errorMessage));
+        toast.error(normalizeDepositCollateralError(errorMessage));
       } finally {
         setIsProcessing(false);
       }
@@ -829,12 +1007,12 @@ export const LeverageAssetsTab = () => {
         toast.success("Margin account created successfully.");
       } else {
         const reason = useMarginAccountInfoStore.getState().accountCreationError || "";
-        toast.error(humanizeCreateAccountError(reason));
+        toast.error(normalizeCreateAccountError(reason));
       }
     } catch (error) {
       console.error("Failed to create margin account:", error);
       const msg = error instanceof Error ? error.message : "";
-      toast.error(humanizeCreateAccountError(msg));
+      toast.error(normalizeCreateAccountError(msg));
     }
   };
 
@@ -921,6 +1099,21 @@ export const LeverageAssetsTab = () => {
                       </span>
                     </div>
                   </>
+                ) : isLoadingBorrowedBalances || effectiveGross > 0.01 ? (
+                  // Loading skeleton — shown while balances are being read OR
+                  // whenever the account demonstrably holds collateral value
+                  // (grossCollateralValue > 0) but the per-token map is momentarily
+                  // empty mid-refresh. Using the account-level value as the source
+                  // of truth means we never flash "no collateral" for an account
+                  // that has some (matches the header's Net Available figure).
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-busy="true">
+                    {[0, 1].map((i) => (
+                      <div
+                        key={i}
+                        className={`h-[52px] rounded-xl animate-pulse ${isDark ? "bg-[#2A2A2A]" : "bg-[#ECECEC]"}`}
+                      />
+                    ))}
+                  </div>
                 ) : (
                   <p className={`text-center text-sm py-2 ${isDark ? "text-[#777777]" : "text-[#AAAAAA]"}`}>
                     No collateral in your margin account. Switch to WB to deposit first.
@@ -1038,22 +1231,11 @@ export const LeverageAssetsTab = () => {
           viewport={{ once: true }}
           transition={{ duration: 0.4, delay: 0.1, ease: "easeOut" }}
         >
-          <motion.h2
-            className={`w-full text-[16px] font-medium ${isDark ? "text-white" : ""}`}
-            initial={{ opacity: 0, x: -10 }}
-            whileInView={{ opacity: 1, x: 0 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.3 }}
-          >
-            Borrow
-          </motion.h2>
-          <BorrowBox
-            mode={mode}
+          <DualBorrow
+            depositUsd={effectiveTotalForBorrow}
             leverage={leverage}
             setLeverage={setLeverage}
-            totalDeposit={effectiveTotalForBorrow}
-            onBorrowItemsChange={setBorrowItems}
-            onTokenChange={setBorrowToken}
+            onChange={handleBorrowChange}
           />
         </motion.section>
 
@@ -1076,7 +1258,7 @@ export const LeverageAssetsTab = () => {
           transition={{ duration: 0.4, delay: 0.3, ease: "easeOut" }}
         >
           <Button
-            disabled={isProcessing || editingId !== null}
+            disabled={isProcessing || editingId !== null || !!borrowState?.error}
             size="large"
             text={
               isProcessing ? "Processing..." :
@@ -1213,14 +1395,25 @@ export const LeverageAssetsTab = () => {
 };
 
 interface LeveragePreviewSectionProps {
+  /** Pure collateral USD being deposited (excludes fee uplift). */
   depositAmount: number;
+  /** USD to be borrowed at the selected leverage. */
   projectedBorrowUsd: number;
+  /** True in MB mode, where collateral is already on-account (no fresh deposit). */
   isMBMode: boolean;
   leverage: number;
   fees: number;
+  /** Deposit including fees. */
   totalDeposit: number;
 }
 
+/**
+ * Renders the before → after transaction preview for the Leverage Assets action
+ * (leverage, deposit, fees, collateral, debt, health factor, liquidation
+ * buffer). The "before" state is read from the margin store; the "after" state
+ * projects the deposit and borrow onto the gross-asset / debt risk math. Returns
+ * null until there is something to preview.
+ */
 const LeveragePreviewSection = ({
   depositAmount,
   projectedBorrowUsd,

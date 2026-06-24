@@ -1,8 +1,10 @@
 import { calcNetApr } from "./lite-position-math";
 import { getCachedTokenPrice } from "@/lib/oracle-price";
 
+/** Health bucket for a Lite position: healthy, near-threshold, or liquidatable. */
 export type LitePositionStatus = "active" | "risky" | "liquidation";
 
+/** A single leveraged-yield position as rendered across the Lite UI (list, detail, card). */
 export interface LitePosition {
   id: string;
   poolId: string;
@@ -46,6 +48,14 @@ const POOL_INFO: Record<string, { protocol: string; poolVersion: string; poolTyp
 // already trigger refresh via the margin store, so the cache is warm by the
 // time this builder runs.
 
+/**
+ * Builds {@link LitePosition} rows from the margin store's on-chain
+ * `borrowedBalances`, spreading the account's total collateral across each
+ * borrow leg in proportion to its USD value. Each leg is treated as a same-asset
+ * single-token Blend position; pool rates come from {@link POOL_INFO} (falling
+ * back to XLM defaults) and collateral token amounts are derived from the shared
+ * oracle price cache. Returns an empty array when there is no borrowed balance.
+ */
 export function buildRealPositions(
   borrowedBalances: Record<string, { amount: string; usdValue: string }>,
   totalCollateralValue: number,

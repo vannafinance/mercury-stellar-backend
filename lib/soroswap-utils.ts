@@ -1,3 +1,9 @@
+// Soroswap (AMM) integration: XLM/USDC pool stats, LP positions, swap quotes,
+// and add/remove-liquidity + swap, both from the Vanna margin account (via
+// AccountManager.execute) and directly from the user's wallet. Reads use a
+// throwaway sim source; the XDR call struct sends amounts in WAD (1e18) while
+// on-chain reserves/LP balances are 7-decimal (STROOP).
+
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@stellar/freighter-api';
 import {
@@ -5,6 +11,7 @@ import {
   NETWORK_PASSPHRASE,
   SOROBAN_RPC_URL,
 } from './stellar-utils';
+import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
 
 // ── Soroswap Testnet Constants ────────────────────────────────────────────────
 const SOROSWAP_ROUTER = CONTRACT_ADDRESSES.SOROSWAP_ROUTER;
@@ -18,11 +25,12 @@ const WAD = 1e18;
 const STROOP = 1e7; // Stellar 7-decimal precision
 
 const toWad  = (amount: number): bigint => BigInt(Math.floor(amount * WAD));
-const toStroop = (amount: number): bigint => BigInt(Math.round(amount * STROOP));
+const toStroop = (amount: number): bigint => BigInt(Math.floor(amount * STROOP + 1e-9));
 const makeKey  = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/** A historical Soroswap add/remove-liquidity event (amounts 7-decimal strings). */
 export interface SoroswapLpEvent {
   type: 'deposit' | 'withdraw';
   shareAmount: string;  // LP shares (7 decimals)
@@ -33,6 +41,7 @@ export interface SoroswapLpEvent {
   ledger: number;
 }
 
+/** Reserves, total LP supply, and fee for the XLM/USDC pool (display strings). */
 export interface SoroswapPoolStats {
   reserveXLM:   string; // human-readable (7 decimals)
   reserveUSDC:  string;
@@ -41,16 +50,19 @@ export interface SoroswapPoolStats {
   pairAddress:  string;
 }
 
+/** A margin account's Soroswap LP position (LP shares, 7-decimal string). */
 export interface SoroswapLpPosition {
   lpBalance: string; // LP shares held by margin account (7 decimals)
 }
 
+/** Outcome of a Soroswap tx: success plus the hash, or an error message. */
 export interface SoroswapTransactionResult {
   success: boolean;
   hash?:   string;
   error?:  string;
 }
 
+/** Static config for a supported Soroswap pool (display + fee in bps×10). */
 export interface SoroswapPoolConfig {
   id:          string;
   tokens:      [string, string];
@@ -58,6 +70,7 @@ export interface SoroswapPoolConfig {
   feeFraction: number;
 }
 
+/** Supported Soroswap pools (currently the single XLM/USDC pair). */
 export const SOROSWAP_POOLS: SoroswapPoolConfig[] = [
   {
     id:          'soroswap-xlm-usdc',
@@ -93,6 +106,13 @@ function tempAccount(): [StellarSdk.rpc.Server, StellarSdk.Account] {
 
 // ── SoroswapService ───────────────────────────────────────────────────────────
 
+/**
+ * Stateless façade over the Soroswap router + XLM/USDC pair. Resolves effective
+ * router/token addresses from Registry (with hardcoded fallbacks), reads pool
+ * stats and LP balances via simulation, and routes liquidity/swap writes either
+ * through the margin account (AccountManager.execute, amounts in WAD) or the
+ * user's wallet directly. All methods are static.
+ */
 export class SoroswapService {
 
   // ── Registry helpers ───────────────────────────────────────────────────────
@@ -408,89 +428,6 @@ export class SoroswapService {
     }
   }
 
-  // ── LP event history ──────────────────────────────────────────────────────
-
-  /**
-   * Fetch deposit / withdraw LP events from the Soroswap pair contract.
-   * The pair emits (Symbol("deposit"|"withdraw"), depositor) with body (shares, amt0, amt1).
-   */
-  static async getSoroswapLpEvents(
-    pairAddress?: string,
-    userAddress?: string,
-  ): Promise<SoroswapLpEvent[]> {
-    try {
-      const resolvedPair = pairAddress ?? SOROSWAP_XLM_USDC_POOL;
-      if (!resolvedPair) return [];
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const latest = await server.getLatestLedger();
-      const startLedger = Math.max(0, latest.sequence - 518400); // ~30 days
-
-      const depositTopic  = StellarSdk.xdr.ScVal.scvSymbol('deposit').toXDR('base64');
-      const withdrawTopic = StellarSdk.xdr.ScVal.scvSymbol('withdraw').toXDR('base64');
-
-      const safeGet = async (topic: string) => {
-        try {
-          const resp = await (server as any).getEvents({
-            startLedger,
-            filters: [{ type: 'contract', contractIds: [resolvedPair], topics: [[topic]] }],
-            limit: 200,
-          });
-          if (resp?.error) return [];
-          return resp?.events ?? [];
-        } catch { return []; }
-      };
-
-      const [depositEvs, withdrawEvs] = await Promise.all([
-        safeGet(depositTopic),
-        safeGet(withdrawTopic),
-      ]);
-
-      const parseEv = (ev: any, type: 'deposit' | 'withdraw'): SoroswapLpEvent | null => {
-        try {
-          if (userAddress && Array.isArray(ev.topic)) {
-            // Some deployments emit depositor/caller at different topic indexes.
-            // Match against any decodable address topic instead of assuming topic[1].
-            const topicAddresses = ev.topic
-              .map((t: any) => {
-                try {
-                  return StellarSdk.scValToNative(t) as string;
-                } catch {
-                  return null;
-                }
-              })
-              .filter((v: string | null): v is string => typeof v === 'string' && v.length > 0);
-            if (topicAddresses.length > 0 && !topicAddresses.includes(userAddress)) {
-              return null;
-            }
-          }
-          const body = ev.value ? (StellarSdk.scValToNative(ev.value) as any[]) : null;
-          if (!Array.isArray(body) || body.length < 3) return null;
-          const toHuman = (v: any) => (Number(v?.toString?.() ?? v ?? 0) / STROOP).toFixed(7);
-          return {
-            type,
-            shareAmount: toHuman(body[0]),
-            amountXLM:   toHuman(body[1]),
-            amountUSDC:  toHuman(body[2]),
-            timestamp: ev.ledgerClosedAt ? new Date(ev.ledgerClosedAt).getTime() : 0,
-            txHash: ev.txHash ?? '',
-            ledger: ev.ledger ?? 0,
-          };
-        } catch { return null; }
-      };
-
-      const all: SoroswapLpEvent[] = [
-        ...depositEvs.map((ev: any) => parseEv(ev, 'deposit')),
-        ...withdrawEvs.map((ev: any) => parseEv(ev, 'withdraw')),
-      ].filter((e): e is SoroswapLpEvent => e !== null);
-
-      return all.sort((a, b) => b.timestamp - a.timestamp);
-    } catch (err: any) {
-      console.warn('[SoroswapService] getSoroswapLpEvents error:', err?.message ?? err);
-      return [];
-    }
-  }
-
   // ── Transaction polling ────────────────────────────────────────────────────
 
   private static async pollTransactionStatus(
@@ -660,11 +597,16 @@ export class SoroswapService {
       const routerAddress = await SoroswapService.getEffectiveRouterAddress();
       const tokenOut: 'XLM' | 'USDC' = tokenIn === 'XLM' ? 'USDC' : 'XLM';
 
+      const amountStroops = floorAmountToStroops(amountIn);
+      if (amountStroops <= BigInt(0)) {
+        return { success: false, error: 'Invalid swap amount' };
+      }
+
       const callBytes = SoroswapService.buildExternalProtocolCallBytes(
         routerAddress,
         'Swap',
         [tokenIn, tokenOut],
-        [toWad(amountIn), BigInt(0)], // amount_out[0] = amountIn WAD, [1] = min_out
+        [stroopsToWad(amountStroops), BigInt(0)],
         marginAccountAddress,
         false,
       );

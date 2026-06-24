@@ -71,9 +71,91 @@ const wadToNumber = (raw: unknown): number => {
   }
 };
 
+// Stellar token balances use 7 decimal places (stroops), not 18-decimal WAD.
+const SAC_DECIMALS = BigInt(10_000_000); // 1e7
+const sacToNumber = (raw: unknown): number => {
+  if (raw === null || raw === undefined) return 0;
+  try {
+    const bi = BigInt((raw as { toString(): string }).toString());
+    const whole = Number(bi / SAC_DECIMALS);
+    const frac = Number(bi % SAC_DECIMALS) / 1e7;
+    return whole + frac;
+  } catch {
+    return 0;
+  }
+};
+
+// SAC contracts for the two native assets held in margin accounts.
+// Mirrors MARGIN_SAC_TOKENS in farmTrackingCollateral.ts.
+const SAC_TOKEN_CONFIGS = [
+  { contractId: CONTRACT_ADDRESSES.BLEND_XLM, symbol: "XLM" },
+  { contractId: CONTRACT_ADDRESSES.BLEND_USDC, symbol: "BLUSDC" },
+] as const;
+
+/**
+ * Read the live XLM and BLUSDC SAC balances held by a margin smart account.
+ * Returns a map of symbol → amount (human units). Mirrors the behaviour of
+ * reconcileMarginRawSacCollateral in farmTrackingCollateral.ts so that the
+ * protocol-wide scan uses the same gross-collateral formula as the connected-
+ * wallet path.
+ */
+async function readSacBalances(
+  server: StellarSdk.rpc.Server,
+  smartAccount: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  await Promise.all(
+    SAC_TOKEN_CONFIGS.map(async ({ contractId, symbol }) => {
+      const raw = await simulateView<unknown>(
+        server,
+        contractId,
+        "balance",
+        StellarSdk.nativeToScVal(smartAccount, { type: "address" }),
+      );
+      out.set(symbol, sacToNumber(raw));
+    }),
+  );
+  return out;
+}
+
 let lastResult: { accounts: AccountSnapshot[]; ownerByAccount: Map<string, string>; fetchedAt: number } | null = null;
 let inflight: Promise<{ accounts: AccountSnapshot[]; ownerByAccount: Map<string, string> }> | null = null;
 const ALL_ACCOUNTS_TTL_MS = 30_000;
+
+// Hard ceiling on how many open accounts we deep-scan in a single pass. The
+// per-account read costs `2 + collateral_tokens + debt_tokens + farm` RPC
+// calls, so without a cap the protocol-wide scan grows O(accounts × tokens)
+// and will overwhelm RPC at mainnet scale. We keep the most recently
+// registered accounts (the tail of SmartAccountsList, which `add_account`
+// appends to) and log how many were omitted — never silently truncate.
+// The permanent fix is a Mercury per-account table; this bound makes the
+// RPC path safe until then.
+const MAX_DEEP_SCAN_ACCOUNTS = 200;
+
+// Cap simultaneous in-flight RPC requests. The previous code fanned out every
+// account (and every token within it) through one unbounded `Promise.all`,
+// firing hundreds of concurrent `simulateTransaction` calls. Pooling keeps
+// RPC pressure flat regardless of roster size.
+const SCAN_CONCURRENCY = 8;
+
+/** Run `fn` over `items` with at most `limit` promises in flight at once. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /** Read RegistryKey::SmartAccountsList from persistent storage. Returns
  *  every smart account address ever registered (open + closed). Use
@@ -229,6 +311,19 @@ async function readSingleAccountState(
     console.warn(`[allMarginAccounts] farm collateral merge failed for ${smartAccount}:`, e);
   }
 
+  // Overwrite XLM/BLUSDC with live SAC balances — these are authoritative for
+  // the raw assets physically held in the account (including borrowed cash that
+  // sits as native tokens before being deployed). Mirrors reconcileMarginRawSacCollateral
+  // in farmTrackingCollateral.ts so the HF formula matches the connected-wallet path.
+  try {
+    const sacAmounts = await readSacBalances(server, smartAccount);
+    sacAmounts.forEach((amt, sym) => {
+      collateralByToken.set(sym, amt);
+    });
+  } catch (e) {
+    console.warn(`[allMarginAccounts] SAC balance read failed for ${smartAccount}:`, e);
+  }
+
   const debtByToken = new Map<string, number>();
   if (Array.isArray(borrowedTokens)) {
     await Promise.all(
@@ -282,17 +377,13 @@ function buildSnapshotFromState(state: MarginAccountChainState): AccountSnapshot
     debt.push({ asset: symbol, symbol, decimals: 7, amount, usd });
   });
 
-  // Mirrors the contract-time HF check used in the connected-wallet flow
-  // (see margin-account-info-store.refreshBorrowedBalances) — borrowed funds
-  // physically live in the smart account until they're deployed elsewhere,
-  // so we add them back to the collateral leg unless tracking-token
-  // collateral is already present (which would double-count).
-  const hasTrackingTokenCollateral = collateral.some(
-    (c) => c.type === "aToken" || c.type === "lp" || c.type === "track",
-  );
-  const grossCollateralUsd = hasTrackingTokenCollateral
-    ? totalCollateralUsd
-    : totalCollateralUsd + totalDebtUsd;
+  // SAC balances (XLM/BLUSDC) are now authoritative in collateralByToken — they
+  // were overwritten by readSacBalances() in readSingleAccountState, which mirrors
+  // reconcileMarginRawSacCollateral. This means totalCollateralUsd already includes:
+  //   • tracking-token collateral (bTokens, LP shares) from fetchFarmTrackingCollateralAmountMap
+  //   • raw borrowed cash sitting as native tokens (from SAC balance reads)
+  // No approximation needed; always use totalCollateralUsd directly.
+  const grossCollateralUsd = totalCollateralUsd;
 
   const healthFactor = totalDebtUsd > 0
     ? grossCollateralUsd / totalDebtUsd
@@ -320,11 +411,11 @@ function buildSnapshotFromState(state: MarginAccountChainState): AccountSnapshot
  * roster from the Registry, snapshots each open account, and rolls them up
  * into the `AccountSnapshot[]` shape consumed by every `derive*` helper.
  *
- * Concurrency: `getContractData` calls and per-account view-call fan-outs
- * run in parallel (Promise.all). For a deployment with N margin accounts
- * the total RPC count is roughly:
- *     1 (list)  +  N (owner)  +  N (active)  +  N×(2 + col_tokens + debt_tokens)
- * which is fine for the testnet's typical few-dozen-account scale.
+ * Load is bounded two ways: at most {@link SCAN_CONCURRENCY} RPC requests are
+ * in flight at once (a pool, not an unbounded `Promise.all`), and the deep
+ * per-account scan is capped at {@link MAX_DEEP_SCAN_ACCOUNTS} (most-recent
+ * accounts kept, overflow logged). Together these keep RPC pressure flat
+ * regardless of how large the account roster grows.
  */
 export async function fetchAllMarginAccountSnapshots(opts?: {
   force?: boolean;
@@ -353,25 +444,37 @@ export async function fetchAllMarginAccountSnapshots(opts?: {
       return { accounts: [] as AccountSnapshot[], ownerByAccount: new Map<string, string>() };
     }
 
-    // Resolve owners + filter closed accounts in parallel.
-    const ownerResults = await Promise.all(
-      allSmartAccounts.map(async (account) => ({
-        account,
-        owner: await readSmartAccountOwner(server, account),
-      })),
+    // Resolve owners + filter closed accounts, pooled to keep RPC pressure flat.
+    const ownerResults = await mapWithConcurrency(
+      allSmartAccounts,
+      SCAN_CONCURRENCY,
+      async (account) => ({ account, owner: await readSmartAccountOwner(server, account) }),
     );
     const openPairs = ownerResults.filter(
       (p): p is { account: string; owner: string } => Boolean(p.owner),
     );
 
-    const stateResults = await Promise.all(
-      openPairs.map(({ account, owner }) =>
-        readSingleAccountState(server, account, owner)
-          .catch((err) => {
-            console.warn(`[allMarginAccounts] state read failed for ${account}:`, err);
-            return null;
-          }),
-      ),
+    // Cap the expensive deep-scan. Keep the most recently registered accounts
+    // (tail of the append-only SmartAccountsList) and log the omission.
+    let scanPairs = openPairs;
+    if (openPairs.length > MAX_DEEP_SCAN_ACCOUNTS) {
+      const omitted = openPairs.length - MAX_DEEP_SCAN_ACCOUNTS;
+      scanPairs = openPairs.slice(-MAX_DEEP_SCAN_ACCOUNTS);
+      console.warn(
+        `[allMarginAccounts] ${openPairs.length} open accounts exceed the ` +
+          `${MAX_DEEP_SCAN_ACCOUNTS} deep-scan cap — snapshotting the ${MAX_DEEP_SCAN_ACCOUNTS} ` +
+          `most recent, omitting ${omitted}. (Move to a Mercury per-account table to lift this.)`,
+      );
+    }
+
+    const stateResults = await mapWithConcurrency(
+      scanPairs,
+      SCAN_CONCURRENCY,
+      ({ account, owner }) =>
+        readSingleAccountState(server, account, owner).catch((err) => {
+          console.warn(`[allMarginAccounts] state read failed for ${account}:`, err);
+          return null;
+        }),
     );
 
     const ownerByAccount = new Map<string, string>();

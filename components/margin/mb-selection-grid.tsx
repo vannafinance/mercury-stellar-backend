@@ -7,14 +7,20 @@ import { Radio } from "../ui/radio-button";
 import { iconPaths } from "@/lib/constants";
 import { Collaterals } from "@/lib/types";
 import { useTheme } from "@/contexts/theme-context";
+import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 type Mode = "Deposit" | "Borrow";
 
 interface MBSelectionGridProps {
+  /** Margin-account collaterals available to leverage. Item id = `${asset}-${amount}`. */
   items: Collaterals[];
+  /** Currently selected item ids. */
   selectedIds: Set<string>;
+  /** "Deposit" renders multi-select checkboxes; "Borrow" renders single-select radios. */
   mode: Mode;
+  /** Checkbox handler (Deposit mode); receives the item id and its prior selected state. */
   onToggle: (itemId: string, isSelected: boolean) => void;
+  /** Radio handler (Borrow mode); receives the chosen item id. */
   onRadioSelect: (itemId: string) => void;
 }
 
@@ -59,12 +65,12 @@ const MBSelectionGridComponent = ({
             <div className={`text-[16px] font-semibold ${
               isDark ? "text-white" : ""
             }`}>
-              {(Number(item.amount) || 0).toFixed(2)} {item.asset}
+              {formatTokenAmount(Number(item.amount) || 0)} {item.asset}
             </div>
             <div className={`rounded-[4px] py-[2px] px-[4px] text-[10px] font-medium ${
               isDark ? "bg-[#111111] text-white" : "bg-[#FFFFFF]"
             }`}>
-              {(Number(item.amountInUsd) || 0).toFixed(2)} USD
+              {formatUsdValue(Number(item.amountInUsd) || 0).replace("$", "")} USD
             </div>
           </article>
         );
@@ -73,7 +79,14 @@ const MBSelectionGridComponent = ({
   );
 };
 
-// Memoized component with custom comparison
+/**
+ * Two-column picker for selecting which margin-account (MB) collaterals to
+ * leverage. Each cell shows the token icon, formatted amount, and USD value with
+ * a checkbox (Deposit) or radio (Borrow) per {@link MBSelectionGridProps.mode}.
+ *
+ * Wrapped in {@link memo} with a custom comparator that deep-checks `items` and
+ * the `selectedIds` set so it only re-renders on a real selection/data change.
+ */
 export const MBSelectionGrid = memo(MBSelectionGridComponent, (prevProps, nextProps) => {
   // Compare mode
   if (prevProps.mode !== nextProps.mode) return false;

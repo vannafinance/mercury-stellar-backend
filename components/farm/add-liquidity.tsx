@@ -1,7 +1,19 @@
 "use client";
 
+/**
+ * Farm "Add Liquidity" panel. Handles two flows from the user's margin account:
+ * - Single-asset supply into a Blend lending pool (with a projected-earnings
+ *   {@link DepositSummary} and borrow-vs-collateral source attribution).
+ * - Dual-asset add into an Aquarius or Soroswap LP pool, auto-computing the
+ *   paired amount from live pool reserves to keep the deposit on-ratio.
+ *
+ * Requires a connected wallet and an existing margin account; the submit button
+ * surfaces the specific gating reason. Pool type (Blend vs Aquarius/Soroswap) is
+ * inferred from the selected farm row.
+ */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useFarmStore } from "@/store/farm-store";
@@ -16,16 +28,23 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { useBlendPoolStats } from "@/hooks/use-farm";
-import { useBlendStore } from "@/store/blend-store";
 import { useTokenPrice } from "@/hooks/use-token-prices";
 import { DepositSummary } from "./deposit-summary";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import toast from "react-hot-toast";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { formatUsdValue } from "@/lib/utils/format-amount";
+import { attributeFarmDeposit } from "@/lib/utils/margin-token-attribution";
 
 const SUPPORTED_TOKENS = ["XLM", "USDC"] as const;
 type TokenSymbol = (typeof SUPPORTED_TOKENS)[number];
 
+/**
+ * Memoized add-liquidity panel. Resolves the selected pool's protocol + tokens
+ * from the farm store, loads the relevant margin-account balances, and dispatches
+ * either the Blend deposit or the DEX add-liquidity mutation.
+ */
 export const AddLiquidity = memo(function AddLiquidity() {
   const { isDark } = useTheme();
   const userAddress = useUserStore((state) => state.address);
@@ -57,8 +76,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
     }
     return "XLM";
   }, [tabType, selectedRow]);
-
-  const triggerBlendRefresh = useBlendStore((s) => s.triggerRefresh);
 
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>(getInitialToken);
   const [value, setValue] = useState<string>("");
@@ -159,25 +176,24 @@ export const AddLiquidity = memo(function AddLiquidity() {
     }
   }, [isAquariusPool, isSoroswapPool]);
 
-  // Auto-calculate tokenB when user types tokenA (and vice versa)
+  // Auto-calculate tokenB when user types tokenA (and vice versa).
+  // reserveA / reserveB match pool.tokens[0] / tokens[1] (see aquarius-utils).
+  const poolSpotPriceAinB = (rA: number, rB: number): number =>
+    rA > 0 && rB > 0 ? rB / rA : 0;
+
   const handleAmountAChange = (val: string) => {
     setAmountA(val);
     const parsed = parseFloat(val);
-    // For Aquarius get_reserves() token order is [USDC, XLM] (sorted by address),
-    // while this panel token order is [XLM, USDC]. Map reserves by symbol first.
-    const xlmReserve = isSoroswapPool
+    const reserveA = isSoroswapPool
       ? parseFloat(soroswapPoolStats?.reserveXLM ?? "0")
-      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
-    const usdcReserve = isSoroswapPool
-      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
       : parseFloat(aquariusPoolStats?.reserveA ?? "0");
-    const reserveA = tokenA === "XLM" ? xlmReserve : usdcReserve;
-    const reserveB = tokenB === "USDC" ? usdcReserve : xlmReserve;
+    const reserveB = isSoroswapPool
+      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
+      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
     if (!isNaN(parsed) && parsed > 0 && reserveA > 0 && reserveB > 0) {
-      const rA = reserveA;
-      const rB = reserveB;
-      if (rA > 0) setAmountB((parsed * rB / rA).toFixed(2));
+      const ratio = poolSpotPriceAinB(reserveA, reserveB);
+      if (ratio > 0) setAmountB((parsed * ratio).toFixed(2));
     } else if (val === '') {
       setAmountB('');
     }
@@ -186,19 +202,16 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const handleAmountBChange = (val: string) => {
     setAmountB(val);
     const parsed = parseFloat(val);
-    const xlmReserve = isSoroswapPool
+    const reserveA = isSoroswapPool
       ? parseFloat(soroswapPoolStats?.reserveXLM ?? "0")
-      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
-    const usdcReserve = isSoroswapPool
-      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
       : parseFloat(aquariusPoolStats?.reserveA ?? "0");
-    const reserveA = tokenA === "XLM" ? xlmReserve : usdcReserve;
-    const reserveB = tokenB === "USDC" ? usdcReserve : xlmReserve;
+    const reserveB = isSoroswapPool
+      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
+      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
     if (!isNaN(parsed) && parsed > 0 && reserveA > 0 && reserveB > 0) {
-      const rA = reserveA;
-      const rB = reserveB;
-      if (rB > 0) setAmountA((parsed * rA / rB).toFixed(2));
+      const inverseRatio = reserveA / reserveB;
+      if (inverseRatio > 0) setAmountA((parsed * inverseRatio).toFixed(2));
     } else if (val === '') {
       setAmountA('');
     }
@@ -270,52 +283,41 @@ export const AddLiquidity = memo(function AddLiquidity() {
     setTxError("");
   };
 
-  const handleAddLiquidity = async () => {
-    if (!userAddress || !marginAccountAddress) return;
+  const qc = useQueryClient();
 
-    const amtA = parseFloat(amountA);
-    const amtB = parseFloat(amountB);
-    if (isNaN(amtA) || isNaN(amtB) || amtA <= 0 || amtB <= 0) return;
-
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    const result = isSoroswapPool
-      ? await SoroswapService.addLiquidity(
-          userAddress,
-          marginAccountAddress,
-          amtA,
-          amtB
-        )
-      : await AquariusService.addLiquidity(
-          userAddress,
-          marginAccountAddress,
-          tokenA,
-          tokenB,
-          amtA,
-          amtB
-        );
-
-    if (result.success) {
+  const addLiquidityMutation = useMutation({
+    mutationFn: async ({ amtA, amtB }: { amtA: number; amtB: number }) => {
+      const result = isSoroswapPool
+        ? await SoroswapService.addLiquidity(userAddress!, marginAccountAddress!, amtA, amtB)
+        : await AquariusService.addLiquidity(userAddress!, marginAccountAddress!, tokenA, tokenB, amtA, amtB);
+      if (!result.success) {
+        throw new Error(result.error ?? "Add liquidity failed");
+      }
+      return { ...result, amtA, amtB };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amtA, amtB }) => {
       setTxStatus("success");
-      setTxHash(result.hash ?? "");
+      setTxHash(hash ?? "");
       appendFarmHistory({
         protocol: isSoroswapPool ? "soroswap" : "aquarius",
         poolKey: buildFarmPoolKey(tokenA, tokenB),
-        marginAccountAddress,
+        marginAccountAddress: marginAccountAddress!,
         action: "add",
         amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenB}`,
-        txHash: result.hash ?? "",
+        txHash: hash ?? "",
       });
-      toast.success(`Liquidity added! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      toast.success(`Liquidity added! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
       const nextXlm = Math.max(0, parseFloat(marginXlmBalance || "0") - amtA);
       const nextUsdc = Math.max(0, parseFloat(marginUsdcBalance || "0") - amtB);
       setMarginXlmBalance(nextXlm.toFixed(2));
       setMarginUsdcBalance(nextUsdc.toFixed(2));
       setAmountA("");
       setAmountB("");
-      // Refresh canonical balances and pool stats; retries absorb RPC indexing delay.
       refreshDexMarginBalances(3, 1500);
       if (isSoroswapPool) {
         SoroswapService.getPoolStats().then(setSoroswapPoolStats).catch(() => {});
@@ -324,63 +326,76 @@ export const AddLiquidity = memo(function AddLiquidity() {
           .then(setAquariusPoolStats)
           .catch(() => {});
       }
-
-      // Keep store-level data in sync for other pages that derive margin info.
-      refreshBorrowedBalances(marginAccountAddress);
-      triggerBlendRefresh();
-    } else {
+      qc.invalidateQueries({ queryKey: ['farm'] });
+    },
+    onError: (error) => {
       setTxStatus("error");
-      const message = result.error ?? "Add liquidity failed";
+      const message = normalizeContractError(error instanceof Error ? error.message : undefined, "Add liquidity failed");
       setTxError(message);
       toast.error(message);
-    }
+    },
+  });
+
+  const handleAddLiquidity = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    const amtA = parseFloat(amountA);
+    const amtB = parseFloat(amountB);
+    if (isNaN(amtA) || isNaN(amtB) || amtA <= 0 || amtB <= 0) return;
+    addLiquidityMutation.mutate({ amtA, amtB });
   };
 
-  const handleDeposit = async () => {
-    if (!userAddress || !marginAccountAddress) return;
-    const amount = parseFloat(value);
-    if (isNaN(amount) || amount <= 0) return;
-
-    setTxStatus("loading");
-    setTxError("");
-    setTxHash("");
-
-    // Deposit from margin account → Blend pool via AccountManager.execute
-    const result = await BlendService.depositToBlendPool(
-      userAddress,
-      marginAccountAddress,
-      selectedToken,
-      amount
-    );
-
-    if (result.success) {
+  const depositToBlendMutation = useMutation({
+    mutationFn: async ({ amount }: { amount: number }) => {
+      const result = await BlendService.depositToBlendPool(
+        userAddress!,
+        marginAccountAddress!,
+        selectedToken,
+        amount,
+      );
+      if (!result.success) {
+        throw new Error(result.error ?? "Deposit failed");
+      }
+      return { ...result, amount };
+    },
+    onMutate: () => {
+      setTxStatus("loading");
+      setTxError("");
+      setTxHash("");
+    },
+    onSuccess: ({ hash, amount }) => {
       setTxStatus("success");
-      setTxHash(result.hash ?? "");
+      setTxHash(hash ?? "");
       appendFarmHistory({
         protocol: "blend",
         poolKey: buildFarmPoolKey(selectedToken),
-        marginAccountAddress,
+        marginAccountAddress: marginAccountAddress!,
         action: "add",
         amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
-        txHash: result.hash ?? "",
+        txHash: hash ?? "",
       });
-      toast.success(`Deposit successful! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      toast.success(`Deposit successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
       setValue("");
-      refreshBorrowedBalances(marginAccountAddress);
-      // Refresh Blend positions (positions table + events) after a short delay
-      // to allow the RPC node to reflect the confirmed transaction state
+      qc.invalidateQueries({ queryKey: ['farm'] });
+      refreshBorrowedBalances(marginAccountAddress!, true);
       setTimeout(() => {
-        triggerBlendRefresh();
-        BlendService.getUserBlendBalance(marginAccountAddress, selectedToken)
+        BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken)
           .then((info) => setBlendBalance(info.underlyingBalance))
           .catch(() => {});
       }, 3000);
-    } else {
+    },
+    onError: (error) => {
       setTxStatus("error");
-      const errorMsg = result.error ?? "Deposit failed";
+      const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Deposit failed");
       setTxError(errorMsg);
       toast.error(errorMsg);
-    }
+    },
+  });
+
+  const handleDeposit = () => {
+    if (!userAddress || !marginAccountAddress) return;
+    const amount = parseFloat(value);
+    if (isNaN(amount) || amount <= 0) return;
+    depositToBlendMutation.mutate({ amount });
   };
 
   const poolAsset = BLEND_POOL_ASSETS.find((a) => a.symbol === selectedToken);
@@ -388,8 +403,19 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   const isInputValid = parseFloat(value) > 0 && !isNaN(parseFloat(value));
   const blendDeployed = parseFloat(blendBalance);
-  const availableToDeployNum = parseFloat(marginTokenBalance || "0");
+  const marginRawNum = parseFloat(marginTokenBalance || "0");
+  const borrowedForToken = parseFloat(
+    borrowedBalances[selectedToken]?.amount ?? "0",
+  );
+  const availableToDeployNum = marginRawNum;
   const availableToDeployStr = availableToDeployNum.toFixed(2);
+  const depositAmountNum = parseFloat(value) || 0;
+  const depositAttribution = attributeFarmDeposit(
+    marginRawNum,
+    blendDeployed,
+    borrowedForToken,
+    depositAmountNum,
+  );
   const isOverBalance = parseFloat(value) > availableToDeployNum;
   const isSubmitDisabled =
     !userAddress ||
@@ -411,14 +437,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   if (isAquariusPool || isSoroswapPool) {
     const dexName = isSoroswapPool ? "Soroswap" : "Aquarius";
-    const xlmReserve = isSoroswapPool
+    const reserveA = isSoroswapPool
       ? parseFloat(soroswapPoolStats?.reserveXLM ?? "0")
-      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
-    const usdcReserve = isSoroswapPool
-      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
       : parseFloat(aquariusPoolStats?.reserveA ?? "0");
-    const reserveA = tokenA === "XLM" ? xlmReserve : usdcReserve;
-    const reserveB = tokenB === "USDC" ? usdcReserve : xlmReserve;
+    const reserveB = isSoroswapPool
+      ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
+      : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
     const availableA = tokenA === "XLM" ? marginXlmBalance : marginUsdcBalance;
     const availableB = tokenB === "USDC" ? marginUsdcBalance : marginXlmBalance;
@@ -449,9 +473,13 @@ export const AddLiquidity = memo(function AddLiquidity() {
         }`}>
           {(reserveA > 0 && reserveB > 0) && (
             <div className={`text-[11px] font-medium mb-[4px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
-              1 {tokenB} ≈ {(reserveA / reserveB).toFixed(2)} {tokenA}
-              &nbsp;·&nbsp;
-              1 {tokenA} ≈ {(reserveB / reserveA).toFixed(2)} {tokenB}
+              {(() => {
+                const priceAinB = poolSpotPriceAinB(reserveA, reserveB);
+                const priceBinA = reserveA > 0 && reserveB > 0 ? reserveA / reserveB : 0;
+                const fmtA = priceAinB < 0.01 ? priceAinB.toFixed(4) : priceAinB.toFixed(2);
+                const fmtB = priceBinA < 0.01 ? priceBinA.toFixed(4) : priceBinA.toFixed(2);
+                return `1 ${tokenA} ≈ ${fmtA} ${tokenB} · 1 ${tokenB} ≈ ${fmtB} ${tokenA}`;
+              })()}
             </div>
           )}
           <div className="w-full flex flex-col gap-[12px]">
@@ -608,6 +636,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
             </AnimatePresence>
           </div>
         </div>
+        {/* USD equivalent of the entered amount (matches the earn supply/withdraw UX) */}
+        <div className="px-3 -mt-1 pb-1">
+          <span className={`text-[12px] font-medium ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+            ≈ {formatUsdValue((parseFloat(value) || 0) * (tokenPriceUsd || 0))}
+          </span>
+        </div>
         <div className="flex items-center justify-between px-3 pb-3">
           <div className="flex items-center gap-1">
             {DEPOSIT_PERCENTAGES.map((pct) => (
@@ -649,9 +683,11 @@ export const AddLiquidity = memo(function AddLiquidity() {
         {parseFloat(value) > 0 && (
           <DepositSummary
             tokenSymbol={selectedToken}
-            depositAmount={parseFloat(value) || 0}
+            depositAmount={depositAmountNum}
             tokenPriceUsd={tokenPriceUsd}
             supplyApyPct={supplyApyPct}
+            fromBorrowAmount={depositAttribution.fromBorrow}
+            fromOwnCollateralAmount={depositAttribution.fromOwn}
           />
         )}
       </AnimatePresence>

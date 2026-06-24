@@ -1,3 +1,9 @@
+/**
+ * Farm deposit form with a Single-Asset / Multi-Asset toggle, rendered inline on
+ * desktop and as a draggable bottom sheet on mobile. Presentational only —
+ * inputs and percentage pills are wired to local state; the Deposit button is
+ * gated on a connected wallet (no on-chain submission here).
+ */
 import Image from "next/image"
 import ToggleButton from "../ui/toggle"
 import { iconPaths } from "@/lib/constants"
@@ -5,6 +11,11 @@ import { Button } from "../ui/button"
 import { useUserStore } from "@/store/user"
 import { useState, useCallback } from "react"
 
+/**
+ * Shared form body for both desktop and mobile layouts. Animates between the
+ * single-asset and dual-asset input cards and renders the Deposit/Connect
+ * button. `inputCard` is the render-prop that draws each amount input.
+ */
 // Shared form content component
 const FormContent = ({ inputCard, singleAmount, setSingleAmount, multiAmounts, handleMultiChange, assets, isSingleAsset, singlePct, setSinglePct, multiPcts, setMultiPcts, userAddress }: any) => (
     <>
@@ -34,6 +45,11 @@ import { PERCENTAGE_COLORS } from "@/lib/constants/margin"
 
 const PERCENTAGES = [10, 25, 50, 100];
 
+/**
+ * Deposit form container.
+ * @param assets Token symbols for the pool; `assets[0]` is used in single-asset
+ *   mode and both `assets[0]`/`assets[1]` in multi-asset mode.
+ */
 export const DepositTokensForm = ({ assets }: { assets: string[] }) => {
     const { isDark } = useTheme();
     const userAddress = useUserStore((state) => state.address)

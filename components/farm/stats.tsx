@@ -1,8 +1,14 @@
+/**
+ * Farm statistics panel. Renders the first two items as prominent highlight
+ * cards and the remainder as compact, zebra-striped detail rows (each row
+ * showing a value with an optional up/down trend, or a progress bar).
+ */
 import { ProgressBar } from "../ui/progress-bar";
 import { useTheme } from "@/contexts/theme-context";
 import { TrendUpIcon, TrendDownIcon } from "@/components/icons";
 import { motion } from "framer-motion";
 
+/** Props for {@link FarmStatsCard}. Each item is a labelled stat with an optional trend indicator or progress bar. */
 interface FarmStatsCardProps {
     items:{
         heading:string;
@@ -16,6 +22,7 @@ interface FarmStatsCardProps {
     }[]
 }
 
+/** Splits `items` into two highlight cards + a list of detail rows and renders them with entrance animations. */
 export const FarmStatsCard = ({items}:FarmStatsCardProps) =>{
     const { isDark } = useTheme();
 

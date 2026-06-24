@@ -1,3 +1,6 @@
+// Single source of truth for the borrow-rate curve. Shared by pool-stats and
+// account-snapshot so the APR shown on Earn matches the rate fed into HF math.
+
 /**
  * Borrow APR derived from a lending pool's live utilization.
  *

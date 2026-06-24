@@ -8,6 +8,7 @@ import type { LitePosition } from "./lite-position-types";
 
 interface PositionsListProps {
   positions: LitePosition[];
+  /** Fired with a position id when a row is clicked, to open its detail view. */
   onSelect: (id: string) => void;
 }
 
@@ -41,6 +42,12 @@ const statusLabel = (s: LitePosition["status"]) =>
 const statusColor = (s: LitePosition["status"]) =>
   s === "active" ? "#10B981" : s === "risky" ? "#F59E0B" : "#FC5457";
 
+/**
+ * Tabular list of the user's Lite positions, each row summarising pool,
+ * collateral, borrowed, net APR, earnings, and health (responsive: a desktop
+ * grid and a stacked mobile layout). Rows are buttons that call `onSelect`.
+ * Renders a centred empty state when there are no positions.
+ */
 export const PositionsList = ({ positions, onSelect }: PositionsListProps) => {
   const { isDark } = useTheme();
 

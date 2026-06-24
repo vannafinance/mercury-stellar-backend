@@ -8,9 +8,20 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { useTheme } from "@/contexts/theme-context";
 
 interface CreateMarginAccountProps {
+  /** Fired once a margin account is successfully created on-chain. */
   onAccountCreated?: () => void;
 }
 
+/**
+ * Onboarding card for provisioning a user's margin account. Resolves to one of
+ * four states driven by wallet + store status: a connect-wallet prompt, a
+ * spinner while checking for an existing account, an "active" confirmation when
+ * one already exists, or the create flow gated behind a borrow-agreement modal.
+ *
+ * Side effects: on mount (and whenever the wallet address changes) it resets any
+ * stale creation state and re-checks for an existing margin account; it also
+ * clears creation state on unmount so a re-mount starts clean.
+ */
 export const CreateMarginAccount = ({ onAccountCreated }: CreateMarginAccountProps) => {
   const { isDark } = useTheme();
   const userAddress = useUserStore((state) => state.address);

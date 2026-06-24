@@ -13,7 +13,7 @@ import { Table } from "@/components/earn/table";
 import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { Form } from "@/components/farm/form";
 import { singleAssetTableBody } from "@/lib/constants/farm";
-import { AQUARIUS_POOLS } from "@/lib/aquarius-utils";
+import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
 import { SOROSWAP_POOLS } from "@/lib/soroswap-utils";
 import { AnimatedTabs } from "@/components/ui/animated-tabs";
 import { items } from "@/components/earn/details-tab";
@@ -35,8 +35,8 @@ import {
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { useBlendStore } from "@/store/blend-store";
 import { buildFarmPoolKey, getFarmHistory } from "@/lib/farm-history";
+import { formatTokenAmount } from "@/lib/utils/format-amount";
 
 // Compact human-readable number: "62.44M", "1.23K", "987.65".
 // Used for large pool/reserve totals where full digit grouping ("62,438,184.70")
@@ -273,7 +273,6 @@ export default function FarmDetailPage() {
   const { positions: userPositions, isLoading: posLoading } = useUserBlendPositions();
   const { events, isLoading: eventsLoading } = useBlendEvents(tokenSymbol ?? undefined);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
 
   // Real data hooks — Aquarius (multi-asset)
   const { stats: aqStats, isLoading: aqStatsLoading } = useAquariusPoolStats(aquariusPoolAddress);
@@ -295,7 +294,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(tokenSymbol ?? "XLM"),
         marginAccountAddress,
       }),
-    [tokenSymbol, marginAccountAddress, refreshKey]
+    [tokenSymbol, marginAccountAddress]
   );
 
   const aquariusLocalHistory = useMemo(
@@ -305,7 +304,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC"),
         marginAccountAddress,
       }),
-    [matchedPool, marginAccountAddress, refreshKey]
+    [matchedPool, marginAccountAddress]
   );
 
   const soroswapLocalHistory = useMemo(
@@ -315,7 +314,7 @@ export default function FarmDetailPage() {
         poolKey: buildFarmPoolKey(ssTokenA, ssTokenB),
         marginAccountAddress,
       }),
-    [ssTokenA, ssTokenB, marginAccountAddress, refreshKey]
+    [ssTokenA, ssTokenB, marginAccountAddress]
   );
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;
@@ -340,8 +339,8 @@ export default function FarmDetailPage() {
   const POSITION_DUST = 0.001;
   const currentPositionBody = useMemo(() => {
     if (!tokenSymbol || myUnderlying <= POSITION_DUST) return { rows: [] };
-    const bTokens = (parseFloat(myPosition?.bTokenBalance ?? '0') || 0).toFixed(2);
-    const underlying = (parseFloat(myPosition?.underlyingValue ?? '0') || 0).toFixed(2);
+    const bTokens = formatTokenAmount(parseFloat(myPosition?.bTokenBalance ?? '0') || 0);
+    const underlying = formatTokenAmount(parseFloat(myPosition?.underlyingValue ?? '0') || 0);
     const apy = reserveData ? (parseFloat(reserveData.supplyAPY) || 0).toFixed(2) : '—';
     const bRate = reserveData?.bRate ? (parseFloat(reserveData.bRate) || 0).toFixed(2) : '—';
     return {
@@ -463,17 +462,25 @@ export default function FarmDetailPage() {
   const aquariusCurrentPositionBody = useMemo(() => {
     if (myLpBalance <= POSITION_DUST) return { rows: [] };
     // Estimate underlying assets proportional to LP share
-    const totalSharesNum = parseFloat(aqStats?.totalShares ?? '0');
-    const ratio = totalSharesNum > 0 ? myLpBalance / totalSharesNum : 0;
-    const xlmShare = (parseFloat(aqStats?.reserveA ?? '0') * ratio).toFixed(2);
-    const usdcShare = (parseFloat(aqStats?.reserveB ?? '0') * ratio).toFixed(2);
+    const { amountA, amountB } = aquariusLpUnderlyingAmounts(
+      myLpBalance,
+      aqStats ?? {
+        reserveA: '0',
+        reserveB: '0',
+        totalShares: '0',
+        feeFraction: '0.30%',
+        feeRaw: 30,
+      },
+      poolTokenA,
+      poolTokenB,
+    );
     return {
       rows: [{
         cell: [
           { chain: poolTokenA, title: `${poolTokenA} / ${poolTokenB}`, tags: ['Aquarius', 'LP'] },
           { title: `${myLpBalance.toFixed(2)} LP` },
-          { title: `${xlmShare} ${poolTokenA}` },
-          { title: `${usdcShare} ${poolTokenB}` },
+          { title: `${amountA.toFixed(2)} ${poolTokenA}` },
+          { title: `${amountB.toFixed(2)} ${poolTokenB}` },
           { title: aqStats?.feeFraction ?? '—' },
         ],
       }],

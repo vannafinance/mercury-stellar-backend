@@ -1,6 +1,12 @@
 'use client';
 
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+/**
+ * Legacy supply-liquidity panel (predecessor of supply-liquidity-tab-new).
+ * Self-contained asset selector + amount input with pool-stats and
+ * "you will receive" preview cards. Retained for reference/fallback; the active
+ * earn form uses the InfoCard-based variant.
+ */
+import { useState, useMemo, useEffect, useCallback } from "react";
 import toast from "react-hot-toast";
 import { Dropdown } from "../ui/dropdown";
 import { DropdownOptions } from "@/lib/constants";
@@ -8,33 +14,33 @@ import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
+import { useTokenPrices } from "@/contexts/price-context";
 import { useSupplyLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType, ContractService } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
+/** Legacy supply panel; manages its own asset selection and balance refresh. */
 export const SupplyLiquidityTab = () => {
   const { isDark } = useTheme();
+  const { getPrice } = useTokenPrices();
   const [selectedOption, setSelectedOption] = useState<string>("XLM");
   const [value, setValue] = useState<string>("");
   const [selectedPercentage, setSelectedPercentage] = useState<number | null>(null);
-  
+
   const userAddress = useUserStore((state) => state.address);
   const balance = useUserStore((state) => state.balance);
   const tokenBalances = useUserStore((state) => state.tokenBalances);
-  
-  const { supply, isLoading, message } = useSupplyLiquidity();
+
+  const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
   const { refresh: refreshPositions } = useUserPositions();
 
-  // Surface supply result as a bottom-left toast (replaces inline banner).
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
+  useMutationToast(supply, {
+    loading: (v) => `Supplying ${v.amount} ${v.assetType} to the lending pool…`,
+    success: (d) => `Successfully supplied ${d.amount} ${d.assetType}! You received v${d.assetType} tokens.`,
+    error: (e) => e.message,
+  });
 
   // Fetch all token balances when user connects
   const refreshTokenBalances = useCallback(async () => {
@@ -107,15 +113,16 @@ export const SupplyLiquidityTab = () => {
         return;
       }
 
-      const result = await supply(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      try {
+        await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
         setValue("");
         setSelectedPercentage(null);
-        // Refresh positions and balances after successful deposit
         setTimeout(() => {
           refreshPositions();
           refreshTokenBalances();
         }, 2000);
+      } catch {
+        // toast fired by useMutationToast
       }
     }
   };
@@ -134,7 +141,7 @@ export const SupplyLiquidityTab = () => {
   // Get button text
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Processing...";
+    if (supply.isPending) return "Processing...";
     if (!value || parseFloat(value) <= 0) return "Enter Amount";
     if (parseFloat(value) > parseFloat(availableBalance)) return "Insufficient Balance";
     return `Supply ${value} ${selectedOption}`;
@@ -142,7 +149,7 @@ export const SupplyLiquidityTab = () => {
 
   const isButtonDisabled = 
     !userAddress || 
-    isLoading || 
+    supply.isPending || 
     !value || 
     parseFloat(value) <= 0 || 
     parseFloat(value) > parseFloat(availableBalance);
@@ -194,7 +201,7 @@ export const SupplyLiquidityTab = () => {
           
           <div className="flex justify-between items-center">
             <span className={`text-xs ${isDark ? "text-gray-500" : "text-gray-400"}`}>
-              ≈ ${(parseFloat(value) * (selectedOption === 'XLM' ? 0.1 : 1) || 0).toFixed(2)} USD
+              ≈ ${(parseFloat(value) * getPrice(selectedOption) || 0).toFixed(2)} USD
             </span>
             <span className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>
               Available: {(parseFloat(String(availableBalance)) || 0).toFixed(2)} {selectedOption}

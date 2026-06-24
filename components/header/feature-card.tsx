@@ -1,14 +1,17 @@
 "use client";
 
+// Icon + title/subtitle row used inside the nav dropdown menus.
 import Image from "next/image";
 
 interface FeatureCardProps {
   icon: string;
   title: string;
   subtitle: string;
+  /** When true, appends a gradient "soon" badge to indicate an upcoming feature. */
   isSoon?: boolean;
 }
 
+/** Presentational menu entry: leading icon, title (with optional "soon" badge), and a muted subtitle. */
 const FeatureCard: React.FC<FeatureCardProps> = ({
   icon,
   title,

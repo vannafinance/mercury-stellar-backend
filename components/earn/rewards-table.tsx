@@ -1,3 +1,7 @@
+/**
+ * Rewards summary card showing claimable reward rows with a Claim action.
+ * Currently backed by static placeholder data pending live rewards wiring.
+ */
 import { useTheme } from "@/contexts/theme-context";
 
 const rewardsHeading = [
@@ -13,6 +17,7 @@ const rewardsData = [
   { id: 3, name: "5k Assets", points: "100", rewards: "100" },
 ];
 
+/** Renders the claimable-rewards table with per-row Claim buttons. */
 export const RewardsTable = () => {
   const { isDark } = useTheme();
 

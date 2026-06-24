@@ -28,6 +28,11 @@ interface InfoProps {
   items?: readonly InfoItem[];
   expandableSections?: readonly ExpandableSection[];
   showExpandable?: boolean;
+  // When true, the dynamic stat rows render a shimmer placeholder instead of
+  // their values — so a not-yet-loaded account shows a skeleton (Uniswap/Aave
+  // style) rather than a misleading "0" or "$0.00". Static rows (e.g. contract
+  // addresses in the expandable sections) are never skeletoned.
+  loading?: boolean;
 }
 
 // Format value using the format helper - defined outside component.
@@ -51,6 +56,12 @@ const formatFieldValue = (
   const formatType = FIELD_FORMAT_MAP[id] as FormatType | undefined;
   const isUsdField = USD_FIELDS.includes(id as (typeof USD_FIELDS)[number]);
 
+  // Sub-cent USD dust → "<$0.01" instead of a misleading "$0.00", consistent with
+  // the header stats / repay tab.
+  if (isUsdField && typeof value === "number" && value > 0 && value < 0.01) {
+    return "<$0.01";
+  }
+
   if (!formatType) {
     // Fallback to default number formatting
     const formatted = formatValue(value, { type: "number" });
@@ -72,6 +83,7 @@ export const InfoCard = ({
   items,
   expandableSections = [],
   showExpandable = false,
+  loading = false,
 }: InfoProps) => {
   const { isDark } = useTheme();
 
@@ -98,8 +110,14 @@ export const InfoCard = ({
   }`;
   const dividerClass = `border-t ${isDark ? "border-[#333333]" : "border-[#F0F0F0]"}`;
 
-  // Render a single info item row
-  const renderItem = (item: InfoItem, idx: number, useAnimate = false) => (
+  // Render a single info item row. `showLoading` swaps the value for a shimmer
+  // placeholder (used for the dynamic stat rows while the account snapshot loads).
+  const renderItem = (
+    item: InfoItem,
+    idx: number,
+    useAnimate = false,
+    showLoading = false,
+  ) => (
     <motion.div
       key={item.id}
       className={rowClass}
@@ -125,7 +143,16 @@ export const InfoCard = ({
           isDark ? "text-white" : "text-[#111111]"
         }`}
       >
-        {formatFieldValue(item.id, data[item.id])}
+        {showLoading ? (
+          <span
+            className={`inline-block h-4 w-16 rounded align-middle animate-pulse ${
+              isDark ? "bg-[#3a3a3a]" : "bg-[#E5E7EB]"
+            }`}
+            aria-hidden="true"
+          />
+        ) : (
+          formatFieldValue(item.id, data[item.id])
+        )}
       </div>
     </motion.div>
   );
@@ -141,7 +168,7 @@ export const InfoCard = ({
           viewport={{ once: true }}
           transition={{ duration: 0.4, ease: "easeOut" }}
         >
-          {items.map((item, idx) => renderItem(item, idx))}
+          {items.map((item, idx) => renderItem(item, idx, false, loading))}
         </motion.article>
       )}
 

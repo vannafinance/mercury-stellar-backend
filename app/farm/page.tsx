@@ -7,6 +7,7 @@ import {
   FARM_STATS_ITEMS,
   farmTableHeadings,
   singleAssetTableHeadings,
+  positionsTableHeadings,
 } from "@/lib/constants/farm";
 import { useUserStore } from "@/store/user";
 import { useState, useMemo, useCallback } from "react";
@@ -15,7 +16,7 @@ import { useFarmStore } from "@/store/farm-store";
 import { useBlendPoolStats, useUserBlendPositions, useAllAquariusPoolStats, useAllAquariusLpPositions } from "@/hooks/use-farm";
 import { useAllSoroswapPoolStats, useSoroswapPoolStats, useSoroswapLpPosition } from "@/hooks/use-soroswap";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { AQUARIUS_POOLS } from "@/lib/aquarius-utils";
+import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 
 function fmtNum(value: number, decimals = 2): string {
@@ -115,11 +116,11 @@ export default function FarmPage() {
           cell: [
             { chain: sym, title: sym, tags: ['Blend', 'Supply'] },
             { title: 'Blend' },
-            { title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0' },
-            { title: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : '0' },
+            {
+              title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0',
+              description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
+            },
             { title: poolStats[sym]?.supplyAPY ? `${poolStats[sym]!.supplyAPY}%` : '0' },
-            { title: '0' },
-            { title: '0' },
           ],
         });
       });
@@ -135,11 +136,11 @@ export default function FarmPage() {
         cell: [
           { chain: 'XLM', titles: ['XLM', 'USDC'], tags: ['Soroswap', 'LP'] },
           { title: 'Soroswap' },
-          { title: `${mySSLpBalance.toFixed(2)} LP` },
-          { title: `${xlmShare} XLM + ${usdcShare} USDC` },
+          {
+            title: `${mySSLpBalance.toFixed(2)} LP`,
+            description: `${xlmShare} XLM + ${usdcShare} USDC`,
+          },
           { title: ssStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
-          { title: '0' },
         ],
       });
     }
@@ -150,20 +151,23 @@ export default function FarmPage() {
       if (lpBal <= POSITION_DUST) return;
       const aqPoolStats = aquariusPools.find((p) => p.pool.id === pool.id)?.stats ?? null;
       const totalShares = parseFloat(aqPoolStats?.totalShares ?? '0');
-      const ratio = totalShares > 0 ? lpBal / totalShares : 0;
-      const shareA = (ratio * parseFloat(aqPoolStats?.reserveA ?? '0')).toFixed(2);
-      const shareB = (ratio * parseFloat(aqPoolStats?.reserveB ?? '0')).toFixed(2);
       const [tokenA, tokenB] = pool.tokens;
+      const { amountA: shareA, amountB: shareB } = aquariusLpUnderlyingAmounts(
+        lpBal,
+        aqPoolStats ?? { reserveA: '0', reserveB: '0', totalShares: '0', feeFraction: '0.30%', feeRaw: 30 },
+        tokenA,
+        tokenB,
+      );
       rows.push({
         id: pool.id,
         cell: [
           { chain: tokenA, titles: [tokenA, tokenB], tags: ['Aquarius', 'LP'] },
           { title: 'Aquarius' },
-          { title: `${lpBal.toFixed(2)} LP` },
-          { title: `${shareA} ${tokenA} + ${shareB} ${tokenB}` },
+          {
+            title: `${lpBal.toFixed(2)} LP`,
+            description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}`,
+          },
           { title: aqPoolStats?.feeFraction ?? '0.30%' },
-          { title: '0' },
-          { title: '0' },
         ],
       });
     });
@@ -343,7 +347,7 @@ export default function FarmPage() {
   const tableData = useMemo(() => {
     if (activeTab === "positions") {
       return {
-        headings: singleAssetTableHeadings,
+        headings: positionsTableHeadings,
         body: positionsTableBody,
       };
     }

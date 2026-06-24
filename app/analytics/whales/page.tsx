@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import {
   formatUsd,
@@ -11,10 +11,10 @@ import {
 } from "@/lib/analytics/utils";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { useChartColors } from "@/lib/analytics/theme";
-import { useAnalyticsOnchainStore } from "@/lib/analytics/onchain/store";
+import { useAnalyticsSnapshot, useLiveEventFeed } from "@/hooks/use-analytics";
 import { deriveWhaleConcentration, type WhaleConcentration } from "@/lib/analytics/onchain/derivations";
 import { useUserStore } from "@/store/user";
-import { readLiveEventFeed, type LiveWhaleActivityRow } from "@/lib/analytics/stellar/eventFeed";
+import { type LiveWhaleActivityRow } from "@/lib/analytics/stellar/eventFeed";
 
 /* ────────────────────────────────────────────
    HELPERS
@@ -294,38 +294,9 @@ function WhaleActivityFeed({
 
 export default function WhalesPage() {
   const userAddress = useUserStore((s) => s.address);
-  const snapshot = useAnalyticsOnchainStore((s) => s.result);
-  const isLoading = useAnalyticsOnchainStore((s) => s.isLoading);
-  const load = useAnalyticsOnchainStore((s) => s.load);
-  const [liveActivity, setLiveActivity] = useState<LiveWhaleActivityRow[]>([]);
-  const [isLiveFeedLoading, setIsLiveFeedLoading] = useState(true);
-
-  useEffect(() => {
-    void load(userAddress);
-  }, [userAddress, load]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const pull = async () => {
-      try {
-        const feed = await readLiveEventFeed();
-        if (!cancelled) setLiveActivity(feed.whaleActivity);
-      } catch {
-        // keep fallback
-      } finally {
-        if (!cancelled) {
-          setIsLiveFeedLoading(false);
-          timer = setTimeout(pull, 30_000);
-        }
-      }
-    };
-    void pull();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  const { result: snapshot, isLoading } = useAnalyticsSnapshot(userAddress);
+  const { data: eventFeed, isLoading: isLiveFeedLoading } = useLiveEventFeed();
+  const liveActivity = useMemo<LiveWhaleActivityRow[]>(() => eventFeed?.whaleActivity ?? [], [eventFeed]);
 
   const whalesData = useMemo(
     () => (snapshot ? deriveWhaleConcentration(snapshot.accounts, 10) : EMPTY_CONCENTRATION),

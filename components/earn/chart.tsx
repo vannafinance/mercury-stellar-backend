@@ -1,3 +1,16 @@
+/**
+ * Time-series chart used across the earn surfaces (overall deposit, net APY,
+ * my-supply, deposit/borrow APY, farm, volume, P&L). Wraps {@link SvgChart}
+ * with a header (title/value + currency tabs), timeframe filter chips, and an
+ * expandable full-screen modal.
+ *
+ * Two non-obvious behaviours live here:
+ * - Per-timeframe bucketing collapses dense snapshot history into ~one point
+ *   per bucket (latest value wins) so the line doesn't reshape on every refresh.
+ * - The x-axis is anchored at the start of the selected window (prepending a
+ *   zero point when needed) so e.g. a "3 Months" view always spans 3 months
+ *   even when all real activity is recent.
+ */
 import { useState, useMemo, useRef, useEffect, memo } from "react";
 import { Dropdown } from "../ui/dropdown";
 import { SvgChart } from "../ui/svg-chart";
@@ -7,6 +20,7 @@ import { ExpandableModal } from "../ui/expandable-modal";
 import { useTheme } from "@/contexts/theme-context";
 import { netVolumeData, netEarningsData } from "@/lib/constants/portfolio";
 
+/** Props for {@link Chart}. `customData` overrides the built-in series for the given `type`. */
 interface ChartProps {
   type:
     | "overall-deposit"
@@ -198,6 +212,12 @@ const filterDataByDays = (
   });
 };
 
+/**
+ * Memoized time-series chart. Selects its raw series from `customData` or a
+ * built-in default keyed by `type`, applies timeframe filtering + bucketing,
+ * and renders both an inline view and an expandable modal. Shows an empty
+ * state ("No data" / "No supply position yet") when the filtered series is empty.
+ */
 export const Chart = memo(function Chart({ type, currencyTab, height, containerWidth, containerHeight, heading, downtrend, uptrend, customData, supplyAPY, borrowAPY, hideTitle }: ChartProps) {
   const { isDark } = useTheme();
   const [selectedFilter, setSelectedFilter] = useState("All Time");

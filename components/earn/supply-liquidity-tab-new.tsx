@@ -1,5 +1,14 @@
 'use client';
 
+/**
+ * Supply panel for the earn form (current implementation). Lets the user pick a
+ * pool, enter an amount (with %-of-balance pills), previews the vToken shares
+ * and projected earnings via {@link InfoCard}, and submits the supply mutation.
+ *
+ * Available balance is asset-aware: native XLM reserves ~1 XLM for fees; USDC
+ * variants read from the corresponding token-balance entry. Supplying the full
+ * balance is blocked to keep a usable residual.
+ */
 import { useState, useEffect, useMemo, useRef, memo } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -12,7 +21,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useSupplyLiquidity, usePoolData } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AssetType } from "@/lib/stellar-utils";
+import { normalizeSupplyError } from "@/lib/errors/normalize";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -33,6 +44,7 @@ const toDisplayAsset = (value: string) => {
   return value;
 };
 
+/** Memoized supply-liquidity panel; selected pool is driven by the route/store. */
 export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const { isDark } = useTheme();
   const router = useRouter();
@@ -60,18 +72,9 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const balance = useUserStore((state) => state.balance);
   const storeTokenBalances = useUserStore((state) => state.tokenBalances);
 
-  const { supply, isLoading, message } = useSupplyLiquidity();
+  const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
-
-  // Toast instead of inline banner.
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -115,10 +118,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
         return;
       }
 
-      const result = await supply(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
+      try {
+        await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
+        toast.success(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`, { id: toastId });
         setAmount("");
         setSelectedPercentage(0);
+      } catch (err) {
+        toast.error(normalizeSupplyError(err instanceof Error ? err.message : undefined, selectedOption), { id: toastId });
       }
     }
   };
@@ -127,6 +134,17 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const exchangeRate = parseFloat(selectedPool?.exchangeRate || '1');
   const supplyAPY = parseFloat(selectedPool?.supplyAPY || '0');
   const amountNum = parseFloat(amount) || 0;
+  // USD value of the amount being supplied. Underlying price from the oracle;
+  // USDC-family pools fall back to $1 if the oracle cache is momentarily empty.
+  const unitPriceUsd =
+    tokenPrices[
+      normalizedAsset === 'XLM' ? 'XLM'
+        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
+        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
+        : 'BLUSDC'
+    ] || (normalizedAsset === 'XLM' ? 0 : 1);
+  const usdValue = amountNum * unitPriceUsd;
+  const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const sharesPreview = exchangeRate > 0 ? amountNum / exchangeRate : 0;
   const monthlyEarnings = (amountNum * supplyAPY) / 100 / 12;
   const yearlyEarnings = (amountNum * supplyAPY) / 100;
@@ -170,14 +188,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Supplying...";
+    if (supply.isPending) return "Supplying...";
     if (!amount || parseFloat(amount) <= 0) return "Enter Amount";
     if (parseFloat(amount) > availableBalance) return "Insufficient Balance";
     return "Supply Liquidity";
   };
 
   const isButtonDisabled =
-    !userAddress || isLoading || !amount || parseFloat(amount) <= 0 || parseFloat(amount) > availableBalance;
+    !userAddress || supply.isPending || !amount || parseFloat(amount) <= 0 || parseFloat(amount) > availableBalance;
 
   return (
     <>
@@ -278,11 +296,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
               type="text"
               inputMode="decimal"
               placeholder="0"
-              disabled={isLoading}
+              disabled={supply.isPending}
               className={`w-full text-right text-[28px] font-semibold bg-transparent outline-none placeholder:opacity-20 ${
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
-              } ${isLoading ? "opacity-50" : ""}`}
+              } ${supply.isPending ? "opacity-50" : ""}`}
             />
+            <div className={`text-right text-[12px] font-medium mt-0.5 ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+              ≈ {formattedUsd}
+            </div>
           </div>
         </div>
 
@@ -293,7 +314,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
               <motion.button
                 key={pct}
                 type="button"
-                disabled={isLoading || availableBalance <= 0}
+                disabled={supply.isPending || availableBalance <= 0}
                 onClick={() => handlePercentageClick(pct)}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.93 }}
@@ -304,7 +325,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
                     : isDark
                       ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
                       : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
-                } ${isLoading || availableBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
+                } ${supply.isPending || availableBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
               >
                 {pct}%
               </motion.button>

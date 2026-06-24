@@ -8,7 +8,9 @@ interface ComingSoonCardProps {
   description: string;
   icon: "perps" | "spot" | "deploy";
   accent: string;
+  /** Drives the status pill label (see {@link STATUS_LABEL}). */
   status: "development" | "soon" | "live";
+  /** Position in the list; used to stagger the entrance animation. */
   index: number;
 }
 
@@ -18,6 +20,12 @@ const STATUS_LABEL: Record<string, string> = {
   live: "Live",
 };
 
+/**
+ * Compact informational card teasing an upcoming Lite-mode feature — a title,
+ * status pill, and description. Presentation-only; the entrance animation is
+ * staggered by `index`. (`icon` / `accent` are part of the props contract but
+ * not currently rendered.)
+ */
 export const ComingSoonCard = ({ title, description, status, index }: ComingSoonCardProps) => {
   const { isDark } = useTheme();
 

@@ -1,13 +1,20 @@
+/**
+ * Supply-APY filter control: a pill button that opens a dropdown for filtering
+ * table rows by a "greater than / less than" APY threshold. Used by the shared
+ * {@link Table} filter toolbar.
+ */
 import { useState, useEffect, useRef } from "react";
 import { AnimatedTabs } from "../ui/animated-tabs";
 import { useTheme } from "@/contexts/theme-context";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 interface SupplyApyProps {
+  /** Current filter state: the threshold `percentage` and whether to match values above (`greaterThan`) or below it. A `percentage` of 0 means "no filter". */
   supplyApy: {
     percentage: number;
     greaterThan: boolean;
   };
+  /** Setter for the filter state, wired to the owning table's filter store. */
   setSupplyApyFilter: React.Dispatch<
     React.SetStateAction<{
       percentage: number;
@@ -18,6 +25,11 @@ interface SupplyApyProps {
   supplyApyLabel?: string;
 }
 
+/**
+ * Renders the threshold pill + outside-click-dismissed dropdown. Input is
+ * sanitized via {@link validateAmountChange}; clearing/zeroing the value resets
+ * the filter to "Anything".
+ */
 export const SupplyApy = (props: SupplyApyProps) => {
   const { isDark } = useTheme();
   const [isOpen, setIsOpen] = useState(false);

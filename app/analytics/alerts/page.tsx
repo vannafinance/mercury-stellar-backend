@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import { alertsData } from "@/lib/analytics/data/mock";
 import { formatTimeAgo, cn } from "@/lib/analytics/utils";
@@ -8,7 +8,7 @@ import type { AlertPriority } from "@/lib/analytics/data/mock";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
-import { readOracleSnapshot, readAllPoolStats, type StellarPoolStats, type StellarAnalyticsSource } from "@/lib/analytics/stellar/rpcReader";
+import { useOracleSnapshot, usePoolStats } from "@/hooks/use-analytics";
 import { ORACLE } from "@/lib/analytics/stellar/canon";
 
 // Live RPC-derived alert. Carries a `source` flag so the UI can show a
@@ -100,43 +100,16 @@ export default function AlertsPage() {
   const hf = useMarginAccountInfoStore((s) => s.avgHealthFactor);
   const totalDebt = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
 
-  const [oracle, setOracle] = useState<StellarAnalyticsSource["oracle"] | null>(null);
-  const [pools, setPools] = useState<StellarPoolStats[]>([]);
-  const [rpcStale, setRpcStale] = useState<boolean>(false);
-  const [rpcError, setRpcError] = useState<string | null>(null);
-
-  // RPC poll loop. 30s heartbeat matches the analytics store TTL so we
-  // don't double-fan-out under typical session usage.
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const pull = async () => {
-      try {
-        const [o, p] = await Promise.all([readOracleSnapshot(), readAllPoolStats()]);
-        if (cancelled) return;
-        setOracle(o);
-        setPools(p);
-        setRpcStale(o.prices.some((x) => x.isFallback));
-        setRpcError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setRpcStale(true);
-        setRpcError(err instanceof Error ? err.message : "Soroban RPC unavailable");
-      } finally {
-        if (!cancelled) timer = setTimeout(pull, 30_000);
-      }
-    };
-    void pull();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, []);
+  const { data: oracle, error: oracleError } = useOracleSnapshot();
+  const { data: pools = [], error: poolsError } = usePoolStats();
+  const rpcError = oracleError ?? poolsError;
+  const rpcStale = Boolean(rpcError) || (oracle?.prices.some((x) => x.isFallback) ?? false);
 
   const realActiveAlerts = useMemo<LiveAlert[]>(() => {
     const out: LiveAlert[] = [];
-    const now = Date.now();
+    // Stamp generated alerts with the data-snapshot time (pure) rather than
+    // render-time Date.now(); falls back to 0 only before the first oracle read.
+    const now = oracle?.fetchedAt ?? 0;
 
     // (1) Connected wallet margin HF
     if (

@@ -1,11 +1,14 @@
+// Margin-account store: the connected user's smart margin account (identity +
+// health-factor / collateral / borrowed / derived-risk fields) plus the action
+// functions that discover, create, and mutate it on-chain. Account resolution is
+// cache-then-reconcile (localStorage hint → authoritative on-chain discovery),
+// and all reads share computeMarginSnapshot with the cached /api/account route so
+// the client and server can never diverge.
+
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
-import { fetchTokenPrices, getCachedTokenPrice } from "@/lib/oracle-price";
-import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
-import { computeBorrowApr } from "@/lib/utils/borrow-rate";
-import { mergeFarmTrackingCollateralIntoBalances } from "@/lib/analytics/stellar/farmTrackingCollateral";
-import { BlendService } from "@/lib/blend-utils";
-
+import { computeMarginSnapshot } from "@/lib/account-snapshot";
+import { deriveMarginHealth } from "@/lib/margin-health";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -20,22 +23,23 @@ const inflightCheckByUser = new Map<string, Promise<void>>();
 const lastRefreshByAccount = new Map<string, number>();
 const inflightRefreshByAccount = new Map<string, Promise<void>>();
 
-// Live token prices via the on-chain Reflector oracle. The cached helper
-// returns the most recently fetched price (or a static fallback the very
-// first time) so synchronous reducers stay synchronous; refresh paths await
-// `fetchTokenPrices` to keep the cache warm before recomputing USD totals.
-const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC'] as const;
-const tokenPrice = (token: string): number => getCachedTokenPrice(token);
-
-// Liquidation threshold from RiskEngine contract: BALANCE_TO_BORROW_THRESHOLD = 1.1 * WAD
-// Account is liquidatable when: (totalCollateral / totalDebt) < 1.1
-const LIQUIDATION_THRESHOLD = 1.1;
-const HEALTH_FACTOR_INFINITY_SENTINEL = 999;
-// Sub-cent residuals (interest dust, rounding remainders from a fully-repaid
-// loan) shouldn't poison the HF / borrow-rate / time-to-liquidation displays
-// by pretending the user still has real debt. A penny is a sane floor: below
-// this we treat the position as having zero debt for UI calculations.
-const USD_DUST_EPSILON = 0.01;
+// D25: when a mutation force-refreshes the store directly (authoritative client
+// read), pause the cached /api/account snapshot from feeding the store for a
+// window just past the route's 15s edge TTL — otherwise the still-cached
+// (pre-mutation) snapshot could clobber the fresh post-mutation values. After
+// the window the edge cache has caught up, so the snapshot feed resumes safely.
+let snapshotFeedSuppressedUntil = 0;
+/**
+ * Pause the cached /api/account snapshot from feeding the store for `ms`
+ * (default 20s, just past the route's 15s edge TTL). Called after a mutation
+ * does an authoritative client read so the lagging cached snapshot can't clobber
+ * the fresh post-mutation values.
+ */
+export const suppressSnapshotFeed = (ms = 20_000) => {
+  snapshotFeedSuppressedUntil = Date.now() + ms;
+};
+/** True while the snapshot feed is suppressed; consumers should skip writing snapshot data into the store. */
+export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
 
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
@@ -45,24 +49,19 @@ const canonicalMarginToken = (token: string): string => {
   return normalized;
 };
 
-// Map a canonical debt symbol back to the lending pool's AssetType so we can
-// fetch its on-chain utilization for borrow-rate computation.
-const debtSymbolToAssetType = (symbol: string): AssetType | null => {
-  switch (symbol.toUpperCase()) {
-    case 'XLM': return ASSET_TYPES.XLM;
-    case 'BLUSDC': return ASSET_TYPES.USDC;
-    case 'AQUSDC': return ASSET_TYPES.AQUARIUS_USDC;
-    case 'SOUSDC': return ASSET_TYPES.SOROSWAP_USDC;
-    default: return null;
-  }
-};
-
 // Types
+/** A per-token balance entry: raw `amount` and its `usdValue` (both decimal strings). */
 export interface BorrowedBalance {
   amount: string;
   usdValue: string;
 }
 
+/**
+ * Full margin-account slice: account identity (`hasMarginAccount`,
+ * `marginAccountAddress`), creation flags/errors, per-token borrowed/collateral
+ * balances, and the derived risk fields (health factor, debt limits, liquidation
+ * metrics) produced by `computeMarginSnapshot`.
+ */
 export interface MarginAccountInfoStateType {
   totalBorrowedValue: number;
   totalCollateralValue: number;
@@ -113,37 +112,25 @@ const initialState: MarginAccountInfoStateType = {
 };
 
 // Export Store
+//
+// NOT persisted. The account identity has a single cache — MarginAccountService's
+// wallet-keyed, AccountManager-guarded localStorage (STORAGE_KEY). On reload,
+// checkUserMarginAccount reads that cache synchronously for an instant paint, then
+// reconciles against on-chain discovery (the source of truth). Persisting identity
+// here too was a second, wallet-agnostic cache that could rehydrate the previously
+// connected wallet's account and disagree with the chain. Balances are never
+// persisted (they bled across accounts on reload) — they always come fresh.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
-  persist: {
-    name: "margin-account-info-store",
-    version: 3,
-    migrate: (persistedState: any, _version: number) => {
-      return {
-        ...persistedState,
-        isCreatingAccount: false,
-        isLoadingBorrowedBalances: false,
-        borrowedBalances: {},
-        collateralBalances: {},
-        totalBorrowedValue: 0,
-        totalCollateralValue: 0,
-        totalValue: 0,
-        avgHealthFactor: 0,
-      };
-    },
-    // Persist only the account identity. Balances and derived metrics must be
-    // re-fetched from the chain on every load — otherwise a previous wallet's
-    // residual entries (e.g. a 40 XLM borrow from a different test session)
-    // bleed into a freshly connected wallet's UI until the async refresh lands.
-    partialize: (state) => ({
-      hasMarginAccount: state.hasMarginAccount,
-      marginAccountAddress: state.marginAccountAddress,
-    }),
-  },
 });
 
 // Action functions
+/**
+ * Adopt a freshly created/known margin account: marks it present, stores its
+ * address, clears creation flags, and wipes any leftover balances so a prior
+ * account's values can't bleed in before the first refresh lands.
+ */
 export const setMarginAccount = (account: MarginAccount) => {
   useMarginAccountInfoStore.getState().set({
     hasMarginAccount: true,
@@ -153,9 +140,44 @@ export const setMarginAccount = (account: MarginAccount) => {
     // stuck on "Creating Account..." and the next open-position attempt is
     // blocked. (setAccountCreationError already resets it on the error path.)
     isCreatingAccount: false,
+    // A freshly created account is empty on-chain. Clear any balances left over
+    // from a previously-loaded account so they don't bleed into the new one
+    // during the window before refreshBorrowedBalances lands.
+    ...STALE_BALANCE_RESET,
   });
 };
 
+// Balance/derived fields to wipe when a DIFFERENT wallet's margin account is
+// resolved, so persisted (stale-while-revalidate) balances from a prior session
+// can't bleed into the newly connected wallet before its refresh lands.
+const STALE_BALANCE_RESET = {
+  borrowedBalances: {},
+  collateralBalances: {},
+  totalBorrowedValue: 0,
+  totalCollateralValue: 0,
+  totalValue: 0,
+  grossCollateralValue: 0,
+  netAvailableCollateral: 0,
+  collateralLeftBeforeLiquidation: 0,
+  avgHealthFactor: 0,
+} as const;
+
+// Set the resolved margin account; if it differs from what's currently stored
+// (e.g. a different wallet connected), drop the stale persisted balances.
+const applyResolvedMarginAccount = (address: string | null) => {
+  const prev = useMarginAccountInfoStore.getState().marginAccountAddress;
+  useMarginAccountInfoStore.getState().set({
+    hasMarginAccount: true,
+    marginAccountAddress: address,
+    ...(address !== prev ? STALE_BALANCE_RESET : {}),
+  });
+};
+
+/**
+ * Reset the store to "no margin account" (used on disconnect or when discovery
+ * finds none): zeroes all identity, balance, and derived-risk fields AND clears
+ * every rate-limit/dedup cache so a later reconnect refetches from scratch.
+ */
 export const clearMarginAccount = () => {
   useMarginAccountInfoStore.getState().set({
     hasMarginAccount: false,
@@ -191,6 +213,7 @@ export const clearMarginAccount = () => {
   inflightRefreshByAccount.clear();
 };
 
+/** Toggle the account-creation loading flag; clears any prior error when entering the loading state. */
 export const setAccountCreationLoading = (loading: boolean) => {
   useMarginAccountInfoStore.getState().set({
     isCreatingAccount: loading,
@@ -198,6 +221,7 @@ export const setAccountCreationLoading = (loading: boolean) => {
   });
 };
 
+/** Record an account-creation error (or clear it with null) and reset the loading flag. */
 export const setAccountCreationError = (error: string | null) => {
   useMarginAccountInfoStore.getState().set({
     accountCreationError: error,
@@ -206,10 +230,21 @@ export const setAccountCreationError = (error: string | null) => {
 };
 
 // Add deposit and borrow action
+/**
+ * Deposit collateral and open a leveraged borrow in one flow against the user's
+ * active margin account. Refreshes borrowed balances afterwards (even on a
+ * partial success where the deposit landed but the borrow failed).
+ *
+ * @param userAddress - Owner wallet; used to look up the active margin account.
+ * @param depositAmount - Collateral amount to deposit (token units).
+ * @param multiplier - Leverage multiplier for the borrow leg.
+ * @param tokenSymbol - Collateral/borrow token; normalized to its canonical margin symbol. Defaults to XLM.
+ * @returns `{ success, hash?, error? }`.
+ */
 export const depositAndBorrow = async (
-  userAddress: string, 
-  depositAmount: number, 
-  multiplier: number, 
+  userAddress: string,
+  depositAmount: number,
+  multiplier: number,
   tokenSymbol: string = 'XLM'
 ): Promise<{ success: boolean; hash?: string; error?: string }> => {
   try {
@@ -234,7 +269,7 @@ export const depositAndBorrow = async (
 
     // Refresh borrowed balances after successful deposit (even if borrow fails, deposit might still succeed)
     if (result.success || result.error?.includes('Deposit was successful')) {
-      await refreshBorrowedBalances(account.address);
+      await refreshBorrowedBalances(account.address, true);
     }
 
     return result;
@@ -247,6 +282,17 @@ export const depositAndBorrow = async (
 };
 
 // Add standalone borrow function
+/**
+ * Borrow against an existing margin account (no deposit leg). Converts the amount
+ * to WAD (18 decimals) via BigInt to avoid Number scientific-notation parse
+ * failures, toggles `isLoadingBorrowedBalances`, and always refreshes balances
+ * after the operation (success or failure).
+ *
+ * @param userAddress - Owner wallet; used to look up the active margin account.
+ * @param tokenSymbol - Token to borrow; normalized to its canonical margin symbol.
+ * @param borrowAmount - Amount to borrow (token units).
+ * @returns `{ success, hash?, error? }`.
+ */
 export const borrowTokens = async (
   userAddress: string,
   tokenSymbol: string,
@@ -255,12 +301,6 @@ export const borrowTokens = async (
   try {
     const normalizedTokenSymbol = canonicalMarginToken(tokenSymbol);
 
-    console.log('🏦 === MARGIN STORE: BORROW OPERATION ===');
-    console.log('📊 Borrow parameters:', {
-      userAddress,
-      tokenSymbol: normalizedTokenSymbol,
-      borrowAmount
-    });
 
     // Get current margin account
     const account = MarginAccountService.getStoredMarginAccount(userAddress);
@@ -272,14 +312,14 @@ export const borrowTokens = async (
       };
     }
 
-    console.log('✅ Found active margin account:', account.address);
 
-    // Convert borrow amount to WAD (18 decimals)
-    const borrowAmountWad = (borrowAmount * Math.pow(10, 18)).toString();
-    console.log('🔢 Converting to WAD:', {
-      originalAmount: borrowAmount,
-      wadAmount: borrowAmountWad
-    });
+    // Convert borrow amount to WAD (18 decimals). Splitting the multiplication
+    // through BigInt avoids the JS Number `toString()` falling back to
+    // scientific notation for large values (e.g. 3431.79 * 1e18 prints as
+    // '3.43e+21'), which downstream `BigInt(...)` parsing rejects.
+    const borrowAmountWad = (
+      BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
+    ).toString();
 
     // Update loading state
     useMarginAccountInfoStore.getState().set({ 
@@ -293,13 +333,10 @@ export const borrowTokens = async (
       borrowAmountWad
     );
 
-    console.log('📈 Borrow operation result:', result);
 
     // Always refresh borrowed balances after operation (success or failure)
     try {
-      console.log('🔄 Refreshing borrowed balances...');
-      await refreshBorrowedBalances(account.address);
-      console.log('✅ Borrowed balances refreshed');
+      await refreshBorrowedBalances(account.address, true);
     } catch (refreshError) {
       console.warn('⚠️ Failed to refresh borrowed balances:', refreshError);
     }
@@ -326,6 +363,7 @@ export const borrowTokens = async (
 };
 
 // Add contract setup action (for admin/testing purposes)
+/** Admin/testing helper: runs the one-time on-chain contract configuration. Returns `{ success, error? }`. */
 export const setupContractConfiguration = async (): Promise<{ success: boolean; error?: string }> => {
   try {
     const result = await MarginAccountService.setupContractConfiguration();
@@ -338,6 +376,16 @@ export const setupContractConfiguration = async (): Promise<{ success: boolean; 
   }
 };
 
+/**
+ * Resolve the user's margin account into the store (cache-then-reconcile):
+ * applies the localStorage-cached address for an instant paint, then ALWAYS
+ * reconciles against authoritative on-chain discovery (adopting the newest active
+ * account). Concurrent calls for the same user are deduped, and results are
+ * throttled by CACHE_DURATION_MS / MIN_FETCH_INTERVAL_MS unless `forceRefresh`.
+ *
+ * @param userAddress - Owner wallet to resolve.
+ * @param forceRefresh - Bypass the throttle caches when true.
+ */
 export const checkUserMarginAccount = async (
   userAddress: string,
   forceRefresh = false,
@@ -358,39 +406,33 @@ export const checkUserMarginAccount = async (
 
   const run = (async () => {
     try {
-      console.log('🔍 Checking margin account for user:', userAddress);
 
-      // Step 1: Check localStorage first (fastest)
+      // Step 1: localStorage gives an instant first paint, but it is only a
+      // hint — a stale entry must never pin an old account. So we apply the
+      // cached address for speed, then ALWAYS reconcile against the chain.
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
-
-      if (accountInfo.hasAccount) {
-        console.log('✅ Found margin account in localStorage:', accountInfo.accountAddress);
-        useMarginAccountInfoStore.getState().set({
-          hasMarginAccount: true,
-          marginAccountAddress: accountInfo.accountAddress || null,
-        });
-        return;
+      const cachedAddress = accountInfo.hasAccount ? accountInfo.accountAddress ?? null : null;
+      if (cachedAddress) {
+        applyResolvedMarginAccount(cachedAddress);
       }
 
-      // Step 2: No account in localStorage - check blockchain
-      console.log('🌐 No account in localStorage, searching blockchain...');
-
+      // Step 2: on-chain discovery is authoritative — it resolves the NEWEST
+      // active account (see getMarginAccountFromRegistry). Adopt it even when a
+      // cached account exists, so the cache can't keep showing an older one.
       try {
         const blockchainAccount = await MarginAccountService.discoverExistingAccount(userAddress);
 
         if (blockchainAccount) {
-          console.log('✅ Recovered margin account from blockchain:', blockchainAccount);
-          useMarginAccountInfoStore.getState().set({
-            hasMarginAccount: true,
-            marginAccountAddress: blockchainAccount,
-          });
-        } else {
-          console.log('❌ No margin account found - user needs to create one');
+          applyResolvedMarginAccount(blockchainAccount);
+        } else if (!cachedAddress) {
+          // Chain has no active account and nothing was cached → none exists.
           clearMarginAccount();
         }
+        // If discovery returns null but we had a cached account, keep the cached
+        // one rather than wiping the section on a single empty/failed lookup.
       } catch (blockchainError) {
         console.error('❌ Error checking blockchain for existing account:', blockchainError);
-        clearMarginAccount();
+        if (!cachedAddress) clearMarginAccount();
       }
     } catch (error) {
       console.error('❌ Error in checkUserMarginAccount:', error);
@@ -405,6 +447,11 @@ export const checkUserMarginAccount = async (
   return run;
 };
 
+/**
+ * Create a new on-chain margin account for the wallet, toggling the creation
+ * loading flag and committing the resolved account (or recording an error) into
+ * the store. Returns true on success.
+ */
 export const createMarginAccount = async (userAddress: string): Promise<boolean> => {
   try {
     setAccountCreationLoading(true);
@@ -431,10 +478,24 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
   }
 };
 
+/** Shallow-merge an arbitrary partial into the margin-account slice. */
 export const updateAccountData = (data: Partial<MarginAccountInfoStateType>) => {
   useMarginAccountInfoStore.getState().set(data);
 };
 
+
+/**
+ * Recompute and commit the account's balances and derived risk fields via the
+ * shared `computeMarginSnapshot` (the single source of truth shared with the
+ * /api/account route). Publishes fast debt/balances first via `onPartial`
+ * (progressive render), then the full snapshot. Concurrent calls per account are
+ * deduped and throttled unless `forceRefresh`; a forced refresh also suppresses
+ * the cached snapshot feed for one TTL window so the lagging edge cache can't
+ * overwrite the fresh post-mutation values.
+ *
+ * @param marginAccountAddress - Account to refresh (validated for basic shape).
+ * @param forceRefresh - Bypass throttle caches and suppress the snapshot feed.
+ */
 export const refreshBorrowedBalances = async (
   marginAccountAddress: string,
   forceRefresh = false,
@@ -454,240 +515,105 @@ export const refreshBorrowedBalances = async (
   if (!forceRefresh && age < CACHE_DURATION_MS) return;
   if (!forceRefresh && age < MIN_FETCH_INTERVAL_MS) return;
 
+  // A forced refresh means a mutation just changed state — protect the result
+  // from the lagging cached snapshot for one TTL window.
+  if (forceRefresh) suppressSnapshotFeed();
+
   const run = (async () => {
   try {
     useMarginAccountInfoStore.getState().set({ isLoadingBorrowedBalances: true });
 
-    // Fetch borrowed balances, collateral balances, and live oracle prices in
-    // parallel. The oracle warm-up is what makes downstream `tokenPrice()`
-    // calls return real-time values instead of static fallbacks.
-    const [borrowedResult, collateralResult] = await Promise.all([
-      MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress),
-      MarginAccountService.getCollateralBalances(marginAccountAddress),
-      fetchTokenPrices([...PRICEABLE_TOKENS]),
-    ]);
-
-    let totalBorrowedValue = 0;
-    let totalCollateralValue = 0;
-    const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
-    const collateralBalances: Record<string, { amount: string; usdValue: string }> = {};
-
-    // ── Borrowed totals ───────────────────────────────────────────────────────
-    if (borrowedResult.success && borrowedResult.data) {
-      const dedupedBorrowed: Record<string, { amount: string; usdValue: string }> = {};
-      Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
-        const canonical = canonicalMarginToken(token);
-        const current = dedupedBorrowed[canonical];
-        if (!current || parseFloat(amount) > parseFloat(current.amount)) {
-          dedupedBorrowed[canonical] = { amount, usdValue };
-        }
-      });
-
-      Object.entries(dedupedBorrowed).forEach(([token, { amount }]) => {
-        // Always recompute USD from the live oracle cache. The upstream
-        // getCurrentBorrowedBalances sometimes returns a 1:1 placeholder
-        // (token amount as USD) which would make XLM debt look 10× too big
-        // and tank the displayed Health Factor / Net Available Collateral.
-        const price = tokenPrice(token);
-        const usd = parseFloat(amount) * price;
-        totalBorrowedValue += usd;
-        borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
-      });
-    }
-
-    // ── Collateral totals ─────────────────────────────────────────────────────
-    if (collateralResult.success && collateralResult.data) {
-      const dedupedCollateral: Record<string, string> = {};
-      Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
-        const canonical = canonicalMarginToken(token);
-        const current = dedupedCollateral[canonical];
-        if (!current || parseFloat(amount) > parseFloat(current)) {
-          dedupedCollateral[canonical] = amount;
-        }
-      });
-
-      Object.entries(dedupedCollateral).forEach(([token, amount]) => {
-        const price = tokenPrice(token);
-        const tokenAmount = parseFloat(amount);
-        const usd = tokenAmount * price;
-        totalCollateralValue += usd;
-        collateralBalances[token] = {
-          amount,
-          usdValue: usd.toFixed(2),
-        };
-      });
-    }
-
-    // Enrich collateralBalances with Blend bTokens and Aquarius/Soroswap LP tokens.
-    // The chain's CollateralBalanceWAD for tracking tokens is 0 by design — Farm
-    // UIs read tracking balances directly from the protocol services. We do the
-    // same here so hasTrackingTokenCollateral fires and HF stays stable after
-    // add-liquidity (user gets bXLM/LP, not raw tokens — should not drop HF).
-    // We also handle the withdrawal case: after full removal the tracking token
-    // key stays in the chain response with WAD=0. We must NOT treat that as an
-    // active farm position, so we override chain zeros with live protocol values
-    // and then gate hasTrackingTokenCollateral on meaningful USD value.
-    try {
-      const enriched = await mergeFarmTrackingCollateralIntoBalances(
-        marginAccountAddress,
-        collateralBalances,
-      );
-      for (const [sym, val] of Object.entries(enriched)) {
-        const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? '0');
-        const newUsd = parseFloat(val.usdValue);
-        // Override stale/zero chain entry with live protocol value when better.
-        if (newUsd > existingUsd) {
-          totalCollateralValue += newUsd - existingUsd;
-          collateralBalances[sym] = val;
-        }
-      }
-    } catch (e) {
-      console.warn('[refreshBorrowedBalances] farm tracking collateral enrichment failed:', e);
-    }
-
-    // ── Derived calculations (matching RiskEngine contract math) ──────────────
-    //
-    // Contract check is effectively:
-    //   (totalCollateral / totalDebt) > 1.1    (when debt > 0)
-    // We keep a finite sentinel for "infinite" HF to avoid giant unreadable UI numbers.
-    const effectiveDebtValue =
-      totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
-
-    // Borrowed funds physically live in the smart_account until they're
-    // deployed elsewhere, so for solvency they're an asset on the balance
-    // sheet. Mirror the contract's borrow-time check (risk_engine.rs:141-145):
-    //   HF_check = (collateral + borrow_value) / (debt + borrow_value)
-    // For ongoing display this becomes (collateral + debt) / debt — collateral
-    // is the unencumbered deposit, +debt is the borrowed funds sitting in the
-    // account. Without this, a 3x leverage position shows HF = 0.5 even though
-    // the borrow check passed at 1.5, which is the number users expect to see.
-    //
-    // If the user has tracking-tokens (Blend deploy already happened), those
-    // are already accounted for inside collateralBalances and we must NOT add
-    // the borrowed value again — would double-count.
-    //
-    // IMPORTANT: After a full withdrawal the contract still lists the tracking
-    // token key with WAD=0. Gate on USD value > dust so a zero-value residual
-    // key doesn't falsely trigger the tracking branch (which drops HF to 0.5).
-    const isTrackingSymbol = (sym: string) => {
-      const upper = sym.toUpperCase();
-      return (
-        upper.startsWith('BLEND_') ||
-        upper.startsWith('AQ_') ||
-        upper.startsWith('SS_') ||
-        upper.endsWith('_LP') ||
-        upper.includes('AQUARIUS') ||
-        upper.includes('SOROSWAP')
-      );
-    };
-    // Gate on meaningful USD value: after full withdrawal the tracking token key
-    // stays in the chain response with WAD=0 — a zero-value entry must not
-    // falsely trigger the farm branch (which would drop HF to ~0.5).
-    const farmPositionValue = Object.entries(collateralBalances)
-      .filter(([sym]) => isTrackingSymbol(sym))
-      .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
-
-    const hasTrackingTokenCollateral = farmPositionValue > USD_DUST_EPSILON;
-
-    let grossCollateralValue: number;
-    if (hasTrackingTokenCollateral) {
-      // Farm positions exist. Gross = farm_value + raw_tokens_still_in_account.
-      //
-      // Invariant: farm_value + raw_in_account = total_assets (constant regardless
-      // of deployment). This correctly handles all sub-cases:
-      //   • farm-all   → raw = 0,   gross = farm                      ✓
-      //   • farm-collateral-only → raw = borrowed, gross = farm + borrowed ✓
-      //   • farm-partial → raw = remaining, gross = farm + remaining   ✓
-      //
-      // Using totalCollateralValue alone (old approach) missed the borrowed funds
-      // still sitting in the account when only collateral was deployed to Blend.
-      let rawAssetValue = 0;
-      try {
-        const [rawXlm, rawUsdc] = await Promise.all([
-          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'XLM'),
-          BlendService.getMarginAccountTokenBalance(marginAccountAddress, 'USDC'),
-        ]);
-        rawAssetValue =
-          parseFloat(rawXlm) * tokenPrice('XLM') +
-          parseFloat(rawUsdc) * tokenPrice('USDC');
-      } catch (e) {
-        console.warn('[refreshBorrowedBalances] raw token balance read failed, using farm-only gross:', e);
-      }
-      grossCollateralValue = farmPositionValue + rawAssetValue;
-    } else {
-      // No farm. Borrowed funds physically sit in the account — mirror the
-      // contract's borrow-time check: gross = collateral + debt.
-      grossCollateralValue = totalCollateralValue + effectiveDebtValue;
-    }
-
-    const avgHealthFactor =
-      effectiveDebtValue > 0
-        ? grossCollateralValue / effectiveDebtValue
-        : grossCollateralValue > 0
-          ? HEALTH_FACTOR_INFINITY_SENTINEL
-          : 0;
-
-    //  Collateral Left Before Liquidation:
-    //    = grossCollateral - (totalDebt × LIQUIDATION_THRESHOLD)
-    //    i.e. how much collateral value can fall before HF hits 1.1
-    const collateralLeftBeforeLiquidation = Math.max(
-      0,
-      grossCollateralValue - effectiveDebtValue * LIQUIDATION_THRESHOLD
-    );
-
-    // Net Available Collateral = unencumbered equity (deposit not backing debt).
-    // For a leveraged position this equals the user's initial collateral —
-    // the borrowed assets sit in the account but they're owed, not free.
-    const netAvailableCollateral = Math.max(0, grossCollateralValue - effectiveDebtValue);
-
-    // Total Value (InfoCard) = Net Available Collateral + Total Borrowed.
-    // Matches the two rows above it; equals grossCollateralValue when HF math
-    // is consistent, but must not use raw chain collateral + debt (double-counts).
-    const totalValue = netAvailableCollateral + totalBorrowedValue;
-
-    //  Debt limit = maximum safe debt at liquidation threshold
-    const debtLimit = grossCollateralValue > 0
-      ? grossCollateralValue / LIQUIDATION_THRESHOLD
-      : 0;
-
-    //  Borrow rate — derive from the lending pool's live on-chain utilization
-    // for the user's largest debt asset, then apply the documented two-slope
-    // rate model (see lib/utils/borrow-rate.ts). Falls back to 0 when there
-    // is no real debt or the pool stats RPC fails.
-    let borrowRate = 0;
-    if (effectiveDebtValue > 0) {
-      const primaryDebtSymbol = Object.entries(borrowedBalances)
-        .map(([symbol, b]) => ({ symbol, usd: parseFloat(b.usdValue) || 0 }))
-        .sort((a, b) => b.usd - a.usd)[0]?.symbol;
-      const assetType = primaryDebtSymbol ? debtSymbolToAssetType(primaryDebtSymbol) : null;
-      if (assetType) {
-        try {
-          const stats = await ContractService.getPoolStats(assetType);
-          const utilizationPct = parseFloat(stats.utilizationRate) || 0;
-          borrowRate = parseFloat(computeBorrowApr(utilizationPct).toFixed(2));
-        } catch (rateErr) {
-          console.warn('⚠️ Borrow rate fetch failed, leaving as 0:', rateErr);
-        }
-      }
-    }
-
-    useMarginAccountInfoStore.getState().set({
-      borrowedBalances,
-      collateralBalances,
-      totalBorrowedValue,
-      totalCollateralValue,
-      grossCollateralValue,
-      totalValue,
-      avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
-      timeToLiquidation: 0,
-      borrowRate,
-      debtLimit,
-      minDebt: 0,
-      maxDebt: debtLimit,
-      isLoadingBorrowedBalances: false,
+    // Single source of truth for the HF / collateral / borrowed / net math —
+    // shared with the cached /api/account route (lib/account-snapshot.ts) so the
+    // mutation/fallback path and the server route can never diverge. onPartial
+    // publishes the fast debt/balances first (progressive render); the heavier
+    // farm/SAC/borrow-rate work resolves concurrently and lands in the final set.
+    const snap = await computeMarginSnapshot(marginAccountAddress, {
+      onPartial: (p) => {
+        const prev = useMarginAccountInfoStore.getState();
+        // MERGE collateral, don't replace. The partial read only has the
+        // non-SAC collateral (AQUSDC/SOUSDC); XLM/BLUSDC arrive later in the
+        // full pass via the SAC reconcile. Replacing here briefly blanked a
+        // still-valid collateral list — and wiped the optimistic deposit —
+        // which left the MB collateral grid stuck in its loading skeleton for
+        // the whole reconcile window. Preserving prior keys keeps the grid
+        // populated; the full snapshot below sets the authoritative set.
+        const mergedCollateral = { ...prev.collateralBalances, ...p.collateralBalances };
+        // Re-derive provisional health from the MERGED collateral so the health
+        // factor stays coherent with the debt (never a stale ∞ over fresh debt)
+        // without dipping when the partial read is missing SAC collateral.
+        const mergedGross = Object.values(mergedCollateral).reduce(
+          (sum, b) => sum + (parseFloat(b.usdValue) || 0),
+          0,
+        );
+        const debt = p.totalBorrowedValue;
+        const health = deriveMarginHealth({
+          grossCollateralValue: Math.max(mergedGross, prev.grossCollateralValue || 0),
+          effectiveDebtValue: debt > 0.01 ? debt : 0,
+          totalBorrowedValue: debt,
+        });
+        useMarginAccountInfoStore.getState().set({
+          borrowedBalances: { ...p.borrowedBalances },
+          collateralBalances: mergedCollateral,
+          totalBorrowedValue: debt,
+          avgHealthFactor: health.avgHealthFactor,
+          grossCollateralValue: Math.max(mergedGross, prev.grossCollateralValue || 0),
+          netAvailableCollateral: health.netAvailableCollateral,
+          collateralLeftBeforeLiquidation: health.collateralLeftBeforeLiquidation,
+          isLoadingBorrowedBalances: false,
+        });
+      },
     });
+
+    // Guard against a degraded client read blanking collateral. XLM/BLUSDC
+    // collateral comes ONLY from the SAC reconcile, which can fail in the browser
+    // (it succeeds server-side in /api/account). When it fails, snap.collateralBalances
+    // drops those keys — which blanked the MB grid + Positions for an account that
+    // demonstrably still holds collateral. If the fresh read shows ZERO collateral
+    // but we already had some, treat it as degraded: update only the debt-side
+    // fields and PRESERVE the prior collateral/health, letting the reliable server
+    // snapshot feed (/api/account) reconcile. A genuine full withdrawal self-heals
+    // on the next read/ledger tick.
+    const prevState = useMarginAccountInfoStore.getState();
+    const snapHasCollateral = Object.values(snap.collateralBalances).some(
+      (b) => (parseFloat(b.amount) || 0) > 0,
+    );
+    const prevHadCollateral = Object.values(prevState.collateralBalances).some(
+      (b) => (parseFloat(b.amount) || 0) > 0,
+    );
+    const collateralDegraded = !snapHasCollateral && prevHadCollateral;
+
+    if (collateralDegraded) {
+      console.warn(
+        "[margin] client snapshot returned no collateral but account holds some " +
+          "(likely a SAC reconcile failure); preserved prior collateral — the " +
+          "server snapshot feed will reconcile.",
+      );
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: snap.borrowedBalances,
+        totalBorrowedValue: snap.totalBorrowedValue,
+        borrowRate: snap.borrowRate,
+        isLoadingBorrowedBalances: false,
+      });
+    } else {
+      useMarginAccountInfoStore.getState().set({
+        borrowedBalances: snap.borrowedBalances,
+        collateralBalances: snap.collateralBalances,
+        totalBorrowedValue: snap.totalBorrowedValue,
+        totalCollateralValue: snap.totalCollateralValue,
+        grossCollateralValue: snap.grossCollateralValue,
+        totalValue: snap.totalValue,
+        avgHealthFactor: snap.avgHealthFactor,
+        collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
+        netAvailableCollateral: snap.netAvailableCollateral,
+        timeToLiquidation: 0,
+        borrowRate: snap.borrowRate,
+        debtLimit: snap.debtLimit,
+        minDebt: 0,
+        maxDebt: snap.debtLimit,
+        isLoadingBorrowedBalances: false,
+      });
+    }
   } catch (error: any) {
     console.error('❌ Error refreshing balances:', error);
     useMarginAccountInfoStore.getState().set({ isLoadingBorrowedBalances: false });
@@ -701,10 +627,12 @@ export const refreshBorrowedBalances = async (
   return run;
 };
 
+/** Reset the entire slice back to its initial (empty) state. */
 export const resetToInitialState = () => {
   useMarginAccountInfoStore.getState().reset();
 };
 
+/** Clear just the account-creation flags (loading + error), e.g. when reopening the create dialog. */
 export const resetCreationState = () => {
   useMarginAccountInfoStore.getState().set({
     isCreatingAccount: false,

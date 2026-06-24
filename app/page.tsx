@@ -13,7 +13,8 @@ import { InfoCard } from "@/components/margin/info-card";
 import { LeverageCollateral } from "@/components/margin/leverage-collateral";
 import { Positionstable } from "@/components/margin/positions-table";
 import { AccountStats } from "@/components/margin/account-stats";
-import { useMarginAccountInfoStore, checkUserMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, checkUserMarginAccount, isSnapshotFeedSuppressed } from "@/store/margin-account-info-store";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
 import { formatValue } from "@/lib/utils/format-value";
@@ -95,6 +96,18 @@ export default function Home() {
     (state) => state.isLoadingBorrowedBalances
   );
 
+  // Per-account snapshot (cached) — gives the stats instantly on reload and a
+  // clean loading signal, same as the margin page. Values are sourced from it
+  // (falling back to the store) so the first paint shows real numbers, not 0.
+  const { snapshot } = useAccountSnapshot(userAddress);
+  const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
+  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
+  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
+  const effCollateralLeft =
+    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
+  const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
+  const effBorrowRate = snapshot?.borrowRate ?? borrowRate;
+
   // Check for margin account when user address changes or wallet connects
   useEffect(() => {
     if (userAddress && isConnected) {
@@ -104,31 +117,44 @@ export default function Home() {
     // Note: We don't clear margin account on disconnect to preserve localStorage data
   }, [userAddress, isConnected]);
 
-  // Refresh borrowed balances when margin account is available
+  // Feed the store from the per-account snapshot — the single source of truth,
+  // same as the margin page. This replaces the per-tick refreshBorrowedBalances:
+  // the snapshot is ledger-tick driven (revalidated inside useAccountSnapshot)
+  // and is now the ONLY writer of balances here, so the positions table can no
+  // longer flip between two independent account-resolution paths.
   useEffect(() => {
-    // Only refresh if wallet is connected, has margin account, and has valid address
-    if (isConnected && hasMarginAccount && marginAccountAddress && marginAccountAddress.length > 10) {
-      refreshBorrowedBalances(marginAccountAddress);
-
-      // Set up periodic refresh every 30 seconds
-      const interval = setInterval(() => {
-        if (isConnected && marginAccountAddress) {
-          refreshBorrowedBalances(marginAccountAddress);
-        }
-      }, 30000);
-
-      return () => clearInterval(interval);
+    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    const store = useMarginAccountInfoStore.getState();
+    if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
+      store.set({
+        hasMarginAccount: true,
+        marginAccountAddress: snapshot.marginAccountAddress,
+        borrowedBalances: snapshot.borrowedBalances ?? {},
+        collateralBalances: snapshot.collateralBalances ?? {},
+        totalBorrowedValue: snapshot.totalBorrowedValue ?? 0,
+        totalCollateralValue: snapshot.totalCollateralValue ?? 0,
+        grossCollateralValue: snapshot.grossCollateralValue ?? 0,
+        totalValue: snapshot.totalValue ?? 0,
+        avgHealthFactor: snapshot.avgHealthFactor ?? 0,
+        collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation ?? 0,
+        netAvailableCollateral: snapshot.netAvailableCollateral ?? 0,
+        borrowRate: snapshot.borrowRate ?? 0,
+        debtLimit: snapshot.debtLimit ?? 0,
+        isLoadingBorrowedBalances: false,
+      });
+    } else if (snapshot.hasMarginAccount === false) {
+      store.set({ hasMarginAccount: false });
     }
-  }, [isConnected, hasMarginAccount, marginAccountAddress]);
+  }, [snapshot]);
 
 
   // ── Live account stats derived from store (contract-aligned formulas) ──────
   const accountStats = useMemo(() => {
     return {
-      netHealthFactor: avgHealthFactor,
-      collateralLeftBeforeLiquidation,
-      netAvailableCollateral,
-      netAmountBorrowed: totalBorrowedValue,
+      netHealthFactor: effHealthFactor,
+      collateralLeftBeforeLiquidation: effCollateralLeft,
+      netAvailableCollateral: effNetAvailable,
+      netAmountBorrowed: effBorrowed,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // mapping totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -136,22 +162,22 @@ export default function Home() {
       netProfitAndLoss: 0,
     };
   }, [
-    avgHealthFactor,
-    collateralLeftBeforeLiquidation,
-    netAvailableCollateral,
-    totalBorrowedValue,
+    effHealthFactor,
+    effCollateralLeft,
+    effNetAvailable,
+    effBorrowed,
   ]);
 
   // InfoCard row keyed `totalCollateralValue` shows Net Available Collateral
   // (gross assets − debt), matching ACCOUNT_STATS_ITEMS — not raw chain collateral.
   const infoCardData = useMemo(
     () => ({
-      totalBorrowedValue,
-      totalCollateralValue: netAvailableCollateral,
-      totalValue: totalBorrowedValue + netAvailableCollateral,
-      avgHealthFactor,
+      totalBorrowedValue: effBorrowed,
+      totalCollateralValue: effNetAvailable,
+      totalValue: effBorrowed + effNetAvailable,
+      avgHealthFactor: effHealthFactor,
       timeToLiquidation,
-      borrowRate,
+      borrowRate: effBorrowRate,
       liquidationPremium,
       liquidationFee,
       debtLimit,
@@ -162,16 +188,16 @@ export default function Home() {
       riskEngine: CONTRACT_ADDRESSES.RISK_ENGINE,
     }),
     [
-      avgHealthFactor,
-      borrowRate,
+      effHealthFactor,
+      effBorrowRate,
       debtLimit,
       liquidationFee,
       liquidationPremium,
       maxDebt,
       minDebt,
-      netAvailableCollateral,
+      effNetAvailable,
       timeToLiquidation,
-      totalBorrowedValue,
+      effBorrowed,
     ],
   );
 
@@ -210,13 +236,10 @@ export default function Home() {
   // a freshly-connected wallet doesn't briefly look empty during the ~12s
   // RPC round-trip. Once data lands we keep showing the last-known values
   // through subsequent polling refreshes (no flicker every 30s).
-  const noDataYet = totalCollateralValue <= 0 && totalBorrowedValue <= 0;
-  const showSpinner = isLoadingBorrowedBalances && noDataYet;
+  // Shimmer (Aave style) until the snapshot resolves; then render real values
+  // directly. Never a raw 0 or a spinner glyph.
+  const showStatsSkeleton = Boolean(userAddress) && !snapshot;
   const accountStatsValues = ACCOUNT_STATS_ITEMS.reduce((acc, item) => {
-    if (showSpinner) {
-      acc[item.id] = "⟳";
-      return acc;
-    }
     const value = accountStats[item.id as keyof typeof accountStats] ?? 0;
     acc[item.id] = formatAccountStatValue(item.id, value);
     return acc;
@@ -268,6 +291,7 @@ export default function Home() {
             values={accountStatsValues}
             valueColors={accountStatsValueColors}
             gridCols="grid-cols-4"
+            loading={showStatsSkeleton}
           />
         </motion.section>
       )}
@@ -343,6 +367,7 @@ export default function Home() {
             <InfoCard
               data={infoCardData}
               items={[...MARGIN_ACCOUNT_INFO_ITEMS]}
+              loading={showStatsSkeleton}
               showExpandable={true}
               expandableSections={[
                 {

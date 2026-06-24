@@ -1,11 +1,41 @@
+/**
+ * Margin / smart-account integration layer for the Vanna lending protocol.
+ *
+ * Wraps the on-chain AccountManager + per-trader SmartAccount contracts behind
+ * one service class (`MarginAccountService`): account discovery/creation,
+ * collateral deposit/withdraw, borrow/repay, and the one-signature "open
+ * position" flows (deposit + borrow + deploy to Blend). Reads go through
+ * simulated transactions; writes are signed via Freighter.
+ *
+ * Amount conventions are deliberate and load-bearing:
+ *   - The contract stores and accepts amounts in WAD (18-decimal fixed point);
+ *     all `*_wad` params/returns use this scale.
+ *   - SAC tokens on this deployment are 7-decimal (stroops), so a stroop→WAD
+ *     conversion multiplies by 1e11 (see `getMarginAccountTokenBalanceWad`).
+ *   - Symbol normalization (`normalizeContractTokenSymbol`) maps the several UI
+ *     aliases (USDC/BLUSDC, AQUSDC, SOUSDC) onto the exact symbols the contract
+ *     expects per call site — these differ between deposit and repay.
+ *
+ * Discovery favors permanent on-chain storage over RPC events because Soroban
+ * testnet only retains events for ~7 days.
+ */
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@stellar/freighter-api';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
+import { getReadSourceAddress } from '@/lib/read-source';
+import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService, ASSET_TYPES, type AssetType } from './stellar-utils';
 import { BlendService } from './blend-utils';
-import { fetchTokenPrice } from './oracle-price';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
+import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
 
 // Types
+/**
+ * A trader's deployed margin smart account, as tracked client-side.
+ *
+ * `address` is the on-chain SmartAccount C-address; `owner` is the trader's
+ * G-address. `accountManagerAddress` records which AccountManager deployment
+ * minted it — used to invalidate cached accounts after a redeploy (a stale
+ * account points at a dead manager).
+ */
 export interface MarginAccount {
   address: string;
   owner: string;
@@ -14,6 +44,13 @@ export interface MarginAccount {
   accountManagerAddress?: string;
 }
 
+/**
+ * Outcome of {@link MarginAccountService.createMarginAccount}. On success,
+ * `marginAccountAddress` is set; `hash` is present only when a creation tx was
+ * actually submitted (absent when an existing account was recovered). `error`
+ * may be populated even when `success` is true to carry an informational note
+ * (e.g. "account already exists").
+ */
 export interface MarginAccountCreationResult {
   success: boolean;
   marginAccountAddress?: string;
@@ -21,7 +58,15 @@ export interface MarginAccountCreationResult {
   error?: string;
 }
 
-// Margin account management class
+/**
+ * Service for managing a trader's margin smart account against the on-chain
+ * AccountManager. All methods are static; the class holds no instance state.
+ *
+ * Read methods simulate transactions (no signature, no fee); write methods
+ * prepare → sign via Freighter → submit → poll. Most writes bump the fee well
+ * above BASE_FEE (20x–120x) because the chained collateral/borrow/deploy paths
+ * are resource-heavy. Account discovery results are cached to localStorage.
+ */
 export class MarginAccountService {
   // Local storage key for margin accounts
   private static STORAGE_KEY = 'vanna_margin_accounts';
@@ -41,6 +86,94 @@ export class MarginAccountService {
       return 'SOUSDC';
     }
     return normalized;
+  }
+
+  private static async checkWalletBalanceForDeposit(
+    walletAddress: string,
+    contractTokenSymbol: string,
+    depositAmount: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (contractTokenSymbol === "XLM") {
+      return { ok: true };
+    }
+
+    let tokenContract: string | undefined;
+    let displaySymbol = contractTokenSymbol;
+    if (contractTokenSymbol === "USDC") {
+      tokenContract = CONTRACT_ADDRESSES.BLEND_USDC;
+      displaySymbol = "BLUSDC";
+    } else if (contractTokenSymbol === "AQUSDC") {
+      tokenContract = CONTRACT_ADDRESSES.AQUARIUS_USDC;
+    } else if (contractTokenSymbol === "SOUSDC") {
+      tokenContract = CONTRACT_ADDRESSES.SOROSWAP_USDC;
+    }
+
+    if (!tokenContract) return { ok: true };
+
+    const balanceStr = await ContractService.getSorobanTokenWalletBalance(
+      tokenContract,
+      walletAddress,
+    );
+    const available = parseFloat(balanceStr) || 0;
+    if (available + 1e-7 < depositAmount) {
+      if (available <= 1e-7) {
+        const faucetHint =
+          displaySymbol === "BLUSDC"
+            ? "Blend USDC"
+            : displaySymbol === "AQUSDC"
+              ? "Aquarius USDC"
+              : displaySymbol === "SOUSDC"
+                ? "Soroswap USDC"
+                : displaySymbol;
+        return {
+          ok: false,
+          error:
+            `You have no ${displaySymbol} in your wallet. Use the Faucet to mint ${faucetHint} (establishes the required trustline), then retry.`,
+        };
+      }
+      return {
+        ok: false,
+        error: `Insufficient ${displaySymbol} wallet balance. Available: ${available.toFixed(2)} ${displaySymbol}.`,
+      };
+    }
+
+    return { ok: true };
+  }
+
+  private static async checkPoolLiquidity(
+    contractBorrowSymbol: string,
+    borrowAmountTokens: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    type PoolEntry = { assetType: AssetType; displayName: string };
+    const poolMap: Record<string, PoolEntry> = {
+      XLM:    { assetType: ASSET_TYPES.XLM,           displayName: 'XLM' },
+      USDC:   { assetType: ASSET_TYPES.USDC,          displayName: 'USDC' },
+      AQUSDC: { assetType: ASSET_TYPES.AQUARIUS_USDC, displayName: 'Aquarius USDC' },
+      SOUSDC: { assetType: ASSET_TYPES.SOROSWAP_USDC, displayName: 'Soroswap USDC' },
+    };
+
+    const entry = poolMap[contractBorrowSymbol];
+    if (!entry) return { ok: true };
+
+    try {
+      const poolLiqStr = await ContractService.getPoolLiquidity(entry.assetType);
+      const poolBalance = parseFloat(poolLiqStr) || 0;
+
+      if (borrowAmountTokens > poolBalance) {
+        return {
+          ok: false,
+          error:
+            `The ${entry.displayName} lending pool does not have enough liquidity. ` +
+            `Available: ${poolBalance.toFixed(2)} ${entry.displayName}, ` +
+            `you need: ${borrowAmountTokens.toFixed(2)} ${entry.displayName}. ` +
+            `Please reduce your leverage or wait for more liquidity to be supplied to the pool.`,
+        };
+      }
+
+      return { ok: true };
+    } catch {
+      return { ok: true };
+    }
   }
 
   private static parseBorrowNotAllowedMessage(raw: any, tokenSymbol: string): string {
@@ -270,7 +403,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Get stored margin account for a user
+   * Read the cached margin account for a trader from localStorage.
+   *
+   * @param userAddress - Trader's G-address (the localStorage map key).
+   * @returns The cached {@link MarginAccount}, or null if none is stored,
+   *          parsing fails, or the entry was minted by a different (older)
+   *          AccountManager deployment — stale entries are deliberately
+   *          discarded so callers re-discover against the live contract.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
     try {
@@ -293,7 +432,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Store margin account for a user
+   * Cache a trader's margin account in localStorage, stamping it with the
+   * current AccountManager address so {@link getStoredMarginAccount} can later
+   * invalidate it after a redeploy. Swallows storage errors (logs only).
+   *
+   * @param userAddress - Trader's G-address (map key).
+   * @param marginAccount - Account to persist; its `accountManagerAddress` is
+   *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
     try {
@@ -311,7 +456,11 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if user has a margin account
+   * Whether the trader has an active, locally-cached margin account.
+   * Checks localStorage only — does not hit the chain. Use
+   * {@link discoverExistingAccount} to recover one that isn't cached.
+   *
+   * @param userAddress - Trader's G-address.
    */
   static hasMarginAccount(userAddress: string): boolean {
     const account = this.getStoredMarginAccount(userAddress);
@@ -319,19 +468,29 @@ export class MarginAccountService {
   }
 
   /**
-   * Create a new margin account by calling the smart contract
-   * STRICT ENFORCEMENT: Only creates if no existing account found
+   * Create a margin smart account for a trader via AccountManager
+   * `create_account`, enforcing one-account-per-trader.
+   *
+   * Idempotent by design: checks localStorage, then the chain
+   * ({@link discoverExistingAccount}), and returns the existing account if
+   * found — only signs/submits a creation tx when none exists anywhere. On a
+   * successful tx it extracts the new C-address from the result (or re-reads it
+   * from the registry as a fallback) and caches it.
+   *
+   * @param userAddress - Trader's G-address; becomes the account owner and the
+   *                       tx source (Freighter will prompt for a signature).
+   * @returns {@link MarginAccountCreationResult}. When an existing account is
+   *          returned, `success` is true and `error` carries an informational
+   *          note; `hash` is set only when a new account was actually minted.
    */
   static async createMarginAccount(
     userAddress: string
   ): Promise<MarginAccountCreationResult> {
     try {
-      console.log('🔍 Checking for existing margin account for:', userAddress);
       
       // STEP 1: Check localStorage first
       const existingAccount = this.getStoredMarginAccount(userAddress);
       if (existingAccount && existingAccount.isActive) {
-        console.log('✅ User already has active margin account in localStorage:', existingAccount.address);
         return {
           success: true,
           marginAccountAddress: existingAccount.address,
@@ -340,10 +499,8 @@ export class MarginAccountService {
       }
       
       // STEP 2: Check blockchain for existing accounts (comprehensive search)
-      console.log('🌐 No local account found, checking blockchain for existing accounts...');
       const blockchainAccount = await this.getMarginAccountFromRegistry(userAddress);
       if (blockchainAccount) {
-        console.log('✅ Found existing active margin account on blockchain:', blockchainAccount);
         return {
           success: true,
           marginAccountAddress: blockchainAccount,
@@ -352,7 +509,6 @@ export class MarginAccountService {
       }
       
       // STEP 3: No existing account found anywhere - proceed with creation
-      console.log('🆕 No existing margin account found. Creating new account...');
       
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(userAddress);
@@ -374,7 +530,6 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      console.log('Preparing margin account creation transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
       
       // Sign the transaction
@@ -387,12 +542,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('Sending margin account creation transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
         // Poll for transaction completion
-        console.log('Transaction pending, polling for completion...');
         const finalResult = await this.pollTransactionStatus(server, result.hash);
         
         if (finalResult.status === 'SUCCESS') {
@@ -401,7 +554,6 @@ export class MarginAccountService {
           
           // If we couldn't extract the address, try to get it via contract call
           if (!marginAccountAddress) {
-            console.log('Could not extract address from transaction, trying registry lookup...');
             marginAccountAddress = await this.getMarginAccountFromRegistry(userAddress);
           }
           
@@ -465,49 +617,43 @@ export class MarginAccountService {
    */
   private static async getMarginAccountFromRegistry(userAddress: string): Promise<string | null> {
     try {
-      console.log('🔍 Discovering existing margin accounts from blockchain for:', userAddress);
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
 
       // Step 1: read on-chain persistent storage (permanent, no event-retention limit)
-      console.log('📦 Step 1: Reading AccountManager persistent storage...');
       let candidates = await this.getSmartAccountsFromStorage(userAddress, server);
-      console.log('📦 Accounts found in storage:', candidates);
 
       // Step 2: events fallback only if storage returned nothing
       if (candidates.length === 0) {
-        console.log('📋 Step 2: Storage empty, falling back to event log...');
         candidates = await this.getAccountsFromEvents(userAddress, server);
-        console.log('📋 Accounts found from events:', candidates);
       }
 
-      // Step 3: filter by activity. Newest-first so we prefer the most recent
-      // account when a trader has reused inactive slots.
-      console.log('🔍 Step 3: Checking account activity status...');
+      // Step 3: resolve to the NEWEST account, deterministically. Walk
+      // newest-first and take the first one the contract definitively reports
+      // active. Crucially, if a candidate's status is undetermined (RPC error),
+      // we resolve to it anyway rather than skipping to an older account — the
+      // newest account is the intended one, and on a clean tick it would win.
+      // Skipping on a transient error is exactly what made the resolved account
+      // (and the displayed collateral) flip between accounts every ledger close.
       for (let i = candidates.length - 1; i >= 0; i--) {
         const accountAddress = candidates[i];
-        try {
-          const isActive = await this.isAccountActive(accountAddress, server, userAddress);
-          console.log(`📊 Account ${accountAddress} is active: ${isActive}`);
+        const isActive = await this.isAccountActive(accountAddress, server, userAddress);
 
-          if (isActive) {
-            const marginAccount: MarginAccount = {
-              address: accountAddress,
-              owner: userAddress,
-              isActive: true,
-              createdAt: Date.now(),
-            };
+        // Definitively inactive → this slot was abandoned; try the next-newest.
+        if (isActive === false) continue;
 
-            this.storeMarginAccount(userAddress, marginAccount);
-            console.log('✅ Successfully recovered existing margin account:', accountAddress);
-            return accountAddress;
-          }
-        } catch (accountError) {
-          console.warn('⚠️ Error checking account activity for:', accountAddress, accountError);
-        }
+        // Active (true) or undetermined (null) → this is our account. Resolving
+        // on null keeps selection stable across transient RPC failures.
+        const marginAccount: MarginAccount = {
+          address: accountAddress,
+          owner: userAddress,
+          isActive: true,
+          createdAt: Date.now(),
+        };
+        this.storeMarginAccount(userAddress, marginAccount);
+        return accountAddress;
       }
 
-      console.log('❌ No existing active margin account found for user');
       return null;
     } catch (error) {
       console.error('❌ Error discovering existing margin account from blockchain:', error);
@@ -656,19 +802,20 @@ export class MarginAccountService {
    * inside the SDK's StrKey check. We use the trader's wallet address since
    * it's always available at the call site and is a valid G-address.
    */
+  // Returns true/false when the contract gives a definitive answer, or null when
+  // the status could not be determined (RPC/simulation error). The null case is
+  // critical: callers must NOT treat "couldn't reach RPC" as "inactive", or a
+  // transient error silently demotes a live account and discovery flips to a
+  // different one on the next ledger tick.
   private static async isAccountActive(
     accountAddress: string,
     server: StellarSdk.rpc.Server,
     sourceUserAddress: string,
-  ): Promise<boolean> {
+  ): Promise<boolean | null> {
     try {
-      console.log('🔍 Checking if account is active:', accountAddress);
-
-      // Create contract client for the smart account
       const contract = new StellarSdk.Contract(accountAddress);
       const call = contract.call('is_account_active');
 
-      // Create a transaction to simulate the call
       const transaction = new StellarSdk.TransactionBuilder(
         new StellarSdk.Account(sourceUserAddress, '0'),
         { fee: '100', networkPassphrase: NETWORK_PASSPHRASE }
@@ -676,27 +823,24 @@ export class MarginAccountService {
       .addOperation(call)
       .setTimeout(30)
       .build();
-      
+
       const result = await server.simulateTransaction(transaction);
-      
-      // Check for simulation errors
+
+      // A simulation error is "undetermined", not "inactive".
       if ('error' in result && result.error) {
         console.warn('⚠️ Contract simulation failed for account:', accountAddress, result.error);
-        return false;
+        return null;
       }
-      
-      // Check for successful simulation result
+
       if ('result' in result && result.result) {
-        const isActive = StellarSdk.scValToNative(result.result.retval) === true;
-        console.log('📊 Account active status:', isActive);
-        return isActive;
+        return StellarSdk.scValToNative(result.result.retval) === true;
       }
-      
+
       console.warn('⚠️ No valid result from account activity check');
-      return false;
+      return null;
     } catch (error) {
       console.error('❌ Error checking account active status:', error);
-      return false;
+      return null;
     }
   }
 
@@ -706,12 +850,14 @@ export class MarginAccountService {
   private static async getRecentLedger(server: StellarSdk.rpc.Server): Promise<number> {
     try {
       const latestLedger = await server.getLatestLedger();
-      // Soroban testnet RPC retains events for ~7 days; go back as far as we
-      // can so accounts created earlier in the deployment lifetime are still
-      // discoverable on a fresh origin (deployed URL without localStorage).
-      const lookBackLedgers = 17280 * 7; // ~7 days of ledgers (5s blocks)
+      // Soroban testnet RPC retains events for ~7 days. Going back the full 7
+      // days (17280*7) lands ~1 ledger BELOW the retention floor as the chain
+      // advances, which makes getEvents throw "startLedger must be within the
+      // ledger range". Use ~6 days so startLedger stays comfortably inside the
+      // window. (Accounts older than the retention window are recovered via the
+      // Registry storage read / localStorage, not event scraping.)
+      const lookBackLedgers = 17280 * 6; // ~6 days of ledgers (5s blocks)
       const startLedger = Math.max(1, latestLedger.sequence - lookBackLedgers);
-      console.log('📅 Searching from ledger', startLedger, 'to', latestLedger.sequence);
       return startLedger;
     } catch (error) {
       console.error('❌ Error getting recent ledger, using default:', error);
@@ -724,14 +870,12 @@ export class MarginAccountService {
    */
   private static extractMarginAccountAddress(result: any): string | null {
     try {
-      console.log('Extracting margin account address from result:', result);
       
       // The create_account function returns the margin account address
       // Try to extract from returnValue first (newer Stellar SDK structure)
       if (result.returnValue) {
         try {
           const returnValue = StellarSdk.scValToNative(result.returnValue);
-          console.log('Extracted return value:', returnValue);
           if (returnValue && typeof returnValue === 'string') {
             return returnValue;
           }
@@ -744,7 +888,6 @@ export class MarginAccountService {
       if (result.result && !result.error && result.result.retval) {
         try {
           const returnValue = StellarSdk.scValToNative(result.result.retval);
-          console.log('Extracted result.result.retval:', returnValue);
           if (returnValue && typeof returnValue === 'string') {
             return returnValue;
           }
@@ -757,7 +900,6 @@ export class MarginAccountService {
       if (result.result && result.result.result && result.result.result.ok) {
         try {
           const returnValue = StellarSdk.scValToNative(result.result.result.ok);
-          console.log('Extracted result.result.result.ok:', returnValue);
           if (returnValue && typeof returnValue === 'string') {
             return returnValue;
           }
@@ -768,9 +910,7 @@ export class MarginAccountService {
       
       // Alternative: try to extract from events
       if (result.events && result.events.length > 0) {
-        console.log('Checking events for margin account address...');
         for (const event of result.events) {
-          console.log('Event:', event);
           if (event.type === 'contract') {
             try {
               // Parse the event data - look for Smart_account_creation event
@@ -779,7 +919,6 @@ export class MarginAccountService {
               
               if (eventTopic && StellarSdk.scValToNative(eventTopic) === 'Smart_account_creation') {
                 const data = StellarSdk.scValToNative(eventData);
-                console.log('Smart account creation event data:', data);
                 
                 if (data && typeof data === 'object' && data.smart_account) {
                   return data.smart_account;
@@ -830,15 +969,24 @@ export class MarginAccountService {
   }
 
   /**
-   * Public method to discover existing margin account from blockchain
-   * Used when localStorage is empty but user might have account on blockchain
+   * Discover a trader's existing margin account directly from the chain (used
+   * when localStorage is empty — e.g. a fresh browser or the deployed origin
+   * after creating the account on localhost). Reads AccountManager persistent
+   * storage first, falling back to creation events, and re-caches the resolved
+   * account. Public wrapper over the registry lookup.
+   *
+   * @param userAddress - Trader's G-address.
+   * @returns The newest active SmartAccount C-address, or null if none found.
    */
   static async discoverExistingAccount(userAddress: string): Promise<string | null> {
     return await this.getMarginAccountFromRegistry(userAddress);
   }
 
   /**
-   * Get margin account info (for display)
+   * Summarize the cached margin account for UI display. localStorage-only (no
+   * chain read). Returns `{ hasAccount: false }` when nothing is cached.
+   *
+   * @param userAddress - Trader's G-address.
    */
   static getMarginAccountInfo(userAddress: string): {
     hasAccount: boolean;
@@ -861,7 +1009,9 @@ export class MarginAccountService {
   }
 
   /**
-   * Format margin account address for display
+   * Truncate an address to `XXXXXX...XXXX` for compact display.
+   *
+   * @param address - Any Stellar address; empty input yields an empty string.
    */
   static formatAccountAddress(address: string): string {
     if (!address) return '';
@@ -869,7 +1019,11 @@ export class MarginAccountService {
   }
 
   /**
-   * Clear stored margin account (for testing/reset)
+   * Remove a trader's cached margin account from localStorage (testing/reset).
+   * Does not touch the chain — the account still exists on-chain and will be
+   * re-discovered. Swallows storage errors (logs only).
+   *
+   * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
     try {
@@ -884,12 +1038,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if a token is allowed as collateral
+   * Whether the AccountManager currently accepts a token as collateral
+   * (`get_iscollateral_allowed`). Read-only simulation against the connected
+   * wallet. The symbol is normalized first, so any UI alias is accepted.
+   *
+   * @param tokenSymbol - Token symbol or UI alias (XLM, USDC/BLUSDC, AQUSDC, SOUSDC).
+   * @returns true if allowed; false on "not allowed", missing wallet, or any
+   *          simulation error (fail-closed).
    */
   static async isCollateralAllowed(tokenSymbol: string): Promise<boolean> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      console.log('🔍 Checking if collateral is allowed for:', contractTokenSymbol);
       
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -918,7 +1077,6 @@ export class MarginAccountService {
       
       if ('result' in result && result.result) {
         const isAllowed = StellarSdk.scValToNative(result.result.retval) === true;
-        console.log(`📊 ${contractTokenSymbol} collateral allowed:`, isAllowed);
         return isAllowed;
       }
       
@@ -931,11 +1089,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Get max asset cap from contract
+   * Read the AccountManager's per-asset deposit cap (`get_max_asset_cap`) via
+   * read-only simulation.
+   *
+   * @returns The cap as a number, or 0 when the wallet is unavailable, the view
+   *          is unimplemented on this deployment, or the call errors. Callers
+   *          treat 0 as "unknown — let the contract enforce limits on execute"
+   *          rather than a hard block.
    */
   static async getMaxAssetCap(): Promise<number> {
     try {
-      console.log('🔍 Getting max asset cap...');
       
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -961,7 +1124,6 @@ export class MarginAccountService {
       
       if ('result' in result && result.result) {
         const maxCap = StellarSdk.scValToNative(result.result.retval);
-        console.log('📊 Max asset cap:', maxCap);
         return Number(maxCap) || 0;
       }
       
@@ -974,12 +1136,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Check if a token is properly configured in the Registry
+   * Verify that the Registry has a contract address set for a token, by calling
+   * the per-token getter (e.g. `get_usdc_contract_address`; note XLM's getter
+   * `get_xlm_contract_adddress` carries a typo that exists on-chain). A missing
+   * address is the most common cause of "deposit/borrow fails for no obvious
+   * reason" after a fresh Registry deploy.
+   *
+   * @param tokenSymbol - Token symbol or UI alias; normalized before lookup.
+   * @returns `{ configured: true }` when the address is set, otherwise
+   *          `{ configured: false, error }` with an admin-actionable message.
+   *          Fail-closed: unknown tokens and errors report not-configured.
    */
   static async isTokenConfigured(tokenSymbol: string): Promise<{ configured: boolean; error?: string }> {
     const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
     try {
-      console.log(`🔍 Checking if ${contractTokenSymbol} is configured in Registry...`);
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const userAddress = await getAddress();
@@ -1023,7 +1193,6 @@ export class MarginAccountService {
       }
 
       if ('result' in simulationResult && simulationResult.result) {
-        console.log(`✅ ${contractTokenSymbol} is configured in Registry`);
         return { configured: true };
       }
 
@@ -1042,7 +1211,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Deposit collateral tokens to margin account
+   * Deposit collateral into a margin account via AccountManager
+   * `deposit_collateral_tokens`. Runs cheap pre-flight reads (Registry config,
+   * collateral-allowed, optional asset cap) to surface admin/config problems
+   * before prompting for a signature, then prepares → signs → submits → polls.
+   * Uses 20x BASE_FEE for the resource-heavy transfer+accounting path.
+   *
+   * @param marginAccountAddress - Target SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param amountWad - Deposit amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash? , error? }`. A failed pre-flight returns an
+   *          admin-actionable `error` without signing anything.
    */
   static async depositCollateralTokens(
     marginAccountAddress: string,
@@ -1051,10 +1230,8 @@ export class MarginAccountService {
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      console.log('🏦 Depositing collateral tokens:', { marginAccountAddress, tokenSymbol: contractTokenSymbol, amountWad });
       
       // Pre-flight checks
-      console.log('🔍 Running pre-flight checks...');
       
       // Check 0: Token configuration in Registry
       const configCheck = await this.isTokenConfigured(contractTokenSymbol);
@@ -1079,12 +1256,10 @@ export class MarginAccountService {
       // Check 2: Read max asset cap when available. Some deployments omit get_max_asset_cap,
       // so do not hard-block here and let the contract enforce limits on execution.
       const maxAssetCap = await this.getMaxAssetCap();
-      console.log('📊 Max asset cap:', maxAssetCap);
       if (maxAssetCap === 0) {
         console.warn('⚠️ Max asset cap unavailable/zero from view call; continuing and deferring limit checks to contract execution.');
       }
       
-      console.log('✅ Pre-flight checks passed');
       
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1116,7 +1291,6 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      console.log('🔍 Preparing deposit transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
       
       // Sign the transaction
@@ -1129,15 +1303,12 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('📤 Sending deposit transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       
       if (result.status === 'PENDING') {
-        console.log('Deposit transaction pending, polling for completion...');
         const finalResult = await this.pollTransactionStatus(server, result.hash);
         
         if (finalResult.status === 'SUCCESS') {
-          console.log('✅ Deposit transaction successful');
           return {
             success: true,
             hash: result.hash
@@ -1164,7 +1335,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Withdraw collateral tokens from margin account back to trader wallet
+   * Withdraw collateral from a margin account back to the trader's wallet via
+   * AccountManager `withdraw_collateral_balance` (50x BASE_FEE).
+   *
+   * Budget handling is deliberate: this op routinely trips a budget-like
+   * simulation/prepare error that still succeeds once submitted, so a
+   * budget-class error is logged and the original envelope is sent anyway;
+   * only a genuine contract error (e.g. Risk Engine blocking the withdraw
+   * while debt is open) aborts with a user-facing message.
+   *
+   * @param marginAccountAddress - Source SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param amountWad - Withdraw amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash?, error? }`; errors are mapped to friendly
+   *          'withdraw'-context messages.
    */
   static async withdrawCollateralBalance(
     marginAccountAddress: string,
@@ -1173,10 +1357,8 @@ export class MarginAccountService {
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      console.log('🏦 Withdrawing collateral tokens:', { marginAccountAddress, tokenSymbol: contractTokenSymbol, amountWad });
 
       // Pre-flight checks
-      console.log('🔍 Running pre-flight checks...');
       
       // Check: Is collateral allowed for this token?
       const isCollateralAllowed = await this.isCollateralAllowed(contractTokenSymbol);
@@ -1200,7 +1382,6 @@ export class MarginAccountService {
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
       // Use 50x base fee - higher fee for complex operation
-      console.log('🔍 Building withdraw-collateral transaction...');
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -1216,7 +1397,6 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      console.log('🔍 Simulating withdraw-collateral transaction...');
       const simulationResult = await server.simulateTransaction(transaction);
 
       // Check if simulation failed with budget error - this is expected for complex operations
@@ -1240,7 +1420,6 @@ export class MarginAccountService {
         console.warn('⚠️ Withdraw simulation returned budget-like error; attempting transaction preparation anyway (this is normal for complex operations).');
       }
 
-      console.log('🔍 Preparing withdraw-collateral transaction...');
       let preparedTx: StellarSdk.Transaction;
       try {
         preparedTx = await server.prepareTransaction(transaction);
@@ -1260,14 +1439,11 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('📤 Sending withdraw-collateral transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
-        console.log('Withdraw transaction pending, polling for completion...');
         const finalResult = await this.pollTransactionStatus(server, result.hash);
         if (finalResult.status === 'SUCCESS') {
-          console.log('✅ Withdraw collateral transaction successful');
           return {
             success: true,
             hash: result.hash
@@ -1293,7 +1469,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Borrow tokens from lending pool to margin account - SIMPLIFIED VERSION
+   * Borrow from a lending pool into a margin account via AccountManager
+   * `borrow` (50x BASE_FEE).
+   *
+   * Verifies the account is active, then handles the borrow path's quirk that a
+   * budget-like simulation error can still assemble/prepare successfully — in
+   * that case it assembles from the sim result rather than aborting. Genuine
+   * "borrow not allowed" failures (Risk Engine health/debt-limit, missing
+   * oracle price, treasury trustline) are mapped to specific messages via
+   * {@link parseBorrowNotAllowedMessage}.
+   *
+   * @param marginAccountAddress - Borrowing SmartAccount C-address.
+   * @param tokenSymbol - Token symbol or UI alias; normalized before use.
+   * @param borrowAmountWad - Borrow amount as a u256 WAD (18-decimal) string.
+   * @returns `{ success, hash?, error? }`.
    */
   static async borrowTokens(
     marginAccountAddress: string,
@@ -1302,7 +1491,6 @@ export class MarginAccountService {
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      console.log('💰 Borrowing tokens:', { marginAccountAddress, tokenSymbol: contractTokenSymbol, borrowAmountWad });
       
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1319,7 +1507,6 @@ export class MarginAccountService {
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
       
       // Pre-check: Verify margin account exists and is active
-      console.log('🔍 Verifying margin account state before borrowing...');
       
       try {
         const isActive = await this.testContractInteraction(marginAccountAddress);
@@ -1329,14 +1516,12 @@ export class MarginAccountService {
             error: 'Margin account is not active or accessible. Please check account status.'
           };
         }
-        console.log('✅ Margin account verification passed');
       } catch (verifyError: any) {
         console.warn('⚠️ Could not verify margin account state:', verifyError.message);
         // Continue anyway, but log the warning
       }
       
       // SIMPLIFIED: Use consistent parameters like deposit operation
-      console.log('🔍 Building borrow transaction with standard fee...');
       
       // Use same fee structure as successful deposit operation
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -1374,7 +1559,6 @@ export class MarginAccountService {
         console.warn('⚠️ Borrow simulation returned a budget-like error; attempting transaction assembly/prepare anyway.');
       }
 
-      console.log('🔍 Preparing borrow transaction...');
       let preparedTx: StellarSdk.Transaction;
       try {
         const assembleTransaction = (StellarSdk as any)?.rpc?.assembleTransaction;
@@ -1402,21 +1586,13 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('📤 Sending borrow transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       
-      console.log('📊 Borrow transaction result:', {
-        status: result.status,
-        hash: result.hash,
-        errorResultXdr: result.errorResult?.toXDR()
-      });
       
       if (result.status === 'PENDING') {
-        console.log('Borrow transaction pending, polling for completion...');
         const finalResult = await this.pollTransactionStatus(server, result.hash);
         
         if (finalResult.status === 'SUCCESS') {
-          console.log('✅ Borrow transaction successful');
           return {
             success: true,
             hash: result.hash
@@ -1469,11 +1645,20 @@ export class MarginAccountService {
   }
 
   /**
-   * Helper function to setup contract configuration (for admin use)
+   * One-time admin bootstrap: sets the max asset cap and enables XLM, BLUSDC,
+   * AQUSDC and SOUSDC as collateral on the AccountManager.
+   *
+   * Each step is a separate signed transaction (Soroban allows one host-fn op
+   * per tx), executed sequentially with a fresh sequence number and a 1s gap to
+   * avoid sequence collisions. Aborts on the first failed step. Intended for
+   * admin/dev setup, not the trader flow — the connected wallet must be the
+   * contract admin or the calls will revert.
+   *
+   * @returns `{ success, error?, transactionHashes? }` listing the hashes of
+   *          the steps that completed.
    */
   static async setupContractConfiguration(): Promise<{ success: boolean; error?: string; transactionHashes?: string[] }> {
     try {
-      console.log('🔧 Setting up contract configuration...');
       
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1529,7 +1714,6 @@ export class MarginAccountService {
       // Execute each operation in a separate transaction
       for (const operation of setupOperations) {
         try {
-          console.log(`🔧 ${operation.name}...`);
           
           // Get fresh account for each transaction
           const sourceAccount = await server.getAccount(userAddress.address);
@@ -1559,7 +1743,6 @@ export class MarginAccountService {
             const finalResult = await this.pollTransactionStatus(server, result.hash);
             
             if (finalResult.status === 'SUCCESS') {
-              console.log(`✅ ${operation.name} successful`);
               transactionHashes.push(result.hash);
             } else {
               console.error(`❌ ${operation.name} failed with status: ${finalResult.status}`);
@@ -1588,7 +1771,6 @@ export class MarginAccountService {
         }
       }
 
-      console.log('✅ All contract configuration setup operations successful');
       return {
         success: true
       };
@@ -1603,11 +1785,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Test if basic contract interaction works with minimal operations
+   * Lightweight liveness probe for a margin account: simulates
+   * `is_account_active` and reports whether the call simulated without error.
+   * Used as a borrow pre-check.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to probe.
+   * @returns true if the simulation succeeded (account reachable/active),
+   *          false on any error or missing wallet.
    */
   static async testContractInteraction(marginAccountAddress: string): Promise<boolean> {
     try {
-      console.log('🔧 Testing basic contract interaction...');
       
       const userAddress = await getAddress();
       if (userAddress.error) return false;
@@ -1626,7 +1813,6 @@ export class MarginAccountService {
         .build();
 
       const result = await server.simulateTransaction(transaction);
-      console.log('🔧 Contract test result:', !('error' in result));
       return !('error' in result);
     } catch (error) {
       console.warn('🔧 Contract test failed:', error);
@@ -1635,9 +1821,17 @@ export class MarginAccountService {
   }
 
   /**
-   * Get current borrowed token balances for a margin account
-   * @param marginAccountAddress - The margin account address
-   * @returns Object with borrowed token balances
+   * Read a margin account's current per-token debt.
+   *
+   * Lists the account's borrowed symbols (`get_all_borrowed_tokens`), then reads
+   * each one's `get_borrowed_token_debt` (a WAD value, divided by 1e18 here) and
+   * prices it via the on-chain Reflector oracle so event-driven callers see live
+   * USD values without re-running the store's recompute. USDC/BLUSDC aliases are
+   * mirrored so both keys stay populated for the UI.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @returns `{ success, data?, error? }` where `data` maps token symbol →
+   *          `{ amount, usdValue }`; an account with no debt yields `{}`.
    */
   static async getCurrentBorrowedBalances(
     marginAccountAddress: string
@@ -1650,20 +1844,14 @@ export class MarginAccountService {
           error: 'Invalid margin account address'
         };
       }
-      console.log('📊 Getting borrowed balances for margin account:', marginAccountAddress);
       
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
-      
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: connected wallet on client, public fallback on
+      // server / pre-connect (source doesn't affect the view result).
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
-      
+
       // Get all borrowed tokens
       const getAllBorrowedTokensTx = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
@@ -1696,10 +1884,8 @@ export class MarginAccountService {
       const borrowedTokens = Array.isArray(borrowedTokensRaw)
         ? borrowedTokensRaw.map((t) => String(t))
         : [];
-      console.log('📊 Found borrowed tokens:', borrowedTokens);
 
       if (borrowedTokens.length === 0) {
-        console.log('📊 No borrowed tokens on-chain; skipping per-token debt probes');
         return { success: true, data: {} };
       }
 
@@ -1745,7 +1931,6 @@ export class MarginAccountService {
         }
       }
       
-      console.log('📊 Current borrowed balances:', borrowedBalances);
       return {
         success: true,
         data: this.addUsdcAliases(borrowedBalances)
@@ -1761,8 +1946,16 @@ export class MarginAccountService {
   }
 
   /**
-   * Get exact borrowed debt for a token in raw WAD precision.
-   * This is used by repay flow to avoid rounded overpay values.
+   * Read the exact outstanding debt for one token at full WAD precision.
+   *
+   * The repay flow needs the unrounded value: passing a human-rounded amount can
+   * overshoot the live debt (interest accrues every ledger) and trap on-chain.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @param tokenSymbol - Token symbol or UI alias; normalized before the read.
+   * @returns `{ success, debtWad?, amount?, error? }` — `debtWad` is the raw
+   *          u256 WAD string; `amount` is the same value divided by 1e18 for
+   *          display. Errors are mapped with 'repay' context.
    */
   static async getBorrowedTokenDebtWad(
     marginAccountAddress: string,
@@ -1821,9 +2014,63 @@ export class MarginAccountService {
   }
 
   /**
-   * Get collateral balances for a margin account
-   * @param marginAccountAddress - The margin account address
-   * @returns Object with collateral token balances
+   * Read how much of `tokenSymbol` the margin (smart) account actually holds,
+   * returned as a u256 WAD string (token is 7-dec stroops → WAD = stroops * 1e11).
+   *
+   * Repay pulls the funds FROM the smart account, so a "repay all" must be capped
+   * at this — the accrued-interest portion of the debt isn't held by the account,
+   * and repaying the raw debt overspends → Error(Contract,#10) "balance is not
+   * sufficient to spend". Returns null on any read failure (caller then doesn't cap).
+   */
+  static async getMarginAccountTokenBalanceWad(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+  ): Promise<string | null> {
+    try {
+      const norm = this.normalizeContractTokenSymbol(tokenSymbol);
+      const tokenIdBySymbol: Record<string, string> = {
+        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+      };
+      const tokenId = tokenIdBySymbol[norm];
+      if (!tokenId) return null;
+
+      const userAddress = await getAddress();
+      if (userAddress.error || !userAddress.address) return null;
+
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(userAddress.address);
+      const token = new StellarSdk.Contract(tokenId);
+      const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(token.call('balance', StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })))
+        .setTimeout(30)
+        .build();
+
+      const sim = await server.simulateTransaction(tx);
+      if ('error' in sim || !('result' in sim) || !sim.result?.retval) return null;
+      const stroops = BigInt(StellarSdk.scValToNative(sim.result.retval).toString());
+      return (stroops * BigInt(100_000_000_000)).toString(); // stroops (1e7) → WAD (1e18)
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read a margin account's collateral holdings, priced in USD.
+   *
+   * Lists collateral symbols (`get_all_collateral_tokens`), reads each
+   * `get_collateral_token_balance` (WAD ÷ 1e18) and prices it via the oracle,
+   * then merges in farm-tracking collateral (assets deployed to external
+   * venues, tracked separately on-chain) and mirrors USDC/BLUSDC aliases.
+   *
+   * @param marginAccountAddress - SmartAccount C-address (validated for shape).
+   * @returns `{ success, data?, error? }` where `data` maps token symbol →
+   *          `{ amount, usdValue }`; empty collateral yields `{}`.
    */
   static async getCollateralBalances(
     marginAccountAddress: string
@@ -1835,18 +2082,11 @@ export class MarginAccountService {
           error: 'Invalid margin account address'
         };
       }
-      console.log('📊 Getting collateral balances for margin account:', marginAccountAddress);
-
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return {
-          success: false,
-          error: 'Failed to get user address'
-        };
-      }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // Read-only sim source: wallet on client, public fallback on server / pre-connect.
+      const sourceAddr = await getReadSourceAddress();
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
 
       const listTx = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -1932,11 +2172,21 @@ export class MarginAccountService {
   }
 
   /**
-   * Repay borrowed tokens to margin account
-   * @param marginAccountAddress - The margin account address
-  * @param tokenSymbol - Token symbol to repay (XLM, USDC)
-   * @param repayAmountWad - Amount to repay in WAD format
-   * @returns Result with success status and transaction hash
+   * Repay debt on a margin account via AccountManager `repay` (50x BASE_FEE).
+   *
+   * Symbol gotcha: the contract's `borrow()` always stores BLEND-pool debt under
+   * `BLUSDC` regardless of whether USDC or BLUSDC was passed, and `repay()`
+   * validates against the stored borrowed-token list — so this maps USDC→BLUSDC
+   * before calling (the opposite of the deposit path, which prefers USDC).
+   *
+   * @param marginAccountAddress - SmartAccount C-address being repaid.
+   * @param tokenSymbol - Token symbol or UI alias; normalized (USDC→BLUSDC).
+   * @param repayAmountWad - Repay amount as a u256 WAD (18-decimal) string;
+   *                         use {@link getBorrowedTokenDebtWad} to avoid overpay.
+   * @returns `{ success, hash?, error? }`. On-chain failures log the full result
+   *          (incl. tx hash) and surface 'repay'-context messages — an
+   *          ArithDomain/u256_sub error typically means the amount edged just
+   *          above the live debt.
    */
   static async repayLoan(
     marginAccountAddress: string,
@@ -1951,7 +2201,6 @@ export class MarginAccountService {
       // USDC, even though deposit_collateral_tokens prefers USDC.
       const normalized = this.normalizeContractTokenSymbol(tokenSymbol);
       const contractTokenSymbol = normalized === 'USDC' ? 'BLUSDC' : normalized;
-      console.log('💳 Repaying loan:', { marginAccountAddress, tokenSymbol: contractTokenSymbol, repayAmountWad });
 
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1967,8 +2216,91 @@ export class MarginAccountService {
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
-      // Build the transaction to call repay
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+      // ── Interest shortfall top-up ─────────────────────────────────────────
+      // Same-asset leverage: the smart account holds borrowed tokens as raw SAC
+      // balances. WAD debt accumulates interest at sub-stroop precision, so by
+      // repay time the required stroop amount can exceed what sits in the account.
+      // Detect the gap; if present, submit a separate single-op top-up transfer
+      // first (Freighter rejects multi-op transactions), then do the repay.
+      const REPAY_TOKEN_CONTRACT: Record<string, string> = {
+        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+      };
+      const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
+      let interestTopUp = BigInt(0);
+
+      if (repayTokenContractAddr) {
+        try {
+          const dummyKp = StellarSdk.Keypair.random();
+          const dummyAcct = new StellarSdk.Account(dummyKp.publicKey(), '0');
+          const tokenContract = new StellarSdk.Contract(repayTokenContractAddr);
+          const balanceTx = new StellarSdk.TransactionBuilder(dummyAcct, {
+            fee: StellarSdk.BASE_FEE,
+            networkPassphrase: NETWORK_PASSPHRASE,
+          })
+            .addOperation(
+              tokenContract.call(
+                'balance',
+                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+              ),
+            )
+            .setTimeout(10)
+            .build();
+
+          const balanceSim = await server.simulateTransaction(balanceTx);
+          if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
+            const smartAcctBalance = StellarSdk.scValToNative(balanceSim.result.retval) as bigint;
+            // Convert WAD repay amount → stroops (7-decimal token units)
+            const repayInStroops = (BigInt(repayAmountWad) * BigInt(10 ** 7)) / BigInt(10 ** 18);
+            if (repayInStroops > smartAcctBalance) {
+              interestTopUp = repayInStroops - smartAcctBalance + BigInt(100); // 100-stroop safety buffer
+            }
+          }
+        } catch {
+          // Balance simulation failure is non-fatal — proceed; contract will
+          // surface the real error if tokens are still short.
+        }
+      }
+
+      // ── Tx 1 (conditional): single-op top-up to cover accrued interest gap ──
+      // Freighter only allows one operation per transaction, so we submit the
+      // top-up as a separate transaction and wait for confirmation before repay.
+      let currentAccount = sourceAccount;
+      if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
+        const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
+        const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
+          fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
+          networkPassphrase: NETWORK_PASSPHRASE,
+        })
+          .addOperation(
+            topUpContract.call(
+              'transfer',
+              StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
+              StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+              StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
+            ),
+          )
+          .setTimeout(30)
+          .build();
+
+        const preparedTopUp = await server.prepareTransaction(topUpTx);
+        const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
+          networkPassphrase: NETWORK_PASSPHRASE,
+        });
+        const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
+          topUpSignResult.signedTxXdr,
+          NETWORK_PASSPHRASE,
+        );
+        const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
+        if (topUpSubmit.status === 'PENDING') {
+          await this.pollTransactionStatus(server, topUpSubmit.hash);
+        }
+        // Refresh the sequence number for the follow-up repay transaction.
+        currentAccount = await server.getAccount(userAddress.address);
+      }
+
+      // ── Tx 2: repay ──────────────────────────────────────────────────────────
+      const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
       })
@@ -1977,13 +2309,12 @@ export class MarginAccountService {
             'repay',
             StellarSdk.nativeToScVal(repayAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })
-          )
+            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+          ),
         )
         .setTimeout(30)
         .build();
 
-      console.log('🔧 Preparing repay transaction...');
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -1995,23 +2326,27 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      console.log('📤 Sending repay transaction...');
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
-        console.log('⏳ Repay transaction pending...');
         const finalResult = await this.pollTransactionStatus(server, result.hash);
 
         if (finalResult.status === 'SUCCESS') {
-          console.log('✅ Repay transaction successful');
           return {
             success: true,
             hash: result.hash
           };
         } else {
+          // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
+          // real on-chain reason is inspectable instead of a generic "failed".
+          console.error('❌ Repay tx did not succeed:', {
+            hash: result.hash,
+            status: finalResult.status,
+            result: JSON.stringify(finalResult, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+          });
           return {
             success: false,
-            error: `Repay transaction failed: ${finalResult.status}`
+            error: `Repay failed on-chain (${finalResult.status}). Tx: ${result.hash}`
           };
         }
       } else if (result.status === 'ERROR') {
@@ -2035,8 +2370,97 @@ export class MarginAccountService {
   }
 
   /**
-   * Get on-chain borrow/repay transaction history for a margin account.
-   * Queries Trader_Borrow and Trader_Repay_Event events from the ACCOUNT_MANAGER contract.
+   * Liquidate an undercollateralised margin account.
+   *
+   * The caller (liquidator) must:
+   *   - Hold enough of each borrowed token in their wallet to repay every open debt.
+   *   - Have approved the AccountManager to spend those tokens (handled by Soroban auth).
+   *
+   * On success the liquidator pays all outstanding debt and receives the smart account's
+   * entire collateral balance as profit.  The transaction must be signed by the liquidator.
+   *
+   * @param liquidatorAddress  Stellar address that will pay the debt and receive collateral.
+   * @param marginAccountAddress  The smart-account (margin account) address to liquidate.
+   */
+  static async liquidateMarginAccount(
+    liquidatorAddress: string,
+    marginAccountAddress: string
+  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    try {
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const sourceAccount = await server.getAccount(liquidatorAddress);
+
+      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: (parseInt(StellarSdk.BASE_FEE) * 100).toString(), // higher fee — multi-token repay
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'liquidate',
+            StellarSdk.nativeToScVal(liquidatorAddress, { type: 'address' }),
+            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await server.prepareTransaction(transaction);
+
+      const signResult = await signTransaction(preparedTx.toXDR(), {
+        networkPassphrase: NETWORK_PASSPHRASE,
+      });
+
+      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+        signResult.signedTxXdr,
+        NETWORK_PASSPHRASE
+      );
+
+      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+
+      if (result.status === 'PENDING') {
+        const finalResult = await this.pollTransactionStatus(server, result.hash);
+
+        if (finalResult.status === 'SUCCESS') {
+          return { success: true, hash: result.hash };
+        } else {
+          console.error('❌ Liquidate tx did not succeed:', {
+            hash: result.hash,
+            status: finalResult.status,
+            result: JSON.stringify(finalResult, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
+          });
+          return {
+            success: false,
+            error: `Liquidation failed on-chain (${finalResult.status}). Tx: ${result.hash}`,
+          };
+        }
+      } else if (result.status === 'ERROR') {
+        return { success: false, error: 'Liquidate transaction failed with ERROR status' };
+      } else {
+        return { success: false, error: `Unexpected status: ${result.status}` };
+      }
+    } catch (error: any) {
+      console.error('❌ Error liquidating margin account:', error);
+      return {
+        success: false,
+        error: this.formatUserFacingContractError(error?.message || error, 'generic'),
+      };
+    }
+  }
+
+  /**
+   * Fetch a margin account's recent borrow/repay history from contract events.
+   *
+   * Pulls `Trader_Borrow` and `Trader_Repay_Event` from the AccountManager over
+   * roughly the last ~30 days of ledgers (capped by Soroban testnet's event
+   * retention), filters to this account, sorts newest-first and returns at most
+   * 50 entries. Borrow events carry no amount on-chain, so `amount` is `'—'` for
+   * borrows; repay amounts are WAD-decoded to human units. Tolerant of malformed
+   * events and RPC hiccups — returns `[]` rather than throwing.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to filter events by.
+   * @returns Up to 50 `{ type, asset, amount, timestamp, hash }` rows.
    */
   static async getMarginTransactionHistory(
     marginAccountAddress: string
@@ -2131,8 +2555,26 @@ export class MarginAccountService {
   }
 
   /**
-   * Atomic one-click flow for Blend single-asset pools:
-   * deposit collateral + optional borrow + deploy to Blend in one wallet signature.
+   * One-signature "open position" for Blend single-asset pools: deposit
+   * collateral, optionally borrow, and deploy the combined amount into Blend —
+   * all inside one Soroban op (`deposit_borrow_and_deploy_blend`).
+   *
+   * Because Soroban permits only one host-function op per tx, the three steps
+   * must live behind a single contract wrapper; this also reads the Blend pool
+   * address from the Registry and pre-builds the external-protocol call bytes.
+   * Uses 120x BASE_FEE. Human amounts are converted to WAD via an intermediate
+   * 1e6 floor × 1e12 (i.e. 6-dp precision scaled to 18) to avoid float drift.
+   *
+   * Gotcha: the chained deposit→borrow→deploy can exceed Soroban's per-tx CPU
+   * budget on populated pools. On a budget error this returns
+   * `success: false` (warning, not error) so the caller in one-click-strategy.ts
+   * can fall back to its 2-tx split flow.
+   *
+   * @param marginAccountAddress - SmartAccount C-address to open the position on.
+   * @param collateralAmount - Collateral to deposit, in token units (> 0).
+   * @param borrowAmount - Amount to borrow, in token units (0 = deposit-only 1x).
+   * @param tokenSymbol - Token symbol or UI alias (default 'XLM'); normalized.
+   * @returns `{ success, hash?, error? }`.
    */
   static async depositBorrowAndDeployBlendAtomic(
     marginAccountAddress: string,
@@ -2272,6 +2714,23 @@ export class MarginAccountService {
    * `depositAmount × (multiplier - 1)`. For cross-asset the caller supplies an
    * explicit borrow amount in `borrow_token` units (USD-equivalent priced by
    * the caller).
+   *
+   * Runs config/collateral/wallet-balance pre-flight checks before signing, and
+   * uses 50x BASE_FEE. Like the atomic Blend flow, a Soroban budget overflow is
+   * returned as a budget-identifiable error (deliberately not collapsed by the
+   * generic formatter) so the caller can fall back to a 2-tx split.
+   *
+   * @param marginAccountAddress - SmartAccount C-address.
+   * @param depositAmount - Collateral to deposit, in deposit-token units.
+   * @param multiplier - Leverage multiplier; borrow defaults to
+   *                      `depositAmount × (multiplier - 1)` when no explicit
+   *                      `borrowAmountTokens` is given.
+   * @param tokenSymbol - Deposit token symbol or UI alias (default 'XLM').
+   * @param options.borrowTokenSymbol - Borrow token when it differs from the
+   *                      deposit token (triggers the cross-asset path).
+   * @param options.borrowAmountTokens - Explicit borrow amount in borrow-token
+   *                      units; overrides the multiplier-derived amount.
+   * @returns `{ success, hash?, error? }`.
    */
   static async depositAndBorrow(
     marginAccountAddress: string,
@@ -2287,10 +2746,6 @@ export class MarginAccountService {
         : contractDepositSymbol;
       const isCrossAsset = contractDepositSymbol !== contractBorrowSymbol;
 
-      console.log(`🚀 ${isCrossAsset ? 'deposit_and_borrow_cross' : 'deposit_and_borrow'} (single tx):`, {
-        marginAccountAddress, depositAmount, multiplier,
-        depositToken: contractDepositSymbol, borrowToken: contractBorrowSymbol,
-      });
 
       const depositAmountWad = (BigInt(Math.floor(depositAmount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
       const borrowAmountTokens = options?.borrowAmountTokens != null
@@ -2319,6 +2774,22 @@ export class MarginAccountService {
       const userAddress = await getAddress();
       if (userAddress.error || !userAddress.address) {
         return { success: false, error: 'Failed to get user address' };
+      }
+
+      const walletCheck = await this.checkWalletBalanceForDeposit(
+        userAddress.address,
+        contractDepositSymbol,
+        depositAmount,
+      );
+      if (!walletCheck.ok) {
+        return { success: false, error: walletCheck.error };
+      }
+
+      if (borrowAmountTokens > 0) {
+        const liquidityCheck = await this.checkPoolLiquidity(contractBorrowSymbol, borrowAmountTokens);
+        if (!liquidityCheck.ok) {
+          return { success: false, error: liquidityCheck.error };
+        }
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -2376,6 +2847,16 @@ export class MarginAccountService {
                `If the borrow leg was rejected by the Risk Engine, try a lower leverage or more collateral.`,
       };
     } catch (error: any) {
+      const raw = String(error?.message ?? error ?? '');
+      // Budget overflow is expected on populated pools — the chained deposit→borrow
+      // can exceed Soroban's per-tx CPU cap. Surface a BUDGET-IDENTIFIABLE error
+      // (not formatUserFacingContractError, which collapses HostError into a generic
+      // string and would hide the signal) so the WB caller can fall back to the
+      // 2-tx split flow. Warn, not error — it's recoverable via the fallback.
+      if (/Budget|ExceededLimit|resource/i.test(raw)) {
+        console.warn('[deposit_and_borrow] Soroban budget exceeded; caller will split into 2 txs:', raw);
+        return { success: false, error: `Budget exceeded — ${raw}` };
+      }
       console.error('❌ Error in deposit_and_borrow:', error);
       return {
         success: false,

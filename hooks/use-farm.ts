@@ -1,6 +1,7 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BlendService,
   BlendReserveData,
@@ -14,13 +15,22 @@ import {
   AQUARIUS_POOLS,
   AquariusPoolConfig,
 } from '@/lib/aquarius-utils';
+import { getBlendEventsFromMercury } from '@/lib/mercury-blend';
+import { getAquariusEventsFromMercury } from '@/lib/mercury-aquarius';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
-import { useBlendStore } from '@/store/blend-store';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
+
+// Farm-page data hooks for the Blend, Aquarius, and Soroswap integrations. All
+// the query hooks follow the same shape: a React Query keyed by resource, a 4s
+// staleTime for stale-while-revalidate, and ledger-tick invalidation so data
+// refreshes when the chain advances without flicker. Event hooks add window-focus
+// refetch; per-account hooks gate on the margin account address.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Blend reserve stats for the two supported assets, or null until loaded. */
 export interface FarmPoolStats {
   XLM: BlendReserveData | null;
   USDC: BlendReserveData | null;
@@ -28,7 +38,16 @@ export interface FarmPoolStats {
 
 const EMPTY_STATS: FarmPoolStats = { XLM: null, USDC: null };
 
+/**
+ * Blend XLM/USDC reserve stats. Ledger-tick invalidated, 4s stale-while-
+ * revalidate. Returns `{ stats, isLoading, isRefreshing, error, refresh }`.
+ * @param enabled - Gate the query (e.g. only when the Blend tab is visible).
+ */
 export const useBlendPoolStats = (enabled = true) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'blend', 'poolStats'],
     enabled,
@@ -36,13 +55,19 @@ export const useBlendPoolStats = (enabled = true) => {
       const data = await BlendService.getAllBlendReserveStats();
       return { XLM: data.XLM, USDC: data.USDC };
     },
-    refetchInterval: enabled ? 60_000 : false,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'poolStats'] });
+  }, [tick, qc]);
 
   return {
     stats: query.data ?? EMPTY_STATS,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -52,6 +77,7 @@ export const useBlendPoolStats = (enabled = true) => {
 // User Blend positions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The margin account's Blend positions per asset plus their combined value in XLM. */
 export interface UserBlendPositions {
   XLM: BlendUserPosition;
   USDC: BlendUserPosition;
@@ -65,13 +91,19 @@ const EMPTY_USER: UserBlendPositions = {
   totalValueXLM: '0',
 };
 
+/**
+ * The connected margin account's Blend positions (XLM + USDC, plus total XLM
+ * value). Gated on the margin account address; ledger-tick invalidated. Returns
+ * `{ positions, isLoading, isRefreshing, error, refresh }`.
+ */
 export const useUserBlendPositions = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    // refreshKey is included so mutations can bump the store → invalidate.
-    queryKey: ['farm', 'blend', 'userPositions', marginAccountAddress, refreshKey],
+    queryKey: ['farm', 'blend', 'userPositions', marginAccountAddress],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<UserBlendPositions> => {
       if (!marginAccountAddress) return EMPTY_USER;
@@ -84,11 +116,19 @@ export const useUserBlendPositions = () => {
         totalValueXLM: (xlmVal + usdcVal).toFixed(4),
       };
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'userPositions'] });
+  }, [tick, qc]);
 
   return {
     positions: query.data ?? EMPTY_USER,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -98,26 +138,41 @@ export const useUserBlendPositions = () => {
 // Blend events / position history
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's Blend supply/withdraw event history from Mercury,
+ * optionally filtered to one token. Gated on the margin account address;
+ * ledger-tick invalidated and refetches on window focus. Returns
+ * `{ events, isLoading, isRefreshing, error, refresh }`.
+ * @param tokenSymbol - Optional token filter (e.g. "XLM").
+ */
 export const useBlendEvents = (tokenSymbol?: string) => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'blend', 'events', marginAccountAddress, tokenSymbol ?? null, refreshKey],
+    queryKey: ['farm', 'blend', 'events', marginAccountAddress, tokenSymbol ?? null],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<BlendEvent[]> => {
       if (!marginAccountAddress) return [];
-      const all = await BlendService.getBlendEvents(marginAccountAddress);
+      const all = await getBlendEventsFromMercury(marginAccountAddress);
       return tokenSymbol ? all.filter((e) => e.tokenSymbol === tokenSymbol) : all;
     },
-    refetchInterval: marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
-    staleTime: 5_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'blend', 'events'] });
+  }, [tick, qc]);
 
   return {
     events: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
@@ -127,13 +182,23 @@ export const useBlendEvents = (tokenSymbol?: string) => {
 // All Aquarius pools stats
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** One configured Aquarius pool paired with its fetched stats (null until loaded) and a loading flag. */
 export interface AquariusPoolWithStats {
   pool: AquariusPoolConfig;
   stats: AquariusPoolStats | null;
   isLoading: boolean;
 }
 
+/**
+ * Stats for every configured Aquarius pool, fetched concurrently
+ * (`Promise.allSettled`, so one failing pool doesn't sink the rest). Ledger-tick
+ * invalidated. Returns one {@link AquariusPoolWithStats} per pool in config order.
+ */
 export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'aquarius', 'allPoolStats'],
     queryFn: async () => {
@@ -148,9 +213,14 @@ export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
       });
       return map;
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'allPoolStats'] });
+  }, [tick, qc]);
 
   const statsMap = query.data ?? {};
   const loading = query.isLoading;
@@ -166,7 +236,15 @@ export const useAllAquariusPoolStats = (): AquariusPoolWithStats[] => {
 // Aquarius pool stats (single)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Stats for a single Aquarius pool. Gated on `poolAddress`; ledger-tick
+ * invalidated. Returns `{ stats, isLoading, isRefreshing }`.
+ */
 export const useAquariusPoolStats = (poolAddress: string | null) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
   const query = useQuery({
     queryKey: ['farm', 'aquarius', 'poolStats', poolAddress],
     enabled: Boolean(poolAddress),
@@ -174,13 +252,19 @@ export const useAquariusPoolStats = (poolAddress: string | null) => {
       if (!poolAddress) return null;
       return AquariusService.getAquariusPoolStats(poolAddress);
     },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'poolStats'] });
+  }, [tick, qc]);
 
   return {
     stats: query.data ?? null,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
@@ -188,24 +272,38 @@ export const useAquariusPoolStats = (poolAddress: string | null) => {
 // Aquarius LP position
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's LP balance in a single Aquarius pool. Gated on both
+ * addresses; ledger-tick invalidated. Returns `{ lpBalance, isLoading, isRefreshing }`.
+ */
 export const useAquariusLpPosition = (
   marginAccountAddress: string | null,
   poolAddress: string | null,
 ) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'lpPosition', marginAccountAddress, poolAddress, refreshKey],
+    queryKey: ['farm', 'aquarius', 'lpPosition', marginAccountAddress, poolAddress],
     enabled: Boolean(marginAccountAddress && poolAddress),
     queryFn: async () => {
       if (!marginAccountAddress || !poolAddress) return '0';
       return AquariusService.getUserLpBalance(marginAccountAddress, poolAddress);
     },
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'lpPosition'] });
+  }, [tick, qc]);
 
   return {
     lpBalance: query.data ?? '0',
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
@@ -213,11 +311,19 @@ export const useAquariusLpPosition = (
 // All Aquarius LP positions (one query for all pools)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's LP balances across all Aquarius pools in one query
+ * (concurrent `Promise.allSettled`, keyed by pool id). Gated on the account
+ * address; ledger-tick invalidated. Returns `{ positions, isLoading, isRefreshing }`
+ * where `positions` maps pool id → balance string.
+ */
 export const useAllAquariusLpPositions = (marginAccountAddress: string | null) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'allLpPositions', marginAccountAddress, refreshKey],
+    queryKey: ['farm', 'aquarius', 'allLpPositions', marginAccountAddress],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<Record<string, string>> => {
       if (!marginAccountAddress) return {};
@@ -238,41 +344,77 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
       });
       return map;
     },
-    staleTime: 30_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
   });
 
-  return { positions: query.data ?? {}, isLoading: query.isLoading || query.isFetching };
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'allLpPositions'] });
+  }, [tick, qc]);
+
+  return {
+    positions: query.data ?? {},
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Aquarius LP events
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The margin account's Aquarius deposit/withdraw event history from Mercury.
+ *
+ * Mercury-sourced and scoped by account: the Aquarius *pool* event has no
+ * depositor, so it's unattributable per-account. Instead we read the
+ * AccountManager's margin-side Trader_AquariusDeposit / Trader_AquariusWithdraw
+ * events, which carry the smart account in a topic → Mercury scopes by account
+ * server-side (see lib/mercury-aquarius.ts). `poolAddress` is no longer needed
+ * for the query (the AM events aren't pool-scoped) but is kept in the signature
+ * for the call sites. Gated on the account address; ledger-tick invalidated and
+ * refetches on window focus. Returns `{ events, isLoading, isRefreshing }`.
+ */
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
-  const refreshKey = useBlendStore((s) => s.refreshKey);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'events', poolAddress, marginAccountAddress ?? null, refreshKey],
-    enabled: Boolean(poolAddress && marginAccountAddress),
+    queryKey: ['farm', 'aquarius', 'events', marginAccountAddress ?? null],
+    enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<AquariusLpEvent[]> => {
-      if (!poolAddress || !marginAccountAddress) return [];
-      return AquariusService.getAquariusEvents(poolAddress, marginAccountAddress);
+      if (!marginAccountAddress) return [];
+      return getAquariusEventsFromMercury(marginAccountAddress);
     },
-    refetchInterval: poolAddress && marginAccountAddress ? 10_000 : false,
     refetchOnWindowFocus: true,
-    staleTime: 5_000,
+    staleTime: 4_000,
   });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'events'] });
+  }, [tick, qc]);
 
   return {
     events: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
   };
 };
 
 // ---------- Aquarius LP chart helper ----------
-// Builds cumulative LP balance chart from deposit/withdraw events.
-// Accepts any event type that has type, shareAmount, and timestamp.
+/**
+ * Builds a cumulative LP-balance time series from deposit/withdraw events, for
+ * charting. Accepts any event with `{ type, shareAmount, timestamp }`. With no
+ * events but a positive balance, emits a 12-month flat line so all time-range
+ * filters render. Running balance is floored at 0.
+ *
+ * @returns Sorted `{ date, amount }[]` (date = YYYY-MM-DD).
+ */
 export const buildLpChartData = (
   events: Array<{ type: 'deposit' | 'withdraw'; shareAmount: string; timestamp: number }>,
   currentLpBalance: number
@@ -321,6 +463,13 @@ export const buildLpChartData = (
   return points;
 };
 
+/**
+ * Builds a cumulative supplied-value time series from Blend supply/withdraw
+ * events, for charting. With no events but a positive value, emits a 12-month
+ * flat line so all time-range filters render. Running value is floored at 0.
+ *
+ * @returns Sorted `{ date, amount }[]` (date = YYYY-MM-DD).
+ */
 export const buildSupplyChartData = (
   events: BlendEvent[],
   currentValue: number,

@@ -1,12 +1,15 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
+import { useCallback, useEffect, useRef } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
-import { computeBorrowApr } from '@/lib/utils/borrow-rate';
+import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
+import { type AllPoolStats } from '@/lib/pool-stats';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
+import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool data
@@ -16,70 +19,37 @@ import { computeBorrowApr } from '@/lib/utils/borrow-rate';
 // We still write into `useEarnPoolStore` so components that read the pools
 // from the store directly keep working unchanged (dual-write pattern).
 // ─────────────────────────────────────────────────────────────────────────────
-const calculateSupplyAPY = (utilizationRate: string) => {
-  const utilization = parseFloat(utilizationRate) / 100;
-  return (2.0 + utilization * 10).toFixed(2);
-};
-
-const calculateBorrowAPY = (utilizationRate: string) => {
-  const utilizationPct = parseFloat(utilizationRate) || 0;
-  return computeBorrowApr(utilizationPct).toFixed(2);
-};
-
-const calculateExchangeRateFromPool = (totalAssets: string, vTokenSupply: string) => {
-  const assets = parseFloat(totalAssets) || 0;
-  const supply = parseFloat(vTokenSupply) || 0;
-
-  // Rate = total_assets / vToken_supply, where total_assets = available cash +
-  // outstanding borrows (+ accrued interest). Borrows alone don't move the rate
-  // since the loan is still owed back to the pool — cash drops but borrows rise
-  // by the same amount. Interest pushes the rate above 1, so 1 vToken > 1 asset.
-  if (assets <= 0 || supply <= 0) return '1';
-  return (assets / supply).toFixed(7);
-};
-
+/**
+ * Lending-pool market stats from the cached `/api/pools` edge route.
+ *
+ * Shared across consumers via React Query; ledger-tick invalidates and
+ * staleTime 4s gives stale-while-revalidate (data stays on screen during
+ * background refetch). Dual-writes into `useEarnPoolStore`.
+ *
+ * @returns `{ pools, isLoading, isRefreshing, lastUpdated, error, refresh }` —
+ *   `pools` falls back to the store snapshot until the first fetch resolves.
+ */
 export const usePoolData = () => {
   const storePools = useEarnPoolStore((s) => s.pools);
   const lastUpdated = useEarnPoolStore((s) => s.lastUpdated);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'pools'],
-    queryFn: async () => {
+    queryFn: async (): Promise<AllPoolStats> => {
       useEarnPoolStore.getState().set({ isLoadingPools: true });
 
-      const [xlmStats, usdcStats, aquiresUsdcStats, soroswapUsdcStats] = await Promise.all([
-        ContractService.getPoolStats(ASSET_TYPES.XLM),
-        ContractService.getPoolStats(ASSET_TYPES.USDC),
-        ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      const mapped = {
-        XLM: {
-          ...xlmStats,
-          supplyAPY: calculateSupplyAPY(xlmStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(xlmStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(xlmStats.totalSupply, xlmStats.vTokenSupply),
-        },
-        USDC: {
-          ...usdcStats,
-          supplyAPY: calculateSupplyAPY(usdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(usdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(usdcStats.totalSupply, usdcStats.vTokenSupply),
-        },
-        AQUARIUS_USDC: {
-          ...aquiresUsdcStats,
-          supplyAPY: calculateSupplyAPY(aquiresUsdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(aquiresUsdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(aquiresUsdcStats.totalSupply, aquiresUsdcStats.vTokenSupply),
-        },
-        SOROSWAP_USDC: {
-          ...soroswapUsdcStats,
-          supplyAPY: calculateSupplyAPY(soroswapUsdcStats.utilizationRate),
-          borrowAPY: calculateBorrowAPY(soroswapUsdcStats.utilizationRate),
-          exchangeRate: calculateExchangeRateFromPool(soroswapUsdcStats.totalSupply, soroswapUsdcStats.vTokenSupply),
-        },
-      };
+      // Pool stats now come from the cached /api/pools edge route (shared across
+      // all users; APY/exchange-rate computed server-side). Still dual-written
+      // into the earn store so direct store readers keep working.
+      const res = await fetch('/api/pools');
+      if (!res.ok) {
+        useEarnPoolStore.getState().set({ isLoadingPools: false });
+        throw new Error(`pool stats failed (${res.status})`);
+      }
+      const mapped = (await res.json()) as AllPoolStats;
 
       useEarnPoolStore.getState().set({
         pools: mapped,
@@ -89,19 +59,23 @@ export const usePoolData = () => {
 
       return mapped;
     },
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    staleTime: 4_000,
   });
 
-  // Let the store's loading flag stay false after an error — the store write
-  // in queryFn only runs on success. Reset it here so retries don't get stuck.
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'pools'] });
+  }, [tick, qc]);
+
   if (query.isError) {
     useEarnPoolStore.getState().set({ isLoadingPools: false });
   }
 
   return {
     pools: query.data ?? storePools,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     lastUpdated,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
@@ -127,10 +101,24 @@ const EMPTY_POSITIONS = {
   SOROSWAP_USDC: { ...EMPTY_POSITION },
 };
 
+/**
+ * The connected user's per-pool positions (deposited, vToken balance, borrowed).
+ *
+ * Enabled only when a wallet is connected. Collapses the deposit/pool-stats/
+ * borrow reads into one concurrent batch and derives `deposited` from the cached
+ * exchange rate. Ledger-tick invalidated; dual-writes positions into the earn
+ * store and deposited balances into the user store. Returns EMPTY_POSITIONS when
+ * disconnected.
+ *
+ * @returns `{ positions, isLoading, isRefreshing, error, refresh }`.
+ */
 export const useUserPositions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
   const storePositions = useEarnPoolStore((s) => s.userPositions);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'userPositions', address ?? null],
@@ -146,24 +134,37 @@ export const useUserPositions = () => {
 
       useEarnPoolStore.getState().set({ isLoadingPositions: true });
 
-      const [xlmVBalance, usdcVBalance, aquiresUsdcVBalance, soroswapUsdcVBalance] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+      // Collapse the 3 serial RPC waves (deposits → pool stats → borrows) into a
+      // single concurrent batch, and reuse the cached /api/pools route for
+      // exchange rates instead of re-reading getPoolStats ×4.
+      const [vBalances, poolsRes, borrows] = await Promise.all([
+        Promise.all([
+          ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+        ]),
+        fetch('/api/pools')
+          .then((r) => (r.ok ? (r.json() as Promise<AllPoolStats>) : null))
+          .catch(() => null),
+        Promise.all([
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.XLM),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.USDC),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getUserBorrowBalance(address, ASSET_TYPES.SOROSWAP_USDC),
+        ]),
       ]);
 
-      const [xlmStats, usdcStats, aquiresUsdcStats, soroswapUsdcStats] = await Promise.all([
-        ContractService.getPoolStats(ASSET_TYPES.XLM),
-        ContractService.getPoolStats(ASSET_TYPES.USDC),
-        ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
-      ]);
+      const [xlmVBalance, usdcVBalance, aquiresUsdcVBalance, soroswapUsdcVBalance] = vBalances;
+      const [xlmBorrow, usdcBorrow, aquiresUsdcBorrow, soroswapUsdcBorrow] = borrows;
 
-      const xlmExchangeRate = parseFloat(calculateExchangeRateFromPool(xlmStats.totalSupply, xlmStats.vTokenSupply));
-      const usdcExchangeRate = parseFloat(calculateExchangeRateFromPool(usdcStats.totalSupply, usdcStats.vTokenSupply));
-      const aquiresUsdcExchangeRate = parseFloat(calculateExchangeRateFromPool(aquiresUsdcStats.totalSupply, aquiresUsdcStats.vTokenSupply));
-      const soroswapUsdcExchangeRate = parseFloat(calculateExchangeRateFromPool(soroswapUsdcStats.totalSupply, soroswapUsdcStats.vTokenSupply));
+      // Exchange rate from the cached pool stats; 1:1 fallback if the route is unavailable.
+      const exRate = (k: keyof AllPoolStats) =>
+        poolsRes ? parseFloat(poolsRes[k].exchangeRate) || 1 : 1;
+      const xlmExchangeRate = exRate('XLM');
+      const usdcExchangeRate = exRate('USDC');
+      const aquiresUsdcExchangeRate = exRate('AQUARIUS_USDC');
+      const soroswapUsdcExchangeRate = exRate('SOROSWAP_USDC');
 
       const xlmVBalanceNum = parseFloat(xlmVBalance) || 0;
       const usdcVBalanceNum = parseFloat(usdcVBalance) || 0;
@@ -174,13 +175,6 @@ export const useUserPositions = () => {
       const usdcDeposited = (usdcVBalanceNum * usdcExchangeRate).toFixed(7);
       const aquiresUsdcDeposited = (aquiresUsdcVBalanceNum * aquiresUsdcExchangeRate).toFixed(7);
       const soroswapUsdcDeposited = (soroswapUsdcVBalanceNum * soroswapUsdcExchangeRate).toFixed(7);
-
-      const [xlmBorrow, usdcBorrow, aquiresUsdcBorrow, soroswapUsdcBorrow] = await Promise.all([
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.XLM),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.USDC),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getUserBorrowBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
 
       const positions = {
         XLM: { deposited: xlmDeposited, vTokenBalance: xlmVBalance, borrowed: xlmBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
@@ -207,342 +201,162 @@ export const useUserPositions = () => {
     },
   });
 
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'userPositions'] });
+  }, [tick, qc]);
+
   if (query.isError) {
     useEarnPoolStore.getState().set({ isLoadingPositions: false });
   }
 
+  const isWalletConnected = Boolean(address && isConnected);
+
   return {
-    positions: query.data ?? storePositions,
-    isLoading: query.isLoading || query.isFetching,
+    positions: isWalletConnected ? (query.data ?? storePositions) : EMPTY_POSITIONS,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     error: query.error ? (query.error as Error).message : null,
     refresh: () => query.refetch(),
   };
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mutations — stay imperative. react-query's `useMutation` would be a clean
-// fit here, but the message/loading UX is already wired through setState and
-// the callers expect the existing return shape.
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Mutation to supply (deposit) liquidity into a pool. Variables:
+ * `{ amount, assetType }`. No optimistic write — `ContractService.deposit`
+ * waits for SUCCESS, then `onSettled` invalidates `['earn']` to refetch the real
+ * balance. Records the tx in the store/earn-history and normalizes errors.
+ */
 export const useSupplyLiquidity = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const normalizeSupplyError = useCallback((rawError: string | undefined, assetType: AssetType) => {
-    const fallback = `Failed to supply ${assetType}. Please try again.`;
-    if (!rawError) return fallback;
-
-    const text = rawError.replace(/\s+/g, ' ').trim();
-    const lowerText = text.toLowerCase();
-
-    if (
-      lowerText.includes('cancelled') ||
-      lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
-    ) {
-      return 'Transaction cancelled by user.';
-    }
-
-    if (
-      lowerText.includes('insufficient') ||
-      lowerText.includes('underfunded') ||
-      lowerText.includes('insufficientbalance') ||
-      lowerText.includes('balance is not sufficient')
-    ) {
-      return `You cannot supply all your ${assetType}. Keep a small balance and try again.`;
-    }
-
-    if (
-      lowerText.includes('diagnostic event') ||
-      lowerText.includes('hosterror') ||
-      lowerText.includes('sorobanrpcerror') ||
-      lowerText.includes('transaction failed') ||
-      lowerText.includes('error(contract')
-    ) {
-      return `Supply failed for ${assetType}. Please reduce the amount and try again.`;
-    }
-
-    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-  }, []);
-
-  const refreshAllBalances = useCallback(async () => {
-    if (!address) return;
-
-    try {
-      const balance = await WalletService.getBalance(address);
-
-      const [xlmDeposited, usdcDeposited, aquiresUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquiresUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const supply = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Supplying ${amount} ${assetType} to the lending pool...` });
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
       const result = await ContractService.deposit(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully supplied ${amount} ${assetType}! You received v${assetType} tokens.` });
-
-        if (result.hash) {
-          addTransaction('supply', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'supply',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeSupplyError(result.error, assetType) });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(normalizeSupplyError(result.error, assetType));
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeSupplyError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, refreshAllBalances, normalizeSupplyError]);
+      return { hash: result.hash, amount, assetType };
+    },
 
-  return {
-    supply,
-    isLoading,
-    message,
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+    onSuccess: ({ hash, amount, assetType }) => {
+      if (hash) {
+        addTransaction('supply', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({ asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
+      }
+    },
+
+    // No optimistic write — the position must change only after the tx confirms.
+    // ContractService.deposit waits for SUCCESS, so invalidate-on-settled refetches
+    // the real on-chain balance; the ledger tick reconciles thereafter.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
+  });
 };
 
+/**
+ * Mutation to withdraw liquidity from a pool. Variables: `{ amount, assetType }`.
+ * Guards against withdrawing more than the deposited vToken balance, waits for
+ * SUCCESS, then invalidates `['earn']`. The returned object is augmented with a
+ * `depositedBalances` map (per-asset vToken balances) for max-amount UIs.
+ */
 export const useWithdrawLiquidity = () => {
+  const qc = useQueryClient();
   const address = useUserStore((state) => state.address);
   const userPositions = useEarnPoolStore((s) => s.userPositions);
-  const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | '', text: string }>({ type: '', text: '' });
 
-  const normalizeWithdrawError = useCallback((rawError: string | undefined, assetType: AssetType) => {
-    const fallback = `Failed to withdraw ${assetType}. Please try again.`;
-    if (!rawError) return fallback;
+  const mutation = useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: AssetType }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-    const text = rawError.replace(/\s+/g, ' ').trim();
-    const lowerText = text.toLowerCase();
-
-    if (
-      lowerText.includes('cancelled') ||
-      lowerText.includes('canceled') ||
-      lowerText.includes('rejected by user')
-    ) {
-      return 'Transaction cancelled by user.';
-    }
-
-    if (
-      lowerText.includes('insufficient') ||
-      lowerText.includes('underfunded') ||
-      lowerText.includes('insufficientbalance') ||
-      lowerText.includes('balance is not sufficient')
-    ) {
-      return `You cannot withdraw all your v${assetType}. Keep a small balance and try again.`;
-    }
-
-    if (
-      lowerText.includes('diagnostic event') ||
-      lowerText.includes('hosterror') ||
-      lowerText.includes('sorobanrpcerror') ||
-      lowerText.includes('transaction failed') ||
-      lowerText.includes('error(contract')
-    ) {
-      return `Withdraw failed for ${assetType}. Please reduce the amount and try again.`;
-    }
-
-    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
-  }, []);
-
-  const refreshAllBalances = useCallback(async () => {
-    if (!address) return;
-
-    try {
-      const balance = await WalletService.getBalance(address);
-
-      const [xlmDeposited, usdcDeposited, aquiresUsdcDeposited, soroswapUsdcDeposited] = await Promise.all([
-        ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      useUserStore.getState().set({
-        balance,
-        depositedBalances: {
-          XLM: xlmDeposited,
-          USDC: usdcDeposited,
-          AQUARIUS_USDC: aquiresUsdcDeposited,
-          SOROSWAP_USDC: soroswapUsdcDeposited,
-        },
-      });
-
-      const poolRates = useEarnPoolStore.getState().pools;
-      const xlmRate = parseFloat(poolRates.XLM.exchangeRate || '1') || 1;
-      const usdcRate = parseFloat(poolRates.USDC.exchangeRate || '1') || 1;
-      const aquiresUsdcRate = parseFloat(poolRates.AQUARIUS_USDC.exchangeRate || '1') || 1;
-      const soroswapUsdcRate = parseFloat(poolRates.SOROSWAP_USDC.exchangeRate || '1') || 1;
-
-      useEarnPoolStore.getState().set({
-        userPositions: {
-          XLM: {
-            ...useEarnPoolStore.getState().userPositions.XLM,
-            vTokenBalance: xlmDeposited,
-            deposited: ((parseFloat(xlmDeposited) || 0) * xlmRate).toFixed(7),
-          },
-          USDC: {
-            ...useEarnPoolStore.getState().userPositions.USDC,
-            vTokenBalance: usdcDeposited,
-            deposited: ((parseFloat(usdcDeposited) || 0) * usdcRate).toFixed(7),
-          },
-          AQUARIUS_USDC: {
-            ...useEarnPoolStore.getState().userPositions.AQUARIUS_USDC,
-            vTokenBalance: aquiresUsdcDeposited,
-            deposited: ((parseFloat(aquiresUsdcDeposited) || 0) * aquiresUsdcRate).toFixed(7),
-          },
-          SOROSWAP_USDC: {
-            ...useEarnPoolStore.getState().userPositions.SOROSWAP_USDC,
-            vTokenBalance: soroswapUsdcDeposited,
-            deposited: ((parseFloat(soroswapUsdcDeposited) || 0) * soroswapUsdcRate).toFixed(7),
-          },
-        },
-      });
-    } catch (error) {
-      console.error('Error refreshing balances:', error);
-    }
-  }, [address]);
-
-  const withdraw = useCallback(async (amount: number, assetType: AssetType = ASSET_TYPES.XLM) => {
-    if (!address) {
-      setMessage({ type: 'error', text: 'Please connect your wallet first' });
-      return { success: false };
-    }
-
-    if (!amount || amount <= 0) {
-      setMessage({ type: 'error', text: 'Please enter a valid amount' });
-      return { success: false };
-    }
-
-    const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
-    const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
-    if (amount > depositedAmount) {
-      setMessage({ type: 'error', text: `Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})` });
-      return { success: false };
-    }
-
-    try {
-      setIsLoading(true);
-      setMessage({ type: 'info', text: `Withdrawing ${amount} v${assetType} from the lending pool...` });
+      const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
+      const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
+      if (amount > depositedAmount) {
+        throw new Error(`Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})`);
+      }
 
       const result = await ContractService.withdraw(address, amount, assetType);
-
-      if (result.success) {
-        setMessage({ type: 'success', text: `Successfully withdrew ${assetType}! Transaction confirmed.` });
-
-        if (result.hash) {
-          addTransaction('withdraw', assetType, amount.toString(), result.hash, 'success');
-          appendEarnHistory({
-            asset: assetType,
-            type: 'withdraw',
-            amount: amount.toString(),
-            hash: result.hash,
-            status: 'success',
-          });
-        }
-
-        await refreshAllBalances();
-
-        return { success: true, hash: result.hash };
-      } else {
-        setMessage({ type: 'error', text: normalizeWithdrawError(result.error, assetType) });
-        return { success: false };
+      if (!result.success) {
+        throw new Error(normalizeWithdrawError(result.error, assetType));
       }
-    } catch (error: any) {
-      setMessage({ type: 'error', text: normalizeWithdrawError(error?.message, assetType) });
-      return { success: false };
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, userPositions, refreshAllBalances, normalizeWithdrawError]);
+      return { hash: result.hash, amount, assetType };
+    },
 
-  return {
-    withdraw,
-    isLoading,
-    message,
+    onSuccess: ({ hash, amount, assetType }) => {
+      if (hash) {
+        addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
+        appendEarnHistory({ asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
+      }
+    },
+
+    // No optimistic write — the position must change only after the tx confirms.
+    // ContractService.withdraw waits for SUCCESS, so invalidate-on-settled refetches
+    // the real on-chain balance; the ledger tick reconciles thereafter.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
+  });
+
+  return Object.assign(mutation, {
     depositedBalances: {
       XLM: userPositions.XLM?.vTokenBalance || '0',
       USDC: userPositions.USDC?.vTokenBalance || '0',
       AQUARIUS_USDC: userPositions.AQUARIUS_USDC?.vTokenBalance || '0',
       SOROSWAP_USDC: userPositions.SOROSWAP_USDC?.vTokenBalance || '0',
     },
-    clearMessage: () => setMessage({ type: '', text: '' }),
-  };
+  });
 };
 
-// Hook to load on-chain earn pool transactions for the connected user.
-// Uses react-query so the fetch re-fires automatically when the wallet
-// reconnects after a page reload (enabled transitions false → true).
+/**
+ * On-chain earn-pool transaction history for the connected user, sourced from
+ * Mercury. Enabled only when connected, so the fetch re-fires automatically on
+ * reconnect (enabled false → true). Ledger-tick invalidated; refetches on window
+ * focus.
+ *
+ * @returns `{ transactions, isLoading, isRefreshing, refresh }`.
+ */
 export const useEarnTransactions = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
 
   const query = useQuery({
     queryKey: ['earn', 'transactions', address ?? null],
     enabled: Boolean(address && isConnected),
     queryFn: async () => {
       if (!address) return [];
-      return ContractService.getEarnPoolEvents(address);
+      return getEarnTransactionsFromMercury(address);
     },
-    staleTime: 30_000,
+    staleTime: 4_000,
     gcTime: 5 * 60_000,
-    refetchInterval: address && isConnected ? 10_000 : false,
     refetchOnWindowFocus: true,
   });
 
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['earn', 'transactions'] });
+  }, [tick, qc]);
+
   return {
     transactions: query.data ?? [],
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
     refresh: () => query.refetch(),
   };
 };
 
-// Combined hook for earn page
+/**
+ * Aggregate hook for the Earn page: composes `usePoolData` + `useUserPositions`
+ * + wallet/store state and derives totals (total deposited/borrowed, deposit-
+ * weighted APY). Exposes a single `refresh` that refetches pools and positions
+ * together.
+ */
 export const useEarnPage = () => {
   const wallet = useUserStore();
   const poolData = usePoolData();

@@ -195,7 +195,6 @@ export default function OrderPlacementForm({
       setSpotTrade({ openOrders: [openOrders, ...prevOpenOrders] });
     }
 
-    console.log("ORDER SUBMIT =>", values);
 
     resetOrderForm(setValue, () => remove());
   };

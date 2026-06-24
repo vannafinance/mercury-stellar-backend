@@ -1,5 +1,17 @@
 'use client';
 
+/**
+ * Withdraw panel for the earn form. Burns vToken shares back to the underlying
+ * asset, with %-of-balance pills and an {@link InfoCard} preview of assets
+ * received. Unlike supply, full (100%) withdrawals are allowed — the contract
+ * is the source of truth.
+ *
+ * Two precision guards matter here: the 100% pill pins to the exact balance
+ * string (partial pills floor to 2dp) and the button uses a ~1 stroop (1e-7)
+ * tolerance, both to stop float-reformatting drift from misfiring
+ * "Insufficient Balance". After a withdrawal it re-syncs position/pool stats on
+ * a staggered schedule so the reduced balance appears without a manual reload.
+ */
 import { useState, useMemo, useEffect, useRef, memo } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -12,6 +24,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useWithdrawLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useMutationToast } from "@/hooks/use-mutation-toast";
 import { AssetType } from "@/lib/stellar-utils";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
@@ -33,6 +47,7 @@ const toDisplayAsset = (value: string) => {
   return value;
 };
 
+/** Memoized withdraw-liquidity panel; selected pool is driven by the route/store. */
 export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const { isDark } = useTheme();
   const router = useRouter();
@@ -58,19 +73,16 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
 
   const userAddress = useUserStore((state) => state.address);
 
-  const { withdraw, isLoading, message } = useWithdrawLiquidity();
-
-  // Toast instead of inline banner.
-  const lastToastedRef = useRef<string>("");
-  useEffect(() => {
-    if (!message.text || message.text === lastToastedRef.current) return;
-    lastToastedRef.current = message.text;
-    if (message.type === "success") toast.success(message.text);
-    else if (message.type === "error") toast.error(message.text);
-    else toast(message.text);
-  }, [message.text, message.type]);
-  const { pools } = usePoolData();
+  const withdraw = useWithdrawLiquidity();
+  const { pools, refresh: refreshPools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+
+  useMutationToast(withdraw, {
+    loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool…`,
+    success: (d) => `Successfully withdrew ${d.assetType}! Transaction confirmed.`,
+    error: (e) => e.message,
+  });
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -113,17 +125,40 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
       // No frontend hardcoded "100% blocked" guard — let the contract
       // decide. A previous version unconditionally toasted "cannot
       // withdraw all" on 100%, which made full withdrawals impossible.
-      const result = await withdraw(numAmount, normalizedAsset as AssetType);
-      if (result.success) {
+      try {
+        await withdraw.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
         setShares("");
         setSelectedPercentage(0);
-        refreshPositions();
+        // The simulation-based balance read can briefly return the pre-burn
+        // balance right after the tx confirms (the burn takes a few seconds to
+        // reflect on-chain). Re-sync position + pool stats across that window so
+        // the reduced balance appears ON ITS OWN — the user never has to reload.
+        // (Ledger ticks also invalidate, but these guarantee a prompt catch-up.)
+        const resync = () => {
+          refreshPositions();
+          refreshPools();
+        };
+        resync();
+        [3000, 6000, 10000, 15000].forEach((d) => setTimeout(resync, d));
+      } catch {
+        // toast fired by useMutationToast
       }
     }
   };
 
   const sharesNum = parseFloat(shares) || 0;
   const assetsPreview = sharesNum * exchangeRate;
+  // USD value of what's being withdrawn: vTokens → underlying (× exchangeRate,
+  // already in assetsPreview) → USD (× oracle price). USDC-family falls back to $1.
+  const unitPriceUsd =
+    tokenPrices[
+      normalizedAsset === 'XLM' ? 'XLM'
+        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
+        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
+        : 'BLUSDC'
+    ] || (normalizedAsset === 'XLM' ? 0 : 1);
+  const usdValue = assetsPreview * unitPriceUsd;
+  const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const infoData = useMemo(() => ({
     youGetAsset: assetsPreview,
@@ -157,7 +192,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
-    if (isLoading) return "Withdrawing...";
+    if (withdraw.isPending) return "Withdrawing...";
     if (!shares || parseFloat(shares) <= 0) return "Enter Amount";
     // 1e-7 tolerance (~one stroop) absorbs float reformatting drift so a
     // 100% click that pins to the exact balance string doesn't misfire as
@@ -167,7 +202,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   };
 
   const isButtonDisabled =
-    !userAddress || isLoading || !shares || parseFloat(shares) <= 0 || parseFloat(shares) > vTokenBalance;
+    !userAddress || withdraw.isPending || !shares || parseFloat(shares) <= 0 || parseFloat(shares) > vTokenBalance;
 
   return (
     <>
@@ -268,11 +303,14 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
               type="text"
               inputMode="decimal"
               placeholder="0"
-              disabled={isLoading}
+              disabled={withdraw.isPending}
               className={`w-full text-right text-[28px] font-semibold bg-transparent outline-none placeholder:opacity-20 ${
                 isDark ? "text-white placeholder:text-white" : "text-[#111111] placeholder:text-[#111111]"
-              } ${isLoading ? "opacity-50" : ""}`}
+              } ${withdraw.isPending ? "opacity-50" : ""}`}
             />
+            <div className={`text-right text-[12px] font-medium mt-0.5 ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
+              ≈ {formattedUsd}
+            </div>
           </div>
         </div>
 
@@ -283,7 +321,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
               <motion.button
                 key={pct}
                 type="button"
-                disabled={isLoading || vTokenBalance <= 0}
+                disabled={withdraw.isPending || vTokenBalance <= 0}
                 onClick={() => handlePercentageClick(pct)}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.93 }}
@@ -294,7 +332,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
                     : isDark
                       ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
                       : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
-                } ${isLoading || vTokenBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
+                } ${withdraw.isPending || vTokenBalance <= 0 ? "opacity-40 cursor-not-allowed" : ""}`}
               >
                 {pct}%
               </motion.button>
