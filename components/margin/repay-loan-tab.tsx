@@ -22,7 +22,12 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 import { useMutationToast } from "@/hooks/use-mutation-toast";
 import toast from "react-hot-toast";
 import { normalizeContractError } from "@/lib/errors/normalize";
-import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+
+/** Format a numeric amount for the editable input: clean string, no trailing
+ *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
+const amountToInputString = (n: number): string =>
+  Number.isFinite(n) && n > 0 ? String(parseFloat(n.toFixed(AMOUNT_MAX_DECIMALS))) : "";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -88,14 +93,19 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
     useState<number>(0);
-  const [repayAmount, setRepayAmount] = useState<number>(0);
+  // The amount field is held as a RAW STRING while editing — converting to a
+  // Number on each keystroke turned a partial "." into NaN and dropped trailing
+  // decimals (so 937.3325 couldn't be edited). `repayAmount` is derived for all
+  // numeric uses; the input shows `repayInput` verbatim.
+  const [repayInput, setRepayInput] = useState<string>("");
+  const repayAmount = parseFloat(repayInput) || 0;
 
   // Sync currency when caller asks to prefill (e.g. row-level Repay click)
   useEffect(() => {
     const mapped = toDropdownAsset(prefilledAsset);
     if (mapped) {
       setSelectedRepayCurrency(mapped);
-      setRepayAmount(0);
+      setRepayInput("");
       setSelectedRepayPercentage(0);
     }
   }, [prefilledAsset]);
@@ -110,7 +120,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
-      setRepayAmount(0);
+      setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
     }
@@ -263,20 +273,22 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       // Full precision (NOT toFixed(2)) — rounding dust to 2dp made it 0 and
       // disabled Pay Now. The mutation caps the WAD at the on-chain debt, so 100%
       // clears the position to zero with no leftover dust.
-      setRepayAmount(parseFloat(clamped.toFixed(7)));
+      setRepayInput(amountToInputString(clamped));
       return;
     }
 
     // Calculate amount based on percentage — keep 7dp so sub-cent debt survives.
     const calculatedAmount = clampRepayDust((repayStats.netOutstandingAmountToPay * item) / 100);
-    setRepayAmount(parseFloat(calculatedAmount.toFixed(7)));
+    setRepayInput(amountToInputString(calculatedAmount));
   };
 
   // Handler for input change
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = validateAmountChange(e.target.value);
     if (sanitized === null) return; // invalid char — toast already shown
-    setRepayAmount(sanitized === "" ? 0 : Number(sanitized));
+    // Keep the raw string; `repayAmount` is derived. This is what lets a partial
+    // "937." or "0.0000001" be typed without becoming NaN or being truncated.
+    setRepayInput(sanitized);
   };
 
   const repayMutation = useMutation({
@@ -360,7 +372,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       // right after a signed tx popup closes (strkey decode of an undefined
       // address). Swallowing the error here keeps the mutation in its success
       // state — the ledger tick will reconcile the store on the next close.
-      setRepayAmount(0);
+      setRepayInput("");
       qc.invalidateQueries({ queryKey: ['margin'] });
 
       try {
@@ -544,7 +556,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                 type="text"
                 inputMode="decimal"
                 placeholder="0"
-                value={repayAmount === 0 ? "" : repayAmount}
+                value={repayInput}
               />
             </div>
           </div>

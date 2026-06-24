@@ -106,21 +106,31 @@ const Margin = () => {
     if (!snapshot || isSnapshotFeedSuppressed()) return;
     const store = useMarginAccountInfoStore.getState();
     if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
+      // Don't let a degraded snapshot (no collateral) overwrite collateral the
+      // store already holds — the single-source-of-truth guarantee. If this read
+      // shows zero collateral but we already had some, update only the debt side
+      // and PRESERVE the collateral/health; a later good read reconciles.
+      const snapGross = snapshot.grossCollateralValue ?? 0;
+      const degraded = snapGross <= 0.01 && (store.grossCollateralValue ?? 0) > 0.01;
       store.set({
         hasMarginAccount: true,
         marginAccountAddress: snapshot.marginAccountAddress,
         borrowedBalances: snapshot.borrowedBalances ?? {},
-        collateralBalances: snapshot.collateralBalances ?? {},
         totalBorrowedValue: snapshot.totalBorrowedValue ?? 0,
-        totalCollateralValue: snapshot.totalCollateralValue ?? 0,
-        grossCollateralValue: snapshot.grossCollateralValue ?? 0,
         totalValue: snapshot.totalValue ?? 0,
-        avgHealthFactor: snapshot.avgHealthFactor ?? 0,
-        collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation ?? 0,
-        netAvailableCollateral: snapshot.netAvailableCollateral ?? 0,
         borrowRate: snapshot.borrowRate ?? 0,
-        debtLimit: snapshot.debtLimit ?? 0,
         isLoadingBorrowedBalances: false,
+        ...(degraded
+          ? {}
+          : {
+              collateralBalances: snapshot.collateralBalances ?? {},
+              totalCollateralValue: snapshot.totalCollateralValue ?? 0,
+              grossCollateralValue: snapGross,
+              avgHealthFactor: snapshot.avgHealthFactor ?? 0,
+              collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation ?? 0,
+              netAvailableCollateral: snapshot.netAvailableCollateral ?? 0,
+              debtLimit: snapshot.debtLimit ?? 0,
+            }),
       });
     } else if (snapshot.hasMarginAccount === false) {
       store.set({ hasMarginAccount: false });

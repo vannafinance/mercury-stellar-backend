@@ -17,7 +17,7 @@ import {
 import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
-import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
 import { formatUsdValue } from "@/lib/utils/format-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
@@ -309,10 +309,7 @@ export const TransferCollateral = () => {
     setPercentage(item);
     const baseBalance = selectedTransferType === "WB" ? maxExecutableWithdraw : maxTransferableBalance;
     const calculatedAmount = (baseBalance * item) / 100;
-    // Floor to 2 decimals so toFixed rounding can't push the displayed amount
-    // above the actual max — see handleMaxValueClick comment for the gotcha.
-    const safeAmount = Math.floor(calculatedAmount * 100) / 100;
-    setValueInput(safeAmount.toFixed(2));
+    setValueInput(floorAmountToInput(calculatedAmount));
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -323,11 +320,10 @@ export const TransferCollateral = () => {
 
   const handleMaxValueClick = () => {
     const targetMax = selectedTransferType === "WB" ? maxExecutableWithdraw : maxTransferableBalance;
-    // Floor to 2 decimals — toFixed(2) rounds 509.998964 → "510.00", which then
-    // parses back to 510 and trips the (input > max + epsilon) validation. Floor
-    // guarantees the displayed value is always ≤ the real max.
-    const safeMax = Math.floor(targetMax * 100) / 100;
-    setValueInput(safeMax.toFixed(2));
+    // floorAmountToInput floors to 7dp (never rounds UP past the real max, which
+    // would trip the > max validation / on-chain rounding) while keeping full
+    // Stellar precision — so Max transfers the whole balance, not a 2dp slice.
+    setValueInput(floorAmountToInput(targetMax));
   };
 
   const transferMutation = useMutation({
@@ -386,7 +382,7 @@ export const TransferCollateral = () => {
       const message = error instanceof Error ? error.message : "Transfer failed";
       const entered = Number(valueInput) || 0;
       const steppedDown = Math.max(0, entered - XLM_MARGIN_WITHDRAW_BUFFER);
-      const safeFloor = Math.floor(steppedDown * 100) / 100;
+      const safeFloor = Math.floor(steppedDown * 1e7) / 1e7;
       const safeMaxAfterFailure = Math.max(0, Math.min(maxExecutableWithdraw, safeFloor));
 
       if (
@@ -395,7 +391,7 @@ export const TransferCollateral = () => {
         totalBorrowedValue <= XLM_TRANSFER_EPSILON &&
         safeMaxAfterFailure > 0
       ) {
-        setValueInput(safeMaxAfterFailure.toFixed(2));
+        setValueInput(floorAmountToInput(safeMaxAfterFailure));
       }
       toast.error(getFriendlyTransferError(message, safeMaxAfterFailure));
     },

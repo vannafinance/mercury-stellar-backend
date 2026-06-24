@@ -28,6 +28,7 @@ import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
 import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
@@ -142,6 +143,12 @@ export const LeverageAssetsTab = () => {
 
   // Real collateral balances from margin account (on-chain data)
   const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
+  // Account-level collateral VALUE — the reliable "does this account hold
+  // collateral?" signal (same number the header shows as Net Available). The
+  // per-token `collateralBalances` map can be transiently blanked by an in-flight
+  // refresh; this value is the single source of truth that gates the MB empty
+  // state, so the grid never claims "no collateral" for an account that has some.
+  const grossCollateralValue = useMarginAccountInfoStore((state) => state.grossCollateralValue);
 
   // Convert Map to stable array for rendering
   const collateralList = useMemo(() => {
@@ -155,6 +162,29 @@ export const LeverageAssetsTab = () => {
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
+  // Same per-account /api/account snapshot the page HEADER reads (React Query
+  // dedupes by key — no extra fetch; it's already cached in memory + localStorage
+  // so it paints instantly). This is the reliable single source of truth for MB
+  // collateral. The live Zustand store is only an OVERLAY for optimistic
+  // mutations; after a deposit the snapshot feed is suppressed for ~20s and the
+  // store can go stale/blank while the header still shows the real value from
+  // this snapshot. Reading it here is exactly why the header showed $971 while
+  // the grid said "no collateral" — now the grid uses the same source.
+  const { snapshot } = useAccountSnapshot(userAddress);
+
+  // Effective collateral = store when it has balances (live/optimistic), else the
+  // snapshot baseline. So the grid is never empty while the account holds value.
+  const effectiveCollateral = useMemo<Record<string, BorrowedBalance>>(() => {
+    const storeHas = Object.values(collateralBalances).some((b) => parseFloat(b.amount) > 0);
+    if (storeHas) return collateralBalances;
+    return (snapshot?.collateralBalances as Record<string, BorrowedBalance>) ?? collateralBalances;
+  }, [collateralBalances, snapshot]);
+
+  // Account-level collateral value from whichever source has it — gates the MB
+  // empty state so it matches the header's Net Available figure.
+  const effectiveGross =
+    grossCollateralValue > 0.01 ? grossCollateralValue : snapshot?.grossCollateralValue ?? 0;
+
   // Build Collaterals[] from real on-chain margin account collateral (used in MB
   // mode grid). Show every REAL collateral token the account holds (XLM / USDC
   // family) so the user can borrow against their full balance. Exclude farm /
@@ -163,7 +193,7 @@ export const LeverageAssetsTab = () => {
   // collateral (and have no token icon). Mirrors the positions table's filter.
   // Dust is shown via adaptive formatting, not hidden.
   const mbCollateralItems = useMemo((): Collaterals[] => {
-    return (Object.entries(collateralBalances) as [string, BorrowedBalance][])
+    return (Object.entries(effectiveCollateral) as [string, BorrowedBalance][])
       .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
       .map(([token, bal]): Collaterals => ({
         asset: token,
@@ -172,7 +202,7 @@ export const LeverageAssetsTab = () => {
         balanceType: "mb",
         unifiedBalance: parseFloat(bal.usdValue),
       }));
-  }, [collateralBalances]);
+  }, [effectiveCollateral]);
 
   // Entering MB with no collateral loaded yet → pull the margin-account balances
   // so the grid fills in instead of flashing the "no collateral" empty state
@@ -180,9 +210,13 @@ export const LeverageAssetsTab = () => {
   // is safe to call on every MB enter.
   useEffect(() => {
     if (isMBMode && marginAccountAddress && mbCollateralItems.length === 0) {
-      refreshBorrowedBalances(marginAccountAddress).catch(() => {});
+      // Force the read when the account demonstrably holds collateral value but
+      // the per-token map is empty (the inconsistency the user hit): bypass the
+      // throttle so the grid fills in seconds, not after the next slow cycle.
+      refreshBorrowedBalances(marginAccountAddress, effectiveGross > 0.01).catch(() => {});
     }
-  }, [isMBMode, marginAccountAddress, mbCollateralItems.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMBMode, marginAccountAddress, mbCollateralItems.length, effectiveGross]);
 
   // When entering MB mode (or when margin-account collaterals first appear),
   // pre-select every available collateral so the user can borrow against the
@@ -1065,11 +1099,13 @@ export const LeverageAssetsTab = () => {
                       </span>
                     </div>
                   </>
-                ) : isLoadingBorrowedBalances ? (
-                  // Loading skeleton — don't show the "no collateral" empty state
-                  // while the margin-account balances are still being read, or
-                  // switching WB→MB flashes "no collateral" for an account that
-                  // actually has some.
+                ) : isLoadingBorrowedBalances || effectiveGross > 0.01 ? (
+                  // Loading skeleton — shown while balances are being read OR
+                  // whenever the account demonstrably holds collateral value
+                  // (grossCollateralValue > 0) but the per-token map is momentarily
+                  // empty mid-refresh. Using the account-level value as the source
+                  // of truth means we never flash "no collateral" for an account
+                  // that has some (matches the header's Net Available figure).
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-busy="true">
                     {[0, 1].map((i) => (
                       <div

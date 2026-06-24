@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { useLedgerTick } from "@/contexts/ledger-subscriber";
 import type { MarginSnapshot } from "@/lib/account-snapshot";
@@ -43,6 +43,35 @@ function writeCachedSnapshot(wallet: string, data: AccountSnapshot) {
   } catch {
     // localStorage full / unavailable — non-fatal, we just lose instant reload.
   }
+}
+
+/**
+ * Warm the account snapshot into the React Query cache (and per-account
+ * localStorage) as soon as the wallet connects, BEFORE the user navigates to the
+ * margin page — so the margin/MB views paint instantly from a warm cache instead
+ * of waiting on the first cold RPC read. One-shot (not a subscription), and a
+ * no-op if the data is already fresh in cache. Safe to call on every connect.
+ */
+export async function prefetchAccountSnapshot(
+  qc: QueryClient,
+  userAddress: string | null,
+): Promise<void> {
+  if (!userAddress) return;
+  await qc
+    .prefetchQuery({
+      queryKey: [...ACCOUNT_SNAPSHOT_KEY, userAddress],
+      queryFn: async () => {
+        const res = await fetch(`/api/account/${userAddress}`);
+        if (!res.ok) throw new Error(`account snapshot failed (${res.status})`);
+        const data = (await res.json()) as AccountSnapshot;
+        writeCachedSnapshot(userAddress, data);
+        return data;
+      },
+      staleTime: 12_000,
+    })
+    .catch(() => {
+      // Prefetch is best-effort; the page's own useAccountSnapshot will retry.
+    });
 }
 
 /**

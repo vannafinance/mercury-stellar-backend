@@ -15,7 +15,7 @@ import {
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/contexts/price-context";
 import { useUserStore } from "@/store/user";
-import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 
@@ -134,7 +134,7 @@ const CollateralComponent = (props: Collateral) => {
         )) || 0
       : 0;
     const calculatedAmount = (balance * item) / 100;
-    setValueInput(calculatedAmount.toFixed(2));
+    setValueInput(floorAmountToInput(calculatedAmount));
   };
 
   const handleSave = () => {
