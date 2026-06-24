@@ -79,4 +79,7 @@ scripts/mercury-blend-probe.mjs
 # Claude Code project guide — kept local, not shipped in the repo
 CLAUDE.md
 
-testsprite_tests\tmp\config.json
+testsprite_tests/
+
+# Binary doc exports — the source of truth is docs/*.md (diffable, reviewable)
+docs/*.docx
