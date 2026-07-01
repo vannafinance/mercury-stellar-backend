@@ -6,8 +6,9 @@ import { DepositModal } from "@/components/portfolio/deposit-modal";
 import { WithdrawModal } from "@/components/portfolio/withdraw-modal";
 import { HistoryModal } from "@/components/portfolio/history-modal";
 import { useWallet } from "@/hooks/use-wallet";
+import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function PortfolioPage() {
   const { isDark } = useTheme();
@@ -15,6 +16,14 @@ export default function PortfolioPage() {
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const { refreshBalances } = useWallet();
+  const userAddress = useUserStore((s) => s.address);
+
+  // Load the connected wallet's token balances so "Wallet Balance" is real on a
+  // direct Portfolio visit (the margin page normally triggers this). One-shot on
+  // connect — not polled; the Refresh button re-pulls on demand.
+  useEffect(() => {
+    if (userAddress) refreshBalances(userAddress).catch(() => {});
+  }, [userAddress, refreshBalances]);
 
   return (
     <>
