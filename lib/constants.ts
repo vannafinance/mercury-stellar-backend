@@ -1,4 +1,5 @@
 export const navbarItems = [
+  { title: "Portfolio", link: "/portfolio", group: "primary" },
   { title: "Earn", link: "/earn", group: "primary" },
   { title: "Margin", link: "/", group: "bordered" },
   { title: "Trade", link: "/trade" , group: "bordered"  },

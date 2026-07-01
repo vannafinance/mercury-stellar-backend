@@ -3,7 +3,6 @@ import { AccountStatsGhost } from "../earn/account-stats-ghost";
 import { RewardsTable } from "../earn/rewards-table";
 import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
-import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 
 export const Lender = () => {
     const { isDark } = useTheme();
@@ -23,10 +22,10 @@ export const Lender = () => {
         const totalDeposited = xlmValue + usdcValue;
 
         return [
-          { id: "1", name: "Total Assets", amount: formatUsdValue(totalDeposited) },
-          { id: "2", name: "Wallet Balance", amount: `${formatTokenAmount(parseFloat(String(balance || '0')))} XLM` },
-          { id: "3", name: "XLM Deposited", amount: `${formatTokenAmount(parseFloat(String(depositedBalances.XLM || '0')))} XLM` },
-          { id: "4", name: "USDC Deposited", amount: `${formatTokenAmount(parseFloat(String(depositedBalances.USDC || '0')))} USDC` },
+          { id: "1", name: "Total Assets", amount: `$${totalDeposited.toFixed(2)}` },
+          { id: "2", name: "Wallet Balance", amount: `${balance} XLM` },
+          { id: "3", name: "XLM Deposited", amount: `${depositedBalances.XLM} XLM` },
+          { id: "4", name: "USDC Deposited", amount: `${depositedBalances.USDC} USDC` },
         ];
       }, [address, balance, depositedBalances]);
 

@@ -2,7 +2,11 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/store/user";
+import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "../ui/button";
 import { AccountStats } from "../margin/account-stats";
@@ -17,23 +21,7 @@ const PORTFOLIO_TABS = [
   { id: "trader", label: "Trader" },
 ];
 
-const TIME_FILTERS = ["1 Week", "1 Month", "3 Months", "All Time"] as const;
-
-const filterRecordByTimeRange = (
-  data: Record<string, number>,
-  filter: string,
-): Record<string, number> => {
-  if (filter === "All Time") return data;
-  const now = new Date();
-  const start = new Date(now);
-  if (filter === "1 Week") start.setDate(now.getDate() - 7);
-  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
-  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
-  start.setHours(0, 0, 0, 0);
-  return Object.fromEntries(
-    Object.entries(data).filter(([date]) => new Date(date) >= start),
-  );
-};
+const TIME_FILTERS = ["3 months", "6 months", "1 year"] as const;
 
 const MOCK_EARNINGS_DATA: Record<string, number> = {
   "2025-08-01": 8420,
@@ -82,7 +70,7 @@ const PortfolioChartCard = ({
   data,
   isDark,
 }: PortfolioChartCardProps) => {
-  const [timeFilter, setTimeFilter] = useState<string>("All Time");
+  const [timeFilter, setTimeFilter] = useState<string>(TIME_FILTERS[0]);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isChartOpen, setIsChartOpen] = useState(false);
 
@@ -94,11 +82,6 @@ const PortfolioChartCard = ({
   const chartColors: [string, string] = useMemo(
     () => ["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"],
     [],
-  );
-
-  const filteredData = useMemo(
-    () => filterRecordByTimeRange(data, timeFilter),
-    [data, timeFilter],
   );
 
   return (
@@ -157,7 +140,7 @@ const PortfolioChartCard = ({
         </div>
         <div className="w-full min-w-0">
           <ReusableChart
-            data={filteredData}
+            data={data}
             gradientColors={chartColors}
             lineColor="#703ae6"
             height={220}
@@ -210,7 +193,7 @@ const PortfolioChartCard = ({
             >
               <div className="pb-2 px-1">
                 <ReusableChart
-                  data={filteredData}
+                  data={data}
                   gradientColors={chartColors}
                   lineColor="#703ae6"
                   height={180}
@@ -230,14 +213,48 @@ const PortfolioChartCard = ({
 
 export const PortfolioSection = () => {
   const userAddress = useUserStore((user) => user.address);
+  const tokenBalances = useUserStore((user) => user.tokenBalances);
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState("lender");
 
+  // Real account-level figures. Prefer the /api/account snapshot (warmed by the
+  // connect-time prefetch, so the cards fill even on a first Portfolio visit),
+  // falling back to the live store — the same source the margin header reads, so
+  // Portfolio and Margin never disagree.
+  const { snapshot } = useAccountSnapshot(userAddress);
+  const store = useMarginAccountInfoStore(
+    useShallow((s) => ({
+      totalCollateralValue: s.totalCollateralValue,
+      netAvailableCollateral: s.netAvailableCollateral,
+      totalBorrowedValue: s.totalBorrowedValue,
+    })),
+  );
+  const marginAccountBalance = snapshot?.totalCollateralValue ?? store.totalCollateralValue ?? 0;
+  const netAvailableCollateral = snapshot?.netAvailableCollateral ?? store.netAvailableCollateral ?? 0;
+  const totalBorrowed = snapshot?.totalBorrowedValue ?? store.totalBorrowedValue ?? 0;
+
+  // Wallet (spendable) USD = Σ wallet token balance × live oracle price.
+  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const walletUsd = useMemo(() => {
+    const priceKey = (sym: string): string =>
+      sym === "BLEND_USDC" ? "BLUSDC"
+      : sym === "AQUARIUS_USDC" ? "AQUSDC"
+      : sym === "SOROSWAP_USDC" ? "SOUSDC"
+      : sym;
+    return Object.entries(tokenBalances).reduce((sum, [sym, amt]) => {
+      const price = prices[priceKey(sym)] ?? 0;
+      return sum + (parseFloat(String(amt)) || 0) * price;
+    }, 0);
+  }, [tokenBalances, prices]);
+
+  const fmtUsd = (n: number) =>
+    `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   const statsValues = {
-    totalPortfolioBalance: userAddress ? "$1,000.00" : "-",
-    netAvailableCollateral: userAddress ? "$1,000.00" : "-",
-    marginAccountBalance: userAddress ? "$600.00" : "-",
-    availablePortfolioBalance: userAddress ? "$600.00" : "-",
+    walletBalance: userAddress ? fmtUsd(walletUsd) : "-",
+    marginAccountBalance: userAddress ? fmtUsd(marginAccountBalance) : "-",
+    netAvailableCollateral: userAddress ? fmtUsd(netAvailableCollateral) : "-",
+    totalBorrowed: userAddress ? fmtUsd(totalBorrowed) : "-",
   };
 
   return (
