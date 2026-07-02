@@ -875,6 +875,64 @@ export const Positionstable = ({
     );
   };
 
+  // ── MOBILE HISTORY CARD ──
+  const renderMobileHistoryCard = (
+    item: { type: 'deposit' | 'borrow' | 'repay' | 'transfer-in' | 'transfer-out'; asset: string; amount: string; timestamp: number; hash: string },
+    idx: number,
+  ) => {
+    const date = item.timestamp
+      ? new Date(item.timestamp).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
+      : '—';
+    const badgeConfig =
+      item.type === 'borrow'
+        ? { className: 'bg-red-100 text-red-600', label: 'Borrow' }
+        : item.type === 'repay'
+          ? { className: 'bg-green-100 text-green-600', label: 'Repay' }
+          : item.type === 'transfer-in'
+            ? { className: 'bg-violet-100 text-violet-700', label: 'Transfer In' }
+            : item.type === 'transfer-out'
+              ? { className: 'bg-amber-100 text-amber-700', label: 'Transfer Out' }
+              : { className: 'bg-blue-100 text-blue-600', label: 'Deposit' };
+    const shortHash = item.hash ? `${item.hash.slice(0, 8)}...${item.hash.slice(-4)}` : '—';
+    return (
+      <div
+        key={`mobile-history-${idx}`}
+        className={`rounded-lg border p-3 flex items-center gap-3 ${isDark ? "border-[#333333] bg-[#2A2A2A]" : "border-[#E2E2E2] bg-white"}`}
+      >
+        {item.asset && (
+          <Image
+            src={getTokenIcon(canonicalToken(item.asset))}
+            alt={item.asset}
+            width={24}
+            height={24}
+            className="rounded-full shrink-0"
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`rounded-[4px] py-[2px] px-[8px] text-[10px] font-semibold ${badgeConfig.className}`}>{badgeConfig.label}</span>
+            <span className={`text-[13px] font-semibold ${isDark ? "text-white" : "text-[#111]"}`}>
+              {formatTokenAmount(parseFloat(String(item.amount ?? '0')) || 0)} {item.asset ? canonicalToken(item.asset) : ''}
+            </span>
+          </div>
+          <span className={`text-[11px] font-medium ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>{date}</span>
+        </div>
+        {item.hash ? (
+          <a
+            href={`https://stellar.expert/explorer/testnet/tx/${item.hash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[12px] font-medium text-[#703AE6] hover:underline shrink-0"
+          >
+            {shortHash}
+          </a>
+        ) : (
+          <span className={`text-[12px] shrink-0 ${isDark ? "text-[#666666]" : "text-[#A0A0A0]"}`}>—</span>
+        )}
+      </div>
+    );
+  };
+
   return (
     <section className="w-full flex flex-col gap-3">
       {/* Title with position count */}
@@ -918,6 +976,7 @@ export const Positionstable = ({
 
       {activeTab === "positionsHistory" ? (
         history.length > 0 ? (
+          <>
           <div className="w-full overflow-x-auto no-scrollbar hidden xl:block">
             <section className="rounded-xl min-w-[700px]">
               {/* History table headers */}
@@ -983,6 +1042,24 @@ export const Positionstable = ({
               )}
             </section>
           </div>
+
+          {/* Mobile / tablet cards — a wide history table scrolls awkwardly on
+              narrow screens, so mirror Current Positions with a card list. */}
+          <div className={`xl:hidden p-2 rounded-lg border flex flex-col gap-2 ${isDark ? "border-[#333333] bg-[#222222]" : "border-[#E2E2E2] bg-[#F7F7F7]"}`}>
+            {paginatedHistory.map((item, idx) => renderMobileHistoryCard(item, idx))}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-4 py-3">
+                <button type="button" onClick={handlePreviousPage} disabled={currentPage === 1} className={`flex items-center justify-center w-8 h-8 transition-colors ${currentPage === 1 ? "cursor-not-allowed opacity-30" : "cursor-pointer hover:opacity-70"} ${isDark ? "text-white" : "text-[#111111]"}`} aria-label="Previous page">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M7.5 9L4.5 6L7.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </button>
+                <span className="px-5 py-1.5 rounded-full bg-[#F1EBFD] text-[#703AE6] text-[13px] font-semibold">{currentPage} of {totalPages}</span>
+                <button type="button" onClick={handleNextPage} disabled={currentPage === totalPages} className={`flex items-center justify-center w-8 h-8 transition-colors ${currentPage === totalPages ? "cursor-not-allowed opacity-30" : "cursor-pointer hover:opacity-70"} ${isDark ? "text-white" : "text-[#111111]"}`} aria-label="Next page">
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 9L7.5 6L4.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </button>
+              </div>
+            )}
+          </div>
+          </>
         ) : (
           renderEmpty()
         )
