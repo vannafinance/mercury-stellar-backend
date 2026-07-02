@@ -5,6 +5,7 @@ import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useUserPositions } from "@/hooks/use-earn";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "../ui/button";
@@ -55,6 +56,21 @@ export const PortfolioSection = () => {
     }, 0);
   }, [tokenBalances, prices]);
 
+  // Net Earnings = Σ accrued lending interest × oracle price across supplied
+  // pools. Real, live figure (the earnings *time-series* chart is deferred to
+  // the Sprint-2 Mercury read-model). USDC-pegged variants price to USDC.
+  const { positions } = useUserPositions();
+  const netEarnings = useMemo(() => {
+    const priceFor: Record<string, string> = {
+      XLM: "XLM", USDC: "USDC", AQUARIUS_USDC: "USDC", SOROSWAP_USDC: "USDC",
+    };
+    return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
+      const earned = parseFloat(positions[asset]?.earnedInterest ?? "0") || 0;
+      const price = prices[priceFor[asset]] ?? (priceFor[asset] === "USDC" ? 1 : 0);
+      return sum + earned * price;
+    }, 0);
+  }, [positions, prices]);
+
   const fmtUsd = (n: number) =>
     `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -74,17 +90,20 @@ export const PortfolioSection = () => {
         values={statsValues}
       />
 
-      {/* Earnings / volume analytics — time-series deferred to the Mercury
-          read-model (Sprint 2). No fabricated financials in the meantime. */}
+      {/* Net Earnings — real accrued lending interest. The over-time chart is
+          deferred to the Sprint-2 Mercury read-model, but the figure is live. */}
       <div
-        className={`w-full rounded-[16px] border px-5 py-6 flex flex-col items-center justify-center gap-1 text-center ${
+        className={`w-full rounded-[16px] border px-5 py-5 flex items-center justify-between ${
           isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#E8E8E8]"
         }`}
       >
-        <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>
-          Earnings &amp; volume analytics
-        </span>
-        <span className="text-[12px] font-medium text-[#777777]">Coming soon</span>
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[13px] font-medium text-[#777777]">Net Earnings</span>
+          <span className={`text-[22px] font-bold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>
+            {userAddress ? fmtUsd(netEarnings) : "-"}
+          </span>
+          <span className="text-[11px] font-medium text-[#777777]">Accrued lending interest</span>
+        </div>
       </div>
 
       {/* Tabs */}
