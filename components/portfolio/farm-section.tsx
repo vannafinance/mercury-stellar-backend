@@ -74,7 +74,7 @@ export const FarmSection = () => {
 
   const tableData = useMemo(() => ({
     headings: farmTableHeadings,
-    body: { rows: [] as any[] },
+    body: { rows: [] as { cell: { title: string; tag?: string }[] }[] },
   }), []);
 
   const filteredChartData = useMemo(
@@ -93,21 +93,21 @@ export const FarmSection = () => {
 
         {/* Farming Info panel */}
         <div className={`w-full lg:w-[422px] flex-shrink-0 flex flex-col rounded-xl border overflow-hidden ${
-          isDark ? "bg-[#222222] border-[#333333]" : "bg-[#F7F7F7] border-[#E5E7EB]"
+          isDark ? "bg-[#222222] border-[#2A2A2A]" : "bg-[#F7F7F7] border-[#E8E8E8]"
         }`}>
-          <div className={`px-5 pt-5 pb-4 border-b flex-shrink-0 ${isDark ? "border-[#333333]" : "border-[#e5e7eb]"}`}>
-            <h3 className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#0f172a]"}`}>Farming Info</h3>
+          <div className={`px-5 pt-5 pb-4 border-b flex-shrink-0 ${isDark ? "border-[#2A2A2A]" : "border-[#e5e7eb]"}`}>
+            <h3 className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>Farming Info</h3>
           </div>
           <div className="flex flex-col overflow-y-auto px-5 pb-5">
             {FARMING_INFO_STATS.map(({ label, value, positive }) => (
               <div key={label} className="flex justify-between items-center py-[10px]">
-                <span className={`text-[14px] font-medium tracking-[0.01em] ${isDark ? "text-[#919191]" : "text-[#6b7280]"}`}>
+                <span className={`text-[14px] font-medium tracking-[0.01em] ${isDark ? "text-[#919191]" : "text-[#777777]"}`}>
                   {label}
                 </span>
                 <span className={`text-[14px] font-semibold flex-shrink-0 ${
                   positive === true ? "text-[#16a34a]"
                   : positive === false ? "text-[#dc2626]"
-                  : isDark ? "text-white" : "text-[#0f172a]"
+                  : isDark ? "text-white" : "text-[#1A1A1A]"
                 }`}>
                   {value}
                 </span>
@@ -118,7 +118,7 @@ export const FarmSection = () => {
 
         {/* Chart panel */}
         <div className={`flex-1 min-w-0 flex flex-col gap-4 rounded-[16px] border p-5 ${
-          isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
+          isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#E8E8E8]"
         }`}>
           <div className="flex items-center justify-between flex-shrink-0 gap-2">
             <div className="flex items-center gap-[4px] flex-wrap">
@@ -142,7 +142,7 @@ export const FarmSection = () => {
                 type="button"
                 onClick={() => setIsTimeDropdownOpen(!isTimeDropdownOpen)}
                 className={`h-[40px] pl-[8px] pr-[12px] flex items-center gap-[4px] rounded-[8px] border-[1px] text-[13px] font-medium cursor-pointer transition ${
-                  isDark ? "bg-[#1a1a1a] border-[#333] text-white hover:bg-[#222]" : "bg-white border-[#e2e2e2] text-[#111] hover:bg-[#f7f7f7]"
+                  isDark ? "bg-[#1a1a1a] border-[#333] text-white hover:bg-[#222]" : "bg-white border-[#E8E8E8] text-[#111] hover:bg-[#f7f7f7]"
                 }`}
               >
                 {timeFilter}
@@ -150,7 +150,7 @@ export const FarmSection = () => {
               </button>
               {isTimeDropdownOpen && (
                 <div className={`absolute right-0 top-[44px] z-10 rounded-[8px] border-[1px] py-[4px] min-w-[120px] ${
-                  isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
+                  isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#E8E8E8]"
                 }`}>
                   {["All Time", "1 Week", "1 Month", "3 Months"].map((f) => (
                     <button
@@ -178,7 +178,7 @@ export const FarmSection = () => {
               showGrid={true}
               showVertGrid={false}
               gridColor={isDark ? "rgba(226, 226, 226, 0.1)" : "rgba(226, 226, 226, 0.5)"}
-              textColor={isDark ? "#919191" : "#5c5b5b"}
+              textColor={isDark ? "#919191" : "#777777"}
             />
           </div>
         </div>

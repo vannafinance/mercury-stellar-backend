@@ -1,222 +1,136 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
-
-const filterRecordByTimeRange = (
-  data: Record<string, number>,
-  filter: string,
-): Record<string, number> => {
-  if (filter === "All Time") return data;
-  const now = new Date();
-  const start = new Date(now);
-  if (filter === "1 Week") start.setDate(now.getDate() - 7);
-  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
-  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
-  start.setHours(0, 0, 0, 0);
-  return Object.fromEntries(
-    Object.entries(data).filter(([date]) => new Date(date) >= start),
-  );
-};
-
-const LENDER_CHART_DATA: Record<string, number> = {
-  "2025-08-01": 4120, "2025-08-08": 4380, "2025-08-15": 4640,
-  "2025-08-22": 4880, "2025-08-29": 5120, "2025-09-05": 5360,
-  "2025-09-12": 5580, "2025-09-19": 5800, "2025-09-26": 6020,
-  "2025-10-03": 5880, "2025-10-10": 6100, "2025-10-17": 6340,
-  "2025-10-24": 6560, "2025-10-31": 6720,
-};
-import { RewardsTable } from "@/components/earn/rewards-table";
-import { ReusableChart } from "@/components/ui/reusable-chart";
+import { useState } from "react";
+import { useUserPositions, usePoolData } from "@/hooks/use-earn";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { Table } from "@/components/earn/table";
+import { formatTokenAmount } from "@/lib/utils/format-amount";
 import { useTheme } from "@/contexts/theme-context";
 
-const LENDER_MINI_STATS = [
-  { id: "1", name: "Total Holdings",    amount: "$1000", positive: null  },
-  { id: "2", name: "Due Amount",        amount: "$100",  positive: null  },
-  { id: "3", name: "Net Returns (USD)", amount: "$10",   positive: true  },
-  { id: "4", name: "Net Returns (%)",   amount: "10%",   positive: true  },
-];
+const ASSETS = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
 
-const POSITION_TABS = [
-  { id: "current-positions", label: "Current Positions" },
-  { id: "positions-history", label: "Positions History" },
-];
+// AQ/SO USDC variants peg to USDC — they have no separate oracle entry.
+const PRICE_TOKEN: Record<string, string> = {
+  XLM: "XLM",
+  USDC: "USDC",
+  AQUARIUS_USDC: "USDC",
+  SOROSWAP_USDC: "USDC",
+};
+
+const POSITION_TABS = [{ id: "current-positions", label: "Current Positions" }];
 
 const TABLE_HEADINGS = [
-  { id: "pool",                label: "Pool" },
-  { id: "amount-supplied",     label: "Amount Supplied",     icon: true },
-  { id: "earn-supply-apy",     label: "Earn Supply APY",     icon: true },
-  { id: "transaction-history", label: "Transaction History", icon: true },
+  { id: "pool", label: "Pool" },
+  { id: "amount-supplied", label: "Amount Supplied", icon: true },
+  { id: "supply-apy", label: "Supply APY", icon: true },
+  { id: "value", label: "Value", icon: true },
 ];
 
-const TABLE_ROWS = [
-  { cell: [{ title: "XLM",       tag: "Active" }, { title: "500 XLM",      tag: "$60"    }, { title: "4.2%", tag: "300 USD"  }, { title: "500 USD" }] },
-  { cell: [{ title: "USDC",      tag: "Active" }, { title: "1000 USDC",    tag: "$1000"  }, { title: "5.1%", tag: "1000 USD" }, { title: "1k USD"  }] },
-  { cell: [{ title: "WBTC",      tag: "Active" }, { title: "0.0109 WBTC",  tag: "$1000"  }, { title: "3.3%", tag: "1000 USD" }, { title: "10k USD" }] },
-  { cell: [{ title: "ETH",       tag: "Active" }, { title: "0.5 ETH",      tag: "$1200"  }, { title: "2.8%", tag: "500 USD"  }, { title: "5k USD"  }] },
-];
+const fmtUsd = (n: number): string =>
+  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/**
+ * Portfolio "Lender" tab — real Stellar lending supply. Positions come from the
+ * same earn hooks the Earn page uses (`useUserPositions` for supplied amounts,
+ * `usePoolData` for live supply APY), USD-valued via the oracle price hook.
+ * Total Holdings = Σ(deposited × price). No mock rewards / returns / P&L —
+ * time-series analytics are deferred to the Sprint-2 Mercury read-model.
+ */
 export const LenderTab = () => {
   const { isDark } = useTheme();
   const [positionTab, setPositionTab] = useState("current-positions");
-  const [timeFilter, setTimeFilter] = useState("All Time");
-  const [isTimeDropdownOpen, setIsTimeDropdownOpen] = useState(false);
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const [chartHeight, setChartHeight] = useState(400);
 
-  const filteredChartData = useMemo(
-    () => filterRecordByTimeRange(LENDER_CHART_DATA, timeFilter),
-    [timeFilter],
-  );
+  const { positions } = useUserPositions();
+  const { pools } = usePoolData();
+  const prices = useTokenPrices(["XLM", "USDC"]);
 
-  useEffect(() => {
-    const el = chartContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const h = entries[0]?.contentRect.height;
-      if (h && h > 0) setChartHeight(Math.floor(h));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  const rows = ASSETS.map((asset) => {
+    const deposited = parseFloat(positions[asset]?.deposited ?? "0");
+    const supplyAPY = parseFloat(pools[asset]?.supplyAPY ?? "0");
+    const price = prices[PRICE_TOKEN[asset]] ?? (PRICE_TOKEN[asset] === "USDC" ? 1 : 0);
+    const symbol = STELLAR_POOLS[asset]?.symbol ?? asset;
+    return { asset, symbol, deposited, supplyAPY, usd: deposited * price };
+  }).filter((r) => r.deposited > 0);
+
+  const totalHoldings = rows.reduce((s, r) => s + r.usd, 0);
+  const avgAPY = rows.length ? rows.reduce((s, r) => s + r.supplyAPY, 0) / rows.length : 0;
+
+  const lenderStats: { id: string; name: string; amount: string; positive: boolean | null }[] = [
+    { id: "1", name: "Total Holdings", amount: fmtUsd(totalHoldings), positive: null },
+    { id: "2", name: "Supplied Assets", amount: String(rows.length), positive: null },
+    { id: "3", name: "Avg Supply APY", amount: `${avgAPY.toFixed(2)}%`, positive: rows.length > 0 ? true : null },
+  ];
+
+  const tableRows = rows.map((r) => ({
+    cell: [
+      { title: r.symbol, tag: "Active" },
+      { title: `${formatTokenAmount(r.deposited)} ${r.symbol}`, tag: fmtUsd(r.usd) },
+      { title: `${r.supplyAPY.toFixed(2)}%`, tag: "" },
+      { title: fmtUsd(r.usd) },
+    ],
+  }));
 
   return (
     <div className="w-full h-fit flex flex-col gap-6 sm:gap-8">
-      {/* Top row: left stats/rewards + right P&L chart */}
+      {/* Top row: real Lender stats + analytics placeholder */}
       <div className="w-full flex flex-col lg:flex-row gap-4 lg:gap-[16px]">
-        {/* Left column */}
-        <div className="w-full lg:w-[422px] flex-shrink-0 flex flex-col gap-4 sm:gap-[16px] lg:h-[500px]">
-          {/* Mini stats */}
-          <div
-            className={`w-full flex flex-col rounded-xl border overflow-hidden flex-shrink-0 ${
-              isDark ? "bg-[#222222] border-[#333333]" : "bg-[#F7F7F7] border-[#E5E7EB]"
-            }`}
-          >
-            <div className={`px-5 pt-5 pb-4 border-b shrink-0 ${isDark ? "border-[#333333]" : "border-[#e5e7eb]"}`}>
-              <h3 className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#0f172a]"}`}>
-                Lender Stats
-              </h3>
-            </div>
-            <div className="flex flex-col px-5 pb-5">
-              {LENDER_MINI_STATS.map(({ id, name, amount, positive }) => (
-                <div key={id} className="flex justify-between items-center py-2.5">
-                  <span className={`text-[14px] font-medium tracking-[0.01em] ${isDark ? "text-[#919191]" : "text-[#6b7280]"}`}>
-                    {name}
-                  </span>
-                  <span
-                    className={`text-[14px] font-semibold shrink-0 ${
-                      positive === true ? "text-[#16a34a]"
-                      : positive === false ? "text-[#dc2626]"
-                      : isDark ? "text-white" : "text-[#0f172a]"
-                    }`}
-                  >
-                    {amount}
-                  </span>
-                </div>
-              ))}
-            </div>
+        {/* Lender Stats */}
+        <div
+          className={`w-full lg:w-[422px] flex-shrink-0 flex flex-col rounded-xl border overflow-hidden ${
+            isDark ? "bg-[#222222] border-[#2A2A2A]" : "bg-[#F7F7F7] border-[#E8E8E8]"
+          }`}
+        >
+          <div className={`px-5 pt-5 pb-4 border-b ${isDark ? "border-[#2A2A2A]" : "border-[#E8E8E8]"}`}>
+            <h3 className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>Lender Stats</h3>
           </div>
-
-          {/* Rewards table */}
-          <div className="flex-1 min-h-0">
-            <RewardsTable />
+          <div className="flex flex-col px-5 pb-5">
+            {lenderStats.map(({ id, name, amount, positive }) => (
+              <div key={id} className="flex justify-between items-center py-2.5">
+                <span className={`text-[14px] font-medium ${isDark ? "text-[#919191]" : "text-[#777777]"}`}>{name}</span>
+                <span
+                  className={`text-[14px] font-semibold shrink-0 ${
+                    positive === true ? "text-[#16a34a]" : isDark ? "text-white" : "text-[#1A1A1A]"
+                  }`}
+                >
+                  {amount}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Right column: P&L chart */}
+        {/* Analytics placeholder — lending P&L over time → Sprint-2 read-model */}
         <div
-          className={`flex-1 min-w-0 flex flex-col gap-4 rounded-[16px] border p-5 lg:h-[500px] lg:self-start ${
-            isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
+          className={`flex-1 min-w-0 flex flex-col items-center justify-center gap-1 rounded-[16px] border p-5 min-h-[180px] ${
+            isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#E8E8E8]"
           }`}
         >
-          <div className="flex items-center justify-between flex-shrink-0">
-            <div className="flex flex-col gap-0.5">
-              <span className={`text-[16px] font-bold ${isDark ? "text-white" : "text-[#0f172a]"}`}>
-                P&L
-              </span>
-              <span className="text-[13px] font-medium text-[#a7a7a7]">
-                Total Value
-              </span>
-            </div>
-            <div className="flex items-center gap-[8px]">
-              <button
-                type="button"
-                className={`h-[40px] px-[12px] pl-[8px] flex items-center justify-center rounded-[8px] border-[1px] text-[13px] font-medium whitespace-nowrap cursor-pointer transition ${
-                  isDark
-                    ? "bg-[#1a1a1a] border-[#333] text-white hover:bg-[#222]"
-                    : "bg-white border-[#e2e2e2] text-[#111] hover:bg-[#f7f7f7]"
-                }`}
-              >
-                Calendar
-              </button>
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsTimeDropdownOpen(!isTimeDropdownOpen)}
-                  className={`h-[40px] pl-[8px] pr-[12px] flex items-center justify-center gap-[4px] rounded-[8px] border-[1px] text-[13px] font-medium whitespace-nowrap cursor-pointer ${
-                    isDark
-                      ? "bg-[#1a1a1a] border-[#333] text-white"
-                      : "bg-white border-[#e2e2e2] text-[#111]"
-                  }`}
-                >
-                  {timeFilter}
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </button>
-                {isTimeDropdownOpen && (
-                  <div
-                    className={`absolute right-0 top-[44px] z-10 rounded-[8px] border-[1px] py-[4px] min-w-[120px] ${
-                      isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
-                    }`}
-                  >
-                    {["All Time", "1 Week", "1 Month", "3 Months"].map((f) => (
-                      <button
-                        key={f}
-                        type="button"
-                        onClick={() => { setTimeFilter(f); setIsTimeDropdownOpen(false); }}
-                        className={`w-full text-left px-[12px] py-[6px] text-[12px] font-medium cursor-pointer transition ${
-                          f === timeFilter ? "text-[#703ae6]" : isDark ? "text-white hover:bg-[#333]" : "text-[#111] hover:bg-[#f7f7f7]"
-                        }`}
-                      >
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div ref={chartContainerRef} className="flex-1 min-h-0 overflow-hidden rounded-xl">
-            <ReusableChart
-              data={filteredChartData}
-              gradientColors={["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"]}
-              lineColor="#703ae6"
-              height={chartHeight}
-              showGrid={true}
-              showVertGrid={false}
-              gridColor={isDark ? "rgba(226, 226, 226, 0.1)" : "rgba(226, 226, 226, 0.5)"}
-              textColor={isDark ? "#919191" : "#5c5b5b"}
-            />
-          </div>
+          <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>Lending P&amp;L</span>
+          <span className="text-[12px] font-medium text-[#777777]">Coming soon</span>
         </div>
       </div>
 
-      {/* Positions table */}
-      <Table
-        heading={{
-          heading: "Positions Table",
-          tabsItems: POSITION_TABS,
-          tabType: "solid",
-        }}
-        activeTab={positionTab}
-        onTabChange={setPositionTab}
-        tableHeadings={TABLE_HEADINGS}
-        tableBody={{ rows: TABLE_ROWS }}
-        tableBodyBackground={isDark ? "bg-[#222222]" : "bg-[#F4F4F4]"}
-        filters={{ customizeDropdown: true, filters: ["All"] }}
-      />
+      {/* Positions table — real supplied positions */}
+      {tableRows.length > 0 ? (
+        <Table
+          heading={{ heading: "Positions Table", tabsItems: POSITION_TABS, tabType: "solid" }}
+          activeTab={positionTab}
+          onTabChange={setPositionTab}
+          tableHeadings={TABLE_HEADINGS}
+          tableBody={{ rows: tableRows }}
+          tableBodyBackground={isDark ? "bg-[#222222]" : "bg-[#F4F4F4]"}
+          filters={{ customizeDropdown: true, filters: ["All"] }}
+        />
+      ) : (
+        <div
+          className={`w-full rounded-[16px] border px-5 py-10 text-center text-[14px] font-medium ${
+            isDark ? "bg-[#222222] border-[#2A2A2A] text-[#777777]" : "bg-[#F7F7F7] border-[#E8E8E8] text-[#777777]"
+          }`}
+        >
+          No lending positions yet. Supply assets on the Earn page to start earning.
+        </div>
+      )}
     </div>
   );
 };

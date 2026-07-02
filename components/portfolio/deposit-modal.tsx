@@ -125,7 +125,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
             exit={{ scale: 0.95, opacity: 0, y: 16 }}
             transition={{ type: "spring", damping: 28, stiffness: 320 }}
             className={`w-full max-w-[440px] rounded-2xl shadow-2xl overflow-hidden ${
-              isDark ? "bg-[#171717] border border-[#2A2A2A]" : "bg-white border border-[#E5E7EB]"
+              isDark ? "bg-[#171717] border border-[#2A2A2A]" : "bg-white border border-[#E8E8E8]"
             }`}
             onClick={(e) => e.stopPropagation()}
           >
@@ -140,10 +140,10 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
                   </svg>
                 </div>
                 <div>
-                  <h2 className={`text-[16px] font-bold leading-tight ${isDark ? "text-white" : "text-[#0f172a]"}`}>
+                  <h2 className={`text-[16px] font-bold leading-tight ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>
                     Deposit Assets
                   </h2>
-                  <p className={`text-[12px] ${isDark ? "text-[#777]" : "text-[#6b7280]"}`}>
+                  <p className={`text-[12px] ${isDark ? "text-[#777]" : "text-[#777777]"}`}>
                     Add funds to your portfolio
                   </p>
                 </div>
@@ -186,7 +186,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
                           percentage === pct
                             ? `${PERCENTAGE_COLORS[pct]} text-white border-transparent`
                             : isDark
-                            ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
+                            ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#2A2A2A] hover:text-white"
                             : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
                         }`}
                       >
@@ -201,7 +201,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
                   <div className="shrink-0">
                     <Dropdown
                       classname={`gap-2 px-3 py-2 rounded-full text-[14px] font-semibold transition-colors ${
-                        isDark ? "bg-[#2A2A2A] hover:bg-[#333333] text-white" : "bg-[#F0F0F0] hover:bg-[#E2E2E2]"
+                        isDark ? "bg-[#2A2A2A] hover:bg-[#2A2A2A] text-white" : "bg-[#F0F0F0] hover:bg-[#E2E2E2]"
                       }`}
                       selectedOption={cfg.label}
                       setSelectedOption={handleAssetChange}
