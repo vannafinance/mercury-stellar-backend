@@ -83,7 +83,7 @@ export const Navbar = (props: Navbar) => {
 
   // In lite mode, hide these pro-only routes from navigation (and redirect away
   // from them below). Lite keeps the simplified home + Margin only.
-  const LITE_HIDDEN_TITLES = ["Trade", "Farm", "Earn"];
+  const LITE_HIDDEN_TITLES = ["Trade", "Farm", "Earn", "Portfolio"];
   const filteredItems =
     appMode === "lite"
       ? props.items.filter((item) => !LITE_HIDDEN_TITLES.includes(item.title))

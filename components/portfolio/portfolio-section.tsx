@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useMemo } from "react";
+import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/store/user";
+import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useUserPositions } from "@/hooks/use-earn";
+import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "../ui/button";
 import { AccountStats } from "../margin/account-stats";
-import { ReusableChart } from "../ui/reusable-chart";
 import { AnimatedTabs } from "../ui/animated-tabs";
 import { PORTFOLIO_STATS_ITEMS } from "@/lib/constants/portfolio";
 import { LenderTab } from "./lender-tab";
@@ -17,227 +20,65 @@ const PORTFOLIO_TABS = [
   { id: "trader", label: "Trader" },
 ];
 
-const TIME_FILTERS = ["1 Week", "1 Month", "3 Months", "All Time"] as const;
-
-const filterRecordByTimeRange = (
-  data: Record<string, number>,
-  filter: string,
-): Record<string, number> => {
-  if (filter === "All Time") return data;
-  const now = new Date();
-  const start = new Date(now);
-  if (filter === "1 Week") start.setDate(now.getDate() - 7);
-  else if (filter === "1 Month") start.setMonth(now.getMonth() - 1);
-  else if (filter === "3 Months") start.setMonth(now.getMonth() - 3);
-  start.setHours(0, 0, 0, 0);
-  return Object.fromEntries(
-    Object.entries(data).filter(([date]) => new Date(date) >= start),
-  );
-};
-
-const MOCK_EARNINGS_DATA: Record<string, number> = {
-  "2025-08-01": 8420,
-  "2025-08-08": 9050,
-  "2025-08-15": 9780,
-  "2025-08-22": 10200,
-  "2025-08-29": 9820,
-  "2025-09-05": 10450,
-  "2025-09-12": 11100,
-  "2025-09-19": 11720,
-  "2025-09-26": 12280,
-  "2025-10-03": 12050,
-  "2025-10-10": 12680,
-  "2025-10-17": 13240,
-  "2025-10-24": 13680,
-  "2025-10-31": 13920,
-};
-
-const MOCK_VOLUME_DATA: Record<string, number> = {
-  "2025-08-01": 43200,
-  "2025-08-08": 52800,
-  "2025-08-15": 61400,
-  "2025-08-22": 58200,
-  "2025-08-29": 69800,
-  "2025-09-05": 78400,
-  "2025-09-12": 88200,
-  "2025-09-19": 84600,
-  "2025-09-26": 96400,
-  "2025-10-03": 108200,
-  "2025-10-10": 118800,
-  "2025-10-17": 114200,
-  "2025-10-24": 128600,
-  "2025-10-31": 142400,
-};
-
-interface PortfolioChartCardProps {
-  title: string;
-  value: string;
-  data: Record<string, number>;
-  isDark: boolean;
-}
-
-const PortfolioChartCard = ({
-  title,
-  value,
-  data,
-  isDark,
-}: PortfolioChartCardProps) => {
-  const [timeFilter, setTimeFilter] = useState<string>("All Time");
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const [isChartOpen, setIsChartOpen] = useState(false);
-
-  const formatYAxisLabel = useCallback((val: number) => {
-    if (val >= 1000) return `${(val / 1000).toFixed(0)}k USD`;
-    return `${val} USD`;
-  }, []);
-
-  const chartColors: [string, string] = useMemo(
-    () => ["rgba(112, 58, 230, 0.18)", "rgba(112, 58, 230, 0.02)"],
-    [],
-  );
-
-  const filteredData = useMemo(
-    () => filterRecordByTimeRange(data, timeFilter),
-    [data, timeFilter],
-  );
-
-  return (
-    <>
-      {/* Desktop: full card */}
-      <div
-        className={`hidden sm:flex w-full min-w-0 rounded-[16px] border-[1px] p-[20px] flex-col gap-3 ${
-          isDark ? "bg-[#111111] border-[#333]" : "bg-white border-[#e2e2e2]"
-        }`}
-      >
-        <div className="flex items-start justify-between">
-          <div>
-            <p className={`text-[13px] font-medium ${isDark ? "text-[#919191]" : "text-[#5c5b5b]"}`}>
-              {title}
-            </p>
-            <p className={`text-[20px] font-bold ${isDark ? "text-white" : "text-[#111]"}`}>
-              {value}
-            </p>
-          </div>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-              className={`h-[34px] px-[12px] rounded-[8px] border-[1px] text-[13px] font-medium cursor-pointer flex items-center gap-[6px] ${
-                isDark
-                  ? "bg-[#1a1a1a] border-[#333] text-white"
-                  : "bg-white border-[#e2e2e2] text-[#111]"
-              }`}
-            >
-              {timeFilter}
-              <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
-                <path d="M1 1L5 5L9 1" stroke={isDark ? "#fff" : "#111"} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-            {isDropdownOpen && (
-              <div
-                className={`absolute right-0 top-[38px] z-10 rounded-[8px] border-[1px] py-[4px] min-w-[120px] ${
-                  isDark ? "bg-[#1a1a1a] border-[#333]" : "bg-white border-[#e2e2e2]"
-                }`}
-              >
-                {TIME_FILTERS.map((f) => (
-                  <button
-                    key={f}
-                    type="button"
-                    onClick={() => { setTimeFilter(f); setIsDropdownOpen(false); }}
-                    className={`w-full text-left px-[12px] py-[6px] text-[12px] font-medium cursor-pointer transition ${
-                      f === timeFilter ? "text-[#703ae6]" : isDark ? "text-white hover:bg-[#333]" : "text-[#111] hover:bg-[#f7f7f7]"
-                    }`}
-                  >
-                    {f}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="w-full min-w-0">
-          <ReusableChart
-            data={filteredData}
-            gradientColors={chartColors}
-            lineColor="#703ae6"
-            height={220}
-            showGrid={true}
-            showVertGrid={false}
-            gridColor={isDark ? "rgba(226, 226, 226, 0.1)" : "rgba(226, 226, 226, 0.5)"}
-            formatYAxisLabel={formatYAxisLabel}
-            textColor={isDark ? "#919191" : "#5c5b5b"}
-          />
-        </div>
-      </div>
-
-      {/* Mobile: collapsible card */}
-      <div
-        className={`sm:hidden w-full rounded-2xl border overflow-hidden transition-colors ${
-          isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#E8E8E8]"
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => setIsChartOpen((prev) => !prev)}
-          className="w-full flex items-center justify-between p-3 cursor-pointer"
-        >
-          <div className="flex flex-col gap-0.5 text-left">
-            <span className={`text-[11px] font-medium leading-[18px] ${isDark ? "text-[#A7A7A7]" : "text-[#777777]"}`}>
-              {title}
-            </span>
-            <span className={`text-[17px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>
-              {value}
-            </span>
-          </div>
-          <motion.div
-            animate={{ rotate: isChartOpen ? 180 : 0 }}
-            transition={{ duration: 0.25 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={isDark ? "#A7A7A7" : "#777777"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 9l6 6 6-6" />
-            </svg>
-          </motion.div>
-        </button>
-
-        <AnimatePresence initial={false}>
-          {isChartOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.3, ease: "easeInOut" }}
-              className="overflow-hidden"
-            >
-              <div className="pb-2 px-1">
-                <ReusableChart
-                  data={filteredData}
-                  gradientColors={chartColors}
-                  lineColor="#703ae6"
-                  height={180}
-                  showGrid={true}
-                  showVertGrid={false}
-                  gridColor={isDark ? "rgba(226, 226, 226, 0.1)" : "rgba(226, 226, 226, 0.5)"}
-                  textColor={isDark ? "#919191" : "#5c5b5b"}
-                />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    </>
-  );
-};
-
 export const PortfolioSection = () => {
   const userAddress = useUserStore((user) => user.address);
+  const tokenBalances = useUserStore((user) => user.tokenBalances);
   const { isDark } = useTheme();
   const [activeTab, setActiveTab] = useState("lender");
 
+  // Real account-level figures. Prefer the /api/account snapshot (warmed by the
+  // connect-time prefetch, so the cards fill even on a first Portfolio visit),
+  // falling back to the live store — the same source the margin header reads, so
+  // Portfolio and Margin never disagree.
+  const { snapshot } = useAccountSnapshot(userAddress);
+  const store = useMarginAccountInfoStore(
+    useShallow((s) => ({
+      totalCollateralValue: s.totalCollateralValue,
+      netAvailableCollateral: s.netAvailableCollateral,
+      totalBorrowedValue: s.totalBorrowedValue,
+    })),
+  );
+  const marginAccountBalance = snapshot?.totalCollateralValue ?? store.totalCollateralValue ?? 0;
+  const netAvailableCollateral = snapshot?.netAvailableCollateral ?? store.netAvailableCollateral ?? 0;
+  const totalBorrowed = snapshot?.totalBorrowedValue ?? store.totalBorrowedValue ?? 0;
+
+  // Wallet (spendable) USD = Σ wallet token balance × live oracle price.
+  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const walletUsd = useMemo(() => {
+    const priceKey = (sym: string): string =>
+      sym === "BLEND_USDC" ? "BLUSDC"
+      : sym === "AQUARIUS_USDC" ? "AQUSDC"
+      : sym === "SOROSWAP_USDC" ? "SOUSDC"
+      : sym;
+    return Object.entries(tokenBalances).reduce((sum, [sym, amt]) => {
+      const price = prices[priceKey(sym)] ?? 0;
+      return sum + (parseFloat(String(amt)) || 0) * price;
+    }, 0);
+  }, [tokenBalances, prices]);
+
+  // Net Earnings = Σ accrued lending interest × oracle price across supplied
+  // pools. Real, live figure (the earnings *time-series* chart is deferred to
+  // the Sprint-2 Mercury read-model). USDC-pegged variants price to USDC.
+  const { positions } = useUserPositions();
+  const netEarnings = useMemo(() => {
+    const priceFor: Record<string, string> = {
+      XLM: "XLM", USDC: "USDC", AQUARIUS_USDC: "USDC", SOROSWAP_USDC: "USDC",
+    };
+    return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
+      const earned = parseFloat(positions[asset]?.earnedInterest ?? "0") || 0;
+      const price = prices[priceFor[asset]] ?? (priceFor[asset] === "USDC" ? 1 : 0);
+      return sum + earned * price;
+    }, 0);
+  }, [positions, prices]);
+
+  const fmtUsd = (n: number) =>
+    `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   const statsValues = {
-    totalPortfolioBalance: userAddress ? "$1,000.00" : "-",
-    netAvailableCollateral: userAddress ? "$1,000.00" : "-",
-    marginAccountBalance: userAddress ? "$600.00" : "-",
-    availablePortfolioBalance: userAddress ? "$600.00" : "-",
+    walletBalance: userAddress ? fmtUsd(walletUsd) : "-",
+    marginAccountBalance: userAddress ? fmtUsd(marginAccountBalance) : "-",
+    netAvailableCollateral: userAddress ? fmtUsd(netAvailableCollateral) : "-",
+    totalBorrowed: userAddress ? fmtUsd(totalBorrowed) : "-",
   };
 
   return (
@@ -249,20 +90,20 @@ export const PortfolioSection = () => {
         values={statsValues}
       />
 
-      {/* Charts row */}
-      <div className="w-full h-fit flex flex-col md:flex-row gap-4 md:gap-[16px]">
-        <PortfolioChartCard
-          title="Net Earnings"
-          value="$ 2000 USD"
-          data={MOCK_EARNINGS_DATA}
-          isDark={isDark}
-        />
-        <PortfolioChartCard
-          title="Net Volume"
-          value="$ 2000 USD"
-          data={MOCK_VOLUME_DATA}
-          isDark={isDark}
-        />
+      {/* Net Earnings — real accrued lending interest. The over-time chart is
+          deferred to the Sprint-2 Mercury read-model, but the figure is live. */}
+      <div
+        className={`w-full rounded-[16px] border px-5 py-5 flex items-center justify-between ${
+          isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#E8E8E8]"
+        }`}
+      >
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[13px] font-medium text-[#777777]">Net Earnings</span>
+          <span className={`text-[22px] font-bold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>
+            {userAddress ? fmtUsd(netEarnings) : "-"}
+          </span>
+          <span className="text-[11px] font-medium text-[#777777]">Accrued lending interest</span>
+        </div>
       </div>
 
       {/* Tabs */}
