@@ -7,6 +7,8 @@
 // today: contracts in `Protocol_V1_Soroban` + DropdownOptions in
 // `lib/constants.ts`.
 
+import { CONTRACT_ADDRESSES } from '../../stellar-utils';
+
 export type StellarAsset =
   | "XLM"
   | "BLUSDC"
@@ -40,7 +42,7 @@ export const PROTOCOLS: StellarProtocol[] = ["Blend", "Aquarius", "Soroswap"];
 export const ORACLE = {
   name: "Reflector",
   description: "Soroban oracle aggregator (Reflector network) wrapped by the protocol's Oracle contract",
-  contractAddress: "CB72D6SOUHUTCESXYOQOBMP6MRSH47NBYIBH73BBRH3ZRT53LPTB6R7V",
+  contractAddress: CONTRACT_ADDRESSES.ORACLE,
   expectedHeartbeatSec: 60,
 } as const;
 

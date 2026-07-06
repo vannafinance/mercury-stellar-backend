@@ -1137,10 +1137,9 @@ export class MarginAccountService {
 
   /**
    * Verify that the Registry has a contract address set for a token, by calling
-   * the per-token getter (e.g. `get_usdc_contract_address`; note XLM's getter
-   * `get_xlm_contract_adddress` carries a typo that exists on-chain). A missing
-   * address is the most common cause of "deposit/borrow fails for no obvious
-   * reason" after a fresh Registry deploy.
+   * the per-token getter (e.g. `get_usdc_contract_address`, `get_xlm_contract_address`).
+   * A missing address is the most common cause of "deposit/borrow fails for no
+   * obvious reason" after a fresh Registry deploy.
    *
    * @param tokenSymbol - Token symbol or UI alias; normalized before lookup.
    * @returns `{ configured: true }` when the address is set, otherwise
@@ -1163,7 +1162,7 @@ export class MarginAccountService {
       // Build function name based on token
       let functionName: string;
       if (contractTokenSymbol === 'XLM') {
-        functionName = 'get_xlm_contract_adddress'; // Note: typo in contract
+        functionName = 'get_xlm_contract_address';
       } else if (contractTokenSymbol === 'BLUSDC' || contractTokenSymbol === 'USDC') {
         functionName = 'get_usdc_contract_address';
       } else if (contractTokenSymbol === 'AQUSDC') {
