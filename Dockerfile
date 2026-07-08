@@ -17,7 +17,7 @@ COPY . .
 # does not pass build args) still bakes a VALID url instead of "" — the app uses
 # `?? fallback`, which does NOT catch an empty string, so "" would crash new URL().
 # Change this to your real domain, or override via --build-arg / cloudbuild _SITE_URL.
-ARG NEXT_PUBLIC_SITE_URL=https://app.vanna.finance
+ARG NEXT_PUBLIC_SITE_URL=https://stellar.vanna.finance
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production

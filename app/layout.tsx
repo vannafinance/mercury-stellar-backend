@@ -24,7 +24,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 
 // Canonical site URL — drives absolute OpenGraph/Twitter/canonical links.
 // Override per-environment with NEXT_PUBLIC_SITE_URL; falls back to the prod app.
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://app.vanna.finance";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://stellar.vanna.finance";
 
 /**
  * Root document metadata applied to every route.
