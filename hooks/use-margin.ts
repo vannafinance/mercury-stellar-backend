@@ -1,7 +1,24 @@
 'use client';
-import { useQuery } from '@tanstack/react-query';
-import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
-import { getMarginHistoryFromMercury } from '@/lib/mercury-margin';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMarginAccountInfoStore,
+  checkUserMarginAccount,
+  createMarginAccount,
+  refreshBorrowedBalances,
+} from '@/store/margin-account-info-store';
+import { getMarginHistoryFromMercury, type MarginTxEntry } from '@/lib/mercury-margin';
+import { appendMarginHistory, getMarginHistoryByAccount } from '@/lib/margin-history';
+import { MarginAccountService } from '@/lib/margin-utils';
+import { useUserStore } from '@/store/user';
+
+/** Merged history-row shape: real Mercury events plus the local transfer-out overlay. */
+export type MarginHistoryRow = {
+  type: MarginTxEntry['type'] | 'transfer-out';
+  asset: string;
+  amount: string;
+  timestamp: number;
+  hash: string;
+};
 
 // Margin transaction history — pure Mercury (full history, no ~7-day RPC cap).
 //
@@ -31,9 +48,19 @@ export const useMarginHistory = () => {
   const query = useQuery({
     queryKey: ['margin', 'history', marginAccountAddress ?? null],
     enabled: Boolean(marginAccountAddress),
-    queryFn: async () => {
+    queryFn: async (): Promise<MarginHistoryRow[]> => {
       if (!marginAccountAddress) return [];
-      return getMarginHistoryFromMercury(marginAccountAddress);
+      const onChain = await getMarginHistoryFromMercury(marginAccountAddress);
+      // Margin-collateral withdrawals (`withdraw_collateral_balance`) emit no
+      // distinguishing on-chain event Mercury can index — unlike deposit/borrow/
+      // repay, which all have real Trader_* events already covered above. Overlay
+      // the local record for "transfer-out" ONLY: every other locally-recorded
+      // type (deposit/borrow/repay/transfer-in) duplicates a real on-chain event,
+      // so including them here would double-list the same transaction.
+      const localWithdrawals: MarginHistoryRow[] = getMarginHistoryByAccount(marginAccountAddress)
+        .filter((e): e is typeof e & { type: 'transfer-out' } => e.type === 'transfer-out')
+        .map(({ type, asset, amount, timestamp, hash }) => ({ type, asset, amount, timestamp, hash }));
+      return [...onChain, ...localWithdrawals];
     },
     staleTime: 30_000,
     gcTime: 5 * 60_000,
@@ -47,4 +74,132 @@ export const useMarginHistory = () => {
     isLoading: query.isLoading,
     isRefreshing: query.isFetching && !query.isLoading,
   };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Margin-collateral transfer (wallet ⇄ margin account) — the same underlying
+// AccountManager calls as `components/margin/transfer-collateral.tsx`'s MB/WB
+// modes, exposed as plain mutations so other surfaces (the Portfolio page's
+// top-level Deposit/Withdraw buttons) can drive the same real collateral
+// transfer instead of the plain lending-pool supply/redeem flow.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Precision-safe human-amount → WAD (1e18) string, scaling via BigInt to avoid float drift. */
+const toWad = (amount: number): string =>
+  (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+
+/** Maps a display/asset-type symbol to the raw contract collateral symbol. */
+const normalizeContractTokenSymbol = (symbol: string): string => {
+  const s = symbol.toUpperCase();
+  if (s === 'BLUSDC' || s === 'BLEND_USDC' || s === 'USDC') return 'USDC';
+  if (s === 'AQUSDC' || s === 'AQUIRESUSDC' || s === 'AQUARIUS_USDC') return 'AQUSDC';
+  if (s === 'SOUSDC' || s === 'SOROSWAPUSDC' || s === 'SOROSWAP_USDC') return 'SOUSDC';
+  return s;
+};
+
+/** Resolves the caller's margin account, creating one on-chain if none exists yet. */
+async function ensureMarginAccount(userAddress: string): Promise<string> {
+  await checkUserMarginAccount(userAddress);
+  const { marginAccountAddress: cachedAddress, hasMarginAccount } = useMarginAccountInfoStore.getState();
+  let marginAccountAddress = cachedAddress;
+  if (!hasMarginAccount || !marginAccountAddress) {
+    const created = await createMarginAccount(userAddress);
+    if (!created) {
+      throw new Error(
+        useMarginAccountInfoStore.getState().accountCreationError || 'Failed to create margin account',
+      );
+    }
+    marginAccountAddress = useMarginAccountInfoStore.getState().marginAccountAddress;
+  }
+  if (!marginAccountAddress) throw new Error('No margin account available');
+  return marginAccountAddress;
+}
+
+/**
+ * Deposit collateral from the connected wallet into the user's margin account
+ * (`AccountManagerContract::deposit_collateral_tokens`) — creates the margin
+ * account first if the wallet doesn't have one yet. On success invalidates
+ * `['margin']` and force-refreshes the store's collateral balances (the real
+ * on-chain `Trader_Deposit` event is what makes this show up in
+ * {@link useMarginHistory}, no local history write needed).
+ */
+export const useDepositCollateral = () => {
+  const qc = useQueryClient();
+  const address = useUserStore((s) => s.address);
+
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: string }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
+
+      const marginAccountAddress = await ensureMarginAccount(address);
+      const symbol = normalizeContractTokenSymbol(assetType);
+      const result = await MarginAccountService.depositCollateralTokens(
+        marginAccountAddress,
+        symbol,
+        toWad(amount),
+      );
+      if (!result.success) throw new Error(result.error || 'Deposit failed');
+      return { hash: result.hash, amount, assetType, marginAccountAddress };
+    },
+    onSuccess: async ({ marginAccountAddress }) => {
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      try {
+        await refreshBorrowedBalances(marginAccountAddress, true);
+      } catch {
+        // Non-fatal — ledger tick / next open reconciles.
+      }
+    },
+  });
+};
+
+/**
+ * Withdraw collateral from the user's margin account back to their wallet
+ * (`AccountManagerContract::withdraw_collateral_balance`) — the contract's own
+ * `is_withdraw_allowed` health check is the actual safety gate; this hook does
+ * not pre-compute a safe max (callers should, for UX, mirror
+ * `transfer-collateral.tsx`'s health-factor-aware cap before calling this).
+ * `withdraw_collateral_balance` emits no distinguishing on-chain event, so on
+ * success this records a local "transfer-out" entry that {@link useMarginHistory}
+ * overlays onto the real Mercury-sourced history.
+ */
+export const useWithdrawCollateral = () => {
+  const qc = useQueryClient();
+  const address = useUserStore((s) => s.address);
+
+  return useMutation({
+    mutationFn: async ({ amount, assetType }: { amount: number; assetType: string }) => {
+      if (!address) throw new Error('Please connect your wallet first');
+      if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
+
+      const marginAccountAddress = useMarginAccountInfoStore.getState().marginAccountAddress;
+      if (!marginAccountAddress) throw new Error('No margin account found for this wallet');
+
+      const symbol = normalizeContractTokenSymbol(assetType);
+      const result = await MarginAccountService.withdrawCollateralBalance(
+        marginAccountAddress,
+        symbol,
+        toWad(amount),
+      );
+      if (!result.success) throw new Error(result.error || 'Withdrawal failed');
+      return { hash: result.hash, amount, assetType, symbol, marginAccountAddress };
+    },
+    onSuccess: async ({ hash, amount, symbol, marginAccountAddress }) => {
+      if (hash) {
+        appendMarginHistory({
+          marginAccountAddress,
+          type: 'transfer-out',
+          asset: symbol,
+          amount: amount.toFixed(7),
+          hash,
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['margin'] });
+      try {
+        await refreshBorrowedBalances(marginAccountAddress, true);
+      } catch {
+        // Non-fatal — ledger tick / next open reconciles.
+      }
+    },
+  });
 };

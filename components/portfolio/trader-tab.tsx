@@ -20,13 +20,6 @@ type TradeTab = (typeof TRADE_TABS)[number];
 
 type MarginStat = { id: string; label: string; value: string; special?: string };
 
-const MARGIN_ALLOCATION = [
-  { label: "Spot",   pct: 25, color: "#703ae6" },
-  { label: "Perps",  pct: 40, color: "#9d6ef0" },
-  { label: "Farm",   pct: 25, color: "#c4a8f8" },
-  { label: "Unused", pct: 10, color: "#E8E8E8", darkColor: "#3F3F46" },
-];
-
 const InfoIcon = ({ isDark }: { isDark: boolean }) => (
   <svg width="13" height="13" viewBox="0 0 14 14" fill="none" className="flex-shrink-0">
     <path
@@ -41,7 +34,6 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   const border = d ? "border-[#2D2D2D]" : "border-[#E8E8E8]";
   const labelClass = `text-[13px] font-medium leading-tight ${d ? "text-[#A0A0A0]" : "text-[#777777]"}`;
   const valueClass = `text-[20px] font-bold leading-tight ${d ? "text-white" : "text-[#111]"}`;
-  const [hoveredAlloc, setHoveredAlloc] = useState<string | null>(null);
   const [showHFTooltip, setShowHFTooltip] = useState(false);
 
   // Real margin-account figures — same snapshot/store the margin page + Portfolio
@@ -104,54 +96,8 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
     </div>
   );
 
-  const renderAllocation = () => {
-    const segments = MARGIN_ALLOCATION.map((item) => ({
-      ...item,
-      resolvedColor: "darkColor" in item && d ? (item as { darkColor?: string }).darkColor : item.color,
-    }));
-    return (
-      <div className="w-full flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 min-w-0">
-        <span className={`text-[13px] font-medium whitespace-nowrap shrink-0 ${d ? "text-[#A0A0A0]" : "text-[#777777]"}`}>
-          Margin Allocation
-        </span>
-        <div className="w-full sm:flex-1 flex items-center gap-0.5 min-w-0">
-          {segments.map(({ label, pct, resolvedColor }) => (
-            <div
-              key={label}
-              className="relative h-[6px] rounded-full cursor-pointer transition-opacity hover:opacity-80"
-              style={{ flex: pct, backgroundColor: resolvedColor }}
-              onMouseEnter={() => setHoveredAlloc(label)}
-              onMouseLeave={() => setHoveredAlloc(null)}
-            >
-              {hoveredAlloc === label && (
-                <div
-                  className={`absolute bottom-[10px] left-1/2 -translate-x-1/2 px-[10px] py-[5px] rounded-[8px] shadow-md border whitespace-nowrap z-50 flex items-center gap-[6px] text-[12px] font-semibold pointer-events-none ${
-                    d ? "bg-[#2a2a2a] border-[#3a3a3a] text-white" : "bg-white border-[#E8E8E8] text-[#111]"
-                  }`}
-                >
-                  <span className="w-[8px] h-[8px] rounded-full shrink-0 inline-block" style={{ backgroundColor: resolvedColor }} />
-                  {label} · {pct}%
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0 flex-wrap">
-          {segments.map(({ label, pct, resolvedColor }) => (
-            <div key={label} className="flex items-center gap-[5px]">
-              <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full shrink-0" style={{ backgroundColor: resolvedColor }} />
-              <span className={`text-[11px] sm:text-[12px] font-medium ${d ? "text-[#919191]" : "text-[#777777]"}`}>{label}</span>
-              <span className={`text-[11px] sm:text-[12px] font-bold ${d ? "text-white" : "text-[#111]"}`}>{pct}%</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
   const renderCell = (stat: MarginStat) => {
     if (stat.special === "gauge") return renderGauge(stat);
-    if (stat.special === "allocation") return renderAllocation();
     if (stat.special === "leverage") {
       const [current, max] = stat.value.split("/");
       return (
