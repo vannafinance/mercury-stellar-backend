@@ -378,6 +378,16 @@ export const positionsTableHeadings = [
   { label: "APY", id: "apy", icon: true },
 ];
 
+// Portfolio "Spot" tab — margin-account token balances held directly (not
+// lent to Blend, not deposited as LP). Simpler shape than positionsTableHeadings:
+// no APY column since spot holdings don't earn yield, just a USD value.
+export const spotBalancesTableHeadings = [
+  { label: "Asset", id: "asset", icon: true },
+  { label: "Venue", id: "venue", icon: true },
+  { label: "Balance", id: "balance", icon: true },
+  { label: "Value (USD)", id: "value", icon: true },
+];
+
 // Blend Capital uses a SINGLE pool contract for all assets.
 // The pool address is CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF (TestnetV2).
 // The asset to deposit/withdraw is specified via the `tokens_out` field in ExternalProtocolCall.

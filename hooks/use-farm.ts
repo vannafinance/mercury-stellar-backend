@@ -308,6 +308,46 @@ export const useAquariusLpPosition = (
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Aquarius token balance in margin account
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A single token's (XLM/USDC) balance held in the margin account, for Aquarius
+ * flows. Gated on both the account address and `tokenSymbol`; ledger-tick
+ * invalidated. Returns `{ balance, isLoading, isRefreshing }`.
+ */
+export const useAquariusTokenBalance = (
+  marginAccountAddress: string | null,
+  tokenSymbol: 'XLM' | 'USDC' | null,
+) => {
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
+  const lastTickRef = useRef(tick);
+
+  const query = useQuery({
+    queryKey: ['farm', 'aquarius', 'tokenBalance', marginAccountAddress, tokenSymbol],
+    enabled: Boolean(marginAccountAddress && tokenSymbol),
+    queryFn: async () => {
+      if (!marginAccountAddress || !tokenSymbol) return '0';
+      return AquariusService.getMarginAccountTokenBalance(marginAccountAddress, tokenSymbol);
+    },
+    staleTime: 4_000,
+  });
+
+  useEffect(() => {
+    if (tick === lastTickRef.current) return;
+    lastTickRef.current = tick;
+    qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'tokenBalance'] });
+  }, [tick, qc]);
+
+  return {
+    balance: query.data ?? '0',
+    isLoading: query.isLoading,
+    isRefreshing: query.isFetching && !query.isLoading,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // All Aquarius LP positions (one query for all pools)
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Positionstable } from "@/components/margin/positions-table";
 import { FarmSection } from "./farm-section";
+import { SpotSection } from "./spot-section";
 import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/store/user";
@@ -176,6 +177,8 @@ export const TraderTab = () => {
         </div>
       ) : activeSubTab === "Farm" ? (
         <FarmSection />
+      ) : activeSubTab === "Spot" ? (
+        <SpotSection />
       ) : (
         <div
           className={`w-full h-[300px] rounded-[16px] border-[1px] flex items-center justify-center ${
