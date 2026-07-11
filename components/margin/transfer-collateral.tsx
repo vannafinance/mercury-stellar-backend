@@ -7,7 +7,7 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { Button } from "../ui/button";
 import { useTheme } from "@/contexts/theme-context";
 import { MarginAccountService } from "@/lib/margin-utils";
-import { getAddress } from "@stellar/freighter-api";
+import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService, CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
 import {

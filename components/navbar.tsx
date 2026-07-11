@@ -13,6 +13,7 @@ import { useWallet } from "@/hooks/use-wallet";
 import { useAppModeStore } from "@/store/app-mode-store";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { FaucetPopup } from "./faucet/faucet-popup";
+import { ConnectWalletModal } from "./wallet/connect-wallet-modal";
 
 interface Navbar {
   /** Nav entries; `group` ("primary" | "bordered" | "secondary") controls placement/styling. */
@@ -69,7 +70,9 @@ export const Navbar = (props: Navbar) => {
   const { isDark, toggleTheme } = useTheme();
   const zoom = useViewportScale(1440);
   useUserStore();
-  const { address, connectWallet, disconnectWallet, isLoading } = useWallet();
+  const { address, walletKind, connectWallet, disconnectWallet, isLoading } = useWallet();
+  const walletLabel = walletKind === "privy" ? "Privy Wallet" : "Freighter Wallet";
+  const privyEnabled = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const [marginCopied, setMarginCopied] = useState(false);
   const handleCopyMarginAddress = () => {
@@ -113,6 +116,7 @@ export const Navbar = (props: Navbar) => {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isWalletDropdownOpen, setIsWalletDropdownOpen] = useState(false);
+  const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [isFaucetOpen, setIsFaucetOpen] = useState(false);
   const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const walletMenuRef = useRef<HTMLDivElement>(null);
@@ -178,6 +182,14 @@ export const Navbar = (props: Navbar) => {
   const handleDisconnect = () => {
     disconnectWallet();
     setIsWalletDropdownOpen(false);
+  };
+  const handleSelectFreighter = () => {
+    connectWallet("freighter");
+    setIsConnectModalOpen(false);
+  };
+  const handleSelectPrivy = () => {
+    connectWallet("privy");
+    setIsConnectModalOpen(false);
   };
 
   const handleNavKeyDown =
@@ -737,9 +749,9 @@ export const Navbar = (props: Navbar) => {
                   size="small"
                   type="navbar"
                   disabled={isLoading}
-                  onClick={connectWallet}
+                  onClick={() => setIsConnectModalOpen(true)}
                   text={isLoading ? "Connecting..." : "Connect Wallet"}
-                  ariaLabel="Connect your Freighter wallet"
+                  ariaLabel="Connect a wallet"
                 />
               </div>
             ) : (
@@ -843,7 +855,7 @@ export const Navbar = (props: Navbar) => {
                                 isDark ? "text-white" : "text-[#111]"
                               }`}
                             >
-                              Freighter Wallet
+                              {walletLabel}
                             </p>
                             <button
                               onClick={() => {
@@ -1156,9 +1168,9 @@ export const Navbar = (props: Navbar) => {
                 size="small"
                 type="gradient"
                 disabled={isLoading}
-                onClick={connectWallet}
+                onClick={() => setIsConnectModalOpen(true)}
                 text={isLoading ? "..." : "Connect"}
-                ariaLabel="Connect your Freighter wallet"
+                ariaLabel="Connect a wallet"
               />
             ) : (
               <div className="relative" ref={walletMenuMobileRef}>
@@ -1242,7 +1254,7 @@ export const Navbar = (props: Navbar) => {
                                 isDark ? "text-white" : "text-[#111]"
                               }`}
                             >
-                              Freighter Wallet
+                              {walletLabel}
                             </p>
                             <button
                               onClick={() => {
@@ -1703,6 +1715,15 @@ export const Navbar = (props: Navbar) => {
         isOpen={isFaucetOpen}
         onClose={() => setIsFaucetOpen(false)}
         walletAddress={address || null}
+      />
+
+      <ConnectWalletModal
+        isOpen={isConnectModalOpen}
+        onClose={() => setIsConnectModalOpen(false)}
+        onSelectFreighter={handleSelectFreighter}
+        onSelectPrivy={handleSelectPrivy}
+        privyEnabled={privyEnabled}
+        isLoading={isLoading}
       />
     </div>
   );

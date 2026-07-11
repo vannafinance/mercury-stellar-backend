@@ -1294,7 +1294,7 @@ export const OneClickStrategy = () => {
             </div>
             <div>
               <p className={`text-[13px] font-semibold ${headingText}`}>Stellar Network</p>
-              <p className={`text-[11px] ${mutedText}`}>Freighter wallet · Testnet</p>
+              <p className={`text-[11px] ${mutedText}`}>Testnet</p>
             </div>
             <div className="ml-auto flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />

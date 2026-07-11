@@ -20,7 +20,7 @@
  * testnet only retains events for ~7 days.
  */
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { getAddress, signTransaction } from '@stellar/freighter-api';
+import { getAddress, signTransaction } from '@/lib/wallet-adapter';
 import { getReadSourceAddress } from '@/lib/read-source';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService, ASSET_TYPES, type AssetType } from './stellar-utils';
 import { BlendService } from './blend-utils';

@@ -323,7 +323,7 @@ export const FaucetPopup = ({ isOpen, onClose, walletAddress }: FaucetPopupProps
                 }`}
               >
                 {walletAddress
-                  ? "Each mint sends a tx — sign in Freighter when prompted."
+                  ? "Each mint sends a tx — approve it in your wallet when prompted."
                   : "Connect wallet to use the faucet."}
               </p>
               <div className="shrink-0">

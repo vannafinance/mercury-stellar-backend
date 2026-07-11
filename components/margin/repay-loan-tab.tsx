@@ -13,7 +13,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
-import { getAddress } from "@stellar/freighter-api";
+import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService } from "@/lib/stellar-utils";
 import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";

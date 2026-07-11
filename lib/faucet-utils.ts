@@ -1,5 +1,5 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { signTransaction } from '@stellar/freighter-api';
+import { signTransaction } from '@/lib/wallet-adapter';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, HORIZON_URL } from './stellar-utils';
 
 // ─── Faucet endpoints / constants ──────────────────────────────────────────

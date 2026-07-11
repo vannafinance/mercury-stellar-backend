@@ -1,4 +1,4 @@
-import { getAddress } from "@stellar/freighter-api";
+import { getAddress } from "@/lib/wallet-adapter";
 
 // Source account for read-only `simulateTransaction` calls. The source only
 // supplies fee/sequence context for a simulation — it NEVER affects a view

@@ -5,7 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { MarginAccountService } from "@/lib/margin-utils";
-import { getAddress } from "@stellar/freighter-api";
+import { getAddress } from "@/lib/wallet-adapter";
 import { useTheme } from "@/contexts/theme-context";
 import toast from "react-hot-toast";
 import { normalizeContractError } from "@/lib/errors/normalize";
