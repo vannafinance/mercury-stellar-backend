@@ -13,6 +13,8 @@ import { Dropdown } from "@/components/ui/dropdown";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
+import { MarginActionPreview } from "@/components/margin/margin-action-preview";
+import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
 
 interface WithdrawModalProps {
   isOpen: boolean;
@@ -67,7 +69,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
   const isLoading = withdrawMutation.isPending;
 
   const userAddress = useUserStore((state) => state.address);
-  const { collateralBalances, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
+  const { collateralBalances, totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
   const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
   const { isDark } = useTheme();
 
@@ -115,6 +117,17 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
   })();
   const isBelowLiqThreshold =
     numAmount > 0 && hasMeaningfulDebt && projectedHfAfter < LIQUIDATION_THRESHOLD;
+
+  const previewRows =
+    numAmount > 0
+      ? computeCollateralPreviewRows({
+          totalCollateralValue,
+          totalBorrowedValue,
+          avgHealthFactor,
+          transferUsd: numAmount * selectedTokenPrice,
+          isInbound: false,
+        })
+      : null;
 
   const withdraw = async (amt: number, asset: AssetType): Promise<{ success: boolean }> => {
     setMessage({ text: "", type: "info" });
@@ -310,6 +323,9 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
                   </span>
                 </div>
               </div>
+
+              {/* Transaction preview — collateral / HF / liquidation buffer before vs after */}
+              {previewRows && <MarginActionPreview rows={previewRows} />}
 
               {/* Exceeds balance warning */}
               {exceedsBalance && (

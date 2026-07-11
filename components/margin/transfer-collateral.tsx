@@ -18,10 +18,10 @@ import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
-import { formatUsdValue } from "@/lib/utils/format-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
-import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
+import { MarginActionPreview } from "@/components/margin/margin-action-preview";
+import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
 
 const XLM_WALLET_RESERVE = 1;
 const XLM_TRANSFER_EPSILON = 1e-7;
@@ -36,12 +36,6 @@ const BORROW_DUST_USD = 0.01;
 // the margin account safely above all on-chain minimums.
 const XLM_MARGIN_WITHDRAW_BUFFER = 5;
 const LIQUIDATION_THRESHOLD = 1.1;
-const HF_INF_SENTINEL = 999;
-const formatHF = (hf: number): string =>
-  !Number.isFinite(hf) || hf >= HF_INF_SENTINEL ? "∞" : hf.toFixed(2);
-// Shared adaptive formatter — "<$0.01" for sub-cent dust, consistent with the
-// header / positions / repay views.
-const formatUsd = (n: number): string => formatUsdValue(n);
 
 /**
  * Transfer tab for moving a token between the user's wallet and their margin
@@ -671,14 +665,12 @@ interface TransferPreviewSectionProps {
 
 /**
  * Computes the after-state of a collateral transfer and renders the
- * before → after preview. Reads margin totals from the store.
+ * before → after preview. Reads margin totals from the store; the actual
+ * before/after math lives in `computeCollateralPreviewRows` (shared with the
+ * Portfolio page's Deposit/Withdraw modals).
  *
- * - WB→MB (deposit into margin): collateral grows, debt unchanged → HF improves.
- * - MB→WB (withdraw from margin): collateral shrinks, debt unchanged → HF drops.
- *
- * gross_collateral here mirrors the store's risk-engine math:
- *   gross = collateral + debt   (smart-account holds borrowed funds)
- *   HF    = gross / debt
+ * - MB (deposit into margin): collateral grows, debt unchanged → HF improves.
+ * - WB (withdraw from margin): collateral shrinks, debt unchanged → HF drops.
  */
 const TransferPreviewSection = ({
   transferAmount,
@@ -692,59 +684,13 @@ const TransferPreviewSection = ({
   const transferUsd = Math.max(0, transferAmount * selectedTokenPrice);
   if (transferUsd <= 0) return null;
 
-  // WB→MB increases on-margin collateral, MB→WB decreases it.
-  const isInbound = transferType === "MB";
-  const collateralAfter = isInbound
-    ? totalCollateralValue + transferUsd
-    : Math.max(0, totalCollateralValue - transferUsd);
-
-  // Use the store's avgHealthFactor to back-calculate the real gross collateral.
-  // The naive formula (collateral + debt) is only correct for pure-cash accounts;
-  // for accounts with deployed assets (aTokens, LP, track tokens) gross = collateral
-  // only — adding debt would overstate it and produce a higher-than-real HF projection.
-  //
-  // gross_before = avgHF × debt  (works regardless of collateral type)
-  // gross_after  = gross_before ± transferUsd
-  const hasDebt = totalBorrowedValue > BORROW_DUST_USD;
-  const hfBefore = hasDebt && avgHealthFactor > 0
-    ? avgHealthFactor
-    : HF_INF_SENTINEL;
-  const grossBefore = hasDebt && avgHealthFactor > 0
-    ? avgHealthFactor * totalBorrowedValue
-    : totalCollateralValue;
-  const grossAfter = isInbound ? grossBefore + transferUsd : Math.max(0, grossBefore - transferUsd);
-
-  const hfAfter = hasDebt ? grossAfter / totalBorrowedValue : HF_INF_SENTINEL;
-
-  const bufferBefore = Math.max(
-    0,
-    grossBefore - totalBorrowedValue * LIQUIDATION_THRESHOLD,
-  );
-  const bufferAfter = Math.max(
-    0,
-    grossAfter - totalBorrowedValue * LIQUIDATION_THRESHOLD,
-  );
-
-  const rows: PreviewRow[] = [
-    {
-      label: "Margin Collateral",
-      before: formatUsd(totalCollateralValue),
-      after: formatUsd(collateralAfter),
-      tone: isInbound ? "positive" : "negative",
-    },
-    {
-      label: "Health Factor",
-      before: formatHF(hfBefore),
-      after: formatHF(hfAfter),
-      tone: hfAfter >= hfBefore ? "positive" : "negative",
-    },
-    {
-      label: "Liquidation Buffer",
-      before: formatUsd(bufferBefore),
-      after: formatUsd(bufferAfter),
-      tone: bufferAfter >= bufferBefore ? "positive" : "negative",
-    },
-  ];
+  const rows = computeCollateralPreviewRows({
+    totalCollateralValue,
+    totalBorrowedValue,
+    avgHealthFactor,
+    transferUsd,
+    isInbound: transferType === "MB",
+  });
 
   return <MarginActionPreview rows={rows} />;
 };
