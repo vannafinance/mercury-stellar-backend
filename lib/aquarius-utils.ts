@@ -6,7 +6,7 @@
 // reserves are re-mapped onto each pool config's token order before display.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { signTransaction } from '@stellar/freighter-api';
+import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
   HORIZON_URL,

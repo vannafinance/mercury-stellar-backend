@@ -9,6 +9,7 @@ import createNewStore from "@/zustand/index"
 export interface User {
   address: string | null;
   isConnected: boolean;
+  walletKind: 'freighter' | 'privy' | null;
   balance: string; // Native XLM balance
   tokenBalances: {
     XLM: string;
@@ -31,6 +32,7 @@ export interface User {
 const initialState: User = {
   address: null,
   isConnected: false,
+  walletKind: null,
   balance: '0',
   tokenBalances: {
     XLM: '0',

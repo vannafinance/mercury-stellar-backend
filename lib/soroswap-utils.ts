@@ -5,7 +5,7 @@
 // on-chain reserves/LP balances are 7-decimal (STROOP).
 
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { signTransaction } from '@stellar/freighter-api';
+import { signTransaction } from '@/lib/wallet-adapter';
 import {
   CONTRACT_ADDRESSES,
   NETWORK_PASSPHRASE,

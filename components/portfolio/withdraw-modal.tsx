@@ -1,15 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useWithdraw } from "@/hooks/use-wallet";
+import { useWithdrawCollateral } from "@/hooks/use-margin";
 import { ASSET_TYPES, AssetType } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
+import { checkUserMarginAccount, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
 import { Dropdown } from "@/components/ui/dropdown";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
+import { MarginActionPreview } from "@/components/margin/margin-action-preview";
+import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
 
 interface WithdrawModalProps {
   isOpen: boolean;
@@ -30,42 +35,122 @@ const WITHDRAW_ASSETS: AssetType[] = [
   ASSET_TYPES.SOROSWAP_USDC,
 ];
 
+/** Maps an AssetType to the margin store's `collateralBalances` key (matches transfer-collateral.tsx). */
+const normalizeContractTokenSymbol = (symbol: string): string =>
+  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC"
+    ? "USDC"
+    : symbol === "AQUARIUS_USDC" || symbol === "AqUSDC"
+      ? "AQUSDC"
+      : symbol === "SOROSWAP_USDC" || symbol === "SoUSDC"
+        ? "SOUSDC"
+        : symbol;
+
+const LIQUIDATION_THRESHOLD = 1.1;
+const BORROW_DUST_USD = 0.01;
+const XLM_TRANSFER_EPSILON = 1e-7;
+// See transfer-collateral.tsx's identical constant for the on-chain-reserve
+// rationale (base reserve + storage TTL/rent + b_rate rounding dust).
+const XLM_MARGIN_WITHDRAW_BUFFER = 5;
+
 export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose }) => {
   const [amount, setAmount] = useState("");
   const [selectedAsset, setSelectedAsset] = useState<AssetType>(ASSET_TYPES.XLM);
   const [percentage, setPercentage] = useState<number | null>(null);
-  // Adapter: our `useWithdraw` is a React Query mutation, while this ported UI
-  // expects a { withdraw, isLoading, message, clearMessage } shape. Bridge it
-  // locally so the UI works against our existing hook — no change to the hook.
-  const withdrawMutation = useWithdraw();
+  // Withdrawals here move collateral OUT of the margin account back to the
+  // wallet (AccountManagerContract::withdraw_collateral_balance) — the same
+  // call transfer-collateral.tsx's "WB" mode makes — NOT the plain
+  // lending-pool redeem flow (that's the Earn page's Withdraw).
+  const withdrawMutation = useWithdrawCollateral();
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" }>({
     text: "",
     type: "info",
   });
   const clearMessage = () => setMessage({ text: "", type: "info" });
   const isLoading = withdrawMutation.isPending;
+
+  const userAddress = useUserStore((state) => state.address);
+  const { collateralBalances, totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
+  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const { isDark } = useTheme();
+
+  useEffect(() => {
+    if (isOpen && userAddress) {
+      checkUserMarginAccount(userAddress).catch(() => {});
+    }
+  }, [isOpen, userAddress]);
+
+  const sym = normalizeContractTokenSymbol(selectedAsset);
+  const cfg = ASSET_DISPLAY[selectedAsset] ?? ASSET_DISPLAY.XLM;
+  const availableBalance = collateralBalances[sym]?.amount || "0";
+  const numAvailable = parseFloat(availableBalance) || 0;
+  const hasMeaningfulDebt = totalBorrowedValue > BORROW_DUST_USD;
+  const selectedTokenPrice = tokenPrices[sym] ?? 1;
+
+  // Health-factor-aware safe withdraw cap — identical math to
+  // transfer-collateral.tsx's "WB" mode: gross_before = avgHF × debt,
+  // withdrawing W keeps gross_after / debt ≥ 1.1 only while W ≤ (avgHF − 1.1) × debt.
+  const maxRiskSafeWithdraw = (() => {
+    if (!hasMeaningfulDebt) return numAvailable;
+    const withdrawableUsd = Math.max(0, (avgHealthFactor - LIQUIDATION_THRESHOLD) * totalBorrowedValue);
+    if (selectedTokenPrice <= 0) return 0;
+    const rawToken = withdrawableUsd / selectedTokenPrice;
+    const withdrawableToken =
+      numAvailable > 0 && rawToken < numAvailable && (numAvailable - rawToken) / numAvailable < 0.001
+        ? numAvailable
+        : rawToken;
+    return Math.max(0, Math.min(numAvailable, withdrawableToken) - XLM_TRANSFER_EPSILON);
+  })();
+  const maxExecutableWithdraw = (() => {
+    if (sym === "XLM" && !hasMeaningfulDebt) {
+      return Math.max(0, Math.min(maxRiskSafeWithdraw, numAvailable - XLM_MARGIN_WITHDRAW_BUFFER));
+    }
+    return Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON);
+  })();
+
+  const numAmount = parseFloat(amount) || 0;
+  const projectedHfAfter = (() => {
+    if (!hasMeaningfulDebt) return Infinity;
+    if (avgHealthFactor <= 0) return Infinity;
+    const withdrawUsd = numAmount * selectedTokenPrice;
+    const grossBefore = avgHealthFactor * totalBorrowedValue;
+    return Math.max(0, grossBefore - withdrawUsd) / totalBorrowedValue;
+  })();
+  const isBelowLiqThreshold =
+    numAmount > 0 && hasMeaningfulDebt && projectedHfAfter < LIQUIDATION_THRESHOLD;
+
+  const previewRows =
+    numAmount > 0
+      ? computeCollateralPreviewRows({
+          totalCollateralValue,
+          totalBorrowedValue,
+          avgHealthFactor,
+          transferUsd: numAmount * selectedTokenPrice,
+          isInbound: false,
+        })
+      : null;
+
   const withdraw = async (amt: number, asset: AssetType): Promise<{ success: boolean }> => {
     setMessage({ text: "", type: "info" });
     try {
       await withdrawMutation.mutateAsync({ amount: amt, assetType: asset });
-      setMessage({ text: "Withdrawal successful!", type: "success" });
+      setMessage({ text: "Withdrawal to wallet successful!", type: "success" });
       return { success: true };
     } catch (e) {
+      const raw = e instanceof Error ? e.message : "Withdrawal failed. Please try again.";
       setMessage({
-        text: e instanceof Error ? e.message : "Withdrawal failed. Please try again.",
+        text: normalizeTransferCollateralError(raw, cfg.label, {
+          maxSafe: maxExecutableWithdraw,
+          isFullWithdraw: !hasMeaningfulDebt,
+          maxExecutableWithdraw,
+          xlmBuffer: XLM_MARGIN_WITHDRAW_BUFFER,
+        }),
         type: "error",
       });
       return { success: false };
     }
   };
-  const { depositedBalances } = useUserStore();
-  const { isDark } = useTheme();
-
-  const availableBalance = depositedBalances[selectedAsset] || "0";
-  const cfg = ASSET_DISPLAY[selectedAsset] ?? ASSET_DISPLAY.XLM;
 
   const handleWithdraw = async () => {
-    const numAmount = parseFloat(amount);
     if (numAmount > 0) {
       const result = await withdraw(numAmount, selectedAsset);
       if (result.success) {
@@ -97,8 +182,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
 
   const handlePercentageClick = (pct: number) => {
     setPercentage(pct);
-    const currentBalance = parseFloat(availableBalance) || 0;
-    setAmount(((currentBalance * pct) / 100).toFixed(2));
+    setAmount(((maxExecutableWithdraw * pct) / 100).toFixed(2));
   };
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -108,9 +192,8 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
     setPercentage(null);
   };
 
-  const numAmount = parseFloat(amount);
-  const numAvailable = parseFloat(availableBalance) || 0;
-  const isValid = !!amount && numAmount > 0 && numAmount <= numAvailable;
+  const isValid =
+    !!amount && numAmount > 0 && numAmount <= maxExecutableWithdraw + XLM_TRANSFER_EPSILON && !isBelowLiqThreshold;
   const exceedsBalance = !!amount && numAmount > numAvailable && numAvailable > 0;
 
   return (
@@ -148,7 +231,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
                     Withdraw Assets
                   </h2>
                   <p className={`text-[12px] ${isDark ? "text-[#777]" : "text-[#777777]"}`}>
-                    Remove funds from your portfolio
+                    Move collateral from margin account to wallet
                   </p>
                 </div>
               </div>
@@ -241,11 +324,21 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
                 </div>
               </div>
 
+              {/* Transaction preview — collateral / HF / liquidation buffer before vs after */}
+              {previewRows && <MarginActionPreview rows={previewRows} />}
+
               {/* Exceeds balance warning */}
               {exceedsBalance && (
                 <p className="text-[12px] font-medium text-red-500 -mt-2">
                   Exceeds available balance
                 </p>
+              )}
+
+              {/* Liquidation-risk warning — blocks submit, mirrors transfer-collateral.tsx */}
+              {isBelowLiqThreshold && (
+                <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-[12px] font-semibold text-red-700">
+                  ⚠ This withdrawal would drop your Health Factor to {Number.isFinite(projectedHfAfter) ? projectedHfAfter.toFixed(2) : "∞"} (below 1.10). Reduce the amount or repay some debt first.
+                </div>
               )}
 
               {/* Status message */}

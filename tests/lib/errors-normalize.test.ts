@@ -27,7 +27,7 @@ describe('cancel detection across every normalizer', () => {
     normalizeWithdrawError: 'Transaction cancelled by user.',
     normalizeDepositCollateralError: 'Transaction cancelled by user.',
     normalizeTransferCollateralError: 'Transaction cancelled by user.',
-    normalizeCreateAccountError: 'Transaction was cancelled in Freighter.',
+    normalizeCreateAccountError: 'Transaction cancelled by user.',
   };
 
   for (const input of CANCEL_INPUTS) {

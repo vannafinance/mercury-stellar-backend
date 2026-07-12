@@ -73,7 +73,7 @@ async function buildSimulationTx(
 ): Promise<StellarSdk.Transaction> {
   let sourceAddr = FALLBACK_SOURCE;
   try {
-    const { getAddress } = await import('@stellar/freighter-api');
+    const { getAddress } = await import('@/lib/wallet-adapter');
     const got = await getAddress();
     if (!got.error && got.address) sourceAddr = got.address;
   } catch {

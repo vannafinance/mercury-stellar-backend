@@ -1,15 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useDeposit } from "@/hooks/use-wallet";
+import { useDepositCollateral } from "@/hooks/use-margin";
 import { ASSET_TYPES, AssetType } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
+import { checkUserMarginAccount, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
 import { Dropdown } from "@/components/ui/dropdown";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
+import { MarginActionPreview } from "@/components/margin/margin-action-preview";
+import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
 
 interface DepositModalProps {
   isOpen: boolean;
@@ -30,14 +34,25 @@ const DEPOSIT_ASSETS: AssetType[] = [
   ASSET_TYPES.SOROSWAP_USDC,
 ];
 
+/** Maps an AssetType to the price-hook's/margin store's token key (matches withdraw-modal.tsx). */
+const normalizeContractTokenSymbol = (symbol: string): string =>
+  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC"
+    ? "USDC"
+    : symbol === "AQUARIUS_USDC" || symbol === "AqUSDC"
+      ? "AQUSDC"
+      : symbol === "SOROSWAP_USDC" || symbol === "SoUSDC"
+        ? "SOUSDC"
+        : symbol;
+
 export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) => {
   const [amount, setAmount] = useState("");
   const [selectedAsset, setSelectedAsset] = useState<AssetType>(ASSET_TYPES.XLM);
   const [percentage, setPercentage] = useState<number | null>(null);
-  // Adapter: our `useDeposit` is a React Query mutation, while this ported UI
-  // expects a { deposit, isLoading, message, clearMessage } shape. Bridge it
-  // locally so the UI works against our existing hook — no change to the hook.
-  const depositMutation = useDeposit();
+  // Deposits here move collateral from the wallet into the user's margin
+  // account (AccountManagerContract::deposit_collateral_tokens) — the same
+  // call `components/margin/transfer-collateral.tsx`'s "MB" mode makes —
+  // NOT the plain lending-pool supply flow (that's the Earn page's Deposit).
+  const depositMutation = useDepositCollateral();
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" }>({
     text: "",
     type: "info",
@@ -48,7 +63,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
     setMessage({ text: "", type: "info" });
     try {
       await depositMutation.mutateAsync({ amount: amt, assetType: asset });
-      setMessage({ text: "Deposit successful!", type: "success" });
+      setMessage({ text: "Deposit to margin account successful!", type: "success" });
       return { success: true };
     } catch (e) {
       setMessage({
@@ -59,13 +74,36 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
     }
   };
   const tokenBalances = useUserStore((state) => state.tokenBalances);
+  const userAddress = useUserStore((state) => state.address);
+  const { totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
+  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
   const { isDark } = useTheme();
+
+  // Ensure the margin-account store is resolved/fresh while the modal is open
+  // (cheap — checkUserMarginAccount dedupes/throttles internally) so the
+  // mutation doesn't have to blind-discover on first submit.
+  useEffect(() => {
+    if (isOpen && userAddress) {
+      checkUserMarginAccount(userAddress).catch(() => {});
+    }
+  }, [isOpen, userAddress]);
 
   const assetBalance = parseFloat(tokenBalances[selectedAsset as keyof typeof tokenBalances] || "0") || 0;
   const cfg = ASSET_DISPLAY[selectedAsset] ?? ASSET_DISPLAY.XLM;
+  const selectedTokenPrice = tokenPrices[normalizeContractTokenSymbol(selectedAsset)] ?? 1;
+  const numAmount = parseFloat(amount) || 0;
+  const previewRows =
+    numAmount > 0
+      ? computeCollateralPreviewRows({
+          totalCollateralValue,
+          totalBorrowedValue,
+          avgHealthFactor,
+          transferUsd: numAmount * selectedTokenPrice,
+          isInbound: true,
+        })
+      : null;
 
   const handleDeposit = async () => {
-    const numAmount = parseFloat(amount);
     if (numAmount > 0) {
       const result = await deposit(numAmount, selectedAsset);
       if (result.success) {
@@ -144,7 +182,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
                     Deposit Assets
                   </h2>
                   <p className={`text-[12px] ${isDark ? "text-[#777]" : "text-[#777777]"}`}>
-                    Add funds to your portfolio
+                    Move collateral from wallet to margin account
                   </p>
                 </div>
               </div>
@@ -236,6 +274,9 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
                   </span>
                 </div>
               </div>
+
+              {/* Transaction preview — collateral / HF / liquidation buffer before vs after */}
+              {previewRows && <MarginActionPreview rows={previewRows} />}
 
               {/* Status message */}
               <AnimatePresence>

@@ -534,10 +534,12 @@ export const LeverageAssetsTab = () => {
       return;
     }
 
-    // Block the action while a collateral row is mid-edit. Otherwise clicking
-    // Deposit & Borrow would submit the previously-saved amount even though
-    // the user has the row open and may be in the middle of changing it.
-    if (editingId !== null) {
+    // Block the action while a collateral row is mid-edit — but only for an
+    // existing margin account, where Deposit & Borrow must submit a settled
+    // amount. Creating the account itself (`create_account` on-chain) takes no
+    // amount at all, so a brand-new user shouldn't be blocked by the
+    // auto-inserted empty collateral row before they've even decided to deposit.
+    if (editingId !== null && hasMarginAccount) {
       toast.error("Please save or cancel your collateral edit before proceeding.");
       return;
     }
@@ -1258,11 +1260,11 @@ export const LeverageAssetsTab = () => {
           transition={{ duration: 0.4, delay: 0.3, ease: "easeOut" }}
         >
           <Button
-            disabled={isProcessing || editingId !== null || !!borrowState?.error}
+            disabled={isProcessing || (editingId !== null && hasMarginAccount) || !!borrowState?.error}
             size="large"
             text={
               isProcessing ? "Processing..." :
-              editingId !== null ? "Save Collateral to Continue" :
+              editingId !== null && hasMarginAccount ? "Save Collateral to Continue" :
               !userAddress ? "Login" :
               hasMarginAccount  && !isMBMode
                 ? leverage <= 1 ? "Deposit" : "Deposit & Borrow"
