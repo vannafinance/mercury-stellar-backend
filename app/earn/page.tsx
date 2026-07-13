@@ -10,7 +10,7 @@ import { useUserStore } from "@/store/user";
 import { useEarnVaultStore } from "@/store/earn-vault-store";
 import { setSelectedPool } from "@/store/selected-pool-store";
 import { AssetType } from "@/lib/stellar-utils";
-import { usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 
 // AQUARIUS_USDC / SOROSWAP_USDC piggyback on USDC's oracle price (no separate
@@ -246,6 +246,7 @@ export default function Earn() {
   // Live data from on-chain contracts (auto-refreshes every 30s)
   const { pools, isLoading: poolsLoading } = usePoolData();
   const { positions: userPositions, isLoading: positionsLoading } = useUserPositions();
+  const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
   const tokenPrices = useTokenPrices(['XLM', 'USDC']);
   const [overviewHistory, setOverviewHistory] = useState<EarnOverviewSnapshot[]>([]);
 
@@ -261,20 +262,42 @@ export default function Earn() {
 
   const { totalDepositedUSD, earnedYieldUSD } = useMemo(() => {
     let totalUSD = 0;
+    let earnedUSD = 0;
+
+    // Net earnings = current vToken-derived value minus net principal
+    // (Σ supply − Σ withdraw, both in real underlying units — Mercury's
+    // withdraw amount is `asset_amount`, not the vToken share count, so this
+    // is an exact reconstruction, not an exchange-rate approximation). Same
+    // pattern as the Margin Positions table's "interest accrued" calc.
+    // Skipped while the transaction history is still loading so we don't
+    // show a misleadingly-inflated number (principal defaulting to 0).
+    const netPrincipalByAsset: Record<string, number> = {};
+    if (!earnTxLoading) {
+      for (const tx of earnTx) {
+        const amt = parseFloat(tx.amount) || 0;
+        if (!(amt > 0)) continue;
+        netPrincipalByAsset[tx.asset] = (netPrincipalByAsset[tx.asset] ?? 0) +
+          (tx.type === "supply" ? amt : -amt);
+      }
+    }
+
     ALL_ASSETS.forEach((asset) => {
       const depositedTokens = parseFloat(userPositions[asset]?.deposited || "0");
       const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? 1;
       totalUSD += depositedTokens * price;
+
+      if (!earnTxLoading) {
+        const principal = Math.max(0, netPrincipalByAsset[asset] ?? 0);
+        const diff = depositedTokens - principal;
+        if (diff > 0) earnedUSD += diff * price;
+      }
     });
+
     return {
       totalDepositedUSD: totalUSD,
-      // Net Earnings disabled: earn history tracking is per-wallet but the
-      // underlying supply/withdraw event store does not yet scope entries by
-      // wallet address, causing cross-wallet contamination. Hardcoded to $0
-      // until the per-wallet history migration is complete.
-      earnedYieldUSD: 0,
+      earnedYieldUSD: earnedUSD,
     };
-  }, [userPositions, tokenPrices]);
+  }, [userPositions, tokenPrices, earnTx, earnTxLoading]);
 
   useEffect(() => {
     if (!userAddress) {
@@ -282,11 +305,7 @@ export default function Earn() {
       return;
     }
     const raw = readOverviewHistory(userAddress);
-    // Zero out any stale earnedYieldUSD values stored in chart history
-    // (artifacts from when Net Earnings was incorrectly computed).
-    const cleaned = raw.map((s) => ({ ...s, earnedYieldUSD: 0 }));
-    writeOverviewHistory(userAddress, cleaned);
-    queueMicrotask(() => setOverviewHistory(cleaned));
+    queueMicrotask(() => setOverviewHistory(raw));
   }, [userAddress]);
 
   useEffect(() => {

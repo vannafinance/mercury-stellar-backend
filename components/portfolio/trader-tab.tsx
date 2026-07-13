@@ -16,7 +16,7 @@ const fmtUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtHF = (hf: number): string => (!Number.isFinite(hf) || hf >= 999 ? "∞" : hf.toFixed(2));
 
-const TRADE_TABS = ["Margin", "Spot", "Perps", "Farm"] as const;
+const TRADE_TABS = ["Margin", "Spot", "Farm"] as const;
 type TradeTab = (typeof TRADE_TABS)[number];
 
 type MarginStat = { id: string; label: string; value: string; special?: string };

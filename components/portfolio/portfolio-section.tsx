@@ -5,7 +5,7 @@ import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { useUserPositions } from "@/hooks/use-earn";
+import { useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "../ui/button";
@@ -56,20 +56,36 @@ export const PortfolioSection = () => {
     }, 0);
   }, [tokenBalances, prices]);
 
-  // Net Earnings = Σ accrued lending interest × oracle price across supplied
-  // pools. Real, live figure (the earnings *time-series* chart is deferred to
-  // the Sprint-2 Mercury read-model). USDC-pegged variants price to USDC.
+  // Net Earnings = Σ (current deposited value − net principal) × oracle price
+  // across supplied pools. Net principal is Σ supply − Σ withdraw from real
+  // Mercury-indexed history (withdraw amounts are the contract's own
+  // `asset_amount`, the real underlying transferred — not the vToken share
+  // count, so this is an exact reconstruction, not an approximation). Same
+  // pattern as the Margin Positions table's "interest accrued" and the Earn
+  // page's "Net Earnings" calc. USDC-pegged variants price to USDC.
   const { positions } = useUserPositions();
+  const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
   const netEarnings = useMemo(() => {
     const priceFor: Record<string, string> = {
       XLM: "XLM", USDC: "USDC", AQUARIUS_USDC: "USDC", SOROSWAP_USDC: "USDC",
     };
+    if (earnTxLoading) return 0;
+    const netPrincipalByAsset: Record<string, number> = {};
+    for (const tx of earnTx) {
+      const amt = parseFloat(tx.amount) || 0;
+      if (!(amt > 0)) continue;
+      netPrincipalByAsset[tx.asset] = (netPrincipalByAsset[tx.asset] ?? 0) +
+        (tx.type === "supply" ? amt : -amt);
+    }
     return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
-      const earned = parseFloat(positions[asset]?.earnedInterest ?? "0") || 0;
+      const deposited = parseFloat(positions[asset]?.deposited ?? "0") || 0;
+      const principal = Math.max(0, netPrincipalByAsset[asset] ?? 0);
+      const diff = deposited - principal;
+      if (diff <= 0) return sum;
       const price = prices[priceFor[asset]] ?? (priceFor[asset] === "USDC" ? 1 : 0);
-      return sum + earned * price;
+      return sum + diff * price;
     }, 0);
-  }, [positions, prices]);
+  }, [positions, prices, earnTx, earnTxLoading]);
 
   const fmtUsd = (n: number) =>
     `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

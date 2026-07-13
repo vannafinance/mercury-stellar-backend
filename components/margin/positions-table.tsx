@@ -726,11 +726,12 @@ export const Positionstable = ({
         viewport={{ once: true }}
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.25 }}
       >
-        {/* Interest accrual UI is temporarily hardcoded to $0 — the on-chain
-            b_rate-derived value was being displayed incorrectly for some
-            positions, so we suppress it until the calc is verified. */}
-        <span className={isDark ? "text-[#666666]" : "text-[#A0A0A0]"}>
-          $0
+        {/* Real accrued interest: current on-chain debt for this position's
+            borrows minus their reconstructed principal (Σ borrow − Σ repay
+            from real Mercury-indexed history), computed in the `positions`
+            memo above. */}
+        <span className={isDark ? "text-white" : ""}>
+          {formatInterestUsd(item.interestAccrued)}
         </span>
       </motion.div>
 
@@ -852,7 +853,7 @@ export const Positionstable = ({
           </div>
           <div>
             <p className={lbl}>Interest Accrued</p>
-            <p className={val}>$0</p>
+            <p className={val}>{formatInterestUsd(item.interestAccrued)}</p>
           </div>
         </div>
 

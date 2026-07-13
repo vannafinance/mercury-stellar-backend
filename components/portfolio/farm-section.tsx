@@ -13,6 +13,7 @@ import {
   useUserBlendPositions,
   useAllAquariusLpPositions,
   useAllAquariusPoolStats,
+  useBlendPoolStats,
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition } from "@/hooks/use-soroswap";
 import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
@@ -22,13 +23,26 @@ const POSITION_DUST = 1e-4;
 const fmtUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Same decimal-APY-string formatter as app/farm/page.tsx's `formatApyDecimalString`
+// (not shared/exported from there — duplicated here to avoid touching that
+// already-shipped page). Aquarius's API returns a decimal string ("0.0234");
+// Soroswap's public testnet API exposes no APY endpoint at all yet, so its
+// row legitimately has no real number to show — "0%" there is honest, not a bug.
+const formatApyPct = (raw?: string): string => {
+  const n = parseFloat(raw ?? "");
+  if (!Number.isFinite(n) || n <= 0) return "0%";
+  return `${(n * 100).toFixed(2)}%`;
+};
+
 /**
  * Portfolio "Farm" tab — real Blend (single-asset supply) + Soroswap/Aquarius
  * (LP) farm positions. Reuses the same real hooks and position-valuation math
  * as `app/farm/page.tsx`'s "Positions" view (kept independent rather than
  * shared, to avoid touching that already-shipped page for this change).
- * P&L/volume have no on-chain cost-basis source yet, so those stay honest
- * "0"/"0%" placeholders rather than fabricated numbers.
+ * APY is real for Blend (supplyAPY) and Aquarius (totalApy/apy); Soroswap's
+ * public testnet API exposes no APY endpoint yet, so that row honestly shows
+ * "0%" rather than a fabricated number. P&L/volume have no on-chain
+ * cost-basis source yet either, so those stay honest $0.00 placeholders.
  */
 export const FarmSection = () => {
   const { isDark } = useTheme();
@@ -41,6 +55,7 @@ export const FarmSection = () => {
   const userAddress = useUserStore((s) => s.address);
 
   const { positions: blendPositions } = useUserBlendPositions();
+  const { stats: blendPoolStats } = useBlendPoolStats();
   const { stats: ssStats } = useSoroswapPoolStats(Boolean(marginAccountAddress));
   const { lpBalance: ssLpBalanceRaw } = useSoroswapLpPosition(marginAccountAddress);
   const mySSLpBalance = parseFloat(ssLpBalanceRaw ?? "0");
@@ -77,7 +92,7 @@ export const FarmSection = () => {
               title: `${pos.underlyingValue} ${sym}`,
               description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
             },
-            { title: "0%" },
+            { title: blendPoolStats[sym]?.supplyAPY ? `${blendPoolStats[sym]!.supplyAPY}%` : "0%" },
           ],
           usd: amount * priceFor(sym),
         });
@@ -117,14 +132,14 @@ export const FarmSection = () => {
           { chain: tokenA, titles: [tokenA, tokenB], tags: ["Aquarius", "LP"] },
           { title: "Aquarius" },
           { title: `${lpBal.toFixed(2)} LP`, description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}` },
-          { title: "0%" },
+          { title: formatApyPct(aqPoolStats?.totalApy ?? aqPoolStats?.apy) },
         ],
         usd: shareA * priceFor(tokenA) + shareB * priceFor(tokenB),
       });
     });
 
     return out;
-  }, [blendPositions, mySSLpBalance, ssStats, aqLpPositions, aquariusPools, priceFor]);
+  }, [blendPositions, blendPoolStats, mySSLpBalance, ssStats, aqLpPositions, aquariusPools, priceFor]);
 
   const userSuppliedUsd = rows.reduce((s, r) => s + r.usd, 0);
 
