@@ -130,7 +130,7 @@ export const DepositSummary = ({
       <div className="flex items-center justify-between">
         <span className={`text-[12px] font-medium ${labelClass}`}>APY</span>
         <span className={`text-[12px] font-semibold ${valueClass}`}>
-          {supplyApyPct === null ? "—" : `${apy.toFixed(2)}%`}
+          {supplyApyPct === null ? "0%" : `${apy.toFixed(2)}%`}
         </span>
       </div>
 

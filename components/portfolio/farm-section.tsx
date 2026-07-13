@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Table } from "@/components/earn/table";
 import { useTheme } from "@/contexts/theme-context";
 import { positionsTableHeadings } from "@/lib/constants/farm";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useFarmStore } from "@/store/farm-store";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import {
   useUserBlendPositions,
@@ -26,12 +28,13 @@ const fmtUsd = (n: number): string =>
  * as `app/farm/page.tsx`'s "Positions" view (kept independent rather than
  * shared, to avoid touching that already-shipped page for this change).
  * P&L/volume have no on-chain cost-basis source yet, so those stay honest
- * "—" placeholders rather than fabricated numbers — same pattern as the
- * Lender tab's "Lending P&L" slot.
+ * "0"/"0%" placeholders rather than fabricated numbers.
  */
 export const FarmSection = () => {
   const { isDark } = useTheme();
   const [activeFilterTab, setActiveFilterTab] = useState("current-position");
+  const router = useRouter();
+  const setFarmData = useFarmStore((s) => s.set);
 
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
@@ -58,7 +61,7 @@ export const FarmSection = () => {
   );
 
   const rows = useMemo(() => {
-    const out: { cell: { title?: string; description?: string; chain?: string; titles?: string[]; tags?: string[] }[]; usd: number }[] = [];
+    const out: { id: string; cell: { title?: string; description?: string; chain?: string; titles?: string[]; tags?: string[] }[]; usd: number }[] = [];
 
     (["XLM", "USDC"] as const)
       .filter((sym) => parseFloat(blendPositions[sym]?.underlyingValue ?? "0") > POSITION_DUST)
@@ -66,6 +69,7 @@ export const FarmSection = () => {
         const pos = blendPositions[sym];
         const amount = parseFloat(pos.underlyingValue || "0");
         out.push({
+          id: sym.toLowerCase(),
           cell: [
             { chain: sym, title: sym, tags: ["Blend", "Supply"] },
             { title: "Blend" },
@@ -73,7 +77,7 @@ export const FarmSection = () => {
               title: `${pos.underlyingValue} ${sym}`,
               description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
             },
-            { title: "—" },
+            { title: "0%" },
           ],
           usd: amount * priceFor(sym),
         });
@@ -85,11 +89,12 @@ export const FarmSection = () => {
       const xlmShare = ratio * parseFloat(ssStats?.reserveXLM ?? "0");
       const usdcShare = ratio * parseFloat(ssStats?.reserveUSDC ?? "0");
       out.push({
+        id: "soroswap-xlm-usdc",
         cell: [
           { chain: "XLM", titles: ["XLM", "USDC"], tags: ["Soroswap", "LP"] },
           { title: "Soroswap" },
           { title: `${mySSLpBalance.toFixed(2)} LP`, description: `${xlmShare.toFixed(2)} XLM + ${usdcShare.toFixed(2)} USDC` },
-          { title: "—" },
+          { title: "0%" },
         ],
         usd: xlmShare * priceFor("XLM") + usdcShare * priceFor("USDC"),
       });
@@ -107,11 +112,12 @@ export const FarmSection = () => {
         tokenB,
       );
       out.push({
+        id: pool.id,
         cell: [
           { chain: tokenA, titles: [tokenA, tokenB], tags: ["Aquarius", "LP"] },
           { title: "Aquarius" },
           { title: `${lpBal.toFixed(2)} LP`, description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}` },
-          { title: "—" },
+          { title: "0%" },
         ],
         usd: shareA * priceFor(tokenA) + shareB * priceFor(tokenB),
       });
@@ -146,8 +152,8 @@ export const FarmSection = () => {
     { label: "Your Total Asset Supplied\nto Farm(USD)", value: fmtUsd(userSuppliedUsd), positive: null },
     { label: "Overall Farm TVL(USD)", value: fmtUsd(overallFarmTvlUsd), positive: null },
     { label: "Percentage of Your Margin\nAllocated to Farm(%)", value: `${pctOfMargin.toFixed(2)}%`, positive: null },
-    { label: "Unrealised P&L", value: "—", positive: null },
-    { label: "Realised P&L", value: "—", positive: null },
+    { label: "Unrealised P&L", value: fmtUsd(0), positive: null },
+    { label: "Realised P&L", value: fmtUsd(0), positive: null },
   ];
 
   const filterTabTypeOptions = [
@@ -158,10 +164,22 @@ export const FarmSection = () => {
   const tableData = useMemo(
     () => ({
       headings: positionsTableHeadings,
-      body: { rows: rows.map(({ cell }) => ({ cell })) },
+      body: { rows: rows.map(({ id, cell }) => ({ id, cell })) },
     }),
     [rows],
   );
+
+  // Same navigation as app/farm/page.tsx's Positions tab: Blend rows go to
+  // their single-asset detail page, Soroswap/Aquarius LP rows go to their
+  // pool page — derived from each row's own protocol tag since this table
+  // has no vaults-style sub-tab to read the type from.
+  const handleRowClick = useCallback((row: { id?: string; cell?: { tags?: string[] }[] }) => {
+    const tabType = row.cell?.[0]?.tags?.includes("Blend") ? "single" : "multi";
+    const rowId = row.id;
+    if (!rowId) return;
+    setFarmData({ selectedRow: row, tabType });
+    router.push(`/farm/${rowId}`);
+  }, [router, setFarmData]);
 
   return (
     <div className="w-full h-fit flex flex-col gap-[20px]">
@@ -226,6 +244,7 @@ export const FarmSection = () => {
           onFilterTabTypeChange={setActiveFilterTab}
           tableHeadings={tableData.headings}
           tableBody={tableData.body}
+          onRowClick={handleRowClick}
         />
       )}
     </div>

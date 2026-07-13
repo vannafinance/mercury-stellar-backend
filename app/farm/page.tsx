@@ -41,7 +41,7 @@ const formatPoolType = (raw?: string): string => {
 // Format an Aquarius API APY string (decimal, e.g. "0.0234") into "2.34%".
 const formatApyDecimalString = (raw?: string): string => {
   const n = parseFloat(raw ?? "");
-  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (!Number.isFinite(n) || n <= 0) return "0%";
   return `${(n * 100).toFixed(2)}%`;
 };
 
@@ -113,6 +113,7 @@ export default function FarmPage() {
       .forEach((sym) => {
         const pos = userPositions[sym];
         rows.push({
+          id: sym.toLowerCase(),
           cell: [
             { chain: sym, title: sym, tags: ['Blend', 'Supply'] },
             { title: 'Blend' },
@@ -185,7 +186,7 @@ export default function FarmPage() {
       const loading = isLoading;
       const tvlTokenA = stats ? `${fmtNum(parseFloat(stats.reserveA))} ${tokenA}` : (loading ? '...' : '0');
       const tvlTokenB = stats ? `${fmtNum(parseFloat(stats.reserveB))} ${tokenB}` : (loading ? '...' : '0');
-      const fee = stats ? stats.feeFraction : (loading ? '...' : '—');
+      const fee = stats ? stats.feeFraction : (loading ? '...' : '0%');
       const shares = stats ? `${fmtNum(parseFloat(stats.totalShares))} LP` : (loading ? '...' : '0');
       // Pool APR uses the API's base trading APY (annualised from fees);
       // 24h APY shows total APY (base + incentives + rewards) which Aquarius
@@ -220,7 +221,7 @@ export default function FarmPage() {
       const shares = stats ? `${fmtNum(parseFloat(stats.totalShares))} LP` : (loading ? '...' : '0');
       const fee = stats ? stats.feeFraction : (loading ? '...' : `${(pool.feeFraction / 100).toFixed(2)}%`);
       // Soroswap's public testnet API doesn't expose APY/volume yet, so
-      // these stay "—" until we wire it up; pool type is xy=k constant
+      // these show 0% until we wire it up; pool type is xy=k constant
       // product across all Soroswap pairs.
       return {
         id: pool.id,
@@ -230,10 +231,8 @@ export default function FarmPage() {
           { title: shares },
           { title: tvlTokenA },
           { title: tvlTokenB },
-          // Soroswap testnet has no public APR/APY endpoint yet — show 0
-          // instead of "—" until on-chain volume tracking is wired up.
-          { title: '0' },
-          { title: '0' },
+          { title: '0%' },
+          { title: '0%' },
           { title: fee },
           { title: 'Constant Product' },
         ],
@@ -335,14 +334,19 @@ export default function FarmPage() {
   const setFarmData = useFarmStore((state) => state.set);
 
   const handleRowClick = useCallback((row: any, rowIndex: number) => {
-    const tabType = activeFilterTab === "lending-single-assets" ? "single" : "multi";
+    // Vaults tab: derive from which filter sub-tab is active (single vs LP).
+    // Positions tab has no such sub-tab — derive from the row's own protocol
+    // tag instead (Blend => single-asset supply, Soroswap/Aquarius => LP).
+    const tabType = activeTab === "positions"
+      ? (row.cell?.[0]?.tags?.includes("Blend") ? "single" : "multi")
+      : (activeFilterTab === "lending-single-assets" ? "single" : "multi");
     const rowId = row.id ||
       row.cell?.[0]?.title?.toLowerCase().replace(/\s+/g, "-") ||
       row.cell?.[0]?.titles?.join("-").toLowerCase().replace(/\s+/g, "-") ||
       `row-${rowIndex}`;
     setFarmData({ selectedRow: row, tabType });
     router.push(`/farm/${rowId}`);
-  }, [activeFilterTab, router, setFarmData]);
+  }, [activeTab, activeFilterTab, router, setFarmData]);
 
   const tableData = useMemo(() => {
     if (activeTab === "positions") {
@@ -437,7 +441,7 @@ export default function FarmPage() {
         onFilterTabTypeChange={handleFilterTabChange}
         tableHeadings={tableData.headings}
         tableBody={tableData.body}
-        onRowClick={activeTab === "vaults" ? handleRowClick : undefined}
+        onRowClick={handleRowClick}
       />
       </section>
     </main>

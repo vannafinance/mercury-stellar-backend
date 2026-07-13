@@ -38,7 +38,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   const [showHFTooltip, setShowHFTooltip] = useState(false);
 
   // Real margin-account figures — same snapshot/store the margin page + Portfolio
-  // header read. Interest-accrued has no clean on-chain source yet → "—".
+  // header read. Interest-accrued has no clean on-chain source yet → shown as 0.
   const userAddress = useUserStore((s) => s.address);
   const { snapshot } = useAccountSnapshot(userAddress);
   const store = useMarginAccountInfoStore(
@@ -67,7 +67,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
     { id: "healthFactor", label: "Health Factor", value: fmtHF(health.avgHealthFactor), special: "gauge" },
     { id: "crossMarginRatio", label: "Cross Margin Ratio", value: `${ltv.toFixed(1)}%` },
     { id: "collateralLeftBeforeLiquidation", label: "Collateral Left Before Liquidation", value: fmtUsd(health.collateralLeftBeforeLiquidation) },
-    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: "—" },
+    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: fmtUsd(0) },
   ];
   const row1 = stats.slice(0, 4);
   const row2 = stats.slice(4, 8);
