@@ -19,6 +19,24 @@ export const runtime = "nodejs";
 
 const COPILOT_URL = process.env.COPILOT_URL ?? "http://127.0.0.1:8000";
 
+// GET /api/copilot → { health, templates } in one round-trip. Used by the
+// /copilot workspace on mount to render the mode badge and template palette.
+// Never throws: an unreachable brain returns { health: null, templates: [] }
+// so the page still renders (with an "offline" badge) instead of crashing.
+export async function GET() {
+  try {
+    const [healthRes, templatesRes] = await Promise.all([
+      fetch(`${COPILOT_URL}/health`, { cache: "no-store" }),
+      fetch(`${COPILOT_URL}/templates`, { cache: "no-store" }),
+    ]);
+    const health = healthRes.ok ? await healthRes.json() : null;
+    const templates = templatesRes.ok ? await templatesRes.json() : [];
+    return NextResponse.json({ health, templates });
+  } catch {
+    return NextResponse.json({ health: null, templates: [] }, { status: 200 });
+  }
+}
+
 // Shape the orchestrator's POST /chat expects (mirrors app/schemas.py ChatRequest).
 interface ChatRequestBody {
   user_id?: unknown;

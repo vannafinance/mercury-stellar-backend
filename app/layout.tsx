@@ -10,7 +10,6 @@ import { PriceProvider } from "@/contexts/price-context";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
-import { CopilotWidget } from "@/components/copilot/copilot-widget";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -101,7 +100,6 @@ export default function RootLayout({
                 <MarginAccountHydrator />
                 <Navbar items={navbarItems}/>
                 <ScaleWrapper>{children}</ScaleWrapper>
-                <CopilotWidget />
                 <AppToaster />
               </PriceProvider>
             </LedgerSubscriberProvider>

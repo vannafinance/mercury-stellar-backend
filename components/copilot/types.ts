@@ -50,11 +50,53 @@ export interface ChatResponse {
   intent?: ParsedIntent | null;
 }
 
-// UI-side message model (what the widget renders in the thread).
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  kind?: ChatKind;
-  preview?: Preview | null;
+// ---- Catalog types (GET /api/copilot → { health, templates }) ----
+// Mirrors the orchestrator's GET /templates payload (app/main.py).
+
+export interface BrainHealth {
+  status: string;
+  llm_provider: string;
+  mcp_mode: string;
+  templates: number;
 }
+
+export interface CatalogSlot {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string | null;
+  min: number | null;
+  max: number | null;
+  allowed: string[] | null;
+}
+
+export interface CatalogAction {
+  id: string;
+  type: "action";
+  category: string;
+  kind: string;
+  title: string;
+  intent_phrase: string;
+  free_tier: boolean;
+  available: boolean;
+  is_write: boolean;
+  notes: string | null;
+  tool_sequence: string[];
+  slots: CatalogSlot[];
+}
+
+export interface CatalogQuery {
+  id: string;
+  type: "query";
+  kind: "query";
+  title: string;
+  intent_phrase: string;
+  tool: string;
+  available: boolean;
+  requires_account: boolean;
+  notes: string | null;
+  required_slots: string[];
+  allowed_assets: string[] | null;
+}
+
+export type CatalogEntry = CatalogAction | CatalogQuery;
