@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Table } from "@/components/earn/table";
 import { useTheme } from "@/contexts/theme-context";
 import { positionsTableHeadings } from "@/lib/constants/farm";
+import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useFarmStore } from "@/store/farm-store";
@@ -17,6 +18,7 @@ import {
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition } from "@/hooks/use-soroswap";
 import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
+import { getFarmHistory, buildFarmPoolKey, type FarmHistoryEntry } from "@/lib/farm-history";
 
 const POSITION_DUST = 1e-4;
 
@@ -176,13 +178,61 @@ export const FarmSection = () => {
     { id: "position-history", label: "Position History" },
   ];
 
-  const tableData = useMemo(
+  // Position History — every add/remove the connected margin account has made
+  // across Blend + Soroswap + Aquarius, merged and sorted newest-first. Same
+  // local tx log (lib/farm-history) and row shape (Date/Type/Amount/Status/Tx
+  // Hash) as the single-pool "Position History" tab on a Farm pool detail page,
+  // just aggregated across every pool instead of scoped to one.
+  const historyEntries = useMemo((): FarmHistoryEntry[] => {
+    if (!marginAccountAddress) return [];
+    const all: FarmHistoryEntry[] = [
+      ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("XLM"), marginAccountAddress }),
+      ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("USDC"), marginAccountAddress }),
+      ...getFarmHistory({ protocol: "soroswap", poolKey: buildFarmPoolKey("XLM", "USDC"), marginAccountAddress }),
+    ];
+    AQUARIUS_POOLS.forEach((pool) => {
+      const [tokenA, tokenB] = pool.tokens;
+      all.push(...getFarmHistory({ protocol: "aquarius", poolKey: buildFarmPoolKey(tokenA, tokenB), marginAccountAddress }));
+    });
+    return all.sort((a, b) => b.timestamp - a.timestamp);
+  }, [marginAccountAddress]);
+
+  const historyTableBody = useMemo(
     () => ({
+      rows: historyEntries.map((ev) => ({
+        cell: [
+          {
+            title: ev.timestamp ? new Date(ev.timestamp).toLocaleDateString() : "—",
+            description: ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : "",
+          },
+          {
+            title: ev.action === "add" ? "Supply" : "Withdraw",
+            badge: ev.action === "add" ? "green" : "orange",
+          },
+          { title: ev.amountDisplay },
+          { title: "Success", badge: "green" },
+          ev.txHash
+            ? {
+                title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
+                clickable: "link",
+                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+              }
+            : { title: "—" },
+        ],
+      })),
+    }),
+    [historyEntries],
+  );
+
+  const tableData = useMemo(() => {
+    if (activeFilterTab === "position-history") {
+      return { headings: transactionTableHeadings, body: historyTableBody };
+    }
+    return {
       headings: positionsTableHeadings,
       body: { rows: rows.map(({ id, cell }) => ({ id, cell })) },
-    }),
-    [rows],
-  );
+    };
+  }, [activeFilterTab, historyTableBody, rows]);
 
   // Same navigation as app/farm/page.tsx's Positions tab: Blend rows go to
   // their single-asset detail page, Soroswap/Aquarius LP rows go to their
@@ -236,18 +286,17 @@ export const FarmSection = () => {
         </div>
       </div>
 
-      {/* Positions Table — real Blend/Soroswap/Aquarius farm positions */}
+      {/* Positions Table — real Blend/Soroswap/Aquarius farm positions.
+          Rendered whenever a wallet is connected, regardless of whether the
+          Current Position tab happens to be empty — Position History can
+          still have entries (e.g. a fully-closed position) even when there's
+          nothing open right now, and the Table component's own empty state
+          ("No data available") covers the genuinely-empty case for both tabs. */}
       {!userAddress ? (
         <div className={`w-full rounded-[16px] border px-5 py-10 text-center text-[14px] font-medium ${
           isDark ? "bg-[#222222] border-[#2A2A2A] text-[#777777]" : "bg-[#F7F7F7] border-[#E8E8E8] text-[#777777]"
         }`}>
           Connect your wallet to see farm positions.
-        </div>
-      ) : rows.length === 0 ? (
-        <div className={`w-full rounded-[16px] border px-5 py-10 text-center text-[14px] font-medium ${
-          isDark ? "bg-[#222222] border-[#2A2A2A] text-[#777777]" : "bg-[#F7F7F7] border-[#E8E8E8] text-[#777777]"
-        }`}>
-          No farm positions yet. Supply or add liquidity on the Farm page to start earning.
         </div>
       ) : (
         <Table
@@ -259,7 +308,7 @@ export const FarmSection = () => {
           onFilterTabTypeChange={setActiveFilterTab}
           tableHeadings={tableData.headings}
           tableBody={tableData.body}
-          onRowClick={handleRowClick}
+          onRowClick={activeFilterTab === "position-history" ? undefined : handleRowClick}
         />
       )}
     </div>

@@ -60,9 +60,8 @@ export const netApyData = [
     { date: "2025-12-31", amount: 289.20 },
 ]     
 
-// Vaults tab — pool-level aggregate stats. Ends with "Your Supply" (which
-// asset, if any, the connected wallet has supplied to this specific pool)
-// then "Collateral" (accepted collateral types) last.
+// Vaults tab — pool-level aggregate stats. Ends with "Your Supply" (the
+// amount + $ value the connected wallet has supplied to this specific pool).
 export const vaultsTableHeadings = [
     { label: "Pool", id: "pool" },
     { label: "Assets Supplied", id: "assets-supplied" ,icon:true},
@@ -71,7 +70,6 @@ export const vaultsTableHeadings = [
     { label: "Borrow APY", id: "borrow-apy" ,icon:true},
     { label: "Utilization Rate", id: "utilization-rate" ,icon:true},
     { label: "Your Supply", id: "your-supply" ,icon:true},
-    { label: "Collateral", id: "collateral" },
   ]
 
 // Positions tab — the user's own holdings, so "Assets Borrowed" (a pool-wide
@@ -83,7 +81,6 @@ export const positionsTableHeadings = [
     { label: "Borrow APY", id: "borrow-apy" ,icon:true},
     { label: "Utilization Rate", id: "utilization-rate" ,icon:true},
     { label: "Your Supply", id: "your-supply" ,icon:true},
-    { label: "Collateral", id: "collateral" },
   ]
 
 // Back-compat alias — kept in case anything still imports the old name.

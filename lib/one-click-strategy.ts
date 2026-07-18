@@ -2,6 +2,7 @@ import { MarginAccountService } from './margin-utils';
 import { BlendService } from './blend-utils';
 import { SoroswapService } from './soroswap-utils';
 import { AquariusService } from './aquarius-utils';
+import { appendFarmHistory, buildFarmPoolKey } from './farm-history';
 
 /** True when `poolProtocol` names the Aquarius AMM (case-insensitive). Every
  * LP call site below branches on this — Aquarius and Soroswap are different
@@ -18,10 +19,27 @@ async function addLpLiquidity(
   xlmAmt: number,
   usdcAmt: number,
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
-  if (isAquarius(poolProtocol)) {
-    return AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt);
+  const result = isAquarius(poolProtocol)
+    ? await AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt)
+    : await SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
+
+  // Record locally so the Farm pool detail page and Portfolio's Farm tab have
+  // a Position History entry for this action even when it was opened through
+  // Lite mode rather than the Farm page's own Add Liquidity form — this
+  // helper is the single chokepoint both paths route through. (Farm's direct
+  // Add Liquidity form already does this itself; see components/farm/add-liquidity.tsx.)
+  if (result.success) {
+    appendFarmHistory({
+      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
+      poolKey: buildFarmPoolKey('XLM', 'USDC'),
+      marginAccountAddress,
+      action: 'add',
+      amountDisplay: `${xlmAmt.toFixed(2)} XLM + ${usdcAmt.toFixed(2)} USDC`,
+      txHash: result.hash ?? '',
+    });
   }
-  return SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
+
+  return result;
 }
 
 /** Protocol-aware "swap from the margin account" — used only for the 1x
@@ -62,10 +80,22 @@ async function removeLpLiquidity(
   marginAccountAddress: string,
   lpAmount: number,
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
-  if (isAquarius(poolProtocol)) {
-    return AquariusService.removeLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', lpAmount);
+  const result = isAquarius(poolProtocol)
+    ? await AquariusService.removeLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', lpAmount)
+    : await SoroswapService.removeLiquidity(userAddress, marginAccountAddress, lpAmount);
+
+  if (result.success) {
+    appendFarmHistory({
+      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
+      poolKey: buildFarmPoolKey('XLM', 'USDC'),
+      marginAccountAddress,
+      action: 'remove',
+      amountDisplay: `${lpAmount.toFixed(2)} LP`,
+      txHash: result.hash ?? '',
+    });
   }
-  return SoroswapService.removeLiquidity(userAddress, marginAccountAddress, lpAmount);
+
+  return result;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

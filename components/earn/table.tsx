@@ -123,6 +123,17 @@ type SupplyApyFilter = {
 /* ---------- FILTER LOGIC (unchanged behavior) ---------- */
 
 /**
+ * A row's leading pool/asset name, upper-cased for matching. Single-asset
+ * rows (Blend "XLM") carry it as `title`; multi-token LP rows (Farm's
+ * Soroswap/Aquarius pools, "XLM"/"USDC") carry it as `titles` instead — a
+ * filter that only read `title` silently saw an empty string for every LP
+ * row and dropped it from every chain/deposit/vaults facet. Checking both
+ * keeps "All Pools" style filters working across single-asset and LP tables.
+ */
+const firstCellName = (cell?: { title?: string; titles?: string[] }): string =>
+  (cell?.title ?? cell?.titles?.join(" ") ?? "").toUpperCase();
+
+/**
  * Pure row filter combining the search term with every active filter facet
  * (chains, deposit/collateral, supply-APY threshold, vaults, curator, provider,
  * protocol). Returns the input unchanged when nothing is active. The supply-APY
@@ -185,19 +196,22 @@ const applyFilters = (
   return rows.filter((row) => {
     if (
       searchLower &&
-      !row.cell.some((cell) => cell.title?.toLowerCase().includes(searchLower))
+      !row.cell.some((cell) =>
+        cell.title?.toLowerCase().includes(searchLower) ||
+        cell.titles?.some((t) => t.toLowerCase().includes(searchLower))
+      )
     ) {
       return false;
     }
 
     if (hasAllChainsFilter) {
-      const poolTitle = row.cell[0]?.title?.toUpperCase() || "";
+      const poolTitle = firstCellName(row.cell[0]);
       if (!poolTitle || !filtersState.allChains.some((c) => poolTitle.includes(c.toUpperCase())))
         return false;
     }
 
     if (hasDepositFilter) {
-      const poolName = row.cell[0]?.title?.toUpperCase() || "";
+      const poolName = firstCellName(row.cell[0]);
       if (!filtersState.deposit.some((d) => poolName.includes(d.toUpperCase())))
         return false;
     }
@@ -260,11 +274,9 @@ const applyFilters = (
     }
 
     if (hasAllFilter) {
-      const matchSource = (
-        typeColumnIndex !== -1
-          ? row.cell[typeColumnIndex]?.title
-          : row.cell[0]?.title
-      )?.toUpperCase() || "";
+      const matchSource = typeColumnIndex !== -1
+        ? (row.cell[typeColumnIndex]?.title?.toUpperCase() || "")
+        : firstCellName(row.cell[0]);
       const matches = filtersState.all.some((f) => {
         const filterUpper = f.toUpperCase();
         return (
@@ -276,7 +288,7 @@ const applyFilters = (
 
     // Vaults filter - checks if vault name matches
     if (hasVaultsFilter) {
-      const vaultName = row.cell[0]?.title?.toUpperCase() || "";
+      const vaultName = firstCellName(row.cell[0]);
       if (!filtersState.vaults.some((v) => vaultName.includes(v.toUpperCase())))
         return false;
     }

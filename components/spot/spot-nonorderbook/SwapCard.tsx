@@ -11,6 +11,7 @@ import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { normalizeContractError } from "@/lib/errors/normalize";
+import { appendSpotHistory } from "@/lib/spot-history";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { SwapInput } from "./SwapInput";
 import { SwapDirectionButton } from "./SwapDirectionButton";
@@ -600,7 +601,14 @@ export const SwapCard = ({
       if (!result.success) {
         throw new Error(result.error ?? "Swap failed");
       }
-      return result;
+      return {
+        ...result,
+        dexProtocol: (isAquarius ? "aquarius" : "soroswap") as "aquarius" | "soroswap",
+        tokenInSymbol: tokenIn!.symbol,
+        tokenOutSymbol: tokenOut!.symbol,
+        amountInUsed: amountInToUse,
+        amountOutAtSubmit: amountOut,
+      };
     },
     onMutate: () => {
       setTxStatus("loading");
@@ -611,11 +619,26 @@ export const SwapCard = ({
       setTxStatus("success");
       setTxHash(result.hash ?? "");
       toast.success(`Swap submitted! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      // Spot swaps always route through the margin account (swapMode is
+      // locked to "margin" — see the showModeTabs comment below), so its
+      // history is scoped to marginAccountAddress like Farm/Lender history.
+      if (swapMode === "margin" && marginAccountAddress) {
+        appendSpotHistory({
+          protocol: result.dexProtocol,
+          marginAccountAddress,
+          tokenIn: result.tokenInSymbol,
+          tokenOut: result.tokenOutSymbol,
+          amountIn: result.amountInUsed.toFixed(7),
+          amountOut: result.amountOutAtSubmit || "0",
+          txHash: result.hash ?? "",
+        });
+      }
       setAmountIn("");
       setAmountOut("");
       if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
+      qc.invalidateQueries({ queryKey: ['spot'] });
     },
     onError: (error) => {
       setTxStatus("error");

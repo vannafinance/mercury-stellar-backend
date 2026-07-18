@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Checkbox } from "../ui/Checkbox";
 import { Radio } from "../ui/radio-button";
 import { iconPaths } from "@/lib/constants";
+import { COIN_ICONS } from "@/lib/constants/margin";
 import { Collaterals } from "@/lib/types";
 import { useTheme } from "@/contexts/theme-context";
 import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
@@ -57,7 +58,7 @@ const MBSelectionGridComponent = ({
               />
             )}
             <Image
-              src={iconPaths[item.asset]}
+              src={COIN_ICONS[item.asset] ?? iconPaths[item.asset] ?? "/icons/usdc-icon.svg"}
               alt={item.asset}
               width={20}
               height={20}

@@ -142,7 +142,6 @@ const buildPoolRow = (
     borrowAPY: string;
     isLoading?: boolean;
   },
-  collateralIcons: string[],
   price: number,
   // How much of THIS specific pool's asset the connected wallet has supplied
   // — 0 when they have no position here. Rendered the same two-line way as
@@ -182,11 +181,6 @@ const buildPoolRow = (
       {
         title: `${formatTokenAmount(yourSupplyAmount)} ${assetSymbol}`,
         tag: fmtUsd(yourSupplyAmount * price),
-      },
-      {
-        onlyIcons: collateralIcons,
-        tag: "Collateral",
-        clickable: "toggle",
       },
     ],
   };
@@ -236,11 +230,6 @@ const buildPositionRow = (
         tag: `${utilizationRate.toFixed(2)}%`,
       },
       { onlyIcons: [assetSymbol], tag: "Supplied" },
-      {
-        onlyIcons: [assetSymbol],
-        tag: "Collateral",
-        clickable: "toggle",
-      },
     ],
   };
 };
@@ -398,10 +387,10 @@ export default function Earn() {
     };
     return {
       rows: [
-        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"], tokenPrices["XLM"] ?? 0, suppliedAmount("XLM")),
-        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
-        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
-        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
+        buildPoolRow("XLM", pools.XLM, tokenPrices["XLM"] ?? 0, suppliedAmount("XLM")),
+        buildPoolRow("BLUSDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
+        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
+        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
       ],
     };
   }, [pools, userPositions, tokenPrices]);
@@ -480,10 +469,6 @@ export default function Earn() {
           assetsBorrowed: { title: cellFor("assets-borrowed")?.title || "", tag: cellFor("assets-borrowed")?.tag || "" },
           borrowApy: { title: cellFor("borrow-apy")?.title || "", tag: cellFor("borrow-apy")?.tag || "" },
           utilizationRate: { title: cellFor("utilization-rate")?.title || "", tag: cellFor("utilization-rate")?.tag || "" },
-          collateral: {
-            onlyIcons: cellFor("collateral")?.onlyIcons || [],
-            tag: cellFor("collateral")?.tag || "Collateral",
-          },
         };
 
         setSelectedVault({ selectedVault: vaultData });
@@ -567,7 +552,7 @@ export default function Earn() {
         <Table
           filterDropdownPosition="right"
           filters={{
-            filters: ["Deposit", "Collateral"],
+            filters: ["Deposit"],
             allChainDropdown: true,
             supplyApyTab: true,
           }}

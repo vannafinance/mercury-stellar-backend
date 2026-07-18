@@ -93,6 +93,13 @@ export const AddLiquidity = memo(function AddLiquidity() {
   }, [tokenDropdownOpen]);
   const [amountA, setAmountA] = useState<string>("");
   const [amountB, setAmountB] = useState<string>("");
+  // Which quick-fill percentage (if any) is currently active per token — drives
+  // the highlighted state on the 10/25/50/100% buttons, matching Remove
+  // Liquidity's percentage pills. Cleared on manual typing in either input
+  // since the paired auto-calc means an edit to one token can make the
+  // other's percentage highlight stale.
+  const [selectedPctA, setSelectedPctA] = useState<number>(0);
+  const [selectedPctB, setSelectedPctB] = useState<number>(0);
   // Borrowed balances from margin account (amounts available to route into Blend)
   const borrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
   const isLoadingBorrowedBalances = useMarginAccountInfoStore((s) => s.isLoadingBorrowedBalances);
@@ -486,47 +493,91 @@ export const AddLiquidity = memo(function AddLiquidity() {
             {[tokenA, tokenB].map((token, idx) => (
               <div
                 key={token}
-                className={`w-full h-fit flex items-center gap-[12px] p-[12px] rounded-[12px] ${
+                className={`w-full h-fit flex flex-col gap-[8px] p-[12px] rounded-[12px] ${
                   isDark ? "bg-[#1A1A1A]" : "bg-[#F7F7F7]"
                 }`}
               >
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="0"
-                  value={idx === 0 ? amountA : amountB}
-                  onChange={(e) => {
-                    const sanitized = validateAmountChange(e.target.value);
-                    if (sanitized === null) return;
-                    if (idx === 0) handleAmountAChange(sanitized);
-                    else handleAmountBChange(sanitized);
-                  }}
-                  min="0"
-                  className={`w-full bg-transparent outline-none border-none text-[18px] font-semibold placeholder:opacity-20 ${
-                    isDark ? "text-white placeholder:text-white" : "text-black placeholder:text-black"
-                  } [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
-                />
-                <div className="flex flex-col items-end gap-[4px] shrink-0">
-                  <div className="flex items-center gap-[6px]">
-                    <Image
-                      src={iconPaths[token] ?? "/icons/stellar.svg"}
-                      alt={token}
-                      width={18}
-                      height={18}
-                    />
-                    <span className={`text-[13px] font-semibold ${
-                      isDark ? "text-white" : "text-[#111111]"
+                <div className="w-full flex items-center gap-[12px]">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={idx === 0 ? amountA : amountB}
+                    onChange={(e) => {
+                      const sanitized = validateAmountChange(e.target.value);
+                      if (sanitized === null) return;
+                      if (idx === 0) handleAmountAChange(sanitized);
+                      else handleAmountBChange(sanitized);
+                      setSelectedPctA(0);
+                      setSelectedPctB(0);
+                    }}
+                    min="0"
+                    className={`w-full bg-transparent outline-none border-none text-[18px] font-semibold placeholder:opacity-20 ${
+                      isDark ? "text-white placeholder:text-white" : "text-black placeholder:text-black"
+                    } [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
+                  />
+                  <div className="flex flex-col items-end gap-[4px] shrink-0">
+                    <div className="flex items-center gap-[6px]">
+                      <Image
+                        src={iconPaths[token] ?? "/icons/stellar.svg"}
+                        alt={token}
+                        width={18}
+                        height={18}
+                      />
+                      <span className={`text-[13px] font-semibold ${
+                        isDark ? "text-white" : "text-[#111111]"
+                      }`}>
+                        {token}
+                      </span>
+                    </div>
+                    <span className={`text-[11px] font-medium whitespace-nowrap ${
+                      isDark ? "text-[#919191]" : "text-[#5C5B5B]"
                     }`}>
-                      {token}
+                      {loadingMarginBalances
+                        ? "Loading..."
+                        : `Bal: ${parseFloat(idx === 0 ? availableA : availableB).toFixed(2)}`}
                     </span>
                   </div>
-                  <span className={`text-[11px] font-medium whitespace-nowrap ${
-                    isDark ? "text-[#919191]" : "text-[#5C5B5B]"
-                  }`}>
-                    {loadingMarginBalances
-                      ? "Loading..."
-                      : `Bal: ${parseFloat(idx === 0 ? availableA : availableB).toFixed(2)}`}
-                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {DEPOSIT_PERCENTAGES.map((pct) => {
+                    const isSelected = (idx === 0 ? selectedPctA : selectedPctB) === pct;
+                    return (
+                      <motion.button
+                        key={pct}
+                        type="button"
+                        disabled={txStatus === "loading" || loadingMarginBalances}
+                        onClick={() => {
+                          const bal = parseFloat(idx === 0 ? availableA : availableB) || 0;
+                          const amt = ((bal * pct) / 100).toFixed(2);
+                          if (idx === 0) {
+                            handleAmountAChange(amt);
+                            setSelectedPctA(pct);
+                            setSelectedPctB(0);
+                          } else {
+                            handleAmountBChange(amt);
+                            setSelectedPctB(pct);
+                            setSelectedPctA(0);
+                          }
+                        }}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.93 }}
+                        transition={{ duration: 0.1 }}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-semibold cursor-pointer border transition-all ${
+                          isSelected
+                            ? "bg-[#703AE6] text-white border-transparent"
+                            : isDark
+                              ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
+                              : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
+                        } ${(txStatus === "loading" || loadingMarginBalances) ? "opacity-40 cursor-not-allowed" : ""}`}
+                        style={{
+                          boxShadow: isSelected ? `0 0 0 1px ${PERCENTAGE_COLORS[pct]}` : "none",
+                        }}
+                      >
+                        {pct}%
+                      </motion.button>
+                    );
+                  })}
                 </div>
               </div>
             ))}

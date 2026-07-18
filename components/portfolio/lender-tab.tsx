@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useUserPositions, usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { Table } from "@/components/earn/table";
+import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
+import { getEarnHistoryByAsset, type EarnHistoryEntry } from "@/lib/earn-history";
 import { formatTokenAmount } from "@/lib/utils/format-amount";
 import { useTheme } from "@/contexts/theme-context";
 
@@ -19,7 +21,10 @@ const PRICE_TOKEN: Record<string, string> = {
   SOROSWAP_USDC: "USDC",
 };
 
-const POSITION_TABS = [{ id: "current-positions", label: "Current Positions" }];
+const POSITION_TABS = [
+  { id: "current-positions", label: "Current Positions" },
+  { id: "position-history", label: "Position History" },
+];
 
 const TABLE_HEADINGS = [
   { id: "pool", label: "Pool" },
@@ -73,6 +78,49 @@ export const LenderTab = () => {
     ],
   }));
 
+  // Position History — every supply/withdraw the wallet has made across all
+  // lending assets, merged and sorted newest-first. Same local tx log
+  // (lib/earn-history) and row shape (Date/Type/Amount/Status/Tx Hash) as the
+  // Earn page's per-asset "All Transactions" history, aggregated here across
+  // every asset instead of scoped to one.
+  const historyEntries = useMemo((): EarnHistoryEntry[] => {
+    return ASSETS.flatMap((asset) => getEarnHistoryByAsset(asset)).sort(
+      (a, b) => b.timestamp - a.timestamp,
+    );
+  }, []);
+
+  const historyTableRows = historyEntries.map((ev) => {
+    const amountNum = parseFloat(ev.amount) || 0;
+    const symbol = STELLAR_POOLS[ev.asset as keyof typeof STELLAR_POOLS]?.symbol ?? ev.asset;
+    const price = prices[PRICE_TOKEN[ev.asset]] ?? (PRICE_TOKEN[ev.asset] === "USDC" ? 1 : 0);
+    return {
+      cell: [
+        {
+          title: ev.timestamp ? new Date(ev.timestamp).toLocaleDateString() : "—",
+          description: ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : "",
+        },
+        {
+          title: ev.type === "supply" ? "Supply" : "Withdraw",
+          badge: ev.type === "supply" ? "green" : "orange",
+        },
+        {
+          title: `${amountNum.toFixed(2)} ${symbol}`,
+          description: fmtUsd(amountNum * price),
+        },
+        { title: "Success", badge: "green" },
+        ev.hash
+          ? {
+              title: `${ev.hash.slice(0, 8)}...${ev.hash.slice(-4)}`,
+              clickable: "link",
+              link: `https://stellar.expert/explorer/testnet/tx/${ev.hash}`,
+            }
+          : { title: "—" },
+      ],
+    };
+  });
+
+  const isHistoryTab = positionTab === "position-history";
+
   return (
     <div className="w-full h-fit flex flex-col gap-6 sm:gap-8">
       {/* Top row: real Lender stats + analytics placeholder */}
@@ -113,20 +161,29 @@ export const LenderTab = () => {
         </div>
       </div>
 
-      {/* Positions table — real supplied positions */}
-      {tableRows.length > 0 ? (
+      {/* Positions table — real supplied positions, or Position History.
+          Rendered whenever the wallet has EITHER current positions OR any
+          history entries — a fully-withdrawn position has no current row but
+          can still have history, so gating render on `tableRows.length` alone
+          hid Position History for exactly that case. The Table component's
+          own empty state covers a genuinely-empty account either way. */}
+      {tableRows.length > 0 || historyEntries.length > 0 ? (
         <Table
           heading={{ heading: "Positions Table", tabsItems: POSITION_TABS, tabType: "solid" }}
           activeTab={positionTab}
           onTabChange={setPositionTab}
-          tableHeadings={TABLE_HEADINGS}
-          tableBody={{ rows: tableRows }}
+          tableHeadings={isHistoryTab ? transactionTableHeadings : TABLE_HEADINGS}
+          tableBody={{ rows: isHistoryTab ? historyTableRows : tableRows }}
           tableBodyBackground={isDark ? "bg-[#222222]" : "bg-[#F4F4F4]"}
           filters={{ customizeDropdown: true, filters: ["All"] }}
-          onRowClick={(_row, rowIndex) => {
-            const symbol = rows[rowIndex]?.symbol;
-            if (symbol) router.push(`/earn/${symbol}?tab=your-positions`);
-          }}
+          onRowClick={
+            isHistoryTab
+              ? undefined
+              : (_row, rowIndex) => {
+                  const symbol = rows[rowIndex]?.symbol;
+                  if (symbol) router.push(`/earn/${symbol}?tab=your-positions`);
+                }
+          }
         />
       ) : (
         <div

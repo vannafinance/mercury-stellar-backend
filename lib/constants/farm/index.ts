@@ -5,9 +5,8 @@ export const farmTableHeadings = [
   { label: "DEX TVL Token 0", id: "dex-tvl-token-0", icon: true },
   { label: "DEX TVL Token 1", id: "dex-tvl-token-1", icon: true },
   { label: "Pool APR", id: "pool-apr", icon: true },
-  { label: "24h APY", id: "24h-apy", icon: true },
   { label: "Fees", id: "fees", icon: true },
-  { label: "Pool Type", id: "pool-type", icon: true },
+  { label: "Holding", id: "holding", icon: true },
 ];
 
 export const farmTableBody = {
@@ -364,6 +363,7 @@ export const singleAssetTableHeadings = [
   { label: "Supply APY", id: "supply-apy", icon: true },
   { label: "Borrow APY", id: "borrow-apy", icon: true },
   { label: "Utilization", id: "utilization", icon: true },
+  { label: "Holding", id: "holding", icon: true },
 ];
 
 // The Positions tab shows the user's own positions, not pool totals — so the
