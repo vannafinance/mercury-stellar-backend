@@ -1560,13 +1560,38 @@ export class MarginAccountService {
 
       let preparedTx: StellarSdk.Transaction;
       try {
-        const assembleTransaction = (StellarSdk as any)?.rpc?.assembleTransaction;
-        if (typeof assembleTransaction === 'function' && 'result' in simulationResult && simulationResult.result) {
-          const assembled = assembleTransaction(transaction, simulationResult);
-          preparedTx = assembled.build();
-        } else {
-          preparedTx = await server.prepareTransaction(transaction);
-        }
+        // Always re-simulate here rather than reusing `simulationResult` (the
+        // pre-check above) to build the footprint, so it's computed as close
+        // to submit-time as possible. `prepareTransaction` simulates fresh
+        // internally.
+        preparedTx = await server.prepareTransaction(transaction);
+
+        // Pad the simulated refundable resource fee with a small safety
+        // margin. The simulation's estimate can undershoot the real
+        // execution's event/ledger-write-rent cost by a tiny amount (seen
+        // live: needed 4688 stroops, simulation only allocated 4500) — e.g.
+        // when interest accrual between simulate and submit nudges a write's
+        // byte size. Falling short here fails the whole tx post-hoc with
+        // "refundable resource fee was not sufficient" (scecExceededLimit)
+        // even though every contract call already succeeded. The margin
+        // added is a few thousand stroops (a fraction of a cent) — negligible
+        // next to this call's existing 50x-BASE_FEE inclusion fee.
+        // Bump the OVERALL tx fee by the same margin, not just the resourceFee
+        // sub-component — the two must satisfy fee >= resourceFee, and only
+        // padding resourceFee could push it past the original fee, producing
+        // an invalid (fee < resourceFee) transaction.
+        const RESOURCE_FEE_SAFETY_MARGIN_STROOPS = BigInt(5000);
+        const currentSorobanData = preparedTx.toEnvelope().v1().tx().ext().sorobanData();
+        const currentResourceFee = BigInt(currentSorobanData.resourceFee().toString());
+        const currentTotalFee = BigInt(preparedTx.fee);
+        const paddedSorobanData = new StellarSdk.SorobanDataBuilder(currentSorobanData)
+          .setResourceFee((currentResourceFee + RESOURCE_FEE_SAFETY_MARGIN_STROOPS).toString())
+          .build();
+        preparedTx = StellarSdk.TransactionBuilder.cloneFrom(preparedTx, {
+          fee: (currentTotalFee + RESOURCE_FEE_SAFETY_MARGIN_STROOPS).toString(),
+        })
+          .setSorobanData(paddedSorobanData)
+          .build();
       } catch (prepareError: any) {
         console.error('❌ Borrow preparation failed:', prepareError);
         return {
@@ -1600,7 +1625,7 @@ export class MarginAccountService {
           console.error('❌ Borrow transaction failed after polling:', finalResult);
           return {
             success: false,
-            error: `Borrow transaction failed with final status: ${finalResult.status}. Details: ${JSON.stringify(finalResult)}`
+            error: this.parseBorrowNotAllowedMessage(finalResult, contractTokenSymbol),
           };
         }
       } else if (result.status === 'ERROR') {

@@ -55,7 +55,16 @@ const DEFAULT_HIDDEN_POOL_IDS = new Set<string>([
 ]);
 
 export default function FarmPage() {
-  const [activeFilterTab, setActiveFilterTab] = useState<string>("lending-single-assets");
+  // Restore whichever Vaults sub-tab (LP/Multiple Assets vs Lending/Single
+  // Assets) was active when the user last clicked into a pool detail page —
+  // otherwise navigating back from a pool always reset to the default
+  // "Lending/Single Assets" tab regardless of where the user actually was.
+  // farm-store's tabType is set on every row click and isn't reset on
+  // unmount, so it still holds the right value here on remount.
+  const lastTabType = useFarmStore((state) => state.tabType);
+  const [activeFilterTab, setActiveFilterTab] = useState<string>(
+    () => (lastTabType === "multi" ? "lp-multiple-assets" : "lending-single-assets")
+  );
   const [activePositionFilterTab, setActivePositionFilterTab] = useState<string>("current-position");
   const [activeTab, setActiveTab] = useState<string>("vaults");
   // When false (default), DEFAULT_HIDDEN_POOL_IDS are filtered out of the

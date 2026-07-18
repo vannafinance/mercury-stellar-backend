@@ -176,6 +176,11 @@ const applyFilters = (
   const typeColumnIndex = tableHeadings.findIndex(
     (h) => h.id === "type" || h.label.toLowerCase() === "type"
   );
+  // Locate the Collateral column by id rather than assuming it's the last
+  // cell — tables can append columns (e.g. "Your Supply") after it.
+  const collateralColumnIndexForFilter = tableHeadings.findIndex(
+    (h) => h.id === "collateral" || h.label.toLowerCase() === "collateral"
+  );
 
   return rows.filter((row) => {
     if (
@@ -198,7 +203,11 @@ const applyFilters = (
     }
 
     if (hasCollateralFilter) {
-      const collateralIcons = row.cell[row.cell.length - 1]?.onlyIcons || [];
+      const collateralCellIndex =
+        collateralColumnIndexForFilter !== -1
+          ? collateralColumnIndexForFilter
+          : row.cell.length - 1;
+      const collateralIcons = row.cell[collateralCellIndex]?.onlyIcons || [];
       if (!filtersState.collateral.some((c) => collateralIcons.includes(c)))
         return false;
     }

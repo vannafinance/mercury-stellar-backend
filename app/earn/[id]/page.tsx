@@ -94,6 +94,16 @@ export default function EarnPage({ params }: { params: Promise<{ id: string }> }
     setActiveTab(tab);
   };
 
+  // Deep-link into the "Your Positions" tab (e.g. from Portfolio's Lender
+  // "Current Positions" row) via /earn/{id}?tab=your-positions. Read directly
+  // off the URL rather than next/navigation's useSearchParams so this doesn't
+  // force a Suspense boundary on an otherwise fully client-rendered page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "your-positions") queueMicrotask(() => setActiveTab("your-positions"));
+  }, []);
+
   const handleBackToPools = () => {
     router.push("/earn");
   };

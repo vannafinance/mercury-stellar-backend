@@ -60,7 +60,10 @@ export const netApyData = [
     { date: "2025-12-31", amount: 289.20 },
 ]     
 
-export const tableHeadings = [
+// Vaults tab — pool-level aggregate stats. Ends with "Collateral" (accepted
+// collateral types) and "Your Supply" (which asset, if any, the connected
+// wallet has supplied to this specific pool).
+export const vaultsTableHeadings = [
     { label: "Pool", id: "pool" },
     { label: "Assets Supplied", id: "assets-supplied" ,icon:true},
     { label: "Supply APY", id: "supply-apy" ,icon:true},
@@ -68,7 +71,23 @@ export const tableHeadings = [
     { label: "Borrow APY", id: "borrow-apy" ,icon:true},
     { label: "Utilization Rate", id: "utilization-rate" ,icon:true},
     { label: "Collateral", id: "collateral" },
+    { label: "Your Supply", id: "your-supply" },
   ]
+
+// Positions tab — the user's own holdings, so "Assets Borrowed" (a pool-wide
+// stat) is dropped; the row is already scoped to what the user supplied.
+export const positionsTableHeadings = [
+    { label: "Pool", id: "pool" },
+    { label: "Assets Supplied", id: "assets-supplied" ,icon:true},
+    { label: "Supply APY", id: "supply-apy" ,icon:true},
+    { label: "Borrow APY", id: "borrow-apy" ,icon:true},
+    { label: "Utilization Rate", id: "utilization-rate" ,icon:true},
+    { label: "Collateral", id: "collateral" },
+    { label: "Your Supply", id: "your-supply" },
+  ]
+
+// Back-compat alias — kept in case anything still imports the old name.
+export const tableHeadings = vaultsTableHeadings
 
 // Stellar Blockchain Pool Data
 export const tableBody = {

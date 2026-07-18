@@ -31,6 +31,7 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -71,7 +72,6 @@ const ensureCollateralId = (collateral: Collaterals): Collaterals => {
  * delegated to {@link LeveragePreviewSection}.
  */
 export const LeverageAssetsTab = () => {
-  const XLM_WALLET_RESERVE = 1;
   const XLM_DEPOSIT_EPSILON = 1e-7;
   const { isDark } = useTheme();
   const { refreshBalances } = useWallet();
@@ -113,6 +113,23 @@ export const LeverageAssetsTab = () => {
       console.warn("Failed to refresh wallet balances on margin page:", err);
     });
   }, [userAddress, refreshBalances]);
+
+  // Real on-chain XLM minimum reserve — see collateral-box.tsx for why a flat
+  // reserve is wrong once the account holds a few trustlines. Gates the
+  // "cannot deposit 100% of wallet" guard below with the account's actual
+  // floor instead of an under-estimate that lets a near-Max deposit through
+  // the app's check but still trap on-chain (Contract #10).
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
 
   // Dialogue state
   type DialogueState = "none" | "create-margin" | "sign-agreement";
@@ -647,13 +664,13 @@ export const LeverageAssetsTab = () => {
           .reduce((sum, item) => sum + item.amount, 0);
         const isXlmDeposit = totalXlmDeposit > 0;
         const walletXlmBalance = parseFloat(tokenBalances.XLM || "0") || 0;
-        const maxXlmDeposit = Math.max(0, walletXlmBalance - XLM_WALLET_RESERVE);
+        const maxXlmDeposit = maxSpendableXlm(walletXlmBalance, xlmMinReserve);
 
         if (
           isXlmDeposit &&
           totalXlmDeposit > maxXlmDeposit + XLM_DEPOSIT_EPSILON
         ) {
-          toast.error("You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.");
+          toast.error(`You cannot deposit that much XLM. Please keep at least ${xlmMinReserve.toFixed(2)} XLM in your wallet for the account reserve.`);
           setIsProcessing(false);
           return;
         }

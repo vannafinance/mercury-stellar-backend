@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useUserPositions, usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
@@ -39,6 +40,7 @@ const fmtUsd = (n: number): string =>
  */
 export const LenderTab = () => {
   const { isDark } = useTheme();
+  const router = useRouter();
   const [positionTab, setPositionTab] = useState("current-positions");
 
   const { positions } = useUserPositions();
@@ -121,6 +123,10 @@ export const LenderTab = () => {
           tableBody={{ rows: tableRows }}
           tableBodyBackground={isDark ? "bg-[#222222]" : "bg-[#F4F4F4]"}
           filters={{ customizeDropdown: true, filters: ["All"] }}
+          onRowClick={(_row, rowIndex) => {
+            const symbol = rows[rowIndex]?.symbol;
+            if (symbol) router.push(`/earn/${symbol}?tab=your-positions`);
+          }}
         />
       ) : (
         <div

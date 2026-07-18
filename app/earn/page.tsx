@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { CollapsibleChart } from "@/components/ui/collapsible-chart";
 import { Table } from "@/components/earn/table";
 import { Carousel } from "@/components/ui/carousel";
-import { tableHeadings } from "@/lib/constants/earn";
+import { vaultsTableHeadings, positionsTableHeadings } from "@/lib/constants/earn";
 import { useUserStore } from "@/store/user";
 import { useEarnVaultStore } from "@/store/earn-vault-store";
 import { setSelectedPool } from "@/store/selected-pool-store";
@@ -124,6 +124,9 @@ const formatTokenAmount = (amount: number): string => {
   return amount.toFixed(2);
 };
 
+const fmtUsd = (n: number): string =>
+  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 // Build a single pool table row from live on-chain pool stats
 const buildPoolRow = (
   assetSymbol: string,
@@ -135,7 +138,13 @@ const buildPoolRow = (
     borrowAPY: string;
     isLoading?: boolean;
   },
-  collateralIcons: string[]
+  collateralIcons: string[],
+  price: number,
+  // Icon to show in "Your Supply", or null for a "—" dash. USDC-family pools
+  // (BLUSDC/AqUSDC/SoUSDC) always show the USDC icon since they're the same
+  // underlying asset regardless of which specific vault you've supplied to;
+  // XLM stays gated on an actual XLM position.
+  yourSupplyIcon: string | null
 ) => {
   const totalSupply = parseFloat(pool.totalSupply) || 0;
   const totalBorrowed = parseFloat(pool.totalBorrowed) || 0;
@@ -148,7 +157,7 @@ const buildPoolRow = (
       { chain: assetSymbol, title: assetSymbol, tag: "Active" },
       {
         title: `${formatTokenAmount(totalSupply)} ${assetSymbol}`,
-        tag: `${totalSupply.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(totalSupply * price),
       },
       {
         title: `${supplyAPY.toFixed(2)}%`,
@@ -156,7 +165,7 @@ const buildPoolRow = (
       },
       {
         title: `${formatTokenAmount(totalBorrowed)} ${assetSymbol}`,
-        tag: `${totalBorrowed.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(totalBorrowed * price),
       },
       {
         title: `${borrowAPY.toFixed(2)}%`,
@@ -171,11 +180,16 @@ const buildPoolRow = (
         tag: "Collateral",
         clickable: "toggle",
       },
+      yourSupplyIcon
+        ? { onlyIcons: [yourSupplyIcon], tag: "Supplied" }
+        : { title: "—" },
     ],
   };
 };
 
-// Build a positions row showing user's deposited/borrowed amount for an asset
+// Build a positions row showing user's deposited amount for an asset. No
+// "Assets Borrowed" column here — this table is already scoped to the user's
+// own supplied positions, so a pool-wide borrow figure doesn't apply.
 const buildPositionRow = (
   assetSymbol: string,
   position: {
@@ -189,10 +203,10 @@ const buildPositionRow = (
     supplyAPY: string;
     borrowAPY: string;
     utilizationRate: string;
-  }
+  },
+  price: number
 ) => {
   const deposited = parseFloat(position.deposited) || 0;
-  const borrowed = parseFloat(position.borrowed) || 0;
   const supplyAPY = parseFloat(pool.supplyAPY) || 0;
   const borrowAPY = parseFloat(pool.borrowAPY) || 0;
   const utilizationRate = parseFloat(pool.utilizationRate) || 0;
@@ -202,15 +216,11 @@ const buildPositionRow = (
       { chain: assetSymbol, title: assetSymbol, tag: "Active" },
       {
         title: `${formatTokenAmount(deposited)} ${assetSymbol}`,
-        tag: `${deposited.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(deposited * price),
       },
       {
         title: `${supplyAPY.toFixed(2)}%`,
         tag: `${supplyAPY.toFixed(2)}%`,
-      },
-      {
-        title: `${formatTokenAmount(borrowed)} ${assetSymbol}`,
-        tag: `${borrowed.toFixed(2)} ${assetSymbol}`,
       },
       {
         title: `${borrowAPY.toFixed(2)}%`,
@@ -225,6 +235,7 @@ const buildPositionRow = (
         tag: "Collateral",
         clickable: "toggle",
       },
+      { onlyIcons: [assetSymbol], tag: "Supplied" },
     ],
   };
 };
@@ -258,6 +269,16 @@ export default function Earn() {
       title: 'XLM',
       tag: 'Active'
     });
+  }, []);
+
+  // Deep-link into the Positions tab (e.g. from Portfolio's Lender "Current
+  // Positions" row) via /earn?tab=positions. Read directly off the URL
+  // instead of next/navigation's useSearchParams so this doesn't force a
+  // Suspense boundary on an otherwise fully client-rendered page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "positions") queueMicrotask(() => setActiveTab("positions"));
   }, []);
 
   const { totalDepositedUSD, earnedYieldUSD } = useMemo(() => {
@@ -355,27 +376,30 @@ export default function Earn() {
     [overviewHistory]
   );
 
-  // ─── Vaults Table ────────────────────────────────────────────────────────────
-  // Each row reflects live pool-level stats fetched from the lending contracts.
-  const liveVaultsTableBody = useMemo(
-    () => ({
-      rows: [
-        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"]),
-        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"]),
-        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"]),
-        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"]),
-      ],
-    }),
-    [pools]
-  );
-
-  // ─── Positions Table ─────────────────────────────────────────────────────────
-  // Shows only the assets where the user has a meaningful (non-dust) balance.
   // Dust threshold: 0.0001 token. After a 100% withdrawal, contracts typically
   // leave 1-100 stroops (1e-7 to 1e-5) of rounding residue in the user's
   // vToken balance — purely numerical, not a real position. Filtering at
   // 1e-4 hides that dust everywhere consistently.
   const POSITION_DUST = 1e-4;
+
+  // ─── Vaults Table ────────────────────────────────────────────────────────────
+  // Each row reflects live pool-level stats fetched from the lending contracts.
+  const liveVaultsTableBody = useMemo(() => {
+    const hasSupplied = (asset: (typeof ALL_ASSETS)[number]) => parseFloat(userPositions[asset]?.deposited || "0") > POSITION_DUST;
+    return {
+      rows: [
+        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"], tokenPrices["XLM"] ?? 0, hasSupplied("XLM") ? "XLM" : null),
+        // BLUSDC/AqUSDC/SoUSDC are all the same underlying USDC — always show
+        // the USDC icon here regardless of which specific vault holds it.
+        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
+        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
+        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
+      ],
+    };
+  }, [pools, userPositions, tokenPrices]);
+
+  // ─── Positions Table ─────────────────────────────────────────────────────────
+  // Shows only the assets where the user has a meaningful (non-dust) balance.
   const livePositionsTableBody = useMemo(() => {
     if (!userAddress) return { rows: [] };
 
@@ -391,11 +415,12 @@ export default function Earn() {
           : asset === "SOROSWAP_USDC" ? "SoUSDC"
           : asset === "USDC" ? "BLUSDC"
           : asset;
-        return buildPositionRow(displaySymbol, userPositions[asset], pools[asset]);
+        const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? (asset === "XLM" ? 0 : 1);
+        return buildPositionRow(displaySymbol, userPositions[asset], pools[asset], price);
       });
 
     return { rows };
-  }, [userAddress, userPositions, pools]);
+  }, [userAddress, userPositions, pools, tokenPrices]);
 
   // Tab-based table data
   const getTableDataForTab = (tabId: string) => {
@@ -405,10 +430,19 @@ export default function Earn() {
   };
 
   // ─── Row Click Handler ────────────────────────────────────────────────────────
+  // Looks up cells by column id (rather than a fixed numeric index) since the
+  // Vaults and Positions tabs render different heading sets (e.g. Positions
+  // has no "Assets Borrowed" column) — a fixed index would silently read the
+  // wrong cell depending on which tab was active when the row was clicked.
   const handleRowClick = useCallback(
     (row: { cell?: VaultTableCell[] }) => {
       const cells = row.cell ?? [];
       const id = cells[0]?.title ?? "";
+      const headings = activeTab === "positions" ? positionsTableHeadings : vaultsTableHeadings;
+      const cellFor = (headingId: string): VaultTableCell | undefined => {
+        const idx = headings.findIndex((h) => h.id === headingId);
+        return idx === -1 ? undefined : cells[idx];
+      };
 
       if (id) {
         const assetType =
@@ -433,14 +467,14 @@ export default function Earn() {
           chain: cells[0]?.chain ?? "XLM",
           title: cells[0]?.title ?? "",
           tag: cells[0]?.tag ?? "Active",
-          assetsSupplied: { title: cells[1]?.title || "", tag: cells[1]?.tag || "" },
-          supplyApy: { title: cells[2]?.title || "", tag: cells[2]?.tag || "" },
-          assetsBorrowed: { title: cells[3]?.title || "", tag: cells[3]?.tag || "" },
-          borrowApy: { title: cells[4]?.title || "", tag: cells[4]?.tag || "" },
-          utilizationRate: { title: cells[5]?.title || "", tag: cells[5]?.tag || "" },
+          assetsSupplied: { title: cellFor("assets-supplied")?.title || "", tag: cellFor("assets-supplied")?.tag || "" },
+          supplyApy: { title: cellFor("supply-apy")?.title || "", tag: cellFor("supply-apy")?.tag || "" },
+          assetsBorrowed: { title: cellFor("assets-borrowed")?.title || "", tag: cellFor("assets-borrowed")?.tag || "" },
+          borrowApy: { title: cellFor("borrow-apy")?.title || "", tag: cellFor("borrow-apy")?.tag || "" },
+          utilizationRate: { title: cellFor("utilization-rate")?.title || "", tag: cellFor("utilization-rate")?.tag || "" },
           collateral: {
-            onlyIcons: cells[6]?.onlyIcons || [],
-            tag: cells[6]?.tag || "Collateral",
+            onlyIcons: cellFor("collateral")?.onlyIcons || [],
+            tag: cellFor("collateral")?.tag || "Collateral",
           },
         };
 
@@ -448,7 +482,7 @@ export default function Earn() {
         router.push(`/earn/${id}`);
       }
     },
-    [router, setSelectedVault]
+    [router, setSelectedVault, activeTab]
   );
 
   const earnCarouselItems = [
@@ -538,7 +572,7 @@ export default function Earn() {
           }}
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          tableHeadings={tableHeadings}
+          tableHeadings={activeTab === "positions" ? positionsTableHeadings : vaultsTableHeadings}
           tableBody={getTableDataForTab(activeTab)}
           onRowClick={handleRowClick}
           hoverBackground="hover:bg-[#F1EBFD]"
