@@ -229,7 +229,6 @@ const buildPositionRow = (
         title: `${utilizationRate.toFixed(2)}%`,
         tag: `${utilizationRate.toFixed(2)}%`,
       },
-      { onlyIcons: [assetSymbol], tag: "Supplied" },
     ],
   };
 };

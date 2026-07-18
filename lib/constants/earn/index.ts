@@ -73,14 +73,14 @@ export const vaultsTableHeadings = [
   ]
 
 // Positions tab — the user's own holdings, so "Assets Borrowed" (a pool-wide
-// stat) is dropped; the row is already scoped to what the user supplied.
+// stat) is dropped; the row is already scoped to what the user supplied, so
+// a separate "Your Supply" column would just repeat "Assets Supplied".
 export const positionsTableHeadings = [
     { label: "Pool", id: "pool" },
     { label: "Assets Supplied", id: "assets-supplied" ,icon:true},
     { label: "Supply APY", id: "supply-apy" ,icon:true},
     { label: "Borrow APY", id: "borrow-apy" ,icon:true},
     { label: "Utilization Rate", id: "utilization-rate" ,icon:true},
-    { label: "Your Supply", id: "your-supply" ,icon:true},
   ]
 
 // Back-compat alias — kept in case anything still imports the old name.
