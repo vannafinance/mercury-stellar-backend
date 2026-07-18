@@ -71,6 +71,24 @@ const TokenIcon = ({ symbol, size = 20 }: { symbol: string; size?: number }) => 
   );
 };
 
+/** LP positions hold two tokens paired together — show both icons overlapping
+ * instead of just the collateral leg (which would look identical to a
+ * single-asset Blend position). */
+const PoolIcon = ({ position, size = 36 }: { position: LitePosition; size?: number }) => {
+  if (position.poolType !== "lp" || position.poolTokens.length < 2) {
+    return <TokenIcon symbol={position.collateralAsset} size={size} />;
+  }
+  return (
+    <div className="flex items-center -space-x-[10px] shrink-0">
+      {position.poolTokens.slice(0, 2).map((t, i) => (
+        <div key={t} className="relative" style={{ zIndex: 2 - i }}>
+          <TokenIcon symbol={t} size={size} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const statusMeta = (s: LitePosition["status"]) =>
   s === "active"
     ? { label: "Safe", color: "#10B981" }
@@ -159,6 +177,12 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         debt          = borrow (principal + accrued borrow interest)
         equity        = totalSupplied − debt = collateral + earnings                */
   const netValueUsd = position.collateralUsd + position.earningsUsd;
+
+  // For an LP position, both legs are pooled together and earn one combined
+  // supply APR — "LP Value" (total deployed) is the number that actually
+  // matches what the Farm page shows for the same pool, distinct from
+  // "Net Value" (equity) above.
+  const lpValueUsd = position.collateralUsd + position.borrowUsd;
 
   const projectedHf = exit.projectedHf;
   const projectedLiquidity = exit.remainingBorrowUsd;
@@ -323,7 +347,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         <div className={`w-full rounded-xl border p-5 ${cardBg}`}>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <TokenIcon symbol={position.collateralAsset} size={36} />
+              <PoolIcon position={position} size={36} />
               <div className="flex flex-col min-w-0">
                 <h2 className={`text-[18px] font-bold leading-6 truncate ${headingText}`}>
                   {position.poolLabel}
@@ -341,6 +365,28 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
               {position.leverage.toFixed(1)}× leverage
             </span>
           </div>
+
+          {/* LP Value — total pooled across both legs, matching how the Farm
+              page presents the same Aquarius/Soroswap position. Distinct from
+              "Net Value" below (your equity), which nets out the debt. */}
+          {position.poolType === "lp" && (
+            <div className={`mt-4 flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${subMuted}`}>
+                  LP Value
+                </span>
+                <PoolIcon position={position} size={18} />
+                <span className={`text-[13px] font-semibold truncate ${headingText}`}>
+                  {position.collateralAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {position.collateralAsset}
+                  {" + "}
+                  {position.borrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {position.borrowAsset}
+                </span>
+              </div>
+              <span className={`text-[13px] font-bold shrink-0 ${headingText}`}>
+                ${lpValueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          )}
 
           {/* Morpho-style hero stats */}
           <div className={`grid grid-cols-2 sm:grid-cols-4 gap-0 mt-5 rounded-lg border ${divider}`}>

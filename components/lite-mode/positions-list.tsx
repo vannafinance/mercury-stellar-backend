@@ -36,6 +36,24 @@ const TokenIcon = ({ symbol, size = 20 }: { symbol: string; size?: number }) => 
   );
 };
 
+/** LP positions hold two tokens paired together — show both icons overlapping
+ * (like the Farm page's pool rows) instead of just the collateral leg, which
+ * would otherwise look identical to a single-asset Blend position. */
+const PoolIcon = ({ position, size = 28 }: { position: LitePosition; size?: number }) => {
+  if (position.poolType !== "lp" || position.poolTokens.length < 2) {
+    return <TokenIcon symbol={position.collateralAsset} size={size} />;
+  }
+  return (
+    <div className="flex items-center -space-x-[8px] shrink-0">
+      {position.poolTokens.slice(0, 2).map((t, i) => (
+        <div key={t} className="relative" style={{ zIndex: 2 - i }}>
+          <TokenIcon symbol={t} size={size} />
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const statusLabel = (s: LitePosition["status"]) =>
   s === "active" ? "Safe" : s === "risky" ? "At Risk" : "Liquidation";
 
@@ -119,7 +137,7 @@ export const PositionsList = ({ positions, onSelect }: PositionsListProps) => {
             <div className="hidden md:grid grid-cols-[1.4fr_1fr_1fr_1fr_0.9fr_0.9fr_auto] items-center gap-4 px-5 py-4">
               {/* Pool */}
               <div className="flex items-center gap-3 min-w-0">
-                <TokenIcon symbol={p.collateralAsset} size={28} />
+                <PoolIcon position={p} size={28} />
                 <div className="flex flex-col min-w-0">
                   <span className={`text-[13px] font-semibold leading-5 truncate ${headingText}`}>
                     {p.poolLabel}
@@ -211,7 +229,7 @@ export const PositionsList = ({ positions, onSelect }: PositionsListProps) => {
             <div className="md:hidden flex flex-col gap-3 px-4 py-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <TokenIcon symbol={p.collateralAsset} size={28} />
+                  <PoolIcon position={p} size={28} />
                   <div className="flex flex-col min-w-0">
                     <span className={`text-[13px] font-semibold truncate ${headingText}`}>
                       {p.poolLabel}

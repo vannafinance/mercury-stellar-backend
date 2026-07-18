@@ -94,10 +94,14 @@ const toChartData = (
   key: "totalDepositedUSD" | "earnedYieldUSD"
 ): Array<{ date: string; amount: number }> => {
   if (snapshots.length === 0) return [];
-  // Earned yield on testnet/short timeframes is often well under $0.01.
-  // Rounding to 2 decimals would flatten the chart to zero, so keep more
-  // precision for earnings while keeping deposits at 2 decimals.
-  const decimals = key === "earnedYieldUSD" ? 6 : 2;
+  // Same precision as what's actually displayed (2 decimals) for both series.
+  // Earnings used to get 6 decimals so testnet's often-sub-cent yield wasn't
+  // "flattened to zero" — but that made the chart plot movement the headline
+  // stat (rounded to $0.00) never shows, drawing a misleadingly dramatic
+  // curve out of pure sub-cent noise. Matching the display precision means a
+  // genuinely-$0.00 account renders a flat line here too, same as Overall
+  // Deposit.
+  const decimals = 2;
   const points = snapshots
     .map((item) => ({
       date: new Date(item.timestamp).toISOString(),
@@ -140,11 +144,11 @@ const buildPoolRow = (
   },
   collateralIcons: string[],
   price: number,
-  // Icon to show in "Your Supply", or null for a "—" dash. USDC-family pools
-  // (BLUSDC/AqUSDC/SoUSDC) always show the USDC icon since they're the same
-  // underlying asset regardless of which specific vault you've supplied to;
-  // XLM stays gated on an actual XLM position.
-  yourSupplyIcon: string | null
+  // How much of THIS specific pool's asset the connected wallet has supplied
+  // — 0 when they have no position here. Rendered the same two-line way as
+  // "Assets Supplied" (amount on top, $ value below) so "Your Supply" reads
+  // consistently instead of collapsing to a bare icon or dash.
+  yourSupplyAmount: number
 ) => {
   const totalSupply = parseFloat(pool.totalSupply) || 0;
   const totalBorrowed = parseFloat(pool.totalBorrowed) || 0;
@@ -176,13 +180,14 @@ const buildPoolRow = (
         tag: `${utilizationRate.toFixed(2)}%`,
       },
       {
+        title: `${formatTokenAmount(yourSupplyAmount)} ${assetSymbol}`,
+        tag: fmtUsd(yourSupplyAmount * price),
+      },
+      {
         onlyIcons: collateralIcons,
         tag: "Collateral",
         clickable: "toggle",
       },
-      yourSupplyIcon
-        ? { onlyIcons: [yourSupplyIcon], tag: "Supplied" }
-        : { title: "—" },
     ],
   };
 };
@@ -230,12 +235,12 @@ const buildPositionRow = (
         title: `${utilizationRate.toFixed(2)}%`,
         tag: `${utilizationRate.toFixed(2)}%`,
       },
+      { onlyIcons: [assetSymbol], tag: "Supplied" },
       {
         onlyIcons: [assetSymbol],
         tag: "Collateral",
         clickable: "toggle",
       },
-      { onlyIcons: [assetSymbol], tag: "Supplied" },
     ],
   };
 };
@@ -385,15 +390,18 @@ export default function Earn() {
   // ─── Vaults Table ────────────────────────────────────────────────────────────
   // Each row reflects live pool-level stats fetched from the lending contracts.
   const liveVaultsTableBody = useMemo(() => {
-    const hasSupplied = (asset: (typeof ALL_ASSETS)[number]) => parseFloat(userPositions[asset]?.deposited || "0") > POSITION_DUST;
+    // Below dust, treat as no position — matches the Positions tab's own
+    // cutoff so "Your Supply" doesn't show stroop-level rounding residue.
+    const suppliedAmount = (asset: (typeof ALL_ASSETS)[number]) => {
+      const amt = parseFloat(userPositions[asset]?.deposited || "0");
+      return amt > POSITION_DUST ? amt : 0;
+    };
     return {
       rows: [
-        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"], tokenPrices["XLM"] ?? 0, hasSupplied("XLM") ? "XLM" : null),
-        // BLUSDC/AqUSDC/SoUSDC are all the same underlying USDC — always show
-        // the USDC icon here regardless of which specific vault holds it.
-        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
-        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
-        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, "USDC"),
+        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"], tokenPrices["XLM"] ?? 0, suppliedAmount("XLM")),
+        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
+        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
+        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"], tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
       ],
     };
   }, [pools, userPositions, tokenPrices]);
@@ -533,16 +541,16 @@ export default function Earn() {
           <article className="flex-1 min-w-0">
             <CollapsibleChart
               label="Net Earnings"
+              // Renders the same way "Overall Deposit" does at $0.00 — a flat
+              // chart, not a special empty-state card — so a brand-new
+              // account looks consistent across both cards.
               statValue={(() => {
                 const v = liveEarnedYieldData.length > 0
                   ? liveEarnedYieldData[liveEarnedYieldData.length - 1].amount
                   : 0;
-                // Below $0.01, show more decimals so micro-yield is visible
-                // instead of collapsing to "$0.00".
-                const max = v > 0 && v < 0.01 ? 6 : 2;
                 return `$${v.toLocaleString(undefined, {
                   minimumFractionDigits: 2,
-                  maximumFractionDigits: max,
+                  maximumFractionDigits: 2,
                 })}`;
               })()}
               chartProps={{
