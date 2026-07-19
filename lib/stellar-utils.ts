@@ -8,8 +8,27 @@
  * All on-chain amounts are handled in WAD (18-decimal fixed point) on the
  * lending-pool side, while SAC token balances use each token's own decimals.
  */
-import { requestAccess, getAddress, signTransaction } from '@stellar/freighter-api';
+import { requestAccess, getAddress, signTransaction, isConnected } from '@stellar/freighter-api';
 import * as StellarSdk from '@stellar/stellar-sdk';
+
+/**
+ * Race a Freighter API promise against a timeout. Freighter's messaging can hang
+ * indefinitely when the extension is missing, locked, or its popup never gets a
+ * response — which otherwise leaves the UI stuck on "Connecting…" forever with no
+ * error. This guarantees the call always settles so the caller can surface a
+ * clear message and reset its loading state.
+ */
+function freighterWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${label} timed out — check that Freighter is installed, unlocked, and set to Testnet.`)),
+        ms,
+      ),
+    ),
+  ]);
+}
 
 // Soroban Network Constants
 /** Network passphrase identifying the Stellar testnet for transaction signing. */
@@ -146,23 +165,51 @@ export class WalletService {
    */
   static async connectWallet(): Promise<{ address: string; success: boolean; error?: string }> {
     try {
-      const accessGranted = await requestAccess();
-      if (!accessGranted) {
-        return { address: '', success: false, error: 'Please approve the connection in Freighter' };
+      // Attempt the real access request DIRECTLY (this triggers the Freighter
+      // popup). We deliberately do NOT hard-gate on isConnected() first: that
+      // check false-negatives right after page load / slow inject and would wrongly
+      // report "not detected" for users who do have Freighter. The timeout below
+      // means a genuinely missing/unresponsive extension surfaces an error instead
+      // of hanging on "Connecting…" forever.
+      //
+      // v6 note: requestAccess() returns { address, error } — NOT a boolean (the
+      // old `if (!accessGranted)` check never fired because the object is truthy).
+      const access = await freighterWithTimeout(requestAccess(), 60000, 'Freighter access request');
+      if (access.error) {
+        return { address: '', success: false, error: access.error.message || 'Please approve the connection in Freighter' };
       }
-      
-      const result = await getAddress();
-      if (result.error) {
-        return { address: '', success: false, error: result.error };
+
+      let address = access.address;
+      if (!address) {
+        const result = await freighterWithTimeout(getAddress(), 15000, 'Freighter address read');
+        if (result.error) {
+          return { address: '', success: false, error: result.error.message || 'Failed to read address' };
+        }
+        address = result.address;
       }
-      
-      if (!result.address) {
-        return { address: '', success: false, error: 'Wallet is locked. Please unlock Freighter' };
+
+      if (!address) {
+        return { address: '', success: false, error: 'Wallet is locked. Please unlock Freighter.' };
       }
-      
-      return { address: result.address, success: true };
+
+      return { address, success: true };
     } catch (error: any) {
-      return { address: '', success: false, error: error?.message || 'Failed to connect wallet' };
+      // We only reach here on a timeout/throw — i.e. the extension never answered.
+      // Probe isConnected() (best-effort) to give a precise message.
+      let detected = false;
+      try {
+        const conn = await freighterWithTimeout(isConnected(), 4000, 'Freighter detection');
+        detected = !!conn?.isConnected;
+      } catch {
+        /* ignore — treat as not detected */
+      }
+      return {
+        address: '',
+        success: false,
+        error: detected
+          ? 'Freighter did not respond. Unlock it, set it to Testnet, and try again.'
+          : 'Freighter not detected. Install/enable the extension, then refresh this page.',
+      };
     }
   }
 
@@ -174,7 +221,12 @@ export class WalletService {
    */
   static async checkConnection(): Promise<{ address: string; connected: boolean }> {
     try {
-      const result = await getAddress();
+      // Silent auto-reconnect on mount/focus: getAddress() returns an address only
+      // if the site is already allowed (it does NOT prompt), so we call it directly.
+      // The timeout means a missing/unresponsive extension resolves to "not
+      // connected" quickly instead of stalling the app. No isConnected() hard-gate
+      // here — it false-negatives on slow inject and would suppress a valid session.
+      const result = await freighterWithTimeout(getAddress(), 10000, 'Freighter address read');
       if (result.address && !result.error) {
         return { address: result.address, connected: true };
       }

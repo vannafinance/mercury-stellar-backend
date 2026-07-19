@@ -531,11 +531,44 @@ export class MarginAccountService {
         .build();
 
       const preparedTx = await server.prepareTransaction(transaction);
-      
-      // Sign the transaction
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
+
+      // Sign the transaction. Pass `address` so Freighter (v6) signs with the
+      // connected account explicitly.
+      let signResult;
+      try {
+        signResult = await signTransaction(preparedTx.toXDR(), {
+          networkPassphrase: NETWORK_PASSPHRASE,
+          address: userAddress,
+        });
+      } catch (signErr: any) {
+        // Freighter THREW while parsing/handling our XDR (rather than returning an
+        // { error }). For a protocol-22 Soroban tx this is almost always an
+        // outdated Freighter extension that can't deserialize the XDR ("attempt to
+        // read outside the boundary of the buffer"), or the wrong network. Turn the
+        // cryptic XDR error into something the user can act on.
+        const detail = signErr?.message || 'XDR error';
+        throw new Error(
+          `Freighter couldn't process the transaction (${detail}). ` +
+          `Update the Freighter extension to the latest version and make sure it's set to Testnet, then try again.`
+        );
+      }
+
+      // v6 returns { signedTxXdr, signerAddress, error }. Without checking `error`,
+      // a declined/failed sign leaves signedTxXdr empty and fromXDR throws the
+      // cryptic "attempt to read outside the boundary of the buffer". Surface the
+      // real reason instead.
+      if (signResult.error) {
+        throw new Error(
+          typeof signResult.error === 'string'
+            ? signResult.error
+            : signResult.error.message || 'Freighter declined or failed to sign the transaction.'
+        );
+      }
+      if (!signResult.signedTxXdr) {
+        throw new Error(
+          'Freighter returned no signed transaction. Ensure it is unlocked, set to Testnet, and that you approved the request.'
+        );
+      }
 
       const signedTx = StellarSdk.TransactionBuilder.fromXDR(
         signResult.signedTxXdr,

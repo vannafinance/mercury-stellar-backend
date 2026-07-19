@@ -42,6 +42,7 @@ interface ChatRequestBody {
   user_id?: unknown;
   message?: unknown;
   tier?: unknown;
+  smart_account?: unknown;
 }
 
 export async function POST(req: NextRequest) {
@@ -66,6 +67,13 @@ export async function POST(req: NextRequest) {
     user_id: typeof body.user_id === "string" && body.user_id ? body.user_id : "guest",
     message: body.message,
     tier: body.tier === "paid" ? "paid" : "free",
+    // Account context: the frontend is the source of truth for the smart-account
+    // (C...) address — the chain has no active-account discovery. Only forward a
+    // well-formed value; otherwise omit so the orchestrator treats it as absent.
+    smart_account:
+      typeof body.smart_account === "string" && body.smart_account.startsWith("C")
+        ? body.smart_account
+        : null,
   };
 
   let upstream: Response;
