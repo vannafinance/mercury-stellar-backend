@@ -463,8 +463,12 @@ export class SoroswapService {
     const amountOut = StellarSdk.xdr.ScVal.scvVec(
       amountsOutWad.map((amt) => StellarSdk.nativeToScVal(amt, { type: 'u256' }))
     );
+    // Testnet has 3 genuinely distinct USDC tokens (one per DEX's own pool) —
+    // the generic "USDC" symbol resolves to Blend's token, not Soroswap's own,
+    // so it fails this Controller's can_call check. Map it to the real
+    // on-chain symbol here rather than trusting every caller to know that.
     const tokensOutVal = StellarSdk.xdr.ScVal.scvVec(
-      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t))
+      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t === 'USDC' ? 'SOUSDC' : t))
     );
     const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
     const tokensIn = StellarSdk.xdr.ScVal.scvVec([]);

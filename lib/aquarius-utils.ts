@@ -910,8 +910,12 @@ export class AquariusService {
       amountsOutWad.map((amt) => StellarSdk.nativeToScVal(amt, { type: 'u256' }))
     );
 
+    // Testnet has 3 genuinely distinct USDC tokens (one per DEX's own pool) —
+    // the generic "USDC" symbol resolves to Blend's token, not Aquarius's own,
+    // so it fails this Controller's can_call check. Map it to the real
+    // on-chain symbol here rather than trusting every caller to know that.
     const tokensOutVal = StellarSdk.xdr.ScVal.scvVec(
-      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t))
+      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t === 'USDC' ? 'AQUSDC' : t))
     );
 
     const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
@@ -1390,10 +1394,14 @@ export class AquariusService {
     amountIn: bigint,
     marginAccountAddress: string,
   ): Buffer {
+    // Same "USDC" -> "AQUSDC" mapping as buildExternalProtocolCallBytes — the
+    // generic symbol resolves to Blend's token via the Registry, which fails
+    // this Controller's can_call (it only accepts XLM / its own AQUSDC).
+    const onChainSymbol = (s: 'XLM' | 'USDC') => (s === 'USDC' ? 'AQUSDC' : s);
     const tokensInVal = StellarSdk.xdr.ScVal.scvVec([]);
     const tokensOutVal = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.xdr.ScVal.scvSymbol(tokenInSymbol),
-      StellarSdk.xdr.ScVal.scvSymbol(tokenOutSymbol),
+      StellarSdk.xdr.ScVal.scvSymbol(onChainSymbol(tokenInSymbol)),
+      StellarSdk.xdr.ScVal.scvSymbol(onChainSymbol(tokenOutSymbol)),
     ]);
     // IMPORTANT: SmartAccount reads the swap amount from amount_out[0] (in WAD/1e18).
     // amount_in is intentionally empty — this matches buildExternalProtocolCallBytes convention.

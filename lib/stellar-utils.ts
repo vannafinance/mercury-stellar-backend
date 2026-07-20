@@ -5,42 +5,75 @@ export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
-// Redeployed 2026-07-11 (fresh deploy_all — full clean redeploy of every core
-// contract, all 4 lending pools + vTokens, and TrackingToken, using vanna_deployer.
-// Ships the Soroswap/Aquarius AddLiquidity auth-mismatch fix (router_quote
-// round-trip re-derivation in SmartAccountContract) plus everything from the
-// 2026-07-10 deployment (RemoveLiquidity/Blend-Withdraw budget exclusions).
-// Every address below was captured directly from this deploy's own on-chain
-// events, including the vTokens — no more stale-address gap. See
-// CONTRACT_COMMAND.md §A7 for the full command log.
+// Redeployed 2026-07-19 (third redeploy same day) — testnet genuinely has
+// THREE separate USDC test tokens (one per DEX's own pre-existing pool,
+// none interchangeable), reversing the prior "single canonical USDC"
+// collapse. Registry.get_protocol_config() now returns aquarius_usdc/
+// soroswap_usdc as their own real addresses alongside the Blend-side `usdc`.
+// Each USDC variant has its own genuine lending pool (3 pools total, plus
+// XLM = 4). See CONTRACT_COMMAND.md for the full command sequence.
+//
+// Live-verified this deploy (real testnet transactions): add liquidity to
+// all 4 lending pools -> create margin account -> deposit XLM + borrow
+// BLUSDC -> deposit XLM + borrow AqUSDC -> deposit XLM + borrow SoUSDC ->
+// Blend Supply (exec) -> Soroswap AddLiquidity + RemoveLiquidity (exec),
+// all succeeding with real fund movement and TrackingToken mint/burn.
+//
+// Aquarius AddLiquidity is registered and reachable but currently BLOCKED by
+// a real external-protocol limitation: the live Aquarius router's `deposit`
+// performs gauge/reward checkpoint accounting that reads a classic-asset
+// trustline balance for `user` — a G-account without that trustline gets a
+// graceful "trustline missing" error, but a smart-contract `user` has no
+// trustline concept at all, so the same check panics unhandled instead.
+// This is a protocol-side constraint on this specific gauge-enabled pool,
+// not a bug in our Controller — confirmed by testing every plausible
+// auth-entry shape (flat siblings, nested-under-router, nested-under-pool)
+// and by reproducing the identical trustline-missing failure with a second
+// real G-account. Aquarius RemoveLiquidity was never reached because of this.
 export const CONTRACT_ADDRESSES = {
-  REGISTRY: 'CBUR7X2M2FQIIF237GNXYJGLHNM3BB3EPEUVYBRPMXVITN4SJP6PJVW2',
-  ORACLE: 'CAWF5QNGOBDZU2NHUJAJPEEPYVANA4W4DFORZLIJXZGV5YIVKWSPMRIZ',
-  RATE_MODEL: 'CASLR2WN5K5I7KJACBHOMM5OXRI4JXT6QIZDW5QSD5JNATRNBWCBJEYU',
-  RISK_ENGINE: 'CCEDO4CLQLM6V7CTTRHTWV73KYLJYKEKTRTVTYJKWDZICSE5PVYGQLCJ',
-  ACCOUNT_MANAGER: 'CASO66NZT3QVCWWWL2TFUW5F3YW4C4IVYENRBUCBRHHRSE3NXRW3SYZP',
-  TRACKING_TOKEN: 'CBH6O3O6I7DYVXAPA6IBP2O53AS4QS7AJJ5KIOOJ6R3JMRP6HGTF6KIB',
+  REGISTRY: 'CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO',
+  ORACLE: 'CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB',
+  RATE_MODEL: 'CBMJ7DD4EUVZWFRPKRPGYK2NADCIGY5OFTPN7PJ7SAOIJI7IQTVHOJT6',
+  RISK_ENGINE: 'CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY',
+  ACCOUNT_MANAGER: 'CAZLR6EHZXQNZJIFNP6F7SIJQC3P64MKHHQNZSSG5BNAEFCYTTGTDZXB',
+  TRACKING_TOKEN: 'CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2',
+  CONTROLLER_FACADE: 'CB2SEZGDRPS4O56UYQAERQGHM7V6ZDMZZE5AYOGERRGWT5CUGRPVDWEH',
+  POOL_DEPLOYER: 'CCURFEEXKVGDAKXAGNG4NHEK2RRSOBOVUZDNHI32DFBAF2HWO57JKLIP',
 
-  // vToken receipt contracts — fresh, matched to the pools below.
-  VXLM_TOKEN: 'CBOVX53HHAJEM3KECYI66XW5NZJVNNYPGXQ4B4F5T2MJSDDK3NCENNLS',
-  VUSDC_TOKEN: 'CCKRLPKII3U47ACRGYVSNT3ZZ5AA3N63HYDIQEFTWSPWLSIAEXI2XPIB',
-  VBLEND_USDC_TOKEN: 'CCKRLPKII3U47ACRGYVSNT3ZZ5AA3N63HYDIQEFTWSPWLSIAEXI2XPIB',
-  VAQUARIUS_USDC_TOKEN: 'CBPCN7SII4SICPNAJ44FBUYMOXE36Z7QWZ5V6VHBAFVW3DYA2QFO623C',
-  VSOROSWAP_USDC_TOKEN: 'CDZ75VRBKPNEDLYU2FP2WVC2UTBC7GXRL7X4SFLOYDMEKZEJMOXRVL5B',
+  // Per-protocol Controllers — resolved by Registry.get_controller_for(target)
+  BLEND_CONTROLLER: 'CDCRNCNLS3B5I7OPQZEOZSHTLB5FWOFSBQTB24FOWM4VF3INK2BW4BJ3',
+  SOROSWAP_CONTROLLER: 'CA4PTRNIFZHB7OLQHEI4OYUJETEVBK7FDHPQ4R2WZS3DVHRZDWBGCB4V',
+  AQUARIUS_CONTROLLER: 'CBZYZARR36IFXTTF7HWAUAXCE4NYB4AESF44XUEE7R6K6L4B4MGK7HUX',
 
-  // Lending Pools
-  LENDING_PROTOCOL_XLM: 'CBFBE5H5UZQYNFI3IWJP3J2VIBXPQ6JPJHKZHZ3HHRXZYEZW7G3FM6QX',
-  LENDING_PROTOCOL_USDC: 'CCYIBZLWBKSNJO7V7JGWVVUFOYVTHUZB72SXV7MRRQ3LTWZUHLIGRFJA',
-  LENDING_PROTOCOL_BLEND_USDC: 'CCYIBZLWBKSNJO7V7JGWVVUFOYVTHUZB72SXV7MRRQ3LTWZUHLIGRFJA',
-  LENDING_PROTOCOL_AQUARIUS_USDC: 'CBTJQONKFKGTUGFLOGL6WIP4ZWPFMX7AUMRRIDI5G7GJCVBLPDXD4IVD',
-  LENDING_PROTOCOL_SOROSWAP_USDC: 'CAE3QRT6RBEMJVA7ENJB4TFF24BZSGENCHYKPNSNROVL2BGWOTAAESDY',
+  // vToken receipt contracts, one per lending pool
+  VXLM_TOKEN: 'CDGYZSMWOOKM55WEKEQ2HEMM7RS2KRA7MYI2DDYXWV5YHGUVUGQZSOCB',
+  VBLEND_USDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
+  VAQUARIUS_USDC_TOKEN: 'CAU5GVAGCWLOIAGFHQFEVBJLDHVS2KH4YPRQ34CIDG2T7RDAWWWODKRV',
+  VSOROSWAP_USDC_TOKEN: 'CAIMEE4EZ3FUMOBTVV7DKGI2TDACWXUWU6Z2RJ3NMP642TDKQHHOEIWG',
 
-  // Blend Capital (testnet)
+  // Lending Pools — 4 genuinely distinct pools now: XLM plus one per USDC variant.
+  LENDING_PROTOCOL_XLM: 'CB3LCPDMPRTRXJHO7ZB3OORQDL2AV5FTJPPZOPHTZFOMUPMJY55RHYR3',
+  LENDING_PROTOCOL_BLEND_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
+  LENDING_PROTOCOL_AQUARIUS_USDC: 'CDKMMD63RUZNROFZZD64QZNEQ2FR5X62R4FE6E3USJ5VN5KY7QM6F2FD',
+  LENDING_PROTOCOL_SOROSWAP_USDC: 'CCZQUQQVZVNZMTG2P6MVAGA7V2DRTCII6IGVEQ5YUCYP7MXA7SMLHETP',
+  // Back-compat alias for call sites still keyed on a single "USDC" pool —
+  // resolves to Blend's own pool specifically, not a shared canonical one.
+  LENDING_PROTOCOL_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
+
+  // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
+  BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  AQUARIUS_USDC_TOKEN: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
+  SOROSWAP_USDC_TOKEN: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
+  // Back-compat alias for old single-USDC call sites — resolves to Blend's own token.
+  USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+
+  // Blend Capital (testnet, external, unchanged)
   BLEND_POOL: 'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF',
   BLEND_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
   BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
-  // Aquarius AMM (testnet)
+  // Aquarius AMM (testnet, external). Registered and reachable — see the
+  // gauge/trustline limitation noted above for why AddLiquidity still fails.
   AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
   AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
   AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
@@ -48,7 +81,8 @@ export const CONTRACT_ADDRESSES = {
   AQUARIUS_XLM_AQUA_POOL: 'CCSXYUVLYALKJGIIYMGYLZI447VS6TDWFTVDL43B4IKK2WERHLWUVCRC',
   AQUARIUS_XLM_USDT_POOL: 'CA6DAGOMK5D7GKBNWVCIEAYSTPJXLQUFWFKSZOMNEM6BVOTUBDCTIT5I',
 
-  // Soroswap DEX (testnet)
+  // Soroswap DEX (testnet, external). XLM/SoUSDC pair auto-created live by
+  // the router's own add_liquidity (Soroswap creates pairs on demand).
   SOROSWAP_ROUTER: 'CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD',
   SOROSWAP_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
   SOROSWAP_USDC: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
@@ -57,6 +91,7 @@ export const CONTRACT_ADDRESSES = {
 
 export const ASSET_TYPES = {
   XLM: 'XLM',
+  // Back-compat alias for old single-USDC call sites — resolves to Blend's own pool/token.
   USDC: 'USDC',
   BLEND_USDC: 'BLEND_USDC',
   AQUARIUS_USDC: 'AQUARIUS_USDC',
@@ -384,7 +419,7 @@ export class ContractService {
           contractAddress = CONTRACT_ADDRESSES.VXLM_TOKEN;
           break;
         case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.VUSDC_TOKEN;
+          contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
           break;
         case ASSET_TYPES.BLEND_USDC:
           contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
@@ -680,7 +715,7 @@ export class ContractService {
           contractAddress = CONTRACT_ADDRESSES.VXLM_TOKEN;
           break;
         case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.VUSDC_TOKEN;
+          contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
           break;
         case ASSET_TYPES.BLEND_USDC:
           contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;

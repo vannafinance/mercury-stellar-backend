@@ -1483,14 +1483,56 @@ export class MarginAccountService {
    * @param borrowAmountWad - Borrow amount as a u256 WAD (18-decimal) string.
    * @returns `{ success, hash?, error? }`.
    */
+  /**
+   * Whether a borrow failure looks like the read-after-write ledger-lag race
+   * seen live on testnet: a footprint computed during simulate/prepare
+   * omits a storage key (e.g. a lending pool's `RateModel`) because, at
+   * simulation time, the RPC node's ledger view hadn't yet caught up with a
+   * just-confirmed prior transaction on the same account (e.g. the first
+   * leg of a dual borrow) — so a data-dependent code path (interest
+   * accrual only runs once the trader has nonzero borrow shares) took a
+   * different, wider branch by the time it actually executed on-chain than
+   * the branch simulation saw. Confirmed via a real failed tx's decoded
+   * diagnostic events: `{"storage":"exceeded_limit"}` /
+   * "trying to access contract data key outside of the footprint". Retrying
+   * after a short delay lets the RPC's view catch up and reliably succeeds.
+   */
+  private static isFootprintRaceError(raw: any): boolean {
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
+    return (
+      text.includes('outside of the footprint') ||
+      text.includes('exceeded_limit') ||
+      /budget|exceededlimit|resource/i.test(text)
+    );
+  }
+
   static async borrowTokens(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    borrowAmountWad: string
+  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    const first = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
+    if (first.success || !this.isFootprintRaceError(first.error)) {
+      return first;
+    }
+
+    // Give the RPC's ledger view a moment to catch up with the prior
+    // transaction on this account, then retry the whole build/simulate/
+    // prepare/sign/send cycle fresh — a stale footprint isn't fixable by
+    // resubmitting the same prepared transaction.
+    console.warn('⚠️ Borrow hit a footprint/ledger-lag race; retrying once after a short delay.');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
+  }
+
+  private static async borrowTokensAttempt(
     marginAccountAddress: string,
     tokenSymbol: string,
     borrowAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      
+
       const userAddress = await getAddress();
       if (userAddress.error) {
         return {
