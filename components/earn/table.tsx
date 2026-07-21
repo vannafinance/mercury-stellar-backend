@@ -431,7 +431,7 @@ const CellContent = ({
           )}
 
           <div className="w-fit h-fit flex gap-[8px] items-center">
-            {cell.chain && (
+            {cell.chain && iconPaths[cell.chain] && (
               <Image
                 src={iconPaths[cell.chain]}
                 alt={cell.chain}

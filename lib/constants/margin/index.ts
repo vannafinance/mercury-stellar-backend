@@ -22,6 +22,10 @@ export const COIN_ICONS: Record<string, string> = {
   AQUSDC: "/icons/usdc-icon.svg",
   SOUSDC: "/icons/usdc-icon.svg",
   USDC: "/icons/usdc-icon.svg",
+  BLND: "/icons/usdc-icon.svg",
+  AQUA: "/icons/aquarius-logo.png",
+  WETH: "/icons/eth-icon.png",
+  EURC: "/icons/eurc.svg",
 };
 
 // ============================================

@@ -52,6 +52,7 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   if (cleaned === "USDC" || cleaned === "BLUSDC" || cleaned === "BLEND_USDC") return "BLUSDC";
   if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "AqUSDC";
   if (cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC") return "SoUSDC";
+  if (cleaned === "BLND" || cleaned === "AQUA" || cleaned === "WETH" || cleaned === "EURC") return cleaned;
   return null;
 };
 
@@ -129,7 +130,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
@@ -177,6 +178,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       if (token === "BLUSDC") return parseFloat(balances.BLEND_USDC) || 0;
       if (token === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
       if (token === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
+      if (token === "BLND") return parseFloat(balances.BLND) || 0;
+      if (token === "AQUA") return parseFloat(balances.AQUA) || 0;
+      if (token === "WETH") return parseFloat(balances.WETH) || 0;
+      if (token === "EURC") return parseFloat(balances.EURC) || 0;
 
       return parseFloat(balances.XLM) || 0;
     } catch (error) {

@@ -40,16 +40,22 @@ export const SpotSection = () => {
   const { balance: xlm } = useSoroswapTokenBalance(marginAccountAddress, "XLM");
   const { balance: aqUsdc } = useAquariusTokenBalance(marginAccountAddress, "USDC");
   const { balance: ssUsdc } = useSoroswapTokenBalance(marginAccountAddress, "USDC");
+  const { balance: aqWeth } = useAquariusTokenBalance(marginAccountAddress, "WETH");
+  const { balance: aqAqua } = useAquariusTokenBalance(marginAccountAddress, "AQUA");
+  const { balance: ssEurc } = useSoroswapTokenBalance(marginAccountAddress, "EURC");
 
-  const prices = useTokenPrices(["XLM", "USDC"]);
+  const prices = useTokenPrices(["XLM", "USDC", "WETH", "AQUA", "EURC"]);
 
   const rows = useMemo(() => {
     const out: { cell: { title?: string; description?: string; chain?: string; titles?: string[]; tags?: string[] }[]; usd: number }[] = [];
 
-    const entries: { symbol: "XLM" | "USDC"; venue: string; balance: string }[] = [
+    const entries: { symbol: "XLM" | "USDC" | "WETH" | "AQUA" | "EURC"; venue: string; balance: string }[] = [
       { symbol: "XLM", venue: "Margin Account", balance: xlm },
       { symbol: "USDC", venue: "Aquarius", balance: aqUsdc },
       { symbol: "USDC", venue: "Soroswap", balance: ssUsdc },
+      { symbol: "WETH", venue: "Aquarius", balance: aqWeth },
+      { symbol: "AQUA", venue: "Aquarius", balance: aqAqua },
+      { symbol: "EURC", venue: "Soroswap", balance: ssEurc },
     ];
 
     entries.forEach(({ symbol, venue, balance }) => {
@@ -68,7 +74,7 @@ export const SpotSection = () => {
     });
 
     return out;
-  }, [xlm, aqUsdc, ssUsdc, prices]);
+  }, [xlm, aqUsdc, ssUsdc, aqWeth, aqAqua, ssEurc, prices]);
 
   const totalSpotUsd = rows.reduce((s, r) => s + r.usd, 0);
 

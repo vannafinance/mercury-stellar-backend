@@ -106,6 +106,14 @@ export class MarginAccountService {
       tokenContract = CONTRACT_ADDRESSES.AQUARIUS_USDC;
     } else if (contractTokenSymbol === "SOUSDC") {
       tokenContract = CONTRACT_ADDRESSES.SOROSWAP_USDC;
+    } else if (contractTokenSymbol === "BLND") {
+      tokenContract = CONTRACT_ADDRESSES.BLND_TOKEN;
+    } else if (contractTokenSymbol === "AQUA") {
+      tokenContract = CONTRACT_ADDRESSES.AQUA_TOKEN;
+    } else if (contractTokenSymbol === "WETH") {
+      tokenContract = CONTRACT_ADDRESSES.WETH_TOKEN;
+    } else if (contractTokenSymbol === "EURC") {
+      tokenContract = CONTRACT_ADDRESSES.EURC_TOKEN;
     }
 
     if (!tokenContract) return { ok: true };
@@ -150,6 +158,10 @@ export class MarginAccountService {
       USDC:   { assetType: ASSET_TYPES.USDC,          displayName: 'USDC' },
       AQUSDC: { assetType: ASSET_TYPES.AQUARIUS_USDC, displayName: 'Aquarius USDC' },
       SOUSDC: { assetType: ASSET_TYPES.SOROSWAP_USDC, displayName: 'Soroswap USDC' },
+      BLND:   { assetType: ASSET_TYPES.BLND,          displayName: 'BLND' },
+      AQUA:   { assetType: ASSET_TYPES.AQUA,          displayName: 'AQUA' },
+      WETH:   { assetType: ASSET_TYPES.WETH,          displayName: 'WETH' },
+      EURC:   { assetType: ASSET_TYPES.EURC,          displayName: 'EURC' },
     };
 
     const entry = poolMap[contractBorrowSymbol];
@@ -1159,8 +1171,16 @@ export class MarginAccountService {
       const sourceAccount = await server.getAccount(userAddress.address);
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
 
-      // Build function name based on token
+      // Build function name based on token. BLND/AQUA/WETH/EURC have no
+      // dedicated getter — they resolve through the Registry's generic
+      // Symbol -> Address index instead (see get_token_address_for in
+      // RegistryContract), which returns Option<Address>, unlike the other
+      // getters below which return the address directly.
       let functionName: string;
+      let callArgs: any[] = [];
+      const usesGenericTokenIndex =
+        contractTokenSymbol === 'BLND' || contractTokenSymbol === 'AQUA' ||
+        contractTokenSymbol === 'WETH' || contractTokenSymbol === 'EURC';
       if (contractTokenSymbol === 'XLM') {
         functionName = 'get_xlm_contract_address';
       } else if (contractTokenSymbol === 'BLUSDC' || contractTokenSymbol === 'USDC') {
@@ -1169,6 +1189,9 @@ export class MarginAccountService {
         functionName = 'get_aquarius_usdc_addr';
       } else if (contractTokenSymbol === 'SOUSDC') {
         functionName = 'get_soroswap_usdc_addr';
+      } else if (usesGenericTokenIndex) {
+        functionName = 'get_token_address_for';
+        callArgs = [StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' })];
       } else {
         return { configured: false, error: `Unknown token: ${contractTokenSymbol}` };
       }
@@ -1177,7 +1200,7 @@ export class MarginAccountService {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
       })
-        .addOperation(contract.call(functionName))
+        .addOperation(contract.call(functionName, ...callArgs))
         .setTimeout(30)
         .build();
 
@@ -1185,13 +1208,22 @@ export class MarginAccountService {
 
       if ('error' in simulationResult && simulationResult.error) {
         console.warn(`⚠️ ${contractTokenSymbol} not configured in Registry:`, simulationResult.error);
-        return { 
-          configured: false, 
-          error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.` 
+        return {
+          configured: false,
+          error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.`
         };
       }
 
       if ('result' in simulationResult && simulationResult.result) {
+        if (usesGenericTokenIndex) {
+          // Option<Address>: None decodes to null/undefined via scValToNative.
+          const decoded = simulationResult.result.retval
+            ? StellarSdk.scValToNative(simulationResult.result.retval)
+            : null;
+          return decoded
+            ? { configured: true }
+            : { configured: false, error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.` };
+        }
         return { configured: true };
       }
 
@@ -2099,6 +2131,10 @@ export class MarginAccountService {
         BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
         AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
         SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+        BLND: CONTRACT_ADDRESSES.BLND_TOKEN,
+        AQUA: CONTRACT_ADDRESSES.AQUA_TOKEN,
+        WETH: CONTRACT_ADDRESSES.WETH_TOKEN,
+        EURC: CONTRACT_ADDRESSES.EURC_TOKEN,
       };
       const tokenId = tokenIdBySymbol[norm];
       if (!tokenId) return null;
@@ -2291,6 +2327,12 @@ export class MarginAccountService {
       const REPAY_TOKEN_CONTRACT: Record<string, string> = {
         BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
         XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+        BLND: CONTRACT_ADDRESSES.BLND_TOKEN,
+        AQUA: CONTRACT_ADDRESSES.AQUA_TOKEN,
+        WETH: CONTRACT_ADDRESSES.WETH_TOKEN,
+        EURC: CONTRACT_ADDRESSES.EURC_TOKEN,
       };
       const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
       let interestTopUp = BigInt(0);

@@ -59,6 +59,9 @@ export const TOKEN_PRICES: Record<StellarAsset, number> = {
   AQUSDC: FALLBACK_PRICES.AQUSDC,
   SOUSDC: FALLBACK_PRICES.SOUSDC,
   EURC: FALLBACK_PRICES.EURC,
+  BLND: FALLBACK_PRICES.BLND,
+  AQUA: FALLBACK_PRICES.AQUA,
+  WETH: FALLBACK_PRICES.WETH,
 };
 
 /** Asset selector entries shown in the Risk Explorer side panel. */

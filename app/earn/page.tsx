@@ -20,9 +20,15 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   USDC: 'USDC',
   AQUARIUS_USDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
+  BLND: 'BLND',
+  AQUA: 'AQUA',
+  WETH: 'WETH',
+  EURC: 'EURC',
 };
 const HISTORY_MAX_ITEMS = 3000;
-const ALL_ASSETS = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+const ALL_ASSETS = [
+  "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC", "BLND", "AQUA", "WETH", "EURC",
+] as const;
 
 // Minimum spacing between persisted history snapshots. Without this, every
 // 30-second oracle refresh that nudges the price by even a hundredth of a
@@ -251,7 +257,7 @@ export default function Earn() {
   const { pools, isLoading: poolsLoading } = usePoolData();
   const { positions: userPositions, isLoading: positionsLoading } = useUserPositions();
   const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
-  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
   const [overviewHistory, setOverviewHistory] = useState<EarnOverviewSnapshot[]>([]);
 
   // Set default pool selection on mount
@@ -390,6 +396,10 @@ export default function Earn() {
         buildPoolRow("BLUSDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
         buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
         buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
+        buildPoolRow("BLND", pools.BLND, tokenPrices["BLND"] ?? 0, suppliedAmount("BLND")),
+        buildPoolRow("AQUA", pools.AQUA, tokenPrices["AQUA"] ?? 0, suppliedAmount("AQUA")),
+        buildPoolRow("WETH", pools.WETH, tokenPrices["WETH"] ?? 0, suppliedAmount("WETH")),
+        buildPoolRow("EURC", pools.EURC, tokenPrices["EURC"] ?? 0, suppliedAmount("EURC")),
       ],
     };
   }, [pools, userPositions, tokenPrices]);
@@ -399,7 +409,9 @@ export default function Earn() {
   const livePositionsTableBody = useMemo(() => {
     if (!userAddress) return { rows: [] };
 
-    const assetKeys = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+    const assetKeys = [
+      "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC", "BLND", "AQUA", "WETH", "EURC",
+    ] as const;
     const rows = assetKeys
       .filter(
         (asset) => parseFloat(userPositions[asset]?.deposited || "0") > POSITION_DUST ||
@@ -449,7 +461,12 @@ export default function Earn() {
               : id === "BLUSDC"
                 ? "USDC"
                 : id.toUpperCase();
-        if (assetType === "XLM" || assetType === "USDC" || assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC") {
+        if (
+          assetType === "XLM" || assetType === "USDC" ||
+          assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC" ||
+          assetType === "BLND" || assetType === "AQUA" ||
+          assetType === "WETH" || assetType === "EURC"
+        ) {
           setSelectedPool(assetType as AssetType, {
             id: id,
             chain: assetType,

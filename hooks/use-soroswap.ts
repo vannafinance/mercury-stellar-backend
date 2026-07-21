@@ -7,6 +7,7 @@ import {
   SoroswapPoolStats,
   SOROSWAP_POOLS,
   SoroswapPoolConfig,
+  SoroswapSwapSymbol,
 } from '@/lib/soroswap-utils';
 import { getSoroswapLpEventsFromMercury } from '@/lib/mercury-soroswap';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
@@ -41,7 +42,7 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
     queryFn: async () => {
       const results = await Promise.allSettled(
         SOROSWAP_POOLS.map((p) =>
-          SoroswapService.getPoolStats().then((s) => ({ id: p.id, stats: s })),
+          SoroswapService.getPoolStats(p.pairAddress).then((s) => ({ id: p.id, stats: s })),
         ),
       );
       const map: Record<string, SoroswapPoolStats | null> = {};
@@ -74,20 +75,23 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Stats for the (single) Soroswap pool. Ledger-tick invalidated. Returns
+ * Stats for a single Soroswap pool. Ledger-tick invalidated. Returns
  * `{ stats, isLoading, isRefreshing, refresh }`.
  * @param enabled - Gate the query (e.g. only when the Soroswap tab is visible).
+ * @param pairAddress - Which pool to fetch (see `SOROSWAP_POOLS`). Omitting
+ *   this defaults to the XLM/USDC pool — passing the wrong (or no) address
+ *   for a non-default pool silently returns XLM/USDC's stats instead.
  */
-export const useSoroswapPoolStats = (enabled = true) => {
+export const useSoroswapPoolStats = (enabled = true, pairAddress?: string) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'poolStats'],
+    queryKey: ['soroswap', 'poolStats', pairAddress ?? 'default'],
     enabled,
     queryFn: async (): Promise<SoroswapPoolStats | null> => {
-      return SoroswapService.getPoolStats();
+      return SoroswapService.getPoolStats(pairAddress);
     },
     staleTime: 4_000,
   });
@@ -114,17 +118,21 @@ export const useSoroswapPoolStats = (enabled = true) => {
  * The margin account's Soroswap LP balance. Gated on the account address;
  * ledger-tick invalidated. Returns `{ lpBalance, isLoading, isRefreshing }`.
  */
-export const useSoroswapLpPosition = (marginAccountAddress: string | null) => {
+export const useSoroswapLpPosition = (
+  marginAccountAddress: string | null,
+  trackingSymbol?: string,
+  pairAddress?: string,
+) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'lpPosition', marginAccountAddress],
+    queryKey: ['soroswap', 'lpPosition', marginAccountAddress, trackingSymbol ?? 'default'],
     enabled: Boolean(marginAccountAddress),
     queryFn: async () => {
       if (!marginAccountAddress) return '0';
-      return SoroswapService.getLpBalance(marginAccountAddress);
+      return SoroswapService.getLpBalance(marginAccountAddress, trackingSymbol, pairAddress);
     },
     staleTime: 4_000,
   });
@@ -192,7 +200,7 @@ export const useSoroswapEvents = (
  */
 export const useSoroswapTokenBalance = (
   marginAccountAddress: string | null,
-  tokenSymbol: 'XLM' | 'USDC' | null,
+  tokenSymbol: SoroswapSwapSymbol | null,
 ) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();

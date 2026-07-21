@@ -36,6 +36,12 @@ export const BLEND_POOL_ASSETS: BlendPoolAsset[] = [
     iconPath: '/icons/usdc-icon.svg',
     decimals: 7,
   },
+  {
+    symbol: 'WETH',
+    trackingSymbol: 'BLEND_WETH',
+    iconPath: '/icons/usdc-icon.svg',
+    decimals: 7,
+  },
 ];
 
 /** Outcome of a Blend tx: success plus the hash, or an error message. */

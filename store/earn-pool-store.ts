@@ -35,6 +35,10 @@ export interface EarnPoolState {
     USDC: PoolStats;
     AQUARIUS_USDC: PoolStats;
     SOROSWAP_USDC: PoolStats;
+    BLND: PoolStats;
+    AQUA: PoolStats;
+    WETH: PoolStats;
+    EURC: PoolStats;
   };
 
   // User Positions
@@ -43,6 +47,10 @@ export interface EarnPoolState {
     USDC: UserPoolPosition;
     AQUARIUS_USDC: UserPoolPosition;
     SOROSWAP_USDC: UserPoolPosition;
+    BLND: UserPoolPosition;
+    AQUA: UserPoolPosition;
+    WETH: UserPoolPosition;
+    EURC: UserPoolPosition;
   };
   
   // Transaction History
@@ -93,12 +101,20 @@ const initialState: EarnPoolState = {
     USDC: { ...defaultPoolStats },
     AQUARIUS_USDC: { ...defaultPoolStats },
     SOROSWAP_USDC: { ...defaultPoolStats },
+    BLND: { ...defaultPoolStats },
+    AQUA: { ...defaultPoolStats },
+    WETH: { ...defaultPoolStats },
+    EURC: { ...defaultPoolStats },
   },
   userPositions: {
     XLM: { ...defaultUserPosition },
     USDC: { ...defaultUserPosition },
     AQUARIUS_USDC: { ...defaultUserPosition },
     SOROSWAP_USDC: { ...defaultUserPosition },
+    BLND: { ...defaultUserPosition },
+    AQUA: { ...defaultUserPosition },
+    WETH: { ...defaultUserPosition },
+    EURC: { ...defaultUserPosition },
   },
   recentTransactions: [],
   isLoadingPools: false,
@@ -148,21 +164,19 @@ export const addTransaction = (
 /** Sums the user's deposited amounts across all pools; returns a 2-dp decimal string. */
 export const calculateUserTotalDeposited = (): string => {
   const { userPositions } = useEarnPoolStore.getState();
-  const xlmValue = parseFloat(userPositions.XLM.deposited) || 0;
-  const usdcValue = parseFloat(userPositions.USDC.deposited) || 0;
-  const aquiresUsdcValue = parseFloat(userPositions.AQUARIUS_USDC.deposited) || 0;
-  const soroswapUsdcValue = parseFloat(userPositions.SOROSWAP_USDC.deposited) || 0;
-
-  return (xlmValue + usdcValue + aquiresUsdcValue + soroswapUsdcValue).toFixed(2);
+  const total = (Object.values(userPositions) as UserPoolPosition[]).reduce(
+    (sum, p) => sum + (parseFloat(p.deposited) || 0),
+    0,
+  );
+  return total.toFixed(2);
 };
 
 /** Sums the user's borrowed amounts across all pools; returns a 2-dp decimal string. */
 export const calculateUserTotalBorrowed = (): string => {
   const { userPositions } = useEarnPoolStore.getState();
-  const xlmValue = parseFloat(userPositions.XLM.borrowed) || 0;
-  const usdcValue = parseFloat(userPositions.USDC.borrowed) || 0;
-  const aquiresUsdcValue = parseFloat(userPositions.AQUARIUS_USDC.borrowed) || 0;
-  const soroswapUsdcValue = parseFloat(userPositions.SOROSWAP_USDC.borrowed) || 0;
-
-  return (xlmValue + usdcValue + aquiresUsdcValue + soroswapUsdcValue).toFixed(2);
+  const total = (Object.values(userPositions) as UserPoolPosition[]).reduce(
+    (sum, p) => sum + (parseFloat(p.borrowed) || 0),
+    0,
+  );
+  return total.toFixed(2);
 };

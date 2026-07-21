@@ -7,8 +7,8 @@ import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { MarginAccountService } from "@/lib/margin-utils";
 // refreshBorrowedBalances is called on connect to keep margin account address in sync
-import { AquariusService } from "@/lib/aquarius-utils";
-import { SoroswapService } from "@/lib/soroswap-utils";
+import { AquariusService, getAquariusSwapPartners, AquariusSwapSymbol } from "@/lib/aquarius-utils";
+import { SoroswapService, getSoroswapSwapPartner, SoroswapSwapSymbol } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { appendSpotHistory } from "@/lib/spot-history";
@@ -30,7 +30,8 @@ import {
   parseTokenAmountToStroops,
 } from "@/lib/utils/swap-amount";
 
-// Stellar tokens supported for Aquarius swap
+// Stellar tokens supported for Aquarius swap. Two disjoint, confirmed-live
+// pools: XLM<->USDC and WETH<->AQUA (no XLM<->WETH/AQUA pool exists).
 const STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.SOROSWAP_XLM,
@@ -51,9 +52,28 @@ const STELLAR_TOKENS: Token[] = [
     chain: "stellar",
     isVerified: true,
   },
+  {
+    id: CONTRACT_ADDRESSES.WETH_TOKEN,
+    symbol: "WETH",
+    name: "Wrapped Ether",
+    logo: "/icons/eth-icon.png",
+    decimals: 7,
+    chain: "stellar",
+    isVerified: true,
+  },
+  {
+    id: CONTRACT_ADDRESSES.AQUA_TOKEN,
+    symbol: "AQUA",
+    name: "Aquarius",
+    logo: "/icons/aquarius-logo.png",
+    decimals: 7,
+    chain: "stellar",
+    isVerified: true,
+  },
 ];
 
-// Stellar tokens supported for Soroswap swap (uses on-chain contract addresses)
+// Stellar tokens supported for Soroswap swap (uses on-chain contract
+// addresses). Both non-XLM tokens hub through XLM: XLM<->USDC, XLM<->EURC.
 const SOROSWAP_STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.SOROSWAP_XLM,
@@ -74,6 +94,15 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
     chain: "stellar",
     isVerified: true,
   },
+  {
+    id: CONTRACT_ADDRESSES.SOROSWAP_EURC,
+    symbol: "EURC",
+    name: "Euro Coin",
+    logo: "/icons/eurc.svg",
+    decimals: 7,
+    chain: "stellar",
+    isVerified: true,
+  },
 ];
 
 // Format a swap amount with adaptive precision (up to 7 decimals, trim trailing zeros).
@@ -89,6 +118,53 @@ function formatSwapRate(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
   const decimals = n >= 1 ? 4 : n >= 0.01 ? 6 : 7;
   return n.toFixed(decimals).replace(/\.?0+$/, "") || "0";
+}
+
+// Soroswap's non-XLM tokens (USDC, EURC) both hub through XLM — no direct
+// USDC<->EURC pool exists. XLM and AQUA are both genuine hubs on Aquarius
+// (each has more than one real on-chain partner — see getAquariusSwapPartners).
+const SOROSWAP_PARTNERS: Record<string, string[]> = {
+  XLM: ["USDC", "EURC"],
+  USDC: ["XLM"],
+  EURC: ["XLM"],
+};
+
+function swapPartnersFor(isAquarius: boolean, symbol: string): string[] {
+  return isAquarius ? getAquariusSwapPartners(symbol) : (SOROSWAP_PARTNERS[symbol] ?? []);
+}
+
+/**
+ * Resolves the correct swap-out token for a newly-selected swap-in token, so
+ * the UI never lets a user land on a pair with no real on-chain pool. Both
+ * DEXes now have genuine hub tokens with more than one valid partner (XLM
+ * and AQUA on Aquarius; XLM on Soroswap) — when the fixed side has multiple
+ * partners, keep whichever one was already selected if it's still valid,
+ * instead of resetting to a fixed default.
+ */
+function resolveTokenOutForTokenIn(
+  isAquarius: boolean,
+  tokenList: Token[],
+  tokenInSymbol: string,
+  currentTokenOutSymbol?: string,
+): Token | null {
+  const partners = swapPartnersFor(isAquarius, tokenInSymbol);
+  if (partners.length === 0) return null;
+  if (currentTokenOutSymbol && partners.includes(currentTokenOutSymbol)) {
+    return tokenList.find((t) => t.symbol === currentTokenOutSymbol) ?? null;
+  }
+  return tokenList.find((t) => t.symbol === partners[0]) ?? null;
+}
+
+/**
+ * Tokens that actually have a real on-chain pool against `fixedSymbol` — used
+ * to filter the token-search modal so a user picking the OTHER side only ever
+ * sees choices that will actually work, instead of picking something with no
+ * real route and having it silently snap to the actual partner.
+ */
+function getSwappablePartners(isAquarius: boolean, tokenList: Token[], fixedSymbol?: string): Token[] {
+  if (!fixedSymbol) return tokenList;
+  const partners = swapPartnersFor(isAquarius, fixedSymbol);
+  return tokenList.filter((t) => partners.includes(t.symbol));
 }
 
 function deriveSwapButtonState(
@@ -240,8 +316,15 @@ export const SwapCard = ({
   // Reset tokens and amounts when DEX changes
   useEffect(() => {
     const list = selectedDex === "aquarius" ? STELLAR_TOKENS : selectedDex === "soroswap" ? SOROSWAP_STELLAR_TOKENS : MOCK_TOKENS;
-    setTokenIn(list[0] ?? null);
-    setTokenOut(list[1] ?? null);
+    const first = list[0] ?? null;
+    setTokenIn(first);
+    setTokenOut(
+      first && selectedDex !== "aquarius" && selectedDex !== "soroswap"
+        ? list[1] ?? null
+        : first
+          ? resolveTokenOutForTokenIn(selectedDex === "aquarius", list, first.symbol)
+          : null,
+    );
     setAmountIn("");
     setAmountOut("");
     setExchangeRate(null);
@@ -267,14 +350,14 @@ export const SwapCard = ({
   const isWalletConnected = Boolean(userAddress);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const [aquariusUsdcWalletBalance, setAquariusUsdcWalletBalance] = useState("0");
-  // Actual token balances held by the margin account contract (updated after swap)
-  const [marginXlmBalance, setMarginXlmBalance] = useState("0");
-  const [marginUsdcBalance, setMarginUsdcBalance] = useState("0");
+  // Actual token balances held by the margin account contract (updated after
+  // swap), keyed by symbol — generic over whichever tokens the active DEX's
+  // token list has (XLM/USDC, WETH/AQUA for Aquarius; XLM/USDC/EURC for Soroswap).
+  const [aquariusMarginBalances, setAquariusMarginBalances] = useState<Record<string, string>>({});
 
   // Soroswap wallet + margin balances
   const [soroswapUsdcWalletBalance, setSoroswapUsdcWalletBalance] = useState("0");
-  const [ssMarginXlmBalance, setSsMarginXlmBalance] = useState("0");
-  const [ssMarginUsdcBalance, setSsMarginUsdcBalance] = useState("0");
+  const [soroswapMarginBalances, setSoroswapMarginBalances] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!isAquarius || !userAddress) {
@@ -316,35 +399,34 @@ export const SwapCard = ({
     if (stored?.address) refreshBorrowedBalances(stored.address);
   }, [userAddress]);
 
-  // Fetch actual XLM/USDC token balances held by the margin account contract.
-  // These update after every swap since borrowedBalances tracks lending debt (not swapped holdings).
+  // Fetch actual token balances held by the margin account contract, for
+  // every token in Aquarius's swap list (XLM, USDC, WETH, AQUA). These update
+  // after every swap since borrowedBalances tracks lending debt (not swapped holdings).
   useEffect(() => {
     if (!isAquarius || !marginAccountAddress || swapMode !== "margin") return;
     let cancelled = false;
-    Promise.all([
-      AquariusService.getMarginAccountTokenBalance(marginAccountAddress, 'XLM'),
-      AquariusService.getMarginAccountTokenBalance(marginAccountAddress, 'USDC'),
-    ]).then(([xlm, usdc]) => {
-      if (!cancelled) {
-        setMarginXlmBalance(xlm);
-        setMarginUsdcBalance(usdc);
-      }
+    Promise.all(
+      STELLAR_TOKENS.map((t) =>
+        AquariusService.getMarginAccountTokenBalance(marginAccountAddress, t.symbol as AquariusSwapSymbol)
+          .then((bal) => [t.symbol, bal] as const)
+      )
+    ).then((entries) => {
+      if (!cancelled) setAquariusMarginBalances(Object.fromEntries(entries));
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [isAquarius, marginAccountAddress, swapMode, txHash]);
 
-  // Fetch Soroswap margin account token balances
+  // Fetch Soroswap margin account token balances (XLM, USDC, EURC).
   useEffect(() => {
     if (!isSoroswap || !marginAccountAddress || swapMode !== "margin") return;
     let cancelled = false;
-    Promise.all([
-      SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, 'XLM'),
-      SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, 'USDC'),
-    ]).then(([xlm, usdc]) => {
-      if (!cancelled) {
-        setSsMarginXlmBalance(xlm);
-        setSsMarginUsdcBalance(usdc);
-      }
+    Promise.all(
+      SOROSWAP_STELLAR_TOKENS.map((t) =>
+        SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, t.symbol as SoroswapSwapSymbol)
+          .then((bal) => [t.symbol, bal] as const)
+      )
+    ).then((entries) => {
+      if (!cancelled) setSoroswapMarginBalances(Object.fromEntries(entries));
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [isSoroswap, marginAccountAddress, swapMode, txHash]);
@@ -358,15 +440,12 @@ export const SwapCard = ({
           const xlm = parseFloat(walletXlmBalance || "0");
           return getMaxSwappableBalance(formatSwapAmount(Math.max(0, xlm - 1)));
         }
+        // Wallet-mode swaps are currently unreachable (swapMode is locked to
+        // "margin" in the UI) — only USDC has a dedicated wallet-balance
+        // fetch; WETH/AQUA fall back to "0" until that mode is re-enabled.
         return getMaxSwappableBalance(aquariusUsdcWalletBalance || "0");
       }
-      if (token.symbol === "XLM") {
-        return getMaxSwappableBalance(marginXlmBalance || "0");
-      }
-      if (token.symbol === "USDC") {
-        return getMaxSwappableBalance(marginUsdcBalance || "0");
-      }
-      return "0";
+      return getMaxSwappableBalance(aquariusMarginBalances[token.symbol] || "0");
     }
     if (isSoroswap) {
       if (swapMode === "wallet") {
@@ -376,16 +455,10 @@ export const SwapCard = ({
         }
         return getMaxSwappableBalance(soroswapUsdcWalletBalance || "0");
       }
-      if (token.symbol === "XLM") {
-        return getMaxSwappableBalance(ssMarginXlmBalance || "0");
-      }
-      if (token.symbol === "USDC") {
-        return getMaxSwappableBalance(ssMarginUsdcBalance || "0");
-      }
-      return "0";
+      return getMaxSwappableBalance(soroswapMarginBalances[token.symbol] || "0");
     }
     return null;
-  }, [isWalletConnected, isAquarius, isSoroswap, swapMode, walletXlmBalance, aquariusUsdcWalletBalance, marginXlmBalance, marginUsdcBalance, soroswapUsdcWalletBalance, ssMarginXlmBalance, ssMarginUsdcBalance]);
+  }, [isWalletConnected, isAquarius, isSoroswap, swapMode, walletXlmBalance, aquariusUsdcWalletBalance, aquariusMarginBalances, soroswapUsdcWalletBalance, soroswapMarginBalances]);
 
   const tokenInBalance = getBalance(tokenIn);
   const tokenOutBalance = getBalance(tokenOut);
@@ -399,45 +472,27 @@ export const SwapCard = ({
     return map;
   }, [tokenList, getBalance]);
 
+  // What the token-search modal should actually offer for whichever side is
+  // being picked — filtered to on-chain-real partners of the OTHER side, so
+  // the user never picks something that would just get silently overridden.
+  const modalTokens = useMemo(() => {
+    if (tokenModalTarget === "in") return getSwappablePartners(isAquarius, tokenList, tokenOut?.symbol);
+    if (tokenModalTarget === "out") return getSwappablePartners(isAquarius, tokenList, tokenIn?.symbol);
+    return tokenList;
+  }, [tokenModalTarget, isAquarius, tokenList, tokenIn?.symbol, tokenOut?.symbol]);
+
   // Preset % state
   const [activePercent, setActivePercent] = useState<number | null>(null);
 
   const handlePercentClick = useCallback((pct: number) => {
     setActivePercent(pct);
-    if (!tokenInBalance) return;
-    const rawBal =
-      isAquarius || isSoroswap
-        ? swapMode === "wallet"
-          ? tokenIn?.symbol === "XLM"
-            ? formatSwapAmount(Math.max(0, parseFloat(walletXlmBalance || "0") - 1))
-            : isAquarius
-              ? aquariusUsdcWalletBalance || "0"
-              : soroswapUsdcWalletBalance || "0"
-          : tokenIn?.symbol === "XLM"
-            ? isAquarius
-              ? marginXlmBalance || "0"
-              : ssMarginXlmBalance || "0"
-            : isAquarius
-              ? marginUsdcBalance || "0"
-              : ssMarginUsdcBalance || "0"
-        : tokenInBalance;
+    // getBalance(tokenIn) (== tokenInBalance) already covers wallet vs margin
+    // mode and every token in both DEXes' lists — no need to re-derive it here.
+    const rawBal = tokenInBalance;
     if (!rawBal || parseTokenAmountToStroops(rawBal) <= BigInt(0)) return;
     setAmountIn(amountFromBalancePercent(rawBal, pct));
     setTxStatus("idle");
-  }, [
-    tokenInBalance,
-    isAquarius,
-    isSoroswap,
-    swapMode,
-    tokenIn,
-    walletXlmBalance,
-    aquariusUsdcWalletBalance,
-    soroswapUsdcWalletBalance,
-    marginXlmBalance,
-    marginUsdcBalance,
-    ssMarginXlmBalance,
-    ssMarginUsdcBalance,
-  ]);
+  }, [tokenInBalance]);
 
   // Debounce window for quote fetches. Each Soroban simulateTransaction round
   // trip costs ~1–3s on testnet, so firing on every keystroke creates a queue
@@ -447,7 +502,7 @@ export const SwapCard = ({
 
   // Auto-fetch quote when amountIn changes (Aquarius only)
   useEffect(() => {
-    if (!isAquarius || !tokenIn || !amountIn || parseFloat(amountIn) <= 0 || !userAddress) {
+    if (!isAquarius || !tokenIn || !tokenOut || !amountIn || parseFloat(amountIn) <= 0 || !userAddress) {
       if (isAquarius) { setAmountOut(""); setExchangeRate(null); setIsQuoteLoading(false); }
       return;
     }
@@ -457,8 +512,9 @@ export const SwapCard = ({
     setIsQuoteLoading(true);
     AquariusService.getSwapQuote(
       parseFloat(amountIn),
-      tokenIn.symbol as "XLM" | "USDC",
+      tokenIn.symbol as AquariusSwapSymbol,
       userAddress,
+      tokenOut.symbol as AquariusSwapSymbol,
     ).then((quote) => {
       if (cancelled) return;
       if (quote && parseFloat(quote) > 0) {
@@ -473,11 +529,11 @@ export const SwapCard = ({
       }
     }).finally(() => { if (!cancelled) setIsQuoteLoading(false); });
     return () => { cancelled = true; };
-  }, [amountIn, tokenIn?.id, isAquarius, userAddress]);
+  }, [amountIn, tokenIn?.id, tokenOut?.id, isAquarius, userAddress]);
 
   // Auto-fetch quote when amountIn changes (Soroswap)
   useEffect(() => {
-    if (!isSoroswap || !tokenIn || !amountIn || parseFloat(amountIn) <= 0 || !userAddress) {
+    if (!isSoroswap || !tokenIn || !tokenOut || !amountIn || parseFloat(amountIn) <= 0 || !userAddress) {
       if (isSoroswap) { setAmountOut(""); setExchangeRate(null); setIsQuoteLoading(false); }
       return;
     }
@@ -487,8 +543,9 @@ export const SwapCard = ({
       if (cancelled) return;
       SoroswapService.getSwapQuote(
         parseFloat(amountIn),
-        tokenIn.symbol as "XLM" | "USDC",
+        tokenIn.symbol as SoroswapSwapSymbol,
         userAddress,
+        tokenOut.symbol as SoroswapSwapSymbol,
       ).then((quote) => {
         if (cancelled) return;
         if (quote && parseFloat(quote) > 0) {
@@ -504,7 +561,7 @@ export const SwapCard = ({
       }).finally(() => { if (!cancelled) setIsQuoteLoading(false); });
     }, QUOTE_DEBOUNCE_MS);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [amountIn, tokenIn?.id, isSoroswap, userAddress]);
+  }, [amountIn, tokenIn?.id, tokenOut?.id, isSoroswap, userAddress]);
 
   const isActionLoading = isQuoteLoading || txStatus === "loading";
 
@@ -531,17 +588,22 @@ export const SwapCard = ({
   }, [tokenIn, tokenOut, amountIn, amountOut]);
 
   const handleTokenSelect = useCallback((token: Token) => {
+    // Snap the OTHER side to a real on-chain partner for the newly-picked
+    // token, rather than blindly swapping the two prior selections — Aquarius
+    // now has two disjoint pairs (XLM<->USDC, WETH<->AQUA), so picking WETH
+    // while USDC was the other side must reset the other side to AQUA, not
+    // leave an XLM+WETH combo with no pool.
     if (tokenModalTarget === "in") {
-      if (token.id === tokenOut?.id) setTokenOut(tokenIn);
       setTokenIn(token);
+      setTokenOut(resolveTokenOutForTokenIn(isAquarius, tokenList, token.symbol, tokenOut?.symbol));
     } else {
-      if (token.id === tokenIn?.id) setTokenIn(tokenOut);
       setTokenOut(token);
+      setTokenIn(resolveTokenOutForTokenIn(isAquarius, tokenList, token.symbol, tokenIn?.symbol));
     }
     setAmountIn("");
     setAmountOut("");
     setTokenModalTarget(null);
-  }, [tokenModalTarget, tokenIn, tokenOut]);
+  }, [tokenModalTarget, tokenIn, tokenOut, isAquarius, tokenList]);
 
   const handleMaxClick = useCallback(() => {
     if (tokenInBalance) setAmountIn(tokenInBalance.replace(/,/g, ""));
@@ -568,32 +630,36 @@ export const SwapCard = ({
           result = await AquariusService.aquariusSwap(
             userAddress!,
             marginAccountAddress ?? "",
-            tokenIn!.symbol as "XLM" | "USDC",
+            tokenIn!.symbol as AquariusSwapSymbol,
             amountInToUse,
             slippageVal,
+            tokenOut!.symbol as AquariusSwapSymbol,
           );
         } else {
           result = await AquariusService.aquariusSwapFromMargin(
             userAddress!,
             marginAccountAddress!,
-            tokenIn!.symbol as "XLM" | "USDC",
+            tokenIn!.symbol as AquariusSwapSymbol,
             amountInToUse,
+            tokenOut!.symbol as AquariusSwapSymbol,
           );
         }
       } else {
         if (swapMode === "wallet") {
           result = await SoroswapService.swap(
             userAddress!,
-            tokenIn!.symbol as "XLM" | "USDC",
+            tokenIn!.symbol as SoroswapSwapSymbol,
             amountInToUse,
             slippageVal,
+            tokenOut!.symbol as SoroswapSwapSymbol,
           );
         } else {
           result = await SoroswapService.swapFromMargin(
             userAddress!,
             marginAccountAddress!,
-            tokenIn!.symbol as "XLM" | "USDC",
+            tokenIn!.symbol as SoroswapSwapSymbol,
             amountInToUse,
+            tokenOut!.symbol as SoroswapSwapSymbol,
           );
         }
       }
@@ -906,8 +972,8 @@ export const SwapCard = ({
         isOpen={tokenModalTarget !== null}
         onClose={() => setTokenModalTarget(null)}
         onSelect={handleTokenSelect}
-        tokens={tokenList}
-        popularTokens={tokenList.slice(0, 5)}
+        tokens={modalTokens}
+        popularTokens={modalTokens.slice(0, 5)}
         balances={tokenListBalances}
       />
     </>

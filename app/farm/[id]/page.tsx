@@ -188,10 +188,10 @@ const FarmHeaderStats = memo(function FarmHeaderStats({
 }: {
   tokenSymbol: 'XLM' | 'USDC' | null;
   isSoroswapEarly: boolean;
-  matchedSoroswapPool: { tokens: string[] } | null;
+  matchedSoroswapPool: { tokens: string[]; pairAddress?: string } | null;
 }) {
   const { stats: poolStats, isLoading: statsLoading } = useBlendPoolStats();
-  const { stats: ssStats, isLoading: ssStatsLoading } = useSoroswapPoolStats(isSoroswapEarly);
+  const { stats: ssStats, isLoading: ssStatsLoading } = useSoroswapPoolStats(isSoroswapEarly, matchedSoroswapPool?.pairAddress);
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';
@@ -280,8 +280,12 @@ export default function FarmDetailPage() {
   const { events: aqEvents } = useAquariusEvents(aquariusPoolAddress, marginAccountAddress);
 
   // Real data hooks — Soroswap (multi-asset)
-  const { stats: ssStats, isLoading: ssStatsLoading } = useSoroswapPoolStats(isSoroswapEarly);
-  const { lpBalance: ssLpBalanceRaw, isLoading: ssLpLoading } = useSoroswapLpPosition(marginAccountAddress);
+  const { stats: ssStats, isLoading: ssStatsLoading } = useSoroswapPoolStats(isSoroswapEarly, matchedSoroswapPool?.pairAddress);
+  const { lpBalance: ssLpBalanceRaw, isLoading: ssLpLoading } = useSoroswapLpPosition(
+    marginAccountAddress,
+    matchedSoroswapPool?.trackingSymbol,
+    matchedSoroswapPool?.pairAddress,
+  );
   const mySSLpBalance = parseFloat(ssLpBalanceRaw ?? '0');
   const { events: ssEvents } = useSoroswapEvents(ssStats?.pairAddress, marginAccountAddress);
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';

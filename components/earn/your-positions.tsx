@@ -69,6 +69,10 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   USDC: 'USDC',
   AQUARIUS_USDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
+  BLND: 'BLND',
+  AQUA: 'AQUA',
+  WETH: 'WETH',
+  EURC: 'EURC',
 };
 
 /** Memoized positions panel; merges on-chain + local history (de-duped by hash) for the selected pool. */

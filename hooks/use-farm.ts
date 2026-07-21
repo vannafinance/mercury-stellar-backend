@@ -14,6 +14,7 @@ import {
   AquariusLpEvent,
   AQUARIUS_POOLS,
   AquariusPoolConfig,
+  AquariusSwapSymbol,
 } from '@/lib/aquarius-utils';
 import { getBlendEventsFromMercury } from '@/lib/mercury-blend';
 import { getAquariusEventsFromMercury } from '@/lib/mercury-aquarius';
@@ -318,7 +319,7 @@ export const useAquariusLpPosition = (
  */
 export const useAquariusTokenBalance = (
   marginAccountAddress: string | null,
-  tokenSymbol: 'XLM' | 'USDC' | null,
+  tokenSymbol: AquariusSwapSymbol | null,
 ) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();

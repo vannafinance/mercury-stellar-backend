@@ -237,8 +237,50 @@ export const STELLAR_POOLS = {
     lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC,
     vToken: CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN,
   },
+  BLND: {
+    id: 'BLND',
+    name: 'Blend',
+    symbol: 'BLND',
+    icon: '/icons/usdc-icon.svg',
+    decimals: 7,
+    nativeContract: CONTRACT_ADDRESSES.BLND_TOKEN,
+    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLND,
+    vToken: CONTRACT_ADDRESSES.VBLND_TOKEN,
+  },
+  AQUA: {
+    id: 'AQUA',
+    name: 'Aquarius',
+    symbol: 'AQUA',
+    icon: '/icons/usdc-icon.svg',
+    decimals: 7,
+    nativeContract: CONTRACT_ADDRESSES.AQUA_TOKEN,
+    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUA,
+    vToken: CONTRACT_ADDRESSES.VAQUA_TOKEN,
+  },
+  WETH: {
+    id: 'WETH',
+    name: 'Wrapped Ether',
+    symbol: 'WETH',
+    icon: '/icons/usdc-icon.svg',
+    decimals: 7,
+    nativeContract: CONTRACT_ADDRESSES.WETH_TOKEN,
+    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_WETH,
+    vToken: CONTRACT_ADDRESSES.VWETH_TOKEN,
+  },
+  EURC: {
+    id: 'EURC',
+    name: 'Euro Coin',
+    symbol: 'EURC',
+    icon: '/icons/usdc-icon.svg',
+    decimals: 7,
+    nativeContract: CONTRACT_ADDRESSES.EURC_TOKEN,
+    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_EURC,
+    vToken: CONTRACT_ADDRESSES.VEURC_TOKEN,
+  },
 } as const;
 
 // Supported assets for dropdown
-export const STELLAR_ASSETS = ['XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC'] as const;
+export const STELLAR_ASSETS = [
+  'XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC', 'BLND', 'AQUA', 'WETH', 'EURC',
+] as const;
 export type StellarAsset = typeof STELLAR_ASSETS[number];

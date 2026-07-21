@@ -28,7 +28,7 @@ import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
-const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
+const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC", "BLND", "AQUA", "WETH", "EURC"] as const;
 
 const toInternalAsset = (value: string) => {
   if (value === 'BLUSDC' || value === 'USDC') return 'USDC';
@@ -74,7 +74,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
 
   const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
-  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -90,6 +90,8 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       return parseFloat(storeTokenBalances.AQUARIUS_USDC || '0');
     } else if (normalizedAsset === 'SOROSWAP_USDC') {
       return parseFloat(storeTokenBalances.SOROSWAP_USDC || '0');
+    } else if (normalizedAsset === 'BLND' || normalizedAsset === 'AQUA' || normalizedAsset === 'WETH' || normalizedAsset === 'EURC') {
+      return parseFloat(storeTokenBalances[normalizedAsset] || '0');
     }
     return 0;
   }, [normalizedAsset, balance, storeTokenBalances]);
@@ -141,6 +143,10 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       normalizedAsset === 'XLM' ? 'XLM'
         : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
         : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
+        : normalizedAsset === 'BLND' ? 'BLND'
+        : normalizedAsset === 'AQUA' ? 'AQUA'
+        : normalizedAsset === 'WETH' ? 'WETH'
+        : normalizedAsset === 'EURC' ? 'EURC'
         : 'BLUSDC'
     ] || (normalizedAsset === 'XLM' ? 0 : 1);
   const usdValue = amountNum * unitPriceUsd;

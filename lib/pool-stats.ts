@@ -1,5 +1,5 @@
-// Shared, server-safe lending-pool stats for the 4 pools (XLM, USDC,
-// AQUARIUS_USDC, SOROSWAP_USDC). Powers both the cached /api/pools route and
+// Shared, server-safe lending-pool stats for all earn pools (XLM, USDC
+// variants, BLND, AQUA, WETH, EURC). Powers both the cached /api/pools route and
 // the client `usePoolData` hook, so the APY/exchange-rate math lives in one
 // place. `getPoolStats` uses a throwaway keypair as its sim source, so this
 // runs server-side with no wallet.
@@ -49,12 +49,16 @@ export type PoolStats = RawPoolStats & {
   exchangeRate: string;
 };
 
-/** Enriched stats for all four supported lending pools, keyed by asset. */
+/** Enriched stats for all supported lending pools, keyed by asset. */
 export type AllPoolStats = {
   XLM: PoolStats;
   USDC: PoolStats;
   AQUARIUS_USDC: PoolStats;
   SOROSWAP_USDC: PoolStats;
+  BLND: PoolStats;
+  AQUA: PoolStats;
+  WETH: PoolStats;
+  EURC: PoolStats;
 };
 
 const enrich = (s: RawPoolStats): PoolStats => ({
@@ -64,19 +68,27 @@ const enrich = (s: RawPoolStats): PoolStats => ({
   exchangeRate: calculateExchangeRateFromPool(s.totalSupply, s.vTokenSupply),
 });
 
-/** Read all 4 lending pools concurrently and enrich with APY/exchange-rate. */
+/** Read all lending pools concurrently and enrich with APY/exchange-rate. */
 export async function computeAllPoolStats(): Promise<AllPoolStats> {
-  const [xlm, usdc, aquarius, soroswap] = await Promise.all([
+  const [xlm, usdc, aquarius, soroswap, blnd, aqua, weth, eurc] = await Promise.all([
     ContractService.getPoolStats(ASSET_TYPES.XLM),
     ContractService.getPoolStats(ASSET_TYPES.USDC),
     ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
     ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
+    ContractService.getPoolStats(ASSET_TYPES.BLND),
+    ContractService.getPoolStats(ASSET_TYPES.AQUA),
+    ContractService.getPoolStats(ASSET_TYPES.WETH),
+    ContractService.getPoolStats(ASSET_TYPES.EURC),
   ]);
   return {
     XLM: enrich(xlm),
     USDC: enrich(usdc),
     AQUARIUS_USDC: enrich(aquarius),
     SOROSWAP_USDC: enrich(soroswap),
+    BLND: enrich(blnd),
+    AQUA: enrich(aqua),
+    WETH: enrich(weth),
+    EURC: enrich(eurc),
   };
 }
 

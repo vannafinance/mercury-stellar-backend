@@ -20,8 +20,8 @@ import { useUserStore } from "@/store/user";
 import { useFarmStore } from "@/store/farm-store";
 import { Button } from "../ui/button";
 import { BlendService, BLEND_POOL_ASSETS } from "@/lib/blend-utils";
-import { AquariusService } from "@/lib/aquarius-utils";
-import { SoroswapService } from "@/lib/soroswap-utils";
+import { AquariusService, AQUARIUS_POOLS, AquariusSwapSymbol } from "@/lib/aquarius-utils";
+import { SoroswapService, SOROSWAP_POOLS, SoroswapSwapSymbol } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { iconPaths } from "@/lib/constants";
@@ -61,6 +61,16 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     (selectedRow?.cell?.[0] as any)?.titles?.map((t: string) => t.toUpperCase()) ?? ["XLM", "USDC"];
   const tokenA = poolTokens[0] ?? "XLM";
   const tokenB = poolTokens[1] ?? "USDC";
+
+  // Resolve which actual on-chain pool this row is (order-insensitive on
+  // tokens) — LP-balance reads and the removeLiquidity call MUST use this
+  // pool's own address/tracking symbol, not a hardcoded XLM/USDC default.
+  const matchedSoroswapPoolConfig = SOROSWAP_POOLS.find(
+    (p) => p.tokens.includes(tokenA) && p.tokens.includes(tokenB)
+  );
+  const matchedAquariusPoolConfig = AQUARIUS_POOLS.find(
+    (p) => p.tokens.includes(tokenA) && p.tokens.includes(tokenB)
+  );
 
   // Determine initial token from store (for single asset / lending rows)
   const getInitialToken = useCallback((): TokenSymbol => {
@@ -138,10 +148,14 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     }
     setLoadingLpBalance(true);
     const fetchLpBalance = isSoroswapPool
-      ? SoroswapService.getLpBalance(marginAccountAddress)
+      ? SoroswapService.getLpBalance(
+          marginAccountAddress,
+          matchedSoroswapPoolConfig?.trackingSymbol,
+          matchedSoroswapPoolConfig?.pairAddress,
+        )
       : AquariusService.getUserLpBalance(
           marginAccountAddress,
-          CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
+          matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
           tokenA,
           tokenB
         );
@@ -149,7 +163,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     fetchLpBalance
       .then(setLpBalance)
       .finally(() => setLoadingLpBalance(false));
-  }, [isAquariusPool, isSoroswapPool, marginAccountAddress, tokenA, tokenB]);
+  }, [isAquariusPool, isSoroswapPool, marginAccountAddress, tokenA, tokenB, matchedSoroswapPoolConfig, matchedAquariusPoolConfig]);
 
   const handleTokenSelect = (token: TokenSymbol) => {
     setSelectedToken(token);
@@ -226,7 +240,10 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   const removeMultiDexMutation = useMutation({
     mutationFn: async ({ amount }: { amount: number }) => {
       const result = isSoroswapPool
-        ? await SoroswapService.removeLiquidity(userAddress!, marginAccountAddress!, amount)
+        ? await SoroswapService.removeLiquidity(
+            userAddress!, marginAccountAddress!, amount,
+            tokenA as SoroswapSwapSymbol, tokenB as SoroswapSwapSymbol,
+          )
         : await AquariusService.removeLiquidity(userAddress!, marginAccountAddress!, tokenA, tokenB, amount);
       if (!result.success) {
         throw new Error(result.error ?? "Remove liquidity failed");

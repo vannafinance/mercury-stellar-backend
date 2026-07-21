@@ -58,7 +58,7 @@ type BorrowMode = "single" | "dual";
  */
 export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: DualBorrowProps) => {
   const { isDark } = useTheme();
-  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC", "BLND", "AQUA", "WETH", "EURC"]);
   const bgColor = isDark ? "#1A1A1A" : "#ffffff";
 
   const [mode, setMode] = useState<BorrowMode>("single");

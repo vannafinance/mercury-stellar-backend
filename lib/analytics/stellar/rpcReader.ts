@@ -16,6 +16,10 @@ const POOL_ASSETS: AssetType[] = [
   ASSET_TYPES.USDC, // Blend USDC pool
   ASSET_TYPES.AQUARIUS_USDC,
   ASSET_TYPES.SOROSWAP_USDC,
+  ASSET_TYPES.BLND,
+  ASSET_TYPES.AQUA,
+  ASSET_TYPES.WETH,
+  ASSET_TYPES.EURC,
 ];
 
 /** Map a pool AssetType to the canonical app symbol used in the UI. */
@@ -25,6 +29,10 @@ const ASSET_TYPE_TO_SYMBOL: Record<AssetType, StellarAsset> = {
   BLEND_USDC: "BLUSDC",
   AQUARIUS_USDC: "AQUSDC",
   SOROSWAP_USDC: "SOUSDC",
+  BLND: "BLND",
+  AQUA: "AQUA",
+  WETH: "WETH",
+  EURC: "EURC",
 };
 
 export type StellarPoolStats = {

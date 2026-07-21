@@ -17,6 +17,10 @@ export const DropdownOptions = [
   "BLUSDC",
   "AqUSDC",
   "SoUSDC",
+  "BLND",
+  "AQUA",
+  "WETH",
+  "EURC",
 ];
 
 // Legacy ETH options (deprecated)
@@ -57,4 +61,8 @@ export const iconPaths: Record<string, string> = {
   ARBITRUM: "/icons/arbitrum-icon.svg",
   BASE: "/icons/base-icon.svg",
   WBTC: "/icons/wbtc-icon.png",
+  WETH: "/icons/eth-icon.png",
+  EURC: "/icons/eurc.svg",
+  AQUA: "/icons/aquarius-logo.png",
+  BLND: "/icons/usdc-icon.svg",
 };

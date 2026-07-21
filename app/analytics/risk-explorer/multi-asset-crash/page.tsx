@@ -83,7 +83,9 @@ const SIM_POSITIONS = Array.from({ length: 30 }, (_, i) => {
 export default function MultiAssetCrashPage() {
   const cc = useChartColors();
   const [activePreset, setActivePreset] = useState("xlm-deep-bear");
-  const [shocks, setShocks] = useState<Record<Asset, number>>({ XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0, EURC: 0 });
+  const [shocks, setShocks] = useState<Record<Asset, number>>({
+    XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0, EURC: 0, BLND: 0, AQUA: 0, WETH: 0,
+  });
   const [hasRun, setHasRun] = useState(false);
 
   const applyPreset = (presetId: string) => {
