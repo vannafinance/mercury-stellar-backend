@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "@/contexts/theme-context";
 import Image from "next/image";
 import { useMemo, useState, useCallback, useEffect, memo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { iconPaths } from "@/lib/constants";
 import { AccountStatsGhost } from "@/components/earn/account-stats-ghost";
 import { Chart } from "@/components/earn/chart";
@@ -62,61 +63,25 @@ const positionTableHeadings = [
   { label: "b-Rate", id: "b-rate" },
 ];
 
-type PositionSnapshot = {
-  timestamp: number;
-  value: number;
-};
-
-const SNAPSHOT_MAX_ITEMS = 3000;
-
 const normalizeTimestamp = (value: unknown): number => {
   const ts = Number(value ?? 0);
   if (!Number.isFinite(ts) || ts <= 0) return 0;
   return ts < 1_000_000_000_000 ? ts * 1000 : ts;
 };
 
-const getFarmChartSnapshotKey = (chartKey: string, account?: string | null) =>
-  `vanna_farm_chart_snapshots_v2_${chartKey}_${account ?? "guest"}`;
-
-const readFarmChartSnapshots = (storageKey: string): PositionSnapshot[] => {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const normalized = parsed
-      .map((item) => ({
-        timestamp: normalizeTimestamp(item?.timestamp),
-        value: Number(item?.value ?? 0),
-      }))
-      .filter((item) => item.timestamp > 0 && Number.isFinite(item.value) && item.value >= 0)
-      .sort((a, b) => a.timestamp - b.timestamp);
-
-    // Remove transient refresh spikes: 0 between two similar positive points.
-    return normalized.filter((item, idx, arr) => {
-      if (item.value !== 0 || idx === 0 || idx === arr.length - 1) return true;
-      const prev = arr[idx - 1];
-      const next = arr[idx + 1];
-      const closeByTime =
-        item.timestamp - prev.timestamp <= 5 * 60_000 &&
-        next.timestamp - item.timestamp <= 5 * 60_000;
-      const similarNeighbors = Math.abs(next.value - prev.value) <= 0.00001;
-      return !(prev.value > 0 && next.value > 0 && closeByTime && similarNeighbors);
-    });
-  } catch {
-    return [];
-  }
-};
-
-const writeFarmChartSnapshots = (storageKey: string, snapshots: PositionSnapshot[]) => {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(storageKey, JSON.stringify(snapshots.slice(-SNAPSHOT_MAX_ITEMS)));
-};
-
+/**
+ * Builds the farm position chart directly from real, Mercury-sourced
+ * add/remove-liquidity history (replayed as a running total), plus a final
+ * live "current value" point. Previously ALSO merged in localStorage-polled
+ * snapshots (`vanna_farm_chart_snapshots_v2_*`) layered on top of this same
+ * real history — pure redundancy (the real history already fully replays the
+ * position's value over time) that caused two problems: the chart could show
+ * stale/reshaping curves from old poll noise, and the position's history
+ * would visibly disappear if the user cleared their browser cache. Dropped
+ * entirely; the real event history is the only source now.
+ */
 const buildRealtimeChartData = (
   history: Array<{ timestamp: number; delta: number }>,
-  snapshots: PositionSnapshot[],
   currentValue: number,
   decimals: number
 ): Array<{ date: string; amount: number }> => {
@@ -140,18 +105,6 @@ const buildRealtimeChartData = (
       points.push({ ts: item.timestamp, amount: round(running) });
     });
   }
-
-  const sortedSnapshots = [...snapshots]
-    .map((item) => ({ timestamp: normalizeTimestamp(item.timestamp), value: round(item.value) }))
-    .filter((item) => item.timestamp > 0 && Number.isFinite(item.value))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  sortedSnapshots.forEach((item) => {
-    const last = points[points.length - 1];
-    if (!last || item.timestamp > last.ts || Math.abs(item.value - last.amount) >= 0.000001) {
-      points.push({ ts: item.timestamp, amount: item.value });
-    }
-  });
 
   const nowTs = Date.now();
   const nowValue = round(currentValue);
@@ -226,7 +179,6 @@ export default function FarmDetailPage() {
   const [activeUiTab, setActiveUiTab] = useState<string>("all-transactions");
   const [activeTab, setActiveTab] = useState<string>("current-position");
   const [showAddLiquidity, setShowAddLiquidity] = useState(false);
-  const [chartSnapshots, setChartSnapshots] = useState<PositionSnapshot[]>([]);
 
   const userAddress = useUserStore((state) => state.address);
 
@@ -291,35 +243,38 @@ export default function FarmDetailPage() {
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';
   const ssTokenB = matchedSoroswapPool?.tokens[1] ?? 'USDC';
 
-  const blendLocalHistory = useMemo(
-    () =>
-      getFarmHistory({
-        protocol: "blend",
-        poolKey: buildFarmPoolKey(tokenSymbol ?? "XLM"),
-        marginAccountAddress,
-      }),
-    [tokenSymbol, marginAccountAddress]
-  );
+  // Local farm tx log, read through a real query (not a plain useMemo) so a
+  // completed add/remove-liquidity actually shows up without a page reload.
+  // add-liquidity.tsx/remove-liquidity.tsx already call
+  // `qc.invalidateQueries({ queryKey: ['farm'] })` on success — that already
+  // correctly refreshes every real useQuery-backed farm hook, but was a
+  // no-op against these three bare useMemos with no matching query to
+  // invalidate (the symptom reported live: history only appears after a
+  // manual refresh). A `['farm', ...]`-prefixed key lets that existing
+  // invalidation reach them too.
+  const blendPoolKey = buildFarmPoolKey(tokenSymbol ?? "XLM");
+  const { data: blendLocalHistory = [] } = useQuery({
+    queryKey: ['farm', 'blend', 'localHistory', blendPoolKey, marginAccountAddress ?? null],
+    queryFn: () => getFarmHistory({ protocol: "blend", poolKey: blendPoolKey, marginAccountAddress }),
+    enabled: Boolean(marginAccountAddress),
+    staleTime: 4_000,
+  });
 
-  const aquariusLocalHistory = useMemo(
-    () =>
-      getFarmHistory({
-        protocol: "aquarius",
-        poolKey: buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC"),
-        marginAccountAddress,
-      }),
-    [matchedPool, marginAccountAddress]
-  );
+  const aquariusPoolKey = buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC");
+  const { data: aquariusLocalHistory = [] } = useQuery({
+    queryKey: ['farm', 'aquarius', 'localHistory', aquariusPoolKey, marginAccountAddress ?? null],
+    queryFn: () => getFarmHistory({ protocol: "aquarius", poolKey: aquariusPoolKey, marginAccountAddress }),
+    enabled: Boolean(marginAccountAddress),
+    staleTime: 4_000,
+  });
 
-  const soroswapLocalHistory = useMemo(
-    () =>
-      getFarmHistory({
-        protocol: "soroswap",
-        poolKey: buildFarmPoolKey(ssTokenA, ssTokenB),
-        marginAccountAddress,
-      }),
-    [ssTokenA, ssTokenB, marginAccountAddress]
-  );
+  const soroswapPoolKey = buildFarmPoolKey(ssTokenA, ssTokenB);
+  const { data: soroswapLocalHistory = [] } = useQuery({
+    queryKey: ['farm', 'soroswap', 'localHistory', soroswapPoolKey, marginAccountAddress ?? null],
+    queryFn: () => getFarmHistory({ protocol: "soroswap", poolKey: soroswapPoolKey, marginAccountAddress }),
+    enabled: Boolean(marginAccountAddress),
+    staleTime: 4_000,
+  });
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;
 
@@ -659,92 +614,29 @@ export default function FarmDetailPage() {
     };
   }, [mySSLpBalance, ssStats, ssTokenA, ssTokenB]);
 
-  const chartHistoryKey = useMemo(() => {
-    if (isSoroswapEarly) return `soroswap:${buildFarmPoolKey(ssTokenA, ssTokenB)}`;
-    if (isAquariusEarly) return `aquarius:${buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC")}`;
-    return `blend:${buildFarmPoolKey(tokenSymbol ?? "XLM")}`;
-  }, [isSoroswapEarly, isAquariusEarly, ssTokenA, ssTokenB, matchedPool, tokenSymbol]);
-
-  const chartStorageKey = useMemo(
-    () => getFarmChartSnapshotKey(chartHistoryKey, marginAccountAddress),
-    [chartHistoryKey, marginAccountAddress]
-  );
-
-  const currentChartValue = useMemo(() => {
-    if (isSoroswapEarly) return Math.max(0, mySSLpBalance);
-    if (isAquariusEarly) return Math.max(0, myLpBalance);
-    return Math.max(0, myUnderlying);
-  }, [isSoroswapEarly, isAquariusEarly, mySSLpBalance, myLpBalance, myUnderlying]);
-
-  const isChartDataLoading = useMemo(() => {
-    if (isSoroswapEarly) return ssStatsLoading || ssLpLoading;
-    if (isAquariusEarly) return aqStatsLoading || aqLpLoading;
-    return statsLoading || posLoading || eventsLoading;
-  }, [
-    isSoroswapEarly,
-    isAquariusEarly,
-    ssStatsLoading,
-    ssLpLoading,
-    aqStatsLoading,
-    aqLpLoading,
-    statsLoading,
-    posLoading,
-    eventsLoading,
-  ]);
-
-  useEffect(() => {
-    const next = readFarmChartSnapshots(chartStorageKey);
-    queueMicrotask(() => setChartSnapshots(next));
-  }, [chartStorageKey]);
-
-  useEffect(() => {
-    if (isChartDataLoading) return;
-    if (!Number.isFinite(currentChartValue)) return;
-
-    queueMicrotask(() => {
-      setChartSnapshots((prev) => {
-        const now = Date.now();
-        const roundedCurrent = parseFloat(currentChartValue.toFixed(7));
-        const last = prev[prev.length - 1];
-        const changed = !last || Math.abs(last.value - roundedCurrent) >= 0.000001;
-
-        // Persist only on real value changes; refresh/re-render should not add points.
-        if (!changed) return prev;
-
-        const next = [
-          ...prev,
-          { timestamp: now, value: roundedCurrent },
-        ].slice(-SNAPSHOT_MAX_ITEMS);
-
-        writeFarmChartSnapshots(chartStorageKey, next);
-        return next;
-      });
-    });
-  }, [chartStorageKey, currentChartValue, isChartDataLoading]);
-
   const blendChartData = useMemo(() => {
     const history = mergedBlendHistory.map((ev) => ({
       timestamp: ev.timestamp,
       delta: (ev.action === "add" ? 1 : -1) * (parseFloat(ev.amountDisplay) || 0),
     }));
-    return buildRealtimeChartData(history, chartSnapshots, myUnderlying, 4);
-  }, [mergedBlendHistory, chartSnapshots, myUnderlying]);
+    return buildRealtimeChartData(history, myUnderlying, 4);
+  }, [mergedBlendHistory, myUnderlying]);
 
   const aqChartData = useMemo(() => {
     const history = mergedAquariusHistory.map((ev) => ({
       timestamp: ev.timestamp,
       delta: (ev.action === "add" ? 1 : -1) * (parseFloat(ev.amountDisplay) || 0),
     }));
-    return buildRealtimeChartData(history, chartSnapshots, myLpBalance, 7);
-  }, [mergedAquariusHistory, chartSnapshots, myLpBalance]);
+    return buildRealtimeChartData(history, myLpBalance, 7);
+  }, [mergedAquariusHistory, myLpBalance]);
 
   const ssChartData = useMemo(() => {
     const history = mergedSoroswapHistory.map((ev) => ({
       timestamp: ev.timestamp,
       delta: (ev.action === "add" ? 1 : -1) * (parseFloat(ev.amountDisplay) || 0),
     }));
-    return buildRealtimeChartData(history, chartSnapshots, mySSLpBalance, 7);
-  }, [mergedSoroswapHistory, chartSnapshots, mySSLpBalance]);
+    return buildRealtimeChartData(history, mySSLpBalance, 7);
+  }, [mergedSoroswapHistory, mySSLpBalance]);
 
   // Route "All Transactions" table to the correct data source for the current pool type.
   const detailTableHeadings = useMemo(() => {

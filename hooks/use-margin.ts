@@ -7,6 +7,7 @@ import {
   refreshBorrowedBalances,
 } from '@/store/margin-account-info-store';
 import { getMarginHistoryFromMercury, type MarginTxEntry } from '@/lib/mercury-margin';
+import { getMarginHistoryFromRpc } from '@/lib/margin-history-rpc';
 import { appendMarginHistory, getMarginHistoryByAccount } from '@/lib/margin-history';
 import { MarginAccountService } from '@/lib/margin-utils';
 import { useUserStore } from '@/store/user';
@@ -20,7 +21,8 @@ export type MarginHistoryRow = {
   hash: string;
 };
 
-// Margin transaction history — pure Mercury (full history, no ~7-day RPC cap).
+// Margin transaction history — Mercury (full history, no ~7-day RPC cap) plus a
+// bounded RPC fallback for any recent activity Mercury is currently missing.
 //
 // The redeployed AccountManager (2026-06-13) now emits self-describing events:
 // Trader_Borrow{token_symbol, token_amount}, Trader_Deposit{token_symbol, amount},
@@ -30,15 +32,25 @@ export type MarginHistoryRow = {
 // Timestamps: repay from its payload; borrow/deposit per-tx from Horizon (the
 // contract emits none, by design) — handled in getMarginHistoryFromMercury.
 //
+// Confirmed 2026-07-21: Mercury's index for the CURRENT AccountManager address
+// stalled on 2026-07-19 despite continuous real on-chain activity since (verified
+// directly via RPC) — a genuine indexing gap on Mercury's side, not something we
+// can fix from here. getMarginHistoryFromRpc fills that gap for whatever RPC's
+// own (short) retention window still covers; the two sources are merged and
+// deduped by tx hash so history shows real data again in the meantime, reverting
+// to Mercury alone automatically once its index catches back up (RPC entries
+// simply become redundant with Mercury's and get deduped out).
+//
 // NO ledger-tick refetch: the query is heavy (full ledger range + per-tx timestamp
 // enrichment). Freshness comes from mount, account change, window focus, and the
 // margin-mutation invalidation of ['margin'] (prefix-matches ['margin','history']).
 /**
- * Full margin transaction history for the connected margin account, sourced
- * purely from Mercury (no ~7-day RPC cap). Gated on the margin account address;
- * intentionally NOT ledger-tick refetched (see note above) — refreshed on mount,
- * account change, window focus, and `['margin']` mutation invalidation. Results
- * are returned newest-first.
+ * Full margin transaction history for the connected margin account: Mercury
+ * (intended full history) merged with a bounded RPC fallback for any recent
+ * activity Mercury's index is currently missing, deduped by tx hash. Gated on
+ * the margin account address; intentionally NOT ledger-tick refetched (see note
+ * above) — refreshed on mount, account change, window focus, and `['margin']`
+ * mutation invalidation. Results are returned newest-first.
  *
  * @returns `{ history, isLoading, isRefreshing }`.
  */
@@ -50,13 +62,25 @@ export const useMarginHistory = () => {
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<MarginHistoryRow[]> => {
       if (!marginAccountAddress) return [];
-      const onChain = await getMarginHistoryFromMercury(marginAccountAddress);
+      const [mercury, rpcFallback] = await Promise.all([
+        getMarginHistoryFromMercury(marginAccountAddress),
+        getMarginHistoryFromRpc(marginAccountAddress),
+      ]);
+      const byHash = new Map<string, MarginTxEntry>();
+      // Mercury first, then RPC fills in anything Mercury doesn't have yet —
+      // same hash means the same on-chain event, so RPC never overrides a row
+      // Mercury already reported.
+      for (const entry of mercury) if (entry.hash) byHash.set(entry.hash, entry);
+      for (const entry of rpcFallback) if (entry.hash && !byHash.has(entry.hash)) byHash.set(entry.hash, entry);
+      const onChain = Array.from(byHash.values());
+
       // Margin-collateral withdrawals (`withdraw_collateral_balance`) emit no
-      // distinguishing on-chain event Mercury can index — unlike deposit/borrow/
-      // repay, which all have real Trader_* events already covered above. Overlay
-      // the local record for "transfer-out" ONLY: every other locally-recorded
-      // type (deposit/borrow/repay/transfer-in) duplicates a real on-chain event,
-      // so including them here would double-list the same transaction.
+      // distinguishing on-chain event Mercury (or RPC) can index — unlike
+      // deposit/borrow/repay, which all have real Trader_* events already
+      // covered above. Overlay the local record for "transfer-out" ONLY: every
+      // other locally-recorded type (deposit/borrow/repay/transfer-in)
+      // duplicates a real on-chain event, so including them here would
+      // double-list the same transaction.
       const localWithdrawals: MarginHistoryRow[] = getMarginHistoryByAccount(marginAccountAddress)
         .filter((e): e is typeof e & { type: 'transfer-out' } => e.type === 'transfer-out')
         .map(({ type, asset, amount, timestamp, hash }) => ({ type, asset, amount, timestamp, hash }));

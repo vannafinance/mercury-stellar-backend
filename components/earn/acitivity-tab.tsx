@@ -12,6 +12,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
+import { useUserStore } from "@/store/user";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
@@ -98,6 +99,7 @@ export const ActivityTab = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();
   const { transactions: recentTransactions } = useEarnTransactions();
+  const walletAddress = useUserStore((state) => state.address);
   const { pools } = usePoolData();
   const selectedAsset = useSelectedPoolStore((state) => state.selectedAsset);
   const assetKey = toInternalAsset(selectedAsset);
@@ -121,7 +123,7 @@ export const ActivityTab = () => {
       }));
 
     const onchainHashes = new Set(onchain.map((tx) => tx.hash).filter(Boolean));
-    const local = getEarnHistoryByAsset(assetKey)
+    const local = getEarnHistoryByAsset(assetKey, walletAddress)
       .filter((tx) => !tx.hash || !onchainHashes.has(tx.hash))
       .map((tx) => ({
         type: tx.type,
@@ -133,7 +135,7 @@ export const ActivityTab = () => {
       }));
 
     return [...onchain, ...local].sort((a, b) => b.timestamp - a.timestamp);
-  }, [recentTransactions, assetKey]);
+  }, [recentTransactions, assetKey, walletAddress]);
 
   // Pool distribution for the currently viewed pool
   const userDistributionBody = useMemo(() => {

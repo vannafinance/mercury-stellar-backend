@@ -2128,7 +2128,7 @@ export class MarginAccountService {
       const norm = this.normalizeContractTokenSymbol(tokenSymbol);
       const tokenIdBySymbol: Record<string, string> = {
         XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
         AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
         SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
         BLND: CONTRACT_ADDRESSES.BLND_TOKEN,
@@ -2276,13 +2276,13 @@ export class MarginAccountService {
   /**
    * Repay debt on a margin account via AccountManager `repay` (50x BASE_FEE).
    *
-   * Symbol gotcha: the contract's `borrow()` always stores BLEND-pool debt under
-   * `BLUSDC` regardless of whether USDC or BLUSDC was passed, and `repay()`
-   * validates against the stored borrowed-token list — so this maps USDC→BLUSDC
-   * before calling (the opposite of the deposit path, which prefers USDC).
+   * The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC and
+   * USDC both resolve to the same Blend USDC token address, so the symbol
+   * passed on-chain no longer needs to differ from the deposit path. Uses the
+   * same normalized symbol (USDC) everywhere, same as deposit/borrow.
    *
    * @param marginAccountAddress - SmartAccount C-address being repaid.
-   * @param tokenSymbol - Token symbol or UI alias; normalized (USDC→BLUSDC).
+   * @param tokenSymbol - Token symbol or UI alias; normalized before the call.
    * @param repayAmountWad - Repay amount as a u256 WAD (18-decimal) string;
    *                         use {@link getBorrowedTokenDebtWad} to avoid overpay.
    * @returns `{ success, hash?, error? }`. On-chain failures log the full result
@@ -2296,13 +2296,12 @@ export class MarginAccountService {
     repayAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
-      // The contract's borrow() always stores the BLEND USDC pool's debt under the
-      // BLUSDC symbol (account_manager.rs:329), regardless of whether the caller
-      // passed USDC or BLUSDC. repay() then validates token_symbol against the
-      // stored borrowed-tokens list, so we must pass BLUSDC for that pool — not
-      // USDC, even though deposit_collateral_tokens prefers USDC.
-      const normalized = this.normalizeContractTokenSymbol(tokenSymbol);
-      const contractTokenSymbol = normalized === 'USDC' ? 'BLUSDC' : normalized;
+      // The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC
+      // and USDC both resolve to the same Blend USDC token address, so which
+      // symbol string is passed no longer matters on-chain. Use the same
+      // normalized symbol every other call site (deposit, borrow) uses,
+      // rather than special-casing repay to send the display symbol BLUSDC.
+      const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
 
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -2325,7 +2324,7 @@ export class MarginAccountService {
       // Detect the gap; if present, submit a separate single-op top-up transfer
       // first (Freighter rejects multi-op transactions), then do the repay.
       const REPAY_TOKEN_CONTRACT: Record<string, string> = {
-        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
         XLM: CONTRACT_ADDRESSES.BLEND_XLM,
         AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
         SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,

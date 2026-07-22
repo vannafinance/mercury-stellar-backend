@@ -248,7 +248,9 @@ export const useSupplyLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('supply', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({ asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
+        if (address) {
+          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
+        }
       }
     },
 
@@ -291,7 +293,9 @@ export const useWithdrawLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({ asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
+        if (address) {
+          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
+        }
       }
     },
 

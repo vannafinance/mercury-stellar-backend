@@ -27,11 +27,13 @@ export interface AttributionHistoryEntry {
  * Derive which borrows belong to which deposit-collateral row by matching a
  * deposit and a borrow that share the same tx hash (an atomic cross-asset open).
  *
- * Pure: pass the same Mercury history the Position History tab uses. NOTE the
- * grouping is deposit-driven — Mercury currently indexes only borrow/repay (no
- * deposit events), so the returned maps are empty today and the caller falls
- * back to attaching all borrows to the largest collateral row. Multi-collateral
- * attribution lights up automatically once deposit events land in Mercury.
+ * Pure: pass the same Mercury history the Position History tab uses (Mercury
+ * indexes Trader_Deposit alongside Trader_Borrow/Trader_Repay_Event, so this
+ * works whenever deposit+borrow were submitted as one atomic transaction).
+ * Debt opened via separate transactions — or before Mercury had a record of
+ * this account — has no shared hash to join on, so it comes back empty for
+ * that borrow; the caller's fallback then shows it as portfolio-wide
+ * (cross-collateral) rather than guessing which deposit opened it.
  */
 export function buildBorrowAttributionFromHistory(
   history: AttributionHistoryEntry[],

@@ -1,13 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useUserPositions, usePoolData } from "@/hooks/use-earn";
+import { useUserPositions, usePoolData, useEarnTransactions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { Table } from "@/components/earn/table";
 import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
-import { getEarnHistoryByAsset, type EarnHistoryEntry } from "@/lib/earn-history";
 import { formatTokenAmount } from "@/lib/utils/format-amount";
 import { useTheme } from "@/contexts/theme-context";
 
@@ -82,16 +81,15 @@ export const LenderTab = () => {
     ],
   }));
 
-  // Position History — every supply/withdraw the wallet has made across all
-  // lending assets, merged and sorted newest-first. Same local tx log
-  // (lib/earn-history) and row shape (Date/Type/Amount/Status/Tx Hash) as the
-  // Earn page's per-asset "All Transactions" history, aggregated here across
-  // every asset instead of scoped to one.
-  const historyEntries = useMemo((): EarnHistoryEntry[] => {
-    return ASSETS.flatMap((asset) => getEarnHistoryByAsset(asset)).sort(
-      (a, b) => b.timestamp - a.timestamp,
-    );
-  }, []);
+  // Position History — every supply/withdraw the CONNECTED wallet has made
+  // across all lending assets, newest-first. Sourced from Mercury
+  // (useEarnTransactions), which scopes server-side to the connected
+  // account — NOT the previous local tx log (lib/earn-history), whose
+  // storage key was shared across every wallet ever connected in this
+  // browser with no per-wallet filter, so switching accounts showed
+  // whichever wallet's history happened to be in localStorage, not the
+  // current one's.
+  const { transactions: historyEntries } = useEarnTransactions();
 
   const historyTableRows = historyEntries.map((ev) => {
     const amountNum = parseFloat(ev.amount) || 0;
