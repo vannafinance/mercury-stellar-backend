@@ -705,6 +705,12 @@ export const SwapCard = ({
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
       qc.invalidateQueries({ queryKey: ['spot'] });
+      // Spot Balances (Portfolio's spot-section.tsx) reads live per-venue
+      // balances under these two separate query-key prefixes, not ['spot'] —
+      // without this they only refreshed on the next ledger tick, showing
+      // stale amounts right after a swap.
+      qc.invalidateQueries({ queryKey: ['soroswap', 'tokenBalance'] });
+      qc.invalidateQueries({ queryKey: ['farm', 'aquarius', 'tokenBalance'] });
     },
     onError: (error) => {
       setTxStatus("error");

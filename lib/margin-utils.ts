@@ -467,6 +467,7 @@ export class MarginAccountService {
     }
   }
 
+
   /**
    * Whether the trader has an active, locally-cached margin account.
    * Checks localStorage only — does not hit the chain. Use
@@ -1696,7 +1697,16 @@ export class MarginAccountService {
             hash: result.hash
           };
         } else {
-          console.error('❌ Borrow transaction failed after polling:', finalResult);
+          // NOT necessarily a real failure yet: this is exactly the
+          // read-after-write footprint race isFootprintRaceError() above
+          // exists for (see its doc comment) — borrowTokens() transparently
+          // retries once when this matches, which is the common case for a
+          // dual borrow's second leg. console.warn, not .error: in dev mode
+          // Next.js's overlay intercepts every console.error as a crash
+          // popup, which falsely alarmed the user for a case that silently
+          // self-heals on retry. A genuine, unretried final failure still
+          // reaches the user via the caller's own toast.error(...).
+          console.warn('⚠️ Borrow transaction not confirmed after polling (may be retried):', finalResult);
           return {
             success: false,
             error: this.parseBorrowNotAllowedMessage(finalResult, contractTokenSymbol),

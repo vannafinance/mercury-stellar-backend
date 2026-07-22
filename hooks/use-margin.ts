@@ -62,17 +62,31 @@ export const useMarginHistory = () => {
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<MarginHistoryRow[]> => {
       if (!marginAccountAddress) return [];
-      const [mercury, rpcFallback] = await Promise.all([
+      // Promise.allSettled, not Promise.all: getMarginHistoryFromMercury has
+      // no internal try/catch, so a Mercury-side failure (confirmed live: a
+      // transient 502 from Mercury's REST endpoint) rejects that promise —
+      // with Promise.all that would reject the WHOLE query and discard a
+      // perfectly good RPC-fallback result too, surfacing as "No transaction
+      // history" even though RPC had real data. Each source degrades
+      // independently now.
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
         getMarginHistoryFromMercury(marginAccountAddress),
         getMarginHistoryFromRpc(marginAccountAddress),
       ]);
-      const byHash = new Map<string, MarginTxEntry>();
-      // Mercury first, then RPC fills in anything Mercury doesn't have yet —
-      // same hash means the same on-chain event, so RPC never overrides a row
-      // Mercury already reported.
-      for (const entry of mercury) if (entry.hash) byHash.set(entry.hash, entry);
-      for (const entry of rpcFallback) if (entry.hash && !byHash.has(entry.hash)) byHash.set(entry.hash, entry);
-      const onChain = Array.from(byHash.values());
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+      // Keyed by hash+type+asset, NOT hash alone: a single atomic "Deposit &
+      // Borrow" transaction emits TWO distinct events (Trader_Deposit AND
+      // Trader_Borrow) sharing the SAME tx hash. Deduping by hash alone
+      // collapsed them into one entry, silently dropping whichever event lost
+      // the Map.set race — confirmed live (a deposit+borrow tx showed only
+      // the deposit in Position History). Mercury first, then RPC fills in
+      // anything Mercury doesn't have yet.
+      const byKey = new Map<string, MarginTxEntry>();
+      const keyOf = (e: MarginTxEntry) => `${e.hash}:${e.type}:${e.asset}`;
+      for (const entry of mercury) if (entry.hash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.hash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      const onChain = Array.from(byKey.values());
 
       // Margin-collateral withdrawals (`withdraw_collateral_balance`) emit no
       // distinguishing on-chain event Mercury (or RPC) can index — unlike
