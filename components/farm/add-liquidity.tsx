@@ -13,6 +13,7 @@
  */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
@@ -50,18 +51,42 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const userAddress = useUserStore((state) => state.address);
   const selectedRow = useFarmStore((state) => state.selectedRow);
   const tabType = useFarmStore((state) => state.tabType);
-  const isAquariusPool =
-    tabType === "multi" &&
-    ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "aquarius" ||
-      (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Aquarius"));
 
-  const isSoroswapPool =
-    tabType === "multi" &&
-    ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "soroswap" ||
-      (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Soroswap"));
+  // `selectedRow` lives in a client-side store populated only when navigating
+  // here by clicking a row on the Farm list page — a hard reload (or a direct
+  // URL visit) starts with it empty, which silently misclassified every
+  // Aquarius/Soroswap pool as single-asset Blend (this panel rendered its
+  // one-token form for a pool that needs two). Mirrors the URL-derived
+  // detection `app/farm/[id]/page.tsx` already uses for its header/tabs,
+  // which is why THOSE kept showing the correct protocol after a refresh
+  // while this panel didn't. Only used as a fallback when the store is empty,
+  // so the existing store-driven behavior is unchanged when it IS populated.
+  const params = useParams();
+  const urlId = (params?.id as string | undefined)?.toLowerCase();
+  const urlIsSoroswapPool = urlId?.startsWith("soroswap-") ?? false;
+  const urlIsAquariusPool = !urlIsSoroswapPool && urlId != null && !["xlm", "usdc"].includes(urlId);
+  const urlMatchedSoroswapPool = urlIsSoroswapPool
+    ? SOROSWAP_POOLS.find((p) => p.id === urlId) ?? SOROSWAP_POOLS[0]
+    : null;
+  const urlMatchedAquariusPool = urlIsAquariusPool
+    ? AQUARIUS_POOLS.find((p) => p.id === urlId || p.tokens.join("-").toLowerCase() === urlId) ?? AQUARIUS_POOLS[0]
+    : null;
 
-  const poolTokens =
-    (selectedRow?.cell?.[0] as any)?.titles?.map((t: string) => t.toUpperCase()) ?? ["XLM", "USDC"];
+  const isAquariusPool = selectedRow
+    ? tabType === "multi" &&
+      ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "aquarius" ||
+        (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Aquarius"))
+    : urlIsAquariusPool;
+
+  const isSoroswapPool = selectedRow
+    ? tabType === "multi" &&
+      ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "soroswap" ||
+        (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Soroswap"))
+    : urlIsSoroswapPool;
+
+  const poolTokens = selectedRow
+    ? (selectedRow?.cell?.[0] as any)?.titles?.map((t: string) => t.toUpperCase()) ?? ["XLM", "USDC"]
+    : (urlMatchedSoroswapPool?.tokens ?? urlMatchedAquariusPool?.tokens ?? ["XLM", "USDC"]);
   const tokenA = poolTokens[0] ?? "XLM";
   const tokenB = poolTokens[1] ?? "USDC";
 
@@ -76,7 +101,9 @@ export const AddLiquidity = memo(function AddLiquidity() {
     (p) => p.tokens.includes(tokenA) && p.tokens.includes(tokenB)
   );
 
-  // Determine initial token from store (for single asset / lending rows)
+  // Determine initial token from store (for single asset / lending rows) —
+  // same hard-refresh gap as above: fall back to the URL slug (literally
+  // "xlm"/"usdc" for a Blend pool) when the store hasn't been populated.
   const getInitialToken = useCallback((): TokenSymbol => {
     if (tabType === "single" && selectedRow) {
       const firstCell = selectedRow.cell?.[0] as any;
@@ -85,8 +112,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
         return title as TokenSymbol;
       }
     }
+    if (!selectedRow && urlId) {
+      const upper = urlId.toUpperCase();
+      if (SUPPORTED_TOKENS.includes(upper as TokenSymbol)) return upper as TokenSymbol;
+    }
     return "XLM";
-  }, [tabType, selectedRow]);
+  }, [tabType, selectedRow, urlId]);
 
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>(getInitialToken);
   const [value, setValue] = useState<string>("");
