@@ -8,8 +8,10 @@ import {
   SOROSWAP_POOLS,
   SoroswapPoolConfig,
   SoroswapSwapSymbol,
+  type SoroswapLpEvent,
 } from '@/lib/soroswap-utils';
 import { getSoroswapLpEventsFromMercury } from '@/lib/mercury-soroswap';
+import { getSoroswapLpEventsFromRpc } from '@/lib/soroswap-history-rpc';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // Farm-page Soroswap data hooks. Same pattern as use-farm.ts: React Query with a
@@ -169,9 +171,22 @@ export const useSoroswapEvents = (
   const query = useQuery({
     queryKey: ['soroswap', 'lpEvents', pairAddress ?? null, marginAccountAddress ?? null],
     enabled: Boolean(pairAddress && marginAccountAddress),
-    queryFn: async () => {
+    queryFn: async (): Promise<SoroswapLpEvent[]> => {
       if (!pairAddress || !marginAccountAddress) return [];
-      return getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress);
+      // Mercury + a bounded RPC fallback, merged via Promise.allSettled —
+      // same fix already applied to margin, Earn, and Aquarius LP history.
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
+        getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress),
+        getSoroswapLpEventsFromRpc(pairAddress, marginAccountAddress),
+      ]);
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+      const byKey = new Map<string, SoroswapLpEvent>();
+      const keyOf = (e: SoroswapLpEvent) => `${e.txHash}:${e.type}`;
+      for (const entry of mercury) if (entry.txHash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.txHash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,

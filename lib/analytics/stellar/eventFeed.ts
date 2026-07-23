@@ -1,6 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 import {
+  ACTIVE_ASSETS,
   fallbackPriceForCanonical,
   fallbackPriceForSymbol,
   resolveUsdAlias,
@@ -116,7 +117,11 @@ async function fetchContractEvents(
 }
 
 export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGERS): Promise<LiveEventFeed> {
-  await fetchTokenPrices(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]).catch(() => undefined);
+  // Was hardcoded to 4 tokens while the `pools` list just below already
+  // covers all 8 lending pools — whale deposit/withdraw/repay rows for
+  // BLND/AQUA/WETH/EURC activity were pricing off stale/fallback quotes
+  // instead of a freshly-primed live one.
+  await fetchTokenPrices([...ACTIVE_ASSETS]).catch(() => undefined);
 
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
   const latest = await server.getLatestLedger();

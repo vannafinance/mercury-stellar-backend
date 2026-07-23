@@ -76,11 +76,22 @@ export const FALLBACK_PRICES: Record<StellarSymbol, number> = {
 } as Record<StellarSymbol, number>;
 
 /** Maps every variant to its underlying price symbol, mirroring the
- *  contract-side `canonical_price_symbol` in `risk_engine.rs`. */
-export function resolveUsdAlias(sym: string): "XLM" | "USDC" | "EURC" {
+ *  contract-side `canonical_price_symbol` in `risk_engine.rs`. Only the
+ *  three USD-pegged variants (BLUSDC/AQUSDC/SOUSDC, plus their BLEND_USDC
+ *  tracking alias) collapse into the shared "USDC" bucket — BLND/AQUA/WETH
+ *  are real, independently-priced tokens, not USD-stable aliases, so they
+ *  must resolve to themselves. Getting this wrong would make shocking BLND
+ *  (say) also incorrectly move every BLUSDC/AQUSDC/SOUSDC wallet, and vice
+ *  versa — confirmed as a real gap when the Risk Explorer's asset picker
+ *  only listed 4 of the 8 supported assets and this path was never
+ *  exercised for the other 4. */
+export function resolveUsdAlias(sym: string): "XLM" | "USDC" | "EURC" | "BLND" | "AQUA" | "WETH" {
   const u = (sym || "").toUpperCase();
   if (u === "XLM" || u === "BLEND_XLM" || u === "BLXLM") return "XLM";
   if (u === "EURC" || u === "BLEND_EURC") return "EURC";
+  if (u === "BLND") return "BLND";
+  if (u === "AQUA") return "AQUA";
+  if (u === "WETH" || u === "BLEND_WETH") return "WETH";
   return "USDC";
 }
 
@@ -90,6 +101,9 @@ export type CanonicalUsdSymbol = ReturnType<typeof resolveUsdAlias>;
 export function fallbackPriceForCanonical(c: CanonicalUsdSymbol): number {
   if (c === "XLM") return FALLBACK_PRICES.XLM;
   if (c === "EURC") return FALLBACK_PRICES.EURC;
+  if (c === "BLND") return FALLBACK_PRICES.BLND;
+  if (c === "AQUA") return FALLBACK_PRICES.AQUA;
+  if (c === "WETH") return FALLBACK_PRICES.WETH;
   return FALLBACK_PRICES.BLUSDC;
 }
 

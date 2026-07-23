@@ -6,7 +6,8 @@ import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
-import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
+import { getEarnTransactionsFromMercury, type EarnTxEntry } from '@/lib/mercury-earn';
+import { getEarnHistoryFromRpc } from '@/lib/earn-history-rpc';
 import { type AllPoolStats } from '@/lib/pool-stats';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
@@ -321,9 +322,15 @@ export const useWithdrawLiquidity = () => {
 
 /**
  * On-chain earn-pool transaction history for the connected user, sourced from
- * Mercury. Enabled only when connected, so the fetch re-fires automatically on
- * reconnect (enabled false → true). Ledger-tick invalidated; refetches on window
- * focus.
+ * Mercury (full history) merged with a bounded RPC fallback for whatever
+ * Mercury is currently missing — Mercury has been observed returning a genuine
+ * 502 for this wallet's lending-pool queries (a real outage, not "no data"),
+ * which previously wiped this history out entirely since Mercury was the only
+ * source. Promise.allSettled, not Promise.all: each source degrades
+ * independently, matching the same fix already applied to margin history's
+ * useMarginHistory. Enabled only when connected, so the fetch re-fires
+ * automatically on reconnect (enabled false → true). Ledger-tick invalidated;
+ * refetches on window focus.
  *
  * @returns `{ transactions, isLoading, isRefreshing, refresh }`.
  */
@@ -337,9 +344,24 @@ export const useEarnTransactions = () => {
   const query = useQuery({
     queryKey: ['earn', 'transactions', address ?? null],
     enabled: Boolean(address && isConnected),
-    queryFn: async () => {
+    queryFn: async (): Promise<EarnTxEntry[]> => {
       if (!address) return [];
-      return getEarnTransactionsFromMercury(address);
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
+        getEarnTransactionsFromMercury(address),
+        getEarnHistoryFromRpc(address),
+      ]);
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+      // Composite key, not hash alone — a single atomic tx can emit more than
+      // one event under the same hash elsewhere in this protocol (e.g.
+      // margin's deposit+borrow), so this follows the same established
+      // discipline even though a plain supply/withdraw is normally 1:1.
+      const byKey = new Map<string, EarnTxEntry>();
+      const keyOf = (e: EarnTxEntry) => `${e.hash}:${e.type}:${e.asset}`;
+      for (const entry of mercury) if (entry.hash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.hash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,

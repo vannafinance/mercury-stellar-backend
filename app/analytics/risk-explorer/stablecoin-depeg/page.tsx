@@ -15,14 +15,17 @@ const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; retur
 // Stellar's USDC universe is three protocol-specific variants (one per
 // pool: Blend / Aquarius / Soroswap). They each peg to USD independently
 // so a depeg in one doesn't auto-propagate, but a paired depeg models
-// systemic contagion (e.g. shared issuer or oracle path).
-type Stablecoin = "BLUSDC" | "AQUSDC" | "SOUSDC" | "BLUSDC+AQUSDC";
+// systemic contagion (e.g. shared issuer or oracle path). EURC is the
+// protocol's other peg (EUR, via the Blend EURC pool) — a genuinely
+// different peg risk from the three USD variants, not a USD depeg proxy.
+type Stablecoin = "BLUSDC" | "AQUSDC" | "SOUSDC" | "BLUSDC+AQUSDC" | "EURC";
 
 const STABLECOIN_OPTIONS: { id: Stablecoin; label: string; color: string; desc: string }[] = [
   { id: "BLUSDC",          label: "Blend USDC",      color: "#2775CA", desc: "Blend pool USDC reserve — primary lending pool" },
   { id: "AQUSDC",          label: "Aquarius USDC",   color: "#26A17B", desc: "Aquarius AMM USDC reserve" },
   { id: "SOUSDC",          label: "Soroswap USDC",   color: "#F5AC37", desc: "Soroswap DEX USDC reserve" },
   { id: "BLUSDC+AQUSDC",   label: "Blend + Aquarius", color: "#FC5457", desc: "Dual-pool USDC depeg — systemic contagion" },
+  { id: "EURC",            label: "EURC",            color: "#8A5CF5", desc: "Blend EURC reserve — EUR peg, independent of the USD variants" },
 ];
 
 const RECOVERY_OPTIONS = [
@@ -42,8 +45,9 @@ const ALL_POSITIONS = Array.from({ length: 32 }, (_, i) => {
   const blusdcPct = 0.1 + dr(i * 3) * 0.35;
   const aqusdcPct = 0.05 + dr(i * 5) * 0.25;
   const sousdcPct = dr(i * 7) * 0.15;
+  const eurcPct = dr(i * 19) * 0.1;
   const trackPct = leverage >= 7 ? 0.3 + dr(i * 9) * 0.25 : 0.05 + dr(i * 9) * 0.2;
-  const lpPct = Math.max(0, 1 - blusdcPct - aqusdcPct - sousdcPct - trackPct);
+  const lpPct = Math.max(0, 1 - blusdcPct - aqusdcPct - sousdcPct - eurcPct - trackPct);
   return {
     id: i,
     debt,
@@ -53,6 +57,7 @@ const ALL_POSITIONS = Array.from({ length: 32 }, (_, i) => {
     blusdcValue: Math.floor(marginValue * blusdcPct),
     aqusdcValue: Math.floor(marginValue * aqusdcPct),
     sousdcValue: Math.floor(marginValue * sousdcPct),
+    eurcValue: Math.floor(marginValue * eurcPct),
     trackValue: Math.floor(marginValue * trackPct),
     lpValue: Math.floor(marginValue * lpPct),
   };
@@ -63,16 +68,18 @@ function applyDepeg(pos: typeof ALL_POSITIONS[0], stable: Stablecoin, severity: 
   let newBl = pos.blusdcValue;
   let newAq = pos.aqusdcValue;
   let newSo = pos.sousdcValue;
+  let newEu = pos.eurcValue;
   if (stable === "BLUSDC" || stable === "BLUSDC+AQUSDC") newBl = Math.floor(pos.blusdcValue * depegFactor);
   if (stable === "AQUSDC" || stable === "BLUSDC+AQUSDC") newAq = Math.floor(pos.aqusdcValue * depegFactor);
   if (stable === "SOUSDC") newSo = Math.floor(pos.sousdcValue * depegFactor);
-  const newMargin = newBl + newAq + newSo + pos.trackValue + pos.lpValue;
+  if (stable === "EURC") newEu = Math.floor(pos.eurcValue * depegFactor);
+  const newMargin = newBl + newAq + newSo + newEu + pos.trackValue + pos.lpValue;
   const newHF = Math.round((newMargin / pos.debt) * 100) / 100;
   // Risk Engine threshold: BALANCE_TO_BORROW_THRESHOLD = 1.1 (risk_engine.rs).
   const liquidated = newHF < LIQ_THRESHOLD;
   const grossRecovery = liquidated ? newMargin * 0.93 : 0;
   const badDebt = liquidated ? Math.max(0, pos.debt - grossRecovery) : 0;
-  return { ...pos, newMargin, newHF, liquidated, badDebt, newBl, newAq, newSo };
+  return { ...pos, newMargin, newHF, liquidated, badDebt, newBl, newAq, newSo, newEu };
 }
 
 export default function StablecoinDepegPage() {
@@ -94,6 +101,7 @@ export default function StablecoinDepegPage() {
       if (stablecoin === "BLUSDC" || stablecoin === "BLUSDC+AQUSDC") exp += p.blusdcValue;
       if (stablecoin === "AQUSDC" || stablecoin === "BLUSDC+AQUSDC") exp += p.aqusdcValue;
       if (stablecoin === "SOUSDC") exp += p.sousdcValue;
+      if (stablecoin === "EURC") exp += p.eurcValue;
       return a + exp;
     }, 0);
     return { results, liquidated, totalBadDebt, coverage, totalExposure, fundRemaining: Math.max(0, INSURANCE_FUND - totalBadDebt), effectiveSeverity };
@@ -281,6 +289,7 @@ export default function StablecoinDepegPage() {
                     if (stablecoin === "BLUSDC" || stablecoin === "BLUSDC+AQUSDC") exposure += p.blusdcValue;
                     if (stablecoin === "AQUSDC" || stablecoin === "BLUSDC+AQUSDC") exposure += p.aqusdcValue;
                     if (stablecoin === "SOUSDC") exposure += p.sousdcValue;
+                    if (stablecoin === "EURC") exposure += p.eurcValue;
                     const loss = exposure * sim.effectiveSeverity / 100;
                     // Stellar G-account synthetic — never an EVM 0x.
                     const synthAccount = `G${(0xA000 + p.id * 71).toString(36).toUpperCase().padStart(50, "0").slice(0, 50)}`;

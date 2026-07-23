@@ -29,11 +29,13 @@ function walletPrimaryAsset(snapshot: AccountSnapshot): StellarAsset {
   if (ACTIVE_ASSETS.includes(symbol as StellarAsset)) {
     return symbol as StellarAsset;
   }
+  // Fallback for a tracking/alias symbol (e.g. BLEND_WETH, AQ_WETH_AQUA)
+  // that isn't itself one of the 8 ACTIVE_ASSETS — route it to its real
+  // underlying bucket via the same canonical resolution the contract uses,
+  // instead of collapsing every non-XLM asset into BLUSDC.
   const canonical = resolveUsdAlias(symbol);
-  if (canonical === "XLM") return "XLM";
-  // Risk explorer controls are currently XLM + USDC-flavoured assets.
-  // EURC collateral is mapped into the USD bucket until a dedicated tab exists.
-  return "BLUSDC";
+  if (canonical === "USDC") return "BLUSDC";
+  return canonical;
 }
 
 export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosition[] {
@@ -70,6 +72,10 @@ export const SIM_ASSETS = [
   { symbol: "BLUSDC", name: "Blend USDC", icon: "$" },
   { symbol: "AQUSDC", name: "Aquarius USDC", icon: "$" },
   { symbol: "SOUSDC", name: "Soroswap USDC", icon: "$" },
+  { symbol: "EURC", name: "Euro Coin", icon: "€" },
+  { symbol: "BLND", name: "Blend", icon: "★" },
+  { symbol: "AQUA", name: "Aquarius", icon: "★" },
+  { symbol: "WETH", name: "Wrapped Ether", icon: "★" },
 ] as const;
 
 const COLLATERAL_SYMBOLS: StellarAsset[] = ACTIVE_ASSETS;

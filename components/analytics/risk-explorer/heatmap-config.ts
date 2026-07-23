@@ -8,13 +8,18 @@ export const LEVERAGE_RANGES = [
   { label: "7–10x", min: 7, max: 10 },
 ] as const;
 
-// Volatile-asset drops apply to XLM (the only true volatile in our universe).
-// Stable drops apply to BLUSDC / AQUSDC / SOUSDC — depegs are tighter.
+// Volatile-asset drops apply to XLM/BLND/AQUA/WETH (real market risk, not a
+// peg). Stable drops apply to BLUSDC/AQUSDC/SOUSDC/EURC — depegs are tighter.
 const VOL_DROPS = [-5, -10, -15, -20, -25, -30, -40, -50, -60] as const;
 const STABLE_DROPS = [-1, -2, -3, -5, -8, -10, -13, -15, -20] as const;
 
 /** Heatmap tabs match wallet `primaryAsset` exactly. Stellar-only — no
- *  EVM tabs (ETH/WBTC/weETH) and no stables we don't actually support. */
+ *  EVM tabs (ETH/WBTC/weETH) and no stables we don't actually support.
+ *  Kept in sync with `lib/analytics/stellar/canon.ts`'s `ACTIVE_ASSETS` —
+ *  this array doesn't derive from it automatically, so a newly-onboarded
+ *  token needs an entry added here too (this one was missed when
+ *  BLND/AQUA/WETH/EURC were wired in, silently hiding them from the
+ *  stress-test heatmap while the rest of the page already showed them). */
 export const HEATMAP_ASSETS = [
   {
     symbol: "XLM",
@@ -39,6 +44,30 @@ export const HEATMAP_ASSETS = [
     label: "Soroswap USDC",
     drops: [...STABLE_DROPS],
     matchFn: (w: WalletPosition) => w.primaryAsset === "SOUSDC",
+  },
+  {
+    symbol: "EURC",
+    label: "EURC",
+    drops: [...STABLE_DROPS],
+    matchFn: (w: WalletPosition) => w.primaryAsset === "EURC",
+  },
+  {
+    symbol: "BLND",
+    label: "BLND",
+    drops: [...VOL_DROPS],
+    matchFn: (w: WalletPosition) => w.primaryAsset === "BLND",
+  },
+  {
+    symbol: "AQUA",
+    label: "AQUA",
+    drops: [...VOL_DROPS],
+    matchFn: (w: WalletPosition) => w.primaryAsset === "AQUA",
+  },
+  {
+    symbol: "WETH",
+    label: "WETH",
+    drops: [...VOL_DROPS],
+    matchFn: (w: WalletPosition) => w.primaryAsset === "WETH",
   },
 ] as const;
 
