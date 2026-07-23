@@ -5,6 +5,7 @@ export const navbarItems = [
   { title: "Trade", link: "/trade" , group: "bordered"  },
   { title: "Farm", link: "/farm", group: "bordered" },
   { title: "Analytics", link: "/analytics/overview2", group: "secondary" },
+  { title: "Copilot", link: "/copilot", group: "secondary" },
 ];
 
 export const tradeItems = [
