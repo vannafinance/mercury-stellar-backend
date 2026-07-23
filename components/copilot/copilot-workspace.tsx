@@ -19,6 +19,7 @@ import { ChevronRight, LayoutTemplate, X, Loader2, Sparkles, Check, CircleAlert,
 import toast from "react-hot-toast";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, checkUserMarginAccount } from "@/store/margin-account-info-store";
+import { useCopilotSettingsStore } from "@/store/copilot-settings";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 
 // ---------------------------------------------------------------------------
@@ -165,9 +166,13 @@ function HFReadout({ hf }: { hf?: number | null }) {
 
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
+  const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const hasMarginAccount = useMarginAccountInfoStore((s) => s.hasMarginAccount);
   const healthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
+  // Per-wallet "session signing" toggle (Privy only). ON → skip the manual
+  // Approve & sign click for single-leg, risk-allowed writes.
+  const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
@@ -179,6 +184,7 @@ export function CopilotWorkspace() {
   const [health, setHealth] = useState<BrainHealth | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const autoFiredRef = useRef<string | null>(null); // guards one auto-approve per turn
 
   useEffect(() => {
     let alive = true;
@@ -281,8 +287,32 @@ export function CopilotWorkspace() {
     setAmount("");
     setExecResult(null);
     setIntentText("");
+    autoFiredRef.current = null;
     inputRef.current?.focus();
   };
+
+  // Auto-approve (session signing): when the toggle is ON for a Privy wallet and
+  // the write is single-leg + risk-allowed + has its amount, execute it once
+  // automatically — no manual "Approve & sign" click. Multi-leg / needs-
+  // confirmation / blocked writes ALWAYS require a manual click (safety), and
+  // Freighter never auto-approves.
+  const autoEligible =
+    autoApprove &&
+    walletKind === "privy" &&
+    !!preview &&
+    !!action &&
+    isExecutable(action) &&
+    preview.risk.decision === "allow" &&
+    !amountMissing &&
+    amountValid &&
+    !!address;
+
+  useEffect(() => {
+    if (autoEligible && !executing && !execResult && autoFiredRef.current !== submitted) {
+      autoFiredRef.current = submitted;
+      approve();
+    }
+  }, [autoEligible, executing, execResult, submitted, approve]);
 
   const brainOnline = health?.status === "ok";
   const isError = response?.kind === "error" || response?.kind === "blocked";
@@ -523,6 +553,12 @@ export function CopilotWorkspace() {
                     </p>
                   )}
 
+                  {autoEligible && (
+                    <p className="mt-4 flex items-center gap-1.5 font-mono text-[11px] text-violet-500">
+                      <ShieldCheck size={13} /> auto-approve on — running without a manual signature
+                    </p>
+                  )}
+
                   <button
                     type="button"
                     disabled={!canExecute || !address}
@@ -533,7 +569,7 @@ export function CopilotWorkspace() {
                         : "cursor-not-allowed bg-vgray-100 text-vgray-400"
                     }`}
                   >
-                    {executing ? "Signing…" : blocked ? "Blocked by risk policy" : "Approve & sign"}
+                    {executing ? "Signing…" : autoEligible ? "Auto-approving…" : blocked ? "Blocked by risk policy" : "Approve & sign"}
                   </button>
 
                   {execResult && !execResult.ok && (

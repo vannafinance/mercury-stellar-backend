@@ -11,6 +11,7 @@ import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useWallet } from "@/hooks/use-wallet";
 import { useAppModeStore } from "@/store/app-mode-store";
+import { CopilotAutoApproveToggle } from "@/components/copilot/auto-approve-toggle";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { FaucetPopup } from "./faucet/faucet-popup";
 import { ConnectWalletModal } from "./wallet/connect-wallet-modal";
@@ -1071,6 +1072,7 @@ export const Navbar = (props: Navbar) => {
                         </button>
                       </div>
                       {/* Disconnect */}
+                      <CopilotAutoApproveToggle />
                       <div
                         className={`border-t mx-1.5 pt-1.5 pb-1.5 ${
                           isDark ? "border-[#222]" : "border-[#F0F0F0]"
@@ -1463,6 +1465,7 @@ export const Navbar = (props: Navbar) => {
                           </div>
                         </button>
                       </div>
+                      <CopilotAutoApproveToggle />
                       <div
                         className={`border-t mx-1.5 pt-1.5 pb-1.5 ${
                           isDark ? "border-[#222]" : "border-[#F0F0F0]"
