@@ -37,6 +37,19 @@ interface RiskResult {
   reasons: string[];
   projected_health_factor?: number | null;
 }
+interface Simulation {
+  hf_before: number | null;
+  hf_after: number | null;
+  collateral_before: number;
+  collateral_after: number;
+  debt_before: number;
+  debt_after: number;
+  ltv_before: number;
+  ltv_after: number;
+  liquidation_threshold: number;
+  amount_usd: number;
+  asset?: string | null;
+}
 interface Preview {
   template_id: string;
   human_summary: string;
@@ -44,6 +57,7 @@ interface Preview {
   risk: RiskResult;
   requires_signature: boolean;
   action?: CopilotAction | null;
+  simulation?: Simulation | null;
 }
 interface ChatResponse {
   kind: "answer" | "clarification" | "unavailable" | "blocked" | "error" | "preview";
@@ -143,18 +157,37 @@ function FactsPanel({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-// Health factor readout with tone.
-function HFReadout({ hf }: { hf?: number | null }) {
-  if (hf == null) return null;
-  const isInf = hf >= 999;
-  const label = isInf ? "∞" : hf.toFixed(2);
-  const tone = isInf || hf >= 1.5 ? "text-emerald-500" : hf >= 1.3 ? "text-amber-500" : "text-imperial-500";
-  const word = isInf || hf >= 1.5 ? "HEALTHY" : hf >= 1.3 ? "CAUTION" : "AT RISK";
+// Health factor tone helpers.
+function hfTone(hf: number | null): string {
+  if (hf == null) return "text-emerald-500"; // no debt → infinite → healthy
+  return hf >= 1.5 ? "text-emerald-500" : hf >= 1.3 ? "text-amber-500" : "text-imperial-500";
+}
+function hfLabel(hf: number | null): string {
+  return hf == null ? "∞" : hf.toFixed(2);
+}
+const usd0 = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+
+// Before → after projection for a margin write. Shows the real impact on the
+// account's health factor, collateral and debt BEFORE the user signs.
+function SimulationPanel({ sim }: { sim: Simulation }) {
+  const Row = ({ label, before, after, tone }: { label: string; before: string; after: string; tone?: string }) => (
+    <div className="flex items-center justify-between gap-3 py-1.5">
+      <span className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">{label}</span>
+      <span className="flex items-center gap-2 font-mono text-[14px]">
+        <span className="text-vgray-500">{before}</span>
+        <ChevronRight size={13} className="text-vgray-300" />
+        <span className={`font-semibold ${tone ?? "text-vgray-900"}`}>{after}</span>
+      </span>
+    </div>
+  );
   return (
-    <div>
-      <p className={`font-mono text-[44px] font-semibold leading-none ${tone}`}>{label}</p>
-      <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-vgray-400">
-        projected HF · {word}
+    <div className="mt-5 rounded-2xl border border-vgray-100 bg-vgray-50 p-4">
+      <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.2em] text-violet-500/80">projected impact</p>
+      <Row label="health factor" before={hfLabel(sim.hf_before)} after={hfLabel(sim.hf_after)} tone={hfTone(sim.hf_after)} />
+      <Row label="collateral" before={usd0(sim.collateral_before)} after={usd0(sim.collateral_after)} />
+      <Row label="debt" before={usd0(sim.debt_before)} after={usd0(sim.debt_after)} />
+      <p className="mt-2 font-mono text-[10px] text-vgray-400">
+        liquidation at HF 1.00 · safety floor 1.30 · est. ~{usd0(sim.amount_usd)}
       </p>
     </div>
   );
@@ -489,17 +522,17 @@ export function CopilotWorkspace() {
               <>
                 <div>
                   <Eyebrow n="02">Preview</Eyebrow>
-                  <div className="mt-3 flex flex-wrap items-end justify-between gap-6">
-                    <div>
-                      <p className="text-h6 font-semibold text-vgray-900">{preview.human_summary}</p>
-                      {action?.multi_leg && (
-                        <p className="mt-1 font-mono text-[11px] uppercase tracking-wider text-amber-500">
-                          multi-step strategy
-                        </p>
-                      )}
-                    </div>
-                    <HFReadout hf={preview.risk.projected_health_factor} />
+                  <div className="mt-3">
+                    <p className="text-h6 font-semibold text-vgray-900">{preview.human_summary}</p>
+                    {action?.multi_leg && (
+                      <p className="mt-1 font-mono text-[11px] uppercase tracking-wider text-amber-500">
+                        multi-step strategy
+                      </p>
+                    )}
                   </div>
+
+                  {/* before → after projection */}
+                  {preview.simulation && <SimulationPanel sim={preview.simulation} />}
 
                   {/* risk / guard reasons */}
                   <div className="mt-4 flex flex-col gap-1.5">
