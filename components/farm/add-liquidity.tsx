@@ -209,8 +209,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
       AquariusService.isAquariusConfigured()
         .then((configured) => setAquariusRegistryMissing(!configured))
         .catch(() => setAquariusRegistryMissing(true));
-      // Fetch pool stats for ratio calculation — must be THIS row's own pool,
-      // not always the XLM/USDC default (e.g. WETH/AQUA needs its own address).
+      // Fetch pool stats for ratio calculation — must be THIS row's own pool
+      // address, not always the XLM/USDC default.
       AquariusService.getAquariusPoolStats(
         matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL
       )
@@ -483,16 +483,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
     isOverBalance ||
     txStatus === "loading";
 
-  const buttonText = () => {
-    if (!userAddress) return "Connect Wallet";
-    if (!marginAccountAddress) return "Margin Account Required";
-    if (blendConfigured === false) return "Blend Pool Not Configured";
-    if (txStatus === "loading") return "Depositing...";
-    if (!isInputValid) return "Enter Amount";
-    if (isOverBalance) return "Insufficient Available Balance";
-    return `Deposit ${selectedToken}`;
-  };
-
   if (isAquariusPool || isSoroswapPool) {
     const dexName = isSoroswapPool ? "Soroswap" : "Aquarius";
     const reserveA = isSoroswapPool
@@ -681,6 +671,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
+    if (!marginAccountAddress) return "Margin Account Required";
+    if (blendConfigured === false) return "Blend Pool Not Configured";
     if (txStatus === "loading") return "Processing...";
     if (parseFloat(value) <= 0 || !value) return "Enter Amount";
     if (parseFloat(value) > availableToDeployNum) return `Insufficient ${token} Balance`;

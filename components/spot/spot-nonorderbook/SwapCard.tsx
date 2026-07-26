@@ -30,8 +30,8 @@ import {
   parseTokenAmountToStroops,
 } from "@/lib/utils/swap-amount";
 
-// Stellar tokens supported for Aquarius swap. Two disjoint, confirmed-live
-// pools: XLM<->USDC and WETH<->AQUA (no XLM<->WETH/AQUA pool exists).
+// Stellar tokens supported for Aquarius swap. A single confirmed-live pool:
+// XLM<->USDC.
 const STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.SOROSWAP_XLM,
@@ -52,28 +52,10 @@ const STELLAR_TOKENS: Token[] = [
     chain: "stellar",
     isVerified: true,
   },
-  {
-    id: CONTRACT_ADDRESSES.WETH_TOKEN,
-    symbol: "WETH",
-    name: "Wrapped Ether",
-    logo: "/icons/eth-icon.png",
-    decimals: 7,
-    chain: "stellar",
-    isVerified: true,
-  },
-  {
-    id: CONTRACT_ADDRESSES.AQUA_TOKEN,
-    symbol: "AQUA",
-    name: "Aquarius",
-    logo: "/icons/aquarius-logo.png",
-    decimals: 7,
-    chain: "stellar",
-    isVerified: true,
-  },
 ];
 
 // Stellar tokens supported for Soroswap swap (uses on-chain contract
-// addresses). Both non-XLM tokens hub through XLM: XLM<->USDC, XLM<->EURC.
+// addresses). A single pool: XLM<->USDC.
 const SOROSWAP_STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.SOROSWAP_XLM,
@@ -90,15 +72,6 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
     symbol: "USDC",
     name: "USD Coin",
     logo: "/icons/usdc-icon.svg",
-    decimals: 7,
-    chain: "stellar",
-    isVerified: true,
-  },
-  {
-    id: CONTRACT_ADDRESSES.SOROSWAP_EURC,
-    symbol: "EURC",
-    name: "Euro Coin",
-    logo: "/icons/eurc.svg",
     decimals: 7,
     chain: "stellar",
     isVerified: true,
@@ -120,13 +93,10 @@ function formatSwapRate(n: number): string {
   return n.toFixed(decimals).replace(/\.?0+$/, "") || "0";
 }
 
-// Soroswap's non-XLM tokens (USDC, EURC) both hub through XLM — no direct
-// USDC<->EURC pool exists. XLM and AQUA are both genuine hubs on Aquarius
-// (each has more than one real on-chain partner — see getAquariusSwapPartners).
+// Soroswap supports a single pair: XLM<->USDC.
 const SOROSWAP_PARTNERS: Record<string, string[]> = {
-  XLM: ["USDC", "EURC"],
+  XLM: ["USDC"],
   USDC: ["XLM"],
-  EURC: ["XLM"],
 };
 
 function swapPartnersFor(isAquarius: boolean, symbol: string): string[] {
@@ -136,10 +106,9 @@ function swapPartnersFor(isAquarius: boolean, symbol: string): string[] {
 /**
  * Resolves the correct swap-out token for a newly-selected swap-in token, so
  * the UI never lets a user land on a pair with no real on-chain pool. Both
- * DEXes now have genuine hub tokens with more than one valid partner (XLM
- * and AQUA on Aquarius; XLM on Soroswap) — when the fixed side has multiple
- * partners, keep whichever one was already selected if it's still valid,
- * instead of resetting to a fixed default.
+ * DEXes currently support a single pair (XLM<->USDC) — when the fixed side
+ * has multiple partners, keep whichever one was already selected if it's
+ * still valid, instead of resetting to a fixed default.
  */
 function resolveTokenOutForTokenIn(
   isAquarius: boolean,
@@ -352,7 +321,7 @@ export const SwapCard = ({
   const [aquariusUsdcWalletBalance, setAquariusUsdcWalletBalance] = useState("0");
   // Actual token balances held by the margin account contract (updated after
   // swap), keyed by symbol — generic over whichever tokens the active DEX's
-  // token list has (XLM/USDC, WETH/AQUA for Aquarius; XLM/USDC/EURC for Soroswap).
+  // token list has (XLM/USDC for both Aquarius and Soroswap).
   const [aquariusMarginBalances, setAquariusMarginBalances] = useState<Record<string, string>>({});
 
   // Soroswap wallet + margin balances
@@ -400,7 +369,7 @@ export const SwapCard = ({
   }, [userAddress]);
 
   // Fetch actual token balances held by the margin account contract, for
-  // every token in Aquarius's swap list (XLM, USDC, WETH, AQUA). These update
+  // every token in Aquarius's swap list (XLM, USDC). These update
   // after every swap since borrowedBalances tracks lending debt (not swapped holdings).
   useEffect(() => {
     if (!isAquarius || !marginAccountAddress || swapMode !== "margin") return;
@@ -416,7 +385,7 @@ export const SwapCard = ({
     return () => { cancelled = true; };
   }, [isAquarius, marginAccountAddress, swapMode, txHash]);
 
-  // Fetch Soroswap margin account token balances (XLM, USDC, EURC).
+  // Fetch Soroswap margin account token balances (XLM, USDC).
   useEffect(() => {
     if (!isSoroswap || !marginAccountAddress || swapMode !== "margin") return;
     let cancelled = false;
@@ -441,8 +410,7 @@ export const SwapCard = ({
           return getMaxSwappableBalance(formatSwapAmount(Math.max(0, xlm - 1)));
         }
         // Wallet-mode swaps are currently unreachable (swapMode is locked to
-        // "margin" in the UI) — only USDC has a dedicated wallet-balance
-        // fetch; WETH/AQUA fall back to "0" until that mode is re-enabled.
+        // "margin" in the UI) — only USDC has a dedicated wallet-balance fetch.
         return getMaxSwappableBalance(aquariusUsdcWalletBalance || "0");
       }
       return getMaxSwappableBalance(aquariusMarginBalances[token.symbol] || "0");
@@ -589,10 +557,8 @@ export const SwapCard = ({
 
   const handleTokenSelect = useCallback((token: Token) => {
     // Snap the OTHER side to a real on-chain partner for the newly-picked
-    // token, rather than blindly swapping the two prior selections — Aquarius
-    // now has two disjoint pairs (XLM<->USDC, WETH<->AQUA), so picking WETH
-    // while USDC was the other side must reset the other side to AQUA, not
-    // leave an XLM+WETH combo with no pool.
+    // token, rather than blindly swapping the two prior selections — both
+    // DEXes currently support a single pair (XLM<->USDC).
     if (tokenModalTarget === "in") {
       setTokenIn(token);
       setTokenOut(resolveTokenOutForTokenIn(isAquarius, tokenList, token.symbol, tokenOut?.symbol));

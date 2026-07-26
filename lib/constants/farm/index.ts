@@ -394,7 +394,6 @@ export const spotBalancesTableHeadings = [
 export const BLEND_POOL_ASSETS_CONFIG = [
   { symbol: "XLM", iconPath: "/coins/xlmbg.png" },
   { symbol: "USDC", iconPath: "/icons/usdc-icon.svg" },
-  { symbol: "WETH", iconPath: "/icons/usdc-icon.svg" },
 ];
 
 export const singleAssetTableBody = {

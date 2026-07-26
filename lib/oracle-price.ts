@@ -19,7 +19,6 @@ const PRICE_ALIASES: Record<string, string> = {
   SOROSWAP_USDC: 'USDC',
   BLXLM: 'XLM',
   BLEND_XLM: 'XLM',
-  BLEND_WETH: 'WETH',
 };
 
 // Static fallbacks used only when the oracle is unreachable on first probe
@@ -28,16 +27,9 @@ const PRICE_ALIASES: Record<string, string> = {
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
-  BLND: 0.05,
-  AQUA: 0.01,
-  WETH: 3000,
-  EURC: 1.08,
   /** Rough LP-token USD when oracle has no feed — matches analytics canon. */
   AQ_XLM_USDC: 0.4,
-  AQ_WETH_AQUA: 30,
   SS_XLM_USDC: 0.4,
-  SS_XLM_EURC: 0.4,
-  BLEND_WETH: 3000,
 };
 
 // Aligned to the ledger cadence (~5 s) so the price tracks the on-chain oracle

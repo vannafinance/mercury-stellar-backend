@@ -20,13 +20,9 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   USDC: 'USDC',
   AQUARIUS_USDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
-  BLND: 'BLND',
-  AQUA: 'AQUA',
-  WETH: 'WETH',
-  EURC: 'EURC',
 };
 const ALL_ASSETS = [
-  "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC", "BLND", "AQUA", "WETH", "EURC",
+  "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
 ] as const;
 
 // Chart data is derived entirely from Mercury's real per-account event
@@ -189,7 +185,7 @@ export default function Earn() {
   const { pools, isLoading: poolsLoading } = usePoolData();
   const { positions: userPositions, isLoading: positionsLoading } = useUserPositions();
   const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
 
   // Set default pool selection on mount
   useEffect(() => {
@@ -316,10 +312,6 @@ export default function Earn() {
         buildPoolRow("BLUSDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
         buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
         buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
-        buildPoolRow("BLND", pools.BLND, tokenPrices["BLND"] ?? 0, suppliedAmount("BLND")),
-        buildPoolRow("AQUA", pools.AQUA, tokenPrices["AQUA"] ?? 0, suppliedAmount("AQUA")),
-        buildPoolRow("WETH", pools.WETH, tokenPrices["WETH"] ?? 0, suppliedAmount("WETH")),
-        buildPoolRow("EURC", pools.EURC, tokenPrices["EURC"] ?? 0, suppliedAmount("EURC")),
       ],
     };
   }, [pools, userPositions, tokenPrices]);
@@ -330,7 +322,7 @@ export default function Earn() {
     if (!userAddress) return { rows: [] };
 
     const assetKeys = [
-      "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC", "BLND", "AQUA", "WETH", "EURC",
+      "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
     ] as const;
     const rows = assetKeys
       .filter(
@@ -383,9 +375,7 @@ export default function Earn() {
                 : id.toUpperCase();
         if (
           assetType === "XLM" || assetType === "USDC" ||
-          assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC" ||
-          assetType === "BLND" || assetType === "AQUA" ||
-          assetType === "WETH" || assetType === "EURC"
+          assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC"
         ) {
           setSelectedPool(assetType as AssetType, {
             id: id,

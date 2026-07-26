@@ -14,17 +14,9 @@ const AQUARIUS_FAUCET_SECRET = 'SBPQCB4DOUQ26OC43QNAA3ODZOGECHJUVHDHYRHKYPL4SA22
 const AQUARIUS_USDC_CODE = 'USDC';
 const AQUARIUS_USDC_ISSUER = 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER';
 const AQUARIUS_USDC_FAUCET_AMOUNT = '1000.0000000';
-// AQUA is issued by the same account as the Aquarius USDC distribution
-// keypair above (verified live) — an issuer can always pay out its own
-// classic asset regardless of its displayed balance, so this reuses the
-// exact same trustline+payment shape as fundAquariusUsdc.
-const AQUARIUS_AQUA_CODE = 'AQUA';
-const AQUARIUS_AQUA_ISSUER = AQUARIUS_USDC_ISSUER;
-const AQUARIUS_AQUA_FAUCET_AMOUNT = '1000.0000000';
 
 export type FaucetTokenId =
-  | 'XLM' | 'BLEND_USDC' | 'AQUARIUS_USDC' | 'SOROSWAP_USDC'
-  | 'BLND' | 'AQUA' | 'WETH' | 'EURC';
+  | 'XLM' | 'BLEND_USDC' | 'AQUARIUS_USDC' | 'SOROSWAP_USDC';
 
 export interface FaucetResult {
   ok: boolean;
@@ -67,8 +59,7 @@ export const fundXlmViaFriendbot = async (address: string): Promise<FaucetResult
 };
 
 // ─── Soroswap faucet API (any SAC it recognizes, keyed by contract address) ─
-// The API mints whichever token contract you pass; USDC and EURC both go
-// through this same generic endpoint (verified live for EURC).
+// The API mints whichever token contract you pass.
 const fundSoroswapToken = async (address: string, contract: string): Promise<FaucetResult> => {
   try {
     const url = `${SOROSWAP_FAUCET_URL}?address=${encodeURIComponent(address)}&contract=${encodeURIComponent(contract)}`;
@@ -88,9 +79,6 @@ const fundSoroswapToken = async (address: string, contract: string): Promise<Fau
 
 export const fundSoroswapUsdc = (address: string) =>
   fundSoroswapToken(address, CONTRACT_ADDRESSES.SOROSWAP_USDC);
-
-export const fundSoroswapEurc = (address: string) =>
-  fundSoroswapToken(address, CONTRACT_ADDRESSES.EURC_TOKEN);
 
 // ─── Blend USDC via Blend's getAssets endpoint ─────────────────────────────
 // Blend returns a TransactionEnvelope already signed by their distribution
@@ -239,9 +227,6 @@ const fundAquariusClassicAsset = async (
 export const fundAquariusUsdc = (address: string) =>
   fundAquariusClassicAsset(address, AQUARIUS_USDC_CODE, AQUARIUS_USDC_ISSUER, AQUARIUS_USDC_FAUCET_AMOUNT);
 
-export const fundAquariusAqua = (address: string) =>
-  fundAquariusClassicAsset(address, AQUARIUS_AQUA_CODE, AQUARIUS_AQUA_ISSUER, AQUARIUS_AQUA_FAUCET_AMOUNT);
-
 // Mint behaviour per token. The UI uses this to decide whether to keep the
 // button disabled forever after the first success ('one-time'), enforce a
 // cooldown timer between mints ('cooldown'), or always allow re-minting
@@ -288,34 +273,6 @@ export const FAUCET_TOKEN_META: Record<FaucetTokenId, FaucetTokenMeta> = {
     category: 'cooldown',
     cooldownMs: 12_000, // 5/min ≈ one mint every 12 seconds
   },
-  BLND: {
-    label: 'BLND',
-    icon: '/icons/usdc-icon.svg',
-    description: 'Part of the Blend testnet basket (one-time, same mint as Blend USDC)',
-    // Blend's getAssets basket mints USDC + BLND + wETH + wBTC together —
-    // if you've already minted Blend USDC above, BLND is likely already funded.
-    category: 'one-time',
-  },
-  AQUA: {
-    label: 'AQUA',
-    icon: '/icons/aquarius-logo.png',
-    description: 'Aquarius issuer account · 1,000 AQUA per mint',
-    // Same issuer-payment mechanism as Aquarius USDC — no rate limit on testnet.
-    category: 'unlimited',
-  },
-  WETH: {
-    label: 'WETH',
-    icon: '/icons/eth-icon.png',
-    description: 'Part of the Blend testnet basket (one-time, same mint as Blend USDC)',
-    category: 'one-time',
-  },
-  EURC: {
-    label: 'EURC',
-    icon: '/icons/eurc.svg',
-    description: 'Soroswap testnet faucet · 5 mints/min cooldown',
-    category: 'cooldown',
-    cooldownMs: 12_000,
-  },
 };
 
 export const runFaucet = async (
@@ -331,14 +288,5 @@ export const runFaucet = async (
       return fundAquariusUsdc(address);
     case 'SOROSWAP_USDC':
       return fundSoroswapUsdc(address);
-    case 'BLND':
-    case 'WETH':
-      // Same basket mint as BLEND_USDC — Blend's getAssets endpoint returns
-      // all remaining unfunded basket assets in one shot.
-      return fundBlendAssets(address);
-    case 'AQUA':
-      return fundAquariusAqua(address);
-    case 'EURC':
-      return fundSoroswapEurc(address);
   }
 };

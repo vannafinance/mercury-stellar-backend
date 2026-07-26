@@ -207,9 +207,9 @@ export default function RiskExplorer({ wallets, chainName, tokenPrices }: RiskEx
   const c = useColors();
   const cc = useChartColors();
 
-  // Default selection mirrors the app's primary asset on Stellar. XLM,
-  // BLND, AQUA, and WETH are real volatile collateral; BLUSDC/AQUSDC/
-  // SOUSDC/EURC are pegs. Source of truth: lib/analytics/stellar/canon.ts.
+  // Default selection mirrors the app's primary asset on Stellar. XLM is
+  // real volatile collateral; BLUSDC/AQUSDC/SOUSDC are pegs. Source of
+  // truth: lib/analytics/stellar/canon.ts.
   const [selectedAsset, setSelectedAsset] = useState<StellarAsset>(ACTIVE_ASSETS[0]);
   const [priceChangePct, setPriceChangePct] = useState(0);
   const [direction, setDirection] = useState<"up" | "down">("down");

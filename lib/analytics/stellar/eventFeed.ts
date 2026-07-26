@@ -117,10 +117,9 @@ async function fetchContractEvents(
 }
 
 export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGERS): Promise<LiveEventFeed> {
-  // Was hardcoded to 4 tokens while the `pools` list just below already
-  // covers all 8 lending pools — whale deposit/withdraw/repay rows for
-  // BLND/AQUA/WETH/EURC activity were pricing off stale/fallback quotes
-  // instead of a freshly-primed live one.
+  // Prime the price cache for all active assets so whale deposit/withdraw/
+  // repay rows below price off a freshly-primed live quote instead of a
+  // stale/fallback one.
   await fetchTokenPrices([...ACTIVE_ASSETS]).catch(() => undefined);
 
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -133,10 +132,6 @@ export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGE
     CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC,
     CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC,
     CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC,
-    CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLND,
-    CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUA,
-    CONTRACT_ADDRESSES.LENDING_PROTOCOL_WETH,
-    CONTRACT_ADDRESSES.LENDING_PROTOCOL_EURC,
   ];
 
   const [

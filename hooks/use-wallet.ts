@@ -66,10 +66,6 @@ export const useWallet = () => {
         ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
         ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
         ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.BLND),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUA),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.WETH),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.EURC),
       ]);
 
       try {
@@ -78,10 +74,6 @@ export const useWallet = () => {
           usdcDeposited,
           aquariusUsdcDeposited,
           soroswapUsdcDeposited,
-          blndDeposited,
-          aquaDeposited,
-          wethDeposited,
-          eurcDeposited,
         ] = await Promise.race([
           depositedBalancesPromise,
           timeoutPromise
@@ -93,10 +85,6 @@ export const useWallet = () => {
             USDC: usdcDeposited,
             AQUARIUS_USDC: aquariusUsdcDeposited,
             SOROSWAP_USDC: soroswapUsdcDeposited,
-            BLND: blndDeposited,
-            AQUA: aquaDeposited,
-            WETH: wethDeposited,
-            EURC: eurcDeposited,
           },
         });
       } catch (depositedError) {
@@ -142,8 +130,8 @@ export const useWallet = () => {
           isConnected: false,
           walletKind: null,
           balance: '0',
-          tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0', BLND: '0', AQUA: '0', WETH: '0', EURC: '0' },
-          depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0', BLND: '0', AQUA: '0', WETH: '0', EURC: '0' },
+          tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+          depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
           isLoading: false,
         });
       }
@@ -232,8 +220,8 @@ export const useWallet = () => {
       isConnected: false,
       walletKind: null,
       balance: '0',
-      tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0', BLND: '0', AQUA: '0', WETH: '0', EURC: '0' },
-      depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0', BLND: '0', AQUA: '0', WETH: '0', EURC: '0' },
+      tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+      depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
       manuallyDisconnected: true, // Mark as manually disconnected to prevent auto-reconnect
       isLoading: false,
     });

@@ -15,17 +15,13 @@ const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; retur
 
 // Real LP pools deployed on Stellar testnet (see CONTRACT_ADDRESSES in
 // lib/stellar-utils.ts and AQUARIUS_POOLS/SOROSWAP_POOLS in
-// lib/analytics/aquarius-utils.ts / soroswap-utils.ts). Most are XLM-paired
-// (XLM being the primary volatile asset), but WETH/AQUA is volatile-volatile
-// — `stableAsset` is a loose label here (this page's IL math only needs a
-// price RATIO, not a literal peg), not a claim that AQUA holds a peg.
+// lib/analytics/aquarius-utils.ts / soroswap-utils.ts). All 3 are XLM-paired
+// (XLM being the primary volatile asset) — `stableAsset` is a loose label
+// here (this page's IL math only needs a price RATIO, not a literal peg).
 const POOLS = [
   { id: "aq_xlm_blusdc", label: "Aquarius XLM/USDC", volatileAsset: "XLM",  stableAsset: "AQUSDC", protocol: "Aquarius" as const },
   { id: "ss_xlm_susdc", label: "Soroswap XLM/USDC", volatileAsset: "XLM",  stableAsset: "SOUSDC", protocol: "Soroswap" as const },
-  { id: "aq_xlm_aqua",  label: "Aquarius XLM/AQUA", volatileAsset: "XLM",  stableAsset: "AQUA",   protocol: "Aquarius" as const },
   { id: "aq_xlm_usdt",  label: "Aquarius XLM/USDT", volatileAsset: "XLM",  stableAsset: "USDT",   protocol: "Aquarius" as const },
-  { id: "aq_weth_aqua", label: "Aquarius WETH/AQUA", volatileAsset: "WETH", stableAsset: "AQUA",  protocol: "Aquarius" as const },
-  { id: "ss_xlm_eurc",  label: "Soroswap XLM/EURC", volatileAsset: "XLM",  stableAsset: "EURC",   protocol: "Soroswap" as const },
 ] as const;
 
 // Standard AMM IL formula

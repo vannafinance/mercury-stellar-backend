@@ -22,11 +22,7 @@ import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
 // "USDC" is the canonical peg the three USDC-flavoured collateral variants
 // (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
-// as its own priced symbol since Reflector exposes it as a real feed. Was
-// hardcoded to 5 tokens (missing BLND/AQUA/WETH/EURC entirely), which meant
-// a margin account holding any of those 4 never got its price pre-warmed
-// here — falling back to a stale cache or FALLBACK_PRICES instead of a live
-// quote in this account's own snapshot.
+// as its own priced symbol since Reflector exposes it as a real feed.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 const USD_DUST_EPSILON = 0.01;
 

@@ -101,10 +101,10 @@ type PoolBorrowRow = {
 };
 
 function poolStatsToBorrowRows(pools: StellarPoolStats[]): PoolBorrowRow[] {
-  // Plain ticker symbols, not spelled-out names ("Blend USDC" etc.) — with
-  // all 8 pools now on this chart, the long spelled-out labels overlapped
-  // each other under the bars. Matches how the other 5 symbols already
-  // render (XLM, BLND, AQUA, WETH, EURC), so this is also just consistent.
+  // Plain ticker symbols, not spelled-out names ("Blend USDC" etc.) — the
+  // long spelled-out labels overlapped each other under the bars. Matches
+  // how the other symbols already render (XLM), so this is also just
+  // consistent.
   return pools.map((p) => ({
     key: p.symbol,
     label: p.symbol,

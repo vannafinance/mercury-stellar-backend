@@ -66,13 +66,12 @@ export const FarmSection = () => {
   const { positions: aqLpPositions } = useAllAquariusLpPositions(marginAccountAddress);
   const aquariusPools = useAllAquariusPoolStats();
 
-  const prices = useTokenPrices(["XLM", "USDC", "AQUA", "USDT"]);
+  const prices = useTokenPrices(["XLM", "USDC", "USDT"]);
   const priceFor = useCallback(
     (sym: string): number => {
       const s = sym.toUpperCase();
       if (s === "XLM") return prices.XLM ?? 0;
       if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
-      if (s === "AQUA") return prices.AQUA ?? 0;
       if (s === "USDT") return prices.USDT ?? 1;
       return 0;
     },

@@ -17,20 +17,12 @@ export interface User {
     BLEND_USDC: string;
     AQUARIUS_USDC: string;
     SOROSWAP_USDC: string;
-    BLND: string;
-    AQUA: string;
-    WETH: string;
-    EURC: string;
   };
   depositedBalances: {
     XLM: string;
     USDC: string;
     AQUARIUS_USDC: string;
     SOROSWAP_USDC: string;
-    BLND: string;
-    AQUA: string;
-    WETH: string;
-    EURC: string;
   };
   isLoading: boolean;
   manuallyDisconnected: boolean; // Track if user manually disconnected
@@ -48,20 +40,12 @@ const initialState: User = {
     BLEND_USDC: '0',
     AQUARIUS_USDC: '0',
     SOROSWAP_USDC: '0',
-    BLND: '0',
-    AQUA: '0',
-    WETH: '0',
-    EURC: '0',
   },
   depositedBalances: {
     XLM: '0',
     USDC: '0',
     AQUARIUS_USDC: '0',
     SOROSWAP_USDC: '0',
-    BLND: '0',
-    AQUA: '0',
-    WETH: '0',
-    EURC: '0',
   },
   isLoading: false,
   manuallyDisconnected: false,

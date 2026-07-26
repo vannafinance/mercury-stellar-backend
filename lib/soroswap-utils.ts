@@ -22,14 +22,13 @@ const SOROSWAP_API   = 'https://api.soroswap.finance';
 const LP_TRACKING_SYMBOL = 'SS_XLM_USDC'; // Registry tracking token symbol
 
 /** Tokens the Spot-swap feature supports on Soroswap. */
-export type SoroswapSwapSymbol = 'XLM' | 'USDC' | 'EURC';
+export type SoroswapSwapSymbol = 'XLM' | 'USDC';
 
 /**
  * Each non-XLM token's swap partner is always XLM (Soroswap's own router is a
- * real generic AMM, but the two pools we've confirmed live and liquid on this
- * testnet both hub through XLM: XLM/USDC and XLM/EURC — no direct USDC<->EURC
- * pool exists). XLM itself has two possible partners, so its resolution must
- * come from the caller's actual token-out selection, not a lookup here.
+ * real generic AMM, but the only pool we've confirmed live and liquid on this
+ * testnet is XLM/USDC). XLM itself resolves to USDC by default; its
+ * resolution can come from the caller's actual token-out selection.
  */
 export function getSoroswapSwapPartner(symbol: SoroswapSwapSymbol, explicitTokenOut?: SoroswapSwapSymbol): SoroswapSwapSymbol | null {
   if (symbol !== 'XLM') return 'XLM';
@@ -96,14 +95,6 @@ export const SOROSWAP_POOLS: SoroswapPoolConfig[] = [
     feeFraction: 30,
     trackingSymbol: 'SS_XLM_USDC',
     pairAddress: SOROSWAP_XLM_USDC_POOL,
-  },
-  {
-    id:          'soroswap-xlm-eurc',
-    tokens:      ['XLM', 'EURC'],
-    displayName: 'XLM / EURC',
-    feeFraction: 30,
-    trackingSymbol: 'SS_XLM_EURC',
-    pairAddress: CONTRACT_ADDRESSES.SOROSWAP_XLM_EURC_POOL,
   },
 ] as const;
 
@@ -228,7 +219,6 @@ export class SoroswapService {
 
   /** Resolves the on-chain contract address for any Spot-swap-supported symbol. */
   private static async getSwapTokenContract(symbol: SoroswapSwapSymbol): Promise<string> {
-    if (symbol === 'EURC') return CONTRACT_ADDRESSES.SOROSWAP_EURC;
     const { xlm, usdc } = await SoroswapService.getSwapTokenAddresses();
     return symbol === 'XLM' ? xlm : usdc;
   }
@@ -286,9 +276,9 @@ export class SoroswapService {
   /**
    * Returns reserves and total LP supply for a Soroswap pool. Defaults to the
    * XLM/USDC pool (via the hardcoded `getPairAddress()`) when no address is
-   * given, for backward compatibility — but every other Soroswap pool (e.g.
-   * XLM/EURC) MUST pass its own `pairAddress` (see `SOROSWAP_POOLS`), or this
-   * silently returns the XLM/USDC pool's stats mislabeled as the requested one.
+   * given, for backward compatibility — any other Soroswap pool MUST pass its
+   * own `pairAddress` (see `SOROSWAP_POOLS`), or this silently returns the
+   * XLM/USDC pool's stats mislabeled as the requested one.
    * Pair contract: get_reserves() -> (i128, i128), token_0/token_1, total_supply().
    */
   static async getPoolStats(pairAddressOverride?: string): Promise<SoroswapPoolStats | null> {
@@ -347,7 +337,7 @@ export class SoroswapService {
   /**
    * Returns LP balance for a margin account via the Vanna tracking token.
    * Defaults to the XLM/USDC pool's tracking symbol/pair for backward
-   * compatibility — any other pool (e.g. XLM/EURC) MUST pass its own
+   * compatibility — any other pool MUST pass its own
    * `trackingSymbol`/`pairAddressOverride` (see `SOROSWAP_POOLS`), or this
    * silently checks the XLM/USDC pool's tracking balance instead.
    */
@@ -577,8 +567,8 @@ export class SoroswapService {
   /**
    * Add liquidity to a Soroswap pool from the margin account. Defaults to
    * XLM/USDC for backward compatibility (e.g. `one-click-strategy.ts`) —
-   * any other pool (e.g. XLM/EURC) MUST pass its own `tokenA`/`tokenB`, or
-   * this builds the call against the wrong token address entirely.
+   * any other pool MUST pass its own `tokenA`/`tokenB`, or this builds the
+   * call against the wrong token address entirely.
    * Amounts are in human-readable token units (e.g. 100.5 XLM).
    */
   static async addLiquidity(

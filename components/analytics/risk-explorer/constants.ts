@@ -29,8 +29,8 @@ function walletPrimaryAsset(snapshot: AccountSnapshot): StellarAsset {
   if (ACTIVE_ASSETS.includes(symbol as StellarAsset)) {
     return symbol as StellarAsset;
   }
-  // Fallback for a tracking/alias symbol (e.g. BLEND_WETH, AQ_WETH_AQUA)
-  // that isn't itself one of the 8 ACTIVE_ASSETS — route it to its real
+  // Fallback for a tracking/alias symbol (e.g. BLEND_USDC, AQ_XLM_USDC)
+  // that isn't itself one of the 4 ACTIVE_ASSETS — route it to its real
   // underlying bucket via the same canonical resolution the contract uses,
   // instead of collapsing every non-XLM asset into BLUSDC.
   const canonical = resolveUsdAlias(symbol);
@@ -60,10 +60,6 @@ export const TOKEN_PRICES: Record<StellarAsset, number> = {
   BLUSDC: FALLBACK_PRICES.BLUSDC,
   AQUSDC: FALLBACK_PRICES.AQUSDC,
   SOUSDC: FALLBACK_PRICES.SOUSDC,
-  EURC: FALLBACK_PRICES.EURC,
-  BLND: FALLBACK_PRICES.BLND,
-  AQUA: FALLBACK_PRICES.AQUA,
-  WETH: FALLBACK_PRICES.WETH,
 };
 
 /** Asset selector entries shown in the Risk Explorer side panel. */
@@ -72,10 +68,6 @@ export const SIM_ASSETS = [
   { symbol: "BLUSDC", name: "Blend USDC", icon: "$" },
   { symbol: "AQUSDC", name: "Aquarius USDC", icon: "$" },
   { symbol: "SOUSDC", name: "Soroswap USDC", icon: "$" },
-  { symbol: "EURC", name: "Euro Coin", icon: "€" },
-  { symbol: "BLND", name: "Blend", icon: "★" },
-  { symbol: "AQUA", name: "Aquarius", icon: "★" },
-  { symbol: "WETH", name: "Wrapped Ether", icon: "★" },
 ] as const;
 
 const COLLATERAL_SYMBOLS: StellarAsset[] = ACTIVE_ASSETS;

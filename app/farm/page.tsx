@@ -39,11 +39,9 @@ const formatApyDecimalString = (raw?: string): string => {
   return `${(n * 100).toFixed(2)}%`;
 };
 
-// Pools permanently excluded from the LP table — these Aquarius testnet
-// pairs have stale/unrelated data and aren't real, usable pools, unlike
-// the WETH/AQUA and XLM/EURC pools that were added alongside them.
+// Pools permanently excluded from the LP table — this Aquarius testnet
+// pair has stale/unrelated data and isn't a real, usable pool.
 const HIDDEN_POOL_IDS = new Set<string>([
-  "aquarius-xlm-aqua",
   "aquarius-xlm-usdt",
 ]);
 
@@ -76,17 +74,16 @@ export default function FarmPage() {
   const { positions: aqLpPositions } = useAllAquariusLpPositions(marginAccountAddress);
 
   // Live USD prices for the assets that show up in farm positions. Aquarius
-  // pools include AQUA and USDT alongside the XLM/USDC defaults; useTokenPrices
+  // pools include USDT alongside the XLM/USDC defaults; useTokenPrices
   // already aliases USDC variants (BLUSDC/AqUSDC/SoUSDC) to the USDC oracle
   // entry, so we only need to list the canonical symbols. Read up-front (not
   // just where the header stats are built) since the Vaults tables' "Holding"
   // column below also needs a USD value for the user's per-pool position.
-  const farmTokenPrices = useTokenPrices(["XLM", "USDC", "AQUA", "USDT"]);
+  const farmTokenPrices = useTokenPrices(["XLM", "USDC", "USDT"]);
   const priceForSymbol = useCallback((sym: string): number => {
     const s = sym.toUpperCase();
     if (s === "XLM") return farmTokenPrices.XLM ?? 0;
     if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return farmTokenPrices.USDC ?? 1;
-    if (s === "AQUA") return farmTokenPrices.AQUA ?? 0;
     if (s === "USDT") return farmTokenPrices.USDT ?? 1;
     return 0;
   }, [farmTokenPrices]);

@@ -410,7 +410,7 @@ export type ShockResult = {
 /**
  * Pure math: recompute each account's collateral AND debt USD using new
  * prices, then re-derive HF and leverage. The Stellar Risk Engine prices
- * BLEND_/AQ_/SS_ tracking tokens off their underlying (XLM/USDC/EURC),
+ * BLEND_/AQ_/SS_ tracking tokens off their underlying (XLM/USDC),
  * so we resolve every symbol through `resolveUsdAlias` before looking up
  * the override. Stables that aren't shocked stay at their cached USD value.
  */

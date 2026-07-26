@@ -118,7 +118,7 @@ const CollateralComponent = (props: Collateral) => {
   // Live oracle-backed prices. AqUSDC / SoUSDC fall through the canonicalize
   // step inside oracle-price.ts (alias → USDC), so we only request the base
   // symbols and then look the selection up directly.
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const priceFor = (symbol: string): number => {
     const upper = symbol.toUpperCase();
     if (upper === 'AQUSDC' || upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC') {

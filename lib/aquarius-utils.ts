@@ -1,9 +1,10 @@
-// Aquarius (AMM) integration: multi-pool stats (live from the Aquarius AMM API
-// with an on-chain fallback), LP positions/events, swap quotes, and add/remove-
-// liquidity + chained swaps from both the margin account (AccountManager.execute,
-// amounts in WAD 1e18) and the user's wallet. On-chain reserves/LP shares are
-// 7-decimal (SCALAR_7). Pool reserve order is sorted by contract address, so
-// reserves are re-mapped onto each pool config's token order before display.
+// Aquarius (AMM) integration: single-pool (XLM<->USDC) stats (live from the
+// Aquarius AMM API with an on-chain fallback), LP positions/events, swap
+// quotes, and add/remove-liquidity + chained swaps from both the margin
+// account (AccountManager.execute, amounts in WAD 1e18) and the user's
+// wallet. On-chain reserves/LP shares are 7-decimal (SCALAR_7). Pool reserve
+// order is sorted by contract address, so reserves are re-mapped onto each
+// pool config's token order before display.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@/lib/wallet-adapter';
@@ -23,31 +24,26 @@ const XLM_CONTRACT = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
 const POOL_SORTED_TOKENS = [CONTRACT_ADDRESSES.AQUARIUS_USDC, XLM_CONTRACT];
 
 /** Tokens the Spot-swap feature supports on Aquarius. */
-export type AquariusSwapSymbol = 'XLM' | 'USDC' | 'WETH' | 'AQUA';
+export type AquariusSwapSymbol = 'XLM' | 'USDC';
 
 /** On-chain contract address for each swappable symbol. */
 const AQUARIUS_SWAP_TOKEN_CONTRACT: Record<AquariusSwapSymbol, string> = {
   XLM: XLM_CONTRACT,
   USDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
-  WETH: CONTRACT_ADDRESSES.WETH_TOKEN,
-  AQUA: CONTRACT_ADDRESSES.AQUA_TOKEN,
 };
 
 /**
- * Every real, on-chain-confirmed swap partner per token. AQUA and XLM are
- * genuine hubs (AQUA pairs directly with both WETH and XLM; XLM directly
- * with both USDC and AQUA) — confirmed live via the router's own `get_pools`
- * (queried with tokens correctly sorted ascending by address; the router
- * throws the same generic error for "wrong order" as for "no pool", which
- * caused an earlier false read here). USDC and WETH each have exactly one
- * confirmed partner. Other `AQUARIUS_POOLS` entries (xlm-usdt) remain
- * unverified and are intentionally excluded from swap routing.
+ * Every real, on-chain-confirmed swap partner per token — confirmed live via
+ * the router's own `get_pools` (queried with tokens correctly sorted
+ * ascending by address; the router throws the same generic error for "wrong
+ * order" as for "no pool", which caused an earlier false read here). XLM and
+ * USDC pair directly with each other only. Other `AQUARIUS_POOLS` entries
+ * (xlm-usdt) remain unverified and are intentionally excluded from swap
+ * routing.
  */
 const AQUARIUS_SWAP_PARTNERS: Record<AquariusSwapSymbol, AquariusSwapSymbol[]> = {
-  XLM: ['USDC', 'AQUA'],
+  XLM: ['USDC'],
   USDC: ['XLM'],
-  WETH: ['AQUA'],
-  AQUA: ['WETH', 'XLM'],
 };
 
 /** Returns the on-chain swap partner for a token — the default when no
@@ -151,26 +147,11 @@ export const AQUARIUS_POOLS: AquariusPoolConfig[] = [
     poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
   },
   {
-    id: 'aquarius-xlm-aqua',
-    tokens: ['XLM', 'AQUA'],
-    feeFraction: 30,
-    displayName: 'XLM / AQUA',
-    poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_AQUA_POOL,
-  },
-  {
     id: 'aquarius-xlm-usdt',
     tokens: ['XLM', 'USDT'],
     feeFraction: 30,
     displayName: 'XLM / USDT',
     poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDT_POOL,
-  },
-  {
-    id: 'aquarius-weth-aqua',
-    tokens: ['WETH', 'AQUA'],
-    onChainReserveSymbols: ['WETH', 'AQUA'],
-    feeFraction: 10,
-    displayName: 'WETH / AQUA',
-    poolAddress: CONTRACT_ADDRESSES.AQUARIUS_WETH_AQUA_POOL,
   },
 ] as const;
 
@@ -466,8 +447,7 @@ export class AquariusService {
 
   /**
    * Whether the wallet holds a trustline for a given classic Stellar asset —
-   * required before any classic-asset-backed token (USDC/AQUA/wETH; all
-   * wrapped SACs, unlike EURC which is a plain custom Soroban contract) can
+   * required before the classic-asset-backed USDC token (a wrapped SAC) can
    * settle into a wallet.
    */
   static async hasClassicAssetTrustline(
@@ -695,9 +675,6 @@ export class AquariusService {
     const b = tokenB.toUpperCase();
     if ((a === 'XLM' && b === 'USDC') || (a === 'USDC' && b === 'XLM')) {
       return 'AQ_XLM_USDC';
-    }
-    if ((a === 'WETH' && b === 'AQUA') || (a === 'AQUA' && b === 'WETH')) {
-      return 'AQ_WETH_AQUA';
     }
     return null;
   }
@@ -1491,7 +1468,6 @@ export class AquariusService {
     // Same "USDC" -> "AQUSDC" mapping as buildExternalProtocolCallBytes — the
     // generic symbol resolves to Blend's token via the Registry, which fails
     // this Controller's can_call (it only accepts XLM / its own AQUSDC).
-    // WETH/AQUA already match their on-chain symbols verbatim, no aliasing needed.
     const onChainSymbol = (s: AquariusSwapSymbol) => (s === 'USDC' ? 'AQUSDC' : s);
     const tokensInVal = StellarSdk.xdr.ScVal.scvVec([]);
     const tokensOutVal = StellarSdk.xdr.ScVal.scvVec([
@@ -1641,12 +1617,10 @@ export class AquariusService {
         return { success: false, error: `No Aquarius pool for ${tokenInSymbol}` };
       }
 
-      // Classic-asset-backed tokens (USDC/AQUA/wETH) require a trustline on the
-      // destination wallet before they can settle there.
+      // Classic-asset-backed USDC requires a trustline on the destination
+      // wallet before it can settle there.
       const trustlineRequirement: Partial<Record<AquariusSwapSymbol, [string, string]>> = {
         USDC: ['USDC', ASSET_ISSUERS.USDC_AQUARIUS],
-        AQUA: ['AQUA', ASSET_ISSUERS.AQUA],
-        WETH: ['wETH', ASSET_ISSUERS.WETH_BLEND],
       };
       const requiredTrustline = trustlineRequirement[resolvedTokenOutSymbol];
       if (requiredTrustline) {

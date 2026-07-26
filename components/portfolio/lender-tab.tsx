@@ -18,10 +18,6 @@ const PRICE_TOKEN: Record<string, string> = {
   USDC: "USDC",
   AQUARIUS_USDC: "USDC",
   SOROSWAP_USDC: "USDC",
-  BLND: "BLND",
-  AQUA: "AQUA",
-  WETH: "WETH",
-  EURC: "EURC",
 };
 
 const POSITION_TABS = [

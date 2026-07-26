@@ -79,10 +79,6 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   USDC: 'USDC',
   AQUARIUS_USDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
-  BLND: 'BLND',
-  AQUA: 'AQUA',
-  WETH: 'WETH',
-  EURC: 'EURC',
 };
 
 const normalizeTimestamp = (value: number | string | undefined): number => {

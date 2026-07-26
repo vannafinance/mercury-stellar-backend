@@ -35,10 +35,6 @@ export interface EarnPoolState {
     USDC: PoolStats;
     AQUARIUS_USDC: PoolStats;
     SOROSWAP_USDC: PoolStats;
-    BLND: PoolStats;
-    AQUA: PoolStats;
-    WETH: PoolStats;
-    EURC: PoolStats;
   };
 
   // User Positions
@@ -47,10 +43,6 @@ export interface EarnPoolState {
     USDC: UserPoolPosition;
     AQUARIUS_USDC: UserPoolPosition;
     SOROSWAP_USDC: UserPoolPosition;
-    BLND: UserPoolPosition;
-    AQUA: UserPoolPosition;
-    WETH: UserPoolPosition;
-    EURC: UserPoolPosition;
   };
   
   // Transaction History
@@ -101,20 +93,12 @@ const initialState: EarnPoolState = {
     USDC: { ...defaultPoolStats },
     AQUARIUS_USDC: { ...defaultPoolStats },
     SOROSWAP_USDC: { ...defaultPoolStats },
-    BLND: { ...defaultPoolStats },
-    AQUA: { ...defaultPoolStats },
-    WETH: { ...defaultPoolStats },
-    EURC: { ...defaultPoolStats },
   },
   userPositions: {
     XLM: { ...defaultUserPosition },
     USDC: { ...defaultUserPosition },
     AQUARIUS_USDC: { ...defaultUserPosition },
     SOROSWAP_USDC: { ...defaultUserPosition },
-    BLND: { ...defaultUserPosition },
-    AQUA: { ...defaultUserPosition },
-    WETH: { ...defaultUserPosition },
-    EURC: { ...defaultUserPosition },
   },
   recentTransactions: [],
   isLoadingPools: false,

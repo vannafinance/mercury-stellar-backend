@@ -49,9 +49,7 @@ const READ_SOURCE_ADDRESS =
 const WAD = BigInt("1000000000000000000"); // 1e18
 
 // "USDC" is the canonical peg BLUSDC/AQUSDC/SOUSDC (already in ACTIVE_ASSETS)
-// resolve to on-chain. Was hardcoded to 5 tokens (missing BLND/AQUA/WETH/EURC),
-// so those 4 never got their price pre-warmed before this protocol-wide scan
-// computed USD totals — see the matching fix in lib/account-snapshot.ts.
+// resolve to on-chain.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 
 // Maps the symbol stored on the smart account back to a canonical price key

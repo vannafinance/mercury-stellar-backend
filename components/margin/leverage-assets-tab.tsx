@@ -177,7 +177,7 @@ export const LeverageAssetsTab = () => {
 
   // Live oracle prices for USD conversions in deposit/borrow flows. Aliased
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
-  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
+  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   // Same per-account /api/account snapshot the page HEADER reads (React Query
   // dedupes by key — no extra fetch; it's already cached in memory + localStorage

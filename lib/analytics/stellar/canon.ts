@@ -13,11 +13,7 @@ export type StellarAsset =
   | "XLM"
   | "BLUSDC"
   | "AQUSDC"
-  | "SOUSDC"
-  | "EURC"
-  | "BLND"
-  | "AQUA"
-  | "WETH";
+  | "SOUSDC";
 
 /** Tracking collateral symbols emitted by SmartAccount when a user
  *  deposits into Blend / Aquarius / Soroswap. UI may surface them as
@@ -25,12 +21,8 @@ export type StellarAsset =
 export type TrackingSymbol =
   | "BLEND_XLM"
   | "BLEND_USDC"
-  | "BLEND_EURC"
-  | "BLEND_WETH"
   | "AQ_XLM_USDC"
-  | "AQ_WETH_AQUA"
-  | "SS_XLM_USDC"
-  | "SS_XLM_EURC";
+  | "SS_XLM_USDC";
 
 export type StellarSymbol = StellarAsset | TrackingSymbol;
 
@@ -38,7 +30,7 @@ export type StellarProtocol = "Blend" | "Aquarius" | "Soroswap";
 
 // User-selectable assets (matches earn ALL_ASSETS / DropdownOptions).
 export const ACTIVE_ASSETS: StellarAsset[] = [
-  "XLM", "BLUSDC", "AQUSDC", "SOUSDC", "BLND", "AQUA", "WETH", "EURC",
+  "XLM", "BLUSDC", "AQUSDC", "SOUSDC",
 ];
 
 export const PROTOCOLS: StellarProtocol[] = ["Blend", "Aquarius", "Soroswap"];
@@ -61,37 +53,19 @@ export const FALLBACK_PRICES: Record<StellarSymbol, number> = {
   BLUSDC: 1.0,
   AQUSDC: 1.0,
   SOUSDC: 1.0,
-  EURC: 1.08,
-  BLND: 0.05,
-  AQUA: 0.01,
-  WETH: 3000,
   BLEND_XLM: 0.16,
   BLEND_USDC: 1.0,
-  BLEND_EURC: 1.08,
-  BLEND_WETH: 3000,
   AQ_XLM_USDC: 0.4, // LP token rough geometric-mean reference
-  AQ_WETH_AQUA: 30,
   SS_XLM_USDC: 0.4,
-  SS_XLM_EURC: 0.4,
 } as Record<StellarSymbol, number>;
 
 /** Maps every variant to its underlying price symbol, mirroring the
- *  contract-side `canonical_price_symbol` in `risk_engine.rs`. Only the
- *  three USD-pegged variants (BLUSDC/AQUSDC/SOUSDC, plus their BLEND_USDC
- *  tracking alias) collapse into the shared "USDC" bucket — BLND/AQUA/WETH
- *  are real, independently-priced tokens, not USD-stable aliases, so they
- *  must resolve to themselves. Getting this wrong would make shocking BLND
- *  (say) also incorrectly move every BLUSDC/AQUSDC/SOUSDC wallet, and vice
- *  versa — confirmed as a real gap when the Risk Explorer's asset picker
- *  only listed 4 of the 8 supported assets and this path was never
- *  exercised for the other 4. */
-export function resolveUsdAlias(sym: string): "XLM" | "USDC" | "EURC" | "BLND" | "AQUA" | "WETH" {
+ *  contract-side `canonical_price_symbol` in `risk_engine.rs`. The three
+ *  USD-pegged variants (BLUSDC/AQUSDC/SOUSDC, plus their BLEND_USDC
+ *  tracking alias) collapse into the shared "USDC" bucket. */
+export function resolveUsdAlias(sym: string): "XLM" | "USDC" {
   const u = (sym || "").toUpperCase();
   if (u === "XLM" || u === "BLEND_XLM" || u === "BLXLM") return "XLM";
-  if (u === "EURC" || u === "BLEND_EURC") return "EURC";
-  if (u === "BLND") return "BLND";
-  if (u === "AQUA") return "AQUA";
-  if (u === "WETH" || u === "BLEND_WETH") return "WETH";
   return "USDC";
 }
 
@@ -100,10 +74,6 @@ export type CanonicalUsdSymbol = ReturnType<typeof resolveUsdAlias>;
 /** Fallback USD unit price for resolveUsdAlias buckets (USDC → BLUSDC peg). */
 export function fallbackPriceForCanonical(c: CanonicalUsdSymbol): number {
   if (c === "XLM") return FALLBACK_PRICES.XLM;
-  if (c === "EURC") return FALLBACK_PRICES.EURC;
-  if (c === "BLND") return FALLBACK_PRICES.BLND;
-  if (c === "AQUA") return FALLBACK_PRICES.AQUA;
-  if (c === "WETH") return FALLBACK_PRICES.WETH;
   return FALLBACK_PRICES.BLUSDC;
 }
 
@@ -113,14 +83,6 @@ export function fallbackPriceForSymbol(sym: string): number | undefined {
   switch (u) {
     case "XLM":
       return FALLBACK_PRICES.XLM;
-    case "EURC":
-      return FALLBACK_PRICES.EURC;
-    case "BLND":
-      return FALLBACK_PRICES.BLND;
-    case "AQUA":
-      return FALLBACK_PRICES.AQUA;
-    case "WETH":
-      return FALLBACK_PRICES.WETH;
     case "BLUSDC":
       return FALLBACK_PRICES.BLUSDC;
     case "AQUSDC":
@@ -131,18 +93,10 @@ export function fallbackPriceForSymbol(sym: string): number | undefined {
       return FALLBACK_PRICES.BLEND_XLM;
     case "BLEND_USDC":
       return FALLBACK_PRICES.BLEND_USDC;
-    case "BLEND_EURC":
-      return FALLBACK_PRICES.BLEND_EURC;
-    case "BLEND_WETH":
-      return FALLBACK_PRICES.BLEND_WETH;
     case "AQ_XLM_USDC":
       return FALLBACK_PRICES.AQ_XLM_USDC;
-    case "AQ_WETH_AQUA":
-      return FALLBACK_PRICES.AQ_WETH_AQUA;
     case "SS_XLM_USDC":
       return FALLBACK_PRICES.SS_XLM_USDC;
-    case "SS_XLM_EURC":
-      return FALLBACK_PRICES.SS_XLM_EURC;
     case "USDC":
       return FALLBACK_PRICES.BLUSDC;
     default:
@@ -157,13 +111,8 @@ export function isTrackingSymbol(sym: string): boolean {
   return (
     u === "BLEND_XLM" ||
     u === "BLEND_USDC" ||
-    u === "BLEND_EURC" ||
-    u === "BLEND_WETH" ||
     u === "AQ_XLM_USDC" ||
-    u === "AQ_WETH_AQUA" ||
     u === "SS_XLM_USDC" ||
-    u === "SS_XLM_EURC" ||
-    u === "AQ_XLM_AQUA" ||
     u === "AQ_XLM_USDT"
   );
 }
@@ -191,10 +140,6 @@ export const ASSET_META: Record<StellarAsset, {
   BLUSDC: { symbol: "BLUSDC", name: "Blend USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_BLEND_USDC" },
   AQUSDC: { symbol: "AQUSDC", name: "Aquarius USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_AQUARIUS_USDC" },
   SOUSDC: { symbol: "SOUSDC", name: "Soroswap USDC", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_SOROSWAP_USDC" },
-  EURC: { symbol: "EURC", name: "Euro Coin", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_EURC" },
-  BLND: { symbol: "BLND", name: "Blend", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_BLND" },
-  AQUA: { symbol: "AQUA", name: "Aquarius", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_AQUA" },
-  WETH: { symbol: "WETH", name: "Wrapped Ether", icon: "/icons/usdc-icon.svg", decimals: 7, poolKey: "LENDING_PROTOCOL_WETH" },
 };
 
 // ─────────────────────────────────────────────────────────────────────

@@ -30,7 +30,7 @@ interface RowState {
 }
 
 const ALL_TOKENS: FaucetTokenId[] = [
-  "XLM", "BLEND_USDC", "AQUARIUS_USDC", "SOROSWAP_USDC", "BLND", "AQUA", "WETH", "EURC",
+  "XLM", "BLEND_USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
 ];
 
 // Persist one-time mint success per (wallet, token) so refreshing the page
@@ -65,10 +65,6 @@ const initialRows = (): Record<FaucetTokenId, RowState> => ({
   BLEND_USDC: { status: "idle" },
   AQUARIUS_USDC: { status: "idle" },
   SOROSWAP_USDC: { status: "idle" },
-  BLND: { status: "idle" },
-  AQUA: { status: "idle" },
-  WETH: { status: "idle" },
-  EURC: { status: "idle" },
 });
 
 export const FaucetPopup = ({ isOpen, onClose, walletAddress }: FaucetPopupProps) => {

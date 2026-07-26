@@ -100,10 +100,6 @@ const EMPTY_POSITIONS = {
   USDC: { ...EMPTY_POSITION },
   AQUARIUS_USDC: { ...EMPTY_POSITION },
   SOROSWAP_USDC: { ...EMPTY_POSITION },
-  BLND: { ...EMPTY_POSITION },
-  AQUA: { ...EMPTY_POSITION },
-  WETH: { ...EMPTY_POSITION },
-  EURC: { ...EMPTY_POSITION },
 };
 
 const EARN_ASSETS = [
@@ -111,10 +107,6 @@ const EARN_ASSETS = [
   ASSET_TYPES.USDC,
   ASSET_TYPES.AQUARIUS_USDC,
   ASSET_TYPES.SOROSWAP_USDC,
-  ASSET_TYPES.BLND,
-  ASSET_TYPES.AQUA,
-  ASSET_TYPES.WETH,
-  ASSET_TYPES.EURC,
 ] as const;
 
 const EMPTY_DEPOSITED = {
@@ -122,10 +114,6 @@ const EMPTY_DEPOSITED = {
   USDC: '0',
   AQUARIUS_USDC: '0',
   SOROSWAP_USDC: '0',
-  BLND: '0',
-  AQUA: '0',
-  WETH: '0',
-  EURC: '0',
 };
 
 /**
@@ -312,10 +300,6 @@ export const useWithdrawLiquidity = () => {
       USDC: userPositions.USDC?.vTokenBalance || '0',
       AQUARIUS_USDC: userPositions.AQUARIUS_USDC?.vTokenBalance || '0',
       SOROSWAP_USDC: userPositions.SOROSWAP_USDC?.vTokenBalance || '0',
-      BLND: userPositions.BLND?.vTokenBalance || '0',
-      AQUA: userPositions.AQUA?.vTokenBalance || '0',
-      WETH: userPositions.WETH?.vTokenBalance || '0',
-      EURC: userPositions.EURC?.vTokenBalance || '0',
     },
   });
 };

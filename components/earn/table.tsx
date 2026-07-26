@@ -38,9 +38,7 @@ const ITEMS_PER_PAGE = 4;
 // BLUSDC/AQUSDC/SOUSDC as distinct symbols since Risk Engine prices them
 // separately; these filter facets only need the plain human-facing asset
 // name a pool is denominated in, so "USDC" covers all three variants here).
-// This was hardcoded to ["XLM", "USDC"] only, silently missing BLND/AQUA/
-// WETH/EURC from every "All Pools"-style dropdown once those pools existed.
-const ALL_POOL_ASSETS = ["XLM", "USDC", "BLND", "AQUA", "WETH", "EURC"];
+const ALL_POOL_ASSETS = ["XLM", "USDC"];
 
 const FILTER_OPTIONS = {
   collateral: ALL_POOL_ASSETS,

@@ -91,7 +91,7 @@ export const TransferCollateral = () => {
     }
   }, [globalIsConnected, globalAddress]);
 
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC', 'BLND', 'AQUA', 'WETH', 'EURC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const sourceBalance = selectedTransferType === "MB" ? walletBalance : marginAccountBalance;
   const maxTransferableBalance = computeMaxTransferableBalance(
     selectedTransferType,
@@ -192,10 +192,6 @@ export const TransferCollateral = () => {
       if (contractTokenSymbol === "USDC") return parseFloat(balances.BLEND_USDC) || 0;
       if (contractTokenSymbol === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
       if (contractTokenSymbol === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
-      if (contractTokenSymbol === "BLND") return parseFloat(balances.BLND) || 0;
-      if (contractTokenSymbol === "AQUA") return parseFloat(balances.AQUA) || 0;
-      if (contractTokenSymbol === "WETH") return parseFloat(balances.WETH) || 0;
-      if (contractTokenSymbol === "EURC") return parseFloat(balances.EURC) || 0;
 
       return parseFloat(balances.XLM) || 0;
     } catch (error) {
@@ -212,10 +208,6 @@ export const TransferCollateral = () => {
       case "USDC": return CONTRACT_ADDRESSES.BLEND_USDC;
       case "AQUSDC": return CONTRACT_ADDRESSES.AQUARIUS_USDC;
       case "SOUSDC": return CONTRACT_ADDRESSES.SOROSWAP_USDC;
-      case "BLND": return CONTRACT_ADDRESSES.BLND_TOKEN;
-      case "AQUA": return CONTRACT_ADDRESSES.AQUA_TOKEN;
-      case "WETH": return CONTRACT_ADDRESSES.WETH_TOKEN;
-      case "EURC": return CONTRACT_ADDRESSES.EURC_TOKEN;
       default: return CONTRACT_ADDRESSES.BLEND_XLM; // XLM SAC
     }
   };
