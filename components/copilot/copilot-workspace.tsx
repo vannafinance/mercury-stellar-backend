@@ -65,6 +65,7 @@ interface ChatResponse {
   preview?: Preview | null;
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
+  request_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +302,22 @@ export function CopilotWorkspace() {
         smartAccount,
       });
       setExecResult(result);
+      // Report the on-chain outcome to the copilot log (fire-and-forget, tied to
+      // this turn's request_id). Never blocks or errors the user.
+      fetch("/api/copilot/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          request_id: response?.request_id ?? null,
+          op: action.op,
+          asset: action.asset ?? null,
+          amount: effectiveAmount,
+          ok: result.ok,
+          hash: result.ok ? result.hash ?? null : null,
+          error: result.ok ? null : result.error,
+          wallet: address,
+        }),
+      }).catch(() => {});
       if (result.ok) {
         toast.success(`Done${result.hash ? ` · ${result.hash.slice(0, 8)}…` : ""}`);
         if (address) checkUserMarginAccount(address).catch(() => {});
@@ -312,7 +329,7 @@ export function CopilotWorkspace() {
     } finally {
       setExecuting(false);
     }
-  }, [action, effectiveAmount, address, smartAccount]);
+  }, [action, effectiveAmount, address, smartAccount, response]);
 
   const reset = () => {
     setSubmitted(null);
