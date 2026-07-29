@@ -20,55 +20,55 @@ Freighter) in the browser. A full server breach cannot move a single token.
 
 ---
 
-## 2. Architecture (two repos)
+## 2. Architecture (one repo, one process)
 
 ```
-┌───────────────┐   POST /api/copilot   ┌──────────────────┐   Gemini + MCP   ┌───────────┐
-│  Frontend     │ ────────────────────► │  Brain            │ ───────────────► │ vanna-mcp │
-│  /copilot UI  │                       │  (FastAPI, Python)│                  │ (~29 tools)│
-│  Next.js      │ ◄──────────────────── │  Gemini + risk    │ ◄─────────────── └───────────┘
-└──────┬────────┘   answer / preview    └──────────────────┘   live data / classify
-       │ (write) execute via AUDITED services → Privy sign → Soroban RPC → confirm
-       ▼
+┌──────────────┐  POST /api/copilot  ┌─────────────────────┐   Gemini + MCP   ┌───────────┐
+│ /copilot UI  │ ──────────────────► │  brain (lib/copilot)│ ───────────────► │ vanna-mcp │
+│ Next.js      │ ◄────────────────── │  in the same server │ ◄─────────────── │ (~29 tools)│
+└──────┬───────┘  answer / preview   └─────────────────────┘  data · build ·  └───────────┘
+       │                                                       auto-sign attempt
+       │ preview carries MCP's unsigned_xdr
+       ▼  wallet signs THAT envelope → Soroban RPC → poll → confirm
    on-chain
 ```
 
-- **Frontend repo:** `mercury-stellar-backend` — branch **`advay-copilot-final`**
-  (based on `feat/stellar-rewire`). Contains the UI + a proxy to the brain +
-  the write executor that calls the app's own audited on-chain services.
-- **Brain repo:** `vanna-copilot-orchestrator` (the Python FastAPI "brain").
-  Does intent parsing (Gemini), MCP reads, risk gate, before→after simulation,
-  and logging. **Not yet in shared version control — needs its own push.**
+The UI, the API route, and the brain all live in this repo and this process.
+There is no second service to run.
 
-**Why writes go through the app's services, not the MCP:** the MCP's native
-write tools are **blocked contract-side** (`deposit_usdc` non-existent,
-`deposit_collateral_tokens` → InvalidAction). The app's own
-`ContractService` / `MarginAccountService` call the correct functions and work
-(same path that creates margin accounts). So: **brain = understand + risk;
-frontend audited services = execute.**
+**Where the transaction is built:** the MCP server. It resolves the contract
+addresses, simulates, and assembles the Soroban footprint, then returns an
+`unsigned_xdr`. Two things can happen next:
+
+1. **Auto-sign** — MCP asks the Vanna Sign Service to sign and submit. Works only
+   when the Sign Service can see a user-scoped identity (see §8.1).
+2. **Wallet sign** — the copilot hands the *same* envelope to the browser, the
+   user's wallet signs it, and the app submits it to Soroban RPC.
+
+Either way the brain never holds a key. `components/copilot/execute.ts` (the old
+"rebuild it locally through the app's audited services" path) is now only a
+fallback for turns that return no XDR.
 
 ---
 
 ## 3. How to run
 
-**Brain** (port 8000):
+**Single process** (recommended — brain is in-process inside Next.js):
 ```bash
-cd vanna-copilot-orchestrator
-.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-- Needs `.env` (see §7) with `LLM_PROVIDER=vertex`, `MCP_MODE=live`, WorkOS M2M creds.
-- Gemini needs **ADC**: `gcloud auth application-default login` (one-time; re-run if it expires — symptom: answers fall back to a terse summarizer instead of rich prose).
-- Health check: `GET http://127.0.0.1:8000/health` → `{status, llm_provider, mcp_mode, templates}`.
-
-**Frontend** (port 3000):
-```bash
-cd mercury-stellar-backend
+npm install
+# .env.local with WorkOS M2M + MCP_MODE=live (see §7)
 npm run dev
 ```
-- Needs `.env.local` with `NEXT_PUBLIC_PRIVY_APP_ID` (see §7).
 - Open `http://localhost:3000/copilot`.
+- Health: `GET http://localhost:3000/api/copilot` → `{ health: { status, llm_provider, mcp_mode, templates, in_process: true } }`.
+- No uvicorn / port 8000. Implementation: `lib/copilot/*` + `app/api/copilot/route.ts`.
 
-Both must be up for the copilot to work end-to-end.
+**Legacy Python brain** (optional / historical):
+```bash
+# only if you still have the separate FastAPI package checked out
+.venv/Scripts/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# then set COPILOT_URL — not used by the current in-process path
+```
 
 ---
 
@@ -91,23 +91,25 @@ Signing/wallet plumbing (already in the branch, not copilot-specific):
 `lib/wallet-adapter.ts` (Freighter/Privy), `contexts/privy-*.tsx`,
 `lib/stellar-utils.ts` (`ContractService`), `lib/margin-utils.ts` (`MarginAccountService`).
 
-### Brain (`vanna-copilot-orchestrator`)
+### Brain — in-process TypeScript (`lib/copilot/*`)
+
+The Python FastAPI brain is retired. Everything below runs inside the Next.js
+server process; there is no uvicorn and no `COPILOT_URL`.
+
 | File | Purpose |
 |---|---|
-| `app/main.py` | FastAPI: `/chat`, `/templates`, `/health`, `/log`; per-turn logging |
-| `app/orchestrator/pipeline.py` | Entry; routes to direct mode (`DIRECT_TOOLS=1`) |
-| `app/orchestrator/direct.py` | **The core.** Tool routing (Gemini-primary + keyword fallback), read handling, write classification + risk + simulation, reads-only/restricted gates |
-| `app/orchestrator/risk_gate.py` | Deterministic policy (leverage cap, HF floor, multi-leg confirm) |
-| `app/orchestrator/planner.py` | Per-tool arg mapping (`TOOL_ARGS`, `resolve_args`) |
-| `app/orchestrator/account.py` | Account context (trader G-addr, smart C-addr) |
-| `app/llm/vertex.py` | Gemini (Vertex): `select_tool`, `parse_intent`, `explain` |
-| `app/llm/mock.py` | Offline deterministic fallback (routing + `explain`/`_summarize`) |
-| `app/llm/factory.py`, `base.py` | Provider selection + interface |
-| `app/mcp/client.py` | Live MCP client (WorkOS M2M JWT) + mock |
-| `app/logs.py` | Structured logging + redaction (`copilot.log`) |
-| `app/schemas.py` | Request/response models (Preview, action, simulation, request_id) |
-| `app/config.py` | Env-driven settings |
-| `app/templates/` | 25 templates + read-only queries + slots |
+| `lib/copilot/handle.ts` | **The core.** `handleChat` — routing, read handling, write execution, auto-sign actions, multi-step plans |
+| `lib/copilot/router.ts` | Deterministic keyword router (fallback when Vertex is down) |
+| `lib/copilot/vertex.ts` | Gemini (Vertex): `vertexSelectTool`, `vertexExplain`, `vertexPing` |
+| `lib/copilot/mcp-client.ts` | Live MCP client (WorkOS M2M JWT, Streamable HTTP + SSE) + mock client |
+| `lib/copilot/mcp-write.ts` | Maps a write op → MCP tool, then interprets the auto-sign outcome |
+| `lib/copilot/tool-args.ts` | Per-tool argument mapping + smart-account requirements |
+| `lib/copilot/risk.ts` | Informational before→after projection (display only) |
+| `lib/copilot/explain.ts` | Fallback summarizer + `factsForUi` |
+| `lib/copilot/types.ts`, `config.ts`, `log.ts` | Response models, env config, structured logging |
+
+> ⚠️ `lib/copilot/`, `tests/copilot-brain.test.ts` and `docs/ONBOARDING_COPILOT.md`
+> are **untracked** at the time of writing — commit them before any `git clean`.
 
 ---
 
@@ -177,9 +179,24 @@ COPILOT_URL=http://127.0.0.1:8000   # optional, default
 ---
 
 ## 8. Known issues / gotchas
-1. **MCP native writes are broken contract-side** — that's why execution uses the
-   frontend's audited services. If the MCP team fixes the write tools, the brain
-   could switch to the unsigned-XDR path.
+1. **Auto-sign cannot work with an M2M token alone.** MCP builds and simulates
+   writes fine (`sim ok` / `xdr ready`), then the Sign Service rejects the
+   signature request with `invalid_user_assertion` / "Invalid token audience".
+   The copilot server authenticates to WorkOS with **client_credentials**, which
+   proves the *app's* identity, not the user's. The Sign Service wants a
+   **user-scoped** token (a user assertion) before it will sign for a wallet.
+   Until that identity is plumbed through — the user authenticating against
+   AuthKit in the browser and the copilot forwarding that user access token to
+   MCP — every write lands in `needs_wallet_sign` and the user signs it
+   themselves. That path is fully working and is not a degraded mode.
+
+   **The signature goes on the XDR MCP built** (`components/copilot/sign-xdr.ts`),
+   not on a locally rebuilt transaction. Rebuilding was the old behaviour and it
+   re-ran the app's Registry/collateral pre-flight, which is where the misleading
+   "XLM token contract address needs to be set in the Registry contract" and
+   "Failed to get user address" toasts came from — MCP had already simulated the
+   very same call successfully. `execute.ts` remains only as a fallback for turns
+   that return no XDR.
 2. **Testnet RPC flakiness** — public `soroban-testnet.stellar.org` rate-limits,
    surfacing as `AxiosError: Network Error` in the browser and transient oracle/
    pool read failures. A retry usually works. Fix: env-configurable dedicated RPC.

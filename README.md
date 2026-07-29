@@ -36,6 +36,17 @@ npm run dev
 
 Open http://localhost:3000.
 
+### Copilot (in-process)
+
+The agent brain runs **inside the Next.js server** — no separate `uvicorn` / port 8000 process.
+After `npm run dev`, open **http://localhost:3000/copilot**.
+
+- `GET /api/copilot` — health (`in_process: true`, MCP mode)
+- `POST /api/copilot` — chat turn (reads via live MCP; writes return a preview the UI signs)
+
+Server-only env (in `.env.local`): `MCP_MODE`, `MCP_BASE_URL`, `WORKOS_M2M_CLIENT_ID`,
+`WORKOS_M2M_CLIENT_SECRET`, `WORKOS_M2M_TOKEN_URL`. See `.env.example`.
+
 ## Environment
 
 Server-only values in `.env.local` (never committed):

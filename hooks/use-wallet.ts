@@ -101,10 +101,20 @@ export const useWallet = () => {
     }
 
     // A persisted Privy session rehydrates through Privy's own SDK state
-    // (see PrivyWalletBridge), which writes address/isConnected once it's
-    // ready — there's nothing for the Freighter-specific check below to do.
+    // (see PrivyWalletBridge). Mark the kind, then try an immediate resync so
+    // the signing bridge is registered before the user hits Approve & sign.
     if (walletKind === 'privy') {
       setActiveWalletKind('privy');
+      try {
+        const controls = getPrivyAuthControls();
+        if (controls?.resync?.()) return;
+        // Bridge not ready yet — leave kind=privy; PrivyWalletBridge will fill it.
+        // Do NOT leave the user stuck forever: if Freighter is also authorized for
+        // this origin, we still allow Freighter as a live fallback at sign time
+        // (see wallet-adapter getAddress/signTransaction).
+      } catch {
+        /* ignore */
+      }
       return;
     }
 

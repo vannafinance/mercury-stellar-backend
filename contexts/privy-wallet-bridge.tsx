@@ -10,7 +10,7 @@
 // login, and signing only exposes raw-hash signing (useSignRawHash) which
 // lib/wallet-adapter.ts turns into signed transaction XDR.
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
 import { useCreateWallet, useSignRawHash } from "@privy-io/react-auth/extended-chains";
 import {
@@ -36,29 +36,14 @@ export const PrivyWalletBridge = () => {
   const { signRawHash } = useSignRawHash();
   const creatingRef = useRef(false);
 
-  // Expose login/logout to non-Privy UI (the navbar) via the adapter module.
-  useEffect(() => {
-    registerPrivyAuthControls({ login, logout });
-    return () => registerPrivyAuthControls(null);
-  }, [login, logout]);
-
-  useEffect(() => {
-    if (!ready || !authenticated || !user) return;
-
+  /**
+   * Point the adapter and the user store at the session's embedded Stellar
+   * wallet. Idempotent, so it's safe both as the login effect's happy path and
+   * as the `resync` escape hatch handed to the connect flow.
+   */
+  const syncStellarWallet = useCallback((): boolean => {
     const stellarWallet = findStellarWallet(user);
-
-    if (!stellarWallet) {
-      if (creatingRef.current) return;
-      creatingRef.current = true;
-      createWallet({ chainType: "stellar" })
-        .catch((error) => {
-          console.error("Failed to create Privy Stellar wallet:", error);
-        })
-        .finally(() => {
-          creatingRef.current = false;
-        });
-      return;
-    }
+    if (!stellarWallet) return false;
 
     registerPrivyBridge({ address: stellarWallet.address, signRawHash });
     setActiveWalletKind("privy");
@@ -69,7 +54,55 @@ export const PrivyWalletBridge = () => {
       walletKind: "privy",
       manuallyDisconnected: false,
     });
-  }, [ready, authenticated, user, createWallet, signRawHash]);
+    return true;
+  }, [user, signRawHash]);
+
+  // Expose login/logout to non-Privy UI (the navbar) via the adapter module.
+  useEffect(() => {
+    registerPrivyAuthControls({ login, logout, authenticated, resync: syncStellarWallet });
+    return () => registerPrivyAuthControls(null);
+  }, [login, logout, authenticated, syncStellarWallet]);
+
+  useEffect(() => {
+    if (!ready || !authenticated || !user) return;
+
+    if (syncStellarWallet()) return;
+
+    // No embedded Stellar wallet on the account yet — create one.
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    createWallet({ chainType: "stellar" })
+      .then(() => {
+        // linkedAccounts updates asynchronously after create; retry sync shortly.
+        setTimeout(() => {
+          try {
+            syncStellarWallet();
+          } catch {
+            /* ignore */
+          }
+        }, 500);
+        setTimeout(() => {
+          try {
+            syncStellarWallet();
+          } catch {
+            /* ignore */
+          }
+        }, 2000);
+      })
+      .catch((error) => {
+        console.error("Failed to create Privy Stellar wallet:", error);
+      })
+      .finally(() => {
+        creatingRef.current = false;
+      });
+  }, [ready, authenticated, user, createWallet, syncStellarWallet]);
+
+  // Keep the adapter bridge warm whenever Privy reports a Stellar wallet —
+  // covers hot reload (module state cleared) and late linkedAccounts updates.
+  useEffect(() => {
+    if (!ready || !authenticated || !user) return;
+    syncStellarWallet();
+  }, [ready, authenticated, user, user?.linkedAccounts, signRawHash, syncStellarWallet]);
 
   // Clear everything on logout so a stale Privy signer/address can't linger.
   useEffect(() => {

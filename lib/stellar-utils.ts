@@ -13,6 +13,8 @@ export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 // Every address below was captured directly from this deploy's own on-chain
 // events, including the vTokens — no more stale-address gap. See
 // CONTRACT_COMMAND.md §A7 for the full command log.
+// Aligned with mercury-stellar-rewire + live MCP vanna_list_protocol_addresses
+// (testnet deploy_all 2026-07-11). XLM SAC = CDLZFC3S… is set on this Registry.
 export const CONTRACT_ADDRESSES = {
   REGISTRY: 'CBUR7X2M2FQIIF237GNXYJGLHNM3BB3EPEUVYBRPMXVITN4SJP6PJVW2',
   ORACLE: 'CAWF5QNGOBDZU2NHUJAJPEEPYVANA4W4DFORZLIJXZGV5YIVKWSPMRIZ',
@@ -20,6 +22,11 @@ export const CONTRACT_ADDRESSES = {
   RISK_ENGINE: 'CCEDO4CLQLM6V7CTTRHTWV73KYLJYKEKTRTVTYJKWDZICSE5PVYGQLCJ',
   ACCOUNT_MANAGER: 'CASO66NZT3QVCWWWL2TFUW5F3YW4C4IVYENRBUCBRHHRSE3NXRW3SYZP',
   TRACKING_TOKEN: 'CBH6O3O6I7DYVXAPA6IBP2O53AS4QS7AJJ5KIOOJ6R3JMRP6HGTF6KIB',
+
+  // Native XLM SAC (Registry get_xlm_contract_address) — same as MCP xlm_contract
+  XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+  // Blend USDC / primary USDC SAC used by lending (MCP usdc_contract)
+  USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
   // vToken receipt contracts — fresh, matched to the pools below.
   VXLM_TOKEN: 'CBOVX53HHAJEM3KECYI66XW5NZJVNNYPGXQ4B4F5T2MJSDDK3NCENNLS',
@@ -73,11 +80,20 @@ export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
 export class WalletService {
   static async connectWallet(): Promise<{ address: string; success: boolean; error?: string }> {
     try {
+      // `requestAccess()` always resolves to an object, so the old `!accessGranted`
+      // check never fired and a *rejected* prompt fell through to `getAddress()`.
+      // Inspect the result properly and stop here, or the user gets prompted twice.
       const accessGranted = await requestAccess();
-      if (!accessGranted) {
-        return { address: '', success: false, error: 'Please approve the connection in Freighter' };
+      if (accessGranted.error || !accessGranted.address) {
+        const detail =
+          typeof accessGranted.error === 'string' ? accessGranted.error : accessGranted.error?.message;
+        return {
+          address: '',
+          success: false,
+          error: detail || 'Please approve the connection in Freighter',
+        };
       }
-      
+
       const result = await getAddress();
       if (result.error) {
         const message = typeof result.error === 'string' ? result.error : result.error.message;

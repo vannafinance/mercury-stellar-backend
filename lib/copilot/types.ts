@@ -1,0 +1,188 @@
+/** Contracts shared between the in-process brain and /api/copilot. */
+
+export type RiskDecision = "allow" | "block" | "needs_confirmation";
+
+export interface ChatRequest {
+  user_id: string;
+  message: string;
+  tier?: "free" | "paid";
+  smart_account?: string | null;
+  /** Client may send auto-sign confirmation choices */
+  auto_sign?: {
+    action?: "start" | "use_defaults" | "custom" | "disable";
+    max_per_tx_usd?: number | string;
+    max_per_day_usd?: number | string;
+  } | null;
+  /** Re-run a pending write after enabling auto-sign */
+  pending_write?: {
+    op: string;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+  } | null;
+}
+
+export interface CopilotAction {
+  op: string;
+  asset?: string | null;
+  amount?: number | null;
+  requires_amount?: boolean;
+  requires_account?: boolean;
+  multi_leg?: boolean;
+  smart_account?: string | null;
+  trader?: string | null;
+  leverage?: number | null;
+}
+
+export interface RiskResult {
+  decision: RiskDecision;
+  reasons: string[];
+  projected_health_factor?: number | null;
+}
+
+export interface Simulation {
+  hf_before: number | null;
+  hf_after: number | null;
+  collateral_before: number;
+  collateral_after: number;
+  debt_before: number;
+  debt_after: number;
+  ltv_before: number;
+  ltv_after: number;
+  liquidation_threshold: number;
+  amount_usd: number;
+  asset?: string | null;
+}
+
+export interface Preview {
+  template_id: string;
+  human_summary: string;
+  slots: Record<string, unknown>;
+  risk: RiskResult;
+  requires_signature: boolean;
+  action?: CopilotAction | null;
+  simulation?: Simulation | null;
+  /** MCP execution path metadata */
+  mcp?: {
+    tool?: string;
+    status?: string;
+    tx_hash?: string | null;
+    needs_auto_sign?: boolean;
+  } | null;
+}
+
+export interface AutoSignPrompt {
+  status: "needs_confirmation" | "needs_enable";
+  message: string;
+  options?: Array<{ id: string; label: string; description?: string }>;
+  pending_write?: CopilotAction | null;
+  raw?: Record<string, unknown> | null;
+}
+
+export interface ChatResponse {
+  kind:
+    | "answer"
+    | "clarification"
+    | "unavailable"
+    | "blocked"
+    | "error"
+    | "preview"
+    | "executed"
+    | "needs_auto_sign"
+    | "needs_wallet_sign";
+  message: string;
+  preview?: Preview | null;
+  data?: Record<string, unknown> | null;
+  intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null;
+  request_id?: string | null;
+  auto_sign?: AutoSignPrompt | null;
+  /** Proof the live MCP server was used */
+  mcp?: {
+    tool?: string | null;
+    simulation_success?: boolean;
+    auto_sign?: string | null;
+    auto_sign_error?: string | null;
+    has_unsigned_xdr?: boolean;
+  } | null;
+  /** Present when MCP built XDR but Sign Service cannot auto-sign (user must wallet-sign once) */
+  unsigned_xdr?: string | null;
+  /**
+   * Next write the client should run automatically after the current step
+   * confirms on-chain (e.g. borrow after deposit in a 2× leverage plan).
+   */
+  next_step?: {
+    op: string;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+    label?: string;
+    step?: number;
+    total_steps?: number;
+  } | null;
+  execution?: {
+    status: string;
+    tx_hash?: string | null;
+    steps?: Array<{ tool: string; label: string; status: string; message: string }>;
+  } | null;
+}
+
+export interface BrainHealth {
+  status: string;
+  llm_provider: string;
+  mcp_mode: string;
+  templates: number;
+  in_process: true;
+  execution_mode?: string;
+}
+
+export type RoutedIntent =
+  | {
+      kind: "read";
+      tool: string;
+      args: Record<string, unknown>;
+      requires_account?: boolean;
+      template_id: string;
+    }
+  | {
+      kind: "write";
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      multi_leg?: boolean;
+      requires_account?: boolean;
+      requires_amount?: boolean;
+      template_id: string;
+      leverage?: number | null;
+      deposit_amount?: number | null;
+      borrow_amount?: number | null;
+    }
+  | {
+      kind: "plan";
+      steps: Array<{
+        kind: "read" | "write";
+        tool?: string;
+        op?: string;
+        args?: Record<string, unknown>;
+        asset?: string | null;
+        amount?: number | null;
+      }>;
+      template_id: string;
+      summary?: string;
+    }
+  | {
+      kind: "restricted";
+      reason: string;
+      template_id: string;
+    }
+  | {
+      kind: "clarify";
+      message: string;
+      template_id?: string | null;
+    }
+  | {
+      kind: "auto_sign";
+      action: "start" | "use_defaults" | "custom" | "disable";
+      max_per_tx_usd?: number | string;
+      max_per_day_usd?: number | string;
+      template_id: string;
+    };

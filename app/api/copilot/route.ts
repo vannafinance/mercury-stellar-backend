@@ -1,34 +1,35 @@
-// Copilot proxy → orchestrator "brain" (Phase 1: READ-only).
-//
-// The browser never talks to the brain directly; this server route forwards to
-// it. Two operations:
-//   GET  /api/copilot        → { health }          (is the brain up? which LLM/MCP?)
-//   POST /api/copilot        → forwards a chat turn → { kind, message, intent }
-//
-// COPILOT_URL overrides the brain base URL. We default to 127.0.0.1 (NOT
-// "localhost") on purpose — Node may resolve "localhost" to IPv6 ::1 first while
-// uvicorn binds IPv4 127.0.0.1, which would fail with ECONNREFUSED.
-//
-// This route is intentionally READ-only for Phase 1: it forwards the message and
-// returns the brain's answer. The brain declines write intents itself; no signing
-// or on-chain path exists here yet.
+/**
+ * In-process Copilot API — Gemini intent + MCP execution + auto-sign.
+ *
+ *   GET  /api/copilot           → health
+ *   GET  /api/copilot?probe=1   → health + Vertex probe
+ *   POST /api/copilot           → chat / auto-sign / resume pending write
+ */
 
 import { NextRequest, NextResponse } from "next/server";
+import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/copilot";
 
-const COPILOT_URL = process.env.COPILOT_URL ?? "http://127.0.0.1:8000";
-const OFFLINE = {
-  message:
-    "Copilot is offline. Start the orchestrator (uvicorn app.main:app --port 8000) " +
-    "or set COPILOT_URL, then try again.",
-};
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const res = await fetch(`${COPILOT_URL}/health`, { cache: "no-store" });
-    const health = await res.json();
+    const health = getBrainHealth();
+    if (req.nextUrl.searchParams.get("probe") === "1") {
+      const vertex = await vertexPing();
+      return NextResponse.json({
+        health: {
+          ...health,
+          vertex_ok: vertex.ok,
+          vertex_model: vertex.model,
+          vertex_error: vertex.error ?? null,
+        },
+      });
+    }
     return NextResponse.json({ health });
-  } catch {
-    return NextResponse.json({ health: null, error: OFFLINE.message }, { status: 200 });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "health check failed";
+    return NextResponse.json({ health: null, error: message }, { status: 200 });
   }
 }
 
@@ -41,27 +42,37 @@ export async function POST(req: NextRequest) {
   }
 
   const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!message) {
+  const autoSign = body.auto_sign && typeof body.auto_sign === "object" ? (body.auto_sign as any) : null;
+  const pendingWrite =
+    body.pending_write && typeof body.pending_write === "object" ? (body.pending_write as any) : null;
+
+  if (!message && !autoSign && !pendingWrite) {
     return NextResponse.json({ kind: "error", message: "Please type a question." }, { status: 400 });
   }
 
   const payload = {
     user_id: typeof body.user_id === "string" && body.user_id ? body.user_id : "guest",
-    message,
-    tier: body.tier === "paid" ? "paid" : "free",
+    message: message || (autoSign ? "auto-sign" : "pending-write"),
+    tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
+    auto_sign: autoSign,
+    pending_write: pendingWrite,
   };
 
   try {
-    const upstream = await fetch(`${COPILOT_URL}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      cache: "no-store",
+    const data = await handleChat(payload);
+    logCopilotEvent("turn", {
+      request_id: data.request_id,
+      kind: data.kind,
+      template_id: data.intent?.template_id ?? null,
+      user: payload.user_id,
+      message: message.slice(0, 120),
+      execution: data.execution?.status ?? null,
     });
-    const data = await upstream.json();
-    return NextResponse.json(data, { status: upstream.ok ? 200 : upstream.status });
-  } catch {
-    return NextResponse.json({ kind: "error", message: OFFLINE.message }, { status: 200 });
+    return NextResponse.json(data);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Copilot failed";
+    logCopilotEvent("turn_error", { error: msg });
+    return NextResponse.json({ kind: "error", message: msg }, { status: 200 });
   }
 }
