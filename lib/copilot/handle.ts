@@ -657,18 +657,29 @@ async function runWrite(
 
   // Sanujit EW5: "Supply 10 USDC to the highest-yielding pool" — read APYs first,
   // name the chosen earn pool, then build lend for that pool.
+  // Tolerates typos like "highest- yielding" (hyphen + space).
   let highestPickNote = "";
+  let highestPickFacts: Record<string, unknown> | null = null;
   if (
     (action.op === "lend" || action.op === "supply") &&
-    /highest[- ]?yielding|best[- ]?yielding|highest apy|best apy/i.test(ctx.message)
+    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy|highest-?\s*yielding/i.test(
+      ctx.message,
+    )
   ) {
     try {
       const pick = await pickHighestEarnPool(getMcpClient(), ctx.userId);
       if (pick) {
         action = { ...action, asset: pick.symbol };
         highestPickNote =
-          `Compared Vanna earn pools and chose **${pick.symbol}** ` +
-          `(supply APY ~${pick.supply_apy_pct}%). Ranking: ${pick.ranking}.\n\n`;
+          `Compared Vanna earn pools — chose ${pick.symbol} ` +
+          `(supply APY ~${pick.supply_apy_pct}%).\n` +
+          `Ranking: ${pick.ranking}.\n\n`;
+        highestPickFacts = {
+          chosen_pool: pick.symbol,
+          chosen_supply_apy_pct: pick.supply_apy_pct,
+          pool_ranking: pick.ranking,
+          selection: "highest_earn_supply_apy",
+        };
       }
     } catch {
       /* fall through with user-stated asset */
@@ -846,24 +857,48 @@ async function runWrite(
   }
 
   if (result.status === "needs_wallet_sign") {
+    const pickSummary = highestPickNote
+      ? highestPickNote.replace(/\n+/g, " ").replace(/\s+/g, " ").trim()
+      : "";
+    // Put the comparison first in human_summary so the staged-action title
+    // shows the winner (UI uses human_summary as the H6 headline).
+    const stagedTitle = pickSummary
+      ? `${pickSummary} → ${mapped.step.label}`
+      : mapped.step.label;
+    const reasons = reasonsWith(
+      pickSummary
+        ? [
+            `Pool selection: ${pickSummary}`,
+            `Action: ${mapped.step.label}`,
+            "wallet sign required (MCP built XDR)",
+          ]
+        : ["wallet sign required (MCP built XDR)"],
+    );
     return {
       kind: "needs_wallet_sign",
       message: (highestPickNote || "") + result.message,
-      data: factsForUi(result.build),
+      data: factsForUi({
+        ...result.build,
+        ...(highestPickFacts || {}),
+        action_label: mapped.step.label,
+      }),
       unsigned_xdr: result.unsigned_xdr ?? null,
       mcp: mcpMeta,
-      intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
+      intent: {
+        template_id: highestPickFacts ? "lend_highest" : action.op,
+        slots: { asset: action.asset, amount: action.amount, ...(highestPickFacts || {}) },
+      },
       preview: {
-        template_id: action.op,
-        human_summary: (highestPickNote ? highestPickNote.replace(/\n+/g, " ").trim() + " · " : "") + mapped.step.label,
-        slots: { asset: action.asset, amount: action.amount },
+        template_id: highestPickFacts ? "lend_highest" : action.op,
+        human_summary: stagedTitle,
+        slots: {
+          asset: action.asset,
+          amount: action.amount,
+          ...(highestPickFacts || {}),
+        },
         risk: {
           decision: "needs_confirmation",
-          reasons: reasonsWith(
-            highestPickNote
-              ? [highestPickNote.replace(/\n+/g, " ").trim(), "wallet sign required (MCP built XDR)"]
-              : ["wallet sign required (MCP built XDR)"],
-          ),
+          reasons,
           projected_health_factor: simulation?.hf_after ?? null,
         },
         requires_signature: true,

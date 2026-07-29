@@ -533,11 +533,26 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
   ) {
     if (tool === "vanna_deploy_to_blend") {
       const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
+      // Event logs show deposit_amount WAD correct, but execute_direct Blend
+      // Deposit with amount=0 — classic MCP ExternalProtocolCall packing bug.
+      const zeroAmount =
+        /\[Deposit\].*\[0\]|amount:\s*0|amount_type:\s*0.*amount:\s*0|\[XLM\],\s*\[0\]/i.test(raw);
+      if (zeroAmount || /#1216|error\(contract,\s*#1216\)/i.test(raw)) {
+        return (
+          `Blend farm deploy failed — MCP/on-chain packed a **zero** Blend deposit amount ` +
+          `(execute_direct shows [Deposit] … [0]) even though deposit_amount was non-zero.\n\n` +
+          `This is an **MCP server bug** in \`vanna_deploy_to_blend\` / ` +
+          `deposit_borrow_and_deploy_blend ExternalProtocolCall packing (amount_in → 0). ` +
+          `Copilot already routes correctly (not deposit_collateral). ` +
+          `No transaction was submitted.\n\n` +
+          `Detail: ${firstLine}`
+        );
+      }
       return (
         `Blend farm deploy simulation failed (this is **not** a margin collateral deposit).\n` +
         `${firstLine}\n\n` +
-        `Common causes: not enough free balance of that asset in the margin account after ` +
-        `the deposit leg, Blend pool constraints, or a zero deploy amount. No transaction was submitted.`
+        `Common causes: insufficient free balance in the margin account after the deposit leg, ` +
+        `Blend pool constraints, or MCP packing a zero deploy amount. No transaction was submitted.`
       );
     }
     if (tool === "vanna_lend") {

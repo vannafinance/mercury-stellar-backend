@@ -202,7 +202,7 @@ export function routeMessage(message: string): RoutedIntent {
   // Word-boundary "lend" so "lending pool" (a READ) does not become a write.
   const hasLendVerb = /\blend\b/.test(text);
   const wantsHighestPool =
-    any(text, "highest-yielding", "highest yielding", "best yielding", "highest apy", "best apy") &&
+    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy/i.test(text) &&
     any(text, "supply", "lend", "deposit");
   const isLendWrite =
     !isSupplyApyRead &&

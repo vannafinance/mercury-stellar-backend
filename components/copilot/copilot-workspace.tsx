@@ -1085,9 +1085,19 @@ export function CopilotWorkspace() {
                     </div>
 
                     <div className="mt-3.5 flex flex-wrap items-start justify-between gap-6">
-                      <p className="max-w-[520px] text-h6 font-semibold text-vgray-900">
-                        {response.preview?.human_summary || response.message}
-                      </p>
+                      <div className="max-w-[560px]">
+                        <p className="whitespace-pre-wrap text-h6 font-semibold text-vgray-900">
+                          {response.preview?.human_summary || response.message}
+                        </p>
+                        {/* Full agent note (e.g. pool ranking) when longer than the title */}
+                        {response.message &&
+                          response.preview?.human_summary &&
+                          response.message.trim() !== response.preview.human_summary.trim() && (
+                            <p className="mt-2 whitespace-pre-wrap text-body-2 leading-relaxed text-vgray-600">
+                              {response.message}
+                            </p>
+                          )}
+                      </div>
                       {action?.op && (
                         <div className="shrink-0 text-right">
                           <p className="font-mono text-[13px] text-vgray-900">{action.op}</p>
