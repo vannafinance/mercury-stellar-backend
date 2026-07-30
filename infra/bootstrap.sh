@@ -21,6 +21,36 @@ DEPLOYER_SA="vanna-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 
 say() { printf '\n=== %s ===\n' "$1"; }
 
+# A freshly created service account is not immediately visible to the project
+# IAM policy service, which rejects the binding with "does not exist" even
+# though the account was just created successfully. Retry rather than fail.
+bind_role() {
+  local member="$1" role="$2" i
+  for i in $(seq 1 12); do
+    if gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+        --member="$member" --role="$role" --condition=None >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "  FAILED to bind $role to $member" >&2
+  return 1
+}
+
+# Same race, but for a binding ON a service account rather than on the project.
+bind_sa_role() {
+  local target="$1" member="$2" role="$3" i
+  for i in $(seq 1 12); do
+    if gcloud iam service-accounts add-iam-policy-binding "$target" \
+        --member="$member" --role="$role" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  echo "  FAILED to bind $role to $member on $target" >&2
+  return 1
+}
+
 gcloud config set project "$PROJECT_ID" >/dev/null
 
 say "1/7 Enabling APIs (a few minutes on first run)"
@@ -50,10 +80,7 @@ gcloud iam service-accounts describe "$RUNTIME_SA" >/dev/null 2>&1 || \
 # itself (crypto-stellar.crypto_stellar) is SDF's PUBLIC dataset, so no read
 # grant is needed — this project is only the billing/quota anchor.
 for ROLE in bigquery.jobUser secretmanager.secretAccessor; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${RUNTIME_SA}" \
-    --role="roles/${ROLE}" \
-    --condition=None >/dev/null
+  bind_role "serviceAccount:${RUNTIME_SA}" "roles/${ROLE}"
 done
 
 say "4/7 Deployer service account (what GitHub Actions acts as)"
@@ -65,21 +92,14 @@ gcloud iam service-accounts describe "$DEPLOYER_SA" >/dev/null 2>&1 || \
 # to upload the source tarball to the auto-created staging bucket. Worth
 # scoping to that one bucket later.
 for ROLE in cloudbuild.builds.editor logging.logWriter artifactregistry.writer run.admin storage.admin; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER_SA}" \
-    --role="roles/${ROLE}" \
-    --condition=None >/dev/null
+  bind_role "serviceAccount:${DEPLOYER_SA}" "roles/${ROLE}"
 done
 
 # Deploying a service that runs as RUNTIME_SA requires actAs on it...
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
-  --member="serviceAccount:${DEPLOYER_SA}" \
-  --role="roles/iam.serviceAccountUser" >/dev/null
+bind_sa_role "$RUNTIME_SA" "serviceAccount:${DEPLOYER_SA}" "roles/iam.serviceAccountUser"
 
 # ...and submitting a build that runs as itself requires actAs on itself.
-gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
-  --member="serviceAccount:${DEPLOYER_SA}" \
-  --role="roles/iam.serviceAccountUser" >/dev/null
+bind_sa_role "$DEPLOYER_SA" "serviceAccount:${DEPLOYER_SA}" "roles/iam.serviceAccountUser"
 
 say "5/7 Workload Identity Federation for GitHub"
 gcloud iam workload-identity-pools describe github --location=global >/dev/null 2>&1 || \
@@ -98,9 +118,9 @@ gcloud iam workload-identity-pools providers describe github \
     --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
     --attribute-condition="assertion.repository == '${GITHUB_REPO}'"
 
-gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
-  --role="roles/iam.workloadIdentityUser" \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository/${GITHUB_REPO}" >/dev/null
+bind_sa_role "$DEPLOYER_SA" \
+  "principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository/${GITHUB_REPO}" \
+  "roles/iam.workloadIdentityUser"
 
 say "6/7 Secrets"
 put_secret() {
