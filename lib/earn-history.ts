@@ -2,6 +2,7 @@ import type { AssetType } from "@/lib/stellar-utils";
 
 export interface EarnHistoryEntry {
   id: string;
+  walletAddress: string;
   asset: AssetType;
   type: "supply" | "withdraw";
   amount: string;
@@ -41,6 +42,7 @@ const writeAll = (entries: EarnHistoryEntry[]) => {
 };
 
 export const appendEarnHistory = (entry: {
+  walletAddress: string;
   asset: AssetType;
   type: "supply" | "withdraw";
   amount: string;
@@ -51,7 +53,8 @@ export const appendEarnHistory = (entry: {
   if (!isBrowser()) return;
 
   const next: EarnHistoryEntry = {
-    id: `${entry.asset}:${entry.hash || Date.now().toString(36)}`,
+    id: `${entry.walletAddress}:${entry.asset}:${entry.hash || Date.now().toString(36)}`,
+    walletAddress: entry.walletAddress,
     asset: normalizeAsset(entry.asset),
     type: entry.type,
     amount: entry.amount,
@@ -65,9 +68,18 @@ export const appendEarnHistory = (entry: {
   writeAll([next, ...withoutDup]);
 };
 
-export const getEarnHistoryByAsset = (asset: string): EarnHistoryEntry[] => {
+/**
+ * Scoped to BOTH asset and wallet — the storage key (`vanna_earn_history_v1`)
+ * is shared across every wallet ever connected in this browser. Without the
+ * wallet filter, switching accounts showed whichever wallet's cached supply/
+ * withdraw entries happened to be in localStorage for this asset, not the
+ * currently connected one's (confirmed live: Portfolio's Position History
+ * showed a different wallet's transactions entirely).
+ */
+export const getEarnHistoryByAsset = (asset: string, walletAddress?: string | null): EarnHistoryEntry[] => {
+  if (!walletAddress) return [];
   const normalized = normalizeAsset(asset);
   return readAll()
-    .filter((item) => normalizeAsset(item.asset) === normalized)
+    .filter((item) => normalizeAsset(item.asset) === normalized && item.walletAddress === walletAddress)
     .sort((a, b) => b.timestamp - a.timestamp);
 };

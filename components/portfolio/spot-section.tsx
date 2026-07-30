@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Table } from "@/components/earn/table";
 import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { useTheme } from "@/contexts/theme-context";
@@ -73,11 +74,19 @@ export const SpotSection = () => {
   const totalSpotUsd = rows.reduce((s, r) => s + r.usd, 0);
 
   // Spot History — every margin-account swap (Aquarius + Soroswap), newest
-  // first. Same local tx log pattern as Farm/Lender position history.
-  const historyEntries = useMemo(
-    () => getSpotHistory(marginAccountAddress),
-    [marginAccountAddress],
-  );
+  // first. A real useQuery (not a plain useMemo) so a completed swap actually
+  // shows up without a page reload: SwapCard's mutation already calls
+  // `qc.invalidateQueries({ queryKey: ['spot'] })` on success, but that was a
+  // no-op against a bare useMemo with no matching query to invalidate — the
+  // symptom reported live ("history only appears after I refresh"). Giving
+  // this a `['spot', 'history', marginAccountAddress]` key lets that existing
+  // prefix-match invalidation actually reach it.
+  const { data: historyEntries = [] } = useQuery({
+    queryKey: ['spot', 'history', marginAccountAddress ?? null],
+    queryFn: () => getSpotHistory(marginAccountAddress),
+    enabled: Boolean(marginAccountAddress),
+    staleTime: 4_000,
+  });
 
   const historyTableBody = useMemo(
     () => ({

@@ -78,8 +78,13 @@ export const PortfolioSection = () => {
         (tx.type === "supply" ? amt : -amt);
     }
     return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
+      // A missing history entry means "we don't know this asset's principal",
+      // NOT "principal is 0" — defaulting to 0 misreports the ENTIRE deposit
+      // as earned yield whenever Mercury hasn't (yet) indexed this asset's
+      // supply event. Same guard as the Earn page's identical calculation.
+      if (!Object.prototype.hasOwnProperty.call(netPrincipalByAsset, asset)) return sum;
       const deposited = parseFloat(positions[asset]?.deposited ?? "0") || 0;
-      const principal = Math.max(0, netPrincipalByAsset[asset] ?? 0);
+      const principal = Math.max(0, netPrincipalByAsset[asset]);
       const diff = deposited - principal;
       if (diff <= 0) return sum;
       const price = prices[priceFor[asset]] ?? (priceFor[asset] === "USDC" ? 1 : 0);

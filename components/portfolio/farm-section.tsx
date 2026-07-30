@@ -15,10 +15,12 @@ import {
   useAllAquariusLpPositions,
   useAllAquariusPoolStats,
   useBlendPoolStats,
+  useBlendEvents,
+  useAquariusEvents,
 } from "@/hooks/use-farm";
-import { useSoroswapPoolStats, useSoroswapLpPosition } from "@/hooks/use-soroswap";
+import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
-import { getFarmHistory, buildFarmPoolKey, type FarmHistoryEntry } from "@/lib/farm-history";
+import { getFarmHistory, buildFarmPoolKey, type FarmHistoryEntry, type FarmAction } from "@/lib/farm-history";
 
 const POSITION_DUST = 1e-4;
 
@@ -64,13 +66,12 @@ export const FarmSection = () => {
   const { positions: aqLpPositions } = useAllAquariusLpPositions(marginAccountAddress);
   const aquariusPools = useAllAquariusPoolStats();
 
-  const prices = useTokenPrices(["XLM", "USDC", "AQUA", "USDT"]);
+  const prices = useTokenPrices(["XLM", "USDC", "USDT"]);
   const priceFor = useCallback(
     (sym: string): number => {
       const s = sym.toUpperCase();
       if (s === "XLM") return prices.XLM ?? 0;
       if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
-      if (s === "AQUA") return prices.AQUA ?? 0;
       if (s === "USDT") return prices.USDT ?? 1;
       return 0;
     },
@@ -180,22 +181,70 @@ export const FarmSection = () => {
 
   // Position History — every add/remove the connected margin account has made
   // across Blend + Soroswap + Aquarius, merged and sorted newest-first. Same
-  // local tx log (lib/farm-history) and row shape (Date/Type/Amount/Status/Tx
-  // Hash) as the single-pool "Position History" tab on a Farm pool detail page,
-  // just aggregated across every pool instead of scoped to one.
+  // row shape (Date/Type/Amount/Status/Tx Hash) as the single-pool "Position
+  // History" tab on a Farm pool detail page, aggregated across every pool
+  // instead of scoped to one.
+  //
+  // Real on-chain events (Mercury + RPC fallback, via the same resilient hooks
+  // the Farm detail page uses) are the source of truth; the local tx log
+  // (lib/farm-history) only fills in entries whose txHash isn't already
+  // covered on-chain (e.g. very recent local optimistic rows) — it is never
+  // the sole source, so history survives a cleared cache / fresh reconnect.
+  const { events: blendEvents } = useBlendEvents();
+  const { events: aqEvents } = useAquariusEvents(null, marginAccountAddress);
+  const { events: ssEvents } = useSoroswapEvents(ssStats?.pairAddress, marginAccountAddress);
+
   const historyEntries = useMemo((): FarmHistoryEntry[] => {
     if (!marginAccountAddress) return [];
-    const all: FarmHistoryEntry[] = [
+
+    const onchain: FarmHistoryEntry[] = [
+      ...blendEvents.map((ev) => ({
+        id: `blend:${ev.txHash}:${ev.type}:${ev.tokenSymbol}`,
+        protocol: "blend" as const,
+        poolKey: buildFarmPoolKey(ev.tokenSymbol),
+        marginAccountAddress,
+        action: (ev.type === "supply" ? "add" : "remove") as FarmAction,
+        amountDisplay: `${ev.underlyingAmount} ${ev.tokenSymbol}`,
+        txHash: ev.txHash ?? "",
+        timestamp: ev.timestamp,
+      })),
+      ...aqEvents.map((ev) => ({
+        id: `aquarius:${ev.txHash}:${ev.type}`,
+        protocol: "aquarius" as const,
+        poolKey: "aquarius",
+        marginAccountAddress,
+        action: (ev.type === "deposit" ? "add" : "remove") as FarmAction,
+        amountDisplay: `${ev.shareAmount} LP`,
+        txHash: ev.txHash ?? "",
+        timestamp: ev.timestamp,
+      })),
+      ...ssEvents.map((ev) => ({
+        id: `soroswap:${ev.txHash}:${ev.type}`,
+        protocol: "soroswap" as const,
+        poolKey: buildFarmPoolKey("XLM", "USDC"),
+        marginAccountAddress,
+        action: (ev.type === "deposit" ? "add" : "remove") as FarmAction,
+        amountDisplay: `${ev.shareAmount} LP`,
+        txHash: ev.txHash ?? "",
+        timestamp: ev.timestamp,
+      })),
+    ];
+
+    const onchainHashes = new Set(onchain.map((e) => e.txHash).filter(Boolean));
+
+    const local: FarmHistoryEntry[] = [
       ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("XLM"), marginAccountAddress }),
       ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("USDC"), marginAccountAddress }),
       ...getFarmHistory({ protocol: "soroswap", poolKey: buildFarmPoolKey("XLM", "USDC"), marginAccountAddress }),
     ];
     AQUARIUS_POOLS.forEach((pool) => {
       const [tokenA, tokenB] = pool.tokens;
-      all.push(...getFarmHistory({ protocol: "aquarius", poolKey: buildFarmPoolKey(tokenA, tokenB), marginAccountAddress }));
+      local.push(...getFarmHistory({ protocol: "aquarius", poolKey: buildFarmPoolKey(tokenA, tokenB), marginAccountAddress }));
     });
-    return all.sort((a, b) => b.timestamp - a.timestamp);
-  }, [marginAccountAddress]);
+    const localFiltered = local.filter((e) => !e.txHash || !onchainHashes.has(e.txHash));
+
+    return [...onchain, ...localFiltered].sort((a, b) => b.timestamp - a.timestamp);
+  }, [marginAccountAddress, blendEvents, aqEvents, ssEvents]);
 
   const historyTableBody = useMemo(
     () => ({

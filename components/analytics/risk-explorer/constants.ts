@@ -29,11 +29,13 @@ function walletPrimaryAsset(snapshot: AccountSnapshot): StellarAsset {
   if (ACTIVE_ASSETS.includes(symbol as StellarAsset)) {
     return symbol as StellarAsset;
   }
+  // Fallback for a tracking/alias symbol (e.g. BLEND_USDC, AQ_XLM_USDC)
+  // that isn't itself one of the 4 ACTIVE_ASSETS — route it to its real
+  // underlying bucket via the same canonical resolution the contract uses,
+  // instead of collapsing every non-XLM asset into BLUSDC.
   const canonical = resolveUsdAlias(symbol);
-  if (canonical === "XLM") return "XLM";
-  // Risk explorer controls are currently XLM + USDC-flavoured assets.
-  // EURC collateral is mapped into the USD bucket until a dedicated tab exists.
-  return "BLUSDC";
+  if (canonical === "USDC") return "BLUSDC";
+  return canonical;
 }
 
 export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosition[] {
@@ -58,7 +60,6 @@ export const TOKEN_PRICES: Record<StellarAsset, number> = {
   BLUSDC: FALLBACK_PRICES.BLUSDC,
   AQUSDC: FALLBACK_PRICES.AQUSDC,
   SOUSDC: FALLBACK_PRICES.SOUSDC,
-  EURC: FALLBACK_PRICES.EURC,
 };
 
 /** Asset selector entries shown in the Risk Explorer side panel. */

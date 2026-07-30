@@ -14,8 +14,12 @@ export interface BorrowInfo {
 export interface Position {
   positionId: number;
 
-  collateral: AssetAmount;
-  collateralUsdValue: number;
+  // Vanna's margin accounts are cross-collateralized (one shared health
+  // factor / borrowing capacity across every deposit) rather than isolated
+  // per-asset positions, so a "position" lists ALL deposited collateral —
+  // not a single anchoring asset — the same way `borrowed` already lists
+  // every borrowed token.
+  collaterals: BorrowInfo[];
 
   borrowed: BorrowInfo[];
 

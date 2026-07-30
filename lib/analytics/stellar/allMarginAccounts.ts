@@ -37,6 +37,7 @@ import type {
 } from "@/lib/analytics/onchain/types";
 import { collateralPositionTypeForSymbol } from "@/lib/analytics/stellar/collateralClassification";
 import { fetchFarmTrackingCollateralAmountMap } from "@/lib/analytics/stellar/farmTrackingCollateral";
+import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
 const STELLAR_CHAIN_ID = 0;
 
@@ -47,7 +48,9 @@ const READ_SOURCE_ADDRESS =
 
 const WAD = BigInt("1000000000000000000"); // 1e18
 
-const PRICEABLE_TOKENS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
+// "USDC" is the canonical peg BLUSDC/AQUSDC/SOUSDC (already in ACTIVE_ASSETS)
+// resolve to on-chain.
+const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 
 // Maps the symbol stored on the smart account back to a canonical price key
 // resolvable through the oracle cache (which already aliases BLUSDC→USDC etc).
@@ -285,61 +288,82 @@ async function readSingleAccountState(
   ]);
 
   const collateralByToken = new Map<string, number>();
-  if (Array.isArray(collateralTokens)) {
-    await Promise.all(
-      collateralTokens.map(async (sym) => {
-        const balanceRaw = await simulateView<unknown>(
-          server,
-          smartAccount,
-          "get_collateral_token_balance",
-          StellarSdk.nativeToScVal(sym, { type: "symbol" }),
-        );
-        const amount = wadToNumber(balanceRaw);
-        if (amount > 0) collateralByToken.set(canonicalSymbol(sym), amount);
-      }),
-    );
-  }
 
-  // Farm / tracking-token collateral (Blend b-tokens, Aquarius & Soroswap LP) —
-  // same sources as the Farm page; smart-account WAD balances are often zero for these symbols.
-  try {
-    const farmAmounts = await fetchFarmTrackingCollateralAmountMap(smartAccount);
-    farmAmounts.forEach((amt, sym) => {
+  // Budget/latency fix: these four reads (per-token collateral balances,
+  // farm/tracking collateral, raw SAC balances, per-token debt) don't depend
+  // on each other's results, but were previously awaited one after another —
+  // 4 sequential RPC round-trip GROUPS per account, multiplied across up to
+  // MAX_DEEP_SCAN_ACCOUNTS accounts bounded by only SCAN_CONCURRENCY workers,
+  // was the dominant cost behind the analytics page's slow cold load. Running
+  // them concurrently cuts each account's own latency to roughly the
+  // slowest single group instead of the sum of all four.
+  const [, farmResult, sacResult, debtByToken] = await Promise.all([
+    Array.isArray(collateralTokens)
+      ? Promise.all(
+          collateralTokens.map(async (sym) => {
+            const balanceRaw = await simulateView<unknown>(
+              server,
+              smartAccount,
+              "get_collateral_token_balance",
+              StellarSdk.nativeToScVal(sym, { type: "symbol" }),
+            );
+            const amount = wadToNumber(balanceRaw);
+            if (amount > 0) collateralByToken.set(canonicalSymbol(sym), amount);
+          }),
+        )
+      : Promise.resolve(),
+
+    // Farm / tracking-token collateral (Blend b-tokens, Aquarius & Soroswap LP) —
+    // same sources as the Farm page; smart-account WAD balances are often zero for these symbols.
+    fetchFarmTrackingCollateralAmountMap(smartAccount).catch((e) => {
+      console.warn(`[allMarginAccounts] farm collateral merge failed for ${smartAccount}:`, e);
+      return null;
+    }),
+
+    // Raw SAC balances (XLM/BLUSDC) — authoritative for the raw assets
+    // physically held in the account (including borrowed cash that sits as
+    // native tokens before being deployed). Mirrors
+    // reconcileMarginRawSacCollateral in farmTrackingCollateral.ts so the HF
+    // formula matches the connected-wallet path.
+    readSacBalances(server, smartAccount).catch((e) => {
+      console.warn(`[allMarginAccounts] SAC balance read failed for ${smartAccount}:`, e);
+      return null;
+    }),
+
+    (async () => {
+      const debtByTokenInner = new Map<string, number>();
+      if (Array.isArray(borrowedTokens)) {
+        await Promise.all(
+          borrowedTokens.map(async (sym) => {
+            // get_borrowed_token_debt routes to the live lending pool, so it
+            // returns up-to-date principal+interest in WAD precision.
+            const debtRaw = await simulateView<unknown>(
+              server,
+              smartAccount,
+              "get_borrowed_token_debt",
+              StellarSdk.nativeToScVal(sym, { type: "symbol" }),
+            );
+            const amount = wadToNumber(debtRaw);
+            if (amount > 0) debtByTokenInner.set(canonicalSymbol(sym), amount);
+          }),
+        );
+      }
+      return debtByTokenInner;
+    })(),
+  ]);
+
+  // Farm/tracking collateral merges in first, then raw SAC balances OVERWRITE
+  // XLM/BLUSDC (authoritative, per the comment above) — same precedence as
+  // the original sequential version, just applied after both reads land.
+  if (farmResult) {
+    farmResult.forEach((amt, sym) => {
       if (amt > 0) collateralByToken.set(sym, amt);
     });
-  } catch (e) {
-    console.warn(`[allMarginAccounts] farm collateral merge failed for ${smartAccount}:`, e);
   }
-
-  // Overwrite XLM/BLUSDC with live SAC balances — these are authoritative for
-  // the raw assets physically held in the account (including borrowed cash that
-  // sits as native tokens before being deployed). Mirrors reconcileMarginRawSacCollateral
-  // in farmTrackingCollateral.ts so the HF formula matches the connected-wallet path.
-  try {
-    const sacAmounts = await readSacBalances(server, smartAccount);
-    sacAmounts.forEach((amt, sym) => {
+  if (sacResult) {
+    sacResult.forEach((amt, sym) => {
       collateralByToken.set(sym, amt);
     });
-  } catch (e) {
-    console.warn(`[allMarginAccounts] SAC balance read failed for ${smartAccount}:`, e);
-  }
-
-  const debtByToken = new Map<string, number>();
-  if (Array.isArray(borrowedTokens)) {
-    await Promise.all(
-      borrowedTokens.map(async (sym) => {
-        // get_borrowed_token_debt routes to the live lending pool, so it
-        // returns up-to-date principal+interest in WAD precision.
-        const debtRaw = await simulateView<unknown>(
-          server,
-          smartAccount,
-          "get_borrowed_token_debt",
-          StellarSdk.nativeToScVal(sym, { type: "symbol" }),
-        );
-        const amount = wadToNumber(debtRaw);
-        if (amount > 0) debtByToken.set(canonicalSymbol(sym), amount);
-      }),
-    );
   }
 
   return {

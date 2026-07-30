@@ -69,7 +69,12 @@ export const useWallet = () => {
       ]);
 
       try {
-        const [xlmDeposited, usdcDeposited, aquariusUsdcDeposited, soroswapUsdcDeposited] = await Promise.race([
+        const [
+          xlmDeposited,
+          usdcDeposited,
+          aquariusUsdcDeposited,
+          soroswapUsdcDeposited,
+        ] = await Promise.race([
           depositedBalancesPromise,
           timeoutPromise
         ]);

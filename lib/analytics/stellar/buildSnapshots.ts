@@ -115,22 +115,28 @@ export async function buildAnalyticsSnapshots(
 ): Promise<{ accounts: AccountSnapshot[]; realAccountCount: number }> {
   const force = opts?.force ?? false;
 
-  // 1. Connected-wallet refresh: keep this so the overview reacts immediately
-  //    to the connected user's writes (the in-memory store is hotter than
-  //    the protocol-wide RPC cache).
-  let selfSnapshot: AccountSnapshot | null = null;
-  if (userAddress) {
-    await checkUserMarginAccount(userAddress, force);
-    const { hasMarginAccount, marginAccountAddress } = useMarginAccountInfoStore.getState();
-    if (hasMarginAccount && marginAccountAddress) {
-      await refreshBorrowedBalances(marginAccountAddress, force);
-    }
-    selfSnapshot = buildSelfSnapshot(userAddress);
-  }
-
-  // 2. Protocol-wide snapshots — served from the shared edge-cached route so the
-  //    bounded RPC fan-out runs once per ~30s globally, not in every browser.
-  const protocolSnapshots = await fetchProtocolSnapshots(force);
+  // The connected-wallet refresh (1) and the protocol-wide edge-cached scan
+  // (2) are fully independent — neither reads the other's result — but were
+  // previously awaited one after another, adding the wallet refresh's
+  // latency on top of the protocol scan's on every cold load. Run them
+  // concurrently instead.
+  const [selfSnapshot, protocolSnapshots] = await Promise.all([
+    // 1. Connected-wallet refresh: keep this so the overview reacts immediately
+    //    to the connected user's writes (the in-memory store is hotter than
+    //    the protocol-wide RPC cache).
+    (async (): Promise<AccountSnapshot | null> => {
+      if (!userAddress) return null;
+      await checkUserMarginAccount(userAddress, force);
+      const { hasMarginAccount, marginAccountAddress } = useMarginAccountInfoStore.getState();
+      if (hasMarginAccount && marginAccountAddress) {
+        await refreshBorrowedBalances(marginAccountAddress, force);
+      }
+      return buildSelfSnapshot(userAddress);
+    })(),
+    // 2. Protocol-wide snapshots — served from the shared edge-cached route so the
+    //    bounded RPC fan-out runs once per ~30s globally, not in every browser.
+    fetchProtocolSnapshots(force),
+  ]);
 
   // 3. Merge — prefer the connected wallet's freshly-recomputed snapshot
   //    over the protocol-wide read for that same account, since the in-memory

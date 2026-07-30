@@ -11,19 +11,6 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  // Hidden: old Overview V1 — kept for reference, superseded by Overview V2
-  // {
-  //   label: "Overview",
-  //   href: "/",
-  //   icon: (
-  //     <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-  //       <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-  //       <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-  //       <rect x="1" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-  //       <rect x="10" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-  //     </svg>
-  //   ),
-  // },
   {
     label: "Overview",
     href: "/analytics/overview2",

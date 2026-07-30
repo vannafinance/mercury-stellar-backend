@@ -1,50 +1,70 @@
-import { CONTRACT_ADDRESSES } from "./stellar-utils";
 import { fetchContractEvents } from "./mercury-client";
 import { enrichTimestampsByTx } from "./mercury-timestamps";
 import type { AquariusLpEvent } from "./aquarius-utils";
 
-// Aquarius LP history sourced from Mercury via the AccountManager's margin-side
-// Trader_AquariusDeposit / Trader_AquariusWithdraw events. The Aquarius *pool*
-// event carries no depositor (unattributable), so the AM emits these instead
-// with the smart account in a topic — meaning we can filter SERVER-SIDE by
-// account (like margin/blend), no client-side scan.
+// Aquarius LP history sourced from Mercury via the POOL's own deposit_liquidity /
+// withdraw_liquidity events.
 //
-// Verified shape on the new AM (CAWVGDG3…, 2026-06-19):
-//   topic1 = "Trader_AquariusDeposit" | "Trader_AquariusWithdraw"   → e.eventName
-//   topic2 = smart_account                                          → server-filtered
-//   data   = { smart_account, token_symbol, amount_a, amount_b, shares }
-//            amount_a / amount_b are WAD (÷1e18); shares is LP-token units (÷1e7).
+// The AccountManager used to emit account-scoped Trader_AquariusDeposit /
+// Trader_AquariusWithdraw events (the original source this file read), but the
+// 2026-07-19 Controller-Facade refactor removed ALL event publishing from the
+// exec path (confirmed: exhaustive grep of account_manager.rs and
+// AquariusControllerContract for `events().publish` turns up nothing on the
+// exec/execute call paths) — so that event has not fired since, and Mercury/RPC
+// queries against it silently go stale for any action taken after the port.
 //
-// The AM event has no payload timestamp → recovered per-tx from Horizon.
-const WAD = 1e18;
+// The pool's own deposit_liquidity/withdraw_liquidity events are still real
+// (Aquarius's own external contract, untouched by our refactor), but — unlike
+// Soroswap's pair event, which carries `data.to` — the pool's event body is
+// just `[share_amount, amountA, amountB]` with no account field at all. Some
+// pool versions carry the depositor in a topic, some don't (confirmed in
+// AquariusService.getAquariusEvents' own comment), so this can only do
+// best-effort attribution: keep an event if none of its topics decode to an
+// address at all (nothing to filter on), or if one of them matches. This is
+// the same class of caveat Soroswap's un-scoped fetch already has, just via
+// topics instead of a data field.
 const SHARE_SCALE = 1e7;
 
-export async function getAquariusEventsFromMercury(
+interface AquariusLiquidityData {
+  [index: number]: unknown;
+}
+
+export async function getAquariusPoolEventsFromMercury(
+  poolAddress: string,
   marginAccountAddress: string,
 ): Promise<AquariusLpEvent[]> {
-  const events = await fetchContractEvents({
-    contract: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
-    account: marginAccountAddress,
-  });
+  // Un-scoped: Mercury's server-side `account` filter needs a reliable topic
+  // position, which this event doesn't consistently have — walk the pool's
+  // full event history and filter client-side, like Soroswap's pair events.
+  const events = await fetchContractEvents({ contract: poolAddress });
 
   const mine = events
-    .filter(
-      (e) =>
-        e.eventName === "Trader_AquariusDeposit" ||
-        e.eventName === "Trader_AquariusWithdraw",
-    )
-    .map((e): AquariusLpEvent => {
-      const d = (e.data && typeof e.data === "object" ? e.data : {}) as Record<string, unknown>;
+    .map((e) => {
+      const kind = e.eventName;
+      if (kind !== "deposit_liquidity" && kind !== "withdraw_liquidity") return null;
+
+      const topicAddresses = e.topics
+        .slice(1)
+        .filter((t): t is string => typeof t === "string" && t.length > 0);
+      if (topicAddresses.length > 0 && !topicAddresses.includes(marginAccountAddress)) {
+        return null;
+      }
+
+      const body = (Array.isArray(e.data) ? e.data : null) as AquariusLiquidityData | null;
+      if (!body) return null;
+      const toHuman = (v: unknown) => (Number(v ?? 0) / SHARE_SCALE).toFixed(7);
+
       return {
-        type: e.eventName === "Trader_AquariusDeposit" ? "deposit" : "withdraw",
-        amountA: (Number(d.amount_a ?? 0) / WAD).toFixed(7),
-        amountB: (Number(d.amount_b ?? 0) / WAD).toFixed(7),
-        shareAmount: (Number(d.shares ?? 0) / SHARE_SCALE).toFixed(7),
+        type: kind === "deposit_liquidity" ? "deposit" : "withdraw",
+        shareAmount: toHuman(body[0]),
+        amountA: toHuman(body[1]),
+        amountB: toHuman(body[2]),
         timestamp: 0,
         txHash: e.tx ?? "",
         ledger: 0,
-      };
-    });
+      } as AquariusLpEvent;
+    })
+    .filter((e): e is AquariusLpEvent => e !== null);
 
   await enrichTimestampsByTx(mine);
   return mine.sort((a, b) => b.timestamp - a.timestamp);

@@ -1,6 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { CONTRACT_ADDRESSES, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 import {
+  ACTIVE_ASSETS,
   fallbackPriceForCanonical,
   fallbackPriceForSymbol,
   resolveUsdAlias,
@@ -116,7 +117,10 @@ async function fetchContractEvents(
 }
 
 export async function readLiveEventFeed(lookbackLedgers = DEFAULT_LOOKBACK_LEDGERS): Promise<LiveEventFeed> {
-  await fetchTokenPrices(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]).catch(() => undefined);
+  // Prime the price cache for all active assets so whale deposit/withdraw/
+  // repay rows below price off a freshly-primed live quote instead of a
+  // stale/fallback one.
+  await fetchTokenPrices([...ACTIVE_ASSETS]).catch(() => undefined);
 
   const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
   const latest = await server.getLatestLedger();
