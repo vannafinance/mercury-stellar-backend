@@ -101,27 +101,22 @@ type PoolBorrowRow = {
 };
 
 function poolStatsToBorrowRows(pools: StellarPoolStats[]): PoolBorrowRow[] {
-  const labelFor = (sym: string) => {
-    switch (sym) {
-      case "BLUSDC":
-        return "Blend USDC";
-      case "AQUSDC":
-        return "Aquarius USDC";
-      case "SOUSDC":
-        return "Soroswap USDC";
-      default:
-        return sym;
-    }
-  };
+  // Plain ticker symbols, not spelled-out names ("Blend USDC" etc.) — the
+  // long spelled-out labels overlapped each other under the bars. Matches
+  // how the other symbols already render (XLM), so this is also just
+  // consistent.
   return pools.map((p) => ({
     key: p.symbol,
-    label: labelFor(p.symbol),
+    label: p.symbol,
     apr: Math.round(computeBorrowApr(p.utilizationRate) * 100) / 100,
     utilization: Math.round(p.utilizationRate * 10) / 10,
   }));
 }
 
-const POOL_BAR_COLORS = ["#32EEE2", "#703AE6", "#F59E0B", "#FC5457"] as const;
+const POOL_BAR_COLORS = [
+  "#32EEE2", "#703AE6", "#F59E0B", "#FC5457",
+  "#22C55E", "#8A5CF5", "#EC4899", "#0EA5E9",
+] as const;
 
 function BorrowRatePoolsChart({
   title,

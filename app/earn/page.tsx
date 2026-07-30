@@ -5,12 +5,12 @@ import { useRouter } from "next/navigation";
 import { CollapsibleChart } from "@/components/ui/collapsible-chart";
 import { Table } from "@/components/earn/table";
 import { Carousel } from "@/components/ui/carousel";
-import { tableHeadings } from "@/lib/constants/earn";
+import { vaultsTableHeadings, positionsTableHeadings } from "@/lib/constants/earn";
 import { useUserStore } from "@/store/user";
 import { useEarnVaultStore } from "@/store/earn-vault-store";
 import { setSelectedPool } from "@/store/selected-pool-store";
 import { AssetType } from "@/lib/stellar-utils";
-import { usePoolData, useUserPositions } from "@/hooks/use-earn";
+import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 
 // AQUARIUS_USDC / SOROSWAP_USDC piggyback on USDC's oracle price (no separate
@@ -21,95 +21,33 @@ const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   AQUARIUS_USDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
 };
-const HISTORY_MAX_ITEMS = 3000;
-const ALL_ASSETS = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+const ALL_ASSETS = [
+  "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+] as const;
 
-// Minimum spacing between persisted history snapshots. Without this, every
-// 30-second oracle refresh that nudges the price by even a hundredth of a
-// cent pushes a new chart point, which makes long-range views (3M / All
-// Time) visibly reshape every minute even though nothing material changed.
-const SNAPSHOT_MIN_INTERVAL_MS = 60_000;
-
-type EarnOverviewSnapshot = {
-  timestamp: number;
-  totalDepositedUSD: number;
-  earnedYieldUSD: number;
-};
-
-
-const getHistoryKey = (address: string) => `vanna_earn_overview_history_v2_${address}`;
-
-const normalizeTimestamp = (value: unknown): number => {
-  const ts = Number(value ?? 0);
-  if (!Number.isFinite(ts) || ts <= 0) return 0;
-  return ts < 1_000_000_000_000 ? ts * 1000 : ts;
-};
-
-const readOverviewHistory = (address: string): EarnOverviewSnapshot[] => {
-  if (typeof window === "undefined" || !address) return [];
-  try {
-    const raw = window.localStorage.getItem(getHistoryKey(address));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const normalized = parsed
-      .map((item) => ({
-        timestamp: normalizeTimestamp(item?.timestamp),
-        totalDepositedUSD: Number(item?.totalDepositedUSD ?? 0),
-        // Migrate older snapshots that used the projected-annual figure: treat
-        // any missing earnedYieldUSD as 0, ignoring the legacy field, so the
-        // chart no longer pretends past projections were earned dollars.
-        earnedYieldUSD: Number(item?.earnedYieldUSD ?? 0),
-      }))
-      .filter((item) =>
-        item.timestamp > 0 &&
-        Number.isFinite(item.totalDepositedUSD) &&
-        Number.isFinite(item.earnedYieldUSD)
-      )
-      .sort((a, b) => a.timestamp - b.timestamp);
-
-    // Remove transient refresh spikes: 0 sandwiched between two similar non-zero values.
-    return normalized.filter((item, idx, arr) => {
-      if (item.totalDepositedUSD !== 0 || idx === 0 || idx === arr.length - 1) return true;
-      const prev = arr[idx - 1];
-      const next = arr[idx + 1];
-      const closeByTime =
-        item.timestamp - prev.timestamp <= 5 * 60_000 &&
-        next.timestamp - item.timestamp <= 5 * 60_000;
-      const similarNeighbors = Math.abs(next.totalDepositedUSD - prev.totalDepositedUSD) <= 0.5;
-      return !(prev.totalDepositedUSD > 0 && next.totalDepositedUSD > 0 && closeByTime && similarNeighbors);
-    });
-  } catch {
-    return [];
-  }
-};
-
-const writeOverviewHistory = (address: string, snapshots: EarnOverviewSnapshot[]) => {
-  if (typeof window === "undefined" || !address) return;
-  window.localStorage.setItem(getHistoryKey(address), JSON.stringify(snapshots.slice(-HISTORY_MAX_ITEMS)));
-};
-
-const toChartData = (
-  snapshots: EarnOverviewSnapshot[],
-  key: "totalDepositedUSD" | "earnedYieldUSD"
+// Chart data is derived entirely from Mercury's real per-account event
+// history (see useEarnTransactions) plus current live state — never from
+// browser storage. Clearing the browser's cache must not change what's
+// shown here; Mercury (and on-chain state) is the only source of truth.
+const toChartPoints = (
+  points: Array<{ timestamp: number; amount: number }>
 ): Array<{ date: string; amount: number }> => {
-  if (snapshots.length === 0) return [];
-  // Earned yield on testnet/short timeframes is often well under $0.01.
-  // Rounding to 2 decimals would flatten the chart to zero, so keep more
-  // precision for earnings while keeping deposits at 2 decimals.
-  const decimals = key === "earnedYieldUSD" ? 6 : 2;
-  const points = snapshots
+  if (points.length === 0) return [];
+  const decimals = 2;
+  const mapped = points
     .map((item) => ({
       date: new Date(item.timestamp).toISOString(),
-      amount: parseFloat((item[key] || 0).toFixed(decimals)),
+      amount: parseFloat((item.amount || 0).toFixed(decimals)),
     }))
     .filter((item) => Number.isFinite(item.amount));
 
-  if (points.length >= 2) return points;
+  if (mapped.length >= 2) return mapped;
 
-  const only = points[0];
-  const firstTs = normalizeTimestamp(snapshots[0]?.timestamp);
-  const prevTs = Math.max(firstTs - 60_000, firstTs - 1);
+  // A single real data point can't draw a line — duplicate it 60s earlier
+  // so the chart renders a flat line at the true current value instead of
+  // an empty state.
+  const only = mapped[0];
+  const prevTs = Math.max(points[0].timestamp - 60_000, points[0].timestamp - 1);
   return [
     { date: new Date(prevTs).toISOString(), amount: only.amount },
     only,
@@ -124,6 +62,9 @@ const formatTokenAmount = (amount: number): string => {
   return amount.toFixed(2);
 };
 
+const fmtUsd = (n: number): string =>
+  `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 // Build a single pool table row from live on-chain pool stats
 const buildPoolRow = (
   assetSymbol: string,
@@ -135,7 +76,12 @@ const buildPoolRow = (
     borrowAPY: string;
     isLoading?: boolean;
   },
-  collateralIcons: string[]
+  price: number,
+  // How much of THIS specific pool's asset the connected wallet has supplied
+  // — 0 when they have no position here. Rendered the same two-line way as
+  // "Assets Supplied" (amount on top, $ value below) so "Your Supply" reads
+  // consistently instead of collapsing to a bare icon or dash.
+  yourSupplyAmount: number
 ) => {
   const totalSupply = parseFloat(pool.totalSupply) || 0;
   const totalBorrowed = parseFloat(pool.totalBorrowed) || 0;
@@ -148,7 +94,7 @@ const buildPoolRow = (
       { chain: assetSymbol, title: assetSymbol, tag: "Active" },
       {
         title: `${formatTokenAmount(totalSupply)} ${assetSymbol}`,
-        tag: `${totalSupply.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(totalSupply * price),
       },
       {
         title: `${supplyAPY.toFixed(2)}%`,
@@ -156,7 +102,7 @@ const buildPoolRow = (
       },
       {
         title: `${formatTokenAmount(totalBorrowed)} ${assetSymbol}`,
-        tag: `${totalBorrowed.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(totalBorrowed * price),
       },
       {
         title: `${borrowAPY.toFixed(2)}%`,
@@ -167,15 +113,16 @@ const buildPoolRow = (
         tag: `${utilizationRate.toFixed(2)}%`,
       },
       {
-        onlyIcons: collateralIcons,
-        tag: "Collateral",
-        clickable: "toggle",
+        title: `${formatTokenAmount(yourSupplyAmount)} ${assetSymbol}`,
+        tag: fmtUsd(yourSupplyAmount * price),
       },
     ],
   };
 };
 
-// Build a positions row showing user's deposited/borrowed amount for an asset
+// Build a positions row showing user's deposited amount for an asset. No
+// "Assets Borrowed" column here — this table is already scoped to the user's
+// own supplied positions, so a pool-wide borrow figure doesn't apply.
 const buildPositionRow = (
   assetSymbol: string,
   position: {
@@ -189,10 +136,10 @@ const buildPositionRow = (
     supplyAPY: string;
     borrowAPY: string;
     utilizationRate: string;
-  }
+  },
+  price: number
 ) => {
   const deposited = parseFloat(position.deposited) || 0;
-  const borrowed = parseFloat(position.borrowed) || 0;
   const supplyAPY = parseFloat(pool.supplyAPY) || 0;
   const borrowAPY = parseFloat(pool.borrowAPY) || 0;
   const utilizationRate = parseFloat(pool.utilizationRate) || 0;
@@ -202,15 +149,11 @@ const buildPositionRow = (
       { chain: assetSymbol, title: assetSymbol, tag: "Active" },
       {
         title: `${formatTokenAmount(deposited)} ${assetSymbol}`,
-        tag: `${deposited.toFixed(2)} ${assetSymbol}`,
+        tag: fmtUsd(deposited * price),
       },
       {
         title: `${supplyAPY.toFixed(2)}%`,
         tag: `${supplyAPY.toFixed(2)}%`,
-      },
-      {
-        title: `${formatTokenAmount(borrowed)} ${assetSymbol}`,
-        tag: `${borrowed.toFixed(2)} ${assetSymbol}`,
       },
       {
         title: `${borrowAPY.toFixed(2)}%`,
@@ -219,11 +162,6 @@ const buildPositionRow = (
       {
         title: `${utilizationRate.toFixed(2)}%`,
         tag: `${utilizationRate.toFixed(2)}%`,
-      },
-      {
-        onlyIcons: [assetSymbol],
-        tag: "Collateral",
-        clickable: "toggle",
       },
     ],
   };
@@ -246,8 +184,8 @@ export default function Earn() {
   // Live data from on-chain contracts (auto-refreshes every 30s)
   const { pools, isLoading: poolsLoading } = usePoolData();
   const { positions: userPositions, isLoading: positionsLoading } = useUserPositions();
+  const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
   const tokenPrices = useTokenPrices(['XLM', 'USDC']);
-  const [overviewHistory, setOverviewHistory] = useState<EarnOverviewSnapshot[]>([]);
 
   // Set default pool selection on mount
   useEffect(() => {
@@ -259,108 +197,133 @@ export default function Earn() {
     });
   }, []);
 
+  // Deep-link into the Positions tab (e.g. from Portfolio's Lender "Current
+  // Positions" row) via /earn?tab=positions. Read directly off the URL
+  // instead of next/navigation's useSearchParams so this doesn't force a
+  // Suspense boundary on an otherwise fully client-rendered page.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "positions") queueMicrotask(() => setActiveTab("positions"));
+  }, []);
+
   const { totalDepositedUSD, earnedYieldUSD } = useMemo(() => {
     let totalUSD = 0;
+    let earnedUSD = 0;
+
+    // Net earnings = current vToken-derived value minus net principal
+    // (Σ supply − Σ withdraw, both in real underlying units — Mercury's
+    // withdraw amount is `asset_amount`, not the vToken share count, so this
+    // is an exact reconstruction, not an exchange-rate approximation). Same
+    // pattern as the Margin Positions table's "interest accrued" calc.
+    // Skipped while the transaction history is still loading so we don't
+    // show a misleadingly-inflated number (principal defaulting to 0).
+    const netPrincipalByAsset: Record<string, number> = {};
+    if (!earnTxLoading) {
+      for (const tx of earnTx) {
+        const amt = parseFloat(tx.amount) || 0;
+        if (!(amt > 0)) continue;
+        netPrincipalByAsset[tx.asset] = (netPrincipalByAsset[tx.asset] ?? 0) +
+          (tx.type === "supply" ? amt : -amt);
+      }
+    }
+
     ALL_ASSETS.forEach((asset) => {
       const depositedTokens = parseFloat(userPositions[asset]?.deposited || "0");
       const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? 1;
       totalUSD += depositedTokens * price;
+
+      // Only count an asset's yield once we've actually SEEN at least one
+      // supply/withdraw event for it. A missing history entry means "we
+      // don't know this asset's principal" — NOT "principal is 0". Treating
+      // it as 0 misreports the entire deposit as earned yield the moment a
+      // pool has a live position but Mercury has no recorded activity for it
+      // yet (e.g. a pool whose liquidity wasn't supplied through the normal
+      // deposit() flow) — exactly the bug this guarded against.
+      if (!earnTxLoading && Object.prototype.hasOwnProperty.call(netPrincipalByAsset, asset)) {
+        const principal = Math.max(0, netPrincipalByAsset[asset]);
+        const diff = depositedTokens - principal;
+        if (diff > 0) earnedUSD += diff * price;
+      }
     });
+
     return {
       totalDepositedUSD: totalUSD,
-      // Net Earnings disabled: earn history tracking is per-wallet but the
-      // underlying supply/withdraw event store does not yet scope entries by
-      // wallet address, causing cross-wallet contamination. Hardcoded to $0
-      // until the per-wallet history migration is complete.
-      earnedYieldUSD: 0,
+      earnedYieldUSD: earnedUSD,
     };
-  }, [userPositions, tokenPrices]);
+  }, [userPositions, tokenPrices, earnTx, earnTxLoading]);
 
-  useEffect(() => {
-    if (!userAddress) {
-      queueMicrotask(() => setOverviewHistory([]));
-      return;
+  // Overall Deposit history: replay Mercury's real supply/withdraw events
+  // chronologically to get genuine historical principal, priced at TODAY's
+  // rates (same simplification the headline figure already uses, so the
+  // chart's last point always matches it exactly). No client-side storage —
+  // recomputed fresh from Mercury on every load.
+  const liveDepositData = useMemo(() => {
+    if (earnTxLoading || earnTx.length === 0) {
+      return toChartPoints([{ timestamp: Date.now(), amount: totalDepositedUSD }]);
     }
-    const raw = readOverviewHistory(userAddress);
-    // Zero out any stale earnedYieldUSD values stored in chart history
-    // (artifacts from when Net Earnings was incorrectly computed).
-    const cleaned = raw.map((s) => ({ ...s, earnedYieldUSD: 0 }));
-    writeOverviewHistory(userAddress, cleaned);
-    queueMicrotask(() => setOverviewHistory(cleaned));
-  }, [userAddress]);
 
-  useEffect(() => {
-    if (!userAddress) return;
-    if (poolsLoading || positionsLoading) return;
-    if (!Number.isFinite(totalDepositedUSD) || !Number.isFinite(earnedYieldUSD)) return;
-
-    queueMicrotask(() => {
-      setOverviewHistory((prev) => {
-        const now = Date.now();
-        const roundedDeposited = parseFloat(totalDepositedUSD.toFixed(2));
-        const roundedEarned = parseFloat(earnedYieldUSD.toFixed(6));
-        const last = prev[prev.length - 1];
-        const depositedChanged = !last || Math.abs(last.totalDepositedUSD - roundedDeposited) >= 0.01;
-        // Earned yield can grow by sub-cent amounts per snapshot (especially on
-        // testnet). Use a much smaller threshold so micro-yield still registers.
-        const earnedChanged = !last || Math.abs(last.earnedYieldUSD - roundedEarned) >= 0.000001;
-        // Throttle: even when values change every 30s oracle tick, don't push
-        // a new chart point more than once per minute. This is what stops the
-        // long-range chart shape from visibly reshaping every refresh.
-        const enoughTimePassed = !last || (now - last.timestamp) >= SNAPSHOT_MIN_INTERVAL_MS;
-
-        if (!depositedChanged && !earnedChanged) return prev;
-        if (!enoughTimePassed) return prev;
-
-        const next: EarnOverviewSnapshot[] = [
-          ...prev,
-          {
-            timestamp: now,
-            totalDepositedUSD: roundedDeposited,
-            earnedYieldUSD: roundedEarned,
-          },
-        ].slice(-HISTORY_MAX_ITEMS);
-
-        writeOverviewHistory(userAddress, next);
-        return next;
+    const sorted = [...earnTx].sort((a, b) => a.timestamp - b.timestamp);
+    const running: Record<string, number> = {};
+    const points = sorted.map((tx) => {
+      const amt = parseFloat(tx.amount) || 0;
+      running[tx.asset] = (running[tx.asset] ?? 0) + (tx.type === "supply" ? amt : -amt);
+      let usd = 0;
+      ALL_ASSETS.forEach((asset) => {
+        const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? 1;
+        usd += Math.max(0, running[asset] ?? 0) * price;
       });
+      return { timestamp: tx.timestamp, amount: usd };
     });
-  }, [userAddress, totalDepositedUSD, earnedYieldUSD, poolsLoading, positionsLoading]);
 
-  const liveDepositData = useMemo(
-    () => toChartData(overviewHistory, "totalDepositedUSD"),
-    [overviewHistory]
-  );
+    // Final point: the live headline total (includes accrued yield beyond
+    // raw principal), so the chart never disagrees with the stat above it.
+    points.push({ timestamp: Date.now(), amount: totalDepositedUSD });
+    return toChartPoints(points);
+  }, [earnTx, earnTxLoading, tokenPrices, totalDepositedUSD]);
+
+  // Net Earnings has no cheap, honest historical reconstruction (it needs
+  // each pool's exchange rate at every past moment, which we don't record) —
+  // rather than fabricate a curve, show the one real, correctly-computed
+  // number as a flat line at its true current value.
   const liveEarnedYieldData = useMemo(
-    () => toChartData(overviewHistory, "earnedYieldUSD"),
-    [overviewHistory]
+    () => toChartPoints([{ timestamp: Date.now(), amount: earnedYieldUSD }]),
+    [earnedYieldUSD]
   );
 
-  // ─── Vaults Table ────────────────────────────────────────────────────────────
-  // Each row reflects live pool-level stats fetched from the lending contracts.
-  const liveVaultsTableBody = useMemo(
-    () => ({
-      rows: [
-        buildPoolRow("XLM", pools.XLM, ["XLM", "USDC"]),
-        buildPoolRow("BLUSDC", pools.USDC, ["BLUSDC", "XLM"]),
-        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, ["USDC", "XLM"]),
-        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, ["USDC", "XLM"]),
-      ],
-    }),
-    [pools]
-  );
-
-  // ─── Positions Table ─────────────────────────────────────────────────────────
-  // Shows only the assets where the user has a meaningful (non-dust) balance.
   // Dust threshold: 0.0001 token. After a 100% withdrawal, contracts typically
   // leave 1-100 stroops (1e-7 to 1e-5) of rounding residue in the user's
   // vToken balance — purely numerical, not a real position. Filtering at
   // 1e-4 hides that dust everywhere consistently.
   const POSITION_DUST = 1e-4;
+
+  // ─── Vaults Table ────────────────────────────────────────────────────────────
+  // Each row reflects live pool-level stats fetched from the lending contracts.
+  const liveVaultsTableBody = useMemo(() => {
+    // Below dust, treat as no position — matches the Positions tab's own
+    // cutoff so "Your Supply" doesn't show stroop-level rounding residue.
+    const suppliedAmount = (asset: (typeof ALL_ASSETS)[number]) => {
+      const amt = parseFloat(userPositions[asset]?.deposited || "0");
+      return amt > POSITION_DUST ? amt : 0;
+    };
+    return {
+      rows: [
+        buildPoolRow("XLM", pools.XLM, tokenPrices["XLM"] ?? 0, suppliedAmount("XLM")),
+        buildPoolRow("BLUSDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
+        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
+        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
+      ],
+    };
+  }, [pools, userPositions, tokenPrices]);
+
+  // ─── Positions Table ─────────────────────────────────────────────────────────
+  // Shows only the assets where the user has a meaningful (non-dust) balance.
   const livePositionsTableBody = useMemo(() => {
     if (!userAddress) return { rows: [] };
 
-    const assetKeys = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+    const assetKeys = [
+      "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+    ] as const;
     const rows = assetKeys
       .filter(
         (asset) => parseFloat(userPositions[asset]?.deposited || "0") > POSITION_DUST ||
@@ -372,11 +335,12 @@ export default function Earn() {
           : asset === "SOROSWAP_USDC" ? "SoUSDC"
           : asset === "USDC" ? "BLUSDC"
           : asset;
-        return buildPositionRow(displaySymbol, userPositions[asset], pools[asset]);
+        const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? (asset === "XLM" ? 0 : 1);
+        return buildPositionRow(displaySymbol, userPositions[asset], pools[asset], price);
       });
 
     return { rows };
-  }, [userAddress, userPositions, pools]);
+  }, [userAddress, userPositions, pools, tokenPrices]);
 
   // Tab-based table data
   const getTableDataForTab = (tabId: string) => {
@@ -386,10 +350,19 @@ export default function Earn() {
   };
 
   // ─── Row Click Handler ────────────────────────────────────────────────────────
+  // Looks up cells by column id (rather than a fixed numeric index) since the
+  // Vaults and Positions tabs render different heading sets (e.g. Positions
+  // has no "Assets Borrowed" column) — a fixed index would silently read the
+  // wrong cell depending on which tab was active when the row was clicked.
   const handleRowClick = useCallback(
     (row: { cell?: VaultTableCell[] }) => {
       const cells = row.cell ?? [];
       const id = cells[0]?.title ?? "";
+      const headings = activeTab === "positions" ? positionsTableHeadings : vaultsTableHeadings;
+      const cellFor = (headingId: string): VaultTableCell | undefined => {
+        const idx = headings.findIndex((h) => h.id === headingId);
+        return idx === -1 ? undefined : cells[idx];
+      };
 
       if (id) {
         const assetType =
@@ -400,7 +373,10 @@ export default function Earn() {
               : id === "BLUSDC"
                 ? "USDC"
                 : id.toUpperCase();
-        if (assetType === "XLM" || assetType === "USDC" || assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC") {
+        if (
+          assetType === "XLM" || assetType === "USDC" ||
+          assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC"
+        ) {
           setSelectedPool(assetType as AssetType, {
             id: id,
             chain: assetType,
@@ -414,22 +390,18 @@ export default function Earn() {
           chain: cells[0]?.chain ?? "XLM",
           title: cells[0]?.title ?? "",
           tag: cells[0]?.tag ?? "Active",
-          assetsSupplied: { title: cells[1]?.title || "", tag: cells[1]?.tag || "" },
-          supplyApy: { title: cells[2]?.title || "", tag: cells[2]?.tag || "" },
-          assetsBorrowed: { title: cells[3]?.title || "", tag: cells[3]?.tag || "" },
-          borrowApy: { title: cells[4]?.title || "", tag: cells[4]?.tag || "" },
-          utilizationRate: { title: cells[5]?.title || "", tag: cells[5]?.tag || "" },
-          collateral: {
-            onlyIcons: cells[6]?.onlyIcons || [],
-            tag: cells[6]?.tag || "Collateral",
-          },
+          assetsSupplied: { title: cellFor("assets-supplied")?.title || "", tag: cellFor("assets-supplied")?.tag || "" },
+          supplyApy: { title: cellFor("supply-apy")?.title || "", tag: cellFor("supply-apy")?.tag || "" },
+          assetsBorrowed: { title: cellFor("assets-borrowed")?.title || "", tag: cellFor("assets-borrowed")?.tag || "" },
+          borrowApy: { title: cellFor("borrow-apy")?.title || "", tag: cellFor("borrow-apy")?.tag || "" },
+          utilizationRate: { title: cellFor("utilization-rate")?.title || "", tag: cellFor("utilization-rate")?.tag || "" },
         };
 
         setSelectedVault({ selectedVault: vaultData });
         router.push(`/earn/${id}`);
       }
     },
-    [router, setSelectedVault]
+    [router, setSelectedVault, activeTab]
   );
 
   const earnCarouselItems = [
@@ -480,16 +452,16 @@ export default function Earn() {
           <article className="flex-1 min-w-0">
             <CollapsibleChart
               label="Net Earnings"
+              // Renders the same way "Overall Deposit" does at $0.00 — a flat
+              // chart, not a special empty-state card — so a brand-new
+              // account looks consistent across both cards.
               statValue={(() => {
                 const v = liveEarnedYieldData.length > 0
                   ? liveEarnedYieldData[liveEarnedYieldData.length - 1].amount
                   : 0;
-                // Below $0.01, show more decimals so micro-yield is visible
-                // instead of collapsing to "$0.00".
-                const max = v > 0 && v < 0.01 ? 6 : 2;
                 return `$${v.toLocaleString(undefined, {
                   minimumFractionDigits: 2,
-                  maximumFractionDigits: max,
+                  maximumFractionDigits: 2,
                 })}`;
               })()}
               chartProps={{
@@ -506,7 +478,7 @@ export default function Earn() {
         <Table
           filterDropdownPosition="right"
           filters={{
-            filters: ["Deposit", "Collateral"],
+            filters: ["Deposit"],
             allChainDropdown: true,
             supplyApyTab: true,
           }}
@@ -519,7 +491,7 @@ export default function Earn() {
           }}
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          tableHeadings={tableHeadings}
+          tableHeadings={activeTab === "positions" ? positionsTableHeadings : vaultsTableHeadings}
           tableBody={getTableDataForTab(activeTab)}
           onRowClick={handleRowClick}
           hoverBackground="hover:bg-[#F1EBFD]"

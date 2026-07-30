@@ -13,7 +13,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { appendMarginHistory } from "@/lib/margin-history";
-import { getAddress } from "@stellar/freighter-api";
+import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService } from "@/lib/stellar-utils";
 import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
@@ -269,10 +269,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
     if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
       const fullAmount = parseFloat(currentDebtWad) / 1e18;
-      const clamped = clampRepayDust(Number.isFinite(fullAmount) ? fullAmount : 0);
-      // Full precision (NOT toFixed(2)) — rounding dust to 2dp made it 0 and
-      // disabled Pay Now. The mutation caps the WAD at the on-chain debt, so 100%
-      // clears the position to zero with no leftover dust.
+      const safeFullAmount = Number.isFinite(fullAmount) ? fullAmount : 0;
+      // Sub-cent accrued-interest residue (e.g. 0.0000024 BLUSDC left after an
+      // earlier repay capped to the account's spendable balance) is dust the
+      // user can't meaningfully act on — same $0.01 threshold the "Net
+      // Outstanding Amount to Repay" stat tile already uses to show "0", so
+      // 100% doesn't fill in a confusing non-zero amount the stat disagrees with.
+      const usdEquiv = selectedTokenPrice > 0 ? safeFullAmount * selectedTokenPrice : safeFullAmount;
+      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(safeFullAmount);
       setRepayInput(amountToInputString(clamped));
       return;
     }

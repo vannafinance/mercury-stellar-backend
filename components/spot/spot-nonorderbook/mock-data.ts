@@ -104,15 +104,6 @@ export const MOCK_TOKENS: Token[] = [
     chain: "stellar",
     isVerified: true,
   },
-  {
-    id: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
-    symbol: "WETH",
-    name: "Wrapped Ether",
-    logo: "/coins/eth.svg",
-    decimals: 18,
-    chain: "ethereum",
-    isVerified: true,
-  },
 ];
 
 export const POPULAR_TOKENS = MOCK_TOKENS.slice(0, 5);

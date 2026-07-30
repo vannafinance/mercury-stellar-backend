@@ -30,10 +30,6 @@ export interface VaultData {
     title: string;
     tag: string;
   };
-  collateral: {
-    onlyIcons: string[];
-    tag: string;
-  };
 }
 
 /** Slice shape: the currently selected vault, or null when none is open. */

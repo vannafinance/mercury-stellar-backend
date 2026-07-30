@@ -13,14 +13,15 @@
  */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useFarmStore } from "@/store/farm-store";
 import { Button } from "../ui/button";
 import { BlendService, BLEND_POOL_ASSETS } from "@/lib/blend-utils";
-import { AquariusService, AquariusPoolStats } from "@/lib/aquarius-utils";
-import { SoroswapService, SoroswapPoolStats } from "@/lib/soroswap-utils";
+import { AquariusService, AquariusPoolStats, AQUARIUS_POOLS, AquariusSwapSymbol } from "@/lib/aquarius-utils";
+import { SoroswapService, SoroswapPoolStats, SOROSWAP_POOLS, SoroswapSwapSymbol } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { iconPaths } from "@/lib/constants";
@@ -50,22 +51,59 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const userAddress = useUserStore((state) => state.address);
   const selectedRow = useFarmStore((state) => state.selectedRow);
   const tabType = useFarmStore((state) => state.tabType);
-  const isAquariusPool =
-    tabType === "multi" &&
-    ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "aquarius" ||
-      (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Aquarius"));
 
-  const isSoroswapPool =
-    tabType === "multi" &&
-    ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "soroswap" ||
-      (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Soroswap"));
+  // `selectedRow` lives in a client-side store populated only when navigating
+  // here by clicking a row on the Farm list page — a hard reload (or a direct
+  // URL visit) starts with it empty, which silently misclassified every
+  // Aquarius/Soroswap pool as single-asset Blend (this panel rendered its
+  // one-token form for a pool that needs two). Mirrors the URL-derived
+  // detection `app/farm/[id]/page.tsx` already uses for its header/tabs,
+  // which is why THOSE kept showing the correct protocol after a refresh
+  // while this panel didn't. Only used as a fallback when the store is empty,
+  // so the existing store-driven behavior is unchanged when it IS populated.
+  const params = useParams();
+  const urlId = (params?.id as string | undefined)?.toLowerCase();
+  const urlIsSoroswapPool = urlId?.startsWith("soroswap-") ?? false;
+  const urlIsAquariusPool = !urlIsSoroswapPool && urlId != null && !["xlm", "usdc"].includes(urlId);
+  const urlMatchedSoroswapPool = urlIsSoroswapPool
+    ? SOROSWAP_POOLS.find((p) => p.id === urlId) ?? SOROSWAP_POOLS[0]
+    : null;
+  const urlMatchedAquariusPool = urlIsAquariusPool
+    ? AQUARIUS_POOLS.find((p) => p.id === urlId || p.tokens.join("-").toLowerCase() === urlId) ?? AQUARIUS_POOLS[0]
+    : null;
 
-  const poolTokens =
-    (selectedRow?.cell?.[0] as any)?.titles?.map((t: string) => t.toUpperCase()) ?? ["XLM", "USDC"];
+  const isAquariusPool = selectedRow
+    ? tabType === "multi" &&
+      ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "aquarius" ||
+        (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Aquarius"))
+    : urlIsAquariusPool;
+
+  const isSoroswapPool = selectedRow
+    ? tabType === "multi" &&
+      ((selectedRow?.cell?.[1] as any)?.title?.toLowerCase?.() === "soroswap" ||
+        (selectedRow?.cell?.[0] as any)?.tags?.includes?.("Soroswap"))
+    : urlIsSoroswapPool;
+
+  const poolTokens = selectedRow
+    ? (selectedRow?.cell?.[0] as any)?.titles?.map((t: string) => t.toUpperCase()) ?? ["XLM", "USDC"]
+    : (urlMatchedSoroswapPool?.tokens ?? urlMatchedAquariusPool?.tokens ?? ["XLM", "USDC"]);
   const tokenA = poolTokens[0] ?? "XLM";
   const tokenB = poolTokens[1] ?? "USDC";
 
-  // Determine initial token from store (for single asset / lending rows)
+  // Resolve which actual on-chain pool this row is (order-insensitive on
+  // tokens) — every stats/balance fetch below MUST use this pool's own
+  // address, not a hardcoded XLM/USDC default, or it silently shows the
+  // wrong pool's numbers relabeled with this pool's token symbols.
+  const matchedSoroswapPoolConfig = SOROSWAP_POOLS.find(
+    (p) => p.tokens.includes(tokenA) && p.tokens.includes(tokenB)
+  );
+  const matchedAquariusPoolConfig = AQUARIUS_POOLS.find(
+    (p) => p.tokens.includes(tokenA) && p.tokens.includes(tokenB)
+  );
+
+  // Determine initial token from store (for single asset / lending rows) —
+  // same hard-refresh gap as above: fall back to the URL slug (literally
+  // "xlm"/"usdc" for a Blend pool) when the store hasn't been populated.
   const getInitialToken = useCallback((): TokenSymbol => {
     if (tabType === "single" && selectedRow) {
       const firstCell = selectedRow.cell?.[0] as any;
@@ -74,8 +112,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
         return title as TokenSymbol;
       }
     }
+    if (!selectedRow && urlId) {
+      const upper = urlId.toUpperCase();
+      if (SUPPORTED_TOKENS.includes(upper as TokenSymbol)) return upper as TokenSymbol;
+    }
     return "XLM";
-  }, [tabType, selectedRow]);
+  }, [tabType, selectedRow, urlId]);
 
   const [selectedToken, setSelectedToken] = useState<TokenSymbol>(getInitialToken);
   const [value, setValue] = useState<string>("");
@@ -93,6 +135,13 @@ export const AddLiquidity = memo(function AddLiquidity() {
   }, [tokenDropdownOpen]);
   const [amountA, setAmountA] = useState<string>("");
   const [amountB, setAmountB] = useState<string>("");
+  // Which quick-fill percentage (if any) is currently active per token — drives
+  // the highlighted state on the 10/25/50/100% buttons, matching Remove
+  // Liquidity's percentage pills. Cleared on manual typing in either input
+  // since the paired auto-calc means an edit to one token can make the
+  // other's percentage highlight stale.
+  const [selectedPctA, setSelectedPctA] = useState<number>(0);
+  const [selectedPctB, setSelectedPctB] = useState<number>(0);
   // Borrowed balances from margin account (amounts available to route into Blend)
   const borrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
   const isLoadingBorrowedBalances = useMarginAccountInfoStore((s) => s.isLoadingBorrowedBalances);
@@ -110,8 +159,10 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const [loadingBlendBalance, setLoadingBlendBalance] = useState(false);
   const [marginTokenBalance, setMarginTokenBalance] = useState<string>("0");
   const [loadingMarginTokenBalance, setLoadingMarginTokenBalance] = useState(false);
-  const [marginXlmBalance, setMarginXlmBalance] = useState<string>("0");
-  const [marginUsdcBalance, setMarginUsdcBalance] = useState<string>("0");
+  // Keyed by symbol (generic over whichever two tokens the selected pool
+  // actually is — previously two fixed XLM/USDC variables that silently
+  // reused the XLM balance for any pool whose second token wasn't USDC).
+  const [marginDexBalances, setMarginDexBalances] = useState<Record<string, string>>({});
   const [loadingMarginBalances, setLoadingMarginBalances] = useState(false);
 
   const refreshDexMarginBalances = useCallback(
@@ -121,18 +172,17 @@ export const AddLiquidity = memo(function AddLiquidity() {
       setLoadingMarginBalances(true);
       try {
         for (let attempt = 0; attempt < retryCount; attempt++) {
-          const [xlm, usdc] = isSoroswapPool
+          const [balA, balB] = isSoroswapPool
             ? await Promise.all([
-                SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, "XLM"),
-                SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, "USDC"),
+                SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, tokenA as SoroswapSwapSymbol),
+                SoroswapService.getMarginAccountTokenBalance(marginAccountAddress, tokenB as SoroswapSwapSymbol),
               ])
             : await Promise.all([
-                AquariusService.getMarginAccountTokenBalance(marginAccountAddress, "XLM"),
-                AquariusService.getMarginAccountTokenBalance(marginAccountAddress, "USDC"),
+                AquariusService.getMarginAccountTokenBalance(marginAccountAddress, tokenA as AquariusSwapSymbol),
+                AquariusService.getMarginAccountTokenBalance(marginAccountAddress, tokenB as AquariusSwapSymbol),
               ]);
 
-          setMarginXlmBalance(xlm);
-          setMarginUsdcBalance(usdc);
+          setMarginDexBalances({ [tokenA]: balA, [tokenB]: balB });
 
           if (attempt < retryCount - 1) {
             await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
@@ -142,7 +192,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         setLoadingMarginBalances(false);
       }
     },
-    [isAquariusPool, isSoroswapPool, marginAccountAddress]
+    [isAquariusPool, isSoroswapPool, marginAccountAddress, tokenA, tokenB]
   );
 
   // Check protocol configuration (once on mount)
@@ -159,8 +209,11 @@ export const AddLiquidity = memo(function AddLiquidity() {
       AquariusService.isAquariusConfigured()
         .then((configured) => setAquariusRegistryMissing(!configured))
         .catch(() => setAquariusRegistryMissing(true));
-      // Fetch pool stats for ratio calculation
-      AquariusService.getAquariusPoolStats(CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL)
+      // Fetch pool stats for ratio calculation — must be THIS row's own pool
+      // address, not always the XLM/USDC default.
+      AquariusService.getAquariusPoolStats(
+        matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL
+      )
         .then(setAquariusPoolStats)
         .catch(() => setAquariusPoolStats(null));
       setSoroswapPoolStats(null);
@@ -169,12 +222,12 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
     if (isSoroswapPool) {
       setAquariusRegistryMissing(false);
-      SoroswapService.getPoolStats()
+      SoroswapService.getPoolStats(matchedSoroswapPoolConfig?.pairAddress)
         .then(setSoroswapPoolStats)
         .catch(() => setSoroswapPoolStats(null));
       setAquariusPoolStats(null);
     }
-  }, [isAquariusPool, isSoroswapPool]);
+  }, [isAquariusPool, isSoroswapPool, matchedAquariusPoolConfig, matchedSoroswapPoolConfig]);
 
   // Auto-calculate tokenB when user types tokenA (and vice versa).
   // reserveA / reserveB match pool.tokens[0] / tokens[1] (see aquarius-utils).
@@ -236,8 +289,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
   // Fetch actual margin account token balances for multi-asset pool display
   useEffect(() => {
     if ((!isAquariusPool && !isSoroswapPool) || !marginAccountAddress) {
-      setMarginXlmBalance("0");
-      setMarginUsdcBalance("0");
+      setMarginDexBalances({});
       return;
     }
     refreshDexMarginBalances();
@@ -288,7 +340,10 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const addLiquidityMutation = useMutation({
     mutationFn: async ({ amtA, amtB }: { amtA: number; amtB: number }) => {
       const result = isSoroswapPool
-        ? await SoroswapService.addLiquidity(userAddress!, marginAccountAddress!, amtA, amtB)
+        ? await SoroswapService.addLiquidity(
+            userAddress!, marginAccountAddress!, amtA, amtB,
+            tokenA as SoroswapSwapSymbol, tokenB as SoroswapSwapSymbol,
+          )
         : await AquariusService.addLiquidity(userAddress!, marginAccountAddress!, tokenA, tokenB, amtA, amtB);
       if (!result.success) {
         throw new Error(result.error ?? "Add liquidity failed");
@@ -312,17 +367,20 @@ export const AddLiquidity = memo(function AddLiquidity() {
         txHash: hash ?? "",
       });
       toast.success(`Liquidity added! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
-      const nextXlm = Math.max(0, parseFloat(marginXlmBalance || "0") - amtA);
-      const nextUsdc = Math.max(0, parseFloat(marginUsdcBalance || "0") - amtB);
-      setMarginXlmBalance(nextXlm.toFixed(2));
-      setMarginUsdcBalance(nextUsdc.toFixed(2));
+      setMarginDexBalances((prev) => ({
+        ...prev,
+        [tokenA]: Math.max(0, parseFloat(prev[tokenA] || "0") - amtA).toFixed(2),
+        [tokenB]: Math.max(0, parseFloat(prev[tokenB] || "0") - amtB).toFixed(2),
+      }));
       setAmountA("");
       setAmountB("");
       refreshDexMarginBalances(3, 1500);
       if (isSoroswapPool) {
-        SoroswapService.getPoolStats().then(setSoroswapPoolStats).catch(() => {});
+        SoroswapService.getPoolStats(matchedSoroswapPoolConfig?.pairAddress).then(setSoroswapPoolStats).catch(() => {});
       } else {
-        AquariusService.getAquariusPoolStats(CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL)
+        AquariusService.getAquariusPoolStats(
+          matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL
+        )
           .then(setAquariusPoolStats)
           .catch(() => {});
       }
@@ -425,16 +483,6 @@ export const AddLiquidity = memo(function AddLiquidity() {
     isOverBalance ||
     txStatus === "loading";
 
-  const buttonText = () => {
-    if (!userAddress) return "Connect Wallet";
-    if (!marginAccountAddress) return "Margin Account Required";
-    if (blendConfigured === false) return "Blend Pool Not Configured";
-    if (txStatus === "loading") return "Depositing...";
-    if (!isInputValid) return "Enter Amount";
-    if (isOverBalance) return "Insufficient Available Balance";
-    return `Deposit ${selectedToken}`;
-  };
-
   if (isAquariusPool || isSoroswapPool) {
     const dexName = isSoroswapPool ? "Soroswap" : "Aquarius";
     const reserveA = isSoroswapPool
@@ -444,8 +492,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
       ? parseFloat(soroswapPoolStats?.reserveUSDC ?? "0")
       : parseFloat(aquariusPoolStats?.reserveB ?? "0");
 
-    const availableA = tokenA === "XLM" ? marginXlmBalance : marginUsdcBalance;
-    const availableB = tokenB === "USDC" ? marginUsdcBalance : marginXlmBalance;
+    const availableA = marginDexBalances[tokenA] ?? "0";
+    const availableB = marginDexBalances[tokenB] ?? "0";
     const isInputValid = parseFloat(amountA) > 0 && parseFloat(amountB) > 0;
     const isOverA = parseFloat(amountA) > parseFloat(availableA);
     const isOverB = parseFloat(amountB) > parseFloat(availableB);
@@ -486,47 +534,91 @@ export const AddLiquidity = memo(function AddLiquidity() {
             {[tokenA, tokenB].map((token, idx) => (
               <div
                 key={token}
-                className={`w-full h-fit flex items-center gap-[12px] p-[12px] rounded-[12px] ${
+                className={`w-full h-fit flex flex-col gap-[8px] p-[12px] rounded-[12px] ${
                   isDark ? "bg-[#1A1A1A]" : "bg-[#F7F7F7]"
                 }`}
               >
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="0"
-                  value={idx === 0 ? amountA : amountB}
-                  onChange={(e) => {
-                    const sanitized = validateAmountChange(e.target.value);
-                    if (sanitized === null) return;
-                    if (idx === 0) handleAmountAChange(sanitized);
-                    else handleAmountBChange(sanitized);
-                  }}
-                  min="0"
-                  className={`w-full bg-transparent outline-none border-none text-[18px] font-semibold placeholder:opacity-20 ${
-                    isDark ? "text-white placeholder:text-white" : "text-black placeholder:text-black"
-                  } [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
-                />
-                <div className="flex flex-col items-end gap-[4px] shrink-0">
-                  <div className="flex items-center gap-[6px]">
-                    <Image
-                      src={iconPaths[token] ?? "/icons/stellar.svg"}
-                      alt={token}
-                      width={18}
-                      height={18}
-                    />
-                    <span className={`text-[13px] font-semibold ${
-                      isDark ? "text-white" : "text-[#111111]"
+                <div className="w-full flex items-center gap-[12px]">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={idx === 0 ? amountA : amountB}
+                    onChange={(e) => {
+                      const sanitized = validateAmountChange(e.target.value);
+                      if (sanitized === null) return;
+                      if (idx === 0) handleAmountAChange(sanitized);
+                      else handleAmountBChange(sanitized);
+                      setSelectedPctA(0);
+                      setSelectedPctB(0);
+                    }}
+                    min="0"
+                    className={`w-full bg-transparent outline-none border-none text-[18px] font-semibold placeholder:opacity-20 ${
+                      isDark ? "text-white placeholder:text-white" : "text-black placeholder:text-black"
+                    } [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
+                  />
+                  <div className="flex flex-col items-end gap-[4px] shrink-0">
+                    <div className="flex items-center gap-[6px]">
+                      <Image
+                        src={iconPaths[token] ?? "/icons/stellar.svg"}
+                        alt={token}
+                        width={18}
+                        height={18}
+                      />
+                      <span className={`text-[13px] font-semibold ${
+                        isDark ? "text-white" : "text-[#111111]"
+                      }`}>
+                        {token}
+                      </span>
+                    </div>
+                    <span className={`text-[11px] font-medium whitespace-nowrap ${
+                      isDark ? "text-[#919191]" : "text-[#5C5B5B]"
                     }`}>
-                      {token}
+                      {loadingMarginBalances
+                        ? "Loading..."
+                        : `Bal: ${parseFloat(idx === 0 ? availableA : availableB).toFixed(2)}`}
                     </span>
                   </div>
-                  <span className={`text-[11px] font-medium whitespace-nowrap ${
-                    isDark ? "text-[#919191]" : "text-[#5C5B5B]"
-                  }`}>
-                    {loadingMarginBalances
-                      ? "Loading..."
-                      : `Bal: ${parseFloat(idx === 0 ? availableA : availableB).toFixed(2)}`}
-                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {DEPOSIT_PERCENTAGES.map((pct) => {
+                    const isSelected = (idx === 0 ? selectedPctA : selectedPctB) === pct;
+                    return (
+                      <motion.button
+                        key={pct}
+                        type="button"
+                        disabled={txStatus === "loading" || loadingMarginBalances}
+                        onClick={() => {
+                          const bal = parseFloat(idx === 0 ? availableA : availableB) || 0;
+                          const amt = ((bal * pct) / 100).toFixed(2);
+                          if (idx === 0) {
+                            handleAmountAChange(amt);
+                            setSelectedPctA(pct);
+                            setSelectedPctB(0);
+                          } else {
+                            handleAmountBChange(amt);
+                            setSelectedPctB(pct);
+                            setSelectedPctA(0);
+                          }
+                        }}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.93 }}
+                        transition={{ duration: 0.1 }}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-semibold cursor-pointer border transition-all ${
+                          isSelected
+                            ? "bg-[#703AE6] text-white border-transparent"
+                            : isDark
+                              ? "bg-[#2A2A2A] text-[#A7A7A7] border-[#333333] hover:text-white"
+                              : "bg-[#F0F0F0] text-[#888888] hover:text-[#555555] border-[#E2E2E2]"
+                        } ${(txStatus === "loading" || loadingMarginBalances) ? "opacity-40 cursor-not-allowed" : ""}`}
+                        style={{
+                          boxShadow: isSelected ? `0 0 0 1px ${PERCENTAGE_COLORS[pct]}` : "none",
+                        }}
+                      >
+                        {pct}%
+                      </motion.button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -579,6 +671,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   const getButtonText = () => {
     if (!userAddress) return "Connect Wallet";
+    if (!marginAccountAddress) return "Margin Account Required";
+    if (blendConfigured === false) return "Blend Pool Not Configured";
     if (txStatus === "loading") return "Processing...";
     if (parseFloat(value) <= 0 || !value) return "Enter Amount";
     if (parseFloat(value) > availableToDeployNum) return `Insufficient ${token} Balance`;

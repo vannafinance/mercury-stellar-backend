@@ -1,16 +1,14 @@
 // ============================================
 // Portfolio Account Stats Constants
 // ============================================
+// Account-level summary for the unified lend+trade account. All four are real,
+// on-chain-derived USD figures (no "portfolio balance" placeholders): wallet
+// (spendable), margin/supplied collateral, free collateral, and outstanding debt.
 export const PORTFOLIO_STATS_ITEMS = [
   {
-    id: "totalPortfolioBalance",
-    name: "Total Portfolio Balance",
+    id: "walletBalance",
+    name: "Wallet Balance",
     icon: "/margin/dollar.png",
-  },
-  {
-    id: "netAvailableCollateral",
-    name: "Net Available Collateral",
-    icon: "/margin/health.png",
   },
   {
     id: "marginAccountBalance",
@@ -18,8 +16,13 @@ export const PORTFOLIO_STATS_ITEMS = [
     icon: "/margin/bag.png",
   },
   {
-    id: "availablePortfolioBalance",
-    name: "Available Portfolio Balance",
+    id: "netAvailableCollateral",
+    name: "Net Available Collateral",
+    icon: "/margin/health.png",
+  },
+  {
+    id: "totalBorrowed",
+    name: "Total Borrowed",
     icon: "/margin/retry.png",
   },
 ] as const;

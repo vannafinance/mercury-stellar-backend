@@ -6,7 +6,8 @@ import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
 import { appendEarnHistory } from '@/lib/earn-history';
-import { getEarnTransactionsFromMercury } from '@/lib/mercury-earn';
+import { getEarnTransactionsFromMercury, type EarnTxEntry } from '@/lib/mercury-earn';
+import { getEarnHistoryFromRpc } from '@/lib/earn-history-rpc';
 import { type AllPoolStats } from '@/lib/pool-stats';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
@@ -101,6 +102,20 @@ const EMPTY_POSITIONS = {
   SOROSWAP_USDC: { ...EMPTY_POSITION },
 };
 
+const EARN_ASSETS = [
+  ASSET_TYPES.XLM,
+  ASSET_TYPES.USDC,
+  ASSET_TYPES.AQUARIUS_USDC,
+  ASSET_TYPES.SOROSWAP_USDC,
+] as const;
+
+const EMPTY_DEPOSITED = {
+  XLM: '0',
+  USDC: '0',
+  AQUARIUS_USDC: '0',
+  SOROSWAP_USDC: '0',
+};
+
 /**
  * The connected user's per-pool positions (deposited, vToken balance, borrowed).
  *
@@ -127,7 +142,7 @@ export const useUserPositions = () => {
       if (!address) {
         useEarnPoolStore.getState().set({ userPositions: EMPTY_POSITIONS });
         useUserStore.getState().set({
-          depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+          depositedBalances: { ...EMPTY_DEPOSITED },
         });
         return EMPTY_POSITIONS;
       }
@@ -136,66 +151,41 @@ export const useUserPositions = () => {
 
       // Collapse the 3 serial RPC waves (deposits → pool stats → borrows) into a
       // single concurrent batch, and reuse the cached /api/pools route for
-      // exchange rates instead of re-reading getPoolStats ×4.
+      // exchange rates instead of re-reading getPoolStats per pool.
       const [vBalances, poolsRes, borrows] = await Promise.all([
-        Promise.all([
-          ContractService.getDepositedBalance(address, ASSET_TYPES.XLM),
-          ContractService.getDepositedBalance(address, ASSET_TYPES.USDC),
-          ContractService.getDepositedBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-          ContractService.getDepositedBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-        ]),
+        Promise.all(EARN_ASSETS.map((a) => ContractService.getDepositedBalance(address, a))),
         fetch('/api/pools')
           .then((r) => (r.ok ? (r.json() as Promise<AllPoolStats>) : null))
           .catch(() => null),
-        Promise.all([
-          ContractService.getUserBorrowBalance(address, ASSET_TYPES.XLM),
-          ContractService.getUserBorrowBalance(address, ASSET_TYPES.USDC),
-          ContractService.getUserBorrowBalance(address, ASSET_TYPES.AQUARIUS_USDC),
-          ContractService.getUserBorrowBalance(address, ASSET_TYPES.SOROSWAP_USDC),
-        ]),
+        Promise.all(EARN_ASSETS.map((a) => ContractService.getUserBorrowBalance(address, a))),
       ]);
 
-      const [xlmVBalance, usdcVBalance, aquiresUsdcVBalance, soroswapUsdcVBalance] = vBalances;
-      const [xlmBorrow, usdcBorrow, aquiresUsdcBorrow, soroswapUsdcBorrow] = borrows;
+      const positions = { ...EMPTY_POSITIONS } as typeof EMPTY_POSITIONS;
+      const depositedBalances = { ...EMPTY_DEPOSITED };
 
-      // Exchange rate from the cached pool stats; 1:1 fallback if the route is unavailable.
-      const exRate = (k: keyof AllPoolStats) =>
-        poolsRes ? parseFloat(poolsRes[k].exchangeRate) || 1 : 1;
-      const xlmExchangeRate = exRate('XLM');
-      const usdcExchangeRate = exRate('USDC');
-      const aquiresUsdcExchangeRate = exRate('AQUARIUS_USDC');
-      const soroswapUsdcExchangeRate = exRate('SOROSWAP_USDC');
-
-      const xlmVBalanceNum = parseFloat(xlmVBalance) || 0;
-      const usdcVBalanceNum = parseFloat(usdcVBalance) || 0;
-      const aquiresUsdcVBalanceNum = parseFloat(aquiresUsdcVBalance) || 0;
-      const soroswapUsdcVBalanceNum = parseFloat(soroswapUsdcVBalance) || 0;
-
-      const xlmDeposited = (xlmVBalanceNum * xlmExchangeRate).toFixed(7);
-      const usdcDeposited = (usdcVBalanceNum * usdcExchangeRate).toFixed(7);
-      const aquiresUsdcDeposited = (aquiresUsdcVBalanceNum * aquiresUsdcExchangeRate).toFixed(7);
-      const soroswapUsdcDeposited = (soroswapUsdcVBalanceNum * soroswapUsdcExchangeRate).toFixed(7);
-
-      const positions = {
-        XLM: { deposited: xlmDeposited, vTokenBalance: xlmVBalance, borrowed: xlmBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
-        USDC: { deposited: usdcDeposited, vTokenBalance: usdcVBalance, borrowed: usdcBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
-        AQUARIUS_USDC: { deposited: aquiresUsdcDeposited, vTokenBalance: aquiresUsdcVBalance, borrowed: aquiresUsdcBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
-        SOROSWAP_USDC: { deposited: soroswapUsdcDeposited, vTokenBalance: soroswapUsdcVBalance, borrowed: soroswapUsdcBorrow, borrowShares: '0', earnedInterest: '0', accruedDebt: '0' },
-      };
+      EARN_ASSETS.forEach((asset, i) => {
+        const vBal = vBalances[i];
+        const borrow = borrows[i];
+        const key = asset as keyof AllPoolStats;
+        const rate = poolsRes ? parseFloat(poolsRes[key].exchangeRate) || 1 : 1;
+        const vNum = parseFloat(vBal) || 0;
+        positions[asset] = {
+          deposited: (vNum * rate).toFixed(7),
+          vTokenBalance: vBal,
+          borrowed: borrow,
+          borrowShares: '0',
+          earnedInterest: '0',
+          accruedDebt: '0',
+        };
+        depositedBalances[asset] = vBal;
+      });
 
       useEarnPoolStore.getState().set({
         userPositions: positions,
         isLoadingPositions: false,
       });
 
-      useUserStore.getState().set({
-        depositedBalances: {
-          XLM: xlmVBalance,
-          USDC: usdcVBalance,
-          AQUARIUS_USDC: aquiresUsdcVBalance,
-          SOROSWAP_USDC: soroswapUsdcVBalance,
-        },
-      });
+      useUserStore.getState().set({ depositedBalances });
 
       return positions;
     },
@@ -247,7 +237,9 @@ export const useSupplyLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('supply', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({ asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
+        if (address) {
+          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
+        }
       }
     },
 
@@ -290,7 +282,9 @@ export const useWithdrawLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
-        appendEarnHistory({ asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
+        if (address) {
+          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
+        }
       }
     },
 
@@ -312,9 +306,15 @@ export const useWithdrawLiquidity = () => {
 
 /**
  * On-chain earn-pool transaction history for the connected user, sourced from
- * Mercury. Enabled only when connected, so the fetch re-fires automatically on
- * reconnect (enabled false → true). Ledger-tick invalidated; refetches on window
- * focus.
+ * Mercury (full history) merged with a bounded RPC fallback for whatever
+ * Mercury is currently missing — Mercury has been observed returning a genuine
+ * 502 for this wallet's lending-pool queries (a real outage, not "no data"),
+ * which previously wiped this history out entirely since Mercury was the only
+ * source. Promise.allSettled, not Promise.all: each source degrades
+ * independently, matching the same fix already applied to margin history's
+ * useMarginHistory. Enabled only when connected, so the fetch re-fires
+ * automatically on reconnect (enabled false → true). Ledger-tick invalidated;
+ * refetches on window focus.
  *
  * @returns `{ transactions, isLoading, isRefreshing, refresh }`.
  */
@@ -328,9 +328,24 @@ export const useEarnTransactions = () => {
   const query = useQuery({
     queryKey: ['earn', 'transactions', address ?? null],
     enabled: Boolean(address && isConnected),
-    queryFn: async () => {
+    queryFn: async (): Promise<EarnTxEntry[]> => {
       if (!address) return [];
-      return getEarnTransactionsFromMercury(address);
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
+        getEarnTransactionsFromMercury(address),
+        getEarnHistoryFromRpc(address),
+      ]);
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+      // Composite key, not hash alone — a single atomic tx can emit more than
+      // one event under the same hash elsewhere in this protocol (e.g.
+      // margin's deposit+borrow), so this follows the same established
+      // discipline even though a plain supply/withdraw is normally 1:1.
+      const byKey = new Map<string, EarnTxEntry>();
+      const keyOf = (e: EarnTxEntry) => `${e.hash}:${e.type}:${e.asset}`;
+      for (const entry of mercury) if (entry.hash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.hash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,

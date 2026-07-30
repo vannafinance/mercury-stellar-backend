@@ -7,6 +7,7 @@ import { ThemeProvider } from "@/contexts/theme-context";
 import { QueryProvider } from "@/contexts/query-provider";
 import { LedgerSubscriberProvider } from "@/contexts/ledger-subscriber";
 import { PriceProvider } from "@/contexts/price-context";
+import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
@@ -24,7 +25,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 
 // Canonical site URL — drives absolute OpenGraph/Twitter/canonical links.
 // Override per-environment with NEXT_PUBLIC_SITE_URL; falls back to the prod app.
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://app.vanna.finance";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://stellar.vanna.finance";
 
 /**
  * Root document metadata applied to every route.
@@ -78,9 +79,10 @@ export const metadata: Metadata = {
 
 /**
  * App shell wrapping every route. Mounts the global provider stack in
- * dependency order — theme → React Query → ledger-tick subscriber → price feed
- * — then the persistent navbar, page content (scaled), and the toast portal.
- * `MarginAccountHydrator` restores the connected account's cached state on load.
+ * dependency order — theme → React Query → Privy (embedded-wallet login) →
+ * ledger-tick subscriber → price feed — then the persistent navbar, page
+ * content (scaled), and the toast portal. `MarginAccountHydrator` restores
+ * the connected account's cached state on load.
  */
 export default function RootLayout({
   children,
@@ -95,14 +97,16 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <QueryProvider>
-            <LedgerSubscriberProvider>
-              <PriceProvider>
-                <MarginAccountHydrator />
-                <Navbar items={navbarItems}/>
-                <ScaleWrapper>{children}</ScaleWrapper>
-                <AppToaster />
-              </PriceProvider>
-            </LedgerSubscriberProvider>
+            <AppPrivyProvider>
+              <LedgerSubscriberProvider>
+                <PriceProvider>
+                  <MarginAccountHydrator />
+                  <Navbar items={navbarItems}/>
+                  <ScaleWrapper>{children}</ScaleWrapper>
+                  <AppToaster />
+                </PriceProvider>
+              </LedgerSubscriberProvider>
+            </AppPrivyProvider>
           </QueryProvider>
         </ThemeProvider>
       </body>

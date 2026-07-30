@@ -5,9 +5,8 @@ export const farmTableHeadings = [
   { label: "DEX TVL Token 0", id: "dex-tvl-token-0", icon: true },
   { label: "DEX TVL Token 1", id: "dex-tvl-token-1", icon: true },
   { label: "Pool APR", id: "pool-apr", icon: true },
-  { label: "24h APY", id: "24h-apy", icon: true },
   { label: "Fees", id: "fees", icon: true },
-  { label: "Pool Type", id: "pool-type", icon: true },
+  { label: "Holding", id: "holding", icon: true },
 ];
 
 export const farmTableBody = {
@@ -364,6 +363,7 @@ export const singleAssetTableHeadings = [
   { label: "Supply APY", id: "supply-apy", icon: true },
   { label: "Borrow APY", id: "borrow-apy", icon: true },
   { label: "Utilization", id: "utilization", icon: true },
+  { label: "Holding", id: "holding", icon: true },
 ];
 
 // The Positions tab shows the user's own positions, not pool totals — so the
@@ -376,6 +376,16 @@ export const positionsTableHeadings = [
   { label: "Protocol", id: "protocol", icon: true },
   { label: "Holdings", id: "holdings", icon: true },
   { label: "APY", id: "apy", icon: true },
+];
+
+// Portfolio "Spot" tab — margin-account token balances held directly (not
+// lent to Blend, not deposited as LP). Simpler shape than positionsTableHeadings:
+// no APY column since spot holdings don't earn yield, just a USD value.
+export const spotBalancesTableHeadings = [
+  { label: "Asset", id: "asset", icon: true },
+  { label: "Venue", id: "venue", icon: true },
+  { label: "Balance", id: "balance", icon: true },
+  { label: "Value (USD)", id: "value", icon: true },
 ];
 
 // Blend Capital uses a SINGLE pool contract for all assets.

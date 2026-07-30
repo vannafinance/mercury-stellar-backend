@@ -75,8 +75,16 @@ scripts/mercury-bycontract-test.mjs
 scripts/mercury-earn-probe.mjs
 scripts/mercury-soroswap-probe.mjs
 scripts/mercury-blend-probe.mjs
+scripts/testnet-full-flow.mjs
+scripts/__tmp_debug_addliq2.mjs
+scripts/__tmp_debug_budget.mjs
+scripts/__tmp_test_xlmusdc_addliq.mjs
+scripts/__tmp_verify_addliq_eurc.mjs
 
 # Claude Code project guide — kept local, not shipped in the repo
 CLAUDE.md
 
-testsprite_tests\tmp\config.json
+testsprite_tests/
+
+# Binary doc exports — the source of truth is docs/*.md (diffable, reviewable)
+docs/*.docx

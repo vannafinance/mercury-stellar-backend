@@ -121,19 +121,22 @@ export const ReusableChart = ({
     chartRef.current = chart;
     seriesRef.current = areaSeries;
 
-    // Handle resize
-    const handleResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
-        chartRef.current.applyOptions({
-          width: chartContainerRef.current.clientWidth,
-        });
+    // Track the container's own box size, not just window resizes — layout
+    // shifts from React re-renders (e.g. sibling content changing) don't
+    // fire a window "resize" event but do change clientWidth, and a stale
+    // chart width bleeds past its container into neighboring elements.
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry || !chartRef.current) return;
+      const width = entry.contentRect.width;
+      if (width > 0) {
+        chartRef.current.applyOptions({ width });
       }
-    };
-
-    window.addEventListener("resize", handleResize);
+    });
+    resizeObserver.observe(chartContainerRef.current);
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       chart.remove();
     };
   }, [gradientColors, lineColor, height, showGrid, showVertGrid, gridColor, formatYAxisLabel, textColor]);
@@ -167,7 +170,7 @@ export const ReusableChart = ({
   return (
     <div
       ref={chartContainerRef}
-      className="w-full"
+      className="w-full overflow-hidden"
       style={{ height: `${height}px` }}
     />
   );

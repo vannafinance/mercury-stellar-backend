@@ -46,7 +46,7 @@ const ALERT_MESSAGES: Record<string, string[]> = {
   "oracle-watcher": [
     "BLUSDC Reflector feed stale — freshness exceeds 60s",
     "XLM Reflector heartbeat healthy — 12s",
-    "EURC oracle deviation between Reflector pushes: 0.3%",
+    "AQUSDC oracle deviation between Reflector pushes: 0.3%",
     "New borrows paused for BLUSDC — Risk Engine staleness guard tripped",
   ],
   "liquidity-stress": [

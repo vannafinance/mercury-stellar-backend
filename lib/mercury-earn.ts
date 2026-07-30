@@ -11,10 +11,17 @@ import { fetchContractEvents } from "./mercury-client";
 //   topic1 = Symbol("deposit_event" | "withdraw_event")   → e.eventName
 //   topic2 = lender account (G…)                          → server-side scoped
 //   data(deposit)  = { amount, asset_symbol, lender, timestamp }
-//   data(withdraw) = { asset_symbol, lender, timestamp, vtoken_amount }
+//   data(withdraw) = { asset_symbol, lender, timestamp, vtoken_amount, asset_amount }
 // amounts are i128 WAD (÷ 1e18); timestamp is unix seconds. The pool's asset is
 // taken from the contract we queried (asset_symbol can't tell USDC / AQUARIUS_USDC
-// / SOROSWAP_USDC apart — they all report "USDC").
+// / SOROSWAP_USDC apart — they all report "USDC"). Withdraw's `amount` below reads
+// `asset_amount` (the real underlying transferred), NOT `vtoken_amount` (vToken
+// shares burned) — the two only match 1:1 at a 1.0 exchange rate. Using shares
+// would silently understate every withdrawal once the pool's exchange rate has
+// grown past 1.0, overstating net-deposited (supply − withdraw) and understating
+// net earnings for any wallet that has ever withdrawn. `LendingWithdrawEvent`
+// carries both fields on-chain specifically so indexers don't need to replay
+// pool state to recover the underlying amount — see events.rs.
 
 export interface EarnTxEntry {
   type: "supply" | "withdraw";
@@ -58,7 +65,7 @@ export async function getEarnTransactionsFromMercury(
           return {
             type: isSupply ? "supply" : "withdraw",
             asset,
-            amount: wadToHuman(isSupply ? d.amount : d.vtoken_amount).toFixed(7),
+            amount: wadToHuman(isSupply ? d.amount : d.asset_amount).toFixed(7),
             timestamp: Number(d.timestamp ?? 0) * 1000,
             hash: e.tx ?? "",
             status: "success",

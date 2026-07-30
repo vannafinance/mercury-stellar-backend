@@ -182,7 +182,7 @@ export function normalizeTransferCollateralError(
 export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
   if (!m) return 'Failed to create margin account. Please try again.';
-  if (isCancel(m)) return 'Transaction was cancelled in Freighter.';
+  if (isCancel(m)) return 'Transaction cancelled by user.';
   if (m.includes('account not found') || m.includes('not found on network'))
     return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))

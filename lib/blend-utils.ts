@@ -3,7 +3,7 @@
 // mirrors blend-sdk-js so figures match testnet.blend.capital exactly.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
-import { signTransaction } from '@stellar/freighter-api';
+import { signTransaction } from '@/lib/wallet-adapter';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
 
 /** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
@@ -103,7 +103,9 @@ export class BlendService {
    * Fetch the Blend Capital pool address from the Registry contract.
    * Returns null if no Blend pool is configured.
    *
-   * Registry method: `has_blend_pool_address()` → bool, `get_blend_pool_address()` → Address
+   * Registry method: `get_blend_pool_address()` → Address (panics, so simulation
+   * fails, if nothing has been registered yet — there is no separate `has_*`
+   * probe function on the deployed contract).
    */
   static async getBlendPoolAddressFromRegistry(): Promise<string | null> {
     try {
@@ -112,28 +114,6 @@ export class BlendService {
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
 
-      // Step 1: Check if blend pool is configured
-      const hasTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('has_blend_pool_address'))
-        .setTimeout(30)
-        .build();
-
-      const hasSim = await server.simulateTransaction(hasTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) {
-        console.warn('[BlendService] has_blend_pool_address simulation failed');
-        return null;
-      }
-
-      const hasBlend = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!hasBlend) {
-        console.warn('[BlendService] Blend pool is not configured in Registry');
-        return null;
-      }
-
-      // Step 2: Get the actual address
       const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -144,7 +124,7 @@ export class BlendService {
 
       const getSim = await server.simulateTransaction(getTx);
       if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) {
-        console.warn('[BlendService] get_blend_pool_address simulation failed');
+        console.warn('[BlendService] get_blend_pool_address simulation failed — Blend pool not configured in Registry');
         return null;
       }
 

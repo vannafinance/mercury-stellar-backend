@@ -4,6 +4,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useState } from "react";
 import { SwapCard } from "./SwapCard";
 import { MOCK_DEXES } from "./mock-data";
+import { SpotSection } from "@/components/portfolio/spot-section";
 
 interface SpotSwapViewProps {
   baseSymbol?: string;
@@ -42,14 +43,24 @@ export const SpotSwapView = ({
       </div>
 
       {/* Content */}
-      <div className="relative z-10 w-full max-w-[480px]">
-        <SwapCard
-          baseSymbol={baseSymbol}
-          selectedDex={selectedDex}
-          dexes={MOCK_DEXES}
-          onDexChange={setSelectedDex}
-          onSwitchToOrderbook={onSwitchToOrderbook}
-        />
+      <div className="relative z-10 w-full max-w-[900px] flex flex-col items-center gap-8">
+        <div className="w-full max-w-[480px]">
+          <SwapCard
+            baseSymbol={baseSymbol}
+            selectedDex={selectedDex}
+            dexes={MOCK_DEXES}
+            onDexChange={setSelectedDex}
+            onSwitchToOrderbook={onSwitchToOrderbook}
+          />
+        </div>
+
+        {/* Same Spot Balances / Spot History the Portfolio page's Spot tab
+            shows — surfaced here too so a swap's effect on margin-account
+            holdings is visible right where the swap itself happens. Wider
+            than the swap card since the table needs the room. */}
+        <div className="w-full">
+          <SpotSection />
+        </div>
       </div>
     </div>
   );

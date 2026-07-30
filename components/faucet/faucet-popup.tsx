@@ -29,7 +29,9 @@ interface RowState {
   lastMintAt?: number;
 }
 
-const ALL_TOKENS: FaucetTokenId[] = ["XLM", "BLEND_USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"];
+const ALL_TOKENS: FaucetTokenId[] = [
+  "XLM", "BLEND_USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+];
 
 // Persist one-time mint success per (wallet, token) so refreshing the page
 // doesn't allow re-minting an already-funded account. Cooldown timestamps
@@ -194,8 +196,8 @@ export const FaucetPopup = ({ isOpen, onClose, walletAddress }: FaucetPopupProps
       applyResult("XLM", xlm);
     }
 
-    // Then the three USDC mints run in parallel — each uses a different
-    // backend so they don't share a rate-limit bucket.
+    // Then the remaining mints run in parallel — each token's faucet path
+    // uses a different backend so they don't share a rate-limit bucket.
     const remaining = eligible.filter((t) => t !== "XLM");
     remaining.forEach((t) => updateRow(t, { status: "loading", message: undefined }));
     const results = await Promise.all(
@@ -323,7 +325,7 @@ export const FaucetPopup = ({ isOpen, onClose, walletAddress }: FaucetPopupProps
                 }`}
               >
                 {walletAddress
-                  ? "Each mint sends a tx — sign in Freighter when prompted."
+                  ? "Each mint sends a tx — approve it in your wallet when prompted."
                   : "Connect wallet to use the faucet."}
               </p>
               <div className="shrink-0">

@@ -18,8 +18,12 @@ import {
   sumCollateralBalancesUsd,
 } from "@/lib/analytics/stellar/farmTrackingCollateral";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
-const PRICEABLE_TOKENS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
+// "USDC" is the canonical peg the three USDC-flavoured collateral variants
+// (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
+// as its own priced symbol since Reflector exposes it as a real feed.
+const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 const USD_DUST_EPSILON = 0.01;
 
 const tokenPrice = (token: string): number => getCachedTokenPrice(token);

@@ -252,14 +252,30 @@ export const OneClickStrategy = () => {
   /* ═══════════════════════════════════════
      Scenario Detection
      ═══════════════════════════════════════ */
+  // LP pools always need BOTH tokens paired to add liquidity, so they're never
+  // "same-asset" — collateral funds one side, the borrow funds the other. The
+  // old `tokens.includes(collateralAsset)` check was true for any XLM/USDC
+  // deposit (both are pool tokens), which silently forced same-asset mode:
+  // it borrowed more of the SAME asset instead of the paired one, and the
+  // pool-agnostic swap-then-supply path never actually added Aquarius/
+  // Soroswap liquidity as a matched pair.
   const isSameAsset = useMemo(() => {
-    if (selectedPool.type === "single") return selectedPool.tokens[0] === collateralAsset;
-    return selectedPool.tokens.includes(collateralAsset);
+    if (selectedPool.type === "lp") return false;
+    return selectedPool.tokens[0] === collateralAsset;
   }, [selectedPool, collateralAsset]);
 
   useEffect(() => {
+    // LP pools have no "swap everything to one token" option (there'd be
+    // nothing left to pair into the pool), so force cross-asset-keep
+    // regardless of whatever scenario was left over from a previous
+    // single-asset pool selection — isSameAsset alone won't catch this
+    // since it can stay `false` across the switch.
+    if (selectedPool.type === "lp") {
+      setScenario("cross-asset-keep");
+      return;
+    }
     setScenario(isSameAsset ? "same-asset" : "cross-asset-keep");
-  }, [isSameAsset]);
+  }, [isSameAsset, selectedPool.type]);
 
   /* ═══════════════════════════════════════
      Calculations
@@ -289,6 +305,24 @@ export const OneClickStrategy = () => {
   const aprCalc = useMemo(() => {
     const supplyApr = selectedPoolLive.supplyApr;
     const vannaBorrowApr = selectedPoolLive.borrowApr;
+
+    // LP pools: collateral + borrowed are paired into ONE Aquarius/Soroswap LP
+    // position earning that pool's own supply APR — not the collateral's
+    // separate Blend lending rate plus the borrowed leg's LP rate (which is
+    // what the single-asset "cross-asset-keep" math below computes, and would
+    // be wrong here since there's no separate Blend position at all).
+    if (selectedPool.type === "lp") {
+      const totalDeployedUsd = collateralUsd + borrowUsd;
+      const totalMultiplier = collateralUsd > 0 ? totalDeployedUsd / collateralUsd : 1;
+      const supplyEarnings = totalMultiplier * supplyApr;
+      const borrowMultiplier = collateralUsd > 0 ? borrowUsd / collateralUsd : 0;
+      const borrowCost = borrowMultiplier * vannaBorrowApr;
+      const netApr = supplyEarnings - borrowCost;
+      return {
+        netApr, supplyEarnings, borrowCost,
+        legs: [{ label: `${selectedPool.protocol} ${selectedPool.tokens.join("/")} LP`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+      };
+    }
 
     if (scenario === "same-asset") {
       const totalDeployed = collateralNum + borrowedAmount;
@@ -432,7 +466,10 @@ export const OneClickStrategy = () => {
       appendLitePosition({
         marginAccountAddress,
         poolId: selectedPool.id,
-        poolLabel: collateralAsset,
+        // LP positions hold both tokens paired together, so the label should
+        // read "XLM/USDC" — not just the collateral leg — matching how the
+        // Farm page titles the same pool.
+        poolLabel: selectedPool.type === "lp" ? selectedPool.tokens.join("/") : collateralAsset,
         protocol: selectedPool.protocol,
         poolVersion: selectedPool.poolVersion,
         poolType: selectedPool.type,
@@ -770,9 +807,14 @@ export const OneClickStrategy = () => {
             </div>
           </div>
 
-          {/* ── CROSS-ASSET SCENARIO TOGGLE ── */}
+          {/* ── CROSS-ASSET SCENARIO TOGGLE ──
+              Single-asset (Blend) pools only — a cross-asset borrow there can
+              either stay split across two pools or get swapped into one. LP
+              pools (Aquarius/Soroswap) have no such choice: adding liquidity
+              always needs the collateral and the borrowed asset paired
+              together, so there's nothing to toggle. */}
           <AnimatePresence>
-            {hasDeposit && !isSameAsset && (
+            {hasDeposit && !isSameAsset && selectedPool.type === "single" && (
               <motion.div key="scenario-toggle" initial="hidden" animate="visible" exit="exit" variants={expandCollapse} className="overflow-hidden">
                 <div className={`w-full border border-t-0 px-4 sm:px-5 py-4 ${cardBg}`}>
                   <div className="flex items-center gap-2 mb-3">
@@ -937,7 +979,25 @@ export const OneClickStrategy = () => {
                               </span>
                             </div>
                           )}
-                          {scenario === "cross-asset-keep" && (
+                          {scenario === "cross-asset-keep" && selectedPool.type === "lp" && (
+                            <div className="flex flex-col gap-[6px]">
+                              <div className="flex items-center gap-[6px] mb-[2px]">
+                                <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
+                                  Add Liquidity — {selectedPool.protocol} {selectedPool.tokens.join("/")} pool
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-[8px]">
+                                <div className="flex items-center -space-x-[4px]">
+                                  <PoolTokenBadge symbol={collateralAsset} size={14} />
+                                  <PoolTokenBadge symbol={borrowAsset} size={14} />
+                                </div>
+                                <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
+                                  {collateralNum.toFixed(2)} {collateralAsset} + {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {selectedPool.tokens.join("/")} LP</strong>
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                          {scenario === "cross-asset-keep" && selectedPool.type === "single" && (
                             <div className="flex flex-col gap-[6px]">
                               <div className="flex items-center gap-[6px] mb-[2px]">
                                 <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
@@ -1196,7 +1256,19 @@ export const OneClickStrategy = () => {
                               </span>
                             </li>
                           )}
-                          {scenario === "cross-asset-keep" && (
+                          {scenario === "cross-asset-keep" && selectedPool.type === "lp" && (
+                            <li className="flex gap-[10px]">
+                              <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
+                              <span>
+                                <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" + "}
+                                <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
+                                added as liquidity to the{" "}
+                                <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPool.tokens.join("/")} pool</span>{" "}
+                                at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
+                              </span>
+                            </li>
+                          )}
+                          {scenario === "cross-asset-keep" && selectedPool.type === "single" && (
                             <>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
@@ -1234,7 +1306,7 @@ export const OneClickStrategy = () => {
                           )}
                           <li className="flex gap-[10px]">
                             <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>
-                              {scenario === "same-asset" ? "4" : "5"}.
+                              {scenario === "same-asset" || selectedPool.type === "lp" ? "4" : "5"}.
                             </span>
                             <span>
                               Net result:{" "}
@@ -1294,7 +1366,7 @@ export const OneClickStrategy = () => {
             </div>
             <div>
               <p className={`text-[13px] font-semibold ${headingText}`}>Stellar Network</p>
-              <p className={`text-[11px] ${mutedText}`}>Freighter wallet · Testnet</p>
+              <p className={`text-[11px] ${mutedText}`}>Testnet</p>
             </div>
             <div className="ml-auto flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />

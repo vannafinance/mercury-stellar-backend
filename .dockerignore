@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.github
+tests
+**/*.test.ts
+**/*.test.tsx
+coverage
+.env*
+npm-debug.log*
+Dockerfile
+.dockerignore
+infra
+bigquery
+README.md

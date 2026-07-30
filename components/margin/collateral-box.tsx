@@ -18,6 +18,7 @@ import { useUserStore } from "@/store/user";
 import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 interface Collateral {
   id?: string;
@@ -48,6 +49,24 @@ const CollateralComponent = (props: Collateral) => {
 
   // Get wallet balances from user store
   const tokenBalances = useUserStore((state) => state.tokenBalances);
+  const userAddress = useUserStore((state) => state.address);
+
+  // Real on-chain XLM minimum reserve — (2 + subentries) × 0.5 XLM. A flat
+  // reserve is wrong once the account holds a few trustlines (BLUSDC/AQUSDC/
+  // SOUSDC/LP), so a "100%"/Max click on XLM would set an amount that passes
+  // this component's own math but still traps on-chain with "resulting
+  // balance is not within the allowed range" (Contract #10).
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
 
   // Determine editing mode
   const isEditing = props.isEditing ?? props.collaterals === null;
@@ -133,7 +152,15 @@ const CollateralComponent = (props: Collateral) => {
             : collateral.unifiedBalance
         )) || 0
       : 0;
-    const calculatedAmount = (balance * item) / 100;
+    // For a WB-sourced native XLM deposit, percentages apply to the safely
+    // spendable balance (wallet balance minus the account's real reserve),
+    // not the raw balance — otherwise 100% (or any high %) computes an amount
+    // that traps on-chain once the wallet holds a few trustlines.
+    const spendableBalance =
+      selectedCurrency === "XLM" && selectedBalanceType === "WB"
+        ? maxSpendableXlm(balance, xlmMinReserve)
+        : balance;
+    const calculatedAmount = (spendableBalance * item) / 100;
     setValueInput(floorAmountToInput(calculatedAmount));
   };
 

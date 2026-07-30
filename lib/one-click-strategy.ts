@@ -1,6 +1,102 @@
 import { MarginAccountService } from './margin-utils';
 import { BlendService } from './blend-utils';
 import { SoroswapService } from './soroswap-utils';
+import { AquariusService } from './aquarius-utils';
+import { appendFarmHistory, buildFarmPoolKey } from './farm-history';
+
+/** True when `poolProtocol` names the Aquarius AMM (case-insensitive). Every
+ * LP call site below branches on this — Aquarius and Soroswap are different
+ * contracts with different call shapes, so routing both through one service
+ * silently added liquidity to the wrong pool. */
+const isAquarius = (poolProtocol: string): boolean => poolProtocol.toLowerCase().includes('aquarius');
+
+/** Protocol-aware "add liquidity from the margin account" — both pools here
+ * are the XLM/USDC pair, so tokenA/tokenB are fixed for the Aquarius call. */
+async function addLpLiquidity(
+  poolProtocol: string,
+  userAddress: string,
+  marginAccountAddress: string,
+  xlmAmt: number,
+  usdcAmt: number,
+): Promise<{ success: boolean; hash?: string; error?: string }> {
+  const result = isAquarius(poolProtocol)
+    ? await AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt)
+    : await SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
+
+  // Record locally so the Farm pool detail page and Portfolio's Farm tab have
+  // a Position History entry for this action even when it was opened through
+  // Lite mode rather than the Farm page's own Add Liquidity form — this
+  // helper is the single chokepoint both paths route through. (Farm's direct
+  // Add Liquidity form already does this itself; see components/farm/add-liquidity.tsx.)
+  if (result.success) {
+    appendFarmHistory({
+      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
+      poolKey: buildFarmPoolKey('XLM', 'USDC'),
+      marginAccountAddress,
+      action: 'add',
+      amountDisplay: `${xlmAmt.toFixed(2)} XLM + ${usdcAmt.toFixed(2)} USDC`,
+      txHash: result.hash ?? '',
+    });
+  }
+
+  return result;
+}
+
+/** Protocol-aware "swap from the margin account" — used only for the 1x
+ * (deposit-only) LP path, which must split a single deposited asset in half
+ * before it has both tokens to pair into the pool. */
+async function swapLpAsset(
+  poolProtocol: string,
+  userAddress: string,
+  marginAccountAddress: string,
+  tokenIn: TokenAsset,
+  amountIn: number,
+): Promise<{ success: boolean; hash?: string; error?: string }> {
+  if (isAquarius(poolProtocol)) {
+    return AquariusService.aquariusSwapFromMargin(userAddress, marginAccountAddress, tokenIn, amountIn);
+  }
+  return SoroswapService.swapFromMargin(userAddress, marginAccountAddress, tokenIn, amountIn);
+}
+
+/**
+ * Contract-level token symbol for a Vanna deposit/borrow call feeding an LP
+ * pool. Aquarius and Soroswap each trade their OWN USDC-variant SAC (AQUSDC /
+ * SOUSDC) — completely distinct on-chain tokens from generic USDC/BLUSDC, not
+ * just aliases. Depositing/borrowing plain "USDC" credits the Blend USDC
+ * lending pool, leaving the margin account's real AQUSDC/SOUSDC balance at
+ * zero — AddLiquidity then traps with "zero balance is not sufficient to
+ * spend" on the pool's actual USDC SAC, even though the deposit/borrow itself
+ * succeeded. XLM has no such variant, so it passes through unchanged.
+ */
+function poolTokenSymbol(asset: TokenAsset, poolProtocol: string, poolType: PoolType): string {
+  if (poolType !== 'lp' || asset !== 'USDC') return asset;
+  return isAquarius(poolProtocol) ? 'AQUSDC' : 'SOUSDC';
+}
+
+/** Protocol-aware "remove liquidity" for {@link closePosition}. */
+async function removeLpLiquidity(
+  poolProtocol: string,
+  userAddress: string,
+  marginAccountAddress: string,
+  lpAmount: number,
+): Promise<{ success: boolean; hash?: string; error?: string }> {
+  const result = isAquarius(poolProtocol)
+    ? await AquariusService.removeLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', lpAmount)
+    : await SoroswapService.removeLiquidity(userAddress, marginAccountAddress, lpAmount);
+
+  if (result.success) {
+    appendFarmHistory({
+      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
+      poolKey: buildFarmPoolKey('XLM', 'USDC'),
+      marginAccountAddress,
+      action: 'remove',
+      amountDisplay: `${lpAmount.toFixed(2)} LP`,
+      txHash: result.hash ?? '',
+    });
+  }
+
+  return result;
+}
 
 /* ─────────────────────────────────────────────────────────────────────────
    Close Position
@@ -79,9 +175,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
       // LP pool — remove proportional liquidity (approx. borrowAmount as LP units)
       step(`Step 1/2: Removing liquidity from ${poolProtocol} ${poolTokens.join('/')} pool...`);
       const approxLpAmt = borrowAmount * pct;
-      const r = await SoroswapService.removeLiquidity(
-        userAddress, marginAccountAddress, approxLpAmt
-      );
+      const r = await removeLpLiquidity(poolProtocol, userAddress, marginAccountAddress, approxLpAmt);
       if (!r.success) return { success: false, error: `Remove liquidity failed: ${r.error}` };
     }
 
@@ -140,6 +234,15 @@ function toWad(amount: number): string {
   return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
 }
 
+// SmartAccountContract deducts a 0.3% origination fee from every borrow — the
+// margin account is only ever credited `borrowAmount × (1 - fee)`, not the
+// full requested amount (see ORIGINATION_FEE_WAD in smart_account.rs). Using
+// the gross borrow amount for the AddLiquidity call overshoots the real
+// credited balance and traps with "balance is not sufficient to spend". A
+// slightly larger shave (0.35%) leaves a small buffer for WAD rounding.
+const BORROW_ORIGINATION_FEE_BUFFER = 0.9965;
+const netOfOriginationFee = (grossAmount: number): number => grossAmount * BORROW_ORIGINATION_FEE_BUFFER;
+
 /**
  * Open a leveraged-yield position in one user-facing action, branching on
  * leverage / pool type / scenario:
@@ -190,7 +293,7 @@ export async function executeOneClickStrategy(
       step(`Step 1/2: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
         marginAccountAddress,
-        collateralAsset,
+        poolTokenSymbol(collateralAsset, poolProtocol, poolType),
         toWad(collateralAmount)
       );
       if (!depositResult.success) {
@@ -203,16 +306,12 @@ export async function executeOneClickStrategy(
         const half = collateralAmount / 2;
         const other = half * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
         step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} → ${otherAsset}...`);
-        const sw = await SoroswapService.swapFromMargin(
-          userAddress, marginAccountAddress, collateralAsset, half
-        );
+        const sw = await swapLpAsset(poolProtocol, userAddress, marginAccountAddress, collateralAsset, half);
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
         const xlmAmt = collateralAsset === 'XLM' ? half : other;
         const usdcAmt = collateralAsset === 'USDC' ? half : other;
         step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
-        const r = await SoroswapService.addLiquidity(
-          userAddress, marginAccountAddress, xlmAmt, usdcAmt
-        );
+        const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
         return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
       }
 
@@ -294,7 +393,7 @@ export async function executeOneClickStrategy(
       step(`Step 1/${totalSteps}: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
         marginAccountAddress,
-        collateralAsset,
+        poolTokenSymbol(collateralAsset, poolProtocol, poolType),
         toWad(collateralAmount)
       );
       if (!depositResult.success) {
@@ -305,7 +404,7 @@ export async function executeOneClickStrategy(
         step(`Step 2/${totalSteps}: Borrowing ${borrowAmount.toFixed(2)} ${borrowAsset} from Vanna...`);
         const borrowResult = await MarginAccountService.borrowTokens(
           marginAccountAddress,
-          borrowAsset,
+          poolTokenSymbol(borrowAsset, poolProtocol, poolType),
           toWad(borrowAmount)
         );
         if (!borrowResult.success) {
@@ -379,31 +478,31 @@ export async function executeOneClickStrategy(
           halfNative * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
 
         step(`Step 2/3: Swapping ${halfNative.toFixed(2)} ${collateralAsset} → ${otherAsset}...`);
-        const swapResult = await SoroswapService.swapFromMargin(
-          userAddress, marginAccountAddress, collateralAsset, halfNative
-        );
+        const swapResult = await swapLpAsset(poolProtocol, userAddress, marginAccountAddress, collateralAsset, halfNative);
         if (!swapResult.success) return { success: false, error: `Swap failed: ${swapResult.error}` };
 
         const xlmAmt = collateralAsset === 'XLM' ? halfNative : otherNative;
         const usdcAmt = collateralAsset === 'USDC' ? halfNative : otherNative;
 
         step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
-        const r = await SoroswapService.addLiquidity(
-          userAddress, marginAccountAddress, xlmAmt, usdcAmt
-        );
+        const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
         return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
       }
 
-      // cross-asset: collateral is one token, borrowed is the other
-      const xlmAmt = collateralAsset === 'XLM' ? collateralAmount : borrowAmount;
-      const usdcAmt = collateralAsset === 'USDC' ? collateralAmount : borrowAmount;
+      // cross-asset: collateral is one token, borrowed is the other (the
+      // normal path once leverage > 1 — deposit and borrow already left the
+      // margin account holding both LP tokens, so no swap is needed here).
+      // The borrowed leg must be shaved by the origination fee — the account
+      // was only ever credited the net amount, and asking AddLiquidity for
+      // the full gross borrow traps with "balance is not sufficient to spend".
+      const netBorrowAmount = netOfOriginationFee(borrowAmount);
+      const xlmAmt = collateralAsset === 'XLM' ? collateralAmount : netBorrowAmount;
+      const usdcAmt = collateralAsset === 'USDC' ? collateralAmount : netBorrowAmount;
       const stepNum = borrowAmount > 0 ? 3 : 2;
       const totalSteps = stepNum;
 
       step(`Step ${stepNum}/${totalSteps}: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
-      const r = await SoroswapService.addLiquidity(
-        userAddress, marginAccountAddress, xlmAmt, usdcAmt
-      );
+      const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
       return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
     }
 

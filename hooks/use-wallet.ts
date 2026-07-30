@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
+import { setActiveWalletKind, getPrivyAuthControls, type WalletKind } from '@/lib/wallet-adapter';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
 
@@ -22,6 +23,7 @@ import { clearMarginAccount } from '@/store/margin-account-info-store';
 export const useWallet = () => {
   const address = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
+  const walletKind = useUserStore((state) => state.walletKind);
   const balance = useUserStore((state) => state.balance);
   const depositedBalances = useUserStore((state) => state.depositedBalances);
   const isLoadingStore = useUserStore((state) => state.isLoading);
@@ -67,7 +69,12 @@ export const useWallet = () => {
       ]);
 
       try {
-        const [xlmDeposited, usdcDeposited, aquariusUsdcDeposited, soroswapUsdcDeposited] = await Promise.race([
+        const [
+          xlmDeposited,
+          usdcDeposited,
+          aquariusUsdcDeposited,
+          soroswapUsdcDeposited,
+        ] = await Promise.race([
           depositedBalancesPromise,
           timeoutPromise
         ]);
@@ -93,17 +100,27 @@ export const useWallet = () => {
 
   const checkConnection = useCallback(async () => {
     // Don't auto-reconnect if user manually disconnected
-    const { manuallyDisconnected } = useUserStore.getState();
+    const { manuallyDisconnected, walletKind } = useUserStore.getState();
     if (manuallyDisconnected) {
       return;
     }
-    
+
+    // A persisted Privy session rehydrates through Privy's own SDK state
+    // (see PrivyWalletBridge), which writes address/isConnected once it's
+    // ready — there's nothing for the Freighter-specific check below to do.
+    if (walletKind === 'privy') {
+      setActiveWalletKind('privy');
+      return;
+    }
+
+    setActiveWalletKind('freighter');
     try {
       const { address: walletAddress, connected } = await WalletService.checkConnection();
       if (connected && walletAddress) {
         useUserStore.getState().set({
           address: walletAddress,
           isConnected: connected,
+          walletKind: 'freighter',
           isLoading: false,
         });
         await refreshBalances(walletAddress);
@@ -111,6 +128,7 @@ export const useWallet = () => {
         useUserStore.getState().set({
           address: null,
           isConnected: false,
+          walletKind: null,
           balance: '0',
           tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
           depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
@@ -133,27 +151,43 @@ export const useWallet = () => {
     return () => window.removeEventListener('focus', handleFocus);
   }, [checkConnection]);
 
-  const connectWallet = useCallback(async () => {
+  const connectWallet = useCallback(async (kind: WalletKind = 'freighter') => {
+    if (kind === 'privy') {
+      // Opens Privy's login modal; PrivyWalletBridge reactively writes
+      // address/isConnected/walletKind into the store once the user
+      // authenticates and their Stellar embedded wallet is ready.
+      const controls = getPrivyAuthControls();
+      if (!controls) {
+        toast.error('Privy login is not available right now');
+        return;
+      }
+      setActiveWalletKind('privy');
+      controls.login();
+      return;
+    }
+
     try {
       setIsLoading(true);
       useUserStore.getState().set({ isLoading: true, manuallyDisconnected: false });
-      
+
+      setActiveWalletKind('freighter');
       const result = await WalletService.connectWallet();
-      
+
       if (result.success) {
-        
+
         // Set address and connected state immediately - don't wait for balance refresh
         useUserStore.getState().set({
           address: result.address,
           isConnected: true,
+          walletKind: 'freighter',
           manuallyDisconnected: false,
         });
-        
+
         // Refresh balances asynchronously with timeout to prevent hanging
         refreshBalances(result.address).catch((error) => {
           console.error('Error refreshing balances after connection:', error);
         });
-        
+
         toast.success('Wallet connected successfully!');
       } else {
         console.error('Wallet connection failed:', result.error);
@@ -169,6 +203,13 @@ export const useWallet = () => {
   }, [refreshBalances]);
 
   const disconnectWallet = useCallback(() => {
+    const { walletKind } = useUserStore.getState();
+    if (walletKind === 'privy') {
+      getPrivyAuthControls()?.logout().catch((error) => {
+        console.error('Error logging out of Privy:', error);
+      });
+    }
+    setActiveWalletKind(null);
 
     // Don't clear localStorage - margin accounts should persist across wallet
     // connections (the address-stored mapping is keyed by user pubkey).
@@ -177,6 +218,7 @@ export const useWallet = () => {
     useUserStore.getState().set({
       address: null,
       isConnected: false,
+      walletKind: null,
       balance: '0',
       tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
       depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
@@ -193,6 +235,7 @@ export const useWallet = () => {
   return {
     address,
     isConnected,
+    walletKind,
     balance,
     depositedBalances,
     isLoading: isLoading || isLoadingStore,

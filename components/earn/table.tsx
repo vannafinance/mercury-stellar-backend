@@ -33,17 +33,24 @@ import { Dropdown } from '../ui/dropdown';
 
 const ITEMS_PER_PAGE = 4;
 
+// Every token the protocol supports across Earn/Farm pools — kept in sync
+// with `ACTIVE_ASSETS` in lib/analytics/stellar/canon.ts (that module treats
+// BLUSDC/AQUSDC/SOUSDC as distinct symbols since Risk Engine prices them
+// separately; these filter facets only need the plain human-facing asset
+// name a pool is denominated in, so "USDC" covers all three variants here).
+const ALL_POOL_ASSETS = ["XLM", "USDC"];
+
 const FILTER_OPTIONS = {
-  collateral: ["XLM", "USDC"],
-  collateralFilters: ["All", "XLM", "USDC"],
-  deposit: ["XLM", "USDC"],
+  collateral: ALL_POOL_ASSETS,
+  collateralFilters: ["All", ...ALL_POOL_ASSETS],
+  deposit: ALL_POOL_ASSETS,
   depositFilters: ["All"],
-  allChains: ["XLM", "USDC"],
-  allChainsFilters: ["All", "XLM", "USDC"],
-  all: ["XLM", "USDC"],
-  allFilters: ["All", "XLM", "USDC"],
-  vaults: ["XLM", "USDC"],
-  vaultsFilters: ["All", "XLM", "USDC"],
+  allChains: ALL_POOL_ASSETS,
+  allChainsFilters: ["All", ...ALL_POOL_ASSETS],
+  all: ALL_POOL_ASSETS,
+  allFilters: ["All", ...ALL_POOL_ASSETS],
+  vaults: ALL_POOL_ASSETS,
+  vaultsFilters: ["All", ...ALL_POOL_ASSETS],
   curator: ["Vanna"],
   curatorFilters: ["All"],
   provider: ["Stellar"],
@@ -123,6 +130,17 @@ type SupplyApyFilter = {
 /* ---------- FILTER LOGIC (unchanged behavior) ---------- */
 
 /**
+ * A row's leading pool/asset name, upper-cased for matching. Single-asset
+ * rows (Blend "XLM") carry it as `title`; multi-token LP rows (Farm's
+ * Soroswap/Aquarius pools, "XLM"/"USDC") carry it as `titles` instead — a
+ * filter that only read `title` silently saw an empty string for every LP
+ * row and dropped it from every chain/deposit/vaults facet. Checking both
+ * keeps "All Pools" style filters working across single-asset and LP tables.
+ */
+const firstCellName = (cell?: { title?: string; titles?: string[] }): string =>
+  (cell?.title ?? cell?.titles?.join(" ") ?? "").toUpperCase();
+
+/**
  * Pure row filter combining the search term with every active filter facet
  * (chains, deposit/collateral, supply-APY threshold, vaults, curator, provider,
  * protocol). Returns the input unchanged when nothing is active. The supply-APY
@@ -176,29 +194,41 @@ const applyFilters = (
   const typeColumnIndex = tableHeadings.findIndex(
     (h) => h.id === "type" || h.label.toLowerCase() === "type"
   );
+  // Locate the Collateral column by id rather than assuming it's the last
+  // cell — tables can append columns (e.g. "Your Supply") after it.
+  const collateralColumnIndexForFilter = tableHeadings.findIndex(
+    (h) => h.id === "collateral" || h.label.toLowerCase() === "collateral"
+  );
 
   return rows.filter((row) => {
     if (
       searchLower &&
-      !row.cell.some((cell) => cell.title?.toLowerCase().includes(searchLower))
+      !row.cell.some((cell) =>
+        cell.title?.toLowerCase().includes(searchLower) ||
+        cell.titles?.some((t) => t.toLowerCase().includes(searchLower))
+      )
     ) {
       return false;
     }
 
     if (hasAllChainsFilter) {
-      const poolTitle = row.cell[0]?.title?.toUpperCase() || "";
+      const poolTitle = firstCellName(row.cell[0]);
       if (!poolTitle || !filtersState.allChains.some((c) => poolTitle.includes(c.toUpperCase())))
         return false;
     }
 
     if (hasDepositFilter) {
-      const poolName = row.cell[0]?.title?.toUpperCase() || "";
+      const poolName = firstCellName(row.cell[0]);
       if (!filtersState.deposit.some((d) => poolName.includes(d.toUpperCase())))
         return false;
     }
 
     if (hasCollateralFilter) {
-      const collateralIcons = row.cell[row.cell.length - 1]?.onlyIcons || [];
+      const collateralCellIndex =
+        collateralColumnIndexForFilter !== -1
+          ? collateralColumnIndexForFilter
+          : row.cell.length - 1;
+      const collateralIcons = row.cell[collateralCellIndex]?.onlyIcons || [];
       if (!filtersState.collateral.some((c) => collateralIcons.includes(c)))
         return false;
     }
@@ -251,11 +281,9 @@ const applyFilters = (
     }
 
     if (hasAllFilter) {
-      const matchSource = (
-        typeColumnIndex !== -1
-          ? row.cell[typeColumnIndex]?.title
-          : row.cell[0]?.title
-      )?.toUpperCase() || "";
+      const matchSource = typeColumnIndex !== -1
+        ? (row.cell[typeColumnIndex]?.title?.toUpperCase() || "")
+        : firstCellName(row.cell[0]);
       const matches = filtersState.all.some((f) => {
         const filterUpper = f.toUpperCase();
         return (
@@ -267,7 +295,7 @@ const applyFilters = (
 
     // Vaults filter - checks if vault name matches
     if (hasVaultsFilter) {
-      const vaultName = row.cell[0]?.title?.toUpperCase() || "";
+      const vaultName = firstCellName(row.cell[0]);
       if (!filtersState.vaults.some((v) => vaultName.includes(v.toUpperCase())))
         return false;
     }
@@ -410,7 +438,7 @@ const CellContent = ({
           )}
 
           <div className="w-fit h-fit flex gap-[8px] items-center">
-            {cell.chain && (
+            {cell.chain && iconPaths[cell.chain] && (
               <Image
                 src={iconPaths[cell.chain]}
                 alt={cell.chain}
@@ -466,7 +494,7 @@ const CellContent = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={(e) => e.stopPropagation()}
-                    className={`whitespace-nowrap text-[14px] font-medium flex items-center gap-1.5 hover:underline ${
+                    className={`text-[14px] font-medium flex items-center gap-1.5 hover:underline flex-wrap ${
                       isDark ? "text-white" : "text-[#111111]"
                     }`}
                   >
@@ -487,7 +515,7 @@ const CellContent = ({
                     )}
                   </a>
                 ) : (
-                  <span className={`whitespace-nowrap text-[14px] font-medium flex items-center gap-1.5 ${
+                  <span className={`text-[14px] font-medium flex items-center gap-1.5 flex-wrap ${
                     isDark ? "text-white" : "text-[#111111]"
                   }`}>
                     {cell.titles ? (
