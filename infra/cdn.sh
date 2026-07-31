@@ -62,30 +62,24 @@ has "gcloud compute backend-services describe ${NAME}-backend --global" || \
     --serve-while-stale="$SERVE_WHILE_STALE" \
     --compression-mode=AUTOMATIC
 
-# A backend service created by an earlier version of this script carries
-# portName, which blocks the serverless NEG attach below. It cannot be repaired
-# in place: export/import regenerates portName from the protocol field, so
-# stripping it silently achieves nothing. The resource has to be recreated, and
-# its dependents have to go first — which is destructive enough that this script
-# reports it rather than doing it unasked.
+# GCP populates portName on the backend service even when --protocol is not
+# passed, and the attach below rejects it. Stripping it via export/import works
+# when protocol is HTTP: import has no HTTPS protocol to re-derive an https
+# portName from, so the field stays clear long enough for the attach to land.
+# (GCP re-adds portName: http afterwards, which is harmless.)
+#
+# This does NOT rescue a service created with --protocol=HTTPS by an older
+# version of this script — there, import regenerates portName: https every
+# time. The assert below catches that case and prints the recreate sequence.
 if gcloud compute backend-services describe "${NAME}-backend" --global \
      --format='value(portName)' 2>/dev/null | grep -q .; then
-  cat >&2 <<EOF
-
-ERROR: ${NAME}-backend has a portName set, which serverless NEGs reject.
-It was created by an older version of this script that passed --protocol.
-
-Delete it and its dependents, then re-run this script. The reserved IP,
-certificate, NEG and HTTP redirect all survive, so DNS does not change:
-
-  gcloud compute forwarding-rules   delete ${NAME}-fr          --global --quiet
-  gcloud compute target-https-proxies delete ${NAME}-https-proxy --global --quiet
-  gcloud compute url-maps           delete ${NAME}-urlmap      --global --quiet
-  gcloud compute backend-services   delete ${NAME}-backend     --global --quiet
-  bash infra/cdn.sh
-
-EOF
-  exit 1
+  echo "  clearing portName so the serverless NEG can attach"
+  TMP="$(mktemp)"
+  gcloud compute backend-services export "${NAME}-backend" --global --destination="$TMP"
+  grep -v '^portName:' "$TMP" > "${TMP}.stripped"
+  mv "${TMP}.stripped" "$TMP"
+  gcloud compute backend-services import "${NAME}-backend" --global --source="$TMP" --quiet
+  rm -f "$TMP"
 fi
 
 # Attaching is not idempotent, but do NOT swallow the error to get that —
@@ -104,7 +98,24 @@ fi
 # and the certificate are done.
 gcloud compute backend-services describe "${NAME}-backend" --global \
   --format='value(backends[].group)' | grep -q "${NAME}-neg" || {
-    echo "ERROR: ${NAME}-neg is not attached to ${NAME}-backend. The load balancer would return 502." >&2
+    cat >&2 <<EOF
+
+ERROR: ${NAME}-neg is not attached to ${NAME}-backend, so the load balancer
+would return 502 for every request.
+
+The usual cause is a backend service created by an older version of this
+script that passed --protocol=HTTPS: export/import regenerates portName
+from the protocol field, so it cannot be repaired in place. Delete it and
+its dependents, then re-run. The reserved IP, certificate, NEG and HTTP
+redirect all survive, so DNS does not change:
+
+  gcloud compute forwarding-rules     delete ${NAME}-fr           --global --quiet
+  gcloud compute target-https-proxies delete ${NAME}-https-proxy  --global --quiet
+  gcloud compute url-maps             delete ${NAME}-urlmap       --global --quiet
+  gcloud compute backend-services     delete ${NAME}-backend      --global --quiet
+  bash infra/cdn.sh
+
+EOF
     exit 1
   }
 
