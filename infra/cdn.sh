@@ -59,10 +59,16 @@ has "gcloud compute backend-services describe ${NAME}-backend --global" || \
     --serve-while-stale="$SERVE_WHILE_STALE" \
     --compression-mode=AUTOMATIC
 
-gcloud compute backend-services add-backend "${NAME}-backend" \
-  --global \
-  --network-endpoint-group="${NAME}-neg" \
-  --network-endpoint-group-region="$REGION" >/dev/null 2>&1 || true
+# Attaching is not idempotent, but do NOT swallow the error to get that —
+# a backend service with no backend attached returns 502 for every request,
+# and a suppressed failure here looks identical to success. Check, then add.
+if ! gcloud compute backend-services describe "${NAME}-backend" --global \
+      --format='value(backends[].group)' 2>/dev/null | grep -q "${NAME}-neg"; then
+  gcloud compute backend-services add-backend "${NAME}-backend" \
+    --global \
+    --network-endpoint-group="${NAME}-neg" \
+    --network-endpoint-group-region="$REGION"
+fi
 
 say "3/8 Reserved anycast IP"
 has "gcloud compute addresses describe ${NAME}-ip --global" || \
