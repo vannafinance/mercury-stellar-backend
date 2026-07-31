@@ -87,19 +87,60 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     return handleAutoSignAction(req, request_id, trader, userId);
   }
 
-  // ── Resume pending write after auto-sign enable ─────────────────────────
+  // ── Resume pending write after auto-sign enable / agent chain hop ───────
   if (req.pending_write?.op) {
     const action: CopilotAction = {
       op: req.pending_write.op,
       asset: req.pending_write.asset ?? null,
       amount: req.pending_write.amount ?? null,
       leverage: req.pending_write.leverage ?? null,
-      requires_amount: req.pending_write.op !== "create_account",
+      requires_amount:
+        req.pending_write.op !== "create_account" &&
+        !(req.pending_write.op === "remove_liquidity" && req.pending_write.fraction != null),
       requires_account: !["create_account", "lend", "redeem"].includes(req.pending_write.op),
       smart_account: smartAccount,
       trader,
+      token_a: req.pending_write.token_a ?? null,
+      token_b: req.pending_write.token_b ?? null,
+      amount_a: req.pending_write.amount_a ?? null,
+      amount_b: req.pending_write.amount_b ?? null,
+      fraction: req.pending_write.fraction ?? null,
     };
-    return runWrite(action, { userId, trader, smartAccount, request_id, message: message || action.op });
+    const writeRes = await runWrite(action, {
+      userId,
+      trader,
+      smartAccount,
+      request_id,
+      message: message || action.op,
+    });
+    // Multi-hop chain: after this leg, attach the follow_up as next_step
+    // (e.g. borrow done → auto supply_to_blend for levered Blend farm).
+    const follow = req.pending_write.follow_up;
+    if (
+      follow?.op &&
+      (writeRes.kind === "executed" ||
+        writeRes.kind === "needs_wallet_sign" ||
+        writeRes.kind === "needs_auto_sign") &&
+      !writeRes.next_step
+    ) {
+      const hopNote =
+        `\n\nNext (auto): ${follow.label || `${follow.op} ${follow.amount ?? ""} ${follow.asset ?? ""}`.trim()}` +
+        ` (step ${follow.step ?? "?"}/${follow.total_steps ?? "?"})`;
+      return {
+        ...writeRes,
+        message: (writeRes.message || "") + hopNote,
+        next_step: {
+          op: follow.op,
+          asset: follow.asset ?? null,
+          amount: follow.amount ?? null,
+          leverage: follow.leverage ?? null,
+          label: follow.label,
+          step: follow.step,
+          total_steps: follow.total_steps,
+        },
+      };
+    }
+    return writeRes;
   }
 
   if (!message) {
@@ -831,6 +872,99 @@ async function runWrite(
           label: `Borrow ${borrow} ${uiAsset} (step 2/2)`,
           step: 2,
           total_steps: 2,
+        },
+      };
+    }
+    return step1Res;
+  }
+
+  // ── Levered Blend farm → NEVER use atomic deposit_borrow_and_deploy ─────
+  // Atomic hits Soroban Budget/ExceededLimit on populated testnet pools.
+  // Same fallback as one-click-strategy / leverage-assets-tab: split into
+  // deposit → borrow → plain supply_to_blend (3 signed legs, agent-chained).
+  if (
+    (action.op === "deploy_to_blend" || action.op === "supply_to_blend") &&
+    action.leverage != null &&
+    action.leverage > 1
+  ) {
+    const dep = action.amount;
+    if (dep == null || !(dep > 0)) {
+      return {
+        kind: "clarification",
+        message:
+          `How much to farm on Blend at ${action.leverage}×? ` +
+          `e.g. “farm Blend at ${action.leverage}x with 20 BLUSDC”.`,
+        intent: {
+          template_id: "deploy_to_blend",
+          slots: { asset: action.asset, amount: null, leverage: action.leverage },
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    // Slightly higher borrow headroom than plain margin (0.85) — still under liq.
+    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null, 0.85);
+    const userAsset = action.asset || "BLUSDC";
+    const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
+    // After deposit+borrow, free balance ≈ borrowed amount (collateral is locked).
+    // Supply the free/borrowed leg to Blend (matches what SA can spend).
+    const supplyAmt = borrow > 0 ? borrow : deposit;
+    const step1: CopilotAction = {
+      op: "deposit_collateral",
+      asset: userAsset,
+      amount: deposit,
+      requires_amount: true,
+      requires_account: true,
+      multi_leg: false,
+      smart_account: smartAccount,
+      trader: ctx.trader,
+    };
+    const step1Res = await runWrite(step1, {
+      ...ctx,
+      smartAccount,
+      message: `step 1/3 farm Blend deposit ${deposit} ${uiAsset}`,
+    });
+    const planNote =
+      `\n\nBlend farm plan (3 steps — avoids Soroban Budget limit on atomic deploy):\n` +
+      `  Step 1/3 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
+      `  Step 2/3 — Borrow ${amount(borrow)} ${uiAsset}\n` +
+      `  Step 3/3 — Supply ${amount(supplyAmt)} ${uiAsset} free balance to Blend\n` +
+      `Auto-approve runs each next step after the previous confirms on-chain.`;
+    if (
+      step1Res.kind === "needs_wallet_sign" ||
+      step1Res.kind === "needs_auto_sign" ||
+      step1Res.kind === "executed"
+    ) {
+      return {
+        ...step1Res,
+        message: (step1Res.message || "") + planNote,
+        intent: {
+          template_id: "deploy_to_blend_split",
+          slots: {
+            step: 1,
+            deposit,
+            borrow,
+            supply: supplyAmt,
+            asset: userAsset,
+            leverage: action.leverage,
+          },
+        },
+        next_step: {
+          op: "borrow",
+          asset: userAsset,
+          amount: borrow,
+          leverage: action.leverage,
+          label: `Borrow ${borrow} ${uiAsset} (step 2/3 · farm Blend)`,
+          step: 2,
+          total_steps: 3,
+          follow_up: {
+            op: "supply_to_blend",
+            asset: userAsset,
+            amount: supplyAmt,
+            leverage: null,
+            label: `Supply ${supplyAmt} ${uiAsset} to Blend (step 3/3)`,
+            step: 3,
+            total_steps: 3,
+          },
         },
       };
     }

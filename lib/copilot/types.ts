@@ -13,12 +13,30 @@ export interface ChatRequest {
     max_per_tx_usd?: number | string;
     max_per_day_usd?: number | string;
   } | null;
-  /** Re-run a pending write after enabling auto-sign */
+  /** Re-run a pending write after enabling auto-sign / agent chain hop */
   pending_write?: {
     op: string;
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    token_a?: string | null;
+    token_b?: string | null;
+    amount_a?: number | null;
+    amount_b?: number | null;
+    fraction?: number | null;
+    /**
+     * Remaining hop after this write confirms (e.g. borrow → then supply_to_blend).
+     * Client echoes this on the next auto step so the server can attach next_step.
+     */
+    follow_up?: {
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+      label?: string;
+      step?: number;
+      total_steps?: number;
+    } | null;
   } | null;
 }
 
@@ -143,6 +161,16 @@ export interface ChatResponse {
     label?: string;
     step?: number;
     total_steps?: number;
+    /** Nested hop after this step confirms (3-leg Blend farm). */
+    follow_up?: {
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+      label?: string;
+      step?: number;
+      total_steps?: number;
+    } | null;
   } | null;
   execution?: {
     status: string;

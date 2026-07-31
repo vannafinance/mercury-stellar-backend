@@ -121,6 +121,15 @@ interface ChatResponse {
     label?: string;
     step?: number;
     total_steps?: number;
+    follow_up?: {
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+      label?: string;
+      step?: number;
+      total_steps?: number;
+    } | null;
   } | null;
   execution?: {
     status: string;
@@ -788,12 +797,13 @@ export function CopilotWorkspace() {
           setSubmitted(label);
           await postCopilot(
             {
-              message: `borrow ${nextStep.amount} ${nextStep.asset || "USDC"}`,
+              message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
               pending_write: {
                 op: nextStep.op,
                 asset: nextStep.asset ?? null,
                 amount: nextStep.amount ?? null,
                 leverage: nextStep.leverage ?? null,
+                follow_up: nextStep.follow_up ?? null,
               },
             },
             label,
@@ -884,6 +894,7 @@ export function CopilotWorkspace() {
             asset: next.asset ?? null,
             amount: next.amount ?? null,
             leverage: next.leverage ?? null,
+            follow_up: next.follow_up ?? null,
           },
         },
         label,

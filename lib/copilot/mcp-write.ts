@@ -141,19 +141,24 @@ export function displayUsdcLabel(mcpSymbol: string, userPick?: string | null): s
   return mcpSymbol;
 }
 
-/** 2× leverage with deposit D → borrow D*(L-1). Caps borrow so post-tx LTV stays under ~85% of liq threshold. */
+/**
+ * Leverage split: deposit D → borrow D*(L-1).
+ * @param maxSafeRatio Cap borrow as a fraction of deposit (default 0.8 for margin LTV headroom).
+ *   Pass a higher ratio for farm legs when the product path allows it.
+ */
 export function splitLeverageAmounts(
   deposit: number,
   leverage?: number | null,
   borrowExplicit?: number | null,
+  maxSafeRatio = 0.8,
 ): { deposit: number; borrow: number } {
   if (borrowExplicit != null && borrowExplicit > 0) {
     return { deposit, borrow: borrowExplicit };
   }
   const lev = leverage != null && leverage > 1 ? leverage : 2;
-  // Classic 2x: deposit D, borrow D. Keep a small safety haircut vs 0.909 liq LTV.
+  // Classic 2x: deposit D, borrow D. Cap vs liq LTV unless caller raises the ratio.
   const rawBorrow = deposit * (lev - 1);
-  const maxSafe = deposit * 0.8; // leave headroom after deposit
+  const maxSafe = deposit * Math.max(0.1, maxSafeRatio);
   return { deposit, borrow: Math.min(rawBorrow, maxSafe) };
 }
 
@@ -437,43 +442,48 @@ export function mapOpToMcpStep(
     case "add_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to add LP." };
       const aRaw = (params.token_a || "XLM").toUpperCase();
-      const bRaw = (params.token_b || params.asset || "BLUSDC").toUpperCase();
-      // Aquarius LP tokens use MCP symbols (USDC not BLUSDC).
-      const a = aRaw === "BLUSDC" ? "USDC" : aRaw;
-      const b = bRaw === "BLUSDC" ? "USDC" : marginCollateralSymbol(bRaw);
+      const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
       const aa = params.amount_a ?? params.amount;
       const bb = params.amount_b;
       if (aa == null || !(aa > 0) || bb == null || !(bb > 0)) {
         return {
           blocker:
-            "How much of each token? e.g. “add 5 XLM and 1 BLUSDC to Aquarius XLM/USDC”.",
+            "How much of each token? e.g. “add 20 XLM and 5 AQUSDC to Aquarius XLM/USDC”. " +
+            "Aquarius spends free XLM + AQUSDC inside the margin account (not BLUSDC).",
         };
       }
-      const uiA = displayUsdcLabel(a, aRaw);
-      const uiB = displayUsdcLabel(b, bRaw);
+      // Normalize pair: XLM + Aquarius USDC (AQUSDC). BLUSDC/bare USDC → AQUSDC
+      // (same as one-click-strategy poolTokenSymbol for Aquarius LP).
+      const isSouswap =
+        aRaw === "SOUSDC" ||
+        bRaw === "SOUSDC" ||
+        aRaw === "SOROSWAP_USDC" ||
+        bRaw === "SOROSWAP_USDC";
+      const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
+      const amountXlm = aRaw === "XLM" ? aa : bRaw === "XLM" ? bb : aa;
+      const amountUsd = aRaw === "XLM" ? bb : bRaw === "XLM" ? aa : bb;
       return {
         step: {
           tool: "vanna_add_liquidity",
           args: {
             smart_account: smart,
-            token_a: a,
-            token_b: b,
-            amount_a: String(aa),
-            amount_b: String(bb),
+            token_a: "XLM",
+            token_b: usdSym,
+            amount_a: String(amountXlm),
+            amount_b: String(amountUsd),
             min_liquidity_out: "0",
             trader,
-            venue: "aquarius",
+            venue: isSouswap ? "soroswap" : "aquarius",
           },
-          label: `Add ${aa} ${uiA} + ${bb} ${uiB} Aquarius LP`,
+          label: `Add ${amountXlm} XLM + ${amountUsd} ${usdSym} LP`,
         },
       };
     }
     case "remove_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
-      const aRaw = (params.token_a || "XLM").toUpperCase();
-      const bRaw = (params.token_b || params.asset || "USDC").toUpperCase();
-      const a = aRaw === "BLUSDC" ? "USDC" : aRaw;
-      const b = bRaw === "BLUSDC" ? "USDC" : marginCollateralSymbol(bRaw);
+      const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
+      const isSouswap = bRaw === "SOUSDC" || bRaw === "SOROSWAP_USDC";
+      const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
       const frac =
         params.fraction != null && params.fraction > 0 && params.fraction <= 1
           ? params.fraction
@@ -491,18 +501,18 @@ export function mapOpToMcpStep(
           tool: "vanna_remove_liquidity",
           args: {
             smart_account: smart,
-            token_a: a,
-            token_b: b,
+            token_a: "XLM",
+            token_b: usdSym,
             ...(lpAmt ? { amount: lpAmt, liquidity_amount: lpAmt } : {}),
             ...(frac != null ? { fraction: frac, share_fraction: frac } : {}),
             min_a: "0",
             min_b: "0",
             trader,
-            venue: "aquarius",
+            venue: isSouswap ? "soroswap" : "aquarius",
           },
           label: frac
-            ? `Remove ${Math.round(frac * 100)}% XLM/${bRaw === "BLUSDC" ? "BLUSDC" : b} LP`
-            : `Remove ${lpAmt} XLM/${bRaw === "BLUSDC" ? "BLUSDC" : b} LP`,
+            ? `Remove ${Math.round(frac * 100)}% XLM/${usdSym} LP`
+            : `Remove ${lpAmt} XLM/${usdSym} LP`,
         },
       };
     }
@@ -725,18 +735,42 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
         /\[Deposit\].*\[0\]|amount:\s*0|amount_type:\s*0.*amount:\s*0|\[XLM\],\s*\[0\]/i.test(raw);
       if (zeroAmount || /#1216|error\(contract,\s*#1216\)/i.test(raw)) {
         return (
-          `Blend farm write failed — MCP/on-chain packed a **zero** Blend amount ` +
+          `Blend farm write failed — MCP/on-chain packed a zero Blend amount ` +
           `(execute_direct shows [Deposit] … [0]).\n\n` +
-          `Escalate to MCP: \`vanna_farm_blend\` supply/deploy packing. ` +
+          `Escalate to MCP: vanna_farm_blend supply/deploy packing. ` +
           `No transaction was submitted.\n\nDetail: ${firstLine}`
+        );
+      }
+      if (/Budget|ExceededLimit|resource/i.test(raw)) {
+        return (
+          `Blend atomic deploy hit the Soroban CPU budget (ExceededLimit). ` +
+          `The copilot now splits this into deposit → borrow → supply instead. ` +
+          `Retry “farm Blend at 2x with 20 BLUSDC” (or similar).\n\nDetail: ${firstLine}`
         );
       }
       return (
         `Blend farm simulation failed (not a margin collateral deposit).\n` +
         `${firstLine}\n\n` +
-        `Common causes: not enough free balance of that asset inside the margin account, ` +
-        `Blend pool constraints, or MCP simulation rejection. No transaction was submitted.`
+        `Need free balance of that asset inside the margin account (C-address), not only the wallet. ` +
+        `Try: deposit 20+ as collateral, borrow some free, then “supply N to Blend”. ` +
+        `No transaction was submitted.`
       );
+    }
+    if (tool === "vanna_add_liquidity" || tool === "vanna_remove_liquidity") {
+      const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
+      if (/balance is not sufficient|#10|insufficient/i.test(raw)) {
+        return (
+          `Aquarius LP needs free XLM + AQUSDC inside the margin account (C-address). ` +
+          `BLUSDC is the wrong USDC for Aquarius — use AQUSDC.\n\n` +
+          `Prep (amounts ≥ 15 each):\n` +
+          `  1) deposit 20 XLM as collateral\n` +
+          `  2) deposit 20 AQUSDC as collateral\n` +
+          `  3) borrow a bit of each if free balance is still 0, or transfer free funds into the C-account\n` +
+          `  4) “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n\n` +
+          `Detail: ${firstLine}`
+        );
+      }
+      return `LP simulation failed: ${firstLine}`;
     }
     if (tool === "vanna_lend") {
       // Try to extract balance from diagnostic: balance], data:9150000000 (7-dec SAC)
