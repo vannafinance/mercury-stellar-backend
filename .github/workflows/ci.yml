@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Hard gates — must pass to merge.
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+
+      # Informational for now. Lint has a known baseline to clean up, and the
+      # test suite can be promoted to a hard gate once green in CI.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+      - name: Test
+        run: npm test
+        continue-on-error: true
