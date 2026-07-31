@@ -50,10 +50,13 @@ say "2/8 Backend service with Cloud CDN"
 # /api/analytics/accounts?force=1) stay uncached, which is the intended
 # behaviour.
 has "gcloud compute backend-services describe ${NAME}-backend --global" || \
+  # No --protocol: setting it makes gcloud auto-resolve a portName, and
+  # serverless NEGs reject portName outright ("Port name is not supported for
+  # a backend service with Serverless network endpoint groups"), which fails
+  # the attach below. The LB-to-Cloud-Run hop is managed by Google regardless.
   gcloud compute backend-services create "${NAME}-backend" \
     --global \
     --load-balancing-scheme=EXTERNAL_MANAGED \
-    --protocol=HTTPS \
     --enable-cdn \
     --cache-mode=USE_ORIGIN_HEADERS \
     --serve-while-stale="$SERVE_WHILE_STALE" \
