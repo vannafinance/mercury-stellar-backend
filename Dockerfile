@@ -40,6 +40,10 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static     ./.next/static
 COPY --from=builder /app/public           ./public
 
+# Entrypoint wrapper that strips Next's RSC Vary values from /api responses so
+# Cloud CDN will cache them. See the file header for why this is necessary.
+COPY server-vary-patch.cjs ./
+
 # next/image needs sharp in production. It is NOT in package.json, so install it
 # explicitly into the standalone node_modules (glibc build for this base image).
 RUN npm install --no-save sharp@^0.34.0 \
@@ -48,4 +52,4 @@ RUN npm install --no-save sharp@^0.34.0 \
 
 USER nextjs
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["node", "server-vary-patch.cjs"]
