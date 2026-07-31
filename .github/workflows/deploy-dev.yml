@@ -9,6 +9,15 @@ name: Deploy dev
 on:
   push:
     branches: [dev]
+    # None of these change the container, and a full rebuild runs ~16 minutes.
+    # Editing a provisioning script should not cost a deploy. cloudbuild.yaml and
+    # this file are deliberately NOT ignored — both change how the app is built
+    # or run. workflow_dispatch still forces a deploy when one is wanted.
+    paths-ignore:
+      - "infra/**"
+      - "**/*.md"
+      - ".gitattributes"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 # id-token: write is what lets the runner mint the OIDC assertion. Without it

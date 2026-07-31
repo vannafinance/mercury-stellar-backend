@@ -49,11 +49,11 @@ say "2/8 Backend service with Cloud CDN"
 # imposing a blanket TTL. Routes that send `no-store` (every error path, and
 # /api/analytics/accounts?force=1) stay uncached, which is the intended
 # behaviour.
+# No --protocol: setting it makes gcloud auto-resolve a portName, and serverless
+# NEGs reject portName outright ("Port name is not supported for a backend
+# service with Serverless network endpoint groups"), which fails the attach
+# below. The LB-to-Cloud-Run hop is managed by Google regardless.
 has "gcloud compute backend-services describe ${NAME}-backend --global" || \
-  # No --protocol: setting it makes gcloud auto-resolve a portName, and
-  # serverless NEGs reject portName outright ("Port name is not supported for
-  # a backend service with Serverless network endpoint groups"), which fails
-  # the attach below. The LB-to-Cloud-Run hop is managed by Google regardless.
   gcloud compute backend-services create "${NAME}-backend" \
     --global \
     --load-balancing-scheme=EXTERNAL_MANAGED \
@@ -61,6 +61,20 @@ has "gcloud compute backend-services describe ${NAME}-backend --global" || \
     --cache-mode=USE_ORIGIN_HEADERS \
     --serve-while-stale="$SERVE_WHILE_STALE" \
     --compression-mode=AUTOMATIC
+
+# Self-heal a backend service created by an earlier version of this script that
+# did pass --protocol. The guard above skips recreation, so without this a
+# re-run leaves the portName in place and the attach keeps failing.
+if gcloud compute backend-services describe "${NAME}-backend" --global \
+     --format='value(portName)' 2>/dev/null | grep -q .; then
+  echo "  clearing unsupported portName"
+  TMP="$(mktemp)"
+  gcloud compute backend-services export "${NAME}-backend" --global --destination="$TMP"
+  grep -v '^portName:' "$TMP" > "${TMP}.stripped"
+  mv "${TMP}.stripped" "$TMP"
+  gcloud compute backend-services import "${NAME}-backend" --global --source="$TMP" --quiet
+  rm -f "$TMP"
+fi
 
 # Attaching is not idempotent, but do NOT swallow the error to get that —
 # a backend service with no backend attached returns 502 for every request,
@@ -72,6 +86,15 @@ if ! gcloud compute backend-services describe "${NAME}-backend" --global \
     --network-endpoint-group="${NAME}-neg" \
     --network-endpoint-group-region="$REGION"
 fi
+
+# Assert rather than assume. Everything downstream reports success even when
+# this is empty, and the symptom only shows up as a 502 an hour later once DNS
+# and the certificate are done.
+gcloud compute backend-services describe "${NAME}-backend" --global \
+  --format='value(backends[].group)' | grep -q "${NAME}-neg" || {
+    echo "ERROR: ${NAME}-neg is not attached to ${NAME}-backend. The load balancer would return 502." >&2
+    exit 1
+  }
 
 say "3/8 Reserved anycast IP"
 has "gcloud compute addresses describe ${NAME}-ip --global" || \
