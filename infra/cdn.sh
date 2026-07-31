@@ -62,18 +62,30 @@ has "gcloud compute backend-services describe ${NAME}-backend --global" || \
     --serve-while-stale="$SERVE_WHILE_STALE" \
     --compression-mode=AUTOMATIC
 
-# Self-heal a backend service created by an earlier version of this script that
-# did pass --protocol. The guard above skips recreation, so without this a
-# re-run leaves the portName in place and the attach keeps failing.
+# A backend service created by an earlier version of this script carries
+# portName, which blocks the serverless NEG attach below. It cannot be repaired
+# in place: export/import regenerates portName from the protocol field, so
+# stripping it silently achieves nothing. The resource has to be recreated, and
+# its dependents have to go first — which is destructive enough that this script
+# reports it rather than doing it unasked.
 if gcloud compute backend-services describe "${NAME}-backend" --global \
      --format='value(portName)' 2>/dev/null | grep -q .; then
-  echo "  clearing unsupported portName"
-  TMP="$(mktemp)"
-  gcloud compute backend-services export "${NAME}-backend" --global --destination="$TMP"
-  grep -v '^portName:' "$TMP" > "${TMP}.stripped"
-  mv "${TMP}.stripped" "$TMP"
-  gcloud compute backend-services import "${NAME}-backend" --global --source="$TMP" --quiet
-  rm -f "$TMP"
+  cat >&2 <<EOF
+
+ERROR: ${NAME}-backend has a portName set, which serverless NEGs reject.
+It was created by an older version of this script that passed --protocol.
+
+Delete it and its dependents, then re-run this script. The reserved IP,
+certificate, NEG and HTTP redirect all survive, so DNS does not change:
+
+  gcloud compute forwarding-rules   delete ${NAME}-fr          --global --quiet
+  gcloud compute target-https-proxies delete ${NAME}-https-proxy --global --quiet
+  gcloud compute url-maps           delete ${NAME}-urlmap      --global --quiet
+  gcloud compute backend-services   delete ${NAME}-backend     --global --quiet
+  bash infra/cdn.sh
+
+EOF
+  exit 1
 fi
 
 # Attaching is not idempotent, but do NOT swallow the error to get that —
