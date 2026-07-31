@@ -13,6 +13,18 @@ export type AccountSnapshot = Partial<MarginSnapshot> & {
 
 export const ACCOUNT_SNAPSHOT_KEY = ["account-snapshot"] as const;
 
+/** Matches the route's `s-maxage=15`, so at most one on-chain read per window. */
+const SNAPSHOT_TTL_MS = 15_000;
+
+/**
+ * Last tick-driven invalidation, shared by every hook instance.
+ *
+ * Module scope on purpose. invalidateQueries() is global, so a per-hook ref would let
+ * each mounted copy (navbar + margin page + copilot rail) fire its own invalidation in
+ * the same window and multiply the reads back up.
+ */
+let lastTickInvalidationAt = 0;
+
 // Per-account snapshot cache (stale-while-revalidate). Persisting the last
 // snapshot KEYED BY WALLET lets a reload paint real values instantly instead of
 // flashing an empty store, then revalidate in the background. It is safe
@@ -109,7 +121,7 @@ export function useAccountSnapshot(userAddress: string | null) {
       return data;
     },
     enabled: Boolean(userAddress),
-    staleTime: 12_000, // just under the route's 15s edge TTL
+    staleTime: SNAPSHOT_TTL_MS - 3_000, // just under the route's edge TTL
     // Stale-while-revalidate across reloads: seed from the per-account cache and
     // tell RQ how old it is, so a stale entry paints instantly AND triggers an
     // immediate background refetch.
@@ -117,9 +129,22 @@ export function useAccountSnapshot(userAddress: string | null) {
     initialDataUpdatedAt: cached?.ts,
   });
 
+  // Revalidate on new ledgers, but at most once per TTL window.
+  //
+  // invalidateQueries() deliberately ignores staleTime, so an unthrottled tick meant a
+  // full refetch every ledger (~5s on Stellar). The comment above claimed the route's
+  // s-maxage absorbed that, but s-maxage is a CDN directive and `next dev` has no CDN —
+  // so every tick ran a real on-chain read. Those reads take ~5s, i.e. longer than the
+  // tick interval, so the refetches never drained and the log filled with overlapping
+  // 5s requests. Throttling here makes the intended "~1 read per 15s" hold in dev and
+  // in production, and does not touch mutation-driven invalidation, which must stay
+  // immediate.
   useEffect(() => {
     if (tick === lastTickRef.current) return;
     lastTickRef.current = tick;
+    const now = Date.now();
+    if (now - lastTickInvalidationAt < SNAPSHOT_TTL_MS) return;
+    lastTickInvalidationAt = now;
     qc.invalidateQueries({ queryKey: ACCOUNT_SNAPSHOT_KEY });
   }, [tick, qc]);
 

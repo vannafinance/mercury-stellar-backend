@@ -108,12 +108,96 @@ class MockMCPClient implements MCPClient {
   }
 }
 
+// ── legacy → consolidated tool translation ──────────────────────────────────
+
+/**
+ * The MCP server consolidated its ~42 fine-grained tools into 14 dispatchers, each
+ * taking `{ action, kwargs }`. Calling `vanna_get_price` now returns
+ * "Unknown tool: vanna_get_price", which broke every read and write at once.
+ *
+ * The `kwargs` payload is byte-for-byte the old argument object, so translating at
+ * the transport boundary restores everything without touching the router, arg
+ * builders, `explain.ts` (keyed on these names), or the tool labels the UI shows as
+ * MCP proof. Callers keep using the legacy names; new-style names pass through
+ * untouched, so `vanna_swap` and the LP/Blend write actions can be wired directly.
+ */
+const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
+  // oracle
+  vanna_get_price: { tool: "vanna_oracle", action: "get_price" },
+  vanna_get_prices: { tool: "vanna_oracle", action: "get_prices_batch" },
+  vanna_get_prices_batch: { tool: "vanna_oracle", action: "get_prices_batch" },
+  // protocol info
+  vanna_list_protocol_addresses: { tool: "vanna_protocol_info", action: "list_addresses" },
+  vanna_get_collateral_config: { tool: "vanna_protocol_info", action: "collateral_config" },
+  // margin account lifecycle
+  vanna_open_account: { tool: "vanna_account", action: "open" },
+  vanna_close_account: { tool: "vanna_account", action: "close" },
+  vanna_get_inactive_accounts: { tool: "vanna_account", action: "list_inactive" },
+  // margin reads
+  vanna_get_account_health: { tool: "vanna_margin_status", action: "health" },
+  vanna_get_collateral: { tool: "vanna_margin_status", action: "collateral" },
+  vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
+  vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
+  // margin writes + preflights
+  vanna_can_borrow: { tool: "vanna_margin_trade", action: "can_borrow" },
+  vanna_can_withdraw: { tool: "vanna_margin_trade", action: "can_withdraw" },
+  vanna_deposit_collateral: { tool: "vanna_margin_trade", action: "deposit" },
+  vanna_withdraw_collateral: { tool: "vanna_margin_trade", action: "withdraw" },
+  vanna_borrow: { tool: "vanna_margin_trade", action: "borrow" },
+  vanna_repay: { tool: "vanna_margin_trade", action: "repay" },
+  vanna_deposit_and_borrow: { tool: "vanna_margin_trade", action: "deposit_and_borrow" },
+  vanna_settle_account: { tool: "vanna_margin_trade", action: "settle" },
+  // earn
+  vanna_get_pool_stats: { tool: "vanna_earn_market", action: "pool_stats" },
+  vanna_get_vtoken_exchange_rate: { tool: "vanna_earn_market", action: "exchange_rate" },
+  vanna_get_vtoken_balance: { tool: "vanna_earn_position", action: "balance" },
+  vanna_lend: { tool: "vanna_earn_write", action: "lend" },
+  vanna_redeem: { tool: "vanna_earn_write", action: "redeem" },
+  // farm
+  vanna_get_farm_overview: { tool: "vanna_farm_overview", action: "overview" },
+  vanna_get_blend_reserve_stats: { tool: "vanna_farm_blend", action: "reserve_stats" },
+  vanna_list_blend_reserves: { tool: "vanna_farm_blend", action: "list_reserves" },
+  vanna_get_blend_position: { tool: "vanna_farm_blend", action: "position" },
+  // Farm Blend writes — legacy names → consolidated farm_blend dispatcher.
+  // Plain supply (FW1) uses action=supply; leveraged entry uses action=deploy.
+  vanna_deploy_to_blend: { tool: "vanna_farm_blend", action: "deploy" },
+  vanna_blend_supply: { tool: "vanna_farm_blend", action: "supply" },
+  vanna_blend_withdraw: { tool: "vanna_farm_blend", action: "withdraw" },
+  vanna_list_aquarius_pools: { tool: "vanna_farm_lp", action: "list_aquarius" },
+  vanna_get_aquarius_pool_stats: { tool: "vanna_farm_lp", action: "aquarius_stats" },
+  vanna_get_farm_lp_position: { tool: "vanna_farm_lp", action: "lp_position" },
+  vanna_get_lp_balance: { tool: "vanna_farm_lp", action: "get_lp_balance" },
+  // wallet identity / balances
+  vanna_get_wallet_balance: { tool: "vanna_wallet", action: "balance" },
+  vanna_get_token_balance: { tool: "vanna_wallet", action: "token_balance" },
+  vanna_list_my_wallet_bindings: { tool: "vanna_wallet", action: "list_bindings" },
+  vanna_list_smart_accounts: { tool: "vanna_wallet", action: "list_smart_accounts" },
+  vanna_resolve_account: { tool: "vanna_wallet", action: "resolve" },
+  // signing
+  vanna_enable_auto_sign: { tool: "vanna_sign", action: "enable_auto_sign" },
+  vanna_disable_auto_sign: { tool: "vanna_sign", action: "disable_auto_sign" },
+  vanna_sign_and_submit: { tool: "vanna_sign", action: "sign_and_submit" },
+};
+
+/** Legacy call → the consolidated `{ name, arguments }` the server now expects. */
+export function toServerCall(
+  tool: string,
+  args: Record<string, unknown>,
+): { name: string; arguments: Record<string, unknown> } {
+  const mapped = LEGACY_TOOL_MAP[tool];
+  if (!mapped) return { name: tool, arguments: args };
+  return { name: mapped.tool, arguments: { action: mapped.action, kwargs: args } };
+}
+
 // ── live ────────────────────────────────────────────────────────────────────
 
 class LiveMCPClient implements MCPClient {
   private token: string | null = null;
   private tokenExpiry = 0;
   private tokenPromise: Promise<string> | null = null;
+  /** Cached Streamable-HTTP session — see getSession. */
+  private sessionId: string | null = null;
+  private sessionPromise: Promise<string> | null = null;
   private static readonly TIMEOUT_MS = 30_000;
   private static readonly EXPIRY_MARGIN_MS = 60_000;
 
@@ -158,7 +242,79 @@ class LiveMCPClient implements MCPClient {
     return this.tokenPromise;
   }
 
-  async call(tool: string, args: Record<string, unknown>, _userId?: string): Promise<Record<string, unknown>> {
+  /**
+   * Open a Streamable-HTTP session and cache it on the instance.
+   *
+   * Previously every tool call did initialize → notifications/initialized →
+   * tools/call, so a turn that touches four pools cost twelve round-trips instead
+   * of four. The client is already a process-wide singleton caching the WorkOS
+   * token, so the session id caches the same way; `call` drops it and retries once
+   * if the server has expired it. Concurrent callers share one in-flight handshake
+   * rather than racing to open several sessions.
+   */
+  private async getSession(baseHeaders: Record<string, string>): Promise<string> {
+    if (this.sessionId) return this.sessionId;
+    if (this.sessionPromise) return this.sessionPromise;
+
+    this.sessionPromise = (async () => {
+      const initRes = await fetch(copilotConfig.mcpBaseUrl, {
+        method: "POST",
+        headers: baseHeaders,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2024-11-05",
+            capabilities: {},
+            clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
+          },
+        }),
+        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+        cache: "no-store",
+      });
+      if (!initRes.ok) {
+        const text = await initRes.text().catch(() => "");
+        if (initRes.status === 401 || initRes.status === 403) {
+          throw new MCPAuthError(`MCP rejected the token (${initRes.status}): ${text.slice(0, 300)}`);
+        }
+        throw new MCPCallError(`MCP initialize failed (${initRes.status}): ${text.slice(0, 300)}`);
+      }
+      const id = initRes.headers.get("mcp-session-id");
+      await consumeSseJson(initRes); // drain initialize result
+      if (!id) throw new MCPCallError("MCP initialize response missing mcp-session-id header");
+
+      // Required by Streamable HTTP after initialize.
+      await fetch(copilotConfig.mcpBaseUrl, {
+        method: "POST",
+        headers: { ...baseHeaders, "mcp-session-id": id },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+        cache: "no-store",
+      }).catch(() => {
+        /* non-fatal */
+      });
+
+      this.sessionId = id;
+      return id;
+    })().finally(() => {
+      this.sessionPromise = null;
+    });
+
+    return this.sessionPromise;
+  }
+
+  /** Drop the cached session so the next call re-handshakes. */
+  private resetSession(): void {
+    this.sessionId = null;
+  }
+
+  async call(
+    tool: string,
+    args: Record<string, unknown>,
+    _userId?: string,
+    retryOnStaleSession = true,
+  ): Promise<Record<string, unknown>> {
     const token = await this.getToken();
     const baseHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -166,48 +322,8 @@ class LiveMCPClient implements MCPClient {
       Accept: "application/json, text/event-stream",
     };
 
-    // One session per tool call keeps the client simple and avoids stale sessions.
-    const initRes = await fetch(copilotConfig.mcpBaseUrl, {
-      method: "POST",
-      headers: baseHeaders,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2024-11-05",
-          capabilities: {},
-          clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
-        },
-      }),
-      signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-      cache: "no-store",
-    });
-    if (!initRes.ok) {
-      const text = await initRes.text().catch(() => "");
-      if (initRes.status === 401 || initRes.status === 403) {
-        throw new MCPAuthError(`MCP rejected the token (${initRes.status}): ${text.slice(0, 300)}`);
-      }
-      throw new MCPCallError(`MCP initialize failed (${initRes.status}): ${text.slice(0, 300)}`);
-    }
-    const sessionId = initRes.headers.get("mcp-session-id");
-    await consumeSseJson(initRes); // drain initialize result
-    if (!sessionId) {
-      throw new MCPCallError("MCP initialize response missing mcp-session-id header");
-    }
-
+    const sessionId = await this.getSession(baseHeaders);
     const sessionHeaders = { ...baseHeaders, "mcp-session-id": sessionId };
-
-    // Required by Streamable HTTP after initialize.
-    await fetch(copilotConfig.mcpBaseUrl, {
-      method: "POST",
-      headers: sessionHeaders,
-      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-      signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-      cache: "no-store",
-    }).catch(() => {
-      /* non-fatal */
-    });
 
     const callRes = await fetch(copilotConfig.mcpBaseUrl, {
       method: "POST",
@@ -216,7 +332,7 @@ class LiveMCPClient implements MCPClient {
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: tool, arguments: args },
+        params: toServerCall(tool, args),
       }),
       signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
       cache: "no-store",
@@ -227,7 +343,16 @@ class LiveMCPClient implements MCPClient {
         // Force token refresh next time.
         this.token = null;
         this.tokenExpiry = 0;
+        this.resetSession(); // the session was opened with the rejected token
         throw new MCPAuthError(`MCP rejected the token (${callRes.status}): ${text.slice(0, 300)}`);
+      }
+      // A cached session the server has since dropped: 404 (unknown session) or a
+      // 400 naming the session. Re-handshake once and replay — invisible to callers.
+      const staleSession =
+        callRes.status === 404 || (callRes.status === 400 && /session/i.test(text));
+      if (staleSession && retryOnStaleSession) {
+        this.resetSession();
+        return this.call(tool, args, _userId, false);
       }
       throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`);
     }

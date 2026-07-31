@@ -171,14 +171,22 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Farm — supply / deploy to Blend (margin account → Blend reserve).
   // Must win over bare deposit_collateral and earn lend.
-  if (
-    any(text, "to blend", "into blend", "on blend", "blend reserve") &&
-    (any(text, "supply", "deposit", "deploy", "farm") || has(text, "blend"))
-  ) {
-    const isReadOnly =
-      any(text, "stats", "apy", "how much", "position", "btoken", "b-token") &&
-      !any(text, "supply", "deposit", "deploy");
-    if (!isReadOnly) {
+  // Naming Blend is NOT intent to write. The old shape had two faults: the
+  // `|| has(text, "blend")` made its own guard vacuous, and read-detection was an
+  // allow-list of markers ("stats"/"apy"/…) which no phrasing has to contain — so
+  // "which Blend reserve pays more, XLM or USDC?" became a deploy_to_blend write
+  // and then got asked to pick a USDC variant. Inverted: a write needs an actual
+  // write verb, and anything that reads as a question about rates stays a read.
+  const blendVenueNamed = any(text, "to blend", "into blend", "on blend", "blend reserve", "blend pool");
+  const blendRateRead = any(
+    text,
+    "supply apy", "supply apr", "borrow apy", "borrow apr", "stats", "utilization",
+    "pays more", "pays better", "which reserve", "which blend", "compare",
+    "position", "btoken", "b-token", "how much do i", "how much have i", "better than",
+  );
+  const blendWriteVerb = any(text, "supply", "deposit", "deploy", "farm", "add liquidity", "move my");
+  if (blendVenueNamed && blendWriteVerb && !blendRateRead) {
+    {
       return {
         kind: "write",
         op: "deploy_to_blend",

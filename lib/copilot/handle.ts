@@ -23,6 +23,9 @@ import {
   earnPoolSymbol,
   splitLeverageAmounts,
   validateLendParams,
+  needsUsdcVariant,
+  usdcVariantClarifyMessage,
+  USDC_VARIANT_OPTIONS,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
 import { routeMessage } from "./router";
@@ -58,6 +61,16 @@ function newRequestId(): string {
 
 function looksLikeWallet(id: string): boolean {
   return /^G[A-Z0-9]{55}$/.test(id);
+}
+
+/** True when the router already resolved this to a Blend-venue read. */
+function isBlendRead(routed: RoutedIntent): boolean {
+  return (
+    routed.kind === "read" &&
+    (routed.tool === "vanna_list_blend_reserves" ||
+      routed.tool === "vanna_get_blend_reserve_stats" ||
+      routed.tool === "vanna_get_blend_position")
+  );
 }
 
 export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
@@ -152,8 +165,19 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         requires_amount: true,
         leverage: kw.kind === "write" ? kw.leverage ?? null : null,
       };
-    } else if (blendRead) {
-      const sym = /\bxlm\b/i.test(message) ? "XLM" : /\busdc\b/i.test(message) ? "USDC" : null;
+    } else if (blendRead && !isBlendRead(routed)) {
+      // Only override when the router did NOT already pick a Blend read. Native
+      // function calling gets this right, and overriding it here was downgrading a
+      // correct all-reserves choice to a single-symbol one.
+      //
+      // Naming two reserves is a comparison, so a single symbol cannot answer it. The
+      // old ternary took whichever it tested first, which is why "XLM or USDC?" fetched
+      // XLM and then reported USDC as unavailable — USDC was never requested.
+      const named = [
+        /\bxlm\b/i.test(message) ? "XLM" : null,
+        /\busdc\b/i.test(message) ? "USDC" : null,
+      ].filter(Boolean) as string[];
+      const sym = named.length === 1 ? named[0]! : null;
       if (/\b(supplied|position|btoken|how much)\b/i.test(message)) {
         routed = {
           kind: "read",
@@ -413,24 +437,29 @@ async function runRead(
     message: string;
   },
 ): Promise<ChatResponse> {
-  // Sanujit F9: farmable Aquarius pools are exactly 3 (not the full AMM API dump).
+  // Farmable Aquarius pools are Vanna's own pairs, not the full AMM API dump.
+  // Counts come from VANNA_AQUARIUS_FARM_PAIRS so the prose can't drift from the
+  // list the way a hardcoded "exactly 3" did once XLM/AQUA was removed.
   if (routed.tool === "vanna_list_aquarius_pools") {
     const mcp = getMcpClient();
     try {
       const raw = await mcp.call("vanna_list_aquarius_pools", {}, ctx.userId);
       const filtered = filterAquariusFarmPools(raw);
+      const known = VANNA_AQUARIUS_FARM_PAIRS.length;
+      const found = filtered.pools.length;
+      const proseWidth = Math.max(1, ...filtered.pools.map((p) => String(p.pair).length));
       const prose =
-        `Exactly **3** Aquarius pools are farmable on Vanna:\n` +
+        `Vanna has ${known} farmable Aquarius pool${known === 1 ? "" : "s"}:\n` +
         filtered.pools
           .map(
             (p) =>
-              `• **${p.pair}** — total APY ~${p.total_apy_pct ?? "n/a"}%` +
-              (p.liquidity_usd != null ? `, liquidity ~$${p.liquidity_usd}` : "") +
-              (p.pool_address ? ` · \`${String(p.pool_address).slice(0, 8)}…\`` : ""),
+              `• ${String(p.pair).padEnd(proseWidth)}  APY ${pct(p.total_apy_pct)}` +
+              (p.liquidity_usd != null ? `  ·  liquidity ${usd(p.liquidity_usd)}` : "") +
+              (p.pool_address ? `  ·  ${String(p.pool_address).slice(0, 8)}…` : ""),
           )
           .join("\n") +
-        (filtered.pools.length < 3
-          ? `\n\n(Only ${filtered.pools.length} of the 3 known farm pairs returned live API stats; missing pairs may be offline on testnet.)`
+        (found < known
+          ? `\n\n(Only ${found} of the ${known} returned live API stats; the rest may be offline on testnet.)`
           : "");
       return {
         kind: "answer",
@@ -438,7 +467,7 @@ async function runRead(
         data: factsForUi({
           count: filtered.pools.length,
           pools: filtered.pools,
-          note: "Vanna farm surface: XLM/USDC, XLM/AQUA, XLM/USDT only.",
+          note: "Vanna farm surface: XLM/USDC and XLM/USDT only (no XLM/AQUA pool exists).",
         }),
         intent: { template_id: "query_aquarius_pools", slots: { count: filtered.pools.length } },
         mcp: { tool: "vanna_list_aquarius_pools", has_unsigned_xdr: false },
@@ -455,13 +484,18 @@ async function runRead(
     (routed.args?.symbol === "__ALL_EARN__" || routed.template_id === "query_all_earn_pools")
   ) {
     const mcp = getMcpClient();
-    const pools = ["XLM", "USDC", "AQUSDC", "SOUSDC"] as const;
+    const pools = [
+      { query: "XLM", display: "XLM" },
+      { query: "USDC", display: "BLUSDC" },
+      { query: "AQUSDC", display: "AQUSDC" },
+      { query: "SOUSDC", display: "SOUSDC" },
+    ] as const;
     const rows: Array<Record<string, unknown>> = [];
-    for (const symbol of pools) {
+    for (const p of pools) {
       try {
-        const data = await mcp.call("vanna_get_pool_stats", { symbol }, ctx.userId);
+        const data = await mcp.call("vanna_get_pool_stats", { symbol: p.query }, ctx.userId);
         rows.push({
-          symbol,
+          symbol: p.display,
           supply_apy_pct: data.supply_apy_pct ?? data.supply_apr_pct,
           borrow_apr_pct: data.borrow_apr_pct,
           utilization_pct: data.utilization_pct,
@@ -470,26 +504,31 @@ async function runRead(
           error: data.error,
         });
       } catch (e) {
-        rows.push({ symbol, error: e instanceof Error ? e.message : String(e) });
+        rows.push({ symbol: p.display, error: e instanceof Error ? e.message : String(e) });
       }
     }
     const ranked = [...rows]
       .filter((r) => r.supply_apy_pct != null && !r.error)
       .sort((a, b) => Number(b.supply_apy_pct) - Number(a.supply_apy_pct));
     const winner = ranked[0];
+    // Pad the symbol so the values line up as a column in the monospace-ish panel,
+    // and round here rather than echoing MCP's 18-decimal strings. No markdown: the
+    // UI renders this as plain text, so "**" would show as literal asterisks.
+    const width = Math.max(...rows.map((r) => String(r.symbol).length));
     const lines = rows.map((r) => {
-      if (r.error) return `• ${r.symbol}: unavailable (${r.error})`;
+      const name = String(r.symbol).padEnd(width);
+      if (r.error) return `• ${name}  unavailable (${r.error})`;
       return (
-        `• ${r.symbol}: supply APY ${r.supply_apy_pct ?? "n/a"}%, ` +
-        `borrow APR ${r.borrow_apr_pct ?? "n/a"}%, util ${r.utilization_pct ?? "n/a"}%, ` +
-        `liquidity ${r.total_liquidity_human ?? "n/a"}`
+        `• ${name}  supply ${pct(r.supply_apy_pct)}  ·  borrow ${pct(r.borrow_apr_pct)}` +
+        `  ·  used ${pct(r.utilization_pct)}  ·  liquidity ${amount(r.total_liquidity_human)}`
       );
     });
     const wantHighest = /highest|best|top/i.test(ctx.message);
     const prose = wantHighest
-      ? `Highest Vanna earn supply APY right now: **${winner?.symbol ?? "n/a"}** at ~${winner?.supply_apy_pct ?? "n/a"}%.\n\nAll earn pools:\n${lines.join("\n")}`
-      : `Vanna earn pools (4):\n${lines.join("\n")}` +
-        (winner ? `\n\nTop supply APY: ${winner.symbol} (~${winner.supply_apy_pct}%).` : "");
+      ? `${winner?.symbol ?? "n/a"} pays the most right now at ${pct(winner?.supply_apy_pct)} supply APY.\n\n` +
+        `All ${rows.length} Vanna earn pools:\n${lines.join("\n")}`
+      : `Vanna has ${rows.length} earn pools:\n${lines.join("\n")}` +
+        (winner ? `\n\n${winner.symbol} currently pays the most, at ${pct(winner.supply_apy_pct)}.` : "");
     return {
       kind: "answer",
       message: prose,
@@ -585,11 +624,68 @@ async function runWrite(
     };
   }
 
+  // A nonsensical amount is nonsense whichever token was meant, so reject it before
+  // the USDC-variant question below — otherwise "supply -5 USDC" asks the user to
+  // pick a variant and only then complains, which reads as the copilot losing track.
+  //
+  // The raw text is checked too, not just the parsed slot: Gemini silently
+  // normalises "deposit -10 XLM" to amount 10, so trusting the extracted value
+  // alone let a negative through as a positive write. Safety never depends on the
+  // model's output.
+  if (/(?:^|\s)-\s?\d+(?:\.\d+)?(?=\s|$|[A-Za-z])/.test(ctx.message)) {
+    return {
+      kind: "blocked",
+      message:
+        "That amount is negative, which isn't a valid size for any action. " +
+        `Give a positive figure — e.g. “${action.op.replace(/_/g, " ")} 10 ${action.asset ?? "XLM"}”.`,
+      intent: { template_id: action.op, slots: { asset: action.asset, raw: ctx.message.slice(0, 80) } },
+      request_id: ctx.request_id,
+    };
+  }
+  if (action.amount != null && Number.isFinite(action.amount) && action.amount <= 0) {
+    return {
+      kind: "blocked",
+      message: `Amount must be positive — “${action.amount}” is not valid. e.g. “${action.op.replace(/_/g, " ")} 10 ${action.asset ?? "XLM"}”.`,
+      intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
+      request_id: ctx.request_id,
+    };
+  }
+
+  // Leverage cap, stated up front. MCP and the Sign Service remain the authority on
+  // risk, but asking for 20× and being answered with "how much do you want to supply?"
+  // hides the fact that the figure was never acceptable (Sanujit FW14). Cheap pre-flight:
+  // name the ceiling before spending a round-trip that will be refused anyway.
+  if (action.leverage != null && Number.isFinite(action.leverage) && action.leverage > copilotConfig.maxLeverage) {
+    return {
+      kind: "blocked",
+      message:
+        `${action.leverage}× leverage is above the maximum this protocol allows. ` +
+        `The cap is ${copilotConfig.maxLeverage}× — retry at ${copilotConfig.maxLeverage}× or lower, ` +
+        `e.g. “farm Blend at ${Math.min(3, copilotConfig.maxLeverage)}× with 100 BLUSDC”.`,
+      intent: { template_id: action.op, slots: { leverage: action.leverage, max: copilotConfig.maxLeverage } },
+      request_id: ctx.request_id,
+    };
+  }
+
   let smartAccount = ctx.smartAccount;
   if (action.requires_account && !smartAccount && ctx.trader) {
     smartAccount = await resolveSmartAccount(getMcpClient(), ctx.trader, ctx.userId);
   }
 
+  // Bare "USDC" is ambiguous (three SACs). Always ask — except highest-yield
+  // path ranks concrete pools first and rewrites asset to BLUSDC/AQUSDC/SOUSDC.
+  const usdcOps = new Set([
+    "lend",
+    "supply",
+    "redeem",
+    "deposit_collateral",
+    "withdraw_collateral",
+    "borrow",
+    "repay",
+    "deposit_and_borrow",
+    "deploy_to_blend",
+    "supply_to_blend",
+  ]);
   // ── deposit_and_borrow → sequential deposit THEN borrow ─────────────────
   // MCP's combined tool runs is_borrow_allowed against CURRENT collateral only
   // (deposit leg is not credited in the pre-flight). So "deposit 20 & borrow 2×"
@@ -622,11 +718,13 @@ async function runWrite(
       smartAccount,
       message: `step 1/2 deposit ${deposit} ${collSym}`,
     });
+    // Plain text, no markdown — the panel renders this verbatim. Keep it to what the
+    // user needs: the two steps and the amounts. The reason MCP can't do it in one
+    // transaction is our problem, not theirs.
     const nextNote =
-      `\n\n**Plan (2 steps)** — MCP cannot count a same-tx deposit in the combined tool’s risk check, so the copilot sequences it:\n` +
-      `1) Deposit ${deposit} ${collSym} as collateral (this step)\n` +
-      `2) After confirmation, automatically borrow ${borrow} ${collSym} (~${action.leverage ?? 2}× with a safety buffer)\n` +
-      `You only approve each signature; the agent chooses the order.`;
+      `\n\nThis runs as 2 steps:\n` +
+      `  1. Deposit ${amount(deposit)} ${collSym} as collateral  ← this step\n` +
+      `  2. Borrow ${amount(borrow)} ${collSym} against it (~${action.leverage ?? 2}×), once step 1 confirms`;
     if (step1Res.kind === "needs_wallet_sign" || step1Res.kind === "needs_auto_sign" || step1Res.kind === "executed") {
       return {
         ...step1Res,
@@ -684,6 +782,35 @@ async function runWrite(
     } catch {
       /* fall through with user-stated asset */
     }
+  }
+
+  // After highest-yield pick, asset is already BLUSDC/AQUSDC/SOUSDC/XLM.
+  // For any other write still holding bare "USDC", force a chip selection.
+  if (usdcOps.has(action.op) && needsUsdcVariant(action.asset) && !highestPickFacts) {
+    return {
+      kind: "clarification",
+      message: usdcVariantClarifyMessage(action.op.replace(/_/g, " ")),
+      clarify_options: USDC_VARIANT_OPTIONS.map((o) => ({
+        id: o.id,
+        label: o.label,
+        description: o.description,
+      })),
+      pending_write: {
+        op: action.op,
+        asset: null,
+        amount: action.amount ?? null,
+        leverage: action.leverage ?? null,
+      },
+      intent: {
+        template_id: "clarify_usdc_variant",
+        slots: { op: action.op, amount: action.amount, asset: "USDC" },
+      },
+      data: {
+        usdc_variants: USDC_VARIANT_OPTIONS.map((o) => o.id),
+        note: "Pick BLUSDC, AQUSDC, or SOUSDC — they are not interchangeable.",
+      },
+      request_id: ctx.request_id,
+    };
   }
 
   // Earn supply: clarify amount with live APY, block bad amounts / unsupported assets,
@@ -1114,10 +1241,40 @@ function mapToolToOp(tool: string): string {
   return m[tool] || tool.replace(/^vanna_/, "");
 }
 
-/** Sanujit farm surface — only these three Aquarius pairs. */
+/**
+ * Display helpers for prose this server writes itself (as opposed to prose Gemini
+ * writes — that path is rounded in `vertexExplain`). MCP returns contract precision,
+ * e.g. "14.977890082244174400", which is unreadable in a sentence.
+ */
+function pct(v: unknown): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(2)}%` : "n/a";
+}
+function amount(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "n/a";
+  return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+function usd(v: unknown): string {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "n/a";
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * Vanna's farmable Aquarius pairs. Must mirror `AQUARIUS_POOLS` in
+ * lib/aquarius-utils.ts, which is the source of truth — it carries the actual
+ * pool contract addresses the app transacts against.
+ *
+ * XLM/AQUA is deliberately absent: the protocol has no XLM/AQUA pool (confirmed
+ * by the contracts owner, and `AQUARIUS_POOLS` holds only XLM/USDC and XLM/USDT).
+ * It was previously listed here from the test-prompt doc, and because the filter
+ * below matches against Aquarius's *whole* public API dump, an unrelated AQUA pool
+ * satisfied the pair and got presented as farmable — with blank APY and liquidity,
+ * since Vanna has no position or address for it.
+ */
 const VANNA_AQUARIUS_FARM_PAIRS: Array<{ pair: string; a: string; b: string }> = [
   { pair: "XLM/USDC", a: "XLM", b: "USDC" },
-  { pair: "XLM/AQUA", a: "XLM", b: "AQUA" },
   { pair: "XLM/USDT", a: "XLM", b: "USDT" },
 ];
 
@@ -1188,15 +1345,21 @@ async function pickHighestEarnPool(
   mcp: ReturnType<typeof getMcpClient>,
   userId: string,
 ): Promise<{ symbol: string; supply_apy_pct: string | number; ranking: string } | null> {
-  const pools = ["XLM", "USDC", "AQUSDC", "SOUSDC"] as const;
+  // Query each concrete pool; map MCP "USDC" alias → BLUSDC for user clarity.
+  const pools = [
+    { query: "XLM", display: "XLM" },
+    { query: "USDC", display: "BLUSDC" },
+    { query: "AQUSDC", display: "AQUSDC" },
+    { query: "SOUSDC", display: "SOUSDC" },
+  ] as const;
   const rows: Array<{ symbol: string; apy: number; apyRaw: string | number }> = [];
-  for (const symbol of pools) {
+  for (const p of pools) {
     try {
-      const data = await mcp.call("vanna_get_pool_stats", { symbol }, userId);
+      const data = await mcp.call("vanna_get_pool_stats", { symbol: p.query }, userId);
       if (data.error) continue;
       const apyRaw = (data.supply_apy_pct ?? data.supply_apr_pct) as string | number;
       const apy = Number(apyRaw);
-      if (Number.isFinite(apy)) rows.push({ symbol, apy, apyRaw });
+      if (Number.isFinite(apy)) rows.push({ symbol: p.display, apy, apyRaw });
     } catch {
       /* skip */
     }

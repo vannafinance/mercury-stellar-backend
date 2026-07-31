@@ -69,6 +69,12 @@ interface Simulation {
   asset?: string | null;
 }
 
+interface ClarifyOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 interface ChatResponse {
   kind:
     | "answer"
@@ -91,6 +97,13 @@ interface ChatResponse {
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
   request_id?: string | null;
+  clarify_options?: ClarifyOption[] | null;
+  pending_write?: {
+    op: string;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+  } | null;
   auto_sign?: AutoSignPrompt | null;
   mcp?: {
     tool?: string | null;
@@ -516,11 +529,13 @@ export function CopilotWorkspace() {
     };
   }, []);
 
-  // Initial + wallet-change paint of the right rail.
+  // Initial + wallet-change paint of the right rail. Intentionally keyed on `address`
+  // only — including refreshRailStats would re-run this on every render it changes on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!address) return;
     void refreshRailStats({ force: true });
-  }, [address]); // eslint-disable-line react-hooks/exhaustive-deps — mount/wallet only
+  }, [address]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -653,6 +668,37 @@ export function CopilotWorkspace() {
       );
     },
     [postCopilot, customTx, customDay, response, submitted],
+  );
+
+  /**
+   * Resume a write after the user picks a USDC variant (BLUSDC / AQUSDC / SOUSDC).
+   * Server stored the pending op+amount; we inject the chosen asset and re-run.
+   */
+  const pickClarifyOption = useCallback(
+    async (opt: ClarifyOption) => {
+      const pw = response?.pending_write;
+      if (!pw?.op) {
+        // Fallback: rephrase as a full message
+        await run(`${opt.id}`);
+        return;
+      }
+      const label = `${pw.op.replace(/_/g, " ")} ${pw.amount ?? ""} ${opt.id}`.trim();
+      setSubmitted(label);
+      setIntentText(label);
+      await postCopilot(
+        {
+          message: label,
+          pending_write: {
+            op: pw.op,
+            asset: opt.id,
+            amount: pw.amount ?? null,
+            leverage: pw.leverage ?? null,
+          },
+        },
+        label,
+      );
+    },
+    [response, postCopilot, run],
   );
 
   /**
@@ -1051,6 +1097,39 @@ export function CopilotWorkspace() {
                     </div>
                     {sim && <ImpactPanel sim={sim} />}
                     {response.data && <FactsGrid data={response.data} />}
+
+                    {/* USDC variant (or other) clarify chips */}
+                    {response.kind === "clarification" &&
+                      response.clarify_options &&
+                      response.clarify_options.length > 0 && (
+                        <div className="mt-5 flex flex-col gap-2.5">
+                          <p className="font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
+                            choose usdc type
+                          </p>
+                          <div className="flex flex-wrap gap-2.5">
+                            {response.clarify_options.map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                disabled={loading}
+                                onClick={() => void pickClarifyOption(opt)}
+                                title={opt.description}
+                                className="rounded-2xl border border-violet-300/50 bg-[var(--cp-violet-soft)] px-4 py-3 text-left transition-colors hover:border-violet-500 disabled:opacity-50"
+                              >
+                                <span className="block font-mono text-[13px] font-semibold text-violet-600">
+                                  {opt.label}
+                                </span>
+                                {opt.description && (
+                                  <span className="mt-0.5 block max-w-[220px] text-[12px] leading-snug text-vgray-500">
+                                    {opt.description}
+                                  </span>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                     <div className="mt-[22px] flex flex-wrap gap-2.5">
                       <button
                         type="button"
@@ -1080,7 +1159,10 @@ export function CopilotWorkspace() {
                 {phase === "staged" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <Eyebrow n="03">Staged action</Eyebrow>
+                      {/* With auto-approve on this never waits for a click, so calling it
+                          "Staged action" and showing a signature request — then submitting
+                          a second later anyway — read as the copilot changing its mind. */}
+                      <Eyebrow n="03">{willAutoSubmit ? "Auto-approving" : "Staged action"}</Eyebrow>
                       {decision && <RiskChip decision={decision} />}
                     </div>
 
@@ -1089,8 +1171,10 @@ export function CopilotWorkspace() {
                         <p className="whitespace-pre-wrap text-h6 font-semibold text-vgray-900">
                           {response.preview?.human_summary || response.message}
                         </p>
-                        {/* Full agent note (e.g. pool ranking) when longer than the title */}
-                        {response.message &&
+                        {/* Full agent note (e.g. the 2-step plan). Suppressed while
+                            auto-approving: it talks about needing a signature. */}
+                        {!willAutoSubmit &&
+                          response.message &&
                           response.preview?.human_summary &&
                           response.message.trim() !== response.preview.human_summary.trim() && (
                             <p className="mt-2 whitespace-pre-wrap text-body-2 leading-relaxed text-vgray-600">
@@ -1146,13 +1230,6 @@ export function CopilotWorkspace() {
 
                     {response.data && <FactsGrid data={response.data} />}
 
-                    {/* Auto-submit must never be silent — say so before it lands. */}
-                    {willAutoSubmit && (
-                      <p className="mt-[18px] flex items-center gap-[7px] font-mono text-[11px] text-violet-500">
-                        <ShieldCheck size={13} />
-                        auto-approve on — your session key is signing this without a click
-                      </p>
-                    )}
                     {sessionSigning && !willAutoSubmit && (
                       <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: AMBER }}>
                         <CircleAlert size={13} className="mt-px shrink-0" />
@@ -1162,23 +1239,34 @@ export function CopilotWorkspace() {
                       </p>
                     )}
 
-                    <button
-                      type="button"
-                      disabled={!address || signing}
-                      onClick={signWithWallet}
-                      className="mt-[22px] w-full rounded-full bg-gradient px-6 py-4 text-btn-md font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                      style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
-                    >
-                      {signing
-                        ? willAutoSubmit
-                          ? "Auto-approving…"
-                          : "Signing…"
-                        : !address
-                          ? "Connect wallet to sign"
-                          : action?.multi_leg
-                            ? "Confirm all legs & sign"
-                            : "Approve & sign"}
-                    </button>
+                    {/* One state, not two. Auto-approve shows a progress line and no
+                        button at all — offering "Approve & sign" for a second before
+                        submitting on its own is the confusing part. */}
+                    {willAutoSubmit ? (
+                      <div
+                        className="mt-[22px] flex items-center gap-2.5 rounded-full px-6 py-4 font-mono text-[12px] font-semibold text-violet-500"
+                        style={{ background: "var(--cp-violet-soft)", border: "1px solid var(--cp-violet-soft-border)" }}
+                      >
+                        <Loader2 size={15} className="animate-spin" />
+                        auto-approving — signing and submitting for you, no click needed
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!address || signing}
+                        onClick={signWithWallet}
+                        className="mt-[22px] w-full rounded-full bg-gradient px-6 py-4 text-btn-md font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                        style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
+                      >
+                        {signing
+                          ? "Signing…"
+                          : !address
+                            ? "Connect wallet to sign"
+                            : action?.multi_leg
+                              ? "Confirm all legs & sign"
+                              : "Approve & sign"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={reset}
@@ -1411,20 +1499,54 @@ export function CopilotWorkspace() {
           <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
             <div className="flex items-center justify-between gap-3">
               <Eyebrow>Autonomy</Eyebrow>
-              <button
-                type="button"
-                disabled={!sessionSigningAvailable}
-                onClick={() => address && setAutoApprove(address, !autoApprove)}
-                className="flex items-center gap-[7px] font-mono text-[11px] font-semibold disabled:cursor-default"
+              <span
+                className="flex items-center gap-[7px] font-mono text-[11px] font-semibold"
                 style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }}
               >
                 <span
                   className="h-1.5 w-1.5 rounded-full"
                   style={{ background: sessionSigning ? VIOLET : "var(--color-vgray-400)" }}
                 />
-                {sessionSigning ? "session signing on" : "manual signing"}
-              </button>
+                {sessionSigning ? "auto-approve on" : "manual signing"}
+              </span>
             </div>
+
+            {/*
+              The real switch, moved here from the wallet dropdown: this setting only
+              affects the copilot, so it belongs on the copilot's own surface where the
+              user can see its state while a write is staged — buried in the wallet menu
+              it was invisible at the moment it mattered.
+            */}
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sessionSigning}
+              disabled={!sessionSigningAvailable}
+              onClick={() => address && setAutoApprove(address, !autoApprove)}
+              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors enabled:hover:border-violet-400 disabled:opacity-60"
+            >
+              <ShieldCheck size={16} className="shrink-0" style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }} />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
+                <span className="block text-[11px] text-vgray-500">
+                  {!sessionSigningAvailable
+                    ? "Vanna embedded wallet only"
+                    : sessionSigning
+                      ? "Cleared writes run without a click"
+                      : "Every write waits for your approval"}
+                </span>
+              </span>
+              <span
+                className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
+                style={{ background: sessionSigning ? VIOLET : "var(--color-vgray-200)" }}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
+                    sessionSigning ? "translate-x-4" : "translate-x-0"
+                  }`}
+                />
+              </span>
+            </button>
             <p className="mt-3 text-body-2 text-vgray-500">
               {sessionSigning
                 ? "Writes that clear the Sign Service policy execute without a signing prompt. Anything outside those caps still waits for you."

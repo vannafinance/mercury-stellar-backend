@@ -53,6 +53,18 @@ export const copilotConfig = {
   },
 
   /**
+   * Routing mechanism.
+   *   "fc"   — native function calling: tool names and argument values are constrained
+   *            by schema, so an invalid tool or a non-existent pool cannot be returned.
+   *   "json" — the older path that pastes the tool catalogue into the prompt as prose.
+   * "fc" degrades to "json" by itself if the endpoint rejects the schema, so this only
+   * needs setting to pin the old behaviour deliberately.
+   */
+  get router(): "fc" | "json" {
+    return env("COPILOT_ROUTER", "fc").toLowerCase() === "json" ? "json" : "fc";
+  },
+
+  /**
    * Local risk env vars are NO LONGER enforced by the copilot.
    * Health factor, leverage, and spend caps are enforced by the MCP server
    * and the Sign Service auto-sign policy. Kept as optional informational defaults only.
@@ -71,4 +83,13 @@ export const copilotConfig = {
   },
 };
 
-export const TEMPLATE_COUNT = 50; // MCP tools surface
+/**
+ * Tools the MCP server exposes, shown in the health chip.
+ *
+ * 14 since the 2026-07-31 consolidation: oracle, protocol_info, account,
+ * margin_status, margin_trade, earn_market, earn_position, earn_write,
+ * farm_overview, farm_blend, farm_lp, swap, wallet, sign. Each dispatches on an
+ * `action`, so the legacy fine-grained names are mapped in mcp-client.ts.
+ * Verify with `tools/list` after an MCP redeploy.
+ */
+export const TEMPLATE_COUNT = 14;

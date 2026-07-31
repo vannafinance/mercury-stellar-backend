@@ -79,6 +79,12 @@ export interface AutoSignPrompt {
   raw?: Record<string, unknown> | null;
 }
 
+export interface ClarifyOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 export interface ChatResponse {
   kind:
     | "answer"
@@ -95,6 +101,18 @@ export interface ChatResponse {
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null;
   request_id?: string | null;
+  /**
+   * Structured choices for clarifications (e.g. BLUSDC / AQUSDC / SOUSDC).
+   * UI renders buttons; selecting one re-runs the pending_write with that asset.
+   */
+  clarify_options?: ClarifyOption[] | null;
+  /** When set with clarify_options, resume this write after the user picks. */
+  pending_write?: {
+    op: string;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+  } | null;
   auto_sign?: AutoSignPrompt | null;
   /** Proof the live MCP server was used */
   mcp?: {

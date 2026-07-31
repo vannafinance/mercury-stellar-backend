@@ -71,6 +71,22 @@ export class MarginAccountService {
   // Local storage key for margin accounts
   private static STORAGE_KEY = 'vanna_margin_accounts';
 
+  /**
+   * Whether the localStorage account cache is usable here.
+   *
+   * These read/write helpers are reached from BOTH the browser and the server:
+   * `/api/account/[addr]` calls `discoverExistingAccount` →
+   * `getMarginAccountFromRegistry` → `storeMarginAccount`, and there is no
+   * `localStorage` in a Node route. Without this guard every server-side
+   * discovery threw `ReferenceError: localStorage is not defined` — swallowed by
+   * the local try/catch, so it never broke the response, but it logged an error
+   * per request and buried real problems in the terminal. The cache is a
+   * browser-only convenience; on the server we simply skip it.
+   */
+  private static canUseLocalStorage(): boolean {
+    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+  }
+
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
     if (normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC') {
@@ -412,6 +428,7 @@ export class MarginAccountService {
    *          discarded so callers re-discover against the live contract.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
+    if (!MarginAccountService.canUseLocalStorage()) return null;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
       if (!stored) return null;
@@ -441,6 +458,10 @@ export class MarginAccountService {
    *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
+    // Discovery also runs server-side (/api/account/[addr] → getMarginAccountFromRegistry),
+    // where there is no localStorage. Caching is a browser-only nicety, so skip it
+    // rather than throwing a ReferenceError the caller only sees as log noise.
+    if (!MarginAccountService.canUseLocalStorage()) return;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
       const accounts: Record<string, MarginAccount> = JSON.parse(stored);
@@ -1027,6 +1048,7 @@ export class MarginAccountService {
    * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
+    if (!MarginAccountService.canUseLocalStorage()) return;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
       const accounts: Record<string, MarginAccount> = JSON.parse(stored);

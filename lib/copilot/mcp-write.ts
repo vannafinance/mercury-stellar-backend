@@ -60,12 +60,70 @@ function looksC(a?: string | null): a is string {
 }
 
 /**
+ * Three distinct testnet USDC SACs (post 2026-07-19 rewire). They are NOT
+ * interchangeable — users must pick one. Plain "USDC" is ambiguous.
+ */
+export const USDC_VARIANT_OPTIONS = [
+  {
+    id: "BLUSDC",
+    label: "BLUSDC",
+    description: "Blend USDC — Vanna earn BLUSDC pool + Blend farm / primary margin USDC",
+  },
+  {
+    id: "AQUSDC",
+    label: "AQUSDC",
+    description: "Aquarius USDC — earn AqUSDC pool + Aquarius-side margin collateral",
+  },
+  {
+    id: "SOUSDC",
+    label: "SOUSDC",
+    description: "Soroswap USDC — earn SoUSDC pool + Soroswap-side margin collateral",
+  },
+] as const;
+
+export type UsdcVariantId = (typeof USDC_VARIANT_OPTIONS)[number]["id"];
+
+/** True when the user said bare USDC without naming BLUSDC / AQUSDC / SOUSDC. */
+export function needsUsdcVariant(asset?: string | null): boolean {
+  if (asset == null || String(asset).trim() === "") return false;
+  const a = String(asset).toUpperCase().replace(/\s+/g, "");
+  // Explicit variants are fine
+  if (
+    a === "BLUSDC" ||
+    a === "BLEND_USDC" ||
+    a === "BLENDUSDC" ||
+    a === "AQUSDC" ||
+    a === "AQUARIUS_USDC" ||
+    a === "AQUARIUSUSDC" ||
+    a === "SOUSDC" ||
+    a === "SOROSWAP_USDC" ||
+    a === "SOROSWAPUSDC"
+  ) {
+    return false;
+  }
+  // Bare USDC (or "USDC pool" resolved to USDC)
+  return a === "USDC";
+}
+
+export function usdcVariantClarifyMessage(context: string): string {
+  return (
+    `Which USDC do you mean for ${context}? On this testnet there are three separate tokens ` +
+    `(not interchangeable):\n` +
+    `• **BLUSDC** — Blend USDC (most common for Vanna earn / Blend farm)\n` +
+    `• **AQUSDC** — Aquarius USDC\n` +
+    `• **SOUSDC** — Soroswap USDC\n` +
+    `Pick one below (or type e.g. “lend 10 BLUSDC”).`
+  );
+}
+
+/**
  * Margin collateral symbols on this deploy (AccountManager allowlist):
  * XLM, BLUSDC, AQUSDC, SOUSDC — plain "USDC" is NOT allowed as collateral.
- * Earn pool "USDC" maps to BLUSDC for margin deposit/borrow.
+ * Call needsUsdcVariant() first when the user only said "USDC".
  */
 export function marginCollateralSymbol(asset?: string | null): string {
-  const a = (asset || "USDC").toUpperCase();
+  const a = (asset || "").toUpperCase();
+  if (!a) return "BLUSDC";
   if (a === "USDC" || a === "BLEND_USDC" || a === "BLUSDC") return "BLUSDC";
   if (a === "AQUARIUS_USDC" || a === "AQUSDC") return "AQUSDC";
   if (a === "SOROSWAP_USDC" || a === "SOUSDC") return "SOUSDC";
@@ -88,12 +146,16 @@ export function splitLeverageAmounts(
   return { deposit, borrow: Math.min(rawBorrow, maxSafe) };
 }
 
-/** Normalize earn-pool symbols the way MCP does (USDC → BLUSDC pool alias). */
+/**
+ * Normalize earn-pool symbols for MCP.
+ * Prefer explicit BLUSDC/AQUSDC/SOUSDC. Bare USDC is treated as BLUSDC only
+ * after the user has been asked (see needsUsdcVariant).
+ */
 export function earnPoolSymbol(asset?: string | null): string {
   const a = (asset || "USDC").toUpperCase();
   if (a === "AQUARIUS_USDC") return "AQUSDC";
   if (a === "SOROSWAP_USDC") return "SOUSDC";
-  if (a === "BLEND_USDC") return "BLUSDC";
+  if (a === "BLEND_USDC" || a === "USDC") return "BLUSDC";
   return a;
 }
 
@@ -153,7 +215,10 @@ export function validateLendParams(params: {
   amount?: number | null;
   trader?: string | null;
 }): string | null {
-  if (!looksG(params.trader)) return "Connect your wallet to lend into an earn pool.";
+  // Validate the REQUEST before demanding a wallet. Whether "20 DOGE" or "-5 USDC"
+  // makes sense has nothing to do with being connected, and checking the wallet
+  // first meant every malformed ask came back as "Connect your wallet to lend",
+  // hiding the actual reason (Sanujit EW8 / EW10).
   const symbol = earnPoolSymbol(params.asset);
   if (!isSupportedEarnSymbol(symbol)) {
     return (
@@ -162,19 +227,21 @@ export function validateLendParams(params: {
     );
   }
   const amt = params.amount;
-  if (amt == null || !(typeof amt === "number") || !Number.isFinite(amt)) {
-    return null; // missing amount handled separately (may include live APY)
-  }
-  if (amt <= 0) {
+  const amountGiven = amt != null && typeof amt === "number" && Number.isFinite(amt);
+  if (amountGiven && amt <= 0) {
     return `Amount must be positive — “${amt}” is not valid. e.g. “supply 10 ${symbol}”.`;
   }
-  if (amt <= MIN_LEND_AMOUNT) {
+  if (amountGiven && amt <= MIN_LEND_AMOUNT) {
     return (
       `That amount (${amt} ${symbol}) is dust — at or below the minimum ${MIN_LEND_AMOUNT}. ` +
       `Try a larger figure, e.g. “supply 1 ${symbol}”.`
     );
   }
-  return null;
+
+  // Request is coherent; now it needs a wallet to go anywhere.
+  if (!looksG(params.trader)) return "Connect your wallet to lend into an earn pool.";
+
+  return null; // a missing amount is handled separately (that reply carries live APY)
 }
 
 /**
@@ -374,8 +441,9 @@ export function mapOpToMcpStep(
     }
     case "deploy_to_blend":
     case "supply_to_blend": {
-      // Farm write: deposit from wallet into margin account and deploy into Blend.
-      // Sanujit FW1 — source is the margin account; MCP tool is vanna_deploy_to_blend.
+      // Farm write via consolidated MCP vanna_farm_blend.
+      // FW1 plain supply → action=supply (legacy name vanna_blend_supply).
+      // Levered farm → action=deploy (legacy name vanna_deploy_to_blend).
       if (!trader || !smart) {
         return { blocker: "Need wallet + smart account to supply to Blend. Create a margin account first." };
       }
@@ -388,14 +456,28 @@ export function mapOpToMcpStep(
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "AQUSDC" || symbol === "SOUSDC"
           ? "USDC"
           : "XLM";
-      // Plain supply (no leverage): borrow 0. Levered farm uses leverage → borrow.
       let bor = 0;
       if (params.borrow_amount != null && params.borrow_amount > 0) {
         bor = params.borrow_amount;
       } else if (params.leverage != null && params.leverage > 1) {
         bor = splitLeverageAmounts(dep, params.leverage, null).borrow;
       }
-      const totalIn = dep + bor;
+      const leveraged = bor > 0;
+      if (!leveraged) {
+        // Prefer the simple farm_blend supply path (no deposit_borrow_and_deploy packing).
+        return {
+          step: {
+            tool: "vanna_blend_supply",
+            args: {
+              smart_account: smart,
+              symbol: blendSym,
+              amount: String(dep),
+              trader,
+            },
+            label: `Supply ${dep} ${blendSym} to Blend`,
+          },
+        };
+      }
       const blendPool = params.blend_pool_address;
       if (!blendPool || !looksC(blendPool)) {
         return {
@@ -413,16 +495,12 @@ export function mapOpToMcpStep(
             token_symbol: blendSym,
             blend_pool_address: blendPool,
             blend_tokens_in: [blendSym],
-            // Same-asset deposit into Blend reserve (not a swap).
             blend_tokens_out: [blendSym],
-            blend_amounts_in: [String(totalIn > 0 ? totalIn : dep)],
+            blend_amounts_in: [String(dep + bor)],
             blend_amounts_out_min: ["0"],
             trader,
           },
-          label:
-            bor > 0
-              ? `Deploy ${dep} + borrow ${bor} ${blendSym} to Blend`
-              : `Supply ${dep} ${blendSym} to Blend`,
+          label: `Deploy ${dep} + borrow ${bor} ${blendSym} to Blend`,
         },
       };
     }
@@ -531,28 +609,23 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
     code === "simulation_failed" ||
     /simulation failed|hosterror|contract error|#3|error\(contract,\s*#3\)/i.test(raw)
   ) {
-    if (tool === "vanna_deploy_to_blend") {
+    if (tool === "vanna_deploy_to_blend" || tool === "vanna_blend_supply") {
       const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
-      // Event logs show deposit_amount WAD correct, but execute_direct Blend
-      // Deposit with amount=0 — classic MCP ExternalProtocolCall packing bug.
       const zeroAmount =
         /\[Deposit\].*\[0\]|amount:\s*0|amount_type:\s*0.*amount:\s*0|\[XLM\],\s*\[0\]/i.test(raw);
       if (zeroAmount || /#1216|error\(contract,\s*#1216\)/i.test(raw)) {
         return (
-          `Blend farm deploy failed — MCP/on-chain packed a **zero** Blend deposit amount ` +
-          `(execute_direct shows [Deposit] … [0]) even though deposit_amount was non-zero.\n\n` +
-          `This is an **MCP server bug** in \`vanna_deploy_to_blend\` / ` +
-          `deposit_borrow_and_deploy_blend ExternalProtocolCall packing (amount_in → 0). ` +
-          `Copilot already routes correctly (not deposit_collateral). ` +
-          `No transaction was submitted.\n\n` +
-          `Detail: ${firstLine}`
+          `Blend farm write failed — MCP/on-chain packed a **zero** Blend amount ` +
+          `(execute_direct shows [Deposit] … [0]).\n\n` +
+          `Escalate to MCP: \`vanna_farm_blend\` supply/deploy packing. ` +
+          `No transaction was submitted.\n\nDetail: ${firstLine}`
         );
       }
       return (
-        `Blend farm deploy simulation failed (this is **not** a margin collateral deposit).\n` +
+        `Blend farm simulation failed (not a margin collateral deposit).\n` +
         `${firstLine}\n\n` +
-        `Common causes: insufficient free balance in the margin account after the deposit leg, ` +
-        `Blend pool constraints, or MCP packing a zero deploy amount. No transaction was submitted.`
+        `Common causes: not enough free balance of that asset inside the margin account, ` +
+        `Blend pool constraints, or MCP simulation rejection. No transaction was submitted.`
       );
     }
     if (tool === "vanna_lend") {
@@ -744,12 +817,11 @@ export async function executeMcpWrite(
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
-        message:
-          "Transaction built and simulated by MCP — it just needs a signature.\n\n" +
-          "Auto-sign is unavailable because the Sign Service requires a user-scoped token " +
-          "(a WorkOS user assertion). The copilot server holds only an M2M client token, which " +
-          "proves the app's identity but not yours, so it cannot sign on your behalf. " +
-          "Press approve to sign this exact transaction with your connected wallet.",
+        // Kept to one line. The M2M-vs-user-assertion reason is our infrastructure
+        // detail, not something the user can act on — and when session signing is on
+        // the UI submits this without a click, so a paragraph about pressing approve
+        // actively contradicts what they are about to see.
+        message: "Built and simulated by MCP — it just needs your signature.",
         mcp_trace: baseTrace,
       };
     }
