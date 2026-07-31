@@ -129,29 +129,7 @@ has "gcloud compute url-maps describe ${NAME}-urlmap --global" || \
   gcloud compute url-maps create "${NAME}-urlmap" \
     --default-service="${NAME}-backend" --global
 
-say "5/8 Google-managed TLS certificate for ${DOMAIN}"
-# Provisioning stays PROVISIONING until DNS resolves to LB_IP, then flips to
-# ACTIVE on its own. Usually 15-60 min. Nothing to do but wait.
-has "gcloud compute ssl-certificates describe ${NAME}-cert --global" || \
-  gcloud compute ssl-certificates create "${NAME}-cert" \
-    --domains="$DOMAIN" --global
-
-say "6/8 HTTPS proxy + forwarding rule"
-has "gcloud compute target-https-proxies describe ${NAME}-https-proxy --global" || \
-  gcloud compute target-https-proxies create "${NAME}-https-proxy" \
-    --url-map="${NAME}-urlmap" \
-    --ssl-certificates="${NAME}-cert" \
-    --global
-
-has "gcloud compute forwarding-rules describe ${NAME}-fr --global" || \
-  gcloud compute forwarding-rules create "${NAME}-fr" \
-    --global \
-    --load-balancing-scheme=EXTERNAL_MANAGED \
-    --target-https-proxy="${NAME}-https-proxy" \
-    --address="${NAME}-ip" \
-    --ports=443
-
-say "7/8 HTTP -> HTTPS redirect on the same IP"
+say "5/8 HTTP -> HTTPS redirect on the same IP"
 has "gcloud compute url-maps describe ${NAME}-redirect --global" || \
   gcloud compute url-maps import "${NAME}-redirect" --global --quiet --source=/dev/stdin <<EOF
 name: ${NAME}-redirect
@@ -171,6 +149,60 @@ has "gcloud compute forwarding-rules describe ${NAME}-fr-http --global" || \
     --target-http-proxy="${NAME}-http-proxy" \
     --address="${NAME}-ip" \
     --ports=80
+
+say "6/8 DNS gate"
+# The certificate below cannot be created usefully until DNS already points at
+# LB_IP. Google validates on creation; if the record is not live yet the domain
+# lands in FAILED_NOT_VISIBLE, and it retries on its own schedule — hours, not
+# minutes. Recovering means deleting and recreating the certificate.
+#
+# So stop here instead, print the record, and let the operator re-run. Exit 0:
+# this is an expected intermediate state, not a failure.
+resolve_a() {
+  if command -v dig >/dev/null 2>&1; then
+    dig +short A "$1" @8.8.8.8 2>/dev/null | grep -E '^[0-9.]+$' | head -1
+  else
+    getent ahostsv4 "$1" 2>/dev/null | awk '{print $1; exit}'
+  fi
+}
+
+CURRENT_A="$(resolve_a "$DOMAIN")"
+if [ "$CURRENT_A" != "$LB_IP" ]; then
+  cat <<EOF
+
+  $DOMAIN currently resolves to: ${CURRENT_A:-<nothing>}
+  It needs to resolve to:        $LB_IP
+
+  Add this record, wait for it to propagate, then re-run this script:
+
+    A    $DOMAIN    $LB_IP    (TTL 60)
+
+  Everything except the TLS certificate and the HTTPS frontend is already in
+  place. Re-running skips all of it and picks up from here.
+
+EOF
+  exit 0
+fi
+echo "  $DOMAIN -> $CURRENT_A, matches the load balancer"
+
+say "7/8 Google-managed TLS certificate for ${DOMAIN}"
+has "gcloud compute ssl-certificates describe ${NAME}-cert --global" || \
+  gcloud compute ssl-certificates create "${NAME}-cert" \
+    --domains="$DOMAIN" --global
+
+has "gcloud compute target-https-proxies describe ${NAME}-https-proxy --global" || \
+  gcloud compute target-https-proxies create "${NAME}-https-proxy" \
+    --url-map="${NAME}-urlmap" \
+    --ssl-certificates="${NAME}-cert" \
+    --global
+
+has "gcloud compute forwarding-rules describe ${NAME}-fr --global" || \
+  gcloud compute forwarding-rules create "${NAME}-fr" \
+    --global \
+    --load-balancing-scheme=EXTERNAL_MANAGED \
+    --target-https-proxy="${NAME}-https-proxy" \
+    --address="${NAME}-ip" \
+    --ports=443
 
 say "8/8 Done"
 cat <<EOF
