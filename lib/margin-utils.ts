@@ -27,36 +27,6 @@ import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
 
-// The localStorage-backed account cache below is best-effort and browser-only.
-// `MarginAccountService` is shared code: the discovery path also runs on the
-// server (app/api/account/[addr] calls `discoverExistingAccount`), where
-// `localStorage` is undefined. Guarding here keeps the chain reads working
-// server-side and simply skips the cache.
-const isBrowser = () => typeof window !== "undefined";
-
-/**
- * Turn a failed `getAddress()` result into an actionable message.
- *
- * Every write below starts by resolving the signer. When that fails these call
- * sites all used to return the same opaque `'Failed to get user address'`, which
- * told the user nothing and — because it also surfaced through the copilot's
- * pre-flight — got misread as an on-chain/Registry problem. The wallet adapter
- * now returns a real reason (locked, not authorized, no session); pass it on.
- */
-function describeAddressFailure(result: { address?: string; error?: unknown }): string {
-  const raw = result?.error;
-  const detail =
-    typeof raw === 'string'
-      ? raw
-      : raw && typeof raw === 'object' && 'message' in raw
-        ? String((raw as { message?: unknown }).message ?? '')
-        : '';
-  return detail
-    ? `Wallet unavailable: ${detail}`
-    : 'Wallet unavailable — unlock or reconnect your wallet and try again.';
-}
-
-
 // Types
 /**
  * A trader's deployed margin smart account, as tracked client-side.
@@ -442,7 +412,6 @@ export class MarginAccountService {
    *          discarded so callers re-discover against the live contract.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
-    if (!isBrowser()) return null;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY);
       if (!stored) return null;
@@ -472,7 +441,6 @@ export class MarginAccountService {
    *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
-    if (!isBrowser()) return;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
       const accounts: Record<string, MarginAccount> = JSON.parse(stored);
@@ -486,6 +454,7 @@ export class MarginAccountService {
       console.error('Error storing margin account:', error);
     }
   }
+
 
   /**
    * Whether the trader has an active, locally-cached margin account.
@@ -1058,7 +1027,6 @@ export class MarginAccountService {
    * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
-    if (!isBrowser()) return;
     try {
       const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
       const accounts: Record<string, MarginAccount> = JSON.parse(stored);
@@ -1070,13 +1038,6 @@ export class MarginAccountService {
     }
   }
 
-  /**
-   * Whether the AccountManager currently accepts a token as collateral
-   * (`get_iscollateral_allowed`). Pure on-chain view — does not need a wallet.
-   *
-   * @returns `{ allowed, known }` where `known=false` means the view failed
-   *          (caller should not hard-block; let the contract enforce).
-   */
   static async checkCollateralAllowed(
     tokenSymbol: string,
   ): Promise<{ allowed: boolean; known: boolean; symbol: string }> {
@@ -1278,38 +1239,24 @@ export class MarginAccountService {
       
       // Pre-flight checks
       
-      // Check 0: Token configuration in Registry (wallet-independent read)
+      // Check 0: Token configuration in Registry
       const configCheck = await this.isTokenConfigured(contractTokenSymbol);
       if (!configCheck.configured) {
-        const detail = configCheck.error || "unknown";
-        // Don't always blame "token not in Registry" — surface the real check error.
-        const looksLikeMissingToken = /not (set|configured)|Unable to verify/i.test(detail);
         return {
           success: false,
-          error: looksLikeMissingToken
-            ? `⚠️ Configuration Issue: ${detail}\n\n` +
-              `The ${contractTokenSymbol} token contract address needs to be set in the Registry contract.\n` +
-              `Registry: ${CONTRACT_ADDRESSES.REGISTRY}\n` +
-              `Please contact the admin to configure the new Registry deployment.`
-            : `⚠️ Pre-flight failed: ${detail}`,
+          error: `⚠️ Configuration Issue: ${configCheck.error}\n\n` +
+                 `The ${contractTokenSymbol} token contract address needs to be set in the Registry contract.\n` +
+                 `Please contact the admin to configure the new Registry deployment.`
         };
       }
       
-      // Check 1: Is collateral allowed for this token? (on-chain view; only block if known=false)
-      const collat = await this.checkCollateralAllowed(contractTokenSymbol);
-      if (collat.known && !collat.allowed) {
+      // Check 1: Is collateral allowed for this token?
+      const isCollateralAllowed = await this.isCollateralAllowed(contractTokenSymbol);
+      if (!isCollateralAllowed) {
         return {
           success: false,
-          error:
-            `${collat.symbol} is not allowed as collateral on AccountManager ` +
-            `(${CONTRACT_ADDRESSES.ACCOUNT_MANAGER.slice(0, 8)}…). ` +
-            `Allowed today typically include XLM, BLUSDC, AQUSDC, SOUSDC — not plain USDC.`,
+          error: `${contractTokenSymbol} is not allowed as collateral. Please ask the contract admin to enable this token first.`
         };
-      }
-      if (!collat.known) {
-        console.warn(
-          `⚠️ Collateral allowlist check inconclusive for ${contractTokenSymbol}; continuing and deferring to contract.`,
-        );
       }
       
       // Check 2: Read max asset cap when available. Some deployments omit get_max_asset_cap,
@@ -1324,7 +1271,7 @@ export class MarginAccountService {
       if (userAddress.error) {
         return {
           success: false,
-          error: describeAddressFailure(userAddress)
+          error: 'Failed to get user address'
         };
       }
 
@@ -1432,7 +1379,7 @@ export class MarginAccountService {
       if (userAddress.error) {
         return {
           success: false,
-          error: describeAddressFailure(userAddress)
+          error: 'Failed to get user address'
         };
       }
 
@@ -1543,19 +1490,61 @@ export class MarginAccountService {
    * @param borrowAmountWad - Borrow amount as a u256 WAD (18-decimal) string.
    * @returns `{ success, hash?, error? }`.
    */
+  /**
+   * Whether a borrow failure looks like the read-after-write ledger-lag race
+   * seen live on testnet: a footprint computed during simulate/prepare
+   * omits a storage key (e.g. a lending pool's `RateModel`) because, at
+   * simulation time, the RPC node's ledger view hadn't yet caught up with a
+   * just-confirmed prior transaction on the same account (e.g. the first
+   * leg of a dual borrow) — so a data-dependent code path (interest
+   * accrual only runs once the trader has nonzero borrow shares) took a
+   * different, wider branch by the time it actually executed on-chain than
+   * the branch simulation saw. Confirmed via a real failed tx's decoded
+   * diagnostic events: `{"storage":"exceeded_limit"}` /
+   * "trying to access contract data key outside of the footprint". Retrying
+   * after a short delay lets the RPC's view catch up and reliably succeeds.
+   */
+  private static isFootprintRaceError(raw: any): boolean {
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
+    return (
+      text.includes('outside of the footprint') ||
+      text.includes('exceeded_limit') ||
+      /budget|exceededlimit|resource/i.test(text)
+    );
+  }
+
   static async borrowTokens(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    borrowAmountWad: string
+  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    const first = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
+    if (first.success || !this.isFootprintRaceError(first.error)) {
+      return first;
+    }
+
+    // Give the RPC's ledger view a moment to catch up with the prior
+    // transaction on this account, then retry the whole build/simulate/
+    // prepare/sign/send cycle fresh — a stale footprint isn't fixable by
+    // resubmitting the same prepared transaction.
+    console.warn('⚠️ Borrow hit a footprint/ledger-lag race; retrying once after a short delay.');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
+  }
+
+  private static async borrowTokensAttempt(
     marginAccountAddress: string,
     tokenSymbol: string,
     borrowAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      
+
       const userAddress = await getAddress();
       if (userAddress.error) {
         return {
           success: false,
-          error: describeAddressFailure(userAddress)
+          error: 'Failed to get user address'
         };
       }
 
@@ -1682,7 +1671,16 @@ export class MarginAccountService {
             hash: result.hash
           };
         } else {
-          console.error('❌ Borrow transaction failed after polling:', finalResult);
+          // NOT necessarily a real failure yet: this is exactly the
+          // read-after-write footprint race isFootprintRaceError() above
+          // exists for (see its doc comment) — borrowTokens() transparently
+          // retries once when this matches, which is the common case for a
+          // dual borrow's second leg. console.warn, not .error: in dev mode
+          // Next.js's overlay intercepts every console.error as a crash
+          // popup, which falsely alarmed the user for a case that silently
+          // self-heals on retry. A genuine, unretried final failure still
+          // reaches the user via the caller's own toast.error(...).
+          console.warn('⚠️ Borrow transaction not confirmed after polling (may be retried):', finalResult);
           return {
             success: false,
             error: this.parseBorrowNotAllowedMessage(finalResult, contractTokenSymbol),
@@ -1748,7 +1746,7 @@ export class MarginAccountService {
       if (userAddress.error) {
         return {
           success: false,
-          error: describeAddressFailure(userAddress)
+          error: 'Failed to get user address'
         };
       }
 
@@ -1933,12 +1931,7 @@ export class MarginAccountService {
       // Read-only sim source: connected wallet on client, public fallback on
       // server / pre-connect (source doesn't affect the view result).
       const sourceAddr = await getReadSourceAddress();
-      let sourceAccount: StellarSdk.Account;
-      try {
-        sourceAccount = await server.getAccount(sourceAddr);
-      } catch {
-        sourceAccount = new StellarSdk.Account(sourceAddr, "0");
-      }
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
 
       // Get all borrowed tokens
@@ -1954,7 +1947,8 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
       
-      const simulationResult = await server.simulateTransaction(getAllBorrowedTokensTx);
+      const preparedTx = await server.prepareTransaction(getAllBorrowedTokensTx);
+      const simulationResult = await server.simulateTransaction(preparedTx);
       
       if ('error' in simulationResult) {
         console.error('❌ Failed to get borrowed tokens:', simulationResult.error);
@@ -1995,7 +1989,8 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
           
-          const balanceResult = await server.simulateTransaction(getBalanceTx);
+          const preparedBalanceTx = await server.prepareTransaction(getBalanceTx);
+          const balanceResult = await server.simulateTransaction(preparedBalanceTx);
           
           if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
             const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
@@ -2056,7 +2051,7 @@ export class MarginAccountService {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
       const userAddress = await getAddress();
       if (userAddress.error) {
-        return { success: false, error: describeAddressFailure(userAddress) };
+        return { success: false, error: 'Failed to get user address' };
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -2117,7 +2112,7 @@ export class MarginAccountService {
       const norm = this.normalizeContractTokenSymbol(tokenSymbol);
       const tokenIdBySymbol: Record<string, string> = {
         XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
         AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
         SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
       };
@@ -2172,15 +2167,8 @@ export class MarginAccountService {
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       // Read-only sim source: wallet on client, public fallback on server / pre-connect.
-      // Never require the source to exist on Horizon — testnet resets wipe random
-      // funded accounts and used to zero out every collateral/HF panel.
       const sourceAddr = await getReadSourceAddress();
-      let sourceAccount: StellarSdk.Account;
-      try {
-        sourceAccount = await server.getAccount(sourceAddr);
-      } catch {
-        sourceAccount = new StellarSdk.Account(sourceAddr, "0");
-      }
+      const sourceAccount = await server.getAccount(sourceAddr);
       const contract = new StellarSdk.Contract(marginAccountAddress);
 
       const listTx = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -2191,9 +2179,8 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      // simulateTransaction is enough for reads; prepareTransaction can fail when
-      // the fee-source account is unfunded (Account not found).
-      const listSim = await server.simulateTransaction(listTx);
+      const preparedList = await server.prepareTransaction(listTx);
+      const listSim = await server.simulateTransaction(preparedList);
 
       if ('error' in listSim) {
         console.error('❌ Failed to get collateral token list:', listSim.error);
@@ -2233,7 +2220,8 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
 
-          const balSim = await server.simulateTransaction(balTx);
+          const preparedBal = await server.prepareTransaction(balTx);
+          const balSim = await server.simulateTransaction(preparedBal);
 
           if (!('error' in balSim) && 'result' in balSim && balSim.result) {
             const rawBal = StellarSdk.scValToNative(balSim.result.retval);
@@ -2268,13 +2256,13 @@ export class MarginAccountService {
   /**
    * Repay debt on a margin account via AccountManager `repay` (50x BASE_FEE).
    *
-   * Symbol gotcha: the contract's `borrow()` always stores BLEND-pool debt under
-   * `BLUSDC` regardless of whether USDC or BLUSDC was passed, and `repay()`
-   * validates against the stored borrowed-token list — so this maps USDC→BLUSDC
-   * before calling (the opposite of the deposit path, which prefers USDC).
+   * The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC and
+   * USDC both resolve to the same Blend USDC token address, so the symbol
+   * passed on-chain no longer needs to differ from the deposit path. Uses the
+   * same normalized symbol (USDC) everywhere, same as deposit/borrow.
    *
    * @param marginAccountAddress - SmartAccount C-address being repaid.
-   * @param tokenSymbol - Token symbol or UI alias; normalized (USDC→BLUSDC).
+   * @param tokenSymbol - Token symbol or UI alias; normalized before the call.
    * @param repayAmountWad - Repay amount as a u256 WAD (18-decimal) string;
    *                         use {@link getBorrowedTokenDebtWad} to avoid overpay.
    * @returns `{ success, hash?, error? }`. On-chain failures log the full result
@@ -2288,19 +2276,18 @@ export class MarginAccountService {
     repayAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
     try {
-      // The contract's borrow() always stores the BLEND USDC pool's debt under the
-      // BLUSDC symbol (account_manager.rs:329), regardless of whether the caller
-      // passed USDC or BLUSDC. repay() then validates token_symbol against the
-      // stored borrowed-tokens list, so we must pass BLUSDC for that pool — not
-      // USDC, even though deposit_collateral_tokens prefers USDC.
-      const normalized = this.normalizeContractTokenSymbol(tokenSymbol);
-      const contractTokenSymbol = normalized === 'USDC' ? 'BLUSDC' : normalized;
+      // The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC
+      // and USDC both resolve to the same Blend USDC token address, so which
+      // symbol string is passed no longer matters on-chain. Use the same
+      // normalized symbol every other call site (deposit, borrow) uses,
+      // rather than special-casing repay to send the display symbol BLUSDC.
+      const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
 
       const userAddress = await getAddress();
       if (userAddress.error) {
         return {
           success: false,
-          error: describeAddressFailure(userAddress)
+          error: 'Failed to get user address'
         };
       }
 
@@ -2317,8 +2304,10 @@ export class MarginAccountService {
       // Detect the gap; if present, submit a separate single-op top-up transfer
       // first (Freighter rejects multi-op transactions), then do the repay.
       const REPAY_TOKEN_CONTRACT: Record<string, string> = {
-        BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC,
+        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
         XLM: CONTRACT_ADDRESSES.BLEND_XLM,
+        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
       };
       const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
       let interestTopUp = BigInt(0);
@@ -2685,7 +2674,7 @@ export class MarginAccountService {
 
       const userAddress = await getAddress();
       if (userAddress.error || !userAddress.address) {
-        return { success: false, error: describeAddressFailure(userAddress) };
+        return { success: false, error: 'Failed to get user address' };
       }
 
       const isCollateralAllowed = await this.isCollateralAllowed(contractTokenSymbol);
@@ -2850,15 +2839,11 @@ export class MarginAccountService {
       // Pre-flight checks (cheap reads, surface admin/config issues before signing)
       const configCheck = await this.isTokenConfigured(contractDepositSymbol);
       if (!configCheck.configured) {
-        const detail = configCheck.error || "unknown";
-        const looksLikeMissingToken = /not (set|configured)|Unable to verify/i.test(detail);
         return {
           success: false,
-          error: looksLikeMissingToken
-            ? `⚠️ Configuration Issue: ${detail}\n\n` +
-              `The ${contractDepositSymbol} token contract address needs to be set in the Registry.\n` +
-              `Registry: ${CONTRACT_ADDRESSES.REGISTRY}`
-            : `⚠️ Pre-flight failed: ${detail}`,
+          error: `⚠️ Configuration Issue: ${configCheck.error}\n\n` +
+                 `The ${contractDepositSymbol} token contract address needs to be set in the Registry contract.\n` +
+                 `Please contact the admin to configure the new Registry deployment.`,
         };
       }
       const isCollateralAllowed = await this.isCollateralAllowed(contractDepositSymbol);
@@ -2871,7 +2856,7 @@ export class MarginAccountService {
 
       const userAddress = await getAddress();
       if (userAddress.error || !userAddress.address) {
-        return { success: false, error: describeAddressFailure(userAddress) };
+        return { success: false, error: 'Failed to get user address' };
       }
 
       const walletCheck = await this.checkWalletBalanceForDeposit(

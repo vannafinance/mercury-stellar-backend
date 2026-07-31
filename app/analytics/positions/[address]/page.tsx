@@ -6,6 +6,7 @@ import { formatUsd, cn, hfColor } from "@/lib/analytics/utils";
 import { PageHeader, PageHeaderMeta } from "@/components/analytics/PageHeader";
 import CoinIcon from "@/components/analytics/ui/CoinIcon";
 import InfoTooltip from "@/components/analytics/ui/InfoTooltip";
+import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SEEDED RANDOM
@@ -30,7 +31,7 @@ function hashAddr(addr: string): number {
 // Match `lib/analytics/stellar/canon.ts` and CONTRACT_ADDRESSES so the per-user
 // breakdown can never surface a non-deployed integration.
 const PROTOCOLS = ["Blend", "Aquarius", "Soroswap"];
-const ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"];
+const ASSETS: readonly string[] = ACTIVE_ASSETS;
 // Vanna Soroban exposes deposit-style and LP-style margin only — no perp side.
 const POS_TYPES = ["Long", "LP", "Lend"];
 

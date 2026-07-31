@@ -15,7 +15,8 @@ const AQUARIUS_USDC_CODE = 'USDC';
 const AQUARIUS_USDC_ISSUER = 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER';
 const AQUARIUS_USDC_FAUCET_AMOUNT = '1000.0000000';
 
-export type FaucetTokenId = 'XLM' | 'BLEND_USDC' | 'AQUARIUS_USDC' | 'SOROSWAP_USDC';
+export type FaucetTokenId =
+  | 'XLM' | 'BLEND_USDC' | 'AQUARIUS_USDC' | 'SOROSWAP_USDC';
 
 export interface FaucetResult {
   ok: boolean;
@@ -57,10 +58,11 @@ export const fundXlmViaFriendbot = async (address: string): Promise<FaucetResult
   }
 };
 
-// ─── Soroswap USDC via Soroswap faucet API ─────────────────────────────────
-export const fundSoroswapUsdc = async (address: string): Promise<FaucetResult> => {
+// ─── Soroswap faucet API (any SAC it recognizes, keyed by contract address) ─
+// The API mints whichever token contract you pass.
+const fundSoroswapToken = async (address: string, contract: string): Promise<FaucetResult> => {
   try {
-    const url = `${SOROSWAP_FAUCET_URL}?address=${encodeURIComponent(address)}&contract=${encodeURIComponent(CONTRACT_ADDRESSES.SOROSWAP_USDC)}`;
+    const url = `${SOROSWAP_FAUCET_URL}?address=${encodeURIComponent(address)}&contract=${encodeURIComponent(contract)}`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -74,6 +76,9 @@ export const fundSoroswapUsdc = async (address: string): Promise<FaucetResult> =
     return { ok: false, error: e instanceof Error ? e.message : 'Soroswap faucet request failed' };
   }
 };
+
+export const fundSoroswapUsdc = (address: string) =>
+  fundSoroswapToken(address, CONTRACT_ADDRESSES.SOROSWAP_USDC);
 
 // ─── Blend USDC via Blend's getAssets endpoint ─────────────────────────────
 // Blend returns a TransactionEnvelope already signed by their distribution
@@ -150,20 +155,28 @@ export const fundBlendAssets = async (address: string): Promise<FaucetResult> =>
   }
 };
 
-// ─── Aquarius USDC via published distribution keypair ──────────────────────
+// ─── Aquarius classic assets via published distribution keypair ───────────
 // Aquarius's testnet distribution flow: build a tx with a changeTrust op
 // (user-signed, default source) and a payment op sourced by the faucet
-// account (faucet-signed). Both signatures are needed to submit.
-export const fundAquariusUsdc = async (address: string): Promise<FaucetResult> => {
+// account (faucet-signed). Both signatures are needed to submit. The faucet
+// keypair IS the issuing account for both USDC and AQUA on this testnet
+// (verified live), so an issuer-sourced payment always succeeds regardless
+// of its displayed balance — issuance is unlimited by Stellar protocol design.
+const fundAquariusClassicAsset = async (
+  address: string,
+  assetCode: string,
+  assetIssuer: string,
+  amount: string,
+): Promise<FaucetResult> => {
   try {
     const horizonServer = new StellarSdk.Horizon.Server(HORIZON_URL);
     const userAccount = await horizonServer.loadAccount(address);
     const faucetKeypair = StellarSdk.Keypair.fromSecret(AQUARIUS_FAUCET_SECRET);
-    const usdc = new StellarSdk.Asset(AQUARIUS_USDC_CODE, AQUARIUS_USDC_ISSUER);
+    const asset = new StellarSdk.Asset(assetCode, assetIssuer);
 
     const balanceLine = userAccount.balances.find((b) => {
       const asAsset = b as { asset_code?: string; asset_issuer?: string };
-      return asAsset.asset_code === AQUARIUS_USDC_CODE && asAsset.asset_issuer === AQUARIUS_USDC_ISSUER;
+      return asAsset.asset_code === assetCode && asAsset.asset_issuer === assetIssuer;
     });
     const needsTrustline = !balanceLine;
 
@@ -173,14 +186,14 @@ export const fundAquariusUsdc = async (address: string): Promise<FaucetResult> =
     }).setTimeout(120);
 
     if (needsTrustline) {
-      txBuilder.addOperation(StellarSdk.Operation.changeTrust({ asset: usdc }));
+      txBuilder.addOperation(StellarSdk.Operation.changeTrust({ asset }));
     }
     txBuilder.addOperation(
       StellarSdk.Operation.payment({
         source: faucetKeypair.publicKey(),
         destination: address,
-        asset: usdc,
-        amount: AQUARIUS_USDC_FAUCET_AMOUNT,
+        asset,
+        amount,
       })
     );
 
@@ -210,6 +223,9 @@ export const fundAquariusUsdc = async (address: string): Promise<FaucetResult> =
     return { ok: false, error: msg };
   }
 };
+
+export const fundAquariusUsdc = (address: string) =>
+  fundAquariusClassicAsset(address, AQUARIUS_USDC_CODE, AQUARIUS_USDC_ISSUER, AQUARIUS_USDC_FAUCET_AMOUNT);
 
 // Mint behaviour per token. The UI uses this to decide whether to keep the
 // button disabled forever after the first success ('one-time'), enforce a

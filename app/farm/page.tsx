@@ -39,12 +39,9 @@ const formatApyDecimalString = (raw?: string): string => {
   return `${(n * 100).toFixed(2)}%`;
 };
 
-// Pools to hide from the LP table by default. The user can toggle them on
-// via the "Hide pools" filter (renders as the "All Pools" dropdown).
-// Only XLM/USDC pairs (Soroswap + Aquarius) are useful right now; the
-// other Aquarius testnet pairs have stale/unrelated data.
-const DEFAULT_HIDDEN_POOL_IDS = new Set<string>([
-  "aquarius-xlm-aqua",
+// Pools permanently excluded from the LP table — this Aquarius testnet
+// pair has stale/unrelated data and isn't a real, usable pool.
+const HIDDEN_POOL_IDS = new Set<string>([
   "aquarius-xlm-usdt",
 ]);
 
@@ -61,9 +58,6 @@ export default function FarmPage() {
   );
   const [activePositionFilterTab, setActivePositionFilterTab] = useState<string>("current-position");
   const [activeTab, setActiveTab] = useState<string>("vaults");
-  // When false (default), DEFAULT_HIDDEN_POOL_IDS are filtered out of the
-  // LP table; the user flips this from the All Pools / Hide pools toggle.
-  const [showHiddenPools, setShowHiddenPools] = useState(false);
   const userAddress = useUserStore((state) => state.address);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
@@ -80,17 +74,16 @@ export default function FarmPage() {
   const { positions: aqLpPositions } = useAllAquariusLpPositions(marginAccountAddress);
 
   // Live USD prices for the assets that show up in farm positions. Aquarius
-  // pools include AQUA and USDT alongside the XLM/USDC defaults; useTokenPrices
+  // pools include USDT alongside the XLM/USDC defaults; useTokenPrices
   // already aliases USDC variants (BLUSDC/AqUSDC/SoUSDC) to the USDC oracle
   // entry, so we only need to list the canonical symbols. Read up-front (not
   // just where the header stats are built) since the Vaults tables' "Holding"
   // column below also needs a USD value for the user's per-pool position.
-  const farmTokenPrices = useTokenPrices(["XLM", "USDC", "AQUA", "USDT"]);
+  const farmTokenPrices = useTokenPrices(["XLM", "USDC", "USDT"]);
   const priceForSymbol = useCallback((sym: string): number => {
     const s = sym.toUpperCase();
     if (s === "XLM") return farmTokenPrices.XLM ?? 0;
     if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return farmTokenPrices.USDC ?? 1;
-    if (s === "AQUA") return farmTokenPrices.AQUA ?? 0;
     if (s === "USDT") return farmTokenPrices.USDT ?? 1;
     return 0;
   }, [farmTokenPrices]);
@@ -310,11 +303,9 @@ export default function FarmPage() {
     });
 
     const allRows = [...ssRows, ...aqRows];
-    const visibleRows = showHiddenPools
-      ? allRows
-      : allRows.filter((r) => !DEFAULT_HIDDEN_POOL_IDS.has(r.id));
+    const visibleRows = allRows.filter((r) => !HIDDEN_POOL_IDS.has(r.id));
     return { rows: visibleRows };
-  }, [aquariusPools, soroswapPools, showHiddenPools, aqLpPositions, mySSLpBalance, priceForSymbol]);
+  }, [aquariusPools, soroswapPools, aqLpPositions, mySSLpBalance, priceForSymbol]);
 
   // Live farm stats values — sum across Blend + Soroswap + Aquarius, in USD
   // so the header card matches the margin page's dollar-denominated display.
@@ -454,20 +445,6 @@ export default function FarmPage() {
 
       {/* Pool Table */}
       <section className="w-full pb-8">
-      {/* Show-hidden-pools toggle: only meaningful on the LP/Multiple Assets
-          tab. By default the table only lists XLM/USDC pools (Soroswap +
-          Aquarius); this toggle reveals XLM/AQUA and XLM/USDT. */}
-      {activeTab === "vaults" && activeFilterTab === "lp-multiple-assets" && (
-        <div className="w-full pb-3 flex justify-end">
-          <button
-            type="button"
-            onClick={() => setShowHiddenPools((v) => !v)}
-            className="text-xs font-medium text-[#703AE6] hover:text-[#5b2cc7] underline-offset-2 hover:underline"
-          >
-            {showHiddenPools ? "Hide extra pools" : "Show all pools"}
-          </button>
-        </div>
-      )}
       <Table
         filterDropdownPosition="left"
         heading={{

@@ -6,7 +6,6 @@ const STABLE_PRICE_USD: Record<string, number> = {
   BLUSDC: 1.0,
   AQUSDC: 1.0,
   SOUSDC: 1.0,
-  EURC: 1.0,
   AQUARIUS_USDC: 1.0,
   SOROSWAP_USDC: 1.0,
 };
@@ -17,7 +16,6 @@ export interface TokenPrices {
   BLUSDC: number;
   AQUSDC: number;
   SOUSDC: number;
-  EURC: number;
   AQUARIUS_USDC: number;
   SOROSWAP_USDC: number;
 }

@@ -14,9 +14,12 @@ import {
   AquariusLpEvent,
   AQUARIUS_POOLS,
   AquariusPoolConfig,
+  AquariusSwapSymbol,
 } from '@/lib/aquarius-utils';
 import { getBlendEventsFromMercury } from '@/lib/mercury-blend';
-import { getAquariusEventsFromMercury } from '@/lib/mercury-aquarius';
+import { getBlendEventsFromRpc } from '@/lib/blend-history-rpc';
+import { getAquariusPoolEventsFromMercury } from '@/lib/mercury-aquarius';
+import { getAquariusLpEventsFromRpc } from '@/lib/aquarius-history-rpc';
 import { useMarginAccountInfoStore } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
@@ -156,7 +159,20 @@ export const useBlendEvents = (tokenSymbol?: string) => {
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<BlendEvent[]> => {
       if (!marginAccountAddress) return [];
-      const all = await getBlendEventsFromMercury(marginAccountAddress);
+      // Mercury + a bounded RPC fallback, merged via Promise.allSettled —
+      // same fix already applied to margin/Earn/Aquarius/Soroswap history.
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
+        getBlendEventsFromMercury(marginAccountAddress),
+        getBlendEventsFromRpc(marginAccountAddress),
+      ]);
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+      const byKey = new Map<string, BlendEvent>();
+      const keyOf = (e: BlendEvent) => `${e.txHash}:${e.type}:${e.tokenSymbol}`;
+      for (const entry of mercury) if (entry.txHash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.txHash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      const all = Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
       return tokenSymbol ? all.filter((e) => e.tokenSymbol === tokenSymbol) : all;
     },
     refetchOnWindowFocus: true,
@@ -318,7 +334,7 @@ export const useAquariusLpPosition = (
  */
 export const useAquariusTokenBalance = (
   marginAccountAddress: string | null,
-  tokenSymbol: 'XLM' | 'USDC' | null,
+  tokenSymbol: AquariusSwapSymbol | null,
 ) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
@@ -406,16 +422,22 @@ export const useAllAquariusLpPositions = (marginAccountAddress: string | null) =
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The margin account's Aquarius deposit/withdraw event history from Mercury.
+ * The margin account's Aquarius deposit/withdraw event history.
  *
- * Mercury-sourced and scoped by account: the Aquarius *pool* event has no
- * depositor, so it's unattributable per-account. Instead we read the
- * AccountManager's margin-side Trader_AquariusDeposit / Trader_AquariusWithdraw
- * events, which carry the smart account in a topic → Mercury scopes by account
- * server-side (see lib/mercury-aquarius.ts). `poolAddress` is no longer needed
- * for the query (the AM events aren't pool-scoped) but is kept in the signature
- * for the call sites. Gated on the account address; ledger-tick invalidated and
- * refetches on window focus. Returns `{ events, isLoading, isRefreshing }`.
+ * Reads the POOL's own deposit_liquidity/withdraw_liquidity events (Mercury +
+ * a bounded RPC fallback, merged via Promise.allSettled). This used to read
+ * the AccountManager's Trader_AquariusDeposit/Trader_AquariusWithdraw events
+ * instead (server-side account-scoped, like margin), but the 2026-07-19
+ * Controller-Facade refactor removed all event publishing from the exec path,
+ * so that event stopped firing entirely — see lib/mercury-aquarius.ts. The
+ * pool event has no reliable account field, so attribution is best-effort
+ * (same caveat Soroswap's un-scoped pair-event read already has).
+ *
+ * `poolAddress` picks one pool; passing `null` fans out across every
+ * configured Aquarius pool (for an account-wide aggregate view, e.g.
+ * Portfolio's Farm tab). Gated on the account address; ledger-tick
+ * invalidated and refetches on window focus. Returns
+ * `{ events, isLoading, isRefreshing }`.
  */
 export const useAquariusEvents = (poolAddress: string | null, marginAccountAddress?: string | null) => {
   const qc = useQueryClient();
@@ -423,11 +445,33 @@ export const useAquariusEvents = (poolAddress: string | null, marginAccountAddre
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['farm', 'aquarius', 'events', marginAccountAddress ?? null],
+    queryKey: ['farm', 'aquarius', 'events', poolAddress ?? 'all', marginAccountAddress ?? null],
     enabled: Boolean(marginAccountAddress),
     queryFn: async (): Promise<AquariusLpEvent[]> => {
       if (!marginAccountAddress) return [];
-      return getAquariusEventsFromMercury(marginAccountAddress);
+      const pools = poolAddress ? [poolAddress] : AQUARIUS_POOLS.map((p) => p.poolAddress);
+
+      const perPool = await Promise.allSettled(
+        pools.map(async (pool) => {
+          const [mercurySettled, rpcSettled] = await Promise.allSettled([
+            getAquariusPoolEventsFromMercury(pool, marginAccountAddress),
+            getAquariusLpEventsFromRpc(pool, marginAccountAddress),
+          ]);
+          const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+          const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+          const byKey = new Map<string, AquariusLpEvent>();
+          const keyOf = (e: AquariusLpEvent) => `${e.txHash}:${e.type}`;
+          for (const entry of mercury) if (entry.txHash) byKey.set(keyOf(entry), entry);
+          for (const entry of rpcFallback) if (entry.txHash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+          return Array.from(byKey.values());
+        }),
+      );
+
+      return perPool
+        .filter((r): r is PromiseFulfilledResult<AquariusLpEvent[]> => r.status === 'fulfilled')
+        .flatMap((r) => r.value)
+        .sort((a, b) => b.timestamp - a.timestamp);
     },
     refetchOnWindowFocus: true,
     staleTime: 4_000,

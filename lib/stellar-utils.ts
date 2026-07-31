@@ -5,57 +5,88 @@ export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
 export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
 
-// Redeployed 2026-07-11 (fresh deploy_all — full clean redeploy of every core
-// contract, all 4 lending pools + vTokens, and TrackingToken, using vanna_deployer.
-// Ships the Soroswap/Aquarius AddLiquidity auth-mismatch fix (router_quote
-// round-trip re-derivation in SmartAccountContract) plus everything from the
-// 2026-07-10 deployment (RemoveLiquidity/Blend-Withdraw budget exclusions).
-// Every address below was captured directly from this deploy's own on-chain
-// events, including the vTokens — no more stale-address gap. See
-// CONTRACT_COMMAND.md §A7 for the full command log.
-// Aligned with mercury-stellar-rewire + live MCP vanna_list_protocol_addresses
-// (testnet deploy_all 2026-07-11). XLM SAC = CDLZFC3S… is set on this Registry.
+// Redeployed 2026-07-19 (third redeploy same day) — testnet genuinely has
+// THREE separate USDC test tokens (one per DEX's own pre-existing pool,
+// none interchangeable), reversing the prior "single canonical USDC"
+// collapse. Registry.get_protocol_config() now returns aquarius_usdc/
+// soroswap_usdc as their own real addresses alongside the Blend-side `usdc`.
+// Each USDC variant has its own genuine lending pool (3 pools total, plus
+// XLM = 4). See CONTRACT_COMMAND.md for the full command sequence.
+//
+// Live-verified this deploy (real testnet transactions): add liquidity to
+// all 4 lending pools -> create margin account -> deposit XLM + borrow
+// BLUSDC -> deposit XLM + borrow AqUSDC -> deposit XLM + borrow SoUSDC ->
+// Blend Supply (exec) -> Soroswap AddLiquidity + RemoveLiquidity (exec),
+// all succeeding with real fund movement and TrackingToken mint/burn.
+//
+// Aquarius AddLiquidity is registered and reachable but currently BLOCKED by
+// a real external-protocol limitation: the live Aquarius router's `deposit`
+// performs gauge/reward checkpoint accounting that reads a classic-asset
+// trustline balance for `user` — a G-account without that trustline gets a
+// graceful "trustline missing" error, but a smart-contract `user` has no
+// trustline concept at all, so the same check panics unhandled instead.
+// This is a protocol-side constraint on this specific gauge-enabled pool,
+// not a bug in our Controller — confirmed by testing every plausible
+// auth-entry shape (flat siblings, nested-under-router, nested-under-pool)
+// and by reproducing the identical trustline-missing failure with a second
+// real G-account. Aquarius RemoveLiquidity was never reached because of this.
 export const CONTRACT_ADDRESSES = {
-  REGISTRY: 'CBUR7X2M2FQIIF237GNXYJGLHNM3BB3EPEUVYBRPMXVITN4SJP6PJVW2',
-  ORACLE: 'CAWF5QNGOBDZU2NHUJAJPEEPYVANA4W4DFORZLIJXZGV5YIVKWSPMRIZ',
-  RATE_MODEL: 'CASLR2WN5K5I7KJACBHOMM5OXRI4JXT6QIZDW5QSD5JNATRNBWCBJEYU',
-  RISK_ENGINE: 'CCEDO4CLQLM6V7CTTRHTWV73KYLJYKEKTRTVTYJKWDZICSE5PVYGQLCJ',
-  ACCOUNT_MANAGER: 'CASO66NZT3QVCWWWL2TFUW5F3YW4C4IVYENRBUCBRHHRSE3NXRW3SYZP',
-  TRACKING_TOKEN: 'CBH6O3O6I7DYVXAPA6IBP2O53AS4QS7AJJ5KIOOJ6R3JMRP6HGTF6KIB',
+  REGISTRY: 'CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO',
+  ORACLE: 'CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB',
+  RATE_MODEL: 'CBMJ7DD4EUVZWFRPKRPGYK2NADCIGY5OFTPN7PJ7SAOIJI7IQTVHOJT6',
+  RISK_ENGINE: 'CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY',
+  ACCOUNT_MANAGER: 'CAZLR6EHZXQNZJIFNP6F7SIJQC3P64MKHHQNZSSG5BNAEFCYTTGTDZXB',
+  TRACKING_TOKEN: 'CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2',
+  CONTROLLER_FACADE: 'CB2SEZGDRPS4O56UYQAERQGHM7V6ZDMZZE5AYOGERRGWT5CUGRPVDWEH',
+  POOL_DEPLOYER: 'CCURFEEXKVGDAKXAGNG4NHEK2RRSOBOVUZDNHI32DFBAF2HWO57JKLIP',
 
-  // Native XLM SAC (Registry get_xlm_contract_address) — same as MCP xlm_contract
-  XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
-  // Blend USDC / primary USDC SAC used by lending (MCP usdc_contract)
-  USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  // Per-protocol Controllers — resolved by Registry.get_controller_for(target)
+  // Redeployed 2026-07-20/21: all three Controllers now have an admin-gated
+  // `upgrade()` fn, so future fixes won't need a fresh redeploy + re-register.
+  BLEND_CONTROLLER: 'CCZVHCPWY47GRWCE2TB7QPX7Y54BMQUYQTTAQ5LJGNJ3GLGO77VVQUS3',
+  SOROSWAP_CONTROLLER: 'CBSUSG7PK2QKYBEA2GPNNTV7QVGKV7DSDUFDB44FFRZYR4L4GB7BKD2M',
+  AQUARIUS_CONTROLLER: 'CBVRH2DWBMASALAMPZ5JUCKZHWO6SA2MD4MBXMO644XNCERWBMKHL2WT',
 
-  // vToken receipt contracts — fresh, matched to the pools below.
-  VXLM_TOKEN: 'CBOVX53HHAJEM3KECYI66XW5NZJVNNYPGXQ4B4F5T2MJSDDK3NCENNLS',
-  VUSDC_TOKEN: 'CCKRLPKII3U47ACRGYVSNT3ZZ5AA3N63HYDIQEFTWSPWLSIAEXI2XPIB',
-  VBLEND_USDC_TOKEN: 'CCKRLPKII3U47ACRGYVSNT3ZZ5AA3N63HYDIQEFTWSPWLSIAEXI2XPIB',
-  VAQUARIUS_USDC_TOKEN: 'CBPCN7SII4SICPNAJ44FBUYMOXE36Z7QWZ5V6VHBAFVW3DYA2QFO623C',
-  VSOROSWAP_USDC_TOKEN: 'CDZ75VRBKPNEDLYU2FP2WVC2UTBC7GXRL7X4SFLOYDMEKZEJMOXRVL5B',
+  // vToken receipt contracts, one per lending pool
+  VXLM_TOKEN: 'CDGYZSMWOOKM55WEKEQ2HEMM7RS2KRA7MYI2DDYXWV5YHGUVUGQZSOCB',
+  VBLEND_USDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
+  VAQUARIUS_USDC_TOKEN: 'CAU5GVAGCWLOIAGFHQFEVBJLDHVS2KH4YPRQ34CIDG2T7RDAWWWODKRV',
+  VSOROSWAP_USDC_TOKEN: 'CAIMEE4EZ3FUMOBTVV7DKGI2TDACWXUWU6Z2RJ3NMP642TDKQHHOEIWG',
+  // Back-compat alias used by earn constants
+  VUSDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
 
-  // Lending Pools
-  LENDING_PROTOCOL_XLM: 'CBFBE5H5UZQYNFI3IWJP3J2VIBXPQ6JPJHKZHZ3HHRXZYEZW7G3FM6QX',
-  LENDING_PROTOCOL_USDC: 'CCYIBZLWBKSNJO7V7JGWVVUFOYVTHUZB72SXV7MRRQ3LTWZUHLIGRFJA',
-  LENDING_PROTOCOL_BLEND_USDC: 'CCYIBZLWBKSNJO7V7JGWVVUFOYVTHUZB72SXV7MRRQ3LTWZUHLIGRFJA',
-  LENDING_PROTOCOL_AQUARIUS_USDC: 'CBTJQONKFKGTUGFLOGL6WIP4ZWPFMX7AUMRRIDI5G7GJCVBLPDXD4IVD',
-  LENDING_PROTOCOL_SOROSWAP_USDC: 'CAE3QRT6RBEMJVA7ENJB4TFF24BZSGENCHYKPNSNROVL2BGWOTAAESDY',
+  // Lending Pools — XLM + per-USDC-variant
+  LENDING_PROTOCOL_XLM: 'CB3LCPDMPRTRXJHO7ZB3OORQDL2AV5FTJPPZOPHTZFOMUPMJY55RHYR3',
+  LENDING_PROTOCOL_BLEND_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
+  LENDING_PROTOCOL_AQUARIUS_USDC: 'CDKMMD63RUZNROFZZD64QZNEQ2FR5X62R4FE6E3USJ5VN5KY7QM6F2FD',
+  LENDING_PROTOCOL_SOROSWAP_USDC: 'CCZQUQQVZVNZMTG2P6MVAGA7V2DRTCII6IGVEQ5YUCYP7MXA7SMLHETP',
+  // Back-compat alias for call sites still keyed on a single "USDC" pool —
+  // resolves to Blend's own pool specifically, not a shared canonical one.
+  LENDING_PROTOCOL_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
 
-  // Blend Capital (testnet)
+  // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
+  BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  AQUARIUS_USDC_TOKEN: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
+  SOROSWAP_USDC_TOKEN: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
+  // Back-compat alias for old single-USDC call sites — resolves to Blend's own token.
+  USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+
+  // Blend Capital (testnet, external, unchanged)
   BLEND_POOL: 'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF',
   BLEND_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
   BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
 
-  // Aquarius AMM (testnet)
+  // Aquarius AMM (testnet, external). Registered and reachable — see the
+  // gauge/trustline limitation noted above for why AddLiquidity still fails.
+  // Only constant_product pools are supported (no concentrated).
   AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
   AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
   AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
   AQUARIUS_POOL_INDEX_HEX: '9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e',
-  AQUARIUS_XLM_AQUA_POOL: 'CCSXYUVLYALKJGIIYMGYLZI447VS6TDWFTVDL43B4IKK2WERHLWUVCRC',
   AQUARIUS_XLM_USDT_POOL: 'CA6DAGOMK5D7GKBNWVCIEAYSTPJXLQUFWFKSZOMNEM6BVOTUBDCTIT5I',
 
-  // Soroswap DEX (testnet)
+  // Soroswap DEX (testnet, external). XLM/SoUSDC pair auto-created live by
+  // the router's own add_liquidity (Soroswap creates pairs on demand).
   SOROSWAP_ROUTER: 'CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD',
   SOROSWAP_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
   SOROSWAP_USDC: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
@@ -64,6 +95,7 @@ export const CONTRACT_ADDRESSES = {
 
 export const ASSET_TYPES = {
   XLM: 'XLM',
+  // Back-compat alias for old single-USDC call sites — resolves to Blend's own pool/token.
   USDC: 'USDC',
   BLEND_USDC: 'BLEND_USDC',
   AQUARIUS_USDC: 'AQUARIUS_USDC',
@@ -77,23 +109,38 @@ export const ASSET_ISSUERS = {
 
 export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
 
+/** Lending-pool contract for an earn asset type. */
+export function lendingPoolAddress(assetType: AssetType): string {
+  switch (assetType) {
+    case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
+    case ASSET_TYPES.USDC:
+    case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
+    case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
+    default: throw new Error(`Unsupported asset type: ${assetType}`);
+  }
+}
+
+/** vToken receipt contract for an earn asset type. */
+export function vTokenAddress(assetType: AssetType): string {
+  switch (assetType) {
+    case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.VXLM_TOKEN;
+    case ASSET_TYPES.USDC:
+    case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
+    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
+    case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
+    default: throw new Error(`Unsupported asset type: ${assetType}`);
+  }
+}
+
 export class WalletService {
   static async connectWallet(): Promise<{ address: string; success: boolean; error?: string }> {
     try {
-      // `requestAccess()` always resolves to an object, so the old `!accessGranted`
-      // check never fired and a *rejected* prompt fell through to `getAddress()`.
-      // Inspect the result properly and stop here, or the user gets prompted twice.
       const accessGranted = await requestAccess();
-      if (accessGranted.error || !accessGranted.address) {
-        const detail =
-          typeof accessGranted.error === 'string' ? accessGranted.error : accessGranted.error?.message;
-        return {
-          address: '',
-          success: false,
-          error: detail || 'Please approve the connection in Freighter',
-        };
+      if (!accessGranted) {
+        return { address: '', success: false, error: 'Please approve the connection in Freighter' };
       }
-
+      
       const result = await getAddress();
       if (result.error) {
         const message = typeof result.error === 'string' ? result.error : result.error.message;
@@ -223,29 +270,8 @@ export class ContractService {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(walletAddress);
       
-      let contractAddress: string;
-      let methodName: string;
-      
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
-      methodName = 'deposit';
+      const contractAddress = lendingPoolAddress(assetType);
+      const methodName = 'deposit';
 
       const contract = new StellarSdk.Contract(contractAddress);
 
@@ -309,29 +335,8 @@ export class ContractService {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(walletAddress);
       
-      let contractAddress: string;
-      let methodName: string;
-      
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
-      methodName = 'redeem_vtokens';
+      const contractAddress = lendingPoolAddress(assetType);
+      const methodName = 'redeem_vtokens';
       
       const contract = new StellarSdk.Contract(contractAddress);
       
@@ -393,27 +398,7 @@ export class ContractService {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(address);
       
-      let contractAddress: string;
-      
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.VXLM_TOKEN;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.VUSDC_TOKEN;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = vTokenAddress(assetType);
 
       const contract = new StellarSdk.Contract(contractAddress);
 
@@ -503,26 +488,7 @@ export class ContractService {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       
-      let contractAddress: string;
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = lendingPoolAddress(assetType);
 
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
@@ -566,26 +532,7 @@ export class ContractService {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       
-      let contractAddress: string;
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = lendingPoolAddress(assetType);
 
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
@@ -628,26 +575,7 @@ export class ContractService {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       
-      let contractAddress: string;
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = lendingPoolAddress(assetType);
 
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
@@ -690,26 +618,7 @@ export class ContractService {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       
-      let contractAddress: string;
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.VXLM_TOKEN;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.VUSDC_TOKEN;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = vTokenAddress(assetType);
 
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
@@ -809,26 +718,7 @@ export class ContractService {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(address);
       
-      let contractAddress: string;
-      switch (assetType) {
-        case ASSET_TYPES.XLM:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-          break;
-        case ASSET_TYPES.USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
-          break;
-        case ASSET_TYPES.BLEND_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-          break;
-        case ASSET_TYPES.AQUARIUS_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-          break;
-        case ASSET_TYPES.SOROSWAP_USDC:
-          contractAddress = CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
-          break;
-        default:
-          throw new Error('Unsupported asset type');
-      }
+      const contractAddress = lendingPoolAddress(assetType);
 
       const contract = new StellarSdk.Contract(contractAddress);
 
@@ -895,9 +785,13 @@ export class ContractService {
         }
       }
 
-      // Read protocol-specific USDC balances directly from Soroban token contracts
+      // Read protocol-specific token balances directly from Soroban SAC contracts
       // to avoid issuer/trustline source mismatches in UI.
-      const [blendUsdcContractBalance, aquariusUsdcContractBalance, soroswapUsdcBalance] = await Promise.all([
+      const [
+        blendUsdcContractBalance,
+        aquariusUsdcContractBalance,
+        soroswapUsdcBalance,
+      ] = await Promise.all([
         ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.BLEND_USDC, address),
         ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.AQUARIUS_USDC, address),
         ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.SOROSWAP_USDC, address),

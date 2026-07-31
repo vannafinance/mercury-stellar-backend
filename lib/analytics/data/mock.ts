@@ -362,7 +362,6 @@ export const oracleData = {
   // LP "oracle accuracy" probes only against pools we actually integrate.
   lpTokenAccuracy: [
     { pool: "Aquarius XLM/USDC", chain: "stellar" as Chain, oracleValue: 890_000, simulatedUnwind: 878_000, deviation: 1.3 },
-    { pool: "Aquarius XLM/AQUA", chain: "stellar" as Chain, oracleValue: 410_000, simulatedUnwind: 402_500, deviation: 1.8 },
     { pool: "Aquarius XLM/USDT", chain: "stellar" as Chain, oracleValue: 320_000, simulatedUnwind: 314_500, deviation: 1.7 },
     { pool: "Soroswap XLM/USDC", chain: "stellar" as Chain, oracleValue: 620_000, simulatedUnwind: 611_000, deviation: 1.5 },
   ],
@@ -406,7 +405,6 @@ export const externalProtocols = {
   stellarDexHealth: {
     aquarius: [
       { pair: "XLM/USDC", tvl: 12_000_000, volume24h: 3_400_000 },
-      { pair: "XLM/AQUA", tvl:  4_800_000, volume24h: 1_200_000 },
       { pair: "XLM/USDT", tvl:  3_900_000, volume24h:   980_000 },
     ],
     soroswap: [
@@ -468,7 +466,7 @@ export const alertsData = {
   summary: { P0: 0, P1: 0, P2: 2, P3: 4 },
   active: [
     { id: "a1", priority: "P2" as AlertPriority, metric: "pool_concentration",   value: 48,        threshold: 40,      message: "SOUSDC pool top-5 depositor concentration at 48%",        chain: "stellar" as Chain, timestamp: ts(0.10), acknowledged: false },
-    { id: "a2", priority: "P2" as AlertPriority, metric: "lp_oracle_deviation",  value: 1.8,       threshold: 1,       message: "Aquarius XLM/AQUA LP oracle deviation at 1.8%",            chain: "stellar" as Chain, timestamp: ts(0.20), acknowledged: false },
+    { id: "a2", priority: "P2" as AlertPriority, metric: "lp_oracle_deviation",  value: 1.8,       threshold: 1,       message: "Aquarius XLM/USDT LP oracle deviation at 1.8%",            chain: "stellar" as Chain, timestamp: ts(0.20), acknowledged: false },
     { id: "a3", priority: "P3" as AlertPriority, metric: "new_position_size",    value: 480_000,   threshold: 250_000, message: "New whale position opened: $480K at 5.8× leverage on Aquarius LP", chain: "stellar" as Chain, timestamp: ts(0.15), acknowledged: true  },
     { id: "a4", priority: "P3" as AlertPriority, metric: "utilization",          value: 77.4,      threshold: 70,      message: "BLUSDC pool utilization at 77.4%",                         chain: "stellar" as Chain, timestamp: ts(0.30), acknowledged: true  },
     { id: "a5", priority: "P3" as AlertPriority, metric: "blend_b_token_drift",  value: 0.10,      threshold: 0.05,    message: "BLEND_XLM tracking-token vs. live b-token drift at 0.10%", chain: "stellar" as Chain, timestamp: ts(0.40), acknowledged: false },

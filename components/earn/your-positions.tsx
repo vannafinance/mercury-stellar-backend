@@ -19,6 +19,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
+import { useUserStore } from "@/store/user";
 import { iconPaths } from "@/lib/constants";
 import { getEarnHistoryByAsset } from "@/lib/earn-history";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
@@ -85,6 +86,7 @@ export const YourPositions = memo(function YourPositions() {
   const { pools } = usePoolData();
   const { positions } = useUserPositions();
   const { transactions } = useEarnTransactions();
+  const walletAddress = useUserStore((state) => state.address);
 
   const supplyAPY = useMemo(() => {
     const pool = pools[assetKey as keyof typeof pools];
@@ -151,7 +153,7 @@ export const YourPositions = memo(function YourPositions() {
       }));
 
     const onchainHashes = new Set(onchain.map((tx) => tx.hash).filter(Boolean));
-    const local = getEarnHistoryByAsset(assetKey)
+    const local = getEarnHistoryByAsset(assetKey, walletAddress)
       .filter((tx) => !tx.hash || !onchainHashes.has(tx.hash))
       .map((tx) => ({
         timestamp: normalizeTimestamp(tx.timestamp),
@@ -162,7 +164,7 @@ export const YourPositions = memo(function YourPositions() {
       }));
 
     return [...onchain, ...local].sort((a, b) => b.timestamp - a.timestamp);
-  }, [transactions, assetKey]);
+  }, [transactions, assetKey, walletAddress]);
 
   // Build chart from real user transactions so tooltip dates match actual activity.
   const mySupplyChartData = useMemo(() => {

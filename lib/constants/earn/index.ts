@@ -240,5 +240,7 @@ export const STELLAR_POOLS = {
 } as const;
 
 // Supported assets for dropdown
-export const STELLAR_ASSETS = ['XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC'] as const;
+export const STELLAR_ASSETS = [
+  'XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC',
+] as const;
 export type StellarAsset = typeof STELLAR_ASSETS[number];

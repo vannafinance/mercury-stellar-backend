@@ -33,17 +33,24 @@ import { Dropdown } from '../ui/dropdown';
 
 const ITEMS_PER_PAGE = 4;
 
+// Every token the protocol supports across Earn/Farm pools — kept in sync
+// with `ACTIVE_ASSETS` in lib/analytics/stellar/canon.ts (that module treats
+// BLUSDC/AQUSDC/SOUSDC as distinct symbols since Risk Engine prices them
+// separately; these filter facets only need the plain human-facing asset
+// name a pool is denominated in, so "USDC" covers all three variants here).
+const ALL_POOL_ASSETS = ["XLM", "USDC"];
+
 const FILTER_OPTIONS = {
-  collateral: ["XLM", "USDC"],
-  collateralFilters: ["All", "XLM", "USDC"],
-  deposit: ["XLM", "USDC"],
+  collateral: ALL_POOL_ASSETS,
+  collateralFilters: ["All", ...ALL_POOL_ASSETS],
+  deposit: ALL_POOL_ASSETS,
   depositFilters: ["All"],
-  allChains: ["XLM", "USDC"],
-  allChainsFilters: ["All", "XLM", "USDC"],
-  all: ["XLM", "USDC"],
-  allFilters: ["All", "XLM", "USDC"],
-  vaults: ["XLM", "USDC"],
-  vaultsFilters: ["All", "XLM", "USDC"],
+  allChains: ALL_POOL_ASSETS,
+  allChainsFilters: ["All", ...ALL_POOL_ASSETS],
+  all: ALL_POOL_ASSETS,
+  allFilters: ["All", ...ALL_POOL_ASSETS],
+  vaults: ALL_POOL_ASSETS,
+  vaultsFilters: ["All", ...ALL_POOL_ASSETS],
   curator: ["Vanna"],
   curatorFilters: ["All"],
   provider: ["Stellar"],
@@ -431,7 +438,7 @@ const CellContent = ({
           )}
 
           <div className="w-fit h-fit flex gap-[8px] items-center">
-            {cell.chain && (
+            {cell.chain && iconPaths[cell.chain] && (
               <Image
                 src={iconPaths[cell.chain]}
                 alt={cell.chain}
@@ -487,7 +494,7 @@ const CellContent = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={(e) => e.stopPropagation()}
-                    className={`whitespace-nowrap text-[14px] font-medium flex items-center gap-1.5 hover:underline ${
+                    className={`text-[14px] font-medium flex items-center gap-1.5 hover:underline flex-wrap ${
                       isDark ? "text-white" : "text-[#111111]"
                     }`}
                   >
@@ -508,7 +515,7 @@ const CellContent = ({
                     )}
                   </a>
                 ) : (
-                  <span className={`whitespace-nowrap text-[14px] font-medium flex items-center gap-1.5 ${
+                  <span className={`text-[14px] font-medium flex items-center gap-1.5 flex-wrap ${
                     isDark ? "text-white" : "text-[#111111]"
                   }`}>
                     {cell.titles ? (

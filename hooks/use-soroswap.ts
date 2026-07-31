@@ -7,8 +7,11 @@ import {
   SoroswapPoolStats,
   SOROSWAP_POOLS,
   SoroswapPoolConfig,
+  SoroswapSwapSymbol,
+  type SoroswapLpEvent,
 } from '@/lib/soroswap-utils';
 import { getSoroswapLpEventsFromMercury } from '@/lib/mercury-soroswap';
+import { getSoroswapLpEventsFromRpc } from '@/lib/soroswap-history-rpc';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 
 // Farm-page Soroswap data hooks. Same pattern as use-farm.ts: React Query with a
@@ -41,7 +44,7 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
     queryFn: async () => {
       const results = await Promise.allSettled(
         SOROSWAP_POOLS.map((p) =>
-          SoroswapService.getPoolStats().then((s) => ({ id: p.id, stats: s })),
+          SoroswapService.getPoolStats(p.pairAddress).then((s) => ({ id: p.id, stats: s })),
         ),
       );
       const map: Record<string, SoroswapPoolStats | null> = {};
@@ -74,20 +77,23 @@ export const useAllSoroswapPoolStats = (): SoroswapPoolWithStats[] => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Stats for the (single) Soroswap pool. Ledger-tick invalidated. Returns
+ * Stats for a single Soroswap pool. Ledger-tick invalidated. Returns
  * `{ stats, isLoading, isRefreshing, refresh }`.
  * @param enabled - Gate the query (e.g. only when the Soroswap tab is visible).
+ * @param pairAddress - Which pool to fetch (see `SOROSWAP_POOLS`). Omitting
+ *   this defaults to the XLM/USDC pool — passing the wrong (or no) address
+ *   for a non-default pool silently returns XLM/USDC's stats instead.
  */
-export const useSoroswapPoolStats = (enabled = true) => {
+export const useSoroswapPoolStats = (enabled = true, pairAddress?: string) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'poolStats'],
+    queryKey: ['soroswap', 'poolStats', pairAddress ?? 'default'],
     enabled,
     queryFn: async (): Promise<SoroswapPoolStats | null> => {
-      return SoroswapService.getPoolStats();
+      return SoroswapService.getPoolStats(pairAddress);
     },
     staleTime: 4_000,
   });
@@ -114,17 +120,21 @@ export const useSoroswapPoolStats = (enabled = true) => {
  * The margin account's Soroswap LP balance. Gated on the account address;
  * ledger-tick invalidated. Returns `{ lpBalance, isLoading, isRefreshing }`.
  */
-export const useSoroswapLpPosition = (marginAccountAddress: string | null) => {
+export const useSoroswapLpPosition = (
+  marginAccountAddress: string | null,
+  trackingSymbol?: string,
+  pairAddress?: string,
+) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
   const lastTickRef = useRef(tick);
 
   const query = useQuery({
-    queryKey: ['soroswap', 'lpPosition', marginAccountAddress],
+    queryKey: ['soroswap', 'lpPosition', marginAccountAddress, trackingSymbol ?? 'default'],
     enabled: Boolean(marginAccountAddress),
     queryFn: async () => {
       if (!marginAccountAddress) return '0';
-      return SoroswapService.getLpBalance(marginAccountAddress);
+      return SoroswapService.getLpBalance(marginAccountAddress, trackingSymbol, pairAddress);
     },
     staleTime: 4_000,
   });
@@ -161,9 +171,22 @@ export const useSoroswapEvents = (
   const query = useQuery({
     queryKey: ['soroswap', 'lpEvents', pairAddress ?? null, marginAccountAddress ?? null],
     enabled: Boolean(pairAddress && marginAccountAddress),
-    queryFn: async () => {
+    queryFn: async (): Promise<SoroswapLpEvent[]> => {
       if (!pairAddress || !marginAccountAddress) return [];
-      return getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress);
+      // Mercury + a bounded RPC fallback, merged via Promise.allSettled —
+      // same fix already applied to margin, Earn, and Aquarius LP history.
+      const [mercurySettled, rpcSettled] = await Promise.allSettled([
+        getSoroswapLpEventsFromMercury(pairAddress, marginAccountAddress),
+        getSoroswapLpEventsFromRpc(pairAddress, marginAccountAddress),
+      ]);
+      const mercury = mercurySettled.status === 'fulfilled' ? mercurySettled.value : [];
+      const rpcFallback = rpcSettled.status === 'fulfilled' ? rpcSettled.value : [];
+
+      const byKey = new Map<string, SoroswapLpEvent>();
+      const keyOf = (e: SoroswapLpEvent) => `${e.txHash}:${e.type}`;
+      for (const entry of mercury) if (entry.txHash) byKey.set(keyOf(entry), entry);
+      for (const entry of rpcFallback) if (entry.txHash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
+      return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
     },
     staleTime: 4_000,
     gcTime: 5 * 60_000,
@@ -192,7 +215,7 @@ export const useSoroswapEvents = (
  */
 export const useSoroswapTokenBalance = (
   marginAccountAddress: string | null,
-  tokenSymbol: 'XLM' | 'USDC' | null,
+  tokenSymbol: SoroswapSwapSymbol | null,
 ) => {
   const qc = useQueryClient();
   const { tick } = useLedgerTick();
