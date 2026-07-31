@@ -1,43 +1,41 @@
-name: Deploy dev
+name: Deploy prod
 
-# dev → Cloud Run service vanna-app-dev → test.stellar.vanna.finance
+# main → Cloud Run service vanna-app-prod → app.stellar.vanna.finance
 #
-# Auth is Workload Identity Federation: GitHub mints an OIDC token, GCP trades
-# it for a short-lived token on vanna-deployer. No service-account JSON key is
-# stored in GitHub secrets — the org policy blocks key creation anyway.
+# Mirrors deploy-dev.yml. The only differences are the target service, the
+# baked-in site URL, and min-instances: prod keeps one warm instance so nobody
+# pays a cold start, dev scales to zero.
+#
+# NEXT_PUBLIC_SITE_URL is inlined into the client bundle at build time, so prod
+# builds its own image from the same commit rather than promoting the dev image.
 
 on:
   push:
-    branches: [dev]
-    # None of these change the container, and a full rebuild runs ~16 minutes.
-    # Editing a provisioning script should not cost a deploy. cloudbuild.yaml and
-    # this file are deliberately NOT ignored — both change how the app is built
-    # or run. workflow_dispatch still forces a deploy when one is wanted.
+    branches: [main]
+    # Same reasoning as dev: none of these change the container, and a rebuild
+    # is ~16 minutes. cloudbuild.yaml and this file stay in scope.
     paths-ignore:
       - "infra/**"
       - "**/*.md"
       - ".gitattributes"
       - ".github/workflows/ci.yml"
-      - ".github/workflows/deploy-prod.yml"
+      - ".github/workflows/deploy-dev.yml"
   workflow_dispatch:
 
-# id-token: write is what lets the runner mint the OIDC assertion. Without it
-# google-github-actions/auth fails with an unhelpful "unable to get credentials".
 permissions:
   contents: read
   id-token: write
 
-# A second push to dev should supersede an in-flight deploy, not race it.
 concurrency:
-  group: deploy-dev
-  cancel-in-progress: true
+  group: deploy-prod
+  cancel-in-progress: false # never cancel a production rollout mid-flight
 
 env:
   PROJECT_ID: vanna-main
   PROJECT_NUMBER: "1079109217674"
   REGION: us-central1
-  SERVICE: vanna-app-dev
-  SITE_URL: https://test.stellar.vanna.finance
+  SERVICE: vanna-app-prod
+  SITE_URL: https://app.stellar.vanna.finance
 
 jobs:
   deploy:
@@ -52,9 +50,6 @@ jobs:
 
       - run: npm ci
 
-      # Gate the deploy on the type-check. The full build is re-run inside the
-      # container build, so running `npm run build` here too would only double
-      # the wall-clock for no extra signal.
       - name: Type-check
         run: npx tsc --noEmit
 
@@ -73,7 +68,7 @@ jobs:
             --config=cloudbuild.yaml \
             --region="$REGION" \
             --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
-            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_MIN_INSTANCES=1,_MAX_INSTANCES=20" \
             .
 
       - name: Report URL
