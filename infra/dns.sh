@@ -1,96 +1,90 @@
 #!/usr/bin/env bash
-# Delegate stellar.vanna.finance to Google Cloud DNS.
+# Delegate a single Stellar hostname to Google Cloud DNS.
 #
-# Only the stellar subtree moves. The parent vanna.finance zone stays where it
-# is, which matters because it carries the Google Workspace MX record
-# (1 smtp.google.com) and the google-site-verification TXT. Recreating those by
-# hand during a migration is how companies lose email, and none of it is needed
-# to get Stellar onto GCP.
+#   bash infra/dns.sh                # test.stellar.vanna.finance -> dev LB
+#   ENV=prod bash infra/dns.sh       # app.stellar.vanna.finance  -> prod LB
 #
-#   bash infra/dns.sh
+# WHY PER-HOSTNAME, NOT THE WHOLE stellar.vanna.finance SUBTREE
+# Delegating the subtree would make stellar.vanna.finance the apex of the new
+# zone — and that is a live site belonging to a different Vercel project
+# (stellar-backend). DNS forbids CNAME at a zone apex, so we would have to
+# hardcode Vercel's anycast A records for a site we do not own. Those addresses
+# rotate, and when they did, someone else's production would break with no
+# obvious cause. Delegating one hostname at a time keeps that responsibility
+# where it already is.
 #
-# Run this AFTER the load balancer is proven working via a plain A record in
-# Vercel. Delegating first means a failure could be either the LB or the
-# delegation, with no way to tell which.
+# The parent vanna.finance zone stays on Vercel regardless: it carries the
+# Google Workspace MX record and nine other projects' subdomains. One NS record
+# therefore remains in Vercel's zone — full independence would mean migrating
+# that entire zone, which is a separate decision involving company email.
 #
 # Idempotent. Excluded from the image by .dockerignore.
 
 set -euo pipefail
 
 PROJECT_ID=vanna-main
-ZONE_NAME=stellar-vanna
-DNS_NAME=stellar.vanna.finance
-TTL=300
+ENV="${ENV:-dev}"
+TTL=60
 
-# Records that must exist in the new zone the moment delegation takes effect.
-# Anything under stellar.vanna.finance that is NOT listed here stops resolving
-# as soon as Vercel hands the subtree over — delegation moves the whole subtree,
-# not just the names we care about.
-#
-# Current Vercel targets, preserved so nothing breaks on cutover. Re-check these
-# before running; they are Vercel anycast addresses and can change.
-APEX_A="216.150.1.1 216.150.16.129"        # stellar.vanna.finance  — still Vercel
-PROD_A="216.150.1.129 216.150.1.1"         # app.stellar…           — still Vercel
-
-# Already migrated to the GCP load balancer.
-DEV_A="8.232.192.197"                      # test.stellar…          — GCP
+case "$ENV" in
+  dev)  HOSTNAME_FQDN=test.stellar.vanna.finance; ZONE_NAME=test-stellar-vanna; LB_NAME=vanna-dev-ip  ;;
+  prod) HOSTNAME_FQDN=app.stellar.vanna.finance;  ZONE_NAME=app-stellar-vanna;  LB_NAME=vanna-prod-ip ;;
+  *) echo "ENV must be dev or prod" >&2; exit 1 ;;
+esac
 
 say() { printf '\n=== %s ===\n' "$1"; }
 
 gcloud config set project "$PROJECT_ID" >/dev/null
 gcloud services enable dns.googleapis.com
 
-say "1/3 Managed zone for ${DNS_NAME}"
+say "1/3 Load balancer address"
+if ! gcloud compute addresses describe "$LB_NAME" --global >/dev/null 2>&1; then
+  echo "  $LB_NAME does not exist yet — run infra/cdn.sh for ENV=$ENV first." >&2
+  exit 1
+fi
+LB_IP=$(gcloud compute addresses describe "$LB_NAME" --global --format='value(address)')
+echo "  $LB_NAME -> $LB_IP"
+
+say "2/3 Managed zone for ${HOSTNAME_FQDN}"
+# The zone apex IS the hostname, so a plain A record at the apex is all this
+# zone ever needs — no CNAME-at-apex problem, nothing else lives under it.
 gcloud dns managed-zones describe "$ZONE_NAME" >/dev/null 2>&1 || \
   gcloud dns managed-zones create "$ZONE_NAME" \
-    --dns-name="${DNS_NAME}." \
-    --description="Stellar subtree, delegated from the Vercel-hosted parent zone" \
+    --dns-name="${HOSTNAME_FQDN}." \
+    --description="Delegated from the Vercel-hosted vanna.finance zone" \
     --visibility=public
 
-say "2/3 Records"
-# add-record-set fails if the name already exists, so remove then add rather
-# than guarding — that keeps a re-run authoritative over drift.
-put_a() {
-  local name="$1"; shift
-  local values="$*"
-  gcloud dns record-sets delete "$name" --zone="$ZONE_NAME" --type=A >/dev/null 2>&1 || true
-  # shellcheck disable=SC2086
-  gcloud dns record-sets create "$name" \
-    --zone="$ZONE_NAME" --type=A --ttl="$TTL" \
-    --rrdatas="$(echo $values | tr ' ' ',')" >/dev/null
-  echo "  A  $name  ->  $values"
-}
-
-put_a "${DNS_NAME}."               $APEX_A
-put_a "test.${DNS_NAME}."          $DEV_A
-put_a "app.${DNS_NAME}."           $PROD_A
+# Remove-then-create rather than a guard, so a re-run is authoritative over any
+# drift instead of silently leaving a stale address in place.
+gcloud dns record-sets delete "${HOSTNAME_FQDN}." \
+  --zone="$ZONE_NAME" --type=A >/dev/null 2>&1 || true
+gcloud dns record-sets create "${HOSTNAME_FQDN}." \
+  --zone="$ZONE_NAME" --type=A --ttl="$TTL" --rrdatas="$LB_IP" >/dev/null
+echo "  A  ${HOSTNAME_FQDN}  ->  $LB_IP"
 
 say "3/3 Delegation"
-NS=$(gcloud dns managed-zones describe "$ZONE_NAME" \
-      --format='value(nameServers)' | tr ';' '\n' | tr -d ' ')
+NS=$(gcloud dns managed-zones describe "$ZONE_NAME" --format='value(nameServers)' | tr ';' '\n' | tr -d ' ')
+SUBDOMAIN="${HOSTNAME_FQDN%.vanna.finance}"
 
 cat <<EOF
-Cloud DNS is now authoritative for ${DNS_NAME} — but nothing uses it yet.
+Cloud DNS is authoritative for ${HOSTNAME_FQDN} — but nothing uses it yet.
 
-Add these NS records in the VERCEL dashboard, on the vanna.finance zone,
-for the name "stellar":
+In the VERCEL dashboard, on the vanna.finance zone, DELETE the existing
+A record for "${SUBDOMAIN}" and add these NS records in its place:
 
-$(echo "$NS" | sed 's/^/  NS   stellar   /')
+$(echo "$NS" | sed "s|^|  NS   ${SUBDOMAIN}   |")
 
-Until those exist, Vercel keeps answering for the subtree and this zone is
-inert. That makes the cutover reversible: delete the NS records and control
-returns to Vercel immediately.
+Only ${HOSTNAME_FQDN} moves. stellar.vanna.finance and every other
+subdomain keep answering from Vercel exactly as they do now.
 
-Verify delegation took effect (expect the Google nameservers, not Vercel):
+Verify (expect the Google nameservers, not Vercel):
 
-  dig +short NS ${DNS_NAME}
+  dig +short NS ${HOSTNAME_FQDN}
+  dig +short ${HOSTNAME_FQDN}          # expect ${LB_IP}
 
-Then confirm the records still resolve correctly:
+Reversible: delete the NS records and control returns to Vercel immediately.
 
-  dig +short test.${DNS_NAME}    # expect ${DEV_A}
-  dig +short app.${DNS_NAME}     # expect ${PROD_A}
-  dig +short ${DNS_NAME}         # expect ${APEX_A}
-
-Email is unaffected: the MX record lives on vanna.finance, which is not
-delegated and is not touched by this script.
+One thread stays attached to Vercel by design — the NS record above lives in
+their zone. Removing that too would mean migrating all of vanna.finance,
+which carries the company MX record and nine other projects.
 EOF
