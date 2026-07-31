@@ -15,6 +15,9 @@ substitutions:
   _REPO: vanna
   _SERVICE: vanna-app-dev
   _SITE_URL: https://test.stellar.vanna.finance
+  # Public value (inlined into the client bundle). Empty means Privy sign-in is
+  # hidden and the app falls back to Freighter, which is the current behaviour.
+  _PRIVY_APP_ID: ""
   _RUNTIME_SA: vanna-app-run@vanna-main.iam.gserviceaccount.com
   _MIN_INSTANCES: "0"
   _MAX_INSTANCES: "10"
@@ -35,6 +38,7 @@ steps:
     args:
       - build
       - --build-arg=NEXT_PUBLIC_SITE_URL=${_SITE_URL}
+      - --build-arg=NEXT_PUBLIC_PRIVY_APP_ID=${_PRIVY_APP_ID}
       - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:${_TAG}
       - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:latest
       - .

@@ -19,6 +19,14 @@ COPY . .
 # Change this to your real domain, or override via --build-arg / cloudbuild _SITE_URL.
 ARG NEXT_PUBLIC_SITE_URL=https://stellar.vanna.finance
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+
+# Privy app id. Public by nature — it is inlined into the client bundle and
+# readable in any browser — so it is a plain build arg, not a secret. Empty by
+# default: contexts/privy-provider.tsx renders children unwrapped when it is
+# unset, so an unconfigured build simply hides Privy sign-in and falls back to
+# Freighter rather than failing.
+ARG NEXT_PUBLIC_PRIVY_APP_ID=
+ENV NEXT_PUBLIC_PRIVY_APP_ID=$NEXT_PUBLIC_PRIVY_APP_ID
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build

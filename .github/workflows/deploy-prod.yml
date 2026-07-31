@@ -63,12 +63,14 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Build and deploy
+        env:
+          PRIVY_APP_ID: ${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
         run: |
           gcloud builds submit \
             --config=cloudbuild.yaml \
             --region="$REGION" \
             --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
-            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_MIN_INSTANCES=1,_MAX_INSTANCES=20" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID},_MIN_INSTANCES=1,_MAX_INSTANCES=20" \
             .
 
       - name: Report URL
