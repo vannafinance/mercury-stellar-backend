@@ -66,18 +66,19 @@ function looksC(a?: string | null): a is string {
 export const USDC_VARIANT_OPTIONS = [
   {
     id: "BLUSDC",
-    label: "BLUSDC",
-    description: "Blend USDC — Vanna earn BLUSDC pool + Blend farm / primary margin USDC",
+    label: "BLUSDC (Blend USDC)",
+    description:
+      "Blend-side USDC — earn Blend USDC pool; margin uses MCP symbol USDC for this token",
   },
   {
     id: "AQUSDC",
     label: "AQUSDC",
-    description: "Aquarius USDC — earn AqUSDC pool + Aquarius-side margin collateral",
+    description: "Aquarius USDC — earn AqUSDC pool + Aquarius margin collateral",
   },
   {
     id: "SOUSDC",
     label: "SOUSDC",
-    description: "Soroswap USDC — earn SoUSDC pool + Soroswap-side margin collateral",
+    description: "Soroswap USDC — earn SoUSDC pool + Soroswap margin collateral",
   },
 ] as const;
 
@@ -109,25 +110,35 @@ export function usdcVariantClarifyMessage(context: string): string {
   return (
     `Which USDC do you mean for ${context}? On this testnet there are three separate tokens ` +
     `(not interchangeable):\n` +
-    `• **BLUSDC** — Blend USDC (most common for Vanna earn / Blend farm)\n` +
-    `• **AQUSDC** — Aquarius USDC\n` +
-    `• **SOUSDC** — Soroswap USDC\n` +
+    `• BLUSDC — Blend USDC (most common for Vanna earn / Blend farm)\n` +
+    `• AQUSDC — Aquarius USDC\n` +
+    `• SOUSDC — Soroswap USDC\n` +
     `Pick one below (or type e.g. “lend 10 BLUSDC”).`
   );
 }
 
 /**
- * Margin collateral symbols on this deploy (AccountManager allowlist):
- * XLM, BLUSDC, AQUSDC, SOUSDC — plain "USDC" is NOT allowed as collateral.
+ * Margin collateral symbols for the live MCP allowlist
+ * (XLM, USDC, AQUSDC, SOUSDC — verified via deposit invalid_input).
+ * UI still says BLUSDC for Blend USDC; MCP wants "USDC" for that SAC.
  * Call needsUsdcVariant() first when the user only said "USDC".
  */
 export function marginCollateralSymbol(asset?: string | null): string {
   const a = (asset || "").toUpperCase();
-  if (!a) return "BLUSDC";
-  if (a === "USDC" || a === "BLEND_USDC" || a === "BLUSDC") return "BLUSDC";
+  if (!a) return "USDC";
+  // Blend USDC family → MCP symbol USDC (not BLUSDC on this deploy)
+  if (a === "USDC" || a === "BLEND_USDC" || a === "BLUSDC") return "USDC";
   if (a === "AQUARIUS_USDC" || a === "AQUSDC") return "AQUSDC";
   if (a === "SOROSWAP_USDC" || a === "SOUSDC") return "SOUSDC";
   return a;
+}
+
+/** Human label for UI (keep BLUSDC when user picked Blend USDC). */
+export function displayUsdcLabel(mcpSymbol: string, userPick?: string | null): string {
+  const u = (userPick || "").toUpperCase();
+  if (u === "BLUSDC" || u === "BLEND_USDC") return "BLUSDC";
+  if (mcpSymbol === "USDC" && (!userPick || u === "USDC")) return "USDC (Blend)";
+  return mcpSymbol;
 }
 
 /** 2× leverage with deposit D → borrow D*(L-1). Caps borrow so post-tx LTV stays under ~85% of liq threshold. */
@@ -148,14 +159,14 @@ export function splitLeverageAmounts(
 
 /**
  * Normalize earn-pool symbols for MCP.
- * Prefer explicit BLUSDC/AQUSDC/SOUSDC. Bare USDC is treated as BLUSDC only
- * after the user has been asked (see needsUsdcVariant).
+ * Blend earn pool accepts "USDC" (alias); AQUSDC/SOUSDC are explicit.
  */
 export function earnPoolSymbol(asset?: string | null): string {
   const a = (asset || "USDC").toUpperCase();
   if (a === "AQUARIUS_USDC") return "AQUSDC";
   if (a === "SOROSWAP_USDC") return "SOUSDC";
-  if (a === "BLEND_USDC" || a === "USDC") return "BLUSDC";
+  // Earn MCP: Blend pool is symbol USDC (or BLUSDC alias → USDC)
+  if (a === "BLEND_USDC" || a === "BLUSDC" || a === "USDC") return "USDC";
   return a;
 }
 
@@ -272,7 +283,7 @@ export async function preflightLend(
         ok: false,
         blocker:
           `You asked to supply ${params.amount} ${toolSymbol}, but your wallet only has ` +
-          `**${balance} ${symbolUsed}** available for that earn pool.${feeNote}\n` +
+          `${balance} ${symbolUsed} available for that earn pool.${feeNote}\n` +
           (lines.length ? `Wallet lines: ${lines.slice(0, 6).join(" · ")}.` : "") +
           `\nNo transaction was built — try a smaller amount.`,
       };
@@ -297,6 +308,8 @@ export function mapOpToMcpStep(
     token_b?: string | null;
     amount_a?: number | null;
     amount_b?: number | null;
+    /** e.g. 0.5 for remove half LP */
+    fraction?: number | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
@@ -341,13 +354,13 @@ export function mapOpToMcpStep(
             `e.g. “lend 10 ${a}” or “supply 25 ${a}”.`,
         };
       }
-      // USDC earn pool is the BLUSDC Registry pool; MCP accepts "USDC" as alias.
-      const toolSymbol = earnPoolSymbol(symbol) === "BLUSDC" ? "USDC" : earnPoolSymbol(symbol);
+      const toolSymbol = earnPoolSymbol(symbol);
+      const uiLabel = displayUsdcLabel(toolSymbol, symbol);
       return {
         step: {
           tool: "vanna_lend",
           args: { symbol: toolSymbol, amount, lender: trader },
-          label: `Lend ${amount} ${toolSymbol}`,
+          label: `Lend ${amount} ${uiLabel}`,
         },
       };
     }
@@ -371,11 +384,12 @@ export function mapOpToMcpStep(
       }
       if (!amount) return { blocker: "How much collateral? e.g. “deposit 5 XLM as collateral”." };
       const collSym = marginCollateralSymbol(symbol);
+      const ui = displayUsdcLabel(collSym, symbol);
       return {
         step: {
           tool: "vanna_deposit_collateral",
           args: { smart_account: smart, symbol: collSym, amount, trader },
-          label: `Deposit ${amount} ${collSym} collateral`,
+          label: `Deposit ${amount} ${ui} collateral`,
         },
       };
     }
@@ -385,11 +399,12 @@ export function mapOpToMcpStep(
       }
       if (!amount) return { blocker: "How much collateral to withdraw?" };
       const collSym = marginCollateralSymbol(symbol);
+      const ui = displayUsdcLabel(collSym, symbol);
       return {
         step: {
           tool: "vanna_withdraw_collateral",
           args: { smart_account: smart, symbol: collSym, amount, trader },
-          label: `Withdraw ${amount} ${collSym} collateral`,
+          label: `Withdraw ${amount} ${ui} collateral`,
         },
       };
     }
@@ -397,11 +412,12 @@ export function mapOpToMcpStep(
       if (!trader || !smart) return { blocker: "Need wallet + smart account to borrow." };
       if (!amount) return { blocker: "How much do you want to borrow?" };
       const borSym = marginCollateralSymbol(symbol);
+      const ui = displayUsdcLabel(borSym, symbol);
       return {
         step: {
           tool: "vanna_borrow",
           args: { smart_account: smart, symbol: borSym, amount, trader },
-          label: `Borrow ${amount} ${borSym}`,
+          label: `Borrow ${amount} ${ui}`,
         },
       };
     }
@@ -409,11 +425,84 @@ export function mapOpToMcpStep(
       if (!trader || !smart) return { blocker: "Need wallet + smart account to repay." };
       if (!amount) return { blocker: "How much do you want to repay?" };
       const repSym = marginCollateralSymbol(symbol);
+      const ui = displayUsdcLabel(repSym, symbol);
       return {
         step: {
           tool: "vanna_repay",
           args: { smart_account: smart, symbol: repSym, amount, trader },
-          label: `Repay ${amount} ${repSym}`,
+          label: `Repay ${amount} ${ui}`,
+        },
+      };
+    }
+    case "add_liquidity": {
+      if (!trader || !smart) return { blocker: "Need wallet + smart account to add LP." };
+      const aRaw = (params.token_a || "XLM").toUpperCase();
+      const bRaw = (params.token_b || params.asset || "BLUSDC").toUpperCase();
+      // Aquarius LP tokens use MCP symbols (USDC not BLUSDC).
+      const a = aRaw === "BLUSDC" ? "USDC" : aRaw;
+      const b = bRaw === "BLUSDC" ? "USDC" : marginCollateralSymbol(bRaw);
+      const aa = params.amount_a ?? params.amount;
+      const bb = params.amount_b;
+      if (aa == null || !(aa > 0) || bb == null || !(bb > 0)) {
+        return {
+          blocker:
+            "How much of each token? e.g. “add 5 XLM and 1 BLUSDC to Aquarius XLM/USDC”.",
+        };
+      }
+      const uiA = displayUsdcLabel(a, aRaw);
+      const uiB = displayUsdcLabel(b, bRaw);
+      return {
+        step: {
+          tool: "vanna_add_liquidity",
+          args: {
+            smart_account: smart,
+            token_a: a,
+            token_b: b,
+            amount_a: String(aa),
+            amount_b: String(bb),
+            min_liquidity_out: "0",
+            trader,
+            venue: "aquarius",
+          },
+          label: `Add ${aa} ${uiA} + ${bb} ${uiB} Aquarius LP`,
+        },
+      };
+    }
+    case "remove_liquidity": {
+      if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
+      const aRaw = (params.token_a || "XLM").toUpperCase();
+      const bRaw = (params.token_b || params.asset || "USDC").toUpperCase();
+      const a = aRaw === "BLUSDC" ? "USDC" : aRaw;
+      const b = bRaw === "BLUSDC" ? "USDC" : marginCollateralSymbol(bRaw);
+      const frac =
+        params.fraction != null && params.fraction > 0 && params.fraction <= 1
+          ? params.fraction
+          : null;
+      const lpAmt =
+        params.amount != null && params.amount > 0 ? String(params.amount) : null;
+      if (!frac && !lpAmt) {
+        return {
+          blocker:
+            "How much LP to remove? e.g. “remove half my liquidity from XLM/USDC” or “remove 10 LP from XLM/USDC”.",
+        };
+      }
+      return {
+        step: {
+          tool: "vanna_remove_liquidity",
+          args: {
+            smart_account: smart,
+            token_a: a,
+            token_b: b,
+            ...(lpAmt ? { amount: lpAmt, liquidity_amount: lpAmt } : {}),
+            ...(frac != null ? { fraction: frac, share_fraction: frac } : {}),
+            min_a: "0",
+            min_b: "0",
+            trader,
+            venue: "aquarius",
+          },
+          label: frac
+            ? `Remove ${Math.round(frac * 100)}% XLM/${bRaw === "BLUSDC" ? "BLUSDC" : b} LP`
+            : `Remove ${lpAmt} XLM/${bRaw === "BLUSDC" ? "BLUSDC" : b} LP`,
         },
       };
     }
@@ -451,11 +540,16 @@ export function mapOpToMcpStep(
       if (dep == null || dep <= 0) {
         return { blocker: "How much do you want to supply to Blend? e.g. “supply 10 XLM to Blend”." };
       }
-      // Blend reserves are XLM or USDC (BLUSDC maps to USDC on Blend).
+      // Blend reserves are XLM or USDC only (BLUSDC/AQUSDC/SOUSDC → USDC reserve).
       const blendSym =
-        symbol === "BLUSDC" || symbol === "USDC" || symbol === "AQUSDC" || symbol === "SOUSDC"
+        symbol === "BLUSDC" ||
+        symbol === "USDC" ||
+        symbol === "AQUSDC" ||
+        symbol === "SOUSDC" ||
+        symbol === "BLEND_USDC"
           ? "USDC"
           : "XLM";
+      const uiSym = displayUsdcLabel(blendSym, symbol);
       let bor = 0;
       if (params.borrow_amount != null && params.borrow_amount > 0) {
         bor = params.borrow_amount;
@@ -465,6 +559,7 @@ export function mapOpToMcpStep(
       const leveraged = bor > 0;
       if (!leveraged) {
         // Prefer the simple farm_blend supply path (no deposit_borrow_and_deploy packing).
+        // Tokens must already be free inside the margin account (C-address), not only wallet.
         return {
           step: {
             tool: "vanna_blend_supply",
@@ -474,7 +569,7 @@ export function mapOpToMcpStep(
               amount: String(dep),
               trader,
             },
-            label: `Supply ${dep} ${blendSym} to Blend`,
+            label: `Supply ${dep} ${uiSym} to Blend`,
           },
         };
       }
@@ -492,15 +587,18 @@ export function mapOpToMcpStep(
             smart_account: smart,
             deposit_amount: String(dep),
             borrow_amount: String(bor),
+            // Accept both token_symbol and symbol — MCP farm_blend deploy packing.
             token_symbol: blendSym,
+            symbol: blendSym,
             blend_pool_address: blendPool,
+            pool_address: blendPool,
             blend_tokens_in: [blendSym],
             blend_tokens_out: [blendSym],
             blend_amounts_in: [String(dep + bor)],
             blend_amounts_out_min: ["0"],
             trader,
           },
-          label: `Deploy ${dep} + borrow ${bor} ${blendSym} to Blend`,
+          label: `Deploy ${dep} + borrow ${bor} ${uiSym} to Blend (~${params.leverage ?? "n"}×)`,
         },
       };
     }
@@ -601,13 +699,25 @@ function isRiskRejection(build: Record<string, unknown>): boolean {
  * a short plain-English note so the UI does not dump the full diagnostic log.
  */
 export function humanizeMcpWriteError(build: Record<string, unknown>, tool: string): string {
-  const code = String(build.error ?? "").toLowerCase();
-  const raw = humanizeWadAmounts(String(build.message || build.error || "MCP write failed"));
+  const code = String(build.error ?? build.reason ?? "").toLowerCase();
+  const raw = humanizeWadAmounts(String(build.message || build.error || build.reason || "MCP write failed"));
+
+  if (code === "collateral_not_allowed" || /not accepted as collateral/i.test(raw)) {
+    const allowed = Array.isArray(build.allowed_collateral)
+      ? (build.allowed_collateral as string[]).join(", ")
+      : "XLM, USDC, AQUSDC, SOUSDC";
+    return (
+      `That token is not accepted as margin collateral on this deployment. ` +
+      `Allowed: ${allowed}. ` +
+      `(Tip: Blend USDC is MCP symbol “USDC” — pick BLUSDC in the UI and we map it.)`
+    );
+  }
 
   // Contract #3 on lend almost always means insufficient token balance.
   if (
     code === "simulation_failed" ||
-    /simulation failed|hosterror|contract error|#3|error\(contract,\s*#3\)/i.test(raw)
+    code === "simulation_rejected" ||
+    /simulation failed|simulation rejected|hosterror|contract error|#3|error\(contract,\s*#3\)/i.test(raw)
   ) {
     if (tool === "vanna_deploy_to_blend" || tool === "vanna_blend_supply") {
       const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
@@ -736,6 +846,7 @@ export async function executeMcpWrite(
     build.auto_sign === "submitted" ||
     build.auto_sign === "signed_and_submitted"
   ) {
+    const hash = (build.tx_hash as string) || null;
     return {
       tool: step.tool,
       label: step.label,
@@ -745,22 +856,64 @@ export async function executeMcpWrite(
       message:
         (build.summary as string) ||
         (build.message as string) ||
-        `${step.label} completed on-chain.`,
+        (hash
+          ? `${step.label} completed on-chain · ${hash.slice(0, 12)}…`
+          : `${step.label} completed on-chain.`),
       mcp_trace: baseTrace,
     };
   }
 
-  if (build.error || build.status === "error") {
+  // False "done" without XDR or hash (seen on farm_blend supply) — treat as error.
+  if (
+    !xdr &&
+    !build.tx_hash &&
+    !build.error &&
+    (build.status === "done" || build.status === "ok" || build.ok === true) &&
+    step.tool.startsWith("vanna_") &&
+    /lend|redeem|deposit|borrow|repay|blend|liquidity|deploy|withdraw|supply/i.test(step.tool + step.label)
+  ) {
+    // Only accept bare "done" for non-fund tools (enable_auto_sign etc.)
+    if (!/enable_auto_sign|disable_auto_sign|resolve|list_/i.test(step.tool)) {
+      return {
+        tool: step.tool,
+        label: step.label,
+        build,
+        status: "error",
+        message:
+          `${step.label} returned no transaction and no tx hash from MCP. ` +
+          `Nothing was submitted — try again, or check margin-account balances for farm writes.`,
+        mcp_trace: baseTrace,
+      };
+    }
+  }
+
+  // Treat simulation_failed / invalid_input even when nested under reason/code.
+  const errCode = String(build.error ?? build.reason ?? build.code ?? "").toLowerCase();
+  const errMsg = String(build.message ?? "");
+  const softFail =
+    !!build.error ||
+    build.status === "error" ||
+    errCode === "simulation_failed" ||
+    errCode === "simulation_rejected" ||
+    errCode === "invalid_input" ||
+    errCode === "collateral_not_allowed" ||
+    /simulation failed|simulation rejected|not accepted as collateral|invalid_input/i.test(errMsg + errCode);
+
+  if (softFail) {
     const risk = isRiskRejection(build);
-    const base = humanizeMcpWriteError(build, step.tool);
+    const base = humanizeMcpWriteError(
+      { ...build, error: build.error ?? build.reason ?? "error", message: errMsg || errCode },
+      step.tool,
+    );
     return {
       tool: step.tool,
       label: step.label,
       build,
-      // A risk-gate "no" is a decision, not a fault — see isRiskRejection.
-      // Over-balance / sim-failed lend is "blocked" style rejection so the UI
-      // doesn't look like a crash.
-      status: risk || /insufficient wallet balance|simulation failed/i.test(base) ? "rejected" : "error",
+      status:
+        risk ||
+        /insufficient|simulation failed|simulation rejected|not accepted as collateral|invalid/i.test(base)
+          ? "rejected"
+          : "error",
       message: risk ? `${base}${rejectionGuidance(step.tool)}` : base,
       mcp_trace: baseTrace,
     };
@@ -794,6 +947,24 @@ export async function executeMcpWrite(
   }
 
   if (!xdr) {
+    // Fund-affecting writes must return XDR or a hash — bare "done" is a false success
+    // (seen on farm_blend supply with empty farm UI afterwards).
+    const fundTool = /lend|redeem|deposit|borrow|repay|blend|liquidity|deploy|withdraw|supply|swap/i.test(
+      step.tool + " " + step.label,
+    );
+    if (fundTool && !/enable_auto_sign|disable_auto_sign/i.test(step.tool)) {
+      return {
+        tool: step.tool,
+        label: step.label,
+        build,
+        status: "error",
+        message:
+          `${step.label}: MCP returned no unsigned transaction and no tx hash. ` +
+          `Nothing was signed or submitted. For Blend supply, confirm free balance inside the ` +
+          `margin account (C-address), not only the wallet.`,
+        mcp_trace: baseTrace,
+      };
+    }
     return {
       tool: step.tool,
       label: step.label,

@@ -167,6 +167,8 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_aquarius_pool_stats: { tool: "vanna_farm_lp", action: "aquarius_stats" },
   vanna_get_farm_lp_position: { tool: "vanna_farm_lp", action: "lp_position" },
   vanna_get_lp_balance: { tool: "vanna_farm_lp", action: "get_lp_balance" },
+  vanna_add_liquidity: { tool: "vanna_farm_lp", action: "add_liquidity" },
+  vanna_remove_liquidity: { tool: "vanna_farm_lp", action: "remove_liquidity" },
   // wallet identity / balances
   vanna_get_wallet_balance: { tool: "vanna_wallet", action: "balance" },
   vanna_get_token_balance: { tool: "vanna_wallet", action: "token_balance" },
@@ -198,7 +200,8 @@ class LiveMCPClient implements MCPClient {
   /** Cached Streamable-HTTP session — see getSession. */
   private sessionId: string | null = null;
   private sessionPromise: Promise<string> | null = null;
-  private static readonly TIMEOUT_MS = 30_000;
+  /** Writes (sign/sim) often exceed 30s on testnet under load. */
+  private static readonly TIMEOUT_MS = 90_000;
   private static readonly EXPIRY_MARGIN_MS = 60_000;
 
   private async getToken(): Promise<string> {

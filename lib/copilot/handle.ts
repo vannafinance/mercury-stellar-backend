@@ -19,6 +19,7 @@ import {
   executeMcpWrite,
   mapOpToMcpStep,
   marginCollateralSymbol,
+  displayUsdcLabel,
   preflightLend,
   earnPoolSymbol,
   splitLeverageAmounts,
@@ -28,7 +29,7 @@ import {
   USDC_VARIANT_OPTIONS,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
-import { routeMessage } from "./router";
+import { findUnsupportedAsset, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
   BrainHealth,
@@ -137,6 +138,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // phrases — Vertex often collapses "list all earn pools", mis-routes highest-APY,
   // or maps "supply to Blend" onto deposit_collateral.
   {
+    const unsupported = findUnsupportedAsset(message);
+    if (
+      unsupported &&
+      /\b(lend|supply|earn|deposit|borrow|repay|farm)\b/i.test(message)
+    ) {
+      return {
+        kind: "blocked",
+        message:
+          `“${unsupported}” is not supported on Vanna testnet. Use XLM, BLUSDC, AQUSDC, or SOUSDC ` +
+          `(not bare USDC without a variant — pick BLUSDC / AQUSDC / SOUSDC when you mean a dollar token).`,
+        intent: { template_id: "unsupported_asset", slots: { asset: unsupported } },
+        request_id,
+      };
+    }
     const kw = routeMessage(message);
     const lowerMsg = message.toLowerCase();
     const blendWrite =
@@ -148,51 +163,106 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       !blendWrite &&
       /\b(stats|apy|reserve|pays|yield|supplied|position|btoken|how much)\b/.test(lowerMsg);
 
+    /** Prefer explicit tickers in the message over nested "USDC" inside BLUSDC. */
+    const assetFromMessage = (): string | null => {
+      if (/\bblusdc\b|\bblend[_\s-]?usdc\b/i.test(message)) return "BLUSDC";
+      if (/\baqusdc\b|\baquarius[_\s-]?usdc\b/i.test(message)) return "AQUSDC";
+      if (/\bsousdc\b|\bsoroswap[_\s-]?usdc\b/i.test(message)) return "SOUSDC";
+      if (/\bxlm\b/i.test(message)) return "XLM";
+      return null;
+    };
+
     if (kw.kind === "read" && kw.template_id === "query_all_earn_pools") {
       routed = kw;
-    } else if (kw.kind === "write" && (kw.op === "deploy_to_blend" || kw.op === "supply_to_blend")) {
-      // Always honor keyword farm write over Vertex deposit_collateral.
+    } else if (kw.kind === "write" && (kw.op === "add_liquidity" || kw.op === "remove_liquidity")) {
+      // Aquarius LP must never become deposit_collateral (screenshot #32).
       routed = kw;
-    } else if (blendWrite && (routed.kind !== "write" || routed.op !== "deploy_to_blend")) {
+    } else if (kw.kind === "write" && (kw.op === "deploy_to_blend" || kw.op === "supply_to_blend")) {
+      // Always honor keyword farm write; fix bare USDC when BLUSDC was named.
+      const named = assetFromMessage();
+      routed = {
+        ...kw,
+        asset:
+          (named && named !== "USDC" ? named : null) ||
+          (kw.asset && kw.asset !== "USDC" ? kw.asset : null) ||
+          named ||
+          kw.asset ||
+          "XLM",
+      };
+    } else if (blendWrite) {
+      // Force deploy_to_blend even if Vertex picked deposit_and_borrow / deposit_collateral.
+      const fromKw = kw.kind === "write" ? kw : null;
+      const assetFix =
+        assetFromMessage() ||
+        (fromKw?.asset && fromKw.asset !== "USDC" ? fromKw.asset : null) ||
+        fromKw?.asset ||
+        "XLM";
       routed = {
         kind: "write",
         op: "deploy_to_blend",
         template_id: "deploy_to_blend",
-        asset: kw.kind === "write" ? kw.asset ?? "XLM" : /\busdc\b/i.test(message) ? "USDC" : "XLM",
-        amount: kw.kind === "write" ? kw.amount ?? null : null,
+        asset: assetFix,
+        amount: fromKw?.amount ?? null,
         multi_leg: true,
         requires_account: true,
         requires_amount: true,
-        leverage: kw.kind === "write" ? kw.leverage ?? null : null,
+        leverage: fromKw?.leverage ?? null,
       };
-    } else if (blendRead && !isBlendRead(routed)) {
-      // Only override when the router did NOT already pick a Blend read. Native
-      // function calling gets this right, and overriding it here was downgrading a
-      // correct all-reserves choice to a single-symbol one.
-      //
-      // Naming two reserves is a comparison, so a single symbol cannot answer it. The
-      // old ternary took whichever it tested first, which is why "XLM or USDC?" fetched
-      // XLM and then reported USDC as unavailable — USDC was never requested.
+    } else if (
+      // Vertex sometimes plans LP as deposit_collateral — override when Aquarius/LP named.
+      /\b(aquarius|add liquidity|provide liquidity)\b/i.test(message) &&
+      /\b(add|provide)\b/i.test(message) &&
+      (routed.kind !== "write" || routed.op !== "add_liquidity")
+    ) {
+      if (kw.kind === "write" && kw.op === "add_liquidity") {
+        routed = kw;
+      } else {
+        const dualMatch = message.match(
+          /(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b(?:\s+and\s+|\s*\+\s*)(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i,
+        );
+        routed = {
+          kind: "write",
+          op: "add_liquidity",
+          template_id: "add_liquidity",
+          asset: dualMatch?.[4]?.toUpperCase() ?? "BLUSDC",
+          amount: dualMatch ? Number(dualMatch[1]) : null,
+          token_a: dualMatch?.[2]?.toUpperCase() ?? "XLM",
+          token_b: dualMatch?.[4]?.toUpperCase() ?? "BLUSDC",
+          amount_a: dualMatch ? Number(dualMatch[1]) : null,
+          amount_b: dualMatch ? Number(dualMatch[3]) : null,
+          multi_leg: true,
+          requires_account: true,
+          requires_amount: true,
+        };
+      }
+    } else if (blendRead) {
+      // Naming two reserves is a comparison — always list both (never single-symbol).
       const named = [
         /\bxlm\b/i.test(message) ? "XLM" : null,
         /\busdc\b/i.test(message) ? "USDC" : null,
       ].filter(Boolean) as string[];
-      const sym = named.length === 1 ? named[0]! : null;
-      if (/\b(supplied|position|btoken|how much)\b/i.test(message)) {
-        routed = {
-          kind: "read",
-          tool: "vanna_get_blend_position",
-          args: sym ? { symbol: sym } : {},
-          requires_account: true,
-          template_id: "query_blend_position",
-        };
-      } else {
-        routed = {
-          kind: "read",
-          tool: sym ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
-          args: sym ? { symbol: sym } : {},
-          template_id: "query_blend",
-        };
+      const compare =
+        named.length > 1 ||
+        /\b(vs|versus| or |compare|pays more|better than)\b/i.test(message);
+      const sym = !compare && named.length === 1 ? named[0]! : null;
+      const vertexOk = isBlendRead(routed) && !compare;
+      if (!vertexOk) {
+        if (/\b(supplied|position|btoken|how much)\b/i.test(message)) {
+          routed = {
+            kind: "read",
+            tool: "vanna_get_blend_position",
+            args: sym ? { symbol: sym } : {},
+            requires_account: true,
+            template_id: "query_blend_position",
+          };
+        } else {
+          routed = {
+            kind: "read",
+            tool: sym ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
+            args: sym ? { symbol: sym } : {},
+            template_id: "query_blend",
+          };
+        }
       }
     } else if (
       kw.kind === "write" &&
@@ -268,6 +338,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       multi_leg: !!routed.multi_leg,
       smart_account: smartAccount,
       trader,
+      token_a: routed.token_a ?? null,
+      token_b: routed.token_b ?? null,
+      amount_a: routed.amount_a ?? null,
+      amount_b: routed.amount_b ?? null,
+      fraction: routed.fraction ?? null,
     };
     return runWrite(action, { userId, trader, smartAccount, request_id, message });
   }
@@ -555,11 +630,19 @@ async function runRead(
     const mcp = getMcpClient();
     const data = await mcp.call(routed.tool, built.args, ctx.userId);
     let prose: string;
+    const hinglish = /\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i.test(ctx.message);
     try {
-      prose = await vertexExplain(ctx.message, routed.tool, data);
+      prose = await vertexExplain(
+        hinglish
+          ? `${ctx.message}\n\n(Reply in the same language mix as the user — clear Hinglish is fine.)`
+          : ctx.message,
+        routed.tool,
+        data,
+      );
     } catch {
       prose = explainRead(routed.tool, data, ctx.message);
     }
+    prose = prose.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
     return {
       kind: "answer",
       message: prose,
@@ -674,6 +757,8 @@ async function runWrite(
 
   // Bare "USDC" is ambiguous (three SACs). Always ask — except highest-yield
   // path ranks concrete pools first and rewrites asset to BLUSDC/AQUSDC/SOUSDC.
+  // LP pair "XLM/USDC" legitimately uses MCP symbol USDC (Aquarius pool) —
+  // do not force BLUSDC/AQUSDC/SOUSDC chips on add/remove liquidity.
   const usdcOps = new Set([
     "lend",
     "supply",
@@ -700,12 +785,13 @@ async function runWrite(
       };
     }
     const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null);
-    const collSym = marginCollateralSymbol(action.asset);
-    // Sequential plan: step 1 is a normal single-leg deposit (not multi_leg atomic risk).
-    // After it confirms, the client auto-fires step 2 borrow via `next_step`.
+    // Keep the user's pick (BLUSDC/AQUSDC/…) for display + chip logic; mapOp
+    // converts to MCP symbols (USDC/AQUSDC/SOUSDC) at the wire.
+    const userAsset = action.asset || "USDC";
+    const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
     const step1: CopilotAction = {
       op: "deposit_collateral",
-      asset: collSym,
+      asset: userAsset,
       amount: deposit,
       requires_amount: true,
       requires_account: true,
@@ -716,15 +802,13 @@ async function runWrite(
     const step1Res = await runWrite(step1, {
       ...ctx,
       smartAccount,
-      message: `step 1/2 deposit ${deposit} ${collSym}`,
+      message: `step 1/2 deposit ${deposit} ${uiAsset}`,
     });
-    // Plain text, no markdown — the panel renders this verbatim. Keep it to what the
-    // user needs: the two steps and the amounts. The reason MCP can't do it in one
-    // transaction is our problem, not theirs.
     const nextNote =
-      `\n\nThis runs as 2 steps:\n` +
-      `  1. Deposit ${amount(deposit)} ${collSym} as collateral  ← this step\n` +
-      `  2. Borrow ${amount(borrow)} ${collSym} against it (~${action.leverage ?? 2}×), once step 1 confirms`;
+      `\n\nPlan (2 steps — not one atomic tx):\n` +
+      `  Step 1/2 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
+      `  Step 2/2 — Borrow ${amount(borrow)} ${uiAsset} (~${action.leverage ?? 2}×) after step 1 confirms\n` +
+      `The copilot runs step 2 automatically once step 1 is on-chain.`;
     if (step1Res.kind === "needs_wallet_sign" || step1Res.kind === "needs_auto_sign" || step1Res.kind === "executed") {
       return {
         ...step1Res,
@@ -735,16 +819,16 @@ async function runWrite(
             step: 1,
             deposit,
             borrow,
-            asset: collSym,
+            asset: userAsset,
             leverage: action.leverage ?? 2,
           },
         },
         next_step: {
           op: "borrow",
-          asset: collSym,
+          asset: userAsset,
           amount: borrow,
           leverage: action.leverage ?? 2,
-          label: `Borrow ${borrow} ${collSym} (step 2/2)`,
+          label: `Borrow ${borrow} ${uiAsset} (step 2/2)`,
           step: 2,
           total_steps: 2,
         },
@@ -920,6 +1004,11 @@ async function runWrite(
       amount: action.amount,
       leverage: action.leverage,
       blend_pool_address: blendPoolAddress,
+      token_a: action.token_a,
+      token_b: action.token_b,
+      amount_a: action.amount_a,
+      amount_b: action.amount_b,
+      fraction: action.fraction,
     },
     { trader: ctx.trader, smartAccount },
   );
@@ -933,15 +1022,21 @@ async function runWrite(
     };
   }
 
-  const impact = projectImpact({ ...action, smart_account: smartAccount }, smartAccount, ctx.trader);
-
+  // IMPORTANT: do NOT run projectImpact in parallel with executeMcpWrite.
+  // Both use the shared MCP Streamable-HTTP session; concurrent tools/call
+  // responses get interleaved and we were attaching get_price payloads to
+  // deposit/borrow (false "no XDR" errors). Write first, then optional sim.
   const result = await executeMcpWrite(getMcpClient(), mapped.step, {
     trader: ctx.trader,
     smartAccount,
     userId: ctx.userId,
   });
 
-  const { simulation, reasons: projected } = await impact;
+  const { simulation, reasons: projected } = await projectImpact(
+    { ...action, smart_account: smartAccount },
+    smartAccount,
+    ctx.trader,
+  );
   /** Projection lines read first; the MCP path's own reason stays as the tail. */
   const reasonsWith = (base: string[]) => (projected.length ? [...projected, ...base] : base);
 
@@ -958,9 +1053,11 @@ async function runWrite(
       (result.submitted?.tx_hash as string) ||
       (result.build.tx_hash as string) ||
       null;
+    // Prefer plain text (no **markdown**) for the chat panel.
+    const cleanMsg = String(result.message || "").replace(/\*\*([^*]+)\*\*/g, "$1");
     return {
       kind: "executed",
-      message: result.message,
+      message: cleanMsg,
       data: factsForUi({ ...result.build, ...(result.submitted || {}) }),
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       mcp: mcpMeta,

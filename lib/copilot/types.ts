@@ -32,6 +32,13 @@ export interface CopilotAction {
   smart_account?: string | null;
   trader?: string | null;
   leverage?: number | null;
+  /** Aquarius / Soroswap LP pair legs */
+  token_a?: string | null;
+  token_b?: string | null;
+  amount_a?: number | null;
+  amount_b?: number | null;
+  /** e.g. 0.5 for "remove half my liquidity" */
+  fraction?: number | null;
 }
 
 export interface RiskResult {
@@ -173,6 +180,11 @@ export type RoutedIntent =
       leverage?: number | null;
       deposit_amount?: number | null;
       borrow_amount?: number | null;
+      token_a?: string | null;
+      token_b?: string | null;
+      amount_a?: number | null;
+      amount_b?: number | null;
+      fraction?: number | null;
     }
   | {
       kind: "plan";

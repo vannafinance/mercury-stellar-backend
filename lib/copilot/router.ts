@@ -8,7 +8,23 @@
 
 import type { RoutedIntent } from "./types";
 
+/** Longest-first so BLUSDC wins over nested USDC. */
 const ASSETS = ["BLUSDC", "AQUSDC", "SOUSDC", "USDC", "XLM", "AQUA", "EURC"] as const;
+
+/** Known junk / unsupported tickers we should reject, not map to USDC. */
+const UNSUPPORTED_ASSETS = [
+  "DOGE",
+  "BTC",
+  "ETH",
+  "SOL",
+  "BNB",
+  "ADA",
+  "DOT",
+  "SHIB",
+  "PEPE",
+  "MATIC",
+  "AVAX",
+] as const;
 
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = /(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)\b/i;
@@ -19,10 +35,25 @@ function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");
 }
 
-function findAsset(text: string): string | null {
+/**
+ * Resolve a supported asset with word boundaries.
+ * Never treat the "USDC" inside "BLUSDC" as bare USDC.
+ */
+export function findAsset(text: string): string | null {
   const upper = text.toUpperCase();
   for (const a of ASSETS) {
-    if (upper.includes(a)) return a === "BLUSDC" || a === "AQUSDC" || a === "SOUSDC" ? a : a;
+    const re = new RegExp(`(?:^|[^A-Z0-9])${a}(?:[^A-Z0-9]|$)`);
+    if (re.test(upper)) return a;
+  }
+  return null;
+}
+
+/** First unsupported ticker mentioned, if any. */
+export function findUnsupportedAsset(text: string): string | null {
+  const upper = text.toUpperCase();
+  for (const a of UNSUPPORTED_ASSETS) {
+    const re = new RegExp(`(?:^|[^A-Z0-9])${a}(?:[^A-Z0-9]|$)`);
+    if (re.test(upper)) return a;
   }
   return null;
 }
@@ -54,6 +85,33 @@ function findLeverage(text: string): number | null {
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Parse “5 XLM and 1 BLUSDC” / “5 XLM + 1 USDC” dual-leg amounts for LP.
+ */
+function parseDualAmounts(text: string): {
+  amount_a: number;
+  token_a: string;
+  amount_b: number;
+  token_b: string;
+} | null {
+  const cleaned = stripAddresses(text);
+  const re =
+    /(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b(?:\s+and\s+|\s*\+\s*|\s*&\s*)(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b/i;
+  const m = cleaned.match(re);
+  if (!m) return null;
+  const amount_a = Number(m[1]);
+  const amount_b = Number(m[3]);
+  if (!Number.isFinite(amount_a) || !(amount_a > 0) || !Number.isFinite(amount_b) || !(amount_b > 0)) {
+    return null;
+  }
+  return {
+    amount_a,
+    token_a: m[2]!.toUpperCase(),
+    amount_b,
+    token_b: m[4]!.toUpperCase(),
+  };
 }
 
 function has(text: string, ...words: string[]): boolean {
@@ -97,10 +155,91 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // Farm Blend with leverage MUST win over margin deposit_and_borrow.
+  // Old guard `(leverage && blend)` routed "Farm Blend at 3x with 10 BLUSDC"
+  // into deposit_and_borrow, which then asked for USDC chips or stuck after deposit.
+  const isBlendFarmWrite =
+    any(text, "farm blend", "blend at", "to blend", "into blend", "on blend", "blend reserve", "blend pool") ||
+    (any(text, "blend") && any(text, "farm", "deploy", "supply", "deposit") && !any(text, "position", "stats", "apy"));
   if (
-    (has(text, "deposit") && any(text, "borrow")) ||
-    any(text, "deposit and borrow", "deposit + borrow", "lever up", "leveraged position") ||
-    (leverage != null && leverage > 1 && any(text, "blend", "leverage", "lever"))
+    isBlendFarmWrite &&
+    any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever") &&
+    !any(text, "supply apy", "borrow apy", "position", "btoken", "pays more", "which reserve")
+  ) {
+    return {
+      kind: "write",
+      op: "deploy_to_blend",
+      template_id: "deploy_to_blend",
+      asset: asset ?? "XLM",
+      amount,
+      multi_leg: true,
+      requires_account: true,
+      requires_amount: true,
+      leverage: leverage ?? null,
+    };
+  }
+
+  // Aquarius / Soroswap LP — add liquidity (must beat bare deposit / lend).
+  const dual = parseDualAmounts(raw);
+  if (
+    any(text, "add liquidity", "provide liquidity", "add lp") ||
+    (any(text, "add") && any(text, "aquarius", "soroswap", "to aquarius", "lp")) ||
+    (any(text, "add") && dual && any(text, "xlm") && any(text, "usdc", "blusdc", "aqusdc", "sousdc"))
+  ) {
+    const token_a = dual?.token_a ?? "XLM";
+    const token_b = dual?.token_b ?? (asset && asset !== "XLM" ? asset : "BLUSDC");
+    return {
+      kind: "write",
+      op: "add_liquidity",
+      template_id: "add_liquidity",
+      asset: token_b,
+      amount: dual?.amount_a ?? amount,
+      token_a,
+      token_b,
+      amount_a: dual?.amount_a ?? amount,
+      amount_b: dual?.amount_b ?? null,
+      multi_leg: true,
+      requires_account: true,
+      requires_amount: true,
+    };
+  }
+
+  // Remove LP (half or explicit amount).
+  if (
+    any(text, "remove liquidity", "remove my liquidity", "withdraw liquidity", "withdraw lp") ||
+    (any(text, "remove half") && any(text, "liquidity", "lp", "xlm/usdc", "pool"))
+  ) {
+    const half = any(text, "half", "50%", "50 %");
+    // Pair default XLM / USDC family from message.
+    const token_b =
+      (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
+      (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
+      (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
+      (/\busdc\b/i.test(raw) && "USDC") ||
+      "USDC";
+    return {
+      kind: "write",
+      op: "remove_liquidity",
+      template_id: "remove_liquidity",
+      asset: token_b,
+      amount: half ? null : amount,
+      token_a: "XLM",
+      token_b,
+      fraction: half ? 0.5 : null,
+      requires_account: true,
+      requires_amount: !half,
+    };
+  }
+
+  // Margin multi-leg only — never steal Blend farm or Aquarius LP.
+  if (
+    ((has(text, "deposit") && any(text, "borrow")) ||
+      any(text, "deposit and borrow", "deposit + borrow", "lever up", "leveraged position") ||
+      (leverage != null &&
+        leverage > 1 &&
+        any(text, "leverage", "lever") &&
+        !any(text, "blend", "farm", "aquarius", "lp"))) &&
+    !any(text, "blend", "farm blend", "aquarius")
   ) {
     return {
       kind: "write",
@@ -169,36 +308,77 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Farm — supply / deploy to Blend (margin account → Blend reserve).
-  // Must win over bare deposit_collateral and earn lend.
-  // Naming Blend is NOT intent to write. The old shape had two faults: the
-  // `|| has(text, "blend")` made its own guard vacuous, and read-detection was an
-  // allow-list of markers ("stats"/"apy"/…) which no phrasing has to contain — so
-  // "which Blend reserve pays more, XLM or USDC?" became a deploy_to_blend write
-  // and then got asked to pick a USDC variant. Inverted: a write needs an actual
-  // write verb, and anything that reads as a question about rates stays a read.
-  const blendVenueNamed = any(text, "to blend", "into blend", "on blend", "blend reserve", "blend pool");
+  // Farm — supply / deploy / "farm Blend at Nx …".
+  // Write needs a real verb; rate questions stay reads.
+  // "farm Blend at 3x with 10 BLUSDC" has no "to blend" but is still a write.
+  const blendVenueNamed = any(
+    text,
+    "to blend",
+    "into blend",
+    "on blend",
+    "blend reserve",
+    "blend pool",
+    "farm blend",
+    "blend at",
+  );
   const blendRateRead = any(
     text,
-    "supply apy", "supply apr", "borrow apy", "borrow apr", "stats", "utilization",
-    "pays more", "pays better", "which reserve", "which blend", "compare",
-    "position", "btoken", "b-token", "how much do i", "how much have i", "better than",
+    "supply apy",
+    "supply apr",
+    "borrow apy",
+    "borrow apr",
+    "stats",
+    "utilization",
+    "pays more",
+    "pays better",
+    "which reserve",
+    "which blend",
+    "compare",
+    "position",
+    "btoken",
+    "b-token",
+    "how much do i",
+    "how much have i",
+    "better than",
   );
-  const blendWriteVerb = any(text, "supply", "deposit", "deploy", "farm", "add liquidity", "move my");
-  if (blendVenueNamed && blendWriteVerb && !blendRateRead) {
-    {
-      return {
-        kind: "write",
-        op: "deploy_to_blend",
-        template_id: "deploy_to_blend",
-        asset: asset ?? "XLM",
-        amount,
-        multi_leg: true,
-        requires_account: true,
-        requires_amount: true,
-        leverage: leverage ?? null,
-      };
-    }
+  const blendWriteVerb = any(
+    text,
+    "supply",
+    "deposit",
+    "deploy",
+    "farm",
+    "add liquidity",
+    "move my",
+    "leverage",
+    "lever",
+  );
+  if ((blendVenueNamed || (any(text, "blend") && leverage != null && leverage > 1)) && blendWriteVerb && !blendRateRead) {
+    return {
+      kind: "write",
+      op: "deploy_to_blend",
+      template_id: "deploy_to_blend",
+      asset: asset ?? "XLM",
+      amount,
+      multi_leg: true,
+      requires_account: true,
+      requires_amount: true,
+      leverage: leverage ?? null,
+    };
+  }
+
+  // Unsupported tickers on write intents — reject before defaulting asset to USDC.
+  if (
+    findUnsupportedAsset(raw) &&
+    (any(text, "lend", "supply", "earn", "deposit", "borrow", "repay") || any(text, "to earn"))
+  ) {
+    const bad = findUnsupportedAsset(raw)!;
+    return {
+      kind: "clarify",
+      message:
+        `“${bad}” is not a Vanna asset on this testnet. Supported: XLM, BLUSDC, AQUSDC, SOUSDC. ` +
+        `Example: “lend 10 XLM” or “supply 25 BLUSDC”.`,
+      template_id: "unsupported_asset",
+    };
   }
 
   // Align with zip brain (direct.py): bare "deposit" → margin collateral.
@@ -371,10 +551,17 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   if (any(text, "blend reserve", "blend apy", "blend pool") || (any(text, "blend") && any(text, "stats", "apr", "apy"))) {
+    // "XLM vs USDC" / "XLM or USDC" is a comparison — list both, never pick one symbol.
+    const namedBlend = [
+      /\bxlm\b/i.test(raw) ? "XLM" : null,
+      /\busdc\b/i.test(raw) ? "USDC" : null,
+    ].filter(Boolean) as string[];
+    const compare = namedBlend.length > 1 || any(text, "vs", " versus ", " or ", "compare", "pays more", "better");
+    const sym = !compare && namedBlend.length === 1 ? namedBlend[0]! : asset && !compare ? asset : null;
     return {
       kind: "read",
-      tool: asset ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
-      args: asset ? { symbol: asset } : {},
+      tool: sym ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
+      args: sym ? { symbol: sym === "BLUSDC" ? "USDC" : sym } : {},
       template_id: "query_blend",
     };
   }

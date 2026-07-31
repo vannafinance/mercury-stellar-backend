@@ -185,6 +185,15 @@ function usd(n: number | null | undefined): string {
 function prettyKey(k: string): string {
   return k.replace(/_pct$/, " %").replace(/_usd$/, " (USD)").replace(/_human$/, "").replace(/_/g, " ").trim();
 }
+
+/** Drop markdown bold/italics so the chat never shows **BLUSDC** stars. */
+function stripMarkdownLite(s: string): string {
+  return s
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
 function prettyVal(v: unknown): string {
   if (typeof v === "boolean") return v ? "yes" : "no";
   if (typeof v === "number") return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -609,6 +618,11 @@ export function CopilotWorkspace() {
           }),
         });
         const data = (await res.json()) as ChatResponse;
+        // Strip markdown stars so the UI never shows **BLUSDC**
+        if (data.message) data.message = stripMarkdownLite(data.message);
+        if (data.preview?.human_summary) {
+          data.preview.human_summary = stripMarkdownLite(data.preview.human_summary);
+        }
         setResponse(data);
         pushLog(promptLabel, data);
         if (data.kind === "executed") {
@@ -622,10 +636,12 @@ export function CopilotWorkspace() {
           data.kind === "needs_wallet_sign" ||
           Boolean(data.execution?.tx_hash);
         void refreshRailStats({ force });
+        return data;
       } catch {
         const failed: ChatResponse = { kind: "error", message: "Copilot request failed." };
         setResponse(failed);
         pushLog(promptLabel, failed);
+        return failed;
       } finally {
         setLoading(false);
       }
@@ -823,6 +839,7 @@ export function CopilotWorkspace() {
    * once (keyed by request_id) so a re-render can't double-spend.
    */
   const autoSubmittedRef = useRef<string | null>(null);
+  const nextStepFiredRef = useRef<string | null>(null);
   useEffect(() => {
     if (response?.kind !== "needs_wallet_sign") return;
     if (!sessionSigning || signing) return;
@@ -836,12 +853,51 @@ export function CopilotWorkspace() {
     void signWithWallet();
   }, [response, sessionSigning, signing, signWithWallet]);
 
+  /**
+   * Agent chain when step 1 already landed as `executed` (server auto-sign or
+   * open_account). Previously next_step only ran after client wallet sign, so
+   * deposit→borrow got stuck after "Deposit 20 BLUSDC done" with auto-approve on.
+   */
+  useEffect(() => {
+    if (response?.kind !== "executed") return;
+    const next = response.next_step;
+    if (!next?.op || next.amount == null || !(next.amount > 0)) return;
+    if (loading || signing) return;
+    const key = `${response.request_id ?? "exec"}:${next.op}:${next.amount}:${next.asset ?? ""}`;
+    if (nextStepFiredRef.current === key) return;
+    nextStepFiredRef.current = key;
+
+    const label =
+      next.label ||
+      `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
+    toast.success("Step 1 confirmed — running next step…", { duration: 4000 });
+    void (async () => {
+      // Let the ledger settle before building the next leg.
+      await new Promise((r) => setTimeout(r, 5000));
+      await refreshRailStats({ force: true });
+      setSubmitted(label);
+      await postCopilot(
+        {
+          message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
+          pending_write: {
+            op: next.op,
+            asset: next.asset ?? null,
+            amount: next.amount ?? null,
+            leverage: next.leverage ?? null,
+          },
+        },
+        label,
+      );
+    })();
+  }, [response, loading, signing, postCopilot, refreshRailStats]);
+
   const reset = () => {
     setSubmitted(null);
     setResponse(null);
     setIntentText("");
     setShowCustom(false);
     autoSubmittedRef.current = null;
+    nextStepFiredRef.current = null;
     inputRef.current?.focus();
   };
 
