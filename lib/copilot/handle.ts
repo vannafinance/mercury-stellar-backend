@@ -23,6 +23,7 @@ import {
   preflightLend,
   earnPoolSymbol,
   splitLeverageAmounts,
+  formatLeveragePlanLine,
   validateLendParams,
   needsUsdcVariant,
   usdcVariantClarifyMessage,
@@ -1111,6 +1112,7 @@ async function runWrite(
       userAsset = "BLUSDC";
     }
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
+    const levLine = formatLeveragePlanLine(deposit, borrow, action.leverage, uiAsset);
     const step1: CopilotAction = {
       op: "deposit_collateral",
       asset: userAsset,
@@ -1128,8 +1130,9 @@ async function runWrite(
     });
     const nextNote =
       `\n\nPlan (2 steps — not one atomic tx):\n` +
+      `  ${levLine}\n` +
       `  Step 1/2 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
-      `  Step 2/2 — Borrow ${amount(borrow)} ${uiAsset} (~${action.leverage ?? 2}×) after step 1 confirms\n` +
+      `  Step 2/2 — Borrow ${amount(borrow)} ${uiAsset} after step 1 confirms\n` +
       `The copilot runs step 2 automatically once step 1 is on-chain.`;
     if (step1Res.kind === "needs_wallet_sign" || step1Res.kind === "needs_auto_sign" || step1Res.kind === "executed") {
       return {
@@ -1182,13 +1185,14 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
-    // Slightly higher borrow headroom than plain margin (0.85) — still under liq.
-    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null, 0.85);
+    // Full L−1 borrow for advertised Nx; protocol can_borrow still gates.
+    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null, 1.0);
     const userAsset = action.asset || "BLUSDC";
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
     // After deposit+borrow, free balance ≈ borrowed amount (collateral is locked).
     // Supply the free/borrowed leg to Blend (matches what SA can spend).
     const supplyAmt = borrow > 0 ? borrow : deposit;
+    const levLine = formatLeveragePlanLine(deposit, borrow, action.leverage, uiAsset);
     const step1: CopilotAction = {
       op: "deposit_collateral",
       asset: userAsset,
@@ -1206,8 +1210,9 @@ async function runWrite(
     });
     const planNote =
       `\n\nBlend farm plan (3 steps — avoids Soroban Budget limit on atomic deploy):\n` +
+      `  ${levLine}\n` +
       `  Step 1/3 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
-      `  Step 2/3 — Borrow ${amount(borrow)} ${uiAsset}\n` +
+      `  Step 2/3 — Borrow ${amount(borrow)} ${uiAsset} (free balance in margin account)\n` +
       `  Step 3/3 — Supply ${amount(supplyAmt)} ${uiAsset} free balance to Blend\n` +
       `Auto-approve runs each next step after the previous confirms on-chain.`;
     if (

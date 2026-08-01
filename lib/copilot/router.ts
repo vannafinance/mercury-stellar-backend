@@ -635,16 +635,20 @@ export function routeMessage(message: string): RoutedIntent {
       });
     }
     if (steps.length >= 2) {
+      const parts = steps.map((s, i) => {
+        const a = s.amount != null ? `${s.amount} ` : "";
+        const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
+        return `${i + 1}) ${s.op} ${a}${s.asset ?? ""}${L}`.trim();
+      });
       return {
         kind: "plan",
         template_id: "multi_goal_strategy",
-        summary: "Multi-step strategy from your prompt",
+        summary: `Multi-step strategy: ${parts.join(" → ")}`,
         steps: steps.map((s) => ({
           kind: "write" as const,
           op: s.op,
           asset: s.asset ?? null,
           amount: s.amount ?? null,
-          // leverage only on write ops that use it — stored via args if needed
           args: s.leverage != null ? { leverage: s.leverage } : undefined,
         })),
       };

@@ -142,24 +142,49 @@ export function displayUsdcLabel(mcpSymbol: string, userPick?: string | null): s
 }
 
 /**
- * Leverage split: deposit D → borrow D*(L-1).
- * @param maxSafeRatio Cap borrow as a fraction of deposit (default 0.8 for margin LTV headroom).
- *   Pass a higher ratio for farm legs when the product path allows it.
+ * Leverage split (industry standard for “Nx position”):
+ *
+ *   equity / deposit = D
+ *   total position   ≈ D × L
+ *   borrow           = D × (L − 1)
+ *
+ * Examples:
+ *   2× → deposit 20, borrow 20  (total 40, equity 20 → 2×)
+ *   3× → deposit 20, borrow 40  (total 60, equity 20 → 3×)
+ *
+ * This is NOT “borrow = L × deposit” (that would be L+1× total exposure).
+ *
+ * @param maxSafeRatio Cap borrow as a fraction of deposit for LTV headroom
+ *   (default 1.0 so advertised Nx matches math; protocol still enforces can_borrow).
  */
 export function splitLeverageAmounts(
   deposit: number,
   leverage?: number | null,
   borrowExplicit?: number | null,
-  maxSafeRatio = 0.8,
+  maxSafeRatio = 1.0,
 ): { deposit: number; borrow: number } {
   if (borrowExplicit != null && borrowExplicit > 0) {
     return { deposit, borrow: borrowExplicit };
   }
   const lev = leverage != null && leverage > 1 ? leverage : 2;
-  // Classic 2x: deposit D, borrow D. Cap vs liq LTV unless caller raises the ratio.
   const rawBorrow = deposit * (lev - 1);
   const maxSafe = deposit * Math.max(0.1, maxSafeRatio);
   return { deposit, borrow: Math.min(rawBorrow, maxSafe) };
+}
+
+/** One-line human explanation of the leverage split for copilot messages. */
+export function formatLeveragePlanLine(
+  deposit: number,
+  borrow: number,
+  leverage: number | null | undefined,
+  assetLabel: string,
+): string {
+  const L = leverage != null && leverage > 1 ? leverage : 2;
+  const total = deposit + borrow;
+  return (
+    `${L}× means total position ≈ ${total} ${assetLabel} on ${deposit} ${assetLabel} equity ` +
+    `(deposit ${deposit} + borrow ${borrow} = ${L}×, not borrow ${deposit * L}).`
+  );
 }
 
 /**
