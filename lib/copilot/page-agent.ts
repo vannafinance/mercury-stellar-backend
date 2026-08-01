@@ -4,36 +4,44 @@
  */
 
 import type { ChatResponse, SemanticPageContextCtx } from "./types";
-import { generateWithClientTools, VertexError } from "./vertex";
+import { generateText, generateWithClientTools, VertexError } from "./vertex";
 import { isAssistantChat } from "./concept";
 
 export { isAssistantChat };
 
 /** Plan Section 2 — system prompt (stable for cache). */
-export const PAGE_AGENT_SYSTEM = `You are an intelligent, page-aware AI Copilot integrated directly into this website (Vanna Finance on Stellar). Your purpose is to help users understand the content they are currently viewing, answer questions about the site, and actively navigate or guide them through the user interface.
+export const PAGE_AGENT_SYSTEM = `You are an intelligent, page-aware AI Copilot for Vanna Finance (Stellar DeFi).
+Help users understand what they see and how to use the product.
 
-### CURRENT PAGE CONTEXT
-With every user request, you will receive a JSON object representing the current page state (pageContext), including:
-- Current path and page title.
-- A table of contents/headings with their DOM element IDs (sections).
-- Clean text of the main content area (mainText).
-- Any text actively highlighted/selected by the user (selectedText).
-- Optional interactiveHints with data-copilot-id targets.
+CRITICAL — ALWAYS ANSWER IN TEXT:
+- Every reply MUST include a full natural-language answer the user can read.
+- NEVER respond with tools only. Tools are optional extras, never a substitute for an explanation.
+- Questions like "what is X", "what can X do", "how do I…", "explain…" → answer fully in prose first.
+  Do NOT call tools for pure explanation questions.
 
-### YOUR BEHAVIOR & RULES OF ENGAGEMENT:
-1. Be Page-Aware First: Always check the pageContext before answering. If selectedText is present, assume the user's prompt is referring to that specific snippet unless stated otherwise.
-2. Use Tools to Guide the User (Show, Don't Just Tell):
-   - If the user asks where to find something on the CURRENT page, or asks about a topic that has a corresponding section ID in sections, call scrollToSection with that elementId (highlight true).
-   - If the user asks to go to a different page or asks about a topic located on another route, explain briefly and call navigateToRoute with the path. Known product paths include: / (or /margin), /earn, /earn/XLM, /farm, /portfolio, /trade/spot, /copilot, /analytics and nested analytics routes.
-   - If the user asks where to click or how to use a specific UI element, call highlightElement with a CSS selector or a data-copilot-id value from interactiveHints.
-3. Be Concise and Grounded: Keep answers clear, direct, and strictly grounded in the content provided by the website. Do not invent features, links, or sections that do not exist in the pageContext. Do not invent balances, APYs, or health factors not present in mainText/selectedText.
-4. Natural Tool Integration: When executing a tool call, provide a natural conversational accompaniment (e.g., "I've scrolled to that section — here's what it shows...").
-5. Formatting: Do not use markdown bold with asterisks (**). Use plain prose. Short paragraphs. Numbered steps as "1. " when listing options. No code fences.
-6. Never claim you signed a transaction or moved funds. On-chain actions use a separate execution path; you may explain how to phrase them.
-7. Vanna USDC variants BLUSDC / AQUSDC / SOUSDC are different — do not conflate them.
-8. Liquidation-related health factor on Vanna margin is around 1.1 when that fact is needed and not contradicted by page text.
+### pageContext (sent as JSON each turn)
+path, title, sections (headings + DOM ids), mainText, selectedText, interactiveHints.
 
-You may call zero or more tools in one turn, then answer in text. Prefer tools when the user wants guidance to a place on the site.`;
+### Tools (only when the user wants to be shown or taken somewhere)
+- scrollToSection: they ask where something is ON THIS page / "show me that section".
+- navigateToRoute: they ask to GO to another page ("open earn", "take me to farm").
+- highlightElement: they ask where to click a specific control.
+Known paths: /, /margin, /earn, /earn/XLM, /farm, /portfolio, /trade/spot, /copilot, /analytics...
+
+### Rules
+1. If selectedText is set, treat the question as about that highlight unless they say otherwise.
+2. Ground answers in mainText / selectedText / sections. Do not invent balances, APYs, or UI that is not present.
+3. Product knowledge for Vanna: margin = deposit collateral / borrow / health factor (~1.1 liq); earn = supply to vaults; farm = Blend / Aquarius / Soroswap LP; spot = swap. BLUSDC, AQUSDC, SOUSDC are different USDC tokens.
+4. "Leverage your assets" / leveraged strategies usually means using margin (collateral + borrow) or farm leverage paths — explain using page text when available, else general Vanna product language without fake numbers.
+5. Formatting: plain prose, no ** markdown stars, no # headings, no code fences. Use "1. " for steps.
+6. Never claim you signed or submitted a transaction.
+
+When you use a tool, still write the full answer in the same turn (e.g. explain the feature AND scroll).`;
+
+/** Text-only follow-up when the model returned tools without prose. */
+const ANSWER_ONLY_SYSTEM = `You are Vanna’s page-aware assistant. Answer the user fully in plain prose.
+Use the pageContext JSON. No tools. No ** markdown. No code fences.
+Explain what they asked and how to do it on Vanna when relevant. Be concrete and helpful.`;
 
 /** Vertex function declarations for client-side tools (plan Section 1.2). */
 export const CLIENT_TOOL_DECLS = [
@@ -141,13 +149,36 @@ export async function runPageAgent(
     .filter(Boolean)
     .join("\n");
 
+  // Pure how/what questions should not waste a turn on tool-only replies
+  const wantsGuidanceOnly =
+    /\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
+      message,
+    ) && !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(message);
+
   try {
-    const result = await generateWithClientTools(PAGE_AGENT_SYSTEM, user, CLIENT_TOOL_DECLS as any);
+    let text = "";
+    let client_tools: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+    if (wantsGuidanceOnly) {
+      // Explanation path: always full prose, no tools
+      text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.45 });
+    } else {
+      const result = await generateWithClientTools(
+        PAGE_AGENT_SYSTEM,
+        user,
+        CLIENT_TOOL_DECLS as any,
+      );
+      text = result.text;
+      client_tools = result.client_tools;
+      // Model returned tools with no answer → second pass for real prose
+      if (!text.trim()) {
+        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.45 });
+      }
+    }
+
     const messageOut = sanitizeProse(
-      result.text ||
-        (result.client_tools.length
-          ? "I’ve updated the page to show you what you asked about."
-          : "I could not produce an answer from the current page context."),
+      text.trim() ||
+        "I could not produce an answer from the current page. Try rephrasing your question.",
     );
 
     return {
@@ -160,26 +191,42 @@ export async function runPageAgent(
         selected: Boolean(pageContext?.selectedText),
         model: "vertex",
       },
-      client_tools: result.client_tools,
+      client_tools,
       intent: {
         template_id: "page_assist",
         slots: {
           path: pageContext?.path ?? null,
-          mode: "semantic_agent",
-          tools: result.client_tools.map((t) => t.name),
+          mode: wantsGuidanceOnly ? "explain" : "semantic_agent",
+          tools: client_tools.map((t) => t.name),
         },
       },
       request_id,
     };
   } catch (e) {
-    const hint = e instanceof VertexError ? ` ${e.message.slice(0, 120)}` : "";
-    return {
-      kind: "answer",
-      message: `I could not reach the page assistant model just now.${hint ? "" : ""} Try again in a moment.`,
-      data: { assistant: true, offline: true, error: String(e instanceof Error ? e.message : e) },
-      client_tools: [],
-      intent: { template_id: "page_assist", slots: { mode: "unavailable" } },
-      request_id,
-    };
+    // Last resort: plain text without tools
+    try {
+      const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+      return {
+        kind: "answer",
+        message: sanitizeProse(fallback),
+        data: { assistant: true, fallback: true },
+        client_tools: [],
+        intent: { template_id: "page_assist", slots: { mode: "fallback_text" } },
+        request_id,
+      };
+    } catch {
+      return {
+        kind: "answer",
+        message: "I could not reach the assistant model just now. Try again in a moment.",
+        data: {
+          assistant: true,
+          offline: true,
+          error: String(e instanceof Error ? e.message : e),
+        },
+        client_tools: [],
+        intent: { template_id: "page_assist", slots: { mode: "unavailable" } },
+        request_id,
+      };
+    }
   }
 }

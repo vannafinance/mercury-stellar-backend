@@ -1,17 +1,14 @@
 "use client";
 
 /**
- * Side-panel body for the page-aware agent.
- * History comes from session store (survives route changes).
+ * Side-panel body — conversation only (no page-context strip / template chips).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Send } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
-import { captureSemanticPageContext } from "@/lib/assistant/semantic-page-context";
 import type { AssistantTurn } from "@/store/assistant-session";
 import { AssistantProse, sanitizeAssistantText } from "./assistant-prose";
-import { copilotConfigHint } from "./assistant-model-hint";
 
 export type AssistantSend = (message: string) => Promise<{
   kind: string;
@@ -24,7 +21,6 @@ export function AssistantPanel({
   send,
   prefill,
   onConsumedPrefill,
-  pageLabel,
   turns,
 }: {
   send: AssistantSend;
@@ -36,27 +32,8 @@ export function AssistantPanel({
   const { isDark } = useTheme();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [selectedChip, setSelectedChip] = useState<string | null>(null);
-  const [pathMeta, setPathMeta] = useState(pageLabel || "/");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-
-  // Live selection chip (plan Step 4)
-  useEffect(() => {
-    const tick = () => {
-      try {
-        const t = window.getSelection()?.toString()?.trim();
-        setSelectedChip(t ? t.slice(0, 120) : null);
-        const ctx = captureSemanticPageContext({ maxMainText: 500 });
-        setPathMeta(ctx.path || pageLabel || "/");
-      } catch {
-        /* ignore */
-      }
-    };
-    tick();
-    document.addEventListener("selectionchange", tick);
-    return () => document.removeEventListener("selectionchange", tick);
-  }, [pageLabel]);
 
   useEffect(() => {
     if (prefill) {
@@ -79,7 +56,6 @@ export function AssistantPanel({
       try {
         await send(text);
       } catch (e) {
-        // send() already appends user; surface error as assistant line via throw handling in parent
         console.error("[assistant]", e);
       } finally {
         setBusy(false);
@@ -98,53 +74,12 @@ export function AssistantPanel({
       data-assistant-panel
       style={{ fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif" }}
     >
-      <div className={`px-4 py-2.5 border-b ${line} shrink-0 space-y-2`}>
-        <p className={`text-[11px] leading-snug ${muted}`}>
-          Page context: <span className={`font-medium ${ink}`}>{pathMeta}</span>
-          {" · "}semantic reader active
-        </p>
-        {selectedChip && (
-          <div
-            className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ${
-              isDark ? "bg-[#703AE6]/20 text-[#D4C4FF]" : "bg-[#703AE6]/10 text-[#5B2BB8]"
-            }`}
-            title={selectedChip}
-          >
-            <span className="shrink-0 font-semibold">Context: Selected Text</span>
-            <span className="truncate opacity-90">“{selectedChip}”</span>
-          </div>
-        )}
-        <div className="flex flex-wrap gap-1.5">
-          {["Summarize this page", "What am I looking at?", "Where can I go next?"].map(
-            (label) => (
-              <button
-                key={label}
-                type="button"
-                disabled={busy}
-                onClick={() => void run(label)}
-                className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                  isDark
-                    ? "bg-[#222] text-[#ccc] hover:bg-[#2e2e2e]"
-                    : "bg-[#f3f3f3] text-[#444] hover:bg-[#e9e9e9]"
-                }`}
-              >
-                {label}
-              </button>
-            ),
-          )}
-        </div>
-        <p className={`text-[10px] ${muted}`}>{copilotConfigHint()}</p>
-      </div>
-
       <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-6">
         {turns.length === 0 && !busy && (
-          <div className="space-y-3 pt-1">
-            <p className={`text-[16px] font-semibold tracking-tight ${ink}`}>
-              Ask about this page
-            </p>
+          <div className="space-y-2 pt-2">
+            <p className={`text-[15px] font-semibold tracking-tight ${ink}`}>Ask anything</p>
             <p className={`text-[13px] leading-relaxed ${muted}`}>
-              I read the live page structure and content. Highlight text for focused answers.
-              I can scroll to sections, highlight UI, or navigate you to other pages.
+              About this page, Vanna products, or what to do next.
             </p>
           </div>
         )}
@@ -170,7 +105,7 @@ export function AssistantPanel({
         {busy && (
           <div className={`flex items-center gap-2 text-[12px] ${muted}`}>
             <Loader2 size={14} className="animate-spin" />
-            Reading page…
+            Thinking…
           </div>
         )}
       </div>
@@ -186,7 +121,7 @@ export function AssistantPanel({
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about this page…"
+          placeholder="Ask anything…"
           disabled={busy}
           className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-[13px] outline-none focus:border-[#703AE6] ${
             isDark
