@@ -672,14 +672,32 @@ export function CopilotWorkspace() {
 
   const enableAutoSign = useCallback(
     async (action: "start" | "use_defaults" | "custom" | "disable") => {
-      const label = action === "disable" ? "Disable auto-sign" : "Enable auto-sign";
+      const label =
+        action === "disable"
+          ? "Disable auto-sign"
+          : action === "use_defaults"
+            ? "Enable auto-sign ($1000/$1000)"
+            : action === "custom"
+              ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
+              : "Enable auto-sign";
       setSubmitted(submitted ?? label);
-      await postCopilot(
+      const data = await postCopilot(
         {
-          message: action === "disable" ? "disable auto-sign" : "enable auto-sign",
+          message:
+            action === "disable"
+              ? "disable auto-sign"
+              : action === "use_defaults"
+                ? "enable auto-sign with default caps"
+                : action === "custom"
+                  ? `set auto-sign cap to ${customTx} per tx and ${customDay || customTx} per day`
+                  : "enable auto-sign",
           auto_sign: {
             action,
-            ...(action === "custom" ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx } : {}),
+            ...(action === "custom"
+              ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx }
+              : action === "use_defaults"
+                ? { max_per_tx_usd: 1000, max_per_day_usd: 1000 }
+                : {}),
           },
           pending_write: response?.auto_sign?.pending_write
             ? {
@@ -691,8 +709,32 @@ export function CopilotWorkspace() {
         },
         label,
       );
+      // Sync local auto-approve (session auto-submit) with the user's cap choice.
+      // Even if MCP Sign Service fails user-assertion, local session signing still
+      // auto-submits staged XDRs — caps are stored for UI + guardian policy.
+      if (address && data) {
+        if (action === "disable") {
+          setAutoApprove(address, false);
+        } else if (action === "use_defaults" || action === "custom") {
+          if (data.kind !== "needs_auto_sign") {
+            setAutoApprove(address, true);
+            const txCap = action === "custom" ? Number(customTx) || 1000 : 1000;
+            const dayCap =
+              action === "custom" ? Number(customDay || customTx) || 1000 : 1000;
+            try {
+              localStorage.setItem(
+                "vanna_copilot_auto_caps",
+                JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
+              );
+            } catch {
+              /* ignore */
+            }
+            toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
+          }
+        }
+      }
     },
-    [postCopilot, customTx, customDay, response, submitted],
+    [postCopilot, customTx, customDay, response, submitted, address],
   );
 
   /**
@@ -1709,8 +1751,28 @@ export function CopilotWorkspace() {
               type="button"
               role="switch"
               aria-checked={sessionSigning}
-              disabled={!sessionSigningAvailable}
-              onClick={() => address && setAutoApprove(address, !autoApprove)}
+              disabled={!sessionSigningAvailable || loading}
+              onClick={() => {
+                if (!address) return;
+                if (sessionSigning) {
+                  // Turning off: local toggle + MCP disable.
+                  setAutoApprove(address, false);
+                  void enableAutoSign("disable");
+                  toast.success("Auto-approve off");
+                  return;
+                }
+                // Turning on: same as MCP — ask for $1000/$1000 defaults or custom caps.
+                setSubmitted("Enable auto-approve");
+                void (async () => {
+                  await postCopilot(
+                    {
+                      message: "enable auto-sign",
+                      auto_sign: { action: "start" },
+                    },
+                    "Enable auto-approve",
+                  );
+                })();
+              }}
               className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors enabled:hover:border-violet-400 disabled:opacity-60"
             >
               <ShieldCheck size={16} className="shrink-0" style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }} />
@@ -1720,8 +1782,22 @@ export function CopilotWorkspace() {
                   {!sessionSigningAvailable
                     ? "Vanna embedded wallet only"
                     : sessionSigning
-                      ? "Cleared writes run without a click"
-                      : "Every write waits for your approval"}
+                      ? (() => {
+                          try {
+                            const raw = localStorage.getItem("vanna_copilot_auto_caps");
+                            if (raw) {
+                              const c = JSON.parse(raw) as {
+                                max_per_tx_usd?: number;
+                                max_per_day_usd?: number;
+                              };
+                              return `Caps $${c.max_per_tx_usd ?? 1000}/tx · $${c.max_per_day_usd ?? 1000}/day`;
+                            }
+                          } catch {
+                            /* ignore */
+                          }
+                          return "Defaults $1000/tx · $1000/day";
+                        })()
+                      : "Turn on → choose $1000 defaults or custom caps"}
                 </span>
               </span>
               <span

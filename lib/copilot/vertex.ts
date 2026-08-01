@@ -528,7 +528,10 @@ Rules:
 - Complex goals (maintain HF, keep earning, rebalance, multi-venue) → kind=plan with ordered steps.
 - Prefer real MCP tool names for reads. Prefer op names for writes.
 - Never invent amounts. If amount missing on a write, still emit write with amount:null so the server asks.
-- "enable auto-sign" / "turn on auto sign" → auto_sign start.
+- "enable auto-sign" / "turn on auto approve" → auto_sign start (MCP default $1000/tx · $1000/day).
+- "set auto-sign cap to 500 per tx and 2000 per day" → auto_sign custom.
+- "use default auto-sign caps" → auto_sign use_defaults.
+- "swap 20 XLM to USDC via aquarius" → write op=swap (server quotes expected_out via oracle).
 - liquidate others → restricted.
 - Hinglish and casual wording are fine.
 - Do not claim you will ask for Freighter approval — execution uses MCP auto-sign.

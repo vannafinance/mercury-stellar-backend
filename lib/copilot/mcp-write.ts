@@ -317,6 +317,10 @@ export function mapOpToMcpStep(
     fraction?: number | null;
     /** aquarius | soroswap for DEX swap / LP */
     venue?: string | null;
+    /** Swap: oracle-quoted expected out and min floor for MCP slippage check */
+    expected_out?: number | string | null;
+    min_out?: number | string | null;
+    slippage_pct?: number | string | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
@@ -555,7 +559,7 @@ export function mapOpToMcpStep(
       }
       const tokenIn = (params.token_a || params.asset || "XLM").toUpperCase();
       const tokenOut = (params.token_b || "USDC").toUpperCase();
-      const venueRaw = String((params as { venue?: string }).venue || "aquarius").toLowerCase();
+      const venueRaw = String(params.venue || "aquarius").toLowerCase();
       const venue = venueRaw.includes("soro") ? "soroswap" : "aquarius";
       if (!amount || !(Number(amount) > 0)) {
         return {
@@ -583,6 +587,24 @@ export function mapOpToMcpStep(
       }
       const uiIn = tokenIn === "USDC" || tokenIn === "BLUSDC" ? "USDC" : tokenIn;
       const uiOut = tokenOut === "USDC" || tokenOut === "BLUSDC" ? "USDC" : tokenOut;
+      // MCP requires min_out OR expected_out (+ optional slippage_pct, default 0.5).
+      // expected_out comes from oracle quote in runWrite (passed via params).
+      const expectedOut =
+        params.expected_out != null && Number(params.expected_out) > 0
+          ? String(params.expected_out)
+          : null;
+      const minOut =
+        params.min_out != null && Number(params.min_out) > 0 ? String(params.min_out) : null;
+      const slip =
+        params.slippage_pct != null && Number(params.slippage_pct) > 0
+          ? String(params.slippage_pct)
+          : "0.5";
+      if (!expectedOut && !minOut) {
+        return {
+          blocker:
+            "Swap needs a price floor (expected_out or min_out). Re-run so the agent can quote via oracle.",
+        };
+      }
       return {
         step: {
           tool: "vanna_swap",
@@ -591,7 +613,9 @@ export function mapOpToMcpStep(
             token_in: inSym,
             token_out: outSym,
             amount_in: amount,
-            min_amount_out: "0",
+            ...(expectedOut ? { expected_out: expectedOut } : {}),
+            ...(minOut ? { min_out: minOut } : {}),
+            slippage_pct: slip,
             trader,
             venue,
             protocol: venue,
@@ -1239,6 +1263,10 @@ export async function executeMcpWrite(
   }
 }
 
+/**
+ * Enable Sign Service auto-sign. MCP default policy is **$1000 per tx / $1000 per day**
+ * when `use_default_caps` is true (same numbers the copilot UI shows).
+ */
 export async function enableAutoSign(
   mcp: MCPClient,
   opts: {
@@ -1253,8 +1281,14 @@ export async function enableAutoSign(
     wallet_address: opts.wallet,
     user_id: opts.userId || opts.wallet,
   };
-  if (opts.useDefaultCaps) args.use_default_caps = true;
-  if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
-  if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
+  if (opts.useDefaultCaps) {
+    args.use_default_caps = true;
+    // Explicit numbers so MCP + copilot stay aligned even if server defaults drift.
+    args.max_per_tx_usd = opts.maxPerTxUsd ?? 1000;
+    args.max_per_day_usd = opts.maxPerDayUsd ?? 1000;
+  } else {
+    if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
+    if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
+  }
   return mcp.call("vanna_enable_auto_sign", args, opts.userId);
 }

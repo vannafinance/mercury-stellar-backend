@@ -148,19 +148,67 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     return { kind: "error", message: "Please type a question.", request_id };
   }
 
-  // Quick NL auto-sign intents without Vertex
+  // Quick NL auto-sign / auto-approve intents (same UX as MCP Sign Service).
   const lower = message.toLowerCase();
-  if (/\benable auto[- ]?sign\b|\bturn on auto[- ]?sign\b|\bauto[- ]?sign on\b/.test(lower)) {
+  if (
+    /\bdisable auto[- ]?sign\b|\bturn off auto[- ]?sign\b|\bauto[- ]?approve off\b|\bdisable auto[- ]?approve\b/.test(
+      lower,
+    )
+  ) {
     return handleAutoSignAction(
-      { ...req, auto_sign: { action: "start" } },
+      { ...req, auto_sign: { action: "disable" } },
       request_id,
       trader,
       userId,
     );
   }
-  if (/\bdisable auto[- ]?sign\b|\bturn off auto[- ]?sign\b/.test(lower)) {
+  // “set auto-sign caps to 500 per tx and 2000 per day” / “auto approve limit 1000”
+  const capMatch =
+    message.match(
+      /(?:auto[- ]?(?:sign|approve)|spend)\s*(?:cap|limit|limits)?[^\d$]*\$?\s*(\d+(?:\.\d+)?)\s*(?:\/\s*tx|per\s*tx|per\s*transaction|tx)?(?:[^\d$]*\$?\s*(\d+(?:\.\d+)?)\s*(?:\/\s*day|per\s*day|daily)?)?/i,
+    ) ||
+    message.match(
+      /(?:max|limit)\s*(?:per\s*)?(?:tx|transaction)[^\d$]*\$?\s*(\d+(?:\.\d+)?)(?:[^\d$]+(?:day|daily)[^\d$]*\$?\s*(\d+(?:\.\d+)?))?/i,
+    );
+  if (
+    capMatch &&
+    /\b(auto[- ]?(?:sign|approve)|cap|limit|spend)\b/i.test(message) &&
+    !/\bdisable\b/i.test(lower)
+  ) {
+    const tx = capMatch[1];
+    const day = capMatch[2] || tx;
     return handleAutoSignAction(
-      { ...req, auto_sign: { action: "disable" } },
+      {
+        ...req,
+        auto_sign: {
+          action: "custom",
+          max_per_tx_usd: tx,
+          max_per_day_usd: day,
+        },
+      },
+      request_id,
+      trader,
+      userId,
+    );
+  }
+  if (
+    /\benable auto[- ]?sign\b|\bturn on auto[- ]?sign\b|\bauto[- ]?sign on\b|\benable auto[- ]?approve\b|\bturn on auto[- ]?approve\b|\bauto[- ]?approve on\b|\bset (?:my )?auto[- ]?(?:sign|approve)(?:\s+cap|\s+limit)?\b/.test(
+      lower,
+    ) ||
+    (/\buse (?:the )?default(?:s)?(?:\s+caps?)?\b/i.test(lower) &&
+      /\bauto[- ]?(?:sign|approve)\b/i.test(lower))
+  ) {
+    // “use defaults for auto-sign”
+    if (/\bdefault/i.test(lower) && /\b(cap|auto|sign|approve)\b/i.test(lower)) {
+      return handleAutoSignAction(
+        { ...req, auto_sign: { action: "use_defaults" } },
+        request_id,
+        trader,
+        userId,
+      );
+    }
+    return handleAutoSignAction(
+      { ...req, auto_sign: { action: "start" } },
       request_id,
       trader,
       userId,
@@ -436,15 +484,17 @@ async function handleAutoSignAction(
           kind: "needs_auto_sign",
           message:
             (r.message as string) ||
-            "Enable auto-sign so the copilot can execute DeFi actions via the Vanna Sign Service (no per-tx wallet popup).",
+            "Enable auto-approve / auto-sign so cleared writes can run without a per-tx prompt.\n\n" +
+              "MCP Sign Service default policy is **$1000 per transaction** and **$1000 per day**. " +
+              "Pick defaults, set custom USD caps, or later say “set auto-sign cap to 500 per tx and 2000 per day”.",
           auto_sign: {
             status: "needs_confirmation",
-            message: "Choose spend limits for auto-sign:",
+            message: "Choose spend limits (MCP default $1000 / $1000):",
             options: [
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: "$1000 per transaction · $1000 per day",
+                description: "$1000 per transaction · $1000 per day (MCP + copilot default)",
               },
               {
                 id: "custom",
@@ -479,8 +529,17 @@ async function handleAutoSignAction(
         wallet: trader,
         userId: userId || trader,
         useDefaultCaps: true,
+        // Explicit defaults matching MCP Sign Service policy ($1000 / $1000).
+        maxPerTxUsd: 1000,
+        maxPerDayUsd: 1000,
       });
-      const msg = (r.summary as string) || (r.message as string) || "Auto-sign enabled with default caps ($1000/$1000).";
+      const msg =
+        (r.summary as string) ||
+        (r.message as string) ||
+        "Auto-sign / auto-approve enabled with default caps: $1000 per transaction · $1000 per day." +
+          (r.error
+            ? ` (MCP note: ${String(r.error)} — wallet session signing may still work for in-app approve.)`
+            : "");
       // Resume pending write if any
       if (req.pending_write?.op && (r.status === "enabled" || r.enabled === true || !r.error)) {
         const resumed = await runWrite(
@@ -519,21 +578,46 @@ async function handleAutoSignAction(
       const tx = req.auto_sign?.max_per_tx_usd;
       if (tx == null || tx === "") {
         return {
-          kind: "clarification",
-          message: "What per-transaction USD limit do you want? (and optional daily limit)",
+          kind: "needs_auto_sign",
+          message:
+            "Set your auto-approve / auto-sign spend caps (same as MCP Sign Service).\n" +
+            "Default is $1000 per transaction and $1000 per day.\n" +
+            "Pick defaults, enter custom USD limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
+          auto_sign: {
+            status: "needs_confirmation",
+            message: "Choose spend limits:",
+            options: [
+              {
+                id: "use_defaults",
+                label: "Use defaults",
+                description: "$1000 per transaction · $1000 per day",
+              },
+              {
+                id: "custom",
+                label: "Set my own limits",
+                description: "Choose per-tx and daily USD caps",
+              },
+            ],
+            pending_write: null,
+            raw: null,
+          },
           request_id,
         };
       }
+      const day = req.auto_sign?.max_per_day_usd ?? tx;
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
         maxPerTxUsd: tx,
-        maxPerDayUsd: req.auto_sign?.max_per_day_usd ?? tx,
+        maxPerDayUsd: day,
       });
       return {
         kind: r.error ? "error" : "answer",
-        message: (r.summary as string) || (r.message as string) || "Auto-sign enabled with your custom caps.",
-        data: factsForUi(r),
+        message:
+          (r.summary as string) ||
+          (r.message as string) ||
+          `Auto-sign / auto-approve enabled with your caps: $${tx} per tx · $${day} per day.`,
+        data: factsForUi({ ...r, max_per_tx_usd: tx, max_per_day_usd: day, default_note: "MCP default is $1000/$1000 when use_default_caps is true." }),
         request_id,
       };
     }
@@ -1170,6 +1254,74 @@ async function runWrite(
     }
   }
 
+  // DEX swap — MCP requires expected_out or min_out (no on-chain quote in MCP).
+  // Quote via oracle: expected_out = amount_in * price_in / price_out.
+  let swapExpectedOut: string | null = null;
+  let swapMinOut: string | null = null;
+  let swapSlippagePct = "0.5";
+  if (action.op === "swap") {
+    if (action.amount == null || !(action.amount > 0)) {
+      return {
+        kind: "clarification",
+        message:
+          "How much do you want to swap? e.g. “swap 20 XLM to USDC via aquarius” or “swap 5 USDC to XLM on soroswap”.",
+        intent: { template_id: "swap", slots: { amount: null } },
+        request_id: ctx.request_id,
+      };
+    }
+    if (!smartAccount) {
+      return {
+        kind: "unavailable",
+        message: "Swap needs a margin (smart) account with free balance of the input token.",
+        request_id: ctx.request_id,
+      };
+    }
+    const tokenIn = (action.token_a || action.asset || "XLM").toUpperCase();
+    const tokenOut = (action.token_b || "USDC").toUpperCase();
+    const venue = (action.venue || "aquarius").toLowerCase().includes("soro")
+      ? "soroswap"
+      : "aquarius";
+    // Oracle symbols: XLM as-is; USDC-family → USDC (stable ~1) for pricing.
+    const oracleIn = tokenIn === "XLM" || tokenIn === "AQUA" ? tokenIn : "USDC";
+    const oracleOut = tokenOut === "XLM" || tokenOut === "AQUA" ? tokenOut : "USDC";
+    try {
+      const mcp = getMcpClient();
+      const [pin, pout] = await Promise.all([
+        mcp.call("vanna_get_price", { symbol: oracleIn }, ctx.userId),
+        mcp.call("vanna_get_price", { symbol: oracleOut }, ctx.userId),
+      ]);
+      const priceIn = Number(pin.price_usd ?? pin.price ?? (oracleIn === "XLM" ? 0.17 : 1));
+      const priceOut = Number(pout.price_usd ?? pout.price ?? (oracleOut === "XLM" ? 0.17 : 1));
+      if (Number.isFinite(priceIn) && Number.isFinite(priceOut) && priceOut > 0) {
+        const expected = (action.amount * priceIn) / priceOut;
+        const slip = 0.5; // percent
+        const minOut = expected * (1 - slip / 100);
+        swapExpectedOut = expected.toFixed(7);
+        swapMinOut = Math.max(0, minOut).toFixed(7);
+        swapSlippagePct = String(slip);
+      }
+    } catch {
+      // Fall back to ~1:1 for stables or rough XLM
+      const fallback =
+        oracleIn === "XLM" && oracleOut === "USDC"
+          ? action.amount * 0.17
+          : oracleIn === "USDC" && oracleOut === "XLM"
+            ? action.amount / 0.17
+            : action.amount;
+      swapExpectedOut = fallback.toFixed(7);
+      swapMinOut = (fallback * 0.995).toFixed(7);
+    }
+    if (!swapExpectedOut) {
+      return {
+        kind: "error",
+        message: "Could not price this swap from the oracle. Try again in a moment.",
+        request_id: ctx.request_id,
+      };
+    }
+    // Stash venue on action for mapOp
+    action = { ...action, venue };
+  }
+
   // Blend farm supply — resolve Registry blend pool C-address for MCP deploy tool.
   let blendPoolAddress: string | null = null;
   if (action.op === "deploy_to_blend" || action.op === "supply_to_blend") {
@@ -1221,6 +1373,9 @@ async function runWrite(
       amount_b: action.amount_b,
       fraction: action.fraction,
       venue: action.venue,
+      expected_out: swapExpectedOut,
+      min_out: swapMinOut,
+      slippage_pct: swapSlippagePct,
     },
     { trader: ctx.trader, smartAccount },
   );
