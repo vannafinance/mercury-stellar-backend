@@ -254,14 +254,17 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const kwFast = routeMessage(message);
   const needsSemanticIntent = (() => {
     const t = message.trim();
-    if (t.length > 110) return true;
+    if (t.length > 90) return true;
     const actionVerbs =
-      t.match(/\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow)\b/gi) ||
-      [];
+      t.match(
+        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy)\b/gi,
+      ) || [];
     const uniqueVerbs = new Set(actionVerbs.map((v) => v.toLowerCase()));
     if (uniqueVerbs.size >= 2) return true;
+    // Yield + farm in one breath even if only one “verb” matched cleanly
+    if (/\b(park|lend|earn|yield)\b/i.test(t) && /\b(farm|blend|deploy)\b/i.test(t)) return true;
     if (
-      /\b(invest|strategy|rebalance|optimize|max(?:imum)?\s*profit|wherever|whatever|make sure|ensure|keeping|while|then also|and also)\b/i.test(
+      /\b(invest|strategy|rebalance|optimize|max(?:imum)?\s*profit|wherever|whatever|make sure|ensure|keeping|while|then also|and also|multi[- ]?step)\b/i.test(
         t,
       ) &&
       !/^\s*(swap|lend|borrow|deposit|repay|supply|farm blend)\b/i.test(t)
@@ -919,6 +922,57 @@ async function runRead(
       request_id: ctx.request_id,
     };
   } catch (e) {
+    // Health on large/active accounts often hits Soroban Budget ExceededLimit.
+    // Fall back to collateral + debt reads so the user still gets real numbers.
+    if (
+      routed.tool === "vanna_get_account_health" &&
+      e instanceof Error &&
+      /Budget|ExceededLimit|resource/i.test(e.message)
+    ) {
+      try {
+        const mcp = getMcpClient();
+        const sa = ctx.smartAccount;
+        const [col, debt] = await Promise.all([
+          mcp.call("vanna_get_collateral", sa ? { smart_account: sa } : {}, ctx.userId).catch(() => null),
+          mcp.call("vanna_get_debt", sa ? { smart_account: sa } : {}, ctx.userId).catch(() => null),
+        ]);
+        const colUsd = col ? Number((col as any).total_value_usd ?? 0) : null;
+        const debtUsd = debt ? Number((debt as any).total_debt_usd ?? 0) : null;
+        const hf =
+          colUsd != null && debtUsd != null && debtUsd > 0.01
+            ? colUsd / debtUsd
+            : colUsd != null && colUsd > 0
+              ? 999
+              : null;
+        const parts = [
+          "Full health endpoint hit a Soroban CPU budget limit on this account — using collateral + debt instead:",
+        ];
+        if (colUsd != null) parts.push(`collateral ~$${colUsd.toFixed(2)}`);
+        if (debtUsd != null) parts.push(`debt ~$${debtUsd.toFixed(2)}`);
+        if (hf != null) {
+          parts.push(
+            hf >= 999
+              ? "health factor ∞ (no meaningful debt)"
+              : `approx health factor ${hf.toFixed(2)} (collateral ÷ debt)`,
+          );
+        }
+        return {
+          kind: "answer",
+          message: parts.join(" · "),
+          data: factsForUi({
+            collateral: col,
+            debt,
+            approx_health_factor: hf,
+            note: "fallback_from_budget_exceeded",
+          }),
+          intent: { template_id: "query_account_health", slots: { mode: "collateral_debt_fallback" } },
+          mcp: { tool: "vanna_get_collateral+vanna_get_debt", has_unsigned_xdr: false },
+          request_id: ctx.request_id,
+        };
+      } catch {
+        /* fall through */
+      }
+    }
     return mcpErrorResponse(e, ctx.request_id, routed.template_id);
   }
 }
@@ -1050,7 +1104,12 @@ async function runWrite(
     const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null);
     // Keep the user's pick (BLUSDC/AQUSDC/…) for display + chip logic; mapOp
     // converts to MCP symbols (USDC/AQUSDC/SOUSDC) at the wire.
-    const userAsset = action.asset || "USDC";
+    // Protocol collateral allowlist: XLM, AQUSDC, SOUSDC, USDC (BLUSDC → MCP USDC).
+    let userAsset = action.asset || "XLM";
+    if (/^blusdc$/i.test(userAsset)) {
+      // Map Blend USDC label → margin USDC collateral (MCP symbol USDC)
+      userAsset = "BLUSDC";
+    }
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
     const step1: CopilotAction = {
       op: "deposit_collateral",
@@ -1722,25 +1781,49 @@ async function runPlan(
 
     if (step.kind === "write" && (step.op || step.tool)) {
       const op = step.op || mapToolToOp(step.tool!);
+      const lev =
+        step.args?.leverage != null && Number.isFinite(Number(step.args.leverage))
+          ? Number(step.args.leverage)
+          : null;
       const action: CopilotAction = {
         op,
         asset: step.asset ?? (step.args?.symbol as string) ?? null,
         amount: step.amount ?? (step.args?.amount != null ? Number(step.args.amount) : null),
+        leverage: lev,
+        multi_leg: op === "deploy_to_blend" || op === "deposit_and_borrow" || (lev != null && lev > 1),
+        requires_account: !["lend", "redeem", "create_account"].includes(op),
+        requires_amount: true,
         smart_account: smartAccount,
         trader: ctx.trader,
+        min_hf: parseMinHealthFactor(ctx.message),
       };
       const writeRes = await runWrite(action, { ...ctx, smartAccount });
-      if (writeRes.kind === "needs_auto_sign") {
+      // Multi-leg split returns next_step — hand control to client agent chain
+      if (writeRes.next_step) {
         return {
           ...writeRes,
           message:
-            `${plan.summary || "Strategy plan"} — paused: auto-sign required before executing “${op}”.\n\n` +
-            writeRes.message,
+            `${plan.summary || "Strategy plan"} — starting multi-step execution.\n\n` + writeRes.message,
           execution: {
-            status: "needs_auto_sign",
+            status: writeRes.kind === "executed" ? "in_progress" : writeRes.kind,
             steps: [
               ...stepsOut,
-              { tool: op, label: op, status: "needs_auto_sign", message: writeRes.message },
+              { tool: op, label: op, status: writeRes.kind, message: writeRes.message },
+            ],
+          },
+        };
+      }
+      if (writeRes.kind === "needs_auto_sign" || writeRes.kind === "needs_wallet_sign") {
+        return {
+          ...writeRes,
+          message:
+            `${plan.summary || "Strategy plan"} — paused: signature required before “${op}”.\n\n` +
+            writeRes.message,
+          execution: {
+            status: writeRes.kind,
+            steps: [
+              ...stepsOut,
+              { tool: op, label: op, status: writeRes.kind, message: writeRes.message },
             ],
           },
         };

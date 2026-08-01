@@ -538,7 +538,33 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // ── reads ───────────────────────────────────────────────────────────────
-  if (any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health")) {
+  // Health as a *constraint* ("keep HF above 1.4") with a real write intent must
+  // not steal multi-goal prompts into a pure health read.
+  const hasActionWriteIntent =
+    any(
+      text,
+      "lend",
+      "borrow",
+      "deposit",
+      "repay",
+      "swap",
+      "farm",
+      "deploy",
+      "supply",
+      "invest",
+      "park",
+      "allocate",
+      "redeem",
+      "withdraw",
+      "add liquidity",
+      "remove liquidity",
+    ) ||
+    /\b(then|and)\s+(also\s+)?(farm|lend|borrow|deposit|supply|swap|invest)\b/i.test(text);
+
+  if (
+    any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") &&
+    !hasActionWriteIntent
+  ) {
     return {
       kind: "read",
       tool: "vanna_get_account_health",
@@ -546,6 +572,83 @@ export function routeMessage(message: string): RoutedIntent {
       requires_account: true,
       template_id: "query_account_health",
     };
+  }
+
+  // Multi-domain narratives: park/lend yield AND farm / deposit+borrow.
+  // Emit a plan so handleChat runs steps instead of collapsing to one read.
+  if (
+    hasActionWriteIntent &&
+    ((any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
+      (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
+      (/\bthen\b/i.test(text) &&
+        (text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park)\b/gi) || []).length >= 2))
+  ) {
+    const minHf = parseMinHealthFactor(raw);
+    const steps: Array<{
+      kind: "read" | "write";
+      op?: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+    }> = [];
+    // Leg 1: earn / park XLM (or first yield intent)
+    // Never reuse HF floors ("above 1.4") as deposit amounts — only explicit "N XLM".
+    if (any(text, "park", "lend", "earn", "yield") && !any(text, "farm blend only")) {
+      const earnAsset = /\bxlm\b/i.test(raw) ? "XLM" : asset;
+      const xlmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*xlm\b/i);
+      const earnAmt = xlmAmtM ? Number(xlmAmtM[1]) : null;
+      if (any(text, "park", "lend", "earn yield", "for yield") || (any(text, "yield") && any(text, "xlm"))) {
+        steps.push({
+          kind: "write",
+          op: "lend",
+          asset: earnAsset ?? "XLM",
+          amount: earnAmt != null && Number.isFinite(earnAmt) && earnAmt > 0 ? earnAmt : null,
+        });
+      }
+    }
+    // Leg 2: farm blend / levered farm — amount only from "N BLUSDC" style, not HF floors
+    if (any(text, "farm", "blend", "deploy")) {
+      const farmAsset =
+        (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
+        (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
+        (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
+        (asset && asset !== "XLM" ? asset : null) ||
+        "BLUSDC";
+      const farmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*(?:blusdc|aqusdc|sousdc|usdc)\b/i);
+      const farmAmt = farmAmtM ? Number(farmAmtM[1]) : null;
+      steps.push({
+        kind: "write",
+        op: "deploy_to_blend",
+        asset: farmAsset,
+        amount: farmAmt != null && Number.isFinite(farmAmt) && farmAmt > 0 ? farmAmt : null,
+        leverage: leverage ?? 2,
+      });
+    }
+    // deposit + borrow (+ optional supply blend) already covered by dedicated multi_leg ops
+    if (any(text, "deposit") && any(text, "borrow") && !steps.length) {
+      steps.push({
+        kind: "write",
+        op: "deposit_and_borrow",
+        asset: asset ?? "XLM",
+        amount,
+        leverage: leverage ?? 2,
+      });
+    }
+    if (steps.length >= 2) {
+      return {
+        kind: "plan",
+        template_id: "multi_goal_strategy",
+        summary: "Multi-step strategy from your prompt",
+        steps: steps.map((s) => ({
+          kind: "write" as const,
+          op: s.op,
+          asset: s.asset ?? null,
+          amount: s.amount ?? null,
+          // leverage only on write ops that use it — stored via args if needed
+          args: s.leverage != null ? { leverage: s.leverage } : undefined,
+        })),
+      };
+    }
   }
 
   if (any(text, "how much do i owe", "my debt", "how much have i borrowed", "what do i owe")) {
@@ -706,11 +809,35 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // “price of XLM and USDC” / dual-oracle asks — always batch when 2+ assets named
   if (any(text, "price", "trading at", "how much is", "rate", "oracle")) {
+    const named: string[] = [];
+    if (/\bxlm\b/i.test(raw)) named.push("XLM");
+    if (/\baqusdc\b/i.test(raw)) named.push("AQUSDC");
+    else if (/\bsousdc\b/i.test(raw)) named.push("SOUSDC");
+    else if (/\bblusdc\b/i.test(raw)) named.push("USDC");
+    else if (/\busdc\b/i.test(raw)) named.push("USDC");
+    if (/\baqua\b/i.test(raw) && !/\baqusdc\b/i.test(raw)) named.push("AQUA");
+    // de-dupe
+    const symbols = [...new Set(named)];
+    if (symbols.length >= 2 || (any(text, "and", "vs", "versus", ",") && symbols.length >= 1)) {
+      const batch =
+        symbols.length >= 2
+          ? symbols
+          : symbols[0] === "XLM"
+            ? ["XLM", "USDC"]
+            : ["USDC", "XLM"];
+      return {
+        kind: "read",
+        tool: "vanna_get_prices_batch",
+        args: { symbols: batch },
+        template_id: "query_prices_batch",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_get_price",
-      args: { symbol: asset ?? "XLM" },
+      args: { symbol: asset ?? symbols[0] ?? "XLM" },
       template_id: "query_price",
     };
   }
