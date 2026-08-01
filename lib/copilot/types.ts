@@ -29,7 +29,10 @@ export type PageSnapshotCtx = {
   url?: string;
   visible_text?: string;
   selection?: string | null;
+  region_text?: string | null;
   headings?: string[];
+  metrics?: Array<{ label: string; value: string }>;
+  tables?: string[];
   captured_at?: number;
   char_count?: number;
 };

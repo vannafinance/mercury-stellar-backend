@@ -19,7 +19,6 @@ import { setSelectedPool, useSelectedPoolStore } from "@/store/selected-pool-sto
 import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { useRegisterPage } from "@/contexts/page-context";
 
 // AQUARIUS_USDC / SOROSWAP_USDC peg to USDC's oracle price (alias resolved
 // inside oracle-price.ts).
@@ -143,52 +142,6 @@ export default function EarnPage({ params }: { params: Promise<{ id: string }> }
     const uppercase = iconPaths[vaultData.title.toUpperCase()];
     return exact || uppercase || "/icons/stellar.svg";
   }, [vaultData.title]);
-
-  const { pools } = usePoolData();
-  const assetKey = toInternalAsset(id);
-  const pool = pools[assetKey as keyof typeof pools];
-  const displayAsset = toDisplayAsset(id);
-
-  useRegisterPage(() => {
-    const totalSupply = parseFloat(pool?.totalSupply || "0");
-    const availableLiquidity = parseFloat(pool?.availableLiquidity || "0");
-    const utilizationRate = parseFloat(pool?.utilizationRate || "0");
-    const supplyAPY = parseFloat(pool?.supplyAPY || "0");
-    return {
-      route: "earn-detail",
-      title: `Earn · ${displayAsset}`,
-      purpose: `Supply or redeem ${displayAsset} in this Vanna earn vault. Track utilization, supply APY, and your position.`,
-      actions: ["lend", "redeem"],
-      metrics: [
-        {
-          label: "Total Supply",
-          value: Number.isFinite(totalSupply) ? fmt(totalSupply) : null,
-        },
-        {
-          label: "Available Liquidity",
-          value: Number.isFinite(availableLiquidity) ? fmt(availableLiquidity) : null,
-          glossaryKey: "available_liquidity",
-        },
-        {
-          label: "Utilization Rate",
-          value: Number.isFinite(utilizationRate)
-            ? `${utilizationRate.toFixed(2)}%`
-            : null,
-          glossaryKey: "utilization",
-        },
-        {
-          label: "Supply APY",
-          value: Number.isFinite(supplyAPY) ? `${supplyAPY.toFixed(2)}%` : null,
-          glossaryKey: "supply_apy",
-        },
-        {
-          label: "vToken",
-          value: `receipt for ${displayAsset}`,
-          glossaryKey: "vtoken",
-        },
-      ],
-    };
-  });
 
   return (
     <main className="flex flex-col gap-5">

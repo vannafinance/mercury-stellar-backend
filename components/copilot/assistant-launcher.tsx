@@ -1,23 +1,24 @@
 "use client";
 
 /**
- * Site-wide page assistant — Gemini in Chrome style.
- *
- * - Right side panel (not a chat bubble popup)
- * - Reads LIVE DOM on every route (analytics included)
- * - Outside ScaleWrapper so layout is not transformed
+ * Site-wide page assistant — Gemini in Chrome style side panel.
+ * Live DOM capture on every route; optional select-region.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { usePathname } from "next/navigation";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { usePageContextApi } from "@/contexts/page-context";
-import { capturePageSnapshot, type PageSnapshot } from "@/lib/assistant/capture-page";
+import {
+  capturePageSnapshot,
+  type CaptureRect,
+  type PageSnapshot,
+} from "@/lib/assistant/capture-page";
 import { AssistantPanel } from "./assistant-panel";
+import { AssistantRegionOverlay } from "./assistant-region-overlay";
 
 const ASK_EVENT = "vanna:assistant:ask";
 
@@ -25,12 +26,14 @@ export function AssistantLauncher() {
   const [open, setOpen] = useState(false);
   const [prefill, setPrefill] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [selectingRegion, setSelectingRegion] = useState(false);
+  const regionRef = useRef<CaptureRect | null>(null);
+  const lastSnapRef = useRef<PageSnapshot | null>(null);
+
   const { isDark } = useTheme();
   const pathname = usePathname();
   const address = useUserStore((s) => s.address);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
-  // Optional structured metrics if a page registered them (never required)
-  const { getPageContext } = usePageContextApi();
 
   useEffect(() => setMounted(true), []);
 
@@ -45,7 +48,14 @@ export function AssistantLauncher() {
     return () => window.removeEventListener(ASK_EVENT, onAsk as EventListener);
   }, []);
 
-  const capture = useCallback(() => capturePageSnapshot({ maxChars: 14_000 }), []);
+  const capture = useCallback(() => {
+    const snap = capturePageSnapshot({
+      maxChars: 14_000,
+      region: regionRef.current,
+    });
+    lastSnapRef.current = snap;
+    return snap;
+  }, []);
 
   const send = useCallback(
     async (
@@ -53,7 +63,7 @@ export function AssistantLauncher() {
       history: Array<{ role: "user" | "assistant"; text: string }> = [],
       snapshot?: PageSnapshot,
     ) => {
-      const snap = snapshot ?? capturePageSnapshot({ maxChars: 14_000 });
+      const snap = snapshot ?? capture();
       const res = await fetch("/api/copilot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -62,8 +72,8 @@ export function AssistantLauncher() {
           user_id: address ?? "guest",
           tier: "paid",
           smart_account: smartAccount ?? null,
+          // DOM only — no hand-maintained page_context registry
           page_snapshot: snap,
-          page_context: getPageContext(),
           history: history.slice(-6),
         }),
       });
@@ -73,8 +83,15 @@ export function AssistantLauncher() {
       }
       return res.json();
     },
-    [address, smartAccount, getPageContext],
+    [address, smartAccount, capture],
   );
+
+  const onRegionComplete = useCallback((rect: CaptureRect) => {
+    regionRef.current = rect;
+    setSelectingRegion(false);
+    setOpen(true);
+    setPrefill("Explain what I selected on the page");
+  }, []);
 
   if (!mounted) return null;
 
@@ -84,8 +101,7 @@ export function AssistantLauncher() {
 
   return createPortal(
     <>
-      {/* Edge tab — page assistant, not a chatbot FAB */}
-      {!open && (
+      {!open && !selectingRegion && (
         <button
           type="button"
           aria-label="Ask about this page"
@@ -111,6 +127,12 @@ export function AssistantLauncher() {
         </button>
       )}
 
+      <AssistantRegionOverlay
+        active={selectingRegion}
+        onComplete={onRegionComplete}
+        onCancel={() => setSelectingRegion(false)}
+      />
+
       {open && (
         <div
           className="fixed inset-0 z-[10000] flex justify-end"
@@ -127,6 +149,7 @@ export function AssistantLauncher() {
           <aside
             data-assistant-panel
             className={`relative flex h-full w-full max-w-[400px] flex-col border-l shadow-2xl ${panelBg}`}
+            style={{ fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif" }}
           >
             <header
               className={`flex items-center gap-2 border-b px-4 py-3 shrink-0 ${
@@ -137,7 +160,9 @@ export function AssistantLauncher() {
                 <Sparkles size={16} className="text-[#703AE6]" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className={`text-[14px] font-semibold ${ink}`}>Ask about this page</p>
+                <p className={`text-[14px] font-semibold tracking-tight ${ink}`}>
+                  Ask about this page
+                </p>
                 <p className={`truncate text-[11px] ${muted}`}>{pathname || "/"}</p>
               </div>
               <button
@@ -159,6 +184,11 @@ export function AssistantLauncher() {
                 prefill={prefill}
                 onConsumedPrefill={() => setPrefill(null)}
                 pageLabel={pathname || undefined}
+                selectingRegion={selectingRegion}
+                onSelectRegion={() => {
+                  setOpen(false);
+                  setSelectingRegion(true);
+                }}
               />
             </div>
           </aside>

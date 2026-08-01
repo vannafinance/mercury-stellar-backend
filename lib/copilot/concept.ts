@@ -1,9 +1,6 @@
 /**
- * Page-aware assistant: Gemini answers from LIVE page snapshot (DOM),
- * not a hand-coded per-page registry.
- *
- * Glossary is optional background only. Never invent numbers not on the page
- * or in the snapshot. Live "my balance" / on-chain actions still use MCP.
+ * Page-aware assistant: Gemini answers from LIVE page snapshot (DOM).
+ * No hand-coded per-page registry. Glossary is optional background only.
  */
 
 import glossaryJson from "@/data/glossary.json";
@@ -31,10 +28,6 @@ const LIVE_PERSONAL =
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
 
-/**
- * Free-form page Q&A → Gemini with DOM snapshot.
- * Actions / live account data → MCP (return false).
- */
 export function isAssistantChat(message: string): boolean {
   const m = message.trim();
   if (!m) return false;
@@ -61,7 +54,6 @@ function lightGlossaryHints(message: string, path?: string | null): string {
     const terms = [e.term, ...e.aliases].map((a) => a.toLowerCase());
     if (terms.some((t) => t.length > 2 && lower.includes(t))) hits.push(e);
   }
-  // path-based soft hints (not a page allowlist — just richer refs)
   if (hits.length < 3 && path) {
     const routeKey = path.includes("farm")
       ? "farm"
@@ -73,9 +65,7 @@ function lightGlossaryHints(message: string, path?: string | null): string {
             ? "portfolio"
             : path.includes("trade")
               ? "trade-spot"
-              : path.includes("analytics")
-                ? "margin"
-                : null;
+              : null;
     if (routeKey) {
       for (const e of Object.values(GLOSSARY)) {
         if (e.pages?.includes(routeKey) && hits.length < 6) hits.push(e);
@@ -92,72 +82,76 @@ function lightGlossaryHints(message: string, path?: string | null): string {
   return JSON.stringify(pack, null, 2);
 }
 
-function renderSnapshot(snap: PageSnapshotCtx | null, legacy?: PageDescriptorCtx | null): string {
-  if (snap?.visible_text?.trim()) {
-    return [
-      "LIVE PAGE (extracted from what the user currently sees in the browser):",
-      `url: ${snap.url || snap.path || "?"}`,
-      `document title: ${snap.title || "?"}`,
-      `path: ${snap.path || "?"}`,
-      snap.selection ? `USER HIGHLIGHT / SELECTION:\n"""${snap.selection}"""` : "USER HIGHLIGHT: (none)",
-      snap.headings?.length ? `headings: ${snap.headings.slice(0, 20).join(" | ")}` : "",
-      "",
-      "VISIBLE PAGE TEXT:",
-      "-----",
-      snap.visible_text.slice(0, 12_000),
-      "-----",
-      "Treat the text above as the source of truth for what is on screen.",
-      "If a number looks stuck at zero or clearly decorative, say you are unsure whether it is live data.",
-    ]
-      .filter(Boolean)
-      .join("\n");
+function renderSnapshot(snap: PageSnapshotCtx | null): string {
+  if (!snap?.visible_text?.trim() && !snap?.region_text?.trim() && !snap?.selection) {
+    return "LIVE PAGE: (no snapshot received — say you cannot see the page content yet.)";
   }
 
-  // Legacy registry only if DOM snapshot missing
-  if (legacy) {
-    const metrics = (legacy.metrics || [])
-      .map(
-        (m) =>
-          `- ${m.label}: ${m.value ?? "?"}${m.isPlaceholder ? " [PLACEHOLDER]" : ""}`,
-      )
-      .join("\n");
-    return [
-      "PAGE REGISTRY (fallback — DOM snapshot was empty):",
-      `${legacy.title} (${legacy.route})`,
-      legacy.purpose,
-      metrics,
-    ].join("\n");
-  }
+  const metrics =
+    Array.isArray((snap as { metrics?: unknown }).metrics) &&
+    ((snap as { metrics?: Array<{ label: string; value: string }> }).metrics?.length ?? 0) > 0
+      ? ((snap as { metrics: Array<{ label: string; value: string }> }).metrics
+          .slice(0, 30)
+          .map((m) => `- ${m.label}: ${m.value}`)
+          .join("\n") || "")
+      : "";
 
-  return "LIVE PAGE: (no snapshot received — answer generally about Vanna and ask the user what they see if needed.)";
+  return [
+    "LIVE PAGE (browser DOM — source of truth for on-screen numbers):",
+    `url: ${snap.url || snap.path || "?"}`,
+    `document title: ${snap.title || "?"}`,
+    `path: ${snap.path || "?"}`,
+    snap.selection ? `USER TEXT HIGHLIGHT:\n"""${snap.selection}"""` : "USER TEXT HIGHLIGHT: (none)",
+    snap.region_text
+      ? `USER SCREEN REGION (drawn box):\n"""${String(snap.region_text).slice(0, 6000)}"""`
+      : "USER SCREEN REGION: (none)",
+    snap.headings?.length ? `headings: ${snap.headings.slice(0, 20).join(" | ")}` : "",
+    metrics ? `structured metrics:\n${metrics}` : "",
+    "",
+    "VISIBLE PAGE TEXT:",
+    "-----",
+    String(snap.visible_text || "").slice(0, 12_000),
+    "-----",
+    "If a figure looks decorative or stuck at zero, say you are unsure it is live data.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
-const ASSISTANT_SYSTEM = `You are Vanna’s in-page assistant — same role as Gemini in Chrome’s side panel:
-you help the user understand **this webpage** while they keep working on it.
+const ASSISTANT_SYSTEM = `You are Vanna’s in-page assistant (like Gemini’s side panel in Chrome).
+You help the user understand THIS webpage while they keep working.
 
-You are NOT a generic chatbot. You are grounded in the LIVE PAGE text extracted from their browser.
+Ground every answer in LIVE PAGE text / region / highlight. You are not a generic chatbot.
 
-How to behave:
-- Answer about what is on the page: labels, numbers, tables, charts titles, buttons, sections.
-- If they highlight text, prioritize explaining that highlight in context of the rest of the page.
-- "Summarize this page" / "what am I looking at?" → structured, clear takeaways from LIVE PAGE.
-- Be a product guide for Vanna Finance (Stellar DeFi: margin, earn, farm, portfolio, trade, analytics).
-- Natural language, including Hinglish if they use it.
-- Sound like a calm expert panel, not a marketing bot and not a support ticket system.
+VOICE & POLISH:
+- Calm, expert, concise. Product guide — not sales, not a ticket bot.
+- Hinglish is fine if the user uses it.
+- Lead with a one-sentence direct answer, then structured options when useful.
 
-HARD RULES:
-1. Numbers: only cite figures that appear in LIVE PAGE (or USER HIGHLIGHT), or that the user typed.
-   Never invent APYs, TVL, balances, health factors, or addresses.
-2. If the page text is thin/empty, say you cannot see enough of the page — do not fabricate UI.
-3. Placeholder / stub UI: if many zeros or obviously static demo stats, warn that the value may not be live.
-4. Never claim you executed a trade, deposit, or signature. Execution is a separate copilot path.
-5. No financial advice ("you should leverage 5x"). Explain options and risks neutrally.
-6. Vanna margin liquidates around health factor 1.1 when that fact is needed; prefer page text if it states LT.
-7. BLUSDC / AQUSDC / SOUSDC are different USDC variants — do not conflate them.
-8. Style: clean prose for a side panel. Short paragraphs. No markdown headings (#), no code fences,
-   no fake "As an AI…" disclaimers. Optional one follow-up question only when useful.
+OUTPUT FORMAT (strict — the UI renders this as designed type, not raw markdown):
+- NEVER use asterisks for bold/italic. No **text**, no *text*, no __text__.
+- NEVER use markdown headings (#) or code fences (\`\`\`).
+- NEVER use raw hyphen bullets with ** labels.
+- Use plain section titles on their own line (Title Case, no trailing junk), for example:
+  What you can do
+- Numbered options as:
+  1. Short title — one or two sentences of detail.
+  2. Next option — detail.
+- Simple lists as lines starting with "• " (bullet character), not "-" or "*".
+- Keep total length reasonable: usually 120–220 words unless the user asks for deep detail.
+- Optional single closing question, one sentence, no pressure.
 
-Optional PRODUCT REFERENCE notes below are background only — never override LIVE PAGE numbers.`;
+CONTENT RULES:
+1. Numbers: only from LIVE PAGE, REGION, HIGHLIGHT, or the user message. Never invent balances/APYs/HF.
+2. Thin snapshot → say you cannot see enough; do not invent UI.
+3. Placeholders / all-zero demo stats → flag uncertainty.
+4. Never claim you executed a trade or signature.
+5. No financial advice ("you should 5x"). Describe options neutrally.
+6. Health factor liquidation context on Vanna is ~1.1 when needed; prefer page text.
+7. BLUSDC, AQUSDC, SOUSDC are different tokens — do not conflate.
+8. When asked "what can I do with …", list 3–5 realistic in-app paths tied to what is on the page (Swap, Earn, Farm, Margin, Portfolio) — not generic crypto tips.
+
+PRODUCT REFERENCE notes below are background only — never override LIVE PAGE numbers.`;
 
 export type AssistantChatOpts = {
   history?: Array<{ role: "user" | "assistant"; text: string }>;
@@ -166,13 +160,13 @@ export type AssistantChatOpts = {
 
 export async function answerAssistant(
   message: string,
-  page: PageDescriptorCtx | null,
+  _page: PageDescriptorCtx | null,
   request_id: string,
   opts?: AssistantChatOpts,
 ): Promise<ChatResponse> {
   const snap = opts?.page_snapshot ?? null;
-  const pageBlock = renderSnapshot(snap, page);
-  const path = snap?.path || page?.route || "";
+  const pageBlock = renderSnapshot(snap);
+  const path = snap?.path || "";
   const ref = lightGlossaryHints(message, path);
 
   const historyBlock =
@@ -187,7 +181,7 @@ export async function answerAssistant(
   const user = [
     pageBlock,
     "",
-    "PRODUCT REFERENCE (optional background — paraphrase, do not recite as a script):",
+    "PRODUCT REFERENCE (optional — paraphrase, never recite as a script):",
     ref,
     "",
     historyBlock,
@@ -197,15 +191,24 @@ export async function answerAssistant(
     .join("\n");
 
   try {
-    const prose = await generateText(ASSISTANT_SYSTEM, user, { temperature: 0.45 });
+    const prose = await generateText(ASSISTANT_SYSTEM, user, { temperature: 0.4 });
+    // Belt-and-suspenders: strip stars if the model ignores format
+    const cleaned = prose
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/\*([^*\n]+)\*/g, "$1")
+      .replace(/^#{1,6}\s+/gm, "")
+      .trim();
+
     return {
       kind: "answer",
-      message: prose,
+      message: cleaned,
       data: {
         assistant: true,
         page_path: path || null,
-        used_dom: Boolean(snap?.visible_text?.trim()),
+        used_dom: Boolean(snap?.visible_text?.trim() || snap?.region_text?.trim()),
         selection: Boolean(snap?.selection),
+        model: "vertex",
       },
       intent: {
         template_id: "page_assist",
@@ -217,7 +220,7 @@ export async function answerAssistant(
     const hint = e instanceof VertexError ? " Model temporarily unavailable." : "";
     return {
       kind: "answer",
-      message: `I couldn’t read the page with the model just now.${hint} Try again in a moment.`,
+      message: `I could not read the page with the model just now.${hint} Try again in a moment.`,
       data: { assistant: true, offline: true },
       intent: { template_id: "page_assist", slots: { mode: "unavailable" } },
       request_id,

@@ -9,10 +9,6 @@ import { useWallet } from "@/hooks/use-wallet";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useState, useEffect } from "react";
-import { useRegisterPage } from "@/contexts/page-context";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { deriveMarginHealth, LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
-import { formatValue } from "@/lib/utils/format-value";
 
 export default function PortfolioPage() {
   const { isDark } = useTheme();
@@ -21,10 +17,6 @@ export default function PortfolioPage() {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const { refreshBalances } = useWallet();
   const userAddress = useUserStore((s) => s.address);
-  const tokenBalances = useUserStore((s) => s.tokenBalances);
-  const nativeBalance = useUserStore((s) => s.balance);
-  const gross = useMarginAccountInfoStore((s) => s.grossCollateralValue);
-  const debt = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
 
   // Load the connected wallet's token balances so "Wallet Balance" is real on a
   // direct Portfolio visit (the margin page normally triggers this). One-shot on
@@ -32,65 +24,6 @@ export default function PortfolioPage() {
   useEffect(() => {
     if (userAddress) refreshBalances(userAddress).catch(() => {});
   }, [userAddress, refreshBalances]);
-
-  useRegisterPage(() => {
-    const health = deriveMarginHealth({
-      grossCollateralValue: gross ?? 0,
-      effectiveDebtValue: (debt ?? 0) > 0.01 ? debt : 0,
-      totalBorrowedValue: debt ?? 0,
-    });
-    const hf =
-      health.avgHealthFactor >= 999
-        ? "∞"
-        : formatValue(health.avgHealthFactor, {
-            type: "health-factor",
-            showZeroAsDash: false,
-          });
-    const xlmBal = tokenBalances?.XLM ?? nativeBalance;
-    return {
-      route: "portfolio",
-      title: "Portfolio",
-      purpose:
-        "Overview of wallet balances, margin health, and positions across Earn, Farm, and Margin.",
-      actions: ["query_wallet_balance", "query_account_health", "deposit", "withdraw"],
-      metrics: [
-        {
-          label: "Net Health Factor",
-          value: userAddress ? hf : null,
-          glossaryKey: "health_factor",
-        },
-        {
-          label: "Liquidation Threshold",
-          value: `${LIQUIDATION_THRESHOLD.toFixed(2)}x`,
-          glossaryKey: "liquidation_threshold",
-        },
-        {
-          label: "Gross Collateral",
-          value:
-            gross != null
-              ? `$${formatValue(gross, { type: "number", useLargeFormat: true, showZeroAsDash: false })}`
-              : null,
-        },
-        {
-          label: "Total Borrowed",
-          value:
-            debt != null
-              ? `$${formatValue(debt, { type: "number", useLargeFormat: true, showZeroAsDash: false })}`
-              : null,
-          glossaryKey: "total_borrowed",
-        },
-        {
-          label: "Wallet XLM",
-          value: xlmBal != null ? String(xlmBal) : null,
-        },
-        {
-          label: "Cross Margin Ratio",
-          value: null,
-          glossaryKey: "cross_margin_ratio",
-        },
-      ],
-    };
-  });
 
   return (
     <>

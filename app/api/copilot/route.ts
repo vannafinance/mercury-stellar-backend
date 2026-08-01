@@ -67,6 +67,9 @@ export async function POST(req: NextRequest) {
   if (pageSnapshot?.selection && pageSnapshot.selection.length > 2_500) {
     pageSnapshot.selection = pageSnapshot.selection.slice(0, 2_500);
   }
+  if (pageSnapshot?.region_text && pageSnapshot.region_text.length > 6_000) {
+    pageSnapshot.region_text = pageSnapshot.region_text.slice(0, 6_000);
+  }
 
   const history = Array.isArray(body.history)
     ? (body.history as Array<{ role?: string; text?: string }>)
