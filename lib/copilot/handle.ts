@@ -225,6 +225,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   if (isAssistantChat(message)) {
     return answerAssistant(message, req.page_context ?? null, request_id, {
       history: Array.isArray(req.history) ? req.history : undefined,
+      page_snapshot: req.page_snapshot ?? null,
     });
   }
 

@@ -173,8 +173,8 @@ const FOLLOW_UP: Record<string, string> = {
   vanna_can_borrow: "Borrow 2 USDC",
   vanna_get_max_borrow: "Borrow 2 USDC",
   vanna_get_wallet_balance: "Deposit 5 XLM as collateral",
-  // Generative assistant turn — optional bridge to live data
-  assistant_chat: "What is my health factor?",
+  // DOM-grounded page assist — optional bridge to live account data
+  page_assist: "What is my health factor?",
 };
 
 const EMERALD = "#10b981";

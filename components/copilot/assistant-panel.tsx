@@ -1,55 +1,64 @@
 "use client";
 
 /**
- * Floating page-aware assistant panel.
- * Free-form chat via Gemini + page_context; multi-turn history; no canned Q&A.
+ * Gemini-in-Chrome style side panel body — NOT a chatbot.
+ * Document-style Q&A, grounded on live DOM page snapshot.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Send, Sparkles } from "lucide-react";
-import Link from "next/link";
+import { Loader2, Send } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
-import type { PageDescriptor } from "@/contexts/page-context";
+import type { PageSnapshot } from "@/lib/assistant/capture-page";
 
 export type AssistantSend = (
   message: string,
   history: Array<{ role: "user" | "assistant"; text: string }>,
-) => Promise<AssistantChatResponse>;
+  snapshot: PageSnapshot,
+) => Promise<{ kind: string; message: string }>;
 
-export type AssistantChatResponse = {
-  kind: string;
-  message: string;
-  clarify_options?: Array<{ id: string; label: string; description?: string }> | null;
-  intent?: { template_id?: string | null } | null;
-  unsigned_xdr?: string | null;
-  preview?: { human_summary?: string } | null;
-};
-
-type Turn = {
-  role: "user" | "assistant";
+type Entry = {
+  kind: "user" | "assist";
   text: string;
-  needsCopilot?: boolean;
 };
 
 export function AssistantPanel({
   send,
-  page,
+  capture,
   prefill,
   onConsumedPrefill,
+  pageLabel,
 }: {
   send: AssistantSend;
-  page: PageDescriptor | null;
+  capture: () => PageSnapshot;
   prefill?: string | null;
   onConsumedPrefill?: () => void;
+  pageLabel?: string;
 }) {
   const { isDark } = useTheme();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [snapMeta, setSnapMeta] = useState<{ path: string; chars: number; selection: boolean } | null>(
+    null,
+  );
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const turnsRef = useRef<Turn[]>([]);
-  turnsRef.current = turns;
+  const entriesRef = useRef<Entry[]>([]);
+  entriesRef.current = entries;
+
+  // Refresh capture meta when panel is shown
+  useEffect(() => {
+    try {
+      const s = capture();
+      setSnapMeta({
+        path: s.path || "/",
+        chars: s.char_count,
+        selection: Boolean(s.selection),
+      });
+    } catch {
+      setSnapMeta(null);
+    }
+  }, [capture]);
 
   useEffect(() => {
     if (prefill) {
@@ -61,7 +70,7 @@ export function AssistantPanel({
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [turns, busy]);
+  }, [entries, busy]);
 
   const run = useCallback(
     async (message: string) => {
@@ -69,32 +78,28 @@ export function AssistantPanel({
       if (!text || busy) return;
       setBusy(true);
       setInput("");
-      const prior = turnsRef.current.map((t) => ({ role: t.role, text: t.text }));
-      setTurns((t) => [...t, { role: "user", text }]);
+      const snap = capture();
+      setSnapMeta({
+        path: snap.path || "/",
+        chars: snap.char_count,
+        selection: Boolean(snap.selection),
+      });
+      const prior = entriesRef.current.map((e) => ({
+        role: (e.kind === "user" ? "user" : "assistant") as "user" | "assistant",
+        text: e.text,
+      }));
+      setEntries((prev) => [...prev, { kind: "user", text }]);
       try {
-        const res = await send(text, prior);
-        const needsCopilot =
-          res.kind === "preview" ||
-          res.kind === "needs_auto_sign" ||
-          res.kind === "needs_wallet_sign" ||
-          !!res.unsigned_xdr;
-        const body =
-          res.message ||
-          res.preview?.human_summary ||
-          (res.kind === "error" ? "Something went wrong." : "No reply.");
-        setTurns((t) => [
-          ...t,
-          {
-            role: "assistant",
-            text: body,
-            needsCopilot,
-          },
+        const res = await send(text, prior, snap);
+        setEntries((prev) => [
+          ...prev,
+          { kind: "assist", text: res.message || "No reply." },
         ]);
       } catch (e) {
-        setTurns((t) => [
-          ...t,
+        setEntries((prev) => [
+          ...prev,
           {
-            role: "assistant",
+            kind: "assist",
             text: e instanceof Error ? e.message : "Request failed.",
           },
         ]);
@@ -102,96 +107,96 @@ export function AssistantPanel({
         setBusy(false);
       }
     },
-    [busy, send],
+    [busy, send, capture],
   );
 
-  const surface = isDark ? "bg-[#161616] border-[#2A2A2A]" : "bg-white border-[#E8E8E8]";
-  const muted = isDark ? "text-[#888]" : "text-[#777]";
   const ink = isDark ? "text-white" : "text-[#111]";
-  const bubbleUser = "bg-[#703AE6] text-white";
-  const bubbleAsst = isDark ? "bg-[#1E1E1E] text-[#E8E8E8]" : "bg-[#F4F2FA] text-[#222]";
+  const muted = isDark ? "text-[#8a8a8a]" : "text-[#6b6b6b]";
+  const line = isDark ? "border-[#2a2a2a]" : "border-[#ececec]";
 
   return (
-    <div
-      className={`flex h-[min(70vh,560px)] w-full max-w-md flex-col overflow-hidden rounded-2xl border shadow-xl ${surface}`}
-    >
-      <header
-        className={`flex items-center gap-2 border-b px-4 py-3 ${
-          isDark ? "border-[#2A2A2A]" : "border-[#EEE]"
-        }`}
-      >
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-[#703AE6] to-[#9B6CFF] text-white">
-          <Sparkles size={16} />
+    <div className="flex h-full min-h-0 flex-col" data-assistant-panel>
+      {/* Context strip — like Chrome “using this page” */}
+      <div className={`px-4 py-2.5 border-b ${line} shrink-0`}>
+        <p className={`text-[11px] leading-snug ${muted}`}>
+          Using content from{" "}
+          <span className={ink}>{snapMeta?.path || pageLabel || "this page"}</span>
+          {snapMeta?.selection ? " · includes your selection" : ""}
+          {snapMeta && snapMeta.chars > 0
+            ? ` · ${snapMeta.chars.toLocaleString()} chars read`
+            : " · waiting for page text"}
+        </p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {[
+            "Summarize this page",
+            "What am I looking at?",
+            snapMeta?.selection ? "Explain my selection" : null,
+            "What do the numbers on this screen mean?",
+          ]
+            .filter(Boolean)
+            .map((label) => (
+              <button
+                key={label as string}
+                type="button"
+                disabled={busy}
+                onClick={() => void run(label as string)}
+                className={`rounded-full px-2.5 py-1 text-[11px] transition-colors ${
+                  isDark
+                    ? "bg-[#222] text-[#ccc] hover:bg-[#2e2e2e]"
+                    : "bg-[#f3f3f3] text-[#444] hover:bg-[#e9e9e9]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
         </div>
-        <div className="min-w-0 flex-1">
-          <p className={`text-sm font-semibold ${ink}`}>Vanna Assistant</p>
-          <p className={`truncate text-[11px] ${muted}`}>
-            {page ? `${page.title} · ask anything` : "Ask anything about Vanna"}
-          </p>
-        </div>
-        <Link
-          href="/copilot"
-          className={`text-[11px] font-medium underline-offset-2 hover:underline ${muted}`}
-        >
-          Full copilot
-        </Link>
-      </header>
+      </div>
 
-      <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {turns.length === 0 && (
-          <div className="space-y-2 pt-2">
-            <p className={`text-sm leading-relaxed ${ink}`}>
-              Hi — I can explain what you&apos;re looking at, how Vanna works, and what
-              options this screen gives you.
+      {/* Document-style thread (not chat bubbles) */}
+      <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-5">
+        {entries.length === 0 && !busy && (
+          <div className="space-y-3 pt-2">
+            <p className={`text-[15px] font-medium leading-snug ${ink}`}>
+              Ask about this page
             </p>
-            <p className={`text-xs leading-relaxed ${muted}`}>
-              {page
-                ? `Context: ${page.title}. Talk naturally — follow-ups work.`
-                : "Open a product page so I can see the same numbers you see."}
-            </p>
-            <p className={`text-[11px] leading-relaxed ${muted}`}>
-              For live balances or on-chain actions (lend, swap, borrow…), say it as a
-              command or use Full copilot.
+            <p className={`text-[13px] leading-relaxed ${muted}`}>
+              I read what is on your screen (labels, numbers, tables, headings) — on any
+              route, including analytics. Highlight text first if you want a focused
+              answer. This stays beside the app; it is not a separate chatbot.
             </p>
           </div>
         )}
 
-        {turns.map((t, i) => (
-          <div
-            key={`${t.role}-${i}`}
-            className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            <div
-              className={`max-w-[90%] rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap ${
-                t.role === "user" ? bubbleUser : bubbleAsst
-              }`}
-            >
-              {t.text}
-              {t.needsCopilot && (
-                <p className="mt-2 text-[11px] opacity-90">
-                  This needs signing.{" "}
-                  <Link href="/copilot" className="underline font-medium">
-                    Open full copilot
-                  </Link>
-                  .
-                </p>
-              )}
+        {entries.map((e, i) =>
+          e.kind === "user" ? (
+            <div key={i} className="space-y-1">
+              <p className={`text-[10px] font-semibold uppercase tracking-wide ${muted}`}>
+                You
+              </p>
+              <p className={`text-[13px] leading-relaxed ${ink}`}>{e.text}</p>
             </div>
-          </div>
-        ))}
+          ) : (
+            <div key={i} className="space-y-1">
+              <p className={`text-[10px] font-semibold uppercase tracking-wide text-[#703AE6]`}>
+                Assistant
+              </p>
+              <p className={`text-[13px] leading-relaxed whitespace-pre-wrap ${ink}`}>
+                {e.text}
+              </p>
+            </div>
+          ),
+        )}
 
         {busy && (
-          <div className={`flex items-center gap-2 text-xs ${muted}`}>
+          <div className={`flex items-center gap-2 text-[12px] ${muted}`}>
             <Loader2 size={14} className="animate-spin" />
-            Thinking…
+            Reading page…
           </div>
         )}
       </div>
 
       <form
-        className={`flex items-center gap-2 border-t p-3 ${
-          isDark ? "border-[#2A2A2A]" : "border-[#EEE]"
-        }`}
+        className={`shrink-0 border-t p-3 flex gap-2 ${line}`}
         onSubmit={(e) => {
           e.preventDefault();
           void run(input);
@@ -201,20 +206,18 @@ export function AssistantPanel({
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={
-            page ? `Ask about ${page.title} or anything on Vanna…` : "Ask me anything…"
-          }
+          placeholder="Ask about this page…"
           disabled={busy}
           className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-[13px] outline-none focus:border-[#703AE6] ${
             isDark
-              ? "border-[#2A2A2A] bg-[#111] text-white placeholder:text-[#555]"
-              : "border-[#E5E5E5] bg-[#FAFAFA] text-[#111] placeholder:text-[#AAA]"
+              ? "border-[#2a2a2a] bg-[#111] text-white placeholder:text-[#555]"
+              : "border-[#e5e5e5] bg-[#fafafa] text-[#111] placeholder:text-[#aaa]"
           }`}
         />
         <button
           type="submit"
           disabled={busy || !input.trim()}
-          aria-label="Send"
+          aria-label="Ask"
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#703AE6] text-white disabled:opacity-40"
         >
           {busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

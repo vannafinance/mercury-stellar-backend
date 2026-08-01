@@ -10,7 +10,7 @@ export type PageMetricCtx = {
   glossaryKey?: string;
 };
 
-/** Page registry descriptor sent with chat so concept answers stay grounded. */
+/** Optional structured page registry (legacy enrichment only). */
 export type PageDescriptorCtx = {
   route: string;
   title: string;
@@ -19,19 +19,33 @@ export type PageDescriptorCtx = {
   actions: string[];
 };
 
+/**
+ * Live DOM snapshot from the browser — primary page awareness signal.
+ * Captured client-side from whatever page the user is on (any route).
+ */
+export type PageSnapshotCtx = {
+  path?: string;
+  title?: string;
+  url?: string;
+  visible_text?: string;
+  selection?: string | null;
+  headings?: string[];
+  captured_at?: number;
+  char_count?: number;
+};
+
 export interface ChatRequest {
   user_id: string;
   message: string;
   tier?: "free" | "paid";
   smart_account?: string | null;
-  /**
-   * Fresh page snapshot from the client registry (read at send time).
-   * Used by the page-aware assistant lane — never invent numbers from this.
-   */
+  /** @deprecated Prefer page_snapshot (live DOM). Kept for optional enrichment. */
   page_context?: PageDescriptorCtx | null;
+  /** Live visible page text + selection from the browser. */
+  page_snapshot?: PageSnapshotCtx | null;
   /**
    * Optional prior turns so the assistant can answer follow-ups naturally.
-   * Client should send only short recent history (e.g. last 8 messages).
+   * Client should send only short recent history (e.g. last 6 messages).
    */
   history?: Array<{ role: "user" | "assistant"; text: string }> | null;
   /** Client may send auto-sign confirmation choices */

@@ -1,54 +1,44 @@
 /**
- * Page-aware AI assistant lane.
+ * Page-aware assistant: Gemini answers from LIVE page snapshot (DOM),
+ * not a hand-coded per-page registry.
  *
- * Uses Gemini for free-form understanding — NOT a glossary lookup table or
- * canned Q&A. Glossary + page snapshot are grounding context only.
- *
- * Still zero MCP: live balances / "my HF" / writes fall through to the
- * existing read/write path. Never invent numbers.
+ * Glossary is optional background only. Never invent numbers not on the page
+ * or in the snapshot. Live "my balance" / on-chain actions still use MCP.
  */
 
 import glossaryJson from "@/data/glossary.json";
-import type { ChatResponse, PageDescriptorCtx } from "./types";
+import type { ChatResponse, PageDescriptorCtx, PageSnapshotCtx } from "./types";
 import { generateText, VertexError } from "./vertex";
 
-export type GlossaryEntry = {
+type GlossaryEntry = {
   term: string;
   aliases: string[];
   short: string;
   detailed: string;
   why_it_matters: string;
   common_mistake?: string;
-  related?: string[];
   pages?: string[];
 };
 
 const GLOSSARY = glossaryJson as Record<string, GlossaryEntry>;
 
-/** Imperative / on-chain actions — must use MCP write path, not chat. */
 const ACTION_INTENT =
   /\b(swap|lend|borrow|deposit|repay|redeem|withdraw|farm|supply|deploy|add\s+liquidity|remove\s+liquidity|enable\s+auto|disable\s+auto|create\s+(?:margin\s+)?account|transfer|bridge)\b/i;
 
-/** Live personal portfolio reads — need MCP, not page snapshot alone. */
 const LIVE_PERSONAL =
-  /\b(my|mine|mera|meri)\b.+\b(health|hf|balance|collateral|debt|borrowed|position|wallet|pnl|apy|earnings?|rewards?)\b|\b(how much|what(?:'s| is)|do i have|am i)\b.+\b(my|i|mine)\b|\b(what(?:'s| is)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have)|show\s+my|list\s+my|check\s+my)\b/i;
+  /\b(my|mine|mera|meri)\b.+\b(health|hf|balance|collateral|debt|borrowed|position|wallet|pnl|apy|earnings?|rewards?)\b|\b(what(?:'s| is)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have)|show\s+my|list\s+my|check\s+my)\b/i;
 
-/**
- * Market / account data the user wants fetched live — MCP read tools.
- * Keep narrow so normal conversation is not stolen from Gemini.
- */
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
 
 /**
- * True when this message should be answered conversationally by Gemini with
- * page context — not routed to MCP tools.
+ * Free-form page Q&A → Gemini with DOM snapshot.
+ * Actions / live account data → MCP (return false).
  */
 export function isAssistantChat(message: string): boolean {
   const m = message.trim();
   if (!m) return false;
 
-  // Explicit action → write/read path (unless purely definitional)
   if (ACTION_INTENT.test(m)) {
     const definitional =
       /\b(what(?:'s| is| are| does)|whats|explain|define|meaning|how does|how do|why|tell me about|difference between)\b/i.test(
@@ -56,144 +46,140 @@ export function isAssistantChat(message: string): boolean {
       );
     if (!definitional) return false;
   }
-
-  // Live personal values or market data queries → MCP
   if (LIVE_PERSONAL.test(m) || LIVE_DATA_QUERY.test(m)) return false;
-
-  // Free-form product / page conversation for Gemini
   return true;
 }
 
-/** @deprecated use isAssistantChat — kept for any external callers */
 export function classifyConcept(message: string): { mode: "assistant" } | null {
   return isAssistantChat(message) ? { mode: "assistant" } : null;
 }
 
-function renderPageContext(page: PageDescriptorCtx | null): string {
-  if (!page) {
-    return [
-      "PAGE CONTEXT: none registered for this route.",
-      "You can still explain Vanna products in general, but say you cannot see their screen numbers.",
-    ].join("\n");
-  }
-  const metrics = (page.metrics || [])
-    .slice(0, 12)
-    .map(
-      (m) =>
-        `- ${m.label}: ${m.value ?? "(loading / unknown)"}${
-          m.isPlaceholder ? "  [PLACEHOLDER — not real data]" : ""
-        }`,
-    )
-    .join("\n");
-  return [
-    "CURRENT SCREEN (authoritative for on-screen numbers):",
-    `title: ${page.title}`,
-    `route: ${page.route}`,
-    `purpose: ${page.purpose}`,
-    `actions available in the product UI / copilot: ${(page.actions || []).join(", ") || "none listed"}`,
-    "metrics the user can see right now:",
-    metrics || "- (none registered)",
-  ].join("\n");
-}
-
-function glossaryReferencePack(page: PageDescriptorCtx | null, message: string): string {
+function lightGlossaryHints(message: string, path?: string | null): string {
   const lower = message.toLowerCase();
-  const pageRoute = page?.route;
-  const entries = Object.entries(GLOSSARY);
-
-  // Prefer terms mentioned in the question or tied to this page
-  const scored = entries.map(([key, e]) => {
-    let score = 0;
-    if (pageRoute && e.pages?.includes(pageRoute)) score += 2;
-    const hay = [e.term, ...e.aliases, key].join(" ").toLowerCase();
-    if (hay.split(/\s+/).some((w) => w.length > 2 && lower.includes(w))) score += 5;
-    if (e.term.toLowerCase().split(/\s+/).every((w) => lower.includes(w))) score += 3;
-    return { key, e, score };
-  });
-
-  scored.sort((a, b) => b.score - a.score);
-  const picked =
-    scored.filter((s) => s.score > 0).slice(0, 8).length > 0
-      ? scored.filter((s) => s.score > 0).slice(0, 8)
-      : scored.filter((s) => s.score >= 2).slice(0, 6).length
-        ? scored.filter((s) => pageRoute && s.e.pages?.includes(pageRoute)).slice(0, 8)
-        : scored.slice(0, 6);
-
-  // Always include page-relevant pack as baseline
-  const byPage = pageRoute
-    ? entries.filter(([, e]) => e.pages?.includes(pageRoute)).slice(0, 10)
-    : [];
-  const map = new Map<string, GlossaryEntry>();
-  for (const [, e] of byPage) map.set(e.term, e);
-  for (const { e } of picked) map.set(e.term, e);
-
-  const pack = [...map.values()].slice(0, 12).map((e) => ({
+  const hits: GlossaryEntry[] = [];
+  for (const e of Object.values(GLOSSARY)) {
+    const terms = [e.term, ...e.aliases].map((a) => a.toLowerCase());
+    if (terms.some((t) => t.length > 2 && lower.includes(t))) hits.push(e);
+  }
+  // path-based soft hints (not a page allowlist — just richer refs)
+  if (hits.length < 3 && path) {
+    const routeKey = path.includes("farm")
+      ? "farm"
+      : path.includes("earn")
+        ? "earn"
+        : path.includes("margin") || path === "/"
+          ? "margin"
+          : path.includes("portfolio")
+            ? "portfolio"
+            : path.includes("trade")
+              ? "trade-spot"
+              : path.includes("analytics")
+                ? "margin"
+                : null;
+    if (routeKey) {
+      for (const e of Object.values(GLOSSARY)) {
+        if (e.pages?.includes(routeKey) && hits.length < 6) hits.push(e);
+      }
+    }
+  }
+  const uniq = new Map(hits.map((e) => [e.term, e]));
+  const pack = [...uniq.values()].slice(0, 8).map((e) => ({
     term: e.term,
-    meaning: e.detailed,
-    why: e.why_it_matters,
-    common_mistake: e.common_mistake || undefined,
+    note: e.detailed,
+    caveat: e.common_mistake,
   }));
-
+  if (!pack.length) return "(none matched)";
   return JSON.stringify(pack, null, 2);
 }
 
-const ASSISTANT_SYSTEM = `You are Vanna Assistant — a smart, conversational in-app guide for Vanna Finance
-(DeFi on Stellar / Soroban: Margin, Earn, Farm, Portfolio, Spot trade).
+function renderSnapshot(snap: PageSnapshotCtx | null, legacy?: PageDescriptorCtx | null): string {
+  if (snap?.visible_text?.trim()) {
+    return [
+      "LIVE PAGE (extracted from what the user currently sees in the browser):",
+      `url: ${snap.url || snap.path || "?"}`,
+      `document title: ${snap.title || "?"}`,
+      `path: ${snap.path || "?"}`,
+      snap.selection ? `USER HIGHLIGHT / SELECTION:\n"""${snap.selection}"""` : "USER HIGHLIGHT: (none)",
+      snap.headings?.length ? `headings: ${snap.headings.slice(0, 20).join(" | ")}` : "",
+      "",
+      "VISIBLE PAGE TEXT:",
+      "-----",
+      snap.visible_text.slice(0, 12_000),
+      "-----",
+      "Treat the text above as the source of truth for what is on screen.",
+      "If a number looks stuck at zero or clearly decorative, say you are unsure whether it is live data.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
 
-You talk like a helpful product expert, not a FAQ bot. Understand free-form English and Hinglish.
-Adapt length to the question: short for simple asks, a bit fuller when the user is confused.
+  // Legacy registry only if DOM snapshot missing
+  if (legacy) {
+    const metrics = (legacy.metrics || [])
+      .map(
+        (m) =>
+          `- ${m.label}: ${m.value ?? "?"}${m.isPlaceholder ? " [PLACEHOLDER]" : ""}`,
+      )
+      .join("\n");
+    return [
+      "PAGE REGISTRY (fallback — DOM snapshot was empty):",
+      `${legacy.title} (${legacy.route})`,
+      legacy.purpose,
+      metrics,
+    ].join("\n");
+  }
 
-WHAT YOU KNOW:
-- CURRENT SCREEN: what page they are on, its purpose, actions, and the exact metric labels/values shown.
-- PRODUCT REFERENCE: curated term notes (health factor, Blend vs Aquarius USDC variants, vTokens, etc.).
-  Use these as background knowledge — paraphrase in your own words. Do NOT dump them verbatim or
-  recite them as a fixed script.
+  return "LIVE PAGE: (no snapshot received — answer generally about Vanna and ask the user what they see if needed.)";
+}
 
-HARD RULES (never break these):
-1. NUMBERS: Only state balances, APYs, health factors, rates, or other figures that appear in
-   CURRENT SCREEN (or that the user just typed). If a metric is marked [PLACEHOLDER], say clearly
-   it is a testnet placeholder / not real measured data. If you do not have a number, say you
-   cannot see it and suggest they ask "what is my …" so live data can be fetched, or open the
-   relevant page.
-2. NO FAKE ON-CHAIN ACTIONS: Never claim you deposited, borrowed, swapped, or signed anything.
-   You only explain and guide. Execution is a separate copilot path.
-3. NO FINANCIAL ADVICE: Describe capabilities ("You can supply to Earn to earn yield") not orders
-   ("You should borrow more" / "definitely farm 2x"). Risk is personal.
-4. USDC VARIANTS: BLUSDC, AQUSDC, SOUSDC are different tokens. Do not treat bare "USDC" as
-   interchangeable across Blend / Aquarius / Soroswap without saying so.
-5. Liquidation threshold on Vanna margin is health factor 1.1 (not 1.3) when you need that fact —
-   prefer CURRENT SCREEN if it shows LT.
-6. Style: natural prose. No markdown headings, no code fences, no bullet walls unless the user
-   asked for a list. You may use short paragraphs. Optional: one clarifying question at the end
-   if it helps.
+const ASSISTANT_SYSTEM = `You are Vanna’s in-page assistant — same role as Gemini in Chrome’s side panel:
+you help the user understand **this webpage** while they keep working on it.
 
-If the user wants a live personal figure ("my health factor", "my balance") or an action
-("lend 10 XLM", "swap…"), tell them briefly you can handle that as a command — they can rephrase
-as the action itself or open Full copilot — but if this turn is only explanatory, just explain.`;
+You are NOT a generic chatbot. You are grounded in the LIVE PAGE text extracted from their browser.
+
+How to behave:
+- Answer about what is on the page: labels, numbers, tables, charts titles, buttons, sections.
+- If they highlight text, prioritize explaining that highlight in context of the rest of the page.
+- "Summarize this page" / "what am I looking at?" → structured, clear takeaways from LIVE PAGE.
+- Be a product guide for Vanna Finance (Stellar DeFi: margin, earn, farm, portfolio, trade, analytics).
+- Natural language, including Hinglish if they use it.
+- Sound like a calm expert panel, not a marketing bot and not a support ticket system.
+
+HARD RULES:
+1. Numbers: only cite figures that appear in LIVE PAGE (or USER HIGHLIGHT), or that the user typed.
+   Never invent APYs, TVL, balances, health factors, or addresses.
+2. If the page text is thin/empty, say you cannot see enough of the page — do not fabricate UI.
+3. Placeholder / stub UI: if many zeros or obviously static demo stats, warn that the value may not be live.
+4. Never claim you executed a trade, deposit, or signature. Execution is a separate copilot path.
+5. No financial advice ("you should leverage 5x"). Explain options and risks neutrally.
+6. Vanna margin liquidates around health factor 1.1 when that fact is needed; prefer page text if it states LT.
+7. BLUSDC / AQUSDC / SOUSDC are different USDC variants — do not conflate them.
+8. Style: clean prose for a side panel. Short paragraphs. No markdown headings (#), no code fences,
+   no fake "As an AI…" disclaimers. Optional one follow-up question only when useful.
+
+Optional PRODUCT REFERENCE notes below are background only — never override LIVE PAGE numbers.`;
 
 export type AssistantChatOpts = {
-  /** Prior turns for multi-turn continuity (user/assistant alternating). */
   history?: Array<{ role: "user" | "assistant"; text: string }>;
+  page_snapshot?: PageSnapshotCtx | null;
 };
 
-/**
- * Free-form Gemini answer grounded on page + product reference.
- * No canned replies, no hardcoded chip lines.
- */
 export async function answerAssistant(
   message: string,
   page: PageDescriptorCtx | null,
   request_id: string,
   opts?: AssistantChatOpts,
 ): Promise<ChatResponse> {
-  const pageBlock = renderPageContext(page);
-  const refPack = glossaryReferencePack(page, message);
+  const snap = opts?.page_snapshot ?? null;
+  const pageBlock = renderSnapshot(snap, page);
+  const path = snap?.path || page?.route || "";
+  const ref = lightGlossaryHints(message, path);
 
   const historyBlock =
     opts?.history && opts.history.length > 0
       ? [
-          "RECENT CONVERSATION (oldest first):",
-          ...opts.history.slice(-8).map((t) => `${t.role.toUpperCase()}: ${t.text}`),
+          "RECENT TURNS:",
+          ...opts.history.slice(-6).map((t) => `${t.role}: ${t.text.slice(0, 1500)}`),
           "",
         ].join("\n")
       : "";
@@ -201,53 +187,44 @@ export async function answerAssistant(
   const user = [
     pageBlock,
     "",
-    "PRODUCT REFERENCE (paraphrase freely — not a script):",
-    refPack,
+    "PRODUCT REFERENCE (optional background — paraphrase, do not recite as a script):",
+    ref,
     "",
     historyBlock,
-    `USER: ${message}`,
+    `USER REQUEST: ${message}`,
   ]
     .filter(Boolean)
     .join("\n");
 
   try {
-    const prose = await generateText(ASSISTANT_SYSTEM, user, { temperature: 0.55 });
+    const prose = await generateText(ASSISTANT_SYSTEM, user, { temperature: 0.45 });
     return {
       kind: "answer",
       message: prose,
       data: {
         assistant: true,
-        page_route: page?.route ?? null,
+        page_path: path || null,
+        used_dom: Boolean(snap?.visible_text?.trim()),
+        selection: Boolean(snap?.selection),
       },
       intent: {
-        template_id: "assistant_chat",
-        slots: { route: page?.route ?? null, mode: "generative" },
+        template_id: "page_assist",
+        slots: { path: path || null, mode: "dom_grounded" },
       },
       request_id,
     };
   } catch (e) {
-    const hint =
-      e instanceof VertexError
-        ? " (The language model is temporarily unavailable — try again in a moment.)"
-        : "";
-    // Minimal non-canned fallback: honest failure, still page-aware one-liner
-    const where = page
-      ? `You're on ${page.title}: ${page.purpose}`
-      : "I could not reach the model just now.";
+    const hint = e instanceof VertexError ? " Model temporarily unavailable." : "";
     return {
       kind: "answer",
-      message: `${where}${hint}`,
+      message: `I couldn’t read the page with the model just now.${hint} Try again in a moment.`,
       data: { assistant: true, offline: true },
-      intent: {
-        template_id: "assistant_chat",
-        slots: { mode: "model_unavailable" },
-      },
+      intent: { template_id: "page_assist", slots: { mode: "unavailable" } },
       request_id,
     };
   }
 }
 
-/** @deprecated use answerAssistant */
 export async function answerConcept(
   _hit: unknown,
   message: string,
