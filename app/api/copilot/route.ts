@@ -60,6 +60,13 @@ export async function POST(req: NextRequest) {
       ? (body.page_snapshot as import("@/lib/copilot/types").PageSnapshotCtx)
       : null;
 
+  const semanticPageContext =
+    body.semantic_page_context &&
+    typeof body.semantic_page_context === "object" &&
+    !Array.isArray(body.semantic_page_context)
+      ? (body.semantic_page_context as import("@/lib/copilot/types").SemanticPageContextCtx)
+      : null;
+
   // Bound DOM text so a huge page cannot blow the request.
   if (pageSnapshot?.visible_text && pageSnapshot.visible_text.length > 16_000) {
     pageSnapshot.visible_text = pageSnapshot.visible_text.slice(0, 16_000);
@@ -70,6 +77,12 @@ export async function POST(req: NextRequest) {
   if (pageSnapshot?.region_text && pageSnapshot.region_text.length > 6_000) {
     pageSnapshot.region_text = pageSnapshot.region_text.slice(0, 6_000);
   }
+  if (semanticPageContext?.mainText && semanticPageContext.mainText.length > 12_000) {
+    semanticPageContext.mainText = semanticPageContext.mainText.slice(0, 12_000);
+  }
+  if (semanticPageContext?.selectedText && semanticPageContext.selectedText.length > 2_500) {
+    semanticPageContext.selectedText = semanticPageContext.selectedText.slice(0, 2_500);
+  }
 
   const history = Array.isArray(body.history)
     ? (body.history as Array<{ role?: string; text?: string }>)
@@ -79,7 +92,7 @@ export async function POST(req: NextRequest) {
             typeof h.text === "string" &&
             h.text.trim(),
         )
-        .slice(-6)
+        .slice(-8)
         .map((h) => ({
           role: h.role as "user" | "assistant",
           text: String(h.text).slice(0, 2000),
@@ -93,6 +106,7 @@ export async function POST(req: NextRequest) {
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
     page_context: pageContext,
     page_snapshot: pageSnapshot,
+    semantic_page_context: semanticPageContext,
     history,
     auto_sign: autoSign,
     pending_write: pendingWrite,

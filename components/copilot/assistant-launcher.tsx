@@ -1,37 +1,40 @@
 "use client";
 
 /**
- * Site-wide page assistant — Gemini in Chrome style side panel.
- * Live DOM capture on every route; optional select-region.
+ * Site-wide page-aware agent launcher (Gemini master plan).
+ * - Semantic pageContext on every send / route change
+ * - Client tool execution (navigate / scroll / highlight)
+ * - Chat history persists across navigations
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 import { createPortal } from "react-dom";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { captureSemanticPageContext } from "@/lib/assistant/semantic-page-context";
+import { executeClientTools } from "@/lib/assistant/client-tools";
 import {
-  capturePageSnapshot,
-  type CaptureRect,
-  type PageSnapshot,
-} from "@/lib/assistant/capture-page";
+  appendAssistantTurn,
+  getAssistantHistory,
+  setAssistantOpen,
+  useAssistantSessionStore,
+} from "@/store/assistant-session";
 import { AssistantPanel } from "./assistant-panel";
-import { AssistantRegionOverlay } from "./assistant-region-overlay";
 
 const ASK_EVENT = "vanna:assistant:ask";
 
-export function AssistantLauncher() {
-  const [open, setOpen] = useState(false);
+function AssistantLauncherInner() {
   const [prefill, setPrefill] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [selectingRegion, setSelectingRegion] = useState(false);
-  const regionRef = useRef<CaptureRect | null>(null);
-  const lastSnapRef = useRef<PageSnapshot | null>(null);
+  const open = useAssistantSessionStore((s) => s.open);
+  const turns = useAssistantSessionStore((s) => s.turns);
 
   const { isDark } = useTheme();
   const pathname = usePathname();
+  const router = useRouter();
   const address = useUserStore((s) => s.address);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
@@ -42,56 +45,60 @@ export function AssistantLauncher() {
       const detail = (ev as CustomEvent<{ message?: string }>).detail;
       const msg = detail?.message?.trim();
       if (msg) setPrefill(msg);
-      setOpen(true);
+      setAssistantOpen(true);
     };
     window.addEventListener(ASK_EVENT, onAsk as EventListener);
     return () => window.removeEventListener(ASK_EVENT, onAsk as EventListener);
   }, []);
 
-  const capture = useCallback(() => {
-    const snap = capturePageSnapshot({
-      maxChars: 14_000,
-      region: regionRef.current,
-    });
-    lastSnapRef.current = snap;
-    return snap;
-  }, []);
+  // Silently refresh awareness on route change (history is preserved)
+  useEffect(() => {
+    // Capture is done at send-time; this keeps selectedText listeners warm via panel
+  }, [pathname]);
 
   const send = useCallback(
-    async (
-      message: string,
-      history: Array<{ role: "user" | "assistant"; text: string }> = [],
-      snapshot?: PageSnapshot,
-    ) => {
-      const snap = snapshot ?? capture();
-      const res = await fetch("/api/copilot", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          user_id: address ?? "guest",
-          tier: "paid",
-          smart_account: smartAccount ?? null,
-          // DOM only — no hand-maintained page_context registry
-          page_snapshot: snap,
-          history: history.slice(-6),
-        }),
-      });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "");
-        throw new Error(errText || `HTTP ${res.status}`);
-      }
-      return res.json();
-    },
-    [address, smartAccount, capture],
-  );
+    async (message: string) => {
+      // Always re-read DOM so the model sees the current page (plan 1.3)
+      const semantic = captureSemanticPageContext();
+      const history = getAssistantHistory(8);
 
-  const onRegionComplete = useCallback((rect: CaptureRect) => {
-    regionRef.current = rect;
-    setSelectingRegion(false);
-    setOpen(true);
-    setPrefill("Explain what I selected on the page");
-  }, []);
+      appendAssistantTurn({ role: "user", text: message });
+
+      try {
+        const res = await fetch("/api/copilot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            user_id: address ?? "guest",
+            tier: "paid",
+            smart_account: smartAccount ?? null,
+            semantic_page_context: semantic,
+            history,
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+
+        // Hands: execute client tools returned by the model
+        if (Array.isArray(data.client_tools) && data.client_tools.length) {
+          executeClientTools(data.client_tools, { router });
+        }
+
+        const reply = String(data.message || "No reply.");
+        appendAssistantTurn({ role: "assistant", text: reply });
+        return data;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Request failed.";
+        appendAssistantTurn({ role: "assistant", text: msg });
+        throw e;
+      }
+    },
+    [address, smartAccount, router],
+  );
 
   if (!mounted) return null;
 
@@ -101,13 +108,13 @@ export function AssistantLauncher() {
 
   return createPortal(
     <>
-      {!open && !selectingRegion && (
+      {!open && (
         <button
           type="button"
           aria-label="Ask about this page"
           onClick={() => {
             setPrefill(null);
-            setOpen(true);
+            setAssistantOpen(true);
           }}
           className={`fixed right-0 top-1/2 z-[10000] -translate-y-1/2 flex flex-col items-center gap-1
                       rounded-l-xl border border-r-0 px-2 py-3 shadow-md transition-colors
@@ -127,12 +134,6 @@ export function AssistantLauncher() {
         </button>
       )}
 
-      <AssistantRegionOverlay
-        active={selectingRegion}
-        onComplete={onRegionComplete}
-        onCancel={() => setSelectingRegion(false)}
-      />
-
       {open && (
         <div
           className="fixed inset-0 z-[10000] flex justify-end"
@@ -144,7 +145,7 @@ export function AssistantLauncher() {
             type="button"
             aria-label="Close assistant backdrop"
             className="absolute inset-0 bg-black/15 sm:bg-black/10"
-            onClick={() => setOpen(false)}
+            onClick={() => setAssistantOpen(false)}
           />
           <aside
             data-assistant-panel
@@ -168,7 +169,7 @@ export function AssistantLauncher() {
               <button
                 type="button"
                 aria-label="Close"
-                onClick={() => setOpen(false)}
+                onClick={() => setAssistantOpen(false)}
                 className={`flex h-8 w-8 items-center justify-center rounded-lg ${
                   isDark ? "hover:bg-[#222] text-[#aaa]" : "hover:bg-[#f0f0f0] text-[#666]"
                 }`}
@@ -180,15 +181,10 @@ export function AssistantLauncher() {
             <div className="min-h-0 flex-1">
               <AssistantPanel
                 send={send}
-                capture={capture}
                 prefill={prefill}
                 onConsumedPrefill={() => setPrefill(null)}
                 pageLabel={pathname || undefined}
-                selectingRegion={selectingRegion}
-                onSelectRegion={() => {
-                  setOpen(false);
-                  setSelectingRegion(true);
-                }}
+                turns={turns}
               />
             </div>
           </aside>
@@ -196,6 +192,15 @@ export function AssistantLauncher() {
       )}
     </>,
     document.body,
+  );
+}
+
+export function AssistantLauncher() {
+  // useSearchParams (via semantic hook if used) needs Suspense in some Next setups
+  return (
+    <Suspense fallback={null}>
+      <AssistantLauncherInner />
+    </Suspense>
   );
 }
 

@@ -30,7 +30,8 @@ import {
   defaultCapUsdFromMcp,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
-import { isAssistantChat, answerAssistant } from "./concept";
+import { isAssistantChat } from "./concept";
+import { runPageAgent } from "./page-agent";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -217,16 +218,32 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     );
   }
 
-  // ── Page-aware AI assistant (generative Gemini, no MCP) ───────────────────
-  // Free-form chat about the screen / product. Glossary is reference only —
-  // not a canned Q&A table. Live "my …" reads and action verbs still fall
-  // through to MCP below. Stays ahead of keyword farm/write overrides so
-  // "what is Blend?" never becomes deploy_to_blend.
+  // ── Page-aware AI agent (Gemini plan: semantic pageContext + client tools) ─
+  // Ahead of MCP write routing so "what is Blend?" never becomes a write.
+  // Live "my …" / actions still fall through to MCP.
   if (isAssistantChat(message)) {
-    return answerAssistant(message, req.page_context ?? null, request_id, {
-      history: Array.isArray(req.history) ? req.history : undefined,
-      page_snapshot: req.page_snapshot ?? null,
-    });
+    // Prefer structured semantic_page_context; fall back to legacy page_snapshot.
+    let semantic = req.semantic_page_context ?? null;
+    if (!semantic && req.page_snapshot) {
+      const snap = req.page_snapshot;
+      semantic = {
+        url: snap.url,
+        path: snap.path,
+        title: snap.title,
+        description: "",
+        sections: (snap.headings || []).map((t) => ({ level: 2, text: t, id: null })),
+        mainText: snap.visible_text || snap.region_text || "",
+        selectedText: snap.selection ?? null,
+        interactiveHints: [],
+        capturedAt: snap.captured_at,
+      };
+    }
+    return runPageAgent(
+      message,
+      semantic,
+      request_id,
+      Array.isArray(req.history) ? req.history : undefined,
+    );
   }
 
   // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─

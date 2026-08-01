@@ -1,79 +1,62 @@
 "use client";
 
 /**
- * Gemini-in-Chrome style side panel body.
- * Document-style polished replies (AssistantProse), live DOM snapshot.
+ * Side-panel body for the page-aware agent.
+ * History comes from session store (survives route changes).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Crop, Loader2, Send } from "lucide-react";
+import { Loader2, Send } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
-import type { PageSnapshot } from "@/lib/assistant/capture-page";
+import { captureSemanticPageContext } from "@/lib/assistant/semantic-page-context";
+import type { AssistantTurn } from "@/store/assistant-session";
 import { AssistantProse, sanitizeAssistantText } from "./assistant-prose";
 import { copilotConfigHint } from "./assistant-model-hint";
 
-export type AssistantSend = (
-  message: string,
-  history: Array<{ role: "user" | "assistant"; text: string }>,
-  snapshot: PageSnapshot,
-) => Promise<{ kind: string; message: string; data?: Record<string, unknown> | null }>;
-
-type Entry = {
-  kind: "user" | "assist";
-  text: string;
-};
+export type AssistantSend = (message: string) => Promise<{
+  kind: string;
+  message: string;
+  client_tools?: Array<{ name: string; args: Record<string, unknown> }> | null;
+  data?: Record<string, unknown> | null;
+}>;
 
 export function AssistantPanel({
   send,
-  capture,
   prefill,
   onConsumedPrefill,
   pageLabel,
-  onSelectRegion,
-  selectingRegion,
+  turns,
 }: {
   send: AssistantSend;
-  capture: () => PageSnapshot;
   prefill?: string | null;
   onConsumedPrefill?: () => void;
   pageLabel?: string;
-  onSelectRegion?: () => void;
-  selectingRegion?: boolean;
+  turns: AssistantTurn[];
 }) {
   const { isDark } = useTheme();
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [entries, setEntries] = useState<Entry[]>([]);
-  const [snapMeta, setSnapMeta] = useState<{
-    path: string;
-    chars: number;
-    selection: boolean;
-    region: boolean;
-    metrics: number;
-  } | null>(null);
+  const [selectedChip, setSelectedChip] = useState<string | null>(null);
+  const [pathMeta, setPathMeta] = useState(pageLabel || "/");
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const entriesRef = useRef<Entry[]>([]);
-  entriesRef.current = entries;
 
-  const refreshMeta = useCallback(() => {
-    try {
-      const s = capture();
-      setSnapMeta({
-        path: s.path || "/",
-        chars: s.char_count,
-        selection: Boolean(s.selection),
-        region: Boolean(s.region_text),
-        metrics: s.metrics?.length ?? 0,
-      });
-    } catch {
-      setSnapMeta(null);
-    }
-  }, [capture]);
-
+  // Live selection chip (plan Step 4)
   useEffect(() => {
-    refreshMeta();
-  }, [refreshMeta, pageLabel]);
+    const tick = () => {
+      try {
+        const t = window.getSelection()?.toString()?.trim();
+        setSelectedChip(t ? t.slice(0, 120) : null);
+        const ctx = captureSemanticPageContext({ maxMainText: 500 });
+        setPathMeta(ctx.path || pageLabel || "/");
+      } catch {
+        /* ignore */
+      }
+    };
+    tick();
+    document.addEventListener("selectionchange", tick);
+    return () => document.removeEventListener("selectionchange", tick);
+  }, [pageLabel]);
 
   useEffect(() => {
     if (prefill) {
@@ -85,7 +68,7 @@ export function AssistantPanel({
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
-  }, [entries, busy]);
+  }, [turns, busy]);
 
   const run = useCallback(
     async (message: string) => {
@@ -93,41 +76,16 @@ export function AssistantPanel({
       if (!text || busy) return;
       setBusy(true);
       setInput("");
-      const snap = capture();
-      setSnapMeta({
-        path: snap.path || "/",
-        chars: snap.char_count,
-        selection: Boolean(snap.selection),
-        region: Boolean(snap.region_text),
-        metrics: snap.metrics?.length ?? 0,
-      });
-      const prior = entriesRef.current.map((e) => ({
-        role: (e.kind === "user" ? "user" : "assistant") as "user" | "assistant",
-        text: e.text,
-      }));
-      setEntries((prev) => [...prev, { kind: "user", text }]);
       try {
-        const res = await send(text, prior, snap);
-        setEntries((prev) => [
-          ...prev,
-          {
-            kind: "assist",
-            text: sanitizeAssistantText(res.message || "No reply."),
-          },
-        ]);
+        await send(text);
       } catch (e) {
-        setEntries((prev) => [
-          ...prev,
-          {
-            kind: "assist",
-            text: e instanceof Error ? e.message : "Request failed.",
-          },
-        ]);
+        // send() already appends user; surface error as assistant line via throw handling in parent
+        console.error("[assistant]", e);
       } finally {
         setBusy(false);
       }
     },
-    [busy, send, capture],
+    [busy, send],
   );
 
   const ink = isDark ? "text-white" : "text-[#111]";
@@ -142,30 +100,28 @@ export function AssistantPanel({
     >
       <div className={`px-4 py-2.5 border-b ${line} shrink-0 space-y-2`}>
         <p className={`text-[11px] leading-snug ${muted}`}>
-          Reading{" "}
-          <span className={`font-medium ${ink}`}>{snapMeta?.path || pageLabel || "this page"}</span>
-          {snapMeta && snapMeta.chars > 0
-            ? ` · ${snapMeta.chars.toLocaleString()} chars`
-            : " · capturing…"}
-          {snapMeta && snapMeta.metrics > 0 ? ` · ${snapMeta.metrics} metrics` : ""}
-          {snapMeta?.selection ? " · text selection" : ""}
-          {snapMeta?.region ? " · screen region" : ""}
+          Page context: <span className={`font-medium ${ink}`}>{pathMeta}</span>
+          {" · "}semantic reader active
         </p>
+        {selectedChip && (
+          <div
+            className={`inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] ${
+              isDark ? "bg-[#703AE6]/20 text-[#D4C4FF]" : "bg-[#703AE6]/10 text-[#5B2BB8]"
+            }`}
+            title={selectedChip}
+          >
+            <span className="shrink-0 font-semibold">Context: Selected Text</span>
+            <span className="truncate opacity-90">“{selectedChip}”</span>
+          </div>
+        )}
         <div className="flex flex-wrap gap-1.5">
-          {[
-            "Summarize this page",
-            "What am I looking at?",
-            snapMeta?.selection || snapMeta?.region
-              ? "Explain what I selected"
-              : null,
-          ]
-            .filter(Boolean)
-            .map((label) => (
+          {["Summarize this page", "What am I looking at?", "Where can I go next?"].map(
+            (label) => (
               <button
-                key={label as string}
+                key={label}
                 type="button"
-                disabled={busy || selectingRegion}
-                onClick={() => void run(label as string)}
+                disabled={busy}
+                onClick={() => void run(label)}
                 className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
                   isDark
                     ? "bg-[#222] text-[#ccc] hover:bg-[#2e2e2e]"
@@ -174,47 +130,29 @@ export function AssistantPanel({
               >
                 {label}
               </button>
-            ))}
-          {onSelectRegion && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={onSelectRegion}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                selectingRegion
-                  ? "bg-[#703AE6] text-white"
-                  : isDark
-                    ? "bg-[#222] text-[#ccc] hover:bg-[#2e2e2e]"
-                    : "bg-[#f3f3f3] text-[#444] hover:bg-[#e9e9e9]"
-              }`}
-            >
-              <Crop size={12} />
-              {selectingRegion ? "Draw on page…" : "Select region"}
-            </button>
+            ),
           )}
         </div>
         <p className={`text-[10px] ${muted}`}>{copilotConfigHint()}</p>
       </div>
 
       <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-6">
-        {entries.length === 0 && !busy && (
+        {turns.length === 0 && !busy && (
           <div className="space-y-3 pt-1">
             <p className={`text-[16px] font-semibold tracking-tight ${ink}`}>
               Ask about this page
             </p>
             <p className={`text-[13px] leading-relaxed ${muted}`}>
-              I read the live screen — tables, labels, and balances — on any route.
-              Highlight text or use Select region for a focused answer.
+              I read the live page structure and content. Highlight text for focused answers.
+              I can scroll to sections, highlight UI, or navigate you to other pages.
             </p>
           </div>
         )}
 
-        {entries.map((e, i) =>
-          e.kind === "user" ? (
+        {turns.map((e, i) =>
+          e.role === "user" ? (
             <div key={i} className="space-y-1">
-              <p
-                className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${muted}`}
-              >
+              <p className={`text-[10px] font-semibold uppercase tracking-[0.08em] ${muted}`}>
                 You
               </p>
               <p className={`text-[13.5px] font-medium leading-relaxed ${ink}`}>{e.text}</p>
@@ -224,7 +162,7 @@ export function AssistantPanel({
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#703AE6]">
                 Assistant
               </p>
-              <AssistantProse text={e.text} />
+              <AssistantProse text={sanitizeAssistantText(e.text)} />
             </div>
           ),
         )}
@@ -249,7 +187,7 @@ export function AssistantPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask about this page…"
-          disabled={busy || selectingRegion}
+          disabled={busy}
           className={`min-w-0 flex-1 rounded-xl border px-3 py-2.5 text-[13px] outline-none focus:border-[#703AE6] ${
             isDark
               ? "border-[#2a2a2a] bg-[#111] text-white placeholder:text-[#555]"
@@ -258,7 +196,7 @@ export function AssistantPanel({
         />
         <button
           type="submit"
-          disabled={busy || selectingRegion || !input.trim()}
+          disabled={busy || !input.trim()}
           aria-label="Ask"
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#703AE6] text-white disabled:opacity-40"
         >

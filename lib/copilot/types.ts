@@ -20,8 +20,8 @@ export type PageDescriptorCtx = {
 };
 
 /**
- * Live DOM snapshot from the browser — primary page awareness signal.
- * Captured client-side from whatever page the user is on (any route).
+ * Live DOM snapshot from the browser (legacy flat text).
+ * Prefer semantic_page_context for the Gemini-style agent.
  */
 export type PageSnapshotCtx = {
   path?: string;
@@ -37,18 +37,38 @@ export type PageSnapshotCtx = {
   char_count?: number;
 };
 
+/** Structured pageContext from the Gemini master plan (semantic reader). */
+export type SemanticPageContextCtx = {
+  url?: string;
+  path?: string;
+  title?: string;
+  description?: string;
+  sections?: Array<{ level?: number; text?: string; id?: string | null }>;
+  mainText?: string;
+  selectedText?: string | null;
+  interactiveHints?: Array<{ id: string; label: string }>;
+  capturedAt?: number;
+};
+
+export type ClientToolCallCtx = {
+  name: string;
+  args: Record<string, unknown>;
+};
+
 export interface ChatRequest {
   user_id: string;
   message: string;
   tier?: "free" | "paid";
   smart_account?: string | null;
-  /** @deprecated Prefer page_snapshot (live DOM). Kept for optional enrichment. */
+  /** @deprecated Prefer semantic_page_context. */
   page_context?: PageDescriptorCtx | null;
-  /** Live visible page text + selection from the browser. */
+  /** @deprecated Prefer semantic_page_context. */
   page_snapshot?: PageSnapshotCtx | null;
+  /** Gemini-plan semantic pageContext JSON (primary for page agent). */
+  semantic_page_context?: SemanticPageContextCtx | null;
   /**
    * Optional prior turns so the assistant can answer follow-ups naturally.
-   * Client should send only short recent history (e.g. last 6 messages).
+   * Client should send only short recent history (e.g. last 8 messages).
    */
   history?: Array<{ role: "user" | "assistant"; text: string }> | null;
   /** Client may send auto-sign confirmation choices */
@@ -179,6 +199,11 @@ export interface ChatResponse {
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null;
   request_id?: string | null;
+  /**
+   * Client-side tools for the page agent (navigate / scroll / highlight).
+   * Executed in the browser only — never on the server.
+   */
+  client_tools?: ClientToolCallCtx[] | null;
   /**
    * Structured choices for clarifications (e.g. BLUSDC / AQUSDC / SOUSDC).
    * UI renders buttons; selecting one re-runs the pending_write with that asset.

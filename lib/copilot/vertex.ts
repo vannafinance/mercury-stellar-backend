@@ -354,6 +354,88 @@ export async function generateText(
   return out.trim();
 }
 
+export type ClientToolDecl = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+/**
+ * Page-agent generation: AUTO function calling for client tools + free text.
+ * Returns prose and zero or more client tool calls for the browser to execute.
+ */
+export async function generateWithClientTools(
+  system: string,
+  user: string,
+  toolDecls: ClientToolDecl[],
+): Promise<{
+  text: string;
+  client_tools: Array<{ name: string; args: Record<string, unknown> }>;
+}> {
+  const token = await getAccessToken();
+  const model = copilotConfig.vertexModel;
+  const body = {
+    systemInstruction: { parts: [{ text: system }] },
+    tools: [{ functionDeclarations: toolDecls }],
+    // AUTO: model may answer in text and/or call tools (Gemini side-panel style)
+    toolConfig: { functionCallingConfig: { mode: "AUTO" } },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: { temperature: 0.35 },
+  };
+
+  const res = await fetch(modelUrl(model), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+    cache: "no-store",
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) tokenCache = null;
+    // Fallback: plain text without tools if schema rejected
+    console.warn(`[copilot:vertex] client-tools HTTP ${res.status}, falling back to generateText`);
+    const textOnly = await generateText(system, user, { temperature: 0.35 });
+    return { text: textOnly, client_tools: [] };
+  }
+
+  let parsed: {
+    candidates?: Array<{
+      content?: { parts?: Array<{ text?: string; functionCall?: { name?: string; args?: Record<string, unknown> } }> };
+      finishReason?: string;
+    }>;
+  };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new VertexError(`Vertex client-tools non-JSON: ${raw.slice(0, 300)}`);
+  }
+  logUsage("page-agent:fc", parsed);
+
+  const parts = parsed?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts
+    .map((p) => p.text)
+    .filter(Boolean)
+    .join("")
+    .trim();
+  const client_tools = parts
+    .filter((p) => p.functionCall?.name)
+    .map((p) => ({
+      name: String(p.functionCall!.name),
+      args: (p.functionCall!.args ?? {}) as Record<string, unknown>,
+    }));
+
+  if (!text && client_tools.length === 0) {
+    throw new VertexError(
+      `Vertex page-agent empty (finishReason=${parsed?.candidates?.[0]?.finishReason ?? "?"})`,
+    );
+  }
+  return { text, client_tools };
+}
+
 /**
  * One routing call using native function calling.
  *
