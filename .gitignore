@@ -13,6 +13,9 @@
 # testing
 /coverage
 
+# local smoke / scratch (never ship)
+/tmp/
+
 # next.js
 /.next/
 /out/

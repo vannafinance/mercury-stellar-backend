@@ -596,11 +596,10 @@ READ (single market/account question):
 WRITE (single action the user wants done now):
 {"kind":"write","op":"<op>","asset":"XLM"|null,"amount":number|null,"multi_leg":boolean,"requires_account":boolean,"requires_amount":boolean,"template_id":"<op>","leverage":number|null,"deposit_amount":number|null,"borrow_amount":number|null}
 
-PLAN (complex / multi-step strategy — e.g. deposit, keep HF, farm yield, rebalance):
+PLAN (complex / multi-step strategy — e.g. park for yield THEN farm, keep HF, rebalance):
 {"kind":"plan","template_id":"strategy","summary":"one line","steps":[
-  {"kind":"read","tool":"vanna_get_pool_stats","args":{"symbol":"USDC"}},
-  {"kind":"write","op":"deposit_collateral","asset":"XLM","amount":10},
-  {"kind":"write","op":"borrow","asset":"USDC","amount":5}
+  {"kind":"write","op":"lend","asset":"XLM","amount":20},
+  {"kind":"write","op":"deploy_to_blend","asset":"BLUSDC","amount":10,"args":{"leverage":2}}
 ]}
 
 AUTO_SIGN:
@@ -614,9 +613,13 @@ CLARIFY (missing amount/asset that cannot be defaulted):
 
 Rules:
 - Questions → read. Imperatives ("deposit", "lend", "borrow", "farm") → write or plan.
-- Complex goals (maintain HF, keep earning, rebalance, multi-venue) → kind=plan with ordered steps.
+- Complex goals (maintain HF, keep earning, rebalance, multi-venue, park THEN farm) → kind=plan with ordered steps.
 - Prefer real MCP tool names for reads. Prefer op names for writes.
-- Never invent amounts. If amount missing on a write, still emit write with amount:null so the server asks.
+- Never invent amounts. Amounts ONLY from explicit "N ASSET" (e.g. "20 XLM", "10 BLUSDC").
+- NEVER use a health-factor floor as an amount. "keep HF above 1.4" → not amount 1.4; put min_hf in summary only.
+- Leverage "2x" / "at 2×" goes in args.leverage on farm/deploy steps — not as amount.
+- Park / lend for yield → op=lend. Farm Blend at Nx → op=deploy_to_blend with leverage.
+- If amount missing on a write, still emit write with amount:null so the server asks.
 - "enable auto-sign" / "turn on auto approve" → auto_sign start (MCP default $1000/tx · $1000/day).
 - "set auto-sign cap to 500 per tx and 2000 per day" → auto_sign custom.
 - "use default auto-sign caps" → auto_sign use_defaults.
@@ -719,14 +722,24 @@ function normalizeRoute(data: Record<string, unknown>): RoutedIntent {
       kind: "plan",
       template_id: String(data.template_id ?? "strategy"),
       summary: data.summary != null ? String(data.summary) : undefined,
-      steps: (data.steps as any[]).map((s) => ({
-        kind: s.kind === "write" ? "write" : "read",
-        tool: s.tool != null ? String(s.tool) : undefined,
-        op: s.op != null ? String(s.op) : undefined,
-        args: s.args && typeof s.args === "object" ? s.args : {},
-        asset: s.asset != null ? String(s.asset).toUpperCase() : null,
-        amount: s.amount != null && s.amount !== "" ? Number(s.amount) : null,
-      })),
+      steps: (data.steps as any[]).map((s) => {
+        const args: Record<string, unknown> =
+          s.args && typeof s.args === "object" && !Array.isArray(s.args) ? { ...s.args } : {};
+        const levRaw = s.leverage ?? args.leverage;
+        if (levRaw != null && Number.isFinite(Number(levRaw))) {
+          args.leverage = Number(levRaw);
+        }
+        const amt = s.amount != null && s.amount !== "" ? Number(s.amount) : null;
+        return {
+          kind: s.kind === "write" ? ("write" as const) : ("read" as const),
+          tool: s.tool != null ? String(s.tool) : undefined,
+          op: s.op != null ? String(s.op) : undefined,
+          args,
+          asset: s.asset != null ? String(s.asset).toUpperCase() : null,
+          amount: amt != null && Number.isFinite(amt) && amt > 0 ? amt : null,
+          leverage: args.leverage != null ? Number(args.leverage) : null,
+        };
+      }),
     };
   }
 

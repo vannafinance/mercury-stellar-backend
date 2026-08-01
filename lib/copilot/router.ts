@@ -574,16 +574,22 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Multi-domain narratives: park/lend yield AND farm / deposit+borrow.
-  // Emit a plan so handleChat runs steps instead of collapsing to one read.
+  // Multi-domain narratives: park/lend yield AND farm / deposit+borrow / then-chains.
+  // Emit a plan so handleChat runs MultiLegAgent instead of collapsing to one write.
+  const multiVerbCount = (
+    text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay|redeem|withdraw)\b/gi) || []
+  ).length;
   if (
     hasActionWriteIntent &&
     ((any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
       (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
-      (/\bthen\b/i.test(text) &&
-        (text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park)\b/gi) || []).length >= 2))
+      (any(text, "repay") && any(text, "deposit", "lend", "borrow")) ||
+      (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply")) ||
+      (/\b(then|and then|after that)\b/i.test(text) && multiVerbCount >= 2) ||
+      (/\band\b/i.test(text) && multiVerbCount >= 2 && any(text, "health", "hf", "liquidat", "farm", "yield")))
   ) {
     const minHf = parseMinHealthFactor(raw);
+    // minHf is a safety constraint (MultiLegAgent), never an amount
     const steps: Array<{
       kind: "read" | "write";
       op?: string;
@@ -591,7 +597,22 @@ export function routeMessage(message: string): RoutedIntent {
       amount?: number | null;
       leverage?: number | null;
     }> = [];
-    // Leg 1: earn / park XLM (or first yield intent)
+
+    // Optional: repay first when user says repay then …
+    if (any(text, "repay") && multiVerbCount >= 2) {
+      const repayM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
+      // Only if "repay" appears before "then" or is first action
+      if (/\brepay\b/i.test(raw)) {
+        steps.push({
+          kind: "write",
+          op: "repay",
+          asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
+          amount: repayM ? Number(repayM[1]) : null,
+        });
+      }
+    }
+
+    // Leg: earn / park XLM (or first yield intent)
     // Never reuse HF floors ("above 1.4") as deposit amounts — only explicit "N XLM".
     if (any(text, "park", "lend", "earn", "yield") && !any(text, "farm blend only")) {
       const earnAsset = /\bxlm\b/i.test(raw) ? "XLM" : asset;
@@ -606,7 +627,23 @@ export function routeMessage(message: string): RoutedIntent {
         });
       }
     }
-    // Leg 2: farm blend / levered farm — amount only from "N BLUSDC" style, not HF floors
+
+    // Swap leg when named with another action
+    if (any(text, "swap") && multiVerbCount >= 2) {
+      const swapM = raw.match(
+        /(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
+      );
+      if (swapM) {
+        steps.push({
+          kind: "write",
+          op: "swap",
+          asset: swapM[2].toUpperCase(),
+          amount: Number(swapM[1]),
+        });
+      }
+    }
+
+    // Leg: farm blend / levered farm — amount only from "N BLUSDC" style, not HF floors
     if (any(text, "farm", "blend", "deploy")) {
       const farmAsset =
         (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
@@ -624,18 +661,32 @@ export function routeMessage(message: string): RoutedIntent {
         leverage: leverage ?? 2,
       });
     }
-    // deposit + borrow (+ optional supply blend) already covered by dedicated multi_leg ops
-    if (any(text, "deposit") && any(text, "borrow") && !steps.length) {
+
+    // deposit + borrow when not already covered by farm expand
+    if (any(text, "deposit") && any(text, "borrow") && !steps.some((s) => s.op === "deploy_to_blend")) {
+      // Prefer amount tied to asset, not HF floor
+      let depAmt = amount;
+      const depM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
+      if (depM) depAmt = Number(depM[1]);
+      if (depAmt != null && minHf != null && Math.abs(depAmt - minHf) < 1e-9) depAmt = null;
       steps.push({
         kind: "write",
         op: "deposit_and_borrow",
         asset: asset ?? "XLM",
-        amount,
+        amount: depAmt,
         leverage: leverage ?? 2,
       });
     }
-    if (steps.length >= 2) {
-      const parts = steps.map((s, i) => {
+
+    // Dedupe consecutive identical ops
+    const deduped = steps.filter((s, i, arr) => {
+      if (i === 0) return true;
+      const p = arr[i - 1];
+      return !(s.op === p.op && s.asset === p.asset && s.amount === p.amount);
+    });
+
+    if (deduped.length >= 2) {
+      const parts = deduped.map((s, i) => {
         const a = s.amount != null ? `${s.amount} ` : "";
         const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
         return `${i + 1}) ${s.op} ${a}${s.asset ?? ""}${L}`.trim();
@@ -644,12 +695,13 @@ export function routeMessage(message: string): RoutedIntent {
         kind: "plan",
         template_id: "multi_goal_strategy",
         summary: `Multi-step strategy: ${parts.join(" → ")}`,
-        steps: steps.map((s) => ({
+        steps: deduped.map((s) => ({
           kind: "write" as const,
           op: s.op,
           asset: s.asset ?? null,
           amount: s.amount ?? null,
           args: s.leverage != null ? { leverage: s.leverage } : undefined,
+          leverage: s.leverage ?? null,
         })),
       };
     }

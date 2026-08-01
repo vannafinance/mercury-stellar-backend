@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
 import { useCreateWallet, useSignRawHash } from "@privy-io/react-auth/extended-chains";
+import toast from "react-hot-toast";
 import {
   registerPrivyBridge,
   registerPrivyAuthControls,
@@ -76,7 +77,9 @@ export const PrivyWalletBridge = () => {
         // linkedAccounts updates asynchronously after create; retry sync shortly.
         setTimeout(() => {
           try {
-            syncStellarWallet();
+            if (syncStellarWallet()) {
+              toast.success("Vanna wallet created and saved to your account", { duration: 4000 });
+            }
           } catch {
             /* ignore */
           }
@@ -91,6 +94,7 @@ export const PrivyWalletBridge = () => {
       })
       .catch((error) => {
         console.error("Failed to create Privy Stellar wallet:", error);
+        toast.error("Could not create Vanna wallet — try again or use Freighter");
       })
       .finally(() => {
         creatingRef.current = false;

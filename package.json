@@ -10,7 +10,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:multi-leg": "vitest run tests/lib/multi-leg-agent.test.ts tests/lib/plan-sanitize.test.ts"
   },
   "dependencies": {
     "@google-cloud/bigquery": "8.3.1",

@@ -262,22 +262,35 @@ class LiveMCPClient implements MCPClient {
     if (this.sessionPromise) return this.sessionPromise;
 
     this.sessionPromise = (async () => {
-      const initRes = await fetch(copilotConfig.mcpBaseUrl, {
-        method: "POST",
-        headers: baseHeaders,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: {
-            protocolVersion: "2024-11-05",
-            capabilities: {},
-            clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
-          },
-        }),
-        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-        cache: "no-store",
-      });
+      let initRes: Response;
+      try {
+        initRes = await fetch(copilotConfig.mcpBaseUrl, {
+          method: "POST",
+          headers: baseHeaders,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2024-11-05",
+              capabilities: {},
+              clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
+            },
+          }),
+          signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+          cache: "no-store",
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/abort|timeout/i.test(msg)) {
+          throw new MCPCallError(
+            `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
+          );
+        }
+        throw new MCPCallError(
+          `MCP initialize network error: could not reach MCP (${msg}). Check MCP_BASE_URL and connectivity.`,
+        );
+      }
       if (!initRes.ok) {
         const text = await initRes.text().catch(() => "");
         if (initRes.status === 401 || initRes.status === 403) {
@@ -330,18 +343,31 @@ class LiveMCPClient implements MCPClient {
     const sessionId = await this.getSession(baseHeaders);
     const sessionHeaders = { ...baseHeaders, "mcp-session-id": sessionId };
 
-    const callRes = await fetch(copilotConfig.mcpBaseUrl, {
-      method: "POST",
-      headers: sessionHeaders,
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: toServerCall(tool, args),
-      }),
-      signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-      cache: "no-store",
-    });
+    let callRes: Response;
+    try {
+      callRes = await fetch(copilotConfig.mcpBaseUrl, {
+        method: "POST",
+        headers: sessionHeaders,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: toServerCall(tool, args),
+        }),
+        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+        cache: "no-store",
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/abort|timeout/i.test(msg)) {
+        throw new MCPCallError(
+          `MCP call '${tool}' timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — server may be cold or overloaded. Retry.`,
+        );
+      }
+      throw new MCPCallError(
+        `MCP call '${tool}' network error: could not reach ${copilotConfig.mcpBaseUrl.slice(0, 48)}… (${msg})`,
+      );
+    }
     if (!callRes.ok) {
       const text = await callRes.text().catch(() => "");
       if (callRes.status === 401 || callRes.status === 403) {

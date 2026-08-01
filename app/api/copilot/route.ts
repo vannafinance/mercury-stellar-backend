@@ -11,6 +11,12 @@ import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/c
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+/**
+ * Multi-leg strategies run N MCP writes + HF samples in one request.
+ * Default serverless limits (~10–60s) will abort mid-strategy.
+ * Hosts that honor maxDuration (e.g. Vercel Pro) need this headroom.
+ */
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   try {
@@ -114,6 +120,10 @@ export async function POST(req: NextRequest) {
 
   try {
     const data = await handleChat(payload);
+    const multiLeg = !!(data.data && (data.data as Record<string, unknown>).multi_leg);
+    const multiSteps = multiLeg
+      ? ((data.data as Record<string, unknown>).multi_leg_steps as unknown[])
+      : null;
     logCopilotEvent("turn", {
       request_id: data.request_id,
       kind: data.kind,
@@ -121,6 +131,9 @@ export async function POST(req: NextRequest) {
       user: payload.user_id,
       message: message.slice(0, 120),
       execution: data.execution?.status ?? null,
+      multi_leg: multiLeg,
+      multi_leg_steps: Array.isArray(multiSteps) ? multiSteps.length : null,
+      tx_hash: data.execution?.tx_hash ? String(data.execution.tx_hash).slice(0, 16) : null,
     });
     return NextResponse.json(data);
   } catch (e) {

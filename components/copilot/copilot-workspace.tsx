@@ -143,7 +143,12 @@ const CAPABILITIES: Array<{ tag: string; tone: "read" | "write" | "multi"; label
   { tag: "read", tone: "read", label: "What's my health factor?", tool: "vanna_get_account_health" },
   { tag: "read", tone: "read", label: "How is the USDC pool doing?", tool: "vanna_get_pool_stats" },
   { tag: "write", tone: "write", label: "Deposit 5 XLM as collateral", tool: "vanna_deposit_collateral" },
-  { tag: "write · multi-leg", tone: "multi", label: "Deposit 20 USDC and borrow 2×", tool: "vanna_deposit_and_borrow" },
+  {
+    tag: "write · multi-leg",
+    tone: "multi",
+    label: "Park 20 XLM then farm 10 BLUSDC at 2×",
+    tool: "multi_leg_agent",
+  },
 ];
 
 const PROMPTS: Record<string, string[]> = {
@@ -154,7 +159,13 @@ const PROMPTS: Record<string, string[]> = {
     "How much do I owe?",
     "Can I borrow 20 USDC?",
   ],
-  actions: ["Deposit 5 XLM", "Lend 5 USDC", "Borrow 2 USDC", "Repay 2 USDC", "Enable auto-sign"],
+  actions: [
+    "Deposit 5 XLM",
+    "Lend 5 USDC",
+    "Borrow 2 USDC",
+    "Park 20 XLM for yield then farm 10 BLUSDC at 2x keep HF above 1.4",
+    "Enable auto-sign",
+  ],
 };
 
 /**
@@ -344,11 +355,183 @@ function StepList({ steps, running }: { steps: Step[]; running: boolean }) {
   );
 }
 
+type MultiLegStepUi = {
+  index?: number;
+  label?: string;
+  status?: string;
+  tx_hash?: string | null;
+  hf_after?: number | null;
+  message?: string;
+};
+
+/** Structured multi-leg strategy card (replaces red wall of text + facts dump). */
+function MultiLegStrategyCard({
+  data,
+  headline,
+}: {
+  data: Record<string, unknown>;
+  headline?: string | null;
+}) {
+  const steps = (Array.isArray(data.multi_leg_steps) ? data.multi_leg_steps : []) as MultiLegStepUi[];
+  if (!steps.length) return null;
+
+  const summary = String(data.strategy_summary || data.plan_summary || "Strategy");
+  const minHf = data.min_hf != null ? Number(data.min_hf) : null;
+  const finalHf = data.final_hf != null ? Number(data.final_hf) : null;
+  const sa = data.smart_account != null ? String(data.smart_account) : null;
+  const title = String(data.headline || headline || "Strategy progress");
+
+  const anyFail = steps.some((s) =>
+    ["error", "blocked", "stopped_hf"].includes(String(s.status || "")),
+  );
+  const allOk = steps.every((s) => s.status === "ok");
+
+  const tone = (status?: string) => {
+    if (status === "ok") return EMERALD;
+    if (status === "needs_sign" || status === "pending" || status === "clarification") return AMBER;
+    if (status === "error" || status === "blocked" || status === "stopped_hf") return IMPERIAL;
+    return "var(--color-vgray-400)";
+  };
+  const mark = (status?: string) => {
+    if (status === "ok") return "Done";
+    if (status === "needs_sign") return "Sign";
+    if (status === "stopped_hf") return "HF";
+    if (status === "skipped") return "Skip";
+    if (status === "pending") return "Next";
+    if (status === "clarification") return "Ask";
+    if (status === "blocked") return "Block";
+    if (status === "error") return "Fail";
+    return "·";
+  };
+
+  const borderColor = allOk
+    ? "rgba(16,185,129,.35)"
+    : anyFail
+      ? "rgba(252,84,87,.28)"
+      : "var(--color-vgray-100)";
+
+  return (
+    <div
+      className="mt-4 overflow-hidden rounded-2xl border bg-surface"
+      style={{ borderColor }}
+    >
+      <div
+        className="border-b px-5 py-4"
+        style={{
+          borderColor: "var(--color-vgray-100)",
+          background: allOk
+            ? "rgba(16,185,129,.06)"
+            : anyFail
+              ? "rgba(252,84,87,.05)"
+              : "var(--color-vgray-50)",
+        }}
+      >
+        <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-vgray-400">
+          multi-step strategy
+        </p>
+        <p className="mt-1.5 text-[17px] font-semibold leading-snug text-vgray-900">{title}</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-vgray-500">{summary}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {sa && (
+            <span className="rounded-full border border-vgray-100 bg-surface px-2.5 py-1 font-mono text-[11px] text-vgray-500">
+              {sa.slice(0, 8)}…{sa.slice(-4)}
+            </span>
+          )}
+          {minHf != null && Number.isFinite(minHf) && (
+            <span className="rounded-full border border-vgray-100 bg-surface px-2.5 py-1 font-mono text-[11px] text-vgray-500">
+              HF floor ≥ {minHf}
+            </span>
+          )}
+          {finalHf != null && Number.isFinite(finalHf) && (
+            <span className="rounded-full border border-vgray-100 bg-surface px-2.5 py-1 font-mono text-[11px] text-vgray-500">
+              Final HF {finalHf >= 999 ? "∞" : finalHf.toFixed(2)}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <ol className="divide-y divide-vgray-100 px-2 py-1 sm:px-3">
+        {steps.map((s, i) => {
+          const st = String(s.status || "");
+          const showDetail =
+            s.message &&
+            st !== "ok" &&
+            st !== "pending" &&
+            st !== "skipped";
+          return (
+            <li key={i} className="flex gap-3 px-3 py-3.5">
+              <span
+                className="mt-0.5 flex h-6 min-w-[3.25rem] shrink-0 items-center justify-center rounded-full px-2 font-mono text-[10px] font-semibold uppercase tracking-wide"
+                style={{ color: tone(st), background: `${tone(st)}18` }}
+              >
+                {mark(st)}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[14px] font-semibold leading-snug text-vgray-900">
+                  <span className="mr-1.5 font-mono text-[11px] font-normal text-vgray-400">
+                    {s.index ?? i + 1}.
+                  </span>
+                  {s.label || `Step ${i + 1}`}
+                </p>
+                {s.tx_hash && (
+                  <p className="mt-0.5 font-mono text-[11px] text-vgray-400">
+                    tx {s.tx_hash.slice(0, 12)}…
+                  </p>
+                )}
+                {s.hf_after != null && Number.isFinite(s.hf_after) && (
+                  <p className="mt-0.5 font-mono text-[11px] text-vgray-500">
+                    HF ≈ {s.hf_after >= 999 ? "∞" : s.hf_after.toFixed(2)}
+                  </p>
+                )}
+                {showDetail && (
+                  <p
+                    className="mt-1.5 text-[12.5px] leading-snug"
+                    style={{ color: st === "error" || st === "blocked" ? IMPERIAL : "var(--color-vgray-500)" }}
+                  >
+                    {s.message}
+                  </p>
+                )}
+                {st === "skipped" && (
+                  <p className="mt-1 text-[12px] text-vgray-400">Not run</p>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className="border-t border-vgray-100 px-5 py-3">
+        <p className="text-[12px] leading-relaxed text-vgray-500">
+          {allOk
+            ? "All steps completed on-chain."
+            : anyFail
+              ? "Stopped early. Only steps marked Done are on-chain — nothing later was claimed as done."
+              : "In progress or waiting on the next action."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function isMultiLegResponse(data?: Record<string, unknown> | null): boolean {
+  return !!(data && (data.multi_leg === true || Array.isArray(data.multi_leg_steps)));
+}
+
 function FactsGrid({ data }: { data: Record<string, unknown> }) {
+  const skipKeys = new Set([
+    "unsigned_xdr",
+    "auth_entries",
+    "multi_leg_steps",
+    "expanded_legs",
+    "remaining_legs",
+    "multi_leg_agent",
+    "plan_summary",
+  ]);
   const rows: [string, string][] = [];
   for (const [k, v] of Object.entries(data)) {
-    if (v == null || v === "" || k === "unsigned_xdr" || k === "auth_entries") continue;
+    if (v == null || v === "" || skipKeys.has(k)) continue;
     if (typeof v === "object") {
+      if (Array.isArray(v)) continue;
       for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
         if (sv != null && typeof sv !== "object") rows.push([prettyKey(sk), prettyVal(sv)]);
       }
@@ -1080,7 +1263,10 @@ export function CopilotWorkspace() {
   };
 
   const brainOnline = health?.status === "ok";
-  const isError = response?.kind === "error" || response?.kind === "blocked";
+  const multiLeg = isMultiLegResponse(response?.data ?? null);
+  // Multi-leg uses a structured card — don't paint the whole turn imperial red.
+  const isError =
+    !multiLeg && (response?.kind === "error" || response?.kind === "blocked");
   const phase = loading
     ? "running"
     : response?.kind === "needs_auto_sign"
@@ -1312,25 +1498,31 @@ export function CopilotWorkspace() {
                 {phase === "answer" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <Eyebrow n="03">{isError ? "Note" : "Answer"}</Eyebrow>
-                      {decision && <RiskChip decision={decision} />}
+                      <Eyebrow n="03">
+                        {multiLeg ? "Strategy" : isError ? "Note" : "Answer"}
+                      </Eyebrow>
+                      {decision && !multiLeg && <RiskChip decision={decision} />}
                     </div>
-                    <div className="mt-3 flex gap-3">
-                      {isError ? (
-                        <CircleAlert size={18} className="mt-1.5 shrink-0 text-imperial-500" />
-                      ) : (
-                        <Sparkles size={18} className="mt-1.5 shrink-0 text-violet-500" />
-                      )}
-                      <p
-                        className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
-                          isError ? "text-imperial-600" : "text-vgray-800"
-                        }`}
-                      >
-                        {response.message}
-                      </p>
-                    </div>
-                    {sim && <ImpactPanel sim={sim} />}
-                    {response.data && <FactsGrid data={response.data} />}
+                    {multiLeg && response.data ? (
+                      <MultiLegStrategyCard data={response.data} headline={response.message} />
+                    ) : (
+                      <div className="mt-3 flex gap-3">
+                        {isError ? (
+                          <CircleAlert size={18} className="mt-1.5 shrink-0 text-imperial-500" />
+                        ) : (
+                          <Sparkles size={18} className="mt-1.5 shrink-0 text-violet-500" />
+                        )}
+                        <p
+                          className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
+                            isError ? "text-imperial-600" : "text-vgray-800"
+                          }`}
+                        >
+                          {response.message}
+                        </p>
+                      </div>
+                    )}
+                    {sim && !multiLeg && <ImpactPanel sim={sim} />}
+                    {response.data && !multiLeg && <FactsGrid data={response.data} />}
 
                     {/* USDC variant (or other) clarify chips */}
                     {response.kind === "clarification" &&
@@ -1603,28 +1795,43 @@ export function CopilotWorkspace() {
                 {/* Executed */}
                 {phase === "done" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <Eyebrow n="04">Executed</Eyebrow>
-                    <div className="mt-4 flex items-center gap-4">
-                      <span
-                        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full"
-                        style={{ background: "rgba(16,185,129,.15)", color: EMERALD }}
-                      >
-                        <Check size={26} />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-h6 font-semibold text-vgray-900">
-                          {response.preview?.human_summary || "Submitted on-chain"}
-                        </p>
-                        <p className="mt-1 text-body-2 text-vgray-500">{response.message}</p>
-                      </div>
-                    </div>
-                    <div className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2">
-                      <Row k="tx hash" v={truncHash(txHash)} />
-                      <Row k="status" v={response.execution?.status || "submitted"} />
-                      <Row k="mcp tool" v={response.mcp?.tool || "—"} />
-                      <Row k="signer" v={sessionSigning ? "session key" : walletKind === "privy" ? "privy" : "freighter"} />
-                    </div>
-                    {response.data && <FactsGrid data={response.data} />}
+                    <Eyebrow n="04">{multiLeg ? "Strategy" : "Executed"}</Eyebrow>
+                    {multiLeg && response.data ? (
+                      <MultiLegStrategyCard data={response.data} headline={response.message} />
+                    ) : (
+                      <>
+                        <div className="mt-4 flex items-center gap-4">
+                          <span
+                            className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full"
+                            style={{ background: "rgba(16,185,129,.15)", color: EMERALD }}
+                          >
+                            <Check size={26} />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-h6 font-semibold text-vgray-900">
+                              {response.preview?.human_summary || "Submitted on-chain"}
+                            </p>
+                            <p className="mt-1 text-body-2 text-vgray-500">{response.message}</p>
+                          </div>
+                        </div>
+                        <div className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2">
+                          <Row k="tx hash" v={truncHash(txHash)} />
+                          <Row k="status" v={response.execution?.status || "submitted"} />
+                          <Row k="mcp tool" v={response.mcp?.tool || "—"} />
+                          <Row
+                            k="signer"
+                            v={
+                              sessionSigning
+                                ? "session key"
+                                : walletKind === "privy"
+                                  ? "privy"
+                                  : "freighter"
+                            }
+                          />
+                        </div>
+                        {response.data && <FactsGrid data={response.data} />}
+                      </>
+                    )}
                     <div className="mt-[22px] flex flex-wrap gap-2.5">
                       <button
                         type="button"

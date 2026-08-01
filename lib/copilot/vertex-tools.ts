@@ -616,9 +616,10 @@ export const ROUTER_TOOLS: ToolEntry[] = [
     decl: {
       name: "make_plan",
       description:
-        "A multi-step strategy that needs more than one call: \"deposit, keep my health factor " +
-        "above 2, then farm the yield\", rebalances, multi-venue goals. Order the steps as they " +
-        "must run. Use a single-purpose tool instead whenever one call is enough.",
+        "A multi-step strategy that needs more than one call: park/lend for yield THEN farm Blend, " +
+        "deposit then borrow, rebalances, multi-venue goals. Order steps as they must run. " +
+        "Amounts ONLY from explicit N ASSET (e.g. 20 XLM) — never use health-factor floors as amounts. " +
+        "Use a single-purpose tool instead whenever one call is enough.",
       parameters: params(
         {
           summary: str("One line describing the strategy."),
@@ -629,9 +630,14 @@ export const ROUTER_TOOLS: ToolEntry[] = [
               {
                 kind: str("read or write.", ["read", "write"]),
                 tool: str("For a read step: the read tool name from this same tool list."),
-                op: str("For a write step: the write tool name from this same tool list."),
+                op: str(
+                  "For a write step: lend, deposit_collateral, borrow, repay, deploy_to_blend, supply_to_blend, etc.",
+                ),
                 asset: str("Asset, if the step needs one.", WRITE_ASSETS),
-                amount: num("Amount, if the step needs one."),
+                amount: num(
+                  "Size only if user said N ASSET (e.g. 20 XLM). Never a health-factor floor like 1.4.",
+                ),
+                leverage: num("Leverage multiple if user said Nx (e.g. 2 for 2x farm). Not an amount."),
               },
               ["kind"],
             ),
@@ -649,13 +655,17 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         steps: raw.map((s) => {
           const step = (s ?? {}) as Record<string, unknown>;
           const isWrite = String(step.kind) === "write";
+          const lev = asAmount(step.leverage);
+          const args: Record<string, unknown> = {};
+          if (lev != null && lev > 1) args.leverage = lev;
           return {
             kind: isWrite ? ("write" as const) : ("read" as const),
             ...(step.tool != null ? { tool: mapPlanTool(String(step.tool)) } : {}),
             ...(step.op != null ? { op: mapPlanOp(String(step.op)) } : {}),
-            args: {},
+            args,
             asset: asStr(step.asset),
             amount: asAmount(step.amount),
+            leverage: lev,
           };
         }),
       };

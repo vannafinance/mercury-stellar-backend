@@ -81,6 +81,15 @@ export const copilotConfig = {
   get readsOnly(): boolean {
     return env("COPILOT_READS_ONLY", "false").toLowerCase() === "true";
   },
+
+  /**
+   * Max atomic legs MultiLegAgent will expand/execute per turn.
+   * Caps latency and blast radius on free-form plans.
+   */
+  get multiLegMaxLegs(): number {
+    const n = Math.floor(envFloat("COPILOT_MULTI_LEG_MAX", 8));
+    return n >= 1 && n <= 12 ? n : 8;
+  },
 };
 
 /**

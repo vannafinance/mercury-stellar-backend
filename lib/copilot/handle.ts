@@ -33,6 +33,20 @@ import {
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { runPageAgent } from "./page-agent";
+import {
+  actionFromExpanded,
+  affectsHealth,
+  expandPlanWrites,
+  extractTxHash,
+  humanizeLegError,
+  multiLegHeadline,
+  multiLegUiData,
+  remainingNextStep,
+  statusFromWriteResult,
+  toExecutionStep,
+  type MultiLegStep,
+} from "./multi-leg-agent";
+import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -459,9 +473,23 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     ) {
       routed = kw;
     }
+
+    // Phase 2: multi-goal plans — never let Vertex collapse park+farm into one write.
+    // Keyword plan has safer amounts (N ASSET only; HF floor never becomes size).
+    if (looksLikeMultiGoal(message) || kw.kind === "plan") {
+      const before = routed.kind;
+      routed = preferMultiGoalPlan(routed, kw, message);
+      if (before !== routed.kind || (routed.kind === "plan" && before === "plan")) {
+        if (routed.kind === "plan" && before !== "plan") {
+          console.warn(
+            `[copilot] multi-goal: preferred keyword plan over vertex ${before} (${routed.steps?.length ?? 0} steps)`,
+          );
+        }
+      }
+    }
   }
 
-  // Normalize plan → execute first write/read or multi-step
+  // Normalize plan → MultiLegAgent (expand → execute → HF stop → report)
   if (routed.kind === "plan") {
     return runPlan(routed, { userId, trader, smartAccount, request_id, message });
   }
@@ -1153,7 +1181,7 @@ async function runWrite(
           asset: userAsset,
           amount: borrow,
           leverage: action.leverage ?? 2,
-          label: `Borrow ${borrow} ${uiAsset} (step 2/2)`,
+          label: `Borrow ${borrow} ${uiAsset}`,
           step: 2,
           total_steps: 2,
         },
@@ -1239,7 +1267,7 @@ async function runWrite(
           asset: userAsset,
           amount: borrow,
           leverage: action.leverage,
-          label: `Borrow ${borrow} ${uiAsset} (step 2/3 · farm Blend)`,
+          label: `Borrow ${borrow} ${uiAsset}`,
           step: 2,
           total_steps: 3,
           follow_up: {
@@ -1247,7 +1275,7 @@ async function runWrite(
             asset: userAsset,
             amount: supplyAmt,
             leverage: null,
-            label: `Supply ${supplyAmt} ${uiAsset} to Blend (step 3/3)`,
+            label: `Supply ${supplyAmt} ${uiAsset} to Blend`,
             step: 3,
             total_steps: 3,
           },
@@ -1739,7 +1767,49 @@ async function runWrite(
   };
 }
 
-// ── Multi-step plans (complex strategy prompts) ───────────────────────────
+// ── Multi-step plans (MultiLegAgent: expand → execute → observe → report) ─
+
+/**
+ * Sample approx HF after a margin-affecting leg.
+ * Prefer health tool; on Budget/ExceededLimit use collateral÷debt fallback.
+ */
+async function sampleApproxHf(
+  userId: string,
+  smartAccount: string | null,
+  trader: string | null,
+): Promise<number | null> {
+  if (!smartAccount && !trader) return null;
+  const mcp = getMcpClient();
+  const args: Record<string, unknown> = {};
+  if (smartAccount) args.smart_account = smartAccount;
+  if (trader) args.trader = trader;
+  try {
+    const r = (await mcp.call("vanna_get_account_health", args, userId)) as Record<string, unknown>;
+    const direct = Number(r.health_factor ?? r.hf ?? r.avg_health_factor);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    const col = Number(r.collateral_usd ?? r.total_collateral_usd ?? 0);
+    const debt = Number(r.debt_usd ?? r.total_debt_usd ?? 0);
+    if (debt > 0.01 && col > 0) return col / debt;
+    if (col > 0 && debt <= 0.01) return 999;
+    return null;
+  } catch (e) {
+    if (!(e instanceof Error) || !/Budget|ExceededLimit|resource/i.test(e.message)) return null;
+    try {
+      const saArgs = smartAccount ? { smart_account: smartAccount } : {};
+      const [col, debt] = await Promise.all([
+        mcp.call("vanna_get_collateral", saArgs, userId).catch(() => null),
+        mcp.call("vanna_get_debt", saArgs, userId).catch(() => null),
+      ]);
+      const colUsd = col ? Number((col as any).total_value_usd ?? 0) : null;
+      const debtUsd = debt ? Number((debt as any).total_debt_usd ?? 0) : null;
+      if (colUsd != null && debtUsd != null && debtUsd > 0.01) return colUsd / debtUsd;
+      if (colUsd != null && colUsd > 0 && (debtUsd == null || debtUsd <= 0.01)) return 999;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+}
 
 async function runPlan(
   plan: Extract<RoutedIntent, { kind: "plan" }>,
@@ -1751,125 +1821,347 @@ async function runPlan(
     message: string;
   },
 ): Promise<ChatResponse> {
-  const stepsOut: Array<{ tool: string; label: string; status: string; message: string }> = [];
-  const facts: Record<string, unknown> = {};
-  let smartAccount = ctx.smartAccount;
   const mcp = getMcpClient();
+  let smartAccount = ctx.smartAccount;
+  const minHf = parseMinHealthFactor(ctx.message);
+  const facts: Record<string, unknown> = {
+    plan_summary: plan.summary,
+    min_hf: minHf,
+    multi_leg_agent: true,
+  };
+  const multiSteps: MultiLegStep[] = [];
+  let stepIndex = 0;
+  let finalHf: number | null = null;
+  let lastPartial: ChatResponse | null = null;
 
+  // ── Phase A: optional plan reads (not expanded) ─────────────────────────
   for (const step of plan.steps.slice(0, 8)) {
-    if (step.kind === "read" && step.tool) {
-      if (needsSmartAccount(step.tool) && !smartAccount && ctx.trader) {
-        smartAccount = await resolveSmartAccount(mcp, ctx.trader, ctx.userId);
-      }
-      const built = buildToolArgs(step.tool, step.args || {}, {
-        trader: ctx.trader,
-        smartAccount,
+    if (step.kind !== "read" || !step.tool) continue;
+    stepIndex += 1;
+    if (needsSmartAccount(step.tool) && !smartAccount && ctx.trader) {
+      smartAccount = await resolveSmartAccount(mcp, ctx.trader, ctx.userId);
+    }
+    const built = buildToolArgs(step.tool, step.args || {}, {
+      trader: ctx.trader,
+      smartAccount,
+    });
+    if (built.blocker) {
+      multiSteps.push({
+        index: stepIndex,
+        op: step.tool,
+        label: step.tool,
+        status: "skipped",
+        message: built.blocker,
       });
-      if (built.blocker) {
-        stepsOut.push({ tool: step.tool, label: step.tool, status: "skipped", message: built.blocker });
-        continue;
-      }
-      try {
-        const data = await mcp.call(step.tool, built.args, ctx.userId);
-        facts[step.tool] = data;
-        stepsOut.push({ tool: step.tool, label: step.tool, status: "ok", message: "read ok" });
-      } catch (e) {
-        stepsOut.push({
-          tool: step.tool,
-          label: step.tool,
-          status: "error",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      }
       continue;
     }
-
-    if (step.kind === "write" && (step.op || step.tool)) {
-      const op = step.op || mapToolToOp(step.tool!);
-      const lev =
-        step.args?.leverage != null && Number.isFinite(Number(step.args.leverage))
-          ? Number(step.args.leverage)
-          : null;
-      const action: CopilotAction = {
-        op,
-        asset: step.asset ?? (step.args?.symbol as string) ?? null,
-        amount: step.amount ?? (step.args?.amount != null ? Number(step.args.amount) : null),
-        leverage: lev,
-        multi_leg: op === "deploy_to_blend" || op === "deposit_and_borrow" || (lev != null && lev > 1),
-        requires_account: !["lend", "redeem", "create_account"].includes(op),
-        requires_amount: true,
-        smart_account: smartAccount,
-        trader: ctx.trader,
-        min_hf: parseMinHealthFactor(ctx.message),
-      };
-      const writeRes = await runWrite(action, { ...ctx, smartAccount });
-      // Multi-leg split returns next_step — hand control to client agent chain
-      if (writeRes.next_step) {
-        return {
-          ...writeRes,
-          message:
-            `${plan.summary || "Strategy plan"} — starting multi-step execution.\n\n` + writeRes.message,
-          execution: {
-            status: writeRes.kind === "executed" ? "in_progress" : writeRes.kind,
-            steps: [
-              ...stepsOut,
-              { tool: op, label: op, status: writeRes.kind, message: writeRes.message },
-            ],
-          },
-        };
-      }
-      if (writeRes.kind === "needs_auto_sign" || writeRes.kind === "needs_wallet_sign") {
-        return {
-          ...writeRes,
-          message:
-            `${plan.summary || "Strategy plan"} — paused: signature required before “${op}”.\n\n` +
-            writeRes.message,
-          execution: {
-            status: writeRes.kind,
-            steps: [
-              ...stepsOut,
-              { tool: op, label: op, status: writeRes.kind, message: writeRes.message },
-            ],
-          },
-        };
-      }
-      if (writeRes.kind === "executed") {
-        stepsOut.push({
-          tool: op,
-          label: op,
-          status: "signed_and_submitted",
-          message: writeRes.message,
-        });
-        if (writeRes.data) Object.assign(facts, writeRes.data);
-        continue;
-      }
-      if (writeRes.kind === "error" || writeRes.kind === "blocked" || writeRes.kind === "clarification") {
-        return {
-          ...writeRes,
-          message: `Plan stopped at “${op}”: ${writeRes.message}`,
-          execution: {
-            status: "stopped",
-            steps: [...stepsOut, { tool: op, label: op, status: writeRes.kind, message: writeRes.message }],
-          },
-        };
-      }
+    try {
+      const data = await mcp.call(step.tool, built.args, ctx.userId);
+      facts[step.tool] = data;
+      multiSteps.push({
+        index: stepIndex,
+        op: step.tool,
+        label: step.tool,
+        status: "ok",
+        message: "read ok",
+      });
+    } catch (e) {
+      multiSteps.push({
+        index: stepIndex,
+        op: step.tool,
+        label: step.tool,
+        status: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 
-  let prose = plan.summary || "Completed plan steps.";
-  try {
-    prose = await vertexExplain(ctx.message, "plan", { steps: stepsOut, facts });
-  } catch {
-    prose = `${plan.summary || "Plan"}\n` + stepsOut.map((s) => `• ${s.label}: ${s.status} — ${s.message}`).join("\n");
+  // ── Phase B: expand nested multi-leg writes into atomic legs ────────────
+  // e.g. deploy_to_blend@2x → deposit_collateral, borrow, supply_to_blend
+  // Server executes legs in order (no client hop for the happy auto-sign path).
+  const expanded = expandPlanWrites(plan.steps);
+  facts.expanded_legs = expanded.map((w) => ({
+    op: w.op,
+    asset: w.asset,
+    amount: w.amount,
+    leverage: w.leverage,
+    label: w.label,
+  }));
+  facts.smart_account = smartAccount;
+
+  const totalWriteLegs = expanded.length;
+  let writeCursor = 0;
+
+  for (const w of expanded) {
+    writeCursor += 1;
+    stepIndex += 1;
+
+    // Need amount for write ops
+    if (w.amount == null || !(w.amount > 0)) {
+      const msg =
+        w.op === "lend" || w.op === "supply"
+          ? `How much do you want to ${w.op === "lend" ? "lend / park" : "supply"}? e.g. “park 20 XLM for yield”.`
+          : `Amount missing for “${w.label}”. Include a size like “10 BLUSDC” or “20 XLM”.`;
+      multiSteps.push({
+        index: stepIndex,
+        op: w.op,
+        label: w.label,
+        asset: w.asset,
+        amount: w.amount,
+        leverage: w.leverage,
+        status: "clarification",
+        message: msg,
+      });
+      // Mark remaining as skipped
+      for (let j = writeCursor; j < totalWriteLegs; j++) {
+        const rest = expanded[j];
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          status: "skipped",
+          message: "Skipped — earlier leg needs amount",
+        });
+      }
+      return {
+        kind: "clarification",
+        message: multiLegHeadline(multiSteps),
+        data: multiLegUiData({
+          steps: multiSteps,
+          summary: plan.summary || "Multi-step strategy",
+          minHf,
+          finalHf,
+          smartAccount,
+        }),
+        intent: { template_id: plan.template_id, slots: { stopped_at: w.op } },
+        execution: { status: "stopped", steps: multiSteps.map(toExecutionStep) },
+        request_id: ctx.request_id,
+      };
+    }
+
+    if (!["lend", "redeem", "create_account"].includes(w.op) && !smartAccount && ctx.trader) {
+      smartAccount = await resolveSmartAccount(mcp, ctx.trader, ctx.userId);
+      facts.smart_account = smartAccount;
+    }
+
+    // Atomic legs only — expandPlanWrites already split levered farm / deposit+borrow.
+    // multi_leg:false prevents runWrite from re-splitting and returning next_step early.
+    const action = actionFromExpanded(w, {
+      smartAccount,
+      trader: ctx.trader,
+      minHf,
+    });
+    action.multi_leg = false;
+    action.requires_amount = true;
+    action.leverage = w.leverage ?? null;
+
+    const writeRes = await runWrite(action, {
+      ...ctx,
+      smartAccount,
+      // Avoid raw multi-goal text re-triggering negative-amount / max-yield heuristics
+      message: `multi-leg step ${writeCursor}/${totalWriteLegs}: ${w.label}`,
+    });
+    lastPartial = writeRes;
+
+    if (writeRes.data && typeof writeRes.data === "object") {
+      Object.assign(facts, { [`leg_${writeCursor}_${w.op}`]: writeRes.data });
+    }
+
+    const status = statusFromWriteResult(writeRes);
+    const txHash = extractTxHash(writeRes);
+    let hfAfter: number | null = null;
+
+    if (status === "ok" && affectsHealth(w.op) && smartAccount) {
+      hfAfter = await sampleApproxHf(ctx.userId, smartAccount, ctx.trader);
+      if (hfAfter != null) finalHf = hfAfter;
+    }
+
+    multiSteps.push({
+      index: stepIndex,
+      op: w.op,
+      label: w.label,
+      asset: w.asset,
+      amount: w.amount,
+      leverage: w.leverage,
+      status,
+      message: humanizeLegError((writeRes.message || "").slice(0, 400)),
+      tx_hash: txHash,
+      hf_after: hfAfter,
+    });
+
+    const planSummary = plan.summary || "Multi-step strategy";
+    const packUi = (extra?: Record<string, unknown>) =>
+      multiLegUiData({
+        steps: multiSteps,
+        summary: planSummary,
+        minHf,
+        finalHf,
+        smartAccount,
+        extra,
+      });
+
+    // ── Stop: needs signature ─────────────────────────────────────────────
+    if (status === "needs_sign") {
+      const remaining = expanded.slice(writeCursor);
+      for (const rest of remaining) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          status: "pending",
+          message: "Waiting for signature on the previous step",
+        });
+      }
+      return {
+        ...writeRes,
+        // Keep needs_* kind so client can auto-sign / wallet-sign
+        message: multiLegHeadline(multiSteps),
+        data: packUi({ remaining_legs: remaining }),
+        intent: {
+          template_id: plan.template_id,
+          slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs },
+        },
+        next_step:
+          writeRes.next_step || remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
+        execution: {
+          status: writeRes.kind,
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
+    // ── Stop: error / blocked / clarification ─────────────────────────────
+    if (status === "error" || status === "blocked" || status === "clarification") {
+      const remaining = expanded.slice(writeCursor);
+      for (const rest of remaining) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          status: "skipped",
+          message: "Skipped — earlier step did not complete",
+        });
+      }
+      // Use answer/clarification (not raw error) so the UI shows a strategy card,
+      // not a red wall of text. Details live in multi_leg_steps.
+      const kindOut =
+        status === "clarification"
+          ? ("clarification" as const)
+          : status === "blocked"
+            ? ("blocked" as const)
+            : ("answer" as const);
+      return {
+        kind: kindOut,
+        message: multiLegHeadline(multiSteps),
+        data: packUi({ stopped_reason: status }),
+        intent: {
+          template_id: plan.template_id,
+          slots: { stopped_at: w.op, reason: status },
+        },
+        clarify_options: writeRes.clarify_options,
+        pending_write: writeRes.pending_write,
+        execution: {
+          status: "stopped",
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
+    // ── Stop: HF floor breached after a successful margin leg ─────────────
+    if (
+      status === "ok" &&
+      minHf != null &&
+      hfAfter != null &&
+      hfAfter < minHf &&
+      writeCursor < totalWriteLegs
+    ) {
+      const remaining = expanded.slice(writeCursor);
+      multiSteps[multiSteps.length - 1] = {
+        ...multiSteps[multiSteps.length - 1],
+        status: "stopped_hf",
+        message:
+          `HF ≈ ${hfAfter.toFixed(2)} fell below floor ${minHf} after this leg. ` +
+          `Further borrows/supplies stopped. Earlier txs above are real.`,
+      };
+      for (const rest of remaining) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          status: "skipped",
+          message: `Skipped — HF floor ${minHf} breached`,
+        });
+      }
+      return {
+        kind: "executed",
+        message: multiLegHeadline(multiSteps),
+        data: multiLegUiData({
+          steps: multiSteps,
+          summary: plan.summary || "Multi-step strategy",
+          minHf,
+          finalHf: hfAfter,
+          smartAccount,
+          extra: { hf_stopped: true },
+        }),
+        intent: {
+          template_id: plan.template_id,
+          slots: { stopped_hf: true, hf_after: hfAfter, min_hf: minHf },
+        },
+        execution: {
+          status: "stopped_hf",
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
   }
 
-  const anySubmitted = stepsOut.some((s) => s.status === "signed_and_submitted");
+  // ── Phase C: final report ───────────────────────────────────────────────
+  if (finalHf == null && smartAccount && multiSteps.some((s) => s.status === "ok" && affectsHealth(s.op))) {
+    finalHf = await sampleApproxHf(ctx.userId, smartAccount, ctx.trader);
+  }
+
+  const anyOk = multiSteps.some((s) => s.status === "ok");
+  const allOk = multiSteps.length > 0 && multiSteps.every((s) => s.status === "ok");
+  const lastHash =
+    [...multiSteps].reverse().find((s) => s.tx_hash)?.tx_hash ??
+    (lastPartial ? extractTxHash(lastPartial) : null);
+
   return {
-    kind: anySubmitted ? "executed" : "answer",
-    message: prose,
-    data: factsForUi(facts),
-    intent: { template_id: plan.template_id },
-    execution: { status: "completed", steps: stepsOut },
+    kind: anyOk || allOk ? "executed" : "answer",
+    message: multiLegHeadline(multiSteps),
+    data: multiLegUiData({
+      steps: multiSteps,
+      summary: plan.summary || "Multi-step strategy",
+      minHf,
+      finalHf,
+      smartAccount,
+      extra: { all_legs_ok: allOk },
+    }),
+    intent: { template_id: plan.template_id, slots: { legs: multiSteps.length } },
+    execution: {
+      status: allOk ? "completed" : anyOk ? "partial" : "stopped",
+      tx_hash: lastHash,
+      steps: multiSteps.map(toExecutionStep),
+    },
     request_id: ctx.request_id,
   };
 }

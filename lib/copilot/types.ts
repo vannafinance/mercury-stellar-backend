@@ -253,7 +253,14 @@ export interface ChatResponse {
   execution?: {
     status: string;
     tx_hash?: string | null;
-    steps?: Array<{ tool: string; label: string; status: string; message: string }>;
+    steps?: Array<{
+      tool: string;
+      label: string;
+      status: string;
+      message: string;
+      tx_hash?: string | null;
+      hf_after?: number | null;
+    }>;
   } | null;
 }
 
@@ -306,6 +313,8 @@ export type RoutedIntent =
         args?: Record<string, unknown>;
         asset?: string | null;
         amount?: number | null;
+        /** Optional; usually carried in args.leverage for expandPlanWrites. */
+        leverage?: number | null;
       }>;
       template_id: string;
       summary?: string;
