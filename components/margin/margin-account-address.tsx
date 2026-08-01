@@ -19,7 +19,7 @@ interface MarginAccountAddressProps {
 export const MarginAccountAddress = ({
   address,
   className = "",
-  network = "testnet",
+  network = "public",
 }: MarginAccountAddressProps) => {
   if (!address) return null;
 

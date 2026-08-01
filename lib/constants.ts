@@ -11,12 +11,10 @@ export const tradeItems = [
   { title: "Spot", link: "/trade/spot" },
 ];
 
-// Stellar blockchain supported assets
+// Stellar mainnet supported assets — single Circle USDC (no BLUSDC/AqUSDC/SoUSDC variants)
 export const DropdownOptions = [
   "XLM",
-  "BLUSDC",
-  "AqUSDC",
-  "SoUSDC",
+  "USDC",
 ];
 
 // Legacy ETH options (deprecated)
@@ -36,14 +34,17 @@ export const LegacyDropdownOptions = [
 
 
 export const iconPaths: Record<string, string> = {
-  // Stellar assets - using USDC icon as placeholder for missing icons
+  // Stellar assets
   XLM: "/coins/xlmbg.png",
-  BLUSDC: "/icons/usdc-icon.svg",
-  AqUSDC: "/icons/usdc-icon.svg", // Aquarius USDC uses USDC icon
-  SoUSDC: "/icons/usdc-icon.svg", // Soroswap USDC uses USDC icon
   USDC: "/icons/usdc-icon.svg",
-  AquiresUSDC: "/icons/usdc-icon.svg", // Aquarius USDC uses USDC icon
-  SoroswapUSDC: "/icons/usdc-icon.svg", // Soroswap USDC uses USDC icon
+  // Legacy USDC-variant aliases → Circle USDC icon (display safety)
+  BLUSDC: "/icons/usdc-icon.svg",
+  AqUSDC: "/icons/usdc-icon.svg",
+  SoUSDC: "/icons/usdc-icon.svg",
+  AQUSDC: "/icons/usdc-icon.svg",
+  SOUSDC: "/icons/usdc-icon.svg",
+  AquiresUSDC: "/icons/usdc-icon.svg",
+  SoroswapUSDC: "/icons/usdc-icon.svg",
   // Legacy ETH assets (for backwards compatibility)
   USDT: "/icons/usdt-icon.svg",
   ETH: "/icons/eth-icon.png",

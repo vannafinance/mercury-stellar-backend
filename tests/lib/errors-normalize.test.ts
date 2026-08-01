@@ -61,12 +61,12 @@ describe('non-cancel errors still pass through their domain message', () => {
       normalizeDepositCollateralError(
         'trustline entry is missing for account GDPMCPUXAHICI4SPGSXG5YXQI2OECTD5A3OCEDKDL3YOOPZ475OSM6YH',
       ),
-    ).toMatch(/Faucet/i);
+    ).toMatch(/bridge|trustline|USDC/i);
   });
   it('transfer: risk-engine block stays informative', () => {
     expect(normalizeTransferCollateralError('is_withdraw_allowed failed', 'USDC')).toMatch(/Risk Engine/i);
   });
-  it('create-account: no funds stays the faucet hint', () => {
-    expect(normalizeCreateAccountError('account not found on network')).toMatch(/Faucet/i);
+  it('create-account: no funds stays the mainnet funding hint', () => {
+    expect(normalizeCreateAccountError('account not found on network')).toMatch(/mainnet|Fund|XLM/i);
   });
 });

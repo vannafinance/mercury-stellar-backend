@@ -60,17 +60,12 @@ async function swapLpAsset(
 
 /**
  * Contract-level token symbol for a Vanna deposit/borrow call feeding an LP
- * pool. Aquarius and Soroswap each trade their OWN USDC-variant SAC (AQUSDC /
- * SOUSDC) — completely distinct on-chain tokens from generic USDC/BLUSDC, not
- * just aliases. Depositing/borrowing plain "USDC" credits the Blend USDC
- * lending pool, leaving the margin account's real AQUSDC/SOUSDC balance at
- * zero — AddLiquidity then traps with "zero balance is not sufficient to
- * spend" on the pool's actual USDC SAC, even though the deposit/borrow itself
- * succeeded. XLM has no such variant, so it passes through unchanged.
+ * pool. Mainnet uses a single Circle USDC for Aquarius and Soroswap (no
+ * AQUSDC/SOUSDC variants). XLM passes through unchanged.
  */
-function poolTokenSymbol(asset: TokenAsset, poolProtocol: string, poolType: PoolType): string {
+function poolTokenSymbol(asset: TokenAsset, _poolProtocol: string, poolType: PoolType): string {
   if (poolType !== 'lp' || asset !== 'USDC') return asset;
-  return isAquarius(poolProtocol) ? 'AQUSDC' : 'SOUSDC';
+  return 'USDC';
 }
 
 /** Protocol-aware "remove liquidity" for {@link closePosition}. */

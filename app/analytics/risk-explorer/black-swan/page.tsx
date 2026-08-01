@@ -17,7 +17,7 @@ type Preset = "crypto_winter" | "defi_contagion" | "perfect_storm" | "custom";
 //   • xlmDrop      → XLM spot price drop (only volatile asset)
 //   • secondaryDrop → secondary stress on USDC pool collateral (e.g.
 //     concurrent issuer stress on Aquarius/Soroswap)
-//   • stablecoinDepeg → BLUSDC/AQUSDC/SOUSDC peg break magnitude (%)
+//   • stablecoinDepeg → Circle USDC peg break magnitude (%)
 //   • oracleFailure   → Reflector returns stale/wrong prices
 //   • protocolExploit → catastrophic event in Blend/Aquarius/Soroswap
 //   • aprSpike        → rate model spike (debt compounds)
@@ -197,7 +197,7 @@ export default function BlackSwanPage() {
         <span className="text-vgray-200">/</span>
         <span className="text-[11px] text-vgray-600 font-semibold">Black Swan Multi-Shock</span>
       </div>
-      <PageHeader title="Black Swan Multi-Shock" subtitle="Combine all Stellar risk vectors at once: XLM crash, BLUSDC/AQUSDC/SOUSDC depeg, Reflector oracle failure, Blend/Aquarius/Soroswap exploit, rate spike, and cascading liquidations against the Risk Engine HF≥1.1 threshold." />
+      <PageHeader title="Black Swan Multi-Shock" subtitle="Combine all Stellar risk vectors at once: XLM crash, Circle USDC depeg, Reflector oracle failure, Blend/Aquarius/Soroswap exploit, rate spike, and cascading liquidations against the Risk Engine HF≥1.1 threshold." />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Controls */}

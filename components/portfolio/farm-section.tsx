@@ -71,7 +71,7 @@ export const FarmSection = () => {
     (sym: string): number => {
       const s = sym.toUpperCase();
       if (s === "XLM") return prices.XLM ?? 0;
-      if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return prices.USDC ?? 1;
+      if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC" || s === "BLEND_USDC") return prices.USDC ?? 1;
       if (s === "USDT") return prices.USDT ?? 1;
       return 0;
     },
@@ -264,7 +264,7 @@ export const FarmSection = () => {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: "link",
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: "—" },
         ],

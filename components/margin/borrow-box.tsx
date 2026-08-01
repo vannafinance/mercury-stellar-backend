@@ -45,18 +45,26 @@ export const BorrowBox = ({
   onTokenChange,
 }: BorrowBoxProps) => {
   const { isDark } = useTheme();
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
 
   const getCollateralBalanceKey = (symbol: string) => {
-    if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
-    if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC"
+    ) return "USDC";
     return symbol;
   };
   const getBorrowedBalanceKey = (symbol: string) => {
-    if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
-    if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC"
+    ) return "USDC";
     return symbol;
   };
   const config = MODE_CONFIG[mode];

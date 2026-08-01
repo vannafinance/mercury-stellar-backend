@@ -66,8 +66,6 @@ describe('ContractService.getPoolStats — asset routing', () => {
     const pools: AssetType[] = [
       ASSET_TYPES.XLM,
       ASSET_TYPES.USDC,
-      ASSET_TYPES.AQUARIUS_USDC,
-      ASSET_TYPES.SOROSWAP_USDC,
     ];
 
     for (const pool of pools) {

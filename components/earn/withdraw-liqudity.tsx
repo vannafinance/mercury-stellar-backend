@@ -31,20 +31,24 @@ import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 
-const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
+const POOL_OPTIONS = ["XLM", "USDC"] as const;
 
 const toInternalAsset = (value: string) => {
-  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'AQUARIUS_USDC';
-  if (value === 'SoUSDC' || value === 'SoroswapUSDC' || value === 'SOROSWAP_USDC') return 'SOROSWAP_USDC';
-  if (value === 'BLUSDC' || value === 'USDC') return 'USDC';
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return u || "XLM";
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'AqUSDC';
-  if (value === 'SOROSWAP_USDC' || value === 'SoroswapUSDC') return 'SoUSDC';
-  if (value === 'USDC') return 'BLUSDC';
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  return "USDC";
 };
 
 /** Memoized withdraw-liquidity panel; selected pool is driven by the route/store. */
@@ -76,7 +80,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const withdraw = useWithdrawLiquidity();
   const { pools, refresh: refreshPools } = usePoolData();
   const { positions, refresh: refreshPositions } = useUserPositions();
-  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
 
   useMutationToast(withdraw, {
     loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool…`,
@@ -153,9 +157,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const unitPriceUsd =
     tokenPrices[
       normalizedAsset === 'XLM' ? 'XLM'
-        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
-        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
-        : 'BLUSDC'
+        : 'USDC'
     ] || (normalizedAsset === 'XLM' ? 0 : 1);
   const usdValue = assetsPreview * unitPriceUsd;
   const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

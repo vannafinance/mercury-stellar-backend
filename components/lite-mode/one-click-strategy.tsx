@@ -37,7 +37,7 @@ interface PoolOption {
   protocol: string;
   poolVersion: string;
   feeTier: string;
-  storeKey: "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
+  storeKey: "XLM" | "USDC";
   tags: string[];
 }
 
@@ -52,11 +52,11 @@ const POOL_OPTIONS: PoolOption[] = [
   },
   {
     id: "xlm-usdc-aquarius", type: "lp", tokens: ["XLM", "USDC"], protocol: "Aquarius", poolVersion: "AMM",
-    feeTier: "0.3%", storeKey: "AQUARIUS_USDC", tags: ["Vanna", "Aquarius"],
+    feeTier: "0.3%", storeKey: "USDC", tags: ["Vanna", "Aquarius"],
   },
   {
     id: "xlm-usdc-soroswap", type: "lp", tokens: ["XLM", "USDC"], protocol: "Soroswap", poolVersion: "DEX",
-    feeTier: "0.3%", storeKey: "SOROSWAP_USDC", tags: ["Vanna", "Soroswap"],
+    feeTier: "0.3%", storeKey: "USDC", tags: ["Vanna", "Soroswap"],
   },
 ];
 
@@ -104,7 +104,7 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
     return <Image src={icon} alt={symbol} width={size} height={size} className="rounded-full" />;
   }
   const palette: Record<string, string> = {
-    XLM: "#703AE6", USDC: "#2775CA", BLUSDC: "#10B981", AqUSDC: "#F59E0B", SoUSDC: "#FF007A",
+    XLM: "#703AE6", USDC: "#2775CA",
   };
   const bg = palette[symbol] || "#595959";
   return (
@@ -210,14 +210,14 @@ export const OneClickStrategy = () => {
       tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
     },
     "xlm-usdc-aquarius": {
-      supplyApr: parseFloat(earnPools.AQUARIUS_USDC.supplyAPY) || 0,
-      borrowApr: parseFloat(earnPools.AQUARIUS_USDC.borrowAPY) || 0,
-      tvl: formatTvl(earnPools.AQUARIUS_USDC.totalSupply, prices.USDC || 1),
+      supplyApr: parseFloat(earnPools.USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
     },
     "xlm-usdc-soroswap": {
-      supplyApr: parseFloat(earnPools.SOROSWAP_USDC.supplyAPY) || 0,
-      borrowApr: parseFloat(earnPools.SOROSWAP_USDC.borrowAPY) || 0,
-      tvl: formatTvl(earnPools.SOROSWAP_USDC.totalSupply, prices.USDC || 1),
+      supplyApr: parseFloat(earnPools.USDC.supplyAPY) || 0,
+      borrowApr: parseFloat(earnPools.USDC.borrowAPY) || 0,
+      tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
     },
   }), [earnPools, prices]);
 

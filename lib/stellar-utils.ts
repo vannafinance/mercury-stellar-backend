@@ -1,110 +1,78 @@
 import { requestAccess, getAddress, signTransaction } from '@/lib/wallet-adapter';
 import * as StellarSdk from '@stellar/stellar-sdk';
 
-export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
-export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
-export const HORIZON_URL = 'https://horizon-testnet.stellar.org';
+export const NETWORK_PASSPHRASE = 'Public Global Stellar Network ; September 2015';
+export const SOROBAN_RPC_URL = 'https://mainnet.sorobanrpc.com';
+export const HORIZON_URL = 'https://horizon.stellar.org';
 
-// Redeployed 2026-07-19 (third redeploy same day) — testnet genuinely has
-// THREE separate USDC test tokens (one per DEX's own pre-existing pool,
-// none interchangeable), reversing the prior "single canonical USDC"
-// collapse. Registry.get_protocol_config() now returns aquarius_usdc/
-// soroswap_usdc as their own real addresses alongside the Blend-side `usdc`.
-// Each USDC variant has its own genuine lending pool (3 pools total, plus
-// XLM = 4). See CONTRACT_COMMAND.md for the full command sequence.
+// Mainnet (Protocol_V1_Soroban): one Circle USDC shared by Blend / Aquarius /
+// Soroswap, two Vanna lending pools (XLM + USDC). External protocol addresses
+// from MAINNET_DEPLOYMENT_COMMANDS.md (verified July 2026).
 //
-// Live-verified this deploy (real testnet transactions): add liquidity to
-// all 4 lending pools -> create margin account -> deposit XLM + borrow
-// BLUSDC -> deposit XLM + borrow AqUSDC -> deposit XLM + borrow SoUSDC ->
-// Blend Supply (exec) -> Soroswap AddLiquidity + RemoveLiquidity (exec),
-// all succeeding with real fund movement and TrackingToken mint/burn.
-//
-// Aquarius AddLiquidity is registered and reachable but currently BLOCKED by
-// a real external-protocol limitation: the live Aquarius router's `deposit`
-// performs gauge/reward checkpoint accounting that reads a classic-asset
-// trustline balance for `user` — a G-account without that trustline gets a
-// graceful "trustline missing" error, but a smart-contract `user` has no
-// trustline concept at all, so the same check panics unhandled instead.
-// This is a protocol-side constraint on this specific gauge-enabled pool,
-// not a bug in our Controller — confirmed by testing every plausible
-// auth-entry shape (flat siblings, nested-under-router, nested-under-pool)
-// and by reproducing the identical trustline-missing failure with a second
-// real G-account. Aquarius RemoveLiquidity was never reached because of this.
+// Vanna contract IDs are left empty until mainnet deploy — fill from
+// deploy/mainnet .env after upload. External SAC / DEX / Blend addresses are live.
 export const CONTRACT_ADDRESSES = {
-  REGISTRY: 'CBBQQULN3XZDWDZG7D6VYD4UQKBGYH22DOFQEISKENCMZTYUPQ5LDXUO',
-  ORACLE: 'CAYHPE4U54GDKULPRHYJZNDMBAJDQ3UNQ446KFYMJ5HABBPORERZCRWB',
-  RATE_MODEL: 'CBMJ7DD4EUVZWFRPKRPGYK2NADCIGY5OFTPN7PJ7SAOIJI7IQTVHOJT6',
-  RISK_ENGINE: 'CCSCBA4WSUMVGA4CWC7QKBZXXEL4TO2YCCFPGHX5SJCYKHQLQUKAVUAY',
-  ACCOUNT_MANAGER: 'CAZLR6EHZXQNZJIFNP6F7SIJQC3P64MKHHQNZSSG5BNAEFCYTTGTDZXB',
-  TRACKING_TOKEN: 'CC4P2DC4J3DTKNL7CQB42S3JSZNIVVHFJEMHZWTSDR233CT6O2KK7ZK2',
-  CONTROLLER_FACADE: 'CB2SEZGDRPS4O56UYQAERQGHM7V6ZDMZZE5AYOGERRGWT5CUGRPVDWEH',
-  POOL_DEPLOYER: 'CCURFEEXKVGDAKXAGNG4NHEK2RRSOBOVUZDNHI32DFBAF2HWO57JKLIP',
+  // ── Vanna core (fill after mainnet deploy) ───────────────────────────────
+  REGISTRY: '',
+  ORACLE: '',
+  RATE_MODEL: '',
+  RISK_ENGINE: '',
+  ACCOUNT_MANAGER: '',
+  TRACKING_TOKEN: '',
+  CONTROLLER_FACADE: '',
+  POOL_DEPLOYER: '',
 
-  // Per-protocol Controllers — resolved by Registry.get_controller_for(target)
-  // Redeployed 2026-07-20/21: all three Controllers now have an admin-gated
-  // `upgrade()` fn, so future fixes won't need a fresh redeploy + re-register.
-  BLEND_CONTROLLER: 'CCZVHCPWY47GRWCE2TB7QPX7Y54BMQUYQTTAQ5LJGNJ3GLGO77VVQUS3',
-  SOROSWAP_CONTROLLER: 'CBSUSG7PK2QKYBEA2GPNNTV7QVGKV7DSDUFDB44FFRZYR4L4GB7BKD2M',
-  AQUARIUS_CONTROLLER: 'CBVRH2DWBMASALAMPZ5JUCKZHWO6SA2MD4MBXMO644XNCERWBMKHL2WT',
+  BLEND_CONTROLLER: '',
+  SOROSWAP_CONTROLLER: '',
+  AQUARIUS_CONTROLLER: '',
 
-  // vToken receipt contracts, one per lending pool
-  VXLM_TOKEN: 'CDGYZSMWOOKM55WEKEQ2HEMM7RS2KRA7MYI2DDYXWV5YHGUVUGQZSOCB',
-  VBLEND_USDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
-  VAQUARIUS_USDC_TOKEN: 'CAU5GVAGCWLOIAGFHQFEVBJLDHVS2KH4YPRQ34CIDG2T7RDAWWWODKRV',
-  VSOROSWAP_USDC_TOKEN: 'CAIMEE4EZ3FUMOBTVV7DKGI2TDACWXUWU6Z2RJ3NMP642TDKQHHOEIWG',
-  // Back-compat alias used by earn constants
-  VUSDC_TOKEN: 'CAZWBJQ6V2XASUILI36UVQJ5K2EQXIDVXJZNGZBEONPUVVURKDOP4RX5',
+  // vToken receipts — one per lending pool (XLM + USDC)
+  VXLM_TOKEN: '',
+  VUSDC_TOKEN: '',
 
-  // Lending Pools — XLM + per-USDC-variant
-  LENDING_PROTOCOL_XLM: 'CB3LCPDMPRTRXJHO7ZB3OORQDL2AV5FTJPPZOPHTZFOMUPMJY55RHYR3',
-  LENDING_PROTOCOL_BLEND_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
-  LENDING_PROTOCOL_AQUARIUS_USDC: 'CDKMMD63RUZNROFZZD64QZNEQ2FR5X62R4FE6E3USJ5VN5KY7QM6F2FD',
-  LENDING_PROTOCOL_SOROSWAP_USDC: 'CCZQUQQVZVNZMTG2P6MVAGA7V2DRTCII6IGVEQ5YUCYP7MXA7SMLHETP',
-  // Back-compat alias for call sites still keyed on a single "USDC" pool —
-  // resolves to Blend's own pool specifically, not a shared canonical one.
-  LENDING_PROTOCOL_USDC: 'CCHSDWJPFMEFNDRSZ55A5MLSTASYHZERLPJIJGTAD7MT24KHVLOU3BTI',
+  // Lending pools — XLM + single USDC
+  LENDING_PROTOCOL_XLM: '',
+  LENDING_PROTOCOL_USDC: '',
 
-  // Three genuinely distinct USDC test tokens — one per DEX's own real pool.
-  BLEND_USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
-  AQUARIUS_USDC_TOKEN: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
-  SOROSWAP_USDC_TOKEN: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
-  // Back-compat alias for old single-USDC call sites — resolves to Blend's own token.
-  USDC_TOKEN: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  // ── Tokens (official mainnet SACs) ───────────────────────────────────────
+  XLM_TOKEN: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
+  USDC_TOKEN: 'CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75',
 
-  // Blend Capital (testnet, external, unchanged)
-  BLEND_POOL: 'CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF',
-  BLEND_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
-  BLEND_USDC: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
+  // Blend Capital v2 (YieldBlox) — external
+  BLEND_POOL: 'CCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS',
+  BLEND_XLM: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
+  BLEND_USDC: 'CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75',
 
-  // Aquarius AMM (testnet, external). Registered and reachable — see the
-  // gauge/trustline limitation noted above for why AddLiquidity still fails.
-  // Only constant_product pools are supported (no concentrated).
-  AQUARIUS_ROUTER: 'CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD',
-  AQUARIUS_XLM_USDC_POOL: 'CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX',
-  AQUARIUS_USDC: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
-  AQUARIUS_POOL_INDEX_HEX: '9ac7a9cde23ac2ada11105eeaa42e43c2ea8332ca0aa8f41f58d7160274d718e',
-  AQUARIUS_XLM_USDT_POOL: 'CA6DAGOMK5D7GKBNWVCIEAYSTPJXLQUFWFKSZOMNEM6BVOTUBDCTIT5I',
+  // Aquarius AMM — external. constant_product XLM/USDC (not concentrated).
+  // Verified via amm-api find-path + on-chain get_reserves (Aug 2026).
+  // Docs: https://docs.aqua.network/developers/reference/addresses-and-networks
+  AQUARIUS_ROUTER: 'CBQDHNBFBZYE4MKPWBSJOPIYLW4SFSXAXUTSXJN76GNKYVYPCKWC6QUK',
+  AQUARIUS_XLM_USDC_POOL: 'CA6PUJLBYKZKUEKLZJMKBZLEKP2OTHANDEOWSFF44FTSYLKQPIICCJBE',
+  AQUARIUS_USDC: 'CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75',
+  AQUARIUS_POOL_INDEX_HEX: 'b2e02fcfca6c96f8ad5cbd84e7784a777b36d9c96a2459402c4f458462aab7f0',
+  AQUARIUS_XLM_USDT_POOL: '',
 
-  // Soroswap DEX (testnet, external). XLM/SoUSDC pair auto-created live by
-  // the router's own add_liquidity (Soroswap creates pairs on demand).
-  SOROSWAP_ROUTER: 'CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD',
-  SOROSWAP_XLM: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
-  SOROSWAP_USDC: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
-  SOROSWAP_XLM_USDC_POOL: 'CDVAIOYHCD4RUSLQNVFI7RIZBFT2JZMJWM4RTOLQZQXL4QAVXU5RFKDB',
+  // Soroswap DEX — external. Factory get_pair(XLM, Circle USDC) on mainnet.
+  // Docs: https://docs.soroswap.finance/smart-contracts/01-protocol-overview/03-technical-reference/deployed-addresses
+  SOROSWAP_FACTORY: 'CA4HEQTL2WPEUYKYKCDOHCDNIV4QHNJ7EL4J4NQ6VADP7SYHVRYZ7AW2',
+  SOROSWAP_ROUTER: 'CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH',
+  SOROSWAP_XLM: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
+  SOROSWAP_USDC: 'CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75',
+  SOROSWAP_XLM_USDC_POOL: 'CAM7DY53G63XA4AJRS24Z6VFYAFSSF76C3RZ45BE5YU3FQS5255OOABP',
+
+  // Reflector oracle feed (external; Vanna Oracle wrapper address is ORACLE above)
+  REFLECTOR: 'CAFJZQWSED6YAWZU3GWRTOCNPPCGBN32L7QV43XX5LZLFTK6JLN34DLN',
 } as const;
 
 export const ASSET_TYPES = {
   XLM: 'XLM',
-  // Back-compat alias for old single-USDC call sites — resolves to Blend's own pool/token.
   USDC: 'USDC',
-  BLEND_USDC: 'BLEND_USDC',
-  AQUARIUS_USDC: 'AQUARIUS_USDC',
-  SOROSWAP_USDC: 'SOROSWAP_USDC',
 } as const;
 
-// Aquarius USDC classic-side issuer (for trustline/Horizon balance checks)
+/** Circle USDC classic-side issuer (trustline / Horizon balance checks). */
 export const ASSET_ISSUERS = {
-  USDC_AQUARIUS: 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER',
+  USDC: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  USDC_AQUARIUS: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
 } as const;
 
 export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
@@ -113,10 +81,7 @@ export type AssetType = typeof ASSET_TYPES[keyof typeof ASSET_TYPES];
 export function lendingPoolAddress(assetType: AssetType): string {
   switch (assetType) {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM;
-    case ASSET_TYPES.USDC:
-    case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_BLEND_USDC;
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC;
-    case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC;
+    case ASSET_TYPES.USDC: return CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
 }
@@ -125,10 +90,7 @@ export function lendingPoolAddress(assetType: AssetType): string {
 export function vTokenAddress(assetType: AssetType): string {
   switch (assetType) {
     case ASSET_TYPES.XLM: return CONTRACT_ADDRESSES.VXLM_TOKEN;
-    case ASSET_TYPES.USDC:
-    case ASSET_TYPES.BLEND_USDC: return CONTRACT_ADDRESSES.VBLEND_USDC_TOKEN;
-    case ASSET_TYPES.AQUARIUS_USDC: return CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN;
-    case ASSET_TYPES.SOROSWAP_USDC: return CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN;
+    case ASSET_TYPES.USDC: return CONTRACT_ADDRESSES.VUSDC_TOKEN;
     default: throw new Error(`Unsupported asset type: ${assetType}`);
   }
 }
@@ -753,73 +715,46 @@ export class ContractService {
   }
 
   /**
-   * Read a wallet's spendable balances for every supported asset.
+   * Read a wallet's spendable balances for supported mainnet assets.
    *
-   * Native XLM comes from Horizon; the USDC variants are read directly from
-   * their Soroban SAC contracts rather than Horizon trustlines — collateral
-   * transfers move SAC tokens, so showing the contract balance avoids
-   * false-positive "available" amounts from a trustline that isn't the real
-   * source. `USDC` and `BLEND_USDC` intentionally mirror the same Blend balance.
+   * Native XLM comes from Horizon; Circle USDC is read from its Soroban SAC
+   * (collateral transfers move SAC tokens, so contract balance is authoritative).
    *
    * @param address - Wallet G-address to query.
-   * @returns Per-asset balances fixed to 7 decimals. On a transient
-   *          Horizon/RPC failure it warns (not errors) and returns all zeros,
-   *          since the next refresh typically recovers.
+   * @returns Per-asset balances fixed to 7 decimals. On transient Horizon/RPC
+   *          failure warns and returns zeros (next refresh usually recovers).
    */
   static async getAllTokenBalances(address: string): Promise<{
     XLM: string;
     USDC: string;
-    BLEND_USDC: string;
-    AQUARIUS_USDC: string;
-    SOROSWAP_USDC: string;
   }> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
       const account = await server.loadAccount(address);
-      
+
       let xlmBalance = '0';
-      
+
       for (const balance of account.balances) {
         if (balance.asset_type === 'native') {
           xlmBalance = parseFloat(balance.balance).toFixed(7);
         }
       }
 
-      // Read protocol-specific token balances directly from Soroban SAC contracts
-      // to avoid issuer/trustline source mismatches in UI.
-      const [
-        blendUsdcContractBalance,
-        aquariusUsdcContractBalance,
-        soroswapUsdcBalance,
-      ] = await Promise.all([
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.BLEND_USDC, address),
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.AQUARIUS_USDC, address),
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.SOROSWAP_USDC, address),
-      ]);
+      const usdcRaw = await ContractService.getSorobanTokenWalletBalance(
+        CONTRACT_ADDRESSES.USDC_TOKEN,
+        address,
+      );
+      const usdc = (parseFloat(usdcRaw) || 0).toFixed(7);
 
-      // Collateral transfers use Soroban token contracts, so show contract balances
-      // directly to avoid false-positive "available" amounts from Horizon trustlines.
-      const blendUsdc = (parseFloat(blendUsdcContractBalance) || 0).toFixed(7);
-      const aquariusUsdc = (parseFloat(aquariusUsdcContractBalance) || 0).toFixed(7);
-      
       return {
         XLM: xlmBalance,
-        USDC: blendUsdc,
-        BLEND_USDC: blendUsdc,
-        AQUARIUS_USDC: aquariusUsdc,
-        SOROSWAP_USDC: soroswapUsdcBalance,
+        USDC: usdc,
       };
     } catch (error: any) {
-      // Transient Horizon/RPC failure (testnet rate-limit or brief outage). Handled
-      // with a zero fallback — warn, not error, so the dev overlay doesn't flag a
-      // recoverable network blip the next ledger tick / refresh will fix.
       console.warn('Error fetching token balances (using zero fallback):', error?.message ?? error);
       return {
         XLM: '0',
         USDC: '0',
-        BLEND_USDC: '0',
-        AQUARIUS_USDC: '0',
-        SOROSWAP_USDC: '0',
       };
     }
   }

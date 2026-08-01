@@ -9,7 +9,7 @@ export const LEVERAGE_RANGES = [
 ] as const;
 
 // Volatile-asset drops apply to XLM (real market risk, not a
-// peg). Stable drops apply to BLUSDC/AQUSDC/SOUSDC — depegs are tighter.
+// peg). Stable drops apply to USDC — depegs are tighter.
 const VOL_DROPS = [-5, -10, -15, -20, -25, -30, -40, -50, -60] as const;
 const STABLE_DROPS = [-1, -2, -3, -5, -8, -10, -13, -15, -20] as const;
 
@@ -26,22 +26,10 @@ export const HEATMAP_ASSETS = [
     matchFn: (w: WalletPosition) => w.primaryAsset === "XLM",
   },
   {
-    symbol: "BLUSDC",
-    label: "Blend USDC",
+    symbol: "USDC",
+    label: "USDC",
     drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "BLUSDC",
-  },
-  {
-    symbol: "AQUSDC",
-    label: "Aquarius USDC",
-    drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "AQUSDC",
-  },
-  {
-    symbol: "SOUSDC",
-    label: "Soroswap USDC",
-    drops: [...STABLE_DROPS],
-    matchFn: (w: WalletPosition) => w.primaryAsset === "SOUSDC",
+    matchFn: (w: WalletPosition) => w.primaryAsset === "USDC",
   },
 ] as const;
 

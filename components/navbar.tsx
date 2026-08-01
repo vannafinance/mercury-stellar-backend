@@ -12,7 +12,6 @@ import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useWallet } from "@/hooks/use-wallet";
 import { useAppModeStore } from "@/store/app-mode-store";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
-import { FaucetPopup } from "./faucet/faucet-popup";
 import { ConnectWalletModal } from "./wallet/connect-wallet-modal";
 
 interface Navbar {
@@ -55,7 +54,7 @@ function isNavItemActive(
 /**
  * Top application navigation bar. Renders the logo, the Pro/Lite mode toggle,
  * grouped nav items (with a hover/focus Trade dropdown), and the right-hand
- * cluster: testnet faucet (wallet-gated), wallet connect / account menu, theme
+ * cluster: wallet connect / account menu, theme
  * toggle, and the responsive mobile hamburger panel.
  *
  * Mode-aware: in Lite mode the pro-only routes (Trade, Farm, Earn) are filtered
@@ -117,7 +116,6 @@ export const Navbar = (props: Navbar) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isWalletDropdownOpen, setIsWalletDropdownOpen] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
-  const [isFaucetOpen, setIsFaucetOpen] = useState(false);
   const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const walletMenuRef = useRef<HTMLDivElement>(null);
   const walletMenuMobileRef = useRef<HTMLDivElement>(null);
@@ -715,29 +713,6 @@ export const Navbar = (props: Navbar) => {
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.5, delay: 0.3, ease: "easeOut" }}
           >
-            {/* Faucet — testnet-only helper that mints XLM + Blend/Aquarius/
-                Soroswap USDC in one popup. Hidden until a wallet is connected
-                because every faucet path needs a destination address. */}
-            {address && (
-              <motion.button
-                type="button"
-                onClick={() => setIsFaucetOpen(true)}
-                whileTap={{ scale: 0.97 }}
-                aria-label="Open testnet faucet"
-                className={`flex items-center gap-2 py-[10px] px-3 rounded-xl font-semibold text-[13px] cursor-pointer transition-colors ${
-                  isDark
-                    ? "bg-[#1C1C1C] border border-[#2A2A2A] text-white hover:border-[#3A3A3A]"
-                    : "bg-[#F7F7F7] border border-[#DFDFDF] text-[#1F1F1F] hover:border-[#BFBFBF]"
-                }`}
-              >
-                <svg width="16" height="16" viewBox="0 0 512.001 512.001" fill="currentColor" aria-hidden="true">
-                  <path d="M433.416,396.756c-3.024,0-5.907,1.279-7.936,3.522c-6.359,7.026-38.082,43.216-38.082,65.704 c0,25.376,20.643,46.019,46.018,46.019s46.019-20.644,46.019-46.019c0-22.489-31.724-58.678-38.083-65.704 C439.323,398.034,436.439,396.756,433.416,396.756z M433.416,490.592c-13.57,0-24.61-11.04-24.61-24.611 c0-7.878,11.678-26.176,24.61-42.073c12.933,15.896,24.611,34.194,24.611,42.073 C458.027,479.552,446.987,490.592,433.416,490.592z" />
-                  <path d="M482.721,289.004h-12.398v-75.462c0-20.657-16.806-37.463-37.463-37.463h-93.837v-7.849 c0-5.912-4.793-10.704-10.704-10.704h-42.815V77.603h60.388c13.919,0,25.243-11.325,25.243-25.243V33.271 c0-13.919-11.324-25.243-25.243-25.243h-67.549C271.095,2.826,262.383,0,253.391,0s-17.704,2.826-24.951,8.028h-67.549 c-13.919,0-25.243,11.325-25.243,25.243v19.088c0,13.919,11.324,25.243,25.243,25.243h60.388v79.922h-42.815 c-5.911,0-10.704,4.792-10.704,10.704v7.849H93.503V101.15c0-5.912-4.793-10.704-10.704-10.704H29.28 c-5.911,0-10.704,4.792-10.704,10.704v224.781c0,5.912,4.793,10.704,10.704,10.704H82.8c5.911,0,10.704-4.792,10.704-10.704 v-74.927h74.257v8.207c0,5.912,4.793,10.704,10.704,10.704h149.854c5.911,0,10.704-4.792,10.704-10.704v-8.206h56.374v37.999 h-14.361c-5.911,0-10.704,4.792-10.704,10.704v53.519c0,5.912,4.793,10.704,10.704,10.704h101.686 c5.911,0,10.704-4.792,10.704-10.704v-53.519C493.425,293.796,488.631,289.004,482.721,289.004z M72.096,315.228H39.984V111.855 h32.112V315.228z M167.76,229.597H93.503v-32.112h74.257V229.597z M160.892,56.194c-2.115,0.001-3.835-1.719-3.835-3.834V33.271 c0-2.115,1.72-3.835,3.835-3.835h71.27c2.607,0,5.125-0.952,7.081-2.676c3.911-3.451,8.937-5.352,14.148-5.352 c5.212,0,10.236,1.9,14.148,5.352c1.956,1.724,4.474,2.676,7.081,2.676h71.27c2.115,0,3.835,1.72,3.835,3.835v19.088 c0,2.115-1.72,3.835-3.835,3.835h-71.27c-2.607,0-5.125,0.952-7.081,2.676c-3.911,3.451-8.937,5.352-14.148,5.352 c-5.212,0-10.236-1.9-14.148-5.352c-1.956-1.724-4.474-2.676-7.081-2.676H160.892z M264.095,84.263v73.261h-21.408V84.263 c3.47,0.897,7.063,1.368,10.704,1.368S260.625,85.16,264.095,84.263z M317.614,248.508H189.168v-24.084h31.755 c5.911,0,10.704-4.792,10.704-10.704c0-5.912-4.793-10.704-10.704-10.704h-31.755v-24.084h128.446V248.508z M339.022,229.597 v-32.112h93.837c8.853,0,16.056,7.203,16.056,16.056v75.462h-32.112v-48.702c0-5.912-4.793-10.704-10.704-10.704H339.022z M472.017,342.523h-80.279v-32.112h80.279V342.523z" />
-                  <path d="M268.734,224.245h2.476c5.911,0,10.704-4.792,10.704-10.704s-4.793-10.704-10.704-10.704h-2.476 c-5.911,0-10.704,4.792-10.704,10.704S262.822,224.245,268.734,224.245z" />
-                </svg>
-                Faucet
-              </motion.button>
-            )}
             {/* Wallet / Login */}
             {!address ? (
               <div className="hidden xl:block">
@@ -945,7 +920,7 @@ export const Navbar = (props: Navbar) => {
                               </button>
                             </div>
                             <a
-                              href={`https://stellar.expert/explorer/testnet/contract/${marginAccountAddress}`}
+                              href={`https://stellar.expert/explorer/public/contract/${marginAccountAddress}`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className={`text-[10px] font-semibold transition-colors ${
@@ -1137,24 +1112,6 @@ export const Navbar = (props: Navbar) => {
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.5, delay: 0.3, ease: "easeOut" }}
           >
-            {address && (
-              <button
-                type="button"
-                onClick={() => setIsFaucetOpen(true)}
-                aria-label="Open testnet faucet"
-                className={`flex items-center justify-center w-8 h-8 rounded-lg cursor-pointer ${
-                  isDark
-                    ? "bg-[#1C1C1C] border border-[#2A2A2A] text-white"
-                    : "bg-[#F7F7F7] border border-[#DFDFDF] text-[#1F1F1F]"
-                }`}
-              >
-                <svg width="14" height="14" viewBox="0 0 512.001 512.001" fill="currentColor" aria-hidden="true">
-                  <path d="M433.416,396.756c-3.024,0-5.907,1.279-7.936,3.522c-6.359,7.026-38.082,43.216-38.082,65.704 c0,25.376,20.643,46.019,46.018,46.019s46.019-20.644,46.019-46.019c0-22.489-31.724-58.678-38.083-65.704 C439.323,398.034,436.439,396.756,433.416,396.756z M433.416,490.592c-13.57,0-24.61-11.04-24.61-24.611 c0-7.878,11.678-26.176,24.61-42.073c12.933,15.896,24.611,34.194,24.611,42.073 C458.027,479.552,446.987,490.592,433.416,490.592z" />
-                  <path d="M482.721,289.004h-12.398v-75.462c0-20.657-16.806-37.463-37.463-37.463h-93.837v-7.849 c0-5.912-4.793-10.704-10.704-10.704h-42.815V77.603h60.388c13.919,0,25.243-11.325,25.243-25.243V33.271 c0-13.919-11.324-25.243-25.243-25.243h-67.549C271.095,2.826,262.383,0,253.391,0s-17.704,2.826-24.951,8.028h-67.549 c-13.919,0-25.243,11.325-25.243,25.243v19.088c0,13.919,11.324,25.243,25.243,25.243h60.388v79.922h-42.815 c-5.911,0-10.704,4.792-10.704,10.704v7.849H93.503V101.15c0-5.912-4.793-10.704-10.704-10.704H29.28 c-5.911,0-10.704,4.792-10.704,10.704v224.781c0,5.912,4.793,10.704,10.704,10.704H82.8c5.911,0,10.704-4.792,10.704-10.704 v-74.927h74.257v8.207c0,5.912,4.793,10.704,10.704,10.704h149.854c5.911,0,10.704-4.792,10.704-10.704v-8.206h56.374v37.999 h-14.361c-5.911,0-10.704,4.792-10.704,10.704v53.519c0,5.912,4.793,10.704,10.704,10.704h101.686 c5.911,0,10.704-4.792,10.704-10.704v-53.519C493.425,293.796,488.631,289.004,482.721,289.004z M72.096,315.228H39.984V111.855 h32.112V315.228z M167.76,229.597H93.503v-32.112h74.257V229.597z M160.892,56.194c-2.115,0.001-3.835-1.719-3.835-3.834V33.271 c0-2.115,1.72-3.835,3.835-3.835h71.27c2.607,0,5.125-0.952,7.081-2.676c3.911-3.451,8.937-5.352,14.148-5.352 c5.212,0,10.236,1.9,14.148,5.352c1.956,1.724,4.474,2.676,7.081,2.676h71.27c2.115,0,3.835,1.72,3.835,3.835v19.088 c0,2.115-1.72,3.835-3.835,3.835h-71.27c-2.607,0-5.125,0.952-7.081,2.676c-3.911,3.451-8.937,5.352-14.148,5.352 c-5.212,0-10.236-1.9-14.148-5.352c-1.956-1.724-4.474-2.676-7.081-2.676H160.892z M264.095,84.263v73.261h-21.408V84.263 c3.47,0.897,7.063,1.368,10.704,1.368S260.625,85.16,264.095,84.263z M317.614,248.508H189.168v-24.084h31.755 c5.911,0,10.704-4.792,10.704-10.704c0-5.912-4.793-10.704-10.704-10.704h-31.755v-24.084h128.446V248.508z M339.022,229.597 v-32.112h93.837c8.853,0,16.056,7.203,16.056,16.056v75.462h-32.112v-48.702c0-5.912-4.793-10.704-10.704-10.704H339.022z M472.017,342.523h-80.279v-32.112h80.279V342.523z" />
-                  <path d="M268.734,224.245h2.476c5.911,0,10.704-4.792,10.704-10.704s-4.793-10.704-10.704-10.704h-2.476 c-5.911,0-10.704,4.792-10.704,10.704S262.822,224.245,268.734,224.245z" />
-                </svg>
-              </button>
-            )}
             {!address ? (
               <Button
                 size="small"
@@ -1340,7 +1297,7 @@ export const Navbar = (props: Navbar) => {
                               </button>
                             </div>
                             <a
-                              href={`https://stellar.expert/explorer/testnet/contract/${marginAccountAddress}`}
+                              href={`https://stellar.expert/explorer/public/contract/${marginAccountAddress}`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className={`text-[10px] font-semibold transition-colors ${
@@ -1702,12 +1659,6 @@ export const Navbar = (props: Navbar) => {
           </>
         )}
       </AnimatePresence>
-
-      <FaucetPopup
-        isOpen={isFaucetOpen}
-        onClose={() => setIsFaucetOpen(false)}
-        walletAddress={address || null}
-      />
 
       <ConnectWalletModal
         isOpen={isConnectModalOpen}

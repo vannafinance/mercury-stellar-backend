@@ -12,12 +12,12 @@
  *     all `*_wad` params/returns use this scale.
  *   - SAC tokens on this deployment are 7-decimal (stroops), so a stroop→WAD
  *     conversion multiplies by 1e11 (see `getMarginAccountTokenBalanceWad`).
- *   - Symbol normalization (`normalizeContractTokenSymbol`) maps the several UI
- *     aliases (USDC/BLUSDC, AQUSDC, SOUSDC) onto the exact symbols the contract
- *     expects per call site — these differ between deposit and repay.
+ *   - Symbol normalization (`normalizeContractTokenSymbol`) maps UI aliases
+ *     (USDC/BLUSDC/AQUSDC/SOUSDC) onto the canonical `USDC` symbol used on
+ *     mainnet; tracking symbols (BLEND_*, AQ_*, SS_*) pass through unchanged.
  *
  * Discovery favors permanent on-chain storage over RPC events because Soroban
- * testnet only retains events for ~7 days.
+ * event retention is limited.
  */
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@/lib/wallet-adapter';
@@ -26,6 +26,7 @@ import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractServic
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
+import { fallbackUsdcAddress, fallbackXlmAddress, getProtocolConfig, getUsdcAddress, getXlmAddress } from './protocol-config';
 
 // Types
 /**
@@ -73,17 +74,27 @@ export class MarginAccountService {
 
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
-    if (normalized === 'BLUSDC' || normalized === 'BLEND_USDC' || normalized === 'USDC') {
-      // Use canonical USDC symbol for Blend USDC on this deployment.
-      // The contract routes USDC and BLUSDC to the same token address,
-      // but USDC avoids the BLUSDC symbol trap observed in deposit_collateral_tokens.
+    // Tracking receipts first — BLEND_USDC is a Blend position receipt symbol,
+    // not the borrowable USDC asset (must not collapse to USDC).
+    if (
+      normalized?.startsWith('BLEND_') ||
+      normalized?.startsWith('AQ_') ||
+      normalized?.startsWith('SS_')
+    ) {
+      return normalized;
+    }
+    // Mainnet: single Circle USDC — collapse former testnet per-DEX aliases.
+    if (
+      normalized === 'BLUSDC' ||
+      normalized === 'USDC' ||
+      normalized === 'AQUSDC' ||
+      normalized === 'AQUIRESUSDC' ||
+      normalized === 'AQUARIUS_USDC' ||
+      normalized === 'SOUSDC' ||
+      normalized === 'SOROSWAPUSDC' ||
+      normalized === 'SOROSWAP_USDC'
+    ) {
       return 'USDC';
-    }
-    if (normalized === 'AQUSDC' || normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') {
-      return 'AQUSDC';
-    }
-    if (normalized === 'SOUSDC' || normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') {
-      return 'SOUSDC';
     }
     return normalized;
   }
@@ -100,12 +111,8 @@ export class MarginAccountService {
     let tokenContract: string | undefined;
     let displaySymbol = contractTokenSymbol;
     if (contractTokenSymbol === "USDC") {
-      tokenContract = CONTRACT_ADDRESSES.BLEND_USDC;
-      displaySymbol = "BLUSDC";
-    } else if (contractTokenSymbol === "AQUSDC") {
-      tokenContract = CONTRACT_ADDRESSES.AQUARIUS_USDC;
-    } else if (contractTokenSymbol === "SOUSDC") {
-      tokenContract = CONTRACT_ADDRESSES.SOROSWAP_USDC;
+      tokenContract = fallbackUsdcAddress();
+      displaySymbol = "USDC";
     }
 
     if (!tokenContract) return { ok: true };
@@ -117,18 +124,10 @@ export class MarginAccountService {
     const available = parseFloat(balanceStr) || 0;
     if (available + 1e-7 < depositAmount) {
       if (available <= 1e-7) {
-        const faucetHint =
-          displaySymbol === "BLUSDC"
-            ? "Blend USDC"
-            : displaySymbol === "AQUSDC"
-              ? "Aquarius USDC"
-              : displaySymbol === "SOUSDC"
-                ? "Soroswap USDC"
-                : displaySymbol;
         return {
           ok: false,
           error:
-            `You have no ${displaySymbol} in your wallet. Use the Faucet to mint ${faucetHint} (establishes the required trustline), then retry.`,
+            `You have no ${displaySymbol} in your wallet. Fund your wallet with XLM/USDC, then retry.`,
         };
       }
       return {
@@ -146,10 +145,8 @@ export class MarginAccountService {
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     type PoolEntry = { assetType: AssetType; displayName: string };
     const poolMap: Record<string, PoolEntry> = {
-      XLM:    { assetType: ASSET_TYPES.XLM,           displayName: 'XLM' },
-      USDC:   { assetType: ASSET_TYPES.USDC,          displayName: 'USDC' },
-      AQUSDC: { assetType: ASSET_TYPES.AQUARIUS_USDC, displayName: 'Aquarius USDC' },
-      SOUSDC: { assetType: ASSET_TYPES.SOROSWAP_USDC, displayName: 'Soroswap USDC' },
+      XLM:  { assetType: ASSET_TYPES.XLM,  displayName: 'XLM' },
+      USDC: { assetType: ASSET_TYPES.USDC, displayName: 'USDC' },
     };
 
     const entry = poolMap[contractBorrowSymbol];
@@ -262,25 +259,7 @@ export class MarginAccountService {
   private static addUsdcAliases(
     balances: Record<string, { amount: string; usdValue: string }>
   ): Record<string, { amount: string; usdValue: string }> {
-    const usdc = balances.USDC;
-    const blusdc = balances.BLUSDC;
-
-    // Some deployments store/retrieve Blend USDC under USDC, while UI reads BLUSDC.
-    // Mirror the non-zero side so both keys stay consistent for rendering + transfer inputs.
-    if (usdc && blusdc) {
-      const usdcAmount = parseFloat(usdc.amount || '0');
-      const blusdcAmount = parseFloat(blusdc.amount || '0');
-      if (usdcAmount > blusdcAmount) {
-        balances.BLUSDC = { ...usdc };
-      } else if (blusdcAmount > usdcAmount) {
-        balances.USDC = { ...blusdc };
-      }
-    } else if (usdc && !blusdc) {
-      balances.BLUSDC = { ...usdc };
-    } else if (blusdc && !usdc) {
-      balances.USDC = { ...blusdc };
-    }
-
+    // Mainnet uses a single USDC key — no BLUSDC/AQUSDC/SOUSDC mirroring.
     return balances;
   }
 
@@ -1137,10 +1116,8 @@ export class MarginAccountService {
   }
 
   /**
-   * Verify that the Registry has a contract address set for a token, by calling
-   * the per-token getter (e.g. `get_usdc_contract_address`, `get_xlm_contract_address`).
-   * A missing address is the most common cause of "deposit/borrow fails for no
-   * obvious reason" after a fresh Registry deploy.
+   * Verify that the Registry has a contract address set for a token via
+   * get_protocol_config (xlm / usdc fields).
    *
    * @param tokenSymbol - Token symbol or UI alias; normalized before lookup.
    * @returns `{ configured: true }` when the address is set, otherwise
@@ -1150,63 +1127,29 @@ export class MarginAccountService {
   static async isTokenConfigured(tokenSymbol: string): Promise<{ configured: boolean; error?: string }> {
     const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
     try {
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const userAddress = await getAddress();
-      if (userAddress.error) {
-        return { configured: false, error: 'Failed to get user address' };
-      }
-
-      const sourceAccount = await server.getAccount(userAddress.address);
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      // Build function name based on token.
-      let functionName: string;
+      const cfg = await getProtocolConfig();
       if (contractTokenSymbol === 'XLM') {
-        functionName = 'get_xlm_contract_address';
-      } else if (contractTokenSymbol === 'BLUSDC' || contractTokenSymbol === 'USDC') {
-        functionName = 'get_usdc_contract_address';
-      } else if (contractTokenSymbol === 'AQUSDC') {
-        functionName = 'get_aquarius_usdc_addr';
-      } else if (contractTokenSymbol === 'SOUSDC') {
-        functionName = 'get_soroswap_usdc_addr';
-      } else {
-        return { configured: false, error: `Unknown token: ${contractTokenSymbol}` };
+        if (cfg.xlm) return { configured: true };
+        return { configured: false, error: 'XLM is not configured in Registry protocol config' };
       }
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call(functionName))
-        .setTimeout(30)
-        .build();
-
-      const simulationResult = await server.simulateTransaction(transaction);
-
-      if ('error' in simulationResult && simulationResult.error) {
-        console.warn(`⚠️ ${contractTokenSymbol} not configured in Registry:`, simulationResult.error);
-        return {
-          configured: false,
-          error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.`
-        };
+      if (contractTokenSymbol === 'USDC') {
+        if (cfg.usdc) return { configured: true };
+        return { configured: false, error: 'USDC is not configured in Registry protocol config' };
       }
-
-      if ('result' in simulationResult && simulationResult.result) {
+      // Tracking symbols don't need a Registry token address.
+      if (
+        contractTokenSymbol.startsWith('BLEND_') ||
+        contractTokenSymbol.startsWith('AQ_') ||
+        contractTokenSymbol.startsWith('SS_')
+      ) {
         return { configured: true };
       }
-
-      return { configured: false, error: 'Unable to verify token configuration' };
+      return { configured: false, error: `Unknown token: ${contractTokenSymbol}` };
     } catch (error: any) {
-      console.error(`❌ Error checking token configuration:`, error);
-      if (error.message?.includes('UnreachableCodeReached') || 
-          error.message?.includes('Failed to fetch')) {
-        return { 
-          configured: false, 
-          error: `${contractTokenSymbol} token not configured in Registry. Admin must set the token contract address.` 
-        };
-      }
-      return { configured: false, error: error.message };
+      return {
+        configured: false,
+        error: error?.message || `Failed to check ${contractTokenSymbol} configuration`,
+      };
     }
   }
 
@@ -1721,8 +1664,8 @@ export class MarginAccountService {
   }
 
   /**
-   * One-time admin bootstrap: sets the max asset cap and enables XLM, BLUSDC,
-   * AQUSDC and SOUSDC as collateral on the AccountManager.
+   * One-time admin bootstrap: sets the max asset cap and enables XLM and USDC
+   * as collateral on the AccountManager.
    *
    * Each step is a separate signed transaction (Soroban allows one host-fn op
    * per tx), executed sequentially with a fresh sequence number and a 1s gap to
@@ -1748,7 +1691,7 @@ export class MarginAccountService {
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
       const transactionHashes: string[] = [];
       
-      // Define setup operations
+      // Define setup operations — mainnet bootstrap allowlist is XLM + USDC only.
       const setupOperations = [
         {
           name: 'Set max asset cap',
@@ -1765,24 +1708,10 @@ export class MarginAccountService {
           )
         },
         {
-          name: 'Allow BLUSDC as collateral',
+          name: 'Allow USDC as collateral',
           call: contract.call(
             'set_iscollateral_allowed',
-            StellarSdk.nativeToScVal('BLUSDC', { type: 'symbol' })
-          )
-        },
-        {
-          name: 'Allow AQUSDC as collateral',
-          call: contract.call(
-            'set_iscollateral_allowed',
-            StellarSdk.nativeToScVal('AQUSDC', { type: 'symbol' })
-          )
-        },
-        {
-          name: 'Allow SOUSDC as collateral',
-          call: contract.call(
-            'set_iscollateral_allowed',
-            StellarSdk.nativeToScVal('SOUSDC', { type: 'symbol' })
+            StellarSdk.nativeToScVal('USDC', { type: 'symbol' })
           )
         }
       ];
@@ -2105,10 +2034,8 @@ export class MarginAccountService {
     try {
       const norm = this.normalizeContractTokenSymbol(tokenSymbol);
       const tokenIdBySymbol: Record<string, string> = {
-        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
-        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
-        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+        XLM: fallbackXlmAddress(),
+        USDC: fallbackUsdcAddress(),
       };
       const tokenId = tokenIdBySymbol[norm];
       if (!tokenId) return null;
@@ -2298,10 +2225,8 @@ export class MarginAccountService {
       // Detect the gap; if present, submit a separate single-op top-up transfer
       // first (Freighter rejects multi-op transactions), then do the repay.
       const REPAY_TOKEN_CONTRACT: Record<string, string> = {
-        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
-        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
-        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+        USDC: fallbackUsdcAddress(),
+        XLM: fallbackXlmAddress(),
       };
       const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
       let interestTopUp = BigInt(0);
@@ -2633,12 +2558,12 @@ export class MarginAccountService {
 
   /**
    * One-signature "open position" for Blend single-asset pools: deposit
-   * collateral, optionally borrow, and deploy the combined amount into Blend —
+   * collateral, optionally borrow, and Supply the combined amount into Blend —
    * all inside one Soroban op (`deposit_borrow_and_deploy_blend`).
    *
-   * Because Soroban permits only one host-function op per tx, the three steps
-   * must live behind a single contract wrapper; this also reads the Blend pool
-   * address from the Registry and pre-builds the external-protocol call bytes.
+   * Typed args (no ExternalProtocolCall bytes):
+   *   blend_pool, tokens: Vec<Address>, amounts_wad: Vec<u128>, min_out
+   *
    * Uses 120x BASE_FEE. Human amounts are converted to WAD via an intermediate
    * 1e6 floor × 1e12 (i.e. 6-dp precision scaled to 18) to avoid float drift.
    *
@@ -2684,7 +2609,7 @@ export class MarginAccountService {
         return {
           success: false,
           error:
-            'Blend pool is not configured in the Registry. Ask the admin to run set_blend_pool_address before deploying.',
+            'Blend pool is not configured. Set Registry blend_pool (or CONTRACT_ADDRESSES.BLEND_POOL) before deploying.',
         };
       }
 
@@ -2699,22 +2624,14 @@ export class MarginAccountService {
       const totalDeployAmountWad =
         BigInt(Math.floor(totalDeployAmount * 1_000_000)) * BigInt(1_000_000_000_000);
 
-      const callBytes = BlendService.buildExternalProtocolCallBytes(
-        blendPoolAddress,
-        'Deposit',
-        contractTokenSymbol,
-        totalDeployAmountWad,
-        marginAccountAddress
-      );
+      const tokenAddress =
+        contractTokenSymbol === 'XLM' ? await getXlmAddress() : await getUsdcAddress();
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const sourceAccount = await server.getAccount(userAddress.address);
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
-      // Single Soroban op calling the contract-side wrapper that does
-      // deposit_collateral_tokens + borrow + execute(blend) internally.
-      // Soroban allows only one host-function op per Stellar tx, so the
-      // collapsed flow has to live behind a single contract function.
+      // Single Soroban op: deposit + borrow + exec(Supply) into Blend.
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 120).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -2726,7 +2643,12 @@ export class MarginAccountService {
             StellarSdk.nativeToScVal(depositAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(borrowAmountWadBigInt.toString(), { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
+            StellarSdk.nativeToScVal(blendPoolAddress, { type: 'address' }),
+            StellarSdk.nativeToScVal([tokenAddress], { type: ['address'] }),
+            StellarSdk.xdr.ScVal.scvVec([
+              StellarSdk.nativeToScVal(totalDeployAmountWad, { type: 'u128' }),
+            ]),
+            StellarSdk.nativeToScVal(BigInt(0), { type: 'u128' }),
           )
         )
         .setTimeout(90)

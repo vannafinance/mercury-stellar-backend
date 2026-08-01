@@ -15,9 +15,11 @@ interface HistoryModalProps {
 /** Canonicalise a Mercury event's asset symbol to the app's display symbol. */
 const canonical = (t: string): string => {
   const u = (t || "").toUpperCase();
-  if (u === "BLEND_USDC" || u === "USDC") return "BLUSDC";
-  if (u === "AQUARIUS_USDC") return "AQUSDC";
-  if (u === "SOROSWAP_USDC") return "SOUSDC";
+  if (
+    u === "BLEND_USDC" || u === "USDC" || u === "BLUSDC" ||
+    u === "AQUARIUS_USDC" || u === "AQUSDC" ||
+    u === "SOROSWAP_USDC" || u === "SOUSDC"
+  ) return "USDC";
   return u;
 };
 
@@ -126,7 +128,7 @@ const HistoryModalContent = ({ onClose }: { onClose: () => void }) => {
                       </div>
                       {item.hash ? (
                         <a
-                          href={`https://stellar.expert/explorer/testnet/tx/${item.hash}`}
+                          href={`https://stellar.expert/explorer/public/tx/${item.hash}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-[12px] font-medium text-[#703AE6] hover:underline shrink-0"

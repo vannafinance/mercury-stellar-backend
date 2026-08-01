@@ -1,15 +1,16 @@
 // USD price oracle reads with a short, ledger-aligned cache. Resolves token
-// aliases (BLUSDC→USDC, BLEND_XLM→XLM, …) to a base symbol, then reads
-// `get_price_latest` off the on-chain oracle via simulation. A per-symbol cache
-// (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe the many concurrent
-// reads a single page issues; static fallbacks cover the unreachable-oracle case.
+// aliases (legacy BLUSDC/AQUSDC/SOUSDC → USDC, BLEND_XLM→XLM, …) to a base
+// symbol, then reads `get_price_latest` off the on-chain oracle via simulation.
+// A per-symbol cache (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe
+// the many concurrent reads a single page issues; static fallbacks cover the
+// unreachable-oracle case.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
 
 // Tokens without their own oracle entry are priced off a base symbol that
-// represents the same underlying USD value (Blend / Aquarius / Soroswap USDC
-// all peg to USDC, and any future Blend XLM tracking token tracks XLM).
+// represents the same underlying USD value. Mainnet: single Circle USDC;
+// legacy testnet variant aliases still resolve here for safety.
 const PRICE_ALIASES: Record<string, string> = {
   BLUSDC: 'USDC',
   BLEND_USDC: 'USDC',
@@ -17,6 +18,8 @@ const PRICE_ALIASES: Record<string, string> = {
   AQUARIUS_USDC: 'USDC',
   SOUSDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
+  AqUSDC: 'USDC',
+  SoUSDC: 'USDC',
   BLXLM: 'XLM',
   BLEND_XLM: 'XLM',
 };

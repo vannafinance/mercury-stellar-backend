@@ -17,9 +17,13 @@ const GRADIENT = "linear-gradient(135deg, #FC5457 10%, #703AE6 80%)";
 
 /** Canonicalise a UI token symbol to the key used by the price hook. */
 const priceKey = (sym: string): string => {
-  if (sym === "BLUSDC" || sym === "BLEND_USDC" || sym === "USDC") return "BLUSDC";
-  if (sym === "AqUSDC" || sym === "AQUARIUS_USDC") return "AQUSDC";
-  if (sym === "SoUSDC" || sym === "SOROSWAP_USDC") return "SOUSDC";
+  const s = sym.toUpperCase();
+  if (
+    s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+    s === "AQUSDC" || s === "AQUARIUS_USDC" ||
+    s === "SOUSDC" || s === "SOROSWAP_USDC" ||
+    sym === "AqUSDC" || sym === "SoUSDC"
+  ) return "USDC";
   return sym;
 };
 
@@ -58,12 +62,12 @@ type BorrowMode = "single" | "dual";
  */
 export const DualBorrow = ({ depositUsd, leverage, setLeverage, onChange }: DualBorrowProps) => {
   const { isDark } = useTheme();
-  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const prices = useTokenPrices(["XLM", "USDC"]);
   const bgColor = isDark ? "#1A1A1A" : "#ffffff";
 
   const [mode, setMode] = useState<BorrowMode>("single");
   // Default to two distinct assets so dual mode is valid out of the box.
-  const [tokens, setTokens] = useState<[string, string]>(["BLUSDC", "XLM"]);
+  const [tokens, setTokens] = useState<[string, string]>(["USDC", "XLM"]);
   const [amounts, setAmounts] = useState<[string, string]>(["", ""]);
 
   const slotCount = mode === "dual" ? 2 : 1;

@@ -1,7 +1,7 @@
 // Aquarius (AMM) integration: single-pool (XLM<->USDC) stats (live from the
 // Aquarius AMM API with an on-chain fallback), LP positions/events, swap
 // quotes, and add/remove-liquidity + chained swaps from both the margin
-// account (AccountManager.execute, amounts in WAD 1e18) and the user's
+// account (AccountManager.exec, amounts in WAD 1e18) and the user's
 // wallet. On-chain reserves/LP shares are 7-decimal (SCALAR_7). Pool reserve
 // order is sorted by contract address, so reserves are re-mapped onto each
 // pool config's token order before display.
@@ -13,15 +13,24 @@ import {
   HORIZON_URL,
   NETWORK_PASSPHRASE,
   SOROBAN_RPC_URL,
-  ASSET_ISSUERS,
 } from './stellar-utils';
 import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
+import {
+  fallbackUsdcAddress,
+  fallbackXlmAddress,
+  getAquariusRouter,
+  getProtocolConfig,
+  getUsdcAddress,
+  getXlmAddress,
+} from './protocol-config';
+import { execViaAccountManager } from './exec-helpers';
 
 // ── Aquarius Swap constants ─────────────────────────────────────────────────
-// XLM Soroban token contract (wrapped native XLM on testnet)
-const XLM_CONTRACT = 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC';
-// Pool token order (sorted): TokenA = Aquarius USDC, TokenB = XLM
-const POOL_SORTED_TOKENS = [CONTRACT_ADDRESSES.AQUARIUS_USDC, XLM_CONTRACT];
+// Native XLM SAC + canonical Circle USDC (mainnet single USDC).
+const XLM_CONTRACT = fallbackXlmAddress();
+const USDC_CONTRACT = fallbackUsdcAddress();
+// Pool token order (sorted by address on-chain); display order is XLM/USDC.
+const POOL_SORTED_TOKENS = [XLM_CONTRACT, USDC_CONTRACT].sort();
 
 /** Tokens the Spot-swap feature supports on Aquarius. */
 export type AquariusSwapSymbol = 'XLM' | 'USDC';
@@ -29,8 +38,15 @@ export type AquariusSwapSymbol = 'XLM' | 'USDC';
 /** On-chain contract address for each swappable symbol. */
 const AQUARIUS_SWAP_TOKEN_CONTRACT: Record<AquariusSwapSymbol, string> = {
   XLM: XLM_CONTRACT,
-  USDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+  USDC: USDC_CONTRACT,
 };
+
+/** Circle USDC classic-asset issuer (trustline checks for wallet swaps). */
+const CIRCLE_USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+export const ASSET_ISSUERS = {
+  USDC: CIRCLE_USDC_ISSUER,
+  USDC_AQUARIUS: CIRCLE_USDC_ISSUER, // back-compat alias
+} as const;
 
 /**
  * Every real, on-chain-confirmed swap partner per token — confirmed live via
@@ -72,7 +88,15 @@ function buildSwapsChain(
   sortedTokens: [string, string],
   poolIndexBytes?: Buffer,
 ): StellarSdk.xdr.ScVal {
-  const idxBytes = poolIndexBytes ?? Buffer.from(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX, 'hex');
+  const configuredIndex = CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX;
+  const idxBytes =
+    poolIndexBytes ??
+    (configuredIndex.length === 64 ? Buffer.from(configuredIndex, 'hex') : undefined);
+  if (!idxBytes || idxBytes.length !== 32) {
+    throw new Error(
+      'Aquarius pool index is not configured. Set AQUARIUS_POOL_INDEX_HEX after discovering a constant_product XLM/USDC pool.',
+    );
+  }
 
   // A single tuple: (Vec<Address>, BytesN<32>, Address)
   const hop = StellarSdk.xdr.ScVal.scvVec([
@@ -141,19 +165,14 @@ export const AQUARIUS_POOLS: AquariusPoolConfig[] = [
   {
     id: 'aquarius-xlm-usdc',
     tokens: ['XLM', 'USDC'],
-    onChainReserveSymbols: ['USDC', 'XLM'],
-    feeFraction: 30,
+    // Mainnet: XLM SAC (CAS3…) sorts before Circle USDC (CCW6…).
+    onChainReserveSymbols: ['XLM', 'USDC'],
+    // Live mainnet pool fee is 0.10% (10 bps) — see gecko-terminal pair metadata.
+    feeFraction: 10,
     displayName: 'XLM / USDC',
     poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
   },
-  {
-    id: 'aquarius-xlm-usdt',
-    tokens: ['XLM', 'USDT'],
-    feeFraction: 30,
-    displayName: 'XLM / USDT',
-    poolAddress: CONTRACT_ADDRESSES.AQUARIUS_XLM_USDT_POOL,
-  },
-] as const;
+].filter((p) => Boolean(p.poolAddress)) as AquariusPoolConfig[];
 
 /** Outcome of an Aquarius tx: success plus the hash, or an error message. */
 export interface AquariusTransactionResult {
@@ -163,13 +182,16 @@ export interface AquariusTransactionResult {
 }
 
 const WAD = 1e18;
-const LP_SHARE_SCALE = 1e7;
-const AQUARIUS_AMM_API_BASE = 'https://amm-api-testnet.aqua.network';
+/** Official mainnet backend — https://docs.aqua.network/developers/reference/backend-api */
+const AQUARIUS_AMM_API_BASE = 'https://amm-api.aqua.network/api/external/v2';
 const AQUARIUS_API_CACHE_TTL_MS = 60_000;
-/** Bump when reserve→config mapping changes so stale cache is not reused. */
-const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 3;
+/** Bump when reserve→config mapping / API shape changes so stale cache is not reused. */
+const AQUARIUS_API_POOL_STATS_CACHE_VERSION = 4;
 
 interface AquariusApiPoolsResponse {
+  /** v2 list shape */
+  results?: AquariusApiPoolItem[];
+  /** legacy / alternate shape */
   items?: AquariusApiPoolItem[];
 }
 
@@ -187,19 +209,14 @@ interface AquariusApiPoolItem {
   volume_usd?: string;     // aggregate USD volume
   liquidity_usd?: string;  // pool TVL in USD
   pool_type?: string;      // "constant_product" | "stable" | "concentrated"
+  total_volume?: number | string;
+  tx_count?: number;
 }
 
 const toWad = (amount: number): bigint => {
   if (!Number.isFinite(amount) || amount <= 0) return BigInt(0);
   return BigInt(Math.floor(amount * WAD));
 };
-
-const toLpShareUnits = (amount: number): bigint => {
-  if (!Number.isFinite(amount) || amount <= 0) return BigInt(0);
-  return BigInt(Math.floor(amount * LP_SHARE_SCALE));
-};
-
-const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
 const SCALAR_7 = 1e7;
 const fromStroopScalar = (raw: string | undefined): string => {
@@ -281,30 +298,31 @@ export class AquariusService {
       return AquariusService.apiPoolStatsCache.byAddress;
     }
 
-    const response = await fetch(`${AQUARIUS_AMM_API_BASE}/pools/?limit=200`);
+    const configured = AQUARIUS_POOLS.map((p) => p.poolAddress).filter(Boolean);
+    // Prefer address__in for our known pools (docs: GET /pools/?address__in=…).
+    // Fall back to a short paginated scan if nothing is configured yet.
+    const url =
+      configured.length > 0
+        ? `${AQUARIUS_AMM_API_BASE}/pools/?address__in=${configured.join(',')}`
+        : `${AQUARIUS_AMM_API_BASE}/pools/?page_size=50`;
+
+    const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Aquarius API error: ${response.status}`);
     }
 
     const json = (await response.json()) as AquariusApiPoolsResponse;
+    const rows = json.results ?? json.items ?? [];
     const byAddress: Record<string, AquariusPoolStats> = {};
 
-    // The Aquarius API returns reserves as 7-decimal scaled raw strings
-    // (e.g. "1313891897900000" = 131,389,189.79 / 1e7 = 131,389,189.79 USDC),
-    // ordered alphabetically by token contract address — NOT in the order
-    // that AQUARIUS_POOLS configs list their tokens. Without re-ordering,
-    // the reserveA/reserveB labels would be flipped (XLM value shown under
-    // USDC and vice versa). We map by symbol via `tokens_str` so the
-    // returned reserveA always matches AQUARIUS_POOLS config tokens[0].
-    for (const pool of json.items ?? []) {
+    // List endpoint often omits reserves/total_share/apy — we still capture fee
+    // / pool_type; getAquariusPoolStats merges with on-chain reserves next.
+    for (const pool of rows) {
       const address = (pool.address ?? '').trim().toUpperCase();
       if (!address) continue;
 
       const cfg = AQUARIUS_POOLS.find((p) => p.poolAddress.toUpperCase() === address);
 
-      // Always map via on-chain reserve index order when we know it (XLM/USDC).
-      // Do not trust tokens_str index alignment — API often lists symbols in
-      // display order while reserves[] stays sorted by contract address.
       let mapped = mapAquariusReservesToConfig(
         cfg,
         pool.reserves?.[0],
@@ -312,7 +330,7 @@ export class AquariusService {
       );
 
       const totalShare = fromStroopScalar(pool.total_share);
-      const feeRaw = Math.round((parseFloat(pool.fee ?? '0.003') || 0.003) * 10_000);
+      const feeRaw = Math.round((parseFloat(pool.fee ?? '0.001') || 0.001) * 10_000);
 
       byAddress[address] = {
         reserveA: mapped.reserveA,
@@ -478,7 +496,7 @@ export class AquariusService {
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
 
     if (text.includes('trustline entry is missing for account')) {
-      return 'USDC trustline is missing in your wallet. Please add Aquarius USDC trustline, then retry swap.';
+      return 'USDC trustline is missing in your wallet. Please add a Circle USDC trustline, then retry swap.';
     }
 
     if (text.includes('Error(Contract, #13)')) {
@@ -495,79 +513,21 @@ export class AquariusService {
   /** Registry-configured USDC contract address, or null if unset/unreadable. */
   static async getRegistryUsdcAddress(): Promise<string | null> {
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const tx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_usdc_contract_address'))
-        .setTimeout(30)
-        .build();
-
-      const sim = await server.simulateTransaction(tx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-        return null;
-      }
-
-      const address = StellarSdk.scValToNative(sim.result.retval);
-      return address as string;
+      const cfg = await getProtocolConfig();
+      return cfg.usdc || null;
     } catch {
       return null;
     }
   }
 
   /**
-   * Aquarius router address from Registry (checks `has_…` first, then `get_…`),
-   * or null if not configured/unreadable. Prefer {@link getEffectiveRouterAddress},
-   * which falls back to the hardcoded address.
+   * Aquarius router address from Registry.get_protocol_config(), or null if
+   * unset. Prefer {@link getEffectiveRouterAddress}, which falls back to
+   * CONTRACT_ADDRESSES.AQUARIUS_ROUTER.
    */
   static async getAquariusRouterAddressFromRegistry(): Promise<string | null> {
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('has_aquarius_router_address'))
-        .setTimeout(30)
-        .build();
-
-      const hasSim = await server.simulateTransaction(hasTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) {
-        console.warn('[AquariusService] has_aquarius_router_address simulation failed');
-        return null;
-      }
-
-      const hasRouter = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!hasRouter) {
-        console.warn('[AquariusService] Aquarius router is not configured in Registry');
-        return null;
-      }
-
-      const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_aquarius_router_address'))
-        .setTimeout(30)
-        .build();
-
-      const getSim = await server.simulateTransaction(getTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) {
-        console.warn('[AquariusService] get_aquarius_router_address simulation failed');
-        return null;
-      }
-
-      const address = StellarSdk.scValToNative(getSim.result.retval);
-      return address as string;
+      return await getAquariusRouter();
     } catch (error: any) {
       console.error('[AquariusService] getAquariusRouterAddressFromRegistry error:', error);
       return null;
@@ -577,68 +537,20 @@ export class AquariusService {
   /** Whether the Registry has an Aquarius pool index configured. False on error. */
   static async hasAquariusPoolIndex(): Promise<boolean> {
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const tx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_aquarius_pool_index'))
-        .setTimeout(30)
-        .build();
-
-      const sim = await server.simulateTransaction(tx);
-      return StellarSdk.rpc.Api.isSimulationSuccess(sim) && !!sim.result?.retval;
-    } catch (error) {
+      const cfg = await getProtocolConfig();
+      return !!cfg.aquarius_pool_index;
+    } catch {
       return false;
     }
   }
 
   /**
-   * Tracking-token contract address from Registry (the contract that stores LP
-   * share balances for margin accounts), or null if unset/unreadable.
+   * Tracking-token contract address from get_protocol_config, or null if unset.
    */
   static async getTrackingTokenAddressFromRegistry(): Promise<string | null> {
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('has_tracking_token_contract_addr'))
-        .setTimeout(30)
-        .build();
-
-      const hasSim = await server.simulateTransaction(hasTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) {
-        return null;
-      }
-
-      const hasTracking = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!hasTracking) return null;
-
-      const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_tracking_token_contract_addr'))
-        .setTimeout(30)
-        .build();
-
-      const getSim = await server.simulateTransaction(getTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) {
-        return null;
-      }
-
-      const address = StellarSdk.scValToNative(getSim.result.retval);
-      return address as string;
+      const cfg = await getProtocolConfig();
+      return cfg.tracking_token || CONTRACT_ADDRESSES.TRACKING_TOKEN || null;
     } catch (error) {
       console.error('[AquariusService] getTrackingTokenAddressFromRegistry error:', error);
       return null;
@@ -664,6 +576,16 @@ export class AquariusService {
     const registryRouter = await AquariusService.getAquariusRouterAddressFromRegistry();
     if (registryRouter) return registryRouter;
     return CONTRACT_ADDRESSES.AQUARIUS_ROUTER;
+  }
+
+  /** Resolve on-chain SAC for an Aquarius swap/LP symbol. */
+  private static async resolveTokenAddress(symbol: string): Promise<string> {
+    const sym = symbol.toUpperCase();
+    if (sym === 'XLM') return getXlmAddress();
+    if (sym === 'USDC' || sym === 'AQUSDC' || sym === 'AQUARIUS_USDC') return getUsdcAddress();
+    const mapped = AQUARIUS_SWAP_TOKEN_CONTRACT[sym as AquariusSwapSymbol];
+    if (mapped) return mapped;
+    throw new Error(`Unsupported Aquarius token: ${symbol}`);
   }
 
   /**
@@ -736,14 +658,24 @@ export class AquariusService {
    * Returns null if both paths fail.
    */
   static async getAquariusPoolStats(poolAddress: string): Promise<AquariusPoolStats | null> {
+    if (!poolAddress?.trim()) return null;
+
+    let fromApi: AquariusPoolStats | undefined;
     try {
-      // Prefer Aquarius AMM API for live pool values shown on aqua.network.
+      // Prefer Aquarius AMM API for fee / APY metadata shown on aqua.network.
       const apiPools = await AquariusService.getAquariusApiPoolStatsByAddress();
-      const fromApi = apiPools[poolAddress.trim().toUpperCase()];
-      if (fromApi) return fromApi;
+      fromApi = apiPools[poolAddress.trim().toUpperCase()];
     } catch (error) {
       console.warn('[AquariusService] AMM API pool stats fetch failed, falling back to contract read:', error);
     }
+
+    // v2 list usually omits reserves/shares — fill from chain when missing.
+    const needsOnChain =
+      !fromApi ||
+      !(parseFloat(fromApi.reserveA) > 0 || parseFloat(fromApi.reserveB) > 0) ||
+      !(parseFloat(fromApi.totalShares) > 0);
+
+    if (!needsOnChain && fromApi) return fromApi;
 
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -786,9 +718,9 @@ export class AquariusService {
         }
       }
 
-      let feeRaw = 30;
+      let feeRaw = fromApi?.feeRaw ?? cfg?.feeFraction ?? 10;
       if (StellarSdk.rpc.Api.isSimulationSuccess(feeSim) && feeSim.result?.retval) {
-        feeRaw = Number(StellarSdk.scValToNative(feeSim.result.retval)) || 30;
+        feeRaw = Number(StellarSdk.scValToNative(feeSim.result.retval)) || feeRaw;
       }
 
       let totalShares = '0';
@@ -803,10 +735,15 @@ export class AquariusService {
         totalShares,
         feeFraction: `${(feeRaw / 100).toFixed(2)}%`,
         feeRaw,
+        apy: fromApi?.apy,
+        totalApy: fromApi?.totalApy,
+        volumeUsd: fromApi?.volumeUsd,
+        liquidityUsd: fromApi?.liquidityUsd,
+        poolType: fromApi?.poolType ?? 'constant_product',
       };
     } catch (error) {
       console.error('[AquariusService] getAquariusPoolStats error:', error);
-      return null;
+      return fromApi ?? null;
     }
   }
 
@@ -942,80 +879,9 @@ export class AquariusService {
   }
 
   /**
-   * Build the XDR `ExternalProtocolCall` payload bytes for AccountManager.execute().
-   * Serialized as an alphabetically-keyed ScVal::Map; `type_action` is encoded as
-   * `Vec([Symbol(action)])` (the Soroban unit-variant encoding — a bare symbol
-   * fails to decode). `amountsOutWad` is WAD (1e18) for AddLiquidity/Swap but
-   * 7-decimal LP share units for RemoveLiquidity (see {@link removeLiquidity}).
-   */
-  static buildExternalProtocolCallBytes(
-    routerAddress: string,
-    action: AquariusAction,
-    tokensOut: string[],
-    amountsOutWad: bigint[],
-    marginAccountAddress: string,
-    feeFraction: number,
-    isTokenPair: boolean
-  ): Buffer {
-    const amountOut = StellarSdk.xdr.ScVal.scvVec(
-      amountsOutWad.map((amt) => StellarSdk.nativeToScVal(amt, { type: 'u256' }))
-    );
-
-    // Testnet has 3 genuinely distinct USDC tokens (one per DEX's own pool) —
-    // the generic "USDC" symbol resolves to Blend's token, not Aquarius's own,
-    // so it fails this Controller's can_call check. Map it to the real
-    // on-chain symbol here rather than trusting every caller to know that.
-    const tokensOutVal = StellarSdk.xdr.ScVal.scvVec(
-      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t === 'USDC' ? 'AQUSDC' : t))
-    );
-
-    const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
-    const tokensIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    const scvMap = StellarSdk.xdr.ScVal.scvMap([
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_in'), val: amountIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_out'), val: amountOut }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('fee_fraction'),
-        val: StellarSdk.xdr.ScVal.scvU32(feeFraction),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('is_token_pair'),
-        val: StellarSdk.xdr.ScVal.scvBool(isTokenPair),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('margin_account'),
-        val: StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('min_liquidity_out'),
-        val: StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('protocol_address'),
-        val: StellarSdk.nativeToScVal(routerAddress, { type: 'address' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('token_pair_ratio'),
-        val: StellarSdk.xdr.ScVal.scvU64(StellarSdk.xdr.Uint64.fromString('0')),
-      }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_in'), val: tokensIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_out'), val: tokensOutVal }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('type_action'),
-        val: StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(action)]),
-      }),
-    ]);
-
-    return Buffer.from(scvMap.toXDR());
-  }
-
-  /**
-   * Add liquidity to the Aquarius XLM/USDC pool from the margin account.
-   *
-   * Routes through AccountManager.execute() → SmartAccount AddLiquidity handler,
-   * which pulls Aquarius USDC + XLM from the margin account and deposits them into
-   * the Aquarius pool.
+   * Add liquidity to the Aquarius XLM/USDC pool from the margin account via
+   * AccountManager.exec(AddLiquidity) with token ADDRESSES (not symbols).
+   * Amounts are WAD (1e18).
    */
   static async addLiquidity(
     walletAddress: string,
@@ -1031,53 +897,21 @@ export class AquariusService {
       }
 
       const routerAddress = await AquariusService.getEffectiveRouterAddress();
+      const tokens = [
+        await AquariusService.resolveTokenAddress(tokenA),
+        await AquariusService.resolveTokenAddress(tokenB),
+      ];
 
-      // Build callbytes for AccountManager → SmartAccount AddLiquidity.
-      // Amounts in WAD (1e18) — SmartAccount converts to token decimals internally.
-      const callBytes = AquariusService.buildExternalProtocolCallBytes(
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         routerAddress,
         'AddLiquidity',
-        [tokenA.toUpperCase(), tokenB.toUpperCase()],
+        tokens,
         [toWad(amountA), toWad(amountB)],
-        marginAccountAddress,
-        30,
-        true,
+        BigInt(0),
+        100,
       );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
-      const accountManager = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 100).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          accountManager.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes),
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      if (result.status === 'PENDING') {
-        await AquariusService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
-      }
-      return { success: false, error: `Network rejected (status: ${result.status})` };
     } catch (error: any) {
       console.error('[AquariusService] addLiquidity error:', error);
       const errText = `${error?.message ?? ''} ${error?.toString?.() ?? ''}`;
@@ -1099,9 +933,9 @@ export class AquariusService {
   }
 
   /**
-   * Remove liquidity from an Aquarius pool from the margin account via
-   * AccountManager.execute(). `lpAmount` is in LP share units (7 decimals, not
-   * WAD). Returns once the tx is accepted (PENDING); does not poll to SUCCESS.
+   * Remove liquidity from an Aquarius pool via AccountManager.exec(RemoveLiquidity).
+   * `lpAmount` is human LP shares; encoded as WAD (controller scales to native).
+   * amounts_wad = [lp_wad, min0, min1].
    */
   static async removeLiquidity(
     walletAddress: string,
@@ -1112,58 +946,21 @@ export class AquariusService {
   ): Promise<AquariusTransactionResult> {
     try {
       const routerAddress = await AquariusService.getEffectiveRouterAddress();
+      const tokens = [
+        await AquariusService.resolveTokenAddress(tokenA),
+        await AquariusService.resolveTokenAddress(tokenB),
+      ];
 
-      const pool = AQUARIUS_POOLS.find(
-        (p) =>
-          (p.tokens[0] === tokenA && p.tokens[1] === tokenB) ||
-          (p.tokens[0] === tokenB && p.tokens[1] === tokenA)
-      );
-      const feeFraction = pool?.feeFraction ?? 30;
-
-      const callBytes = AquariusService.buildExternalProtocolCallBytes(
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         routerAddress,
         'RemoveLiquidity',
-        [tokenA, tokenB],
-        // RemoveLiquidity expects Aquarius LP share units (7 decimals), not WAD.
-        [toLpShareUnits(lpAmount)],
-        marginAccountAddress,
-        feeFraction,
-        true
+        tokens,
+        [toWad(lpAmount), BigInt(0), BigInt(0)],
+        BigInt(0),
+        20,
       );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      if (result.status === 'PENDING') {
-        return { success: true, hash: result.hash };
-      }
-      return { success: false, error: 'Transaction rejected by network' };
     } catch (error: any) {
       console.error('[AquariusService] removeLiquidity error:', error);
       return { success: false, error: error?.message || 'Remove liquidity failed' };
@@ -1177,9 +974,13 @@ export class AquariusService {
    * that had a hardcoded fallback to begin with.
    */
   private static async getAquariusPoolIndices(sortedTokens: [string, string]): Promise<Buffer[]> {
-    const fallback = sortedTokens[0] === POOL_SORTED_TOKENS[0] && sortedTokens[1] === POOL_SORTED_TOKENS[1]
-      ? [Buffer.from(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX, 'hex')]
-      : [];
+    const hex = CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX;
+    const fallback =
+      hex.length === 64 &&
+      sortedTokens[0] === POOL_SORTED_TOKENS[0] &&
+      sortedTokens[1] === POOL_SORTED_TOKENS[1]
+        ? [Buffer.from(hex, 'hex')]
+        : [];
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const tempKeypair = StellarSdk.Keypair.random();
@@ -1372,8 +1173,8 @@ export class AquariusService {
       void _simulatorAddress;
       const resolvedTokenOutSymbol = tokenOutSymbol ?? getAquariusSwapPartner(tokenInSymbol);
       if (!resolvedTokenOutSymbol) return null;
-      const tokenInContract = AQUARIUS_SWAP_TOKEN_CONTRACT[tokenInSymbol];
-      const tokenOutContract = AQUARIUS_SWAP_TOKEN_CONTRACT[resolvedTokenOutSymbol];
+      const tokenInContract = await AquariusService.resolveTokenAddress(tokenInSymbol);
+      const tokenOutContract = await AquariusService.resolveTokenAddress(resolvedTokenOutSymbol);
       const sortedTokens = sortedTokenPair(tokenInContract, tokenOutContract);
       const amountInStroops = BigInt(Math.round(amountIn * 1e7));
 
@@ -1423,7 +1224,9 @@ export class AquariusService {
     _simulatorAddress: string,
   ): Promise<Buffer> {
     const isXlmUsdcPair = sortedTokens[0] === POOL_SORTED_TOKENS[0] && sortedTokens[1] === POOL_SORTED_TOKENS[1];
-    const fallback = isXlmUsdcPair ? Buffer.from(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX, 'hex') : null;
+    const hex = CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX;
+    const fallback =
+      isXlmUsdcPair && hex.length === 64 ? Buffer.from(hex, 'hex') : null;
     try {
       void _simulatorAddress;
       const poolIndices = await AquariusService.getAquariusPoolIndices(sortedTokens);
@@ -1453,76 +1256,8 @@ export class AquariusService {
   }
 
   /**
-   * Build margin swap call bytes in the format expected by AccountManager/SmartAccount:
-   * - type_action: Vec([Symbol("Swap")])
-   * - tokens_out: Vec<Symbol> with exactly [token_in, token_out]
-   * - amount_out[0]: amount_in in WAD
-   */
-  private static buildSwapCallBytesForMargin(
-    routerAddress: string,
-    tokenInSymbol: AquariusSwapSymbol,
-    tokenOutSymbol: AquariusSwapSymbol,
-    amountIn: bigint,
-    marginAccountAddress: string,
-  ): Buffer {
-    // Same "USDC" -> "AQUSDC" mapping as buildExternalProtocolCallBytes — the
-    // generic symbol resolves to Blend's token via the Registry, which fails
-    // this Controller's can_call (it only accepts XLM / its own AQUSDC).
-    const onChainSymbol = (s: AquariusSwapSymbol) => (s === 'USDC' ? 'AQUSDC' : s);
-    const tokensInVal = StellarSdk.xdr.ScVal.scvVec([]);
-    const tokensOutVal = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.xdr.ScVal.scvSymbol(onChainSymbol(tokenInSymbol)),
-      StellarSdk.xdr.ScVal.scvSymbol(onChainSymbol(tokenOutSymbol)),
-    ]);
-    // IMPORTANT: SmartAccount reads the swap amount from amount_out[0] (in WAD/1e18).
-    // amount_in is intentionally empty — this matches buildExternalProtocolCallBytes convention.
-    const amountInVal = StellarSdk.xdr.ScVal.scvVec([]);
-    const amountOutVal = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.nativeToScVal(amountIn, { type: 'u256' }),  // amount_in in WAD
-      StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' }),  // min_amount_out
-    ]);
-
-    const scvMap = StellarSdk.xdr.ScVal.scvMap([
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_in'), val: amountInVal }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_out'), val: amountOutVal }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('fee_fraction'),
-        val: StellarSdk.xdr.ScVal.scvU32(30),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('is_token_pair'),
-        val: StellarSdk.xdr.ScVal.scvBool(false),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('margin_account'),
-        val: StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('min_liquidity_out'),
-        val: StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('protocol_address'),
-        val: StellarSdk.nativeToScVal(routerAddress, { type: 'address' }),
-      }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('token_pair_ratio'),
-        val: StellarSdk.xdr.ScVal.scvU64(StellarSdk.xdr.Uint64.fromString('0')),
-      }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_in'), val: tokensInVal }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_out'), val: tokensOutVal }),
-      new StellarSdk.xdr.ScMapEntry({
-        key: makeKey('type_action'),
-        val: StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol('Swap')]),
-      }),
-    ]);
-
-    return Buffer.from(scvMap.toXDR());
-  }
-
-  /**
-   * Execute a swap from the margin account via AccountManager.execute() → SmartAccount Swap handler.
-    * Encodes swap action payload in the exact struct shape expected by AccountManager.
+   * Execute a swap from the margin account via AccountManager.exec(Swap)
+   * with token ADDRESSES. amounts_wad = [amount_in_wad]; min_out for slippage.
    */
   static async aquariusSwapFromMargin(
     walletAddress: string,
@@ -1544,47 +1279,21 @@ export class AquariusService {
         return { success: false, error: 'Invalid swap amount' };
       }
 
-      const callBytes = AquariusService.buildSwapCallBytesForMargin(
-        routerAddress,
-        tokenInSymbol,
-        resolvedTokenOutSymbol,
-        stroopsToWad(amountStroops),
+      const tokens = [
+        await AquariusService.resolveTokenAddress(tokenInSymbol),
+        await AquariusService.resolveTokenAddress(resolvedTokenOutSymbol),
+      ];
+
+      return await execViaAccountManager(
+        walletAddress,
         marginAccountAddress,
+        routerAddress,
+        'Swap',
+        tokens,
+        [stroopsToWad(amountStroops)],
+        BigInt(0),
+        100,
       );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
-      const accountManager = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 100).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          accountManager.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      if (result.status === 'PENDING') {
-        return { success: true, hash: result.hash };
-      }
-      return { success: false, error: `Network rejected (status: ${result.status})` };
     } catch (error: any) {
       console.error('[AquariusService] aquariusSwapFromMargin error:', error);
       const errText = `${error?.message ?? ''} ${error?.toString?.() ?? ''}`;
@@ -1601,7 +1310,7 @@ export class AquariusService {
   /**
    * Execute a swap via the Aquarius router.
    * user = walletAddress (standard G... account — Freighter can sign directly).
-   * Swap amounts come from the wallet's own XLM / Aquarius USDC balance.
+   * Swap amounts come from the wallet's own XLM / Circle USDC balance.
    */
   static async aquariusSwap(
     walletAddress: string,
@@ -1617,10 +1326,10 @@ export class AquariusService {
         return { success: false, error: `No Aquarius pool for ${tokenInSymbol}` };
       }
 
-      // Classic-asset-backed USDC requires a trustline on the destination
+      // Classic-asset-backed Circle USDC requires a trustline on the destination
       // wallet before it can settle there.
       const trustlineRequirement: Partial<Record<AquariusSwapSymbol, [string, string]>> = {
-        USDC: ['USDC', ASSET_ISSUERS.USDC_AQUARIUS],
+        USDC: ['USDC', ASSET_ISSUERS.USDC],
       };
       const requiredTrustline = trustlineRequirement[resolvedTokenOutSymbol];
       if (requiredTrustline) {
@@ -1633,8 +1342,8 @@ export class AquariusService {
         }
       }
 
-      const tokenInContract = AQUARIUS_SWAP_TOKEN_CONTRACT[tokenInSymbol];
-      const tokenOutContract = AQUARIUS_SWAP_TOKEN_CONTRACT[resolvedTokenOutSymbol];
+      const tokenInContract = await AquariusService.resolveTokenAddress(tokenInSymbol);
+      const tokenOutContract = await AquariusService.resolveTokenAddress(resolvedTokenOutSymbol);
       const sortedTokens = sortedTokenPair(tokenInContract, tokenOutContract);
       const amountInStroops = BigInt(Math.round(amountIn * 1e7));
 

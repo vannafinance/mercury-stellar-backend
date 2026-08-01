@@ -24,25 +24,17 @@ interface WithdrawModalProps {
 const ASSET_DISPLAY: Record<string, { label: string; sub: string }> = {
   XLM: { label: "XLM", sub: "Stellar Lumens" },
   USDC: { label: "USDC", sub: "USD Coin" },
-  AQUARIUS_USDC: { label: "AqUSDC", sub: "Aquarius USDC" },
-  SOROSWAP_USDC: { label: "SoUSDC", sub: "Soroswap USDC" },
-};
+  };
 
 const WITHDRAW_ASSETS: AssetType[] = [
   ASSET_TYPES.XLM,
   ASSET_TYPES.USDC,
-  ASSET_TYPES.AQUARIUS_USDC,
-  ASSET_TYPES.SOROSWAP_USDC,
 ];
 
 /** Maps an AssetType to the margin store's `collateralBalances` key (matches transfer-collateral.tsx). */
 const normalizeContractTokenSymbol = (symbol: string): string =>
-  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC"
+  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC" || symbol === "AQUARIUS_USDC" || symbol === "AqUSDC" || symbol === "SOROSWAP_USDC" || symbol === "SoUSDC" || symbol === "AQUSDC" || symbol === "SOUSDC"
     ? "USDC"
-    : symbol === "AQUARIUS_USDC" || symbol === "AqUSDC"
-      ? "AQUSDC"
-      : symbol === "SOROSWAP_USDC" || symbol === "SoUSDC"
-        ? "SOUSDC"
         : symbol;
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -70,7 +62,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
 
   const userAddress = useUserStore((state) => state.address);
   const { collateralBalances, totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
-  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const tokenPrices = useTokenPrices(["XLM", "USDC"]);
   const { isDark } = useTheme();
 
   useEffect(() => {

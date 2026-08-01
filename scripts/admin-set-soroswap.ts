@@ -136,7 +136,7 @@ const main = async () => {
 
   console.log('✓ Registry Soroswap router now set to:', routerId);
   console.log('✓ Registry Soroswap USDC now set to:', soroswapUsdcId);
-  console.log('✓ Registry Soroswap USDC lending pool (frontend constant):', CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC);
+  console.log('✓ Registry Soroswap USDC lending pool (frontend constant):', CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC);
   console.log('');
   console.log('Next step: run scripts/admin-set-aquarius.ts to complete Aquarius token/pool routing.');
 };

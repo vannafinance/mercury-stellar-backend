@@ -17,10 +17,15 @@ const MAX_ITEMS = 200;
 const isBrowser = () => typeof window !== "undefined";
 
 const normalizeAsset = (value: string): AssetType => {
-  if (value === "BLUSDC" || value === "USDC") return "USDC";
-  if (value === "AqUSDC" || value === "AQUIRESUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
-  if (value === "SoUSDC" || value === "SOROSWAPUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
-  return (value?.toUpperCase?.() || "XLM") as AssetType;
+  const u = (value || "").toUpperCase();
+  // Collapse legacy USDC variants + display aliases → Circle USDC
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC"
+  ) return "USDC";
+  return (u || "XLM") as AssetType;
 };
 
 const readAll = (): EarnHistoryEntry[] => {

@@ -51,14 +51,16 @@ const LIQUIDATION_THRESHOLD = 1.1;
  */
 export const TransferCollateral = () => {
   const { isDark } = useTheme();
-  const normalizeContractTokenSymbol = (symbol: string) =>
-    symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
-      ? "USDC"
-      : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-        ? "AQUSDC"
-        : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
-          ? "SOUSDC"
-          : symbol;
+  const normalizeContractTokenSymbol = (symbol: string) => {
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUIRESUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAPUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC" || symbol === "AquiresUSDC" || symbol === "SoroswapUSDC"
+    ) return "USDC";
+    return symbol === "XLM" || s === "XLM" ? "XLM" : symbol;
+  };
   const [selectedCurrency, setSelectedCurrency] = useState<string>("XLM");
   const [selectedTransferType, setSelectedTransferType] = useState<"MB" | "WB">("MB");
   const [valueInput, setValueInput] = useState<string>("");
@@ -91,7 +93,7 @@ export const TransferCollateral = () => {
     }
   }, [globalIsConnected, globalAddress]);
 
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const sourceBalance = selectedTransferType === "MB" ? walletBalance : marginAccountBalance;
   const maxTransferableBalance = computeMaxTransferableBalance(
     selectedTransferType,
@@ -189,9 +191,8 @@ export const TransferCollateral = () => {
       const balances = await ContractService.getAllTokenBalances(address);
       const contractTokenSymbol = normalizeContractTokenSymbol(tokenSymbol);
 
-      if (contractTokenSymbol === "USDC") return parseFloat(balances.BLEND_USDC) || 0;
-      if (contractTokenSymbol === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
-      if (contractTokenSymbol === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
+      if (contractTokenSymbol === "USDC" || contractTokenSymbol === "AQUSDC" || contractTokenSymbol === "SOUSDC" || contractTokenSymbol === "BLUSDC")
+        return parseFloat(balances.USDC || "0") || 0;
 
       return parseFloat(balances.XLM) || 0;
     } catch (error) {
@@ -205,10 +206,10 @@ export const TransferCollateral = () => {
   // (borrows + unencumbered collateral) for the display row.
   const getTokenSacAddress = (tokenSymbol: string): string => {
     switch (normalizeContractTokenSymbol(tokenSymbol)) {
-      case "USDC": return CONTRACT_ADDRESSES.BLEND_USDC;
-      case "AQUSDC": return CONTRACT_ADDRESSES.AQUARIUS_USDC;
-      case "SOUSDC": return CONTRACT_ADDRESSES.SOROSWAP_USDC;
-      default: return CONTRACT_ADDRESSES.BLEND_XLM; // XLM SAC
+      case "USDC":
+        return CONTRACT_ADDRESSES.USDC_TOKEN || CONTRACT_ADDRESSES.BLEND_USDC;
+      default:
+        return CONTRACT_ADDRESSES.BLEND_XLM; // XLM SAC
     }
   };
 

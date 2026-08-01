@@ -23,7 +23,7 @@ export const isStellarContractAddress = (value: unknown): value is string =>
 export const AddressBadge = ({
   address,
   label,
-  network = "testnet",
+  network = "public",
   className = "",
 }: AddressBadgeProps) => {
   const { isDark } = useTheme();

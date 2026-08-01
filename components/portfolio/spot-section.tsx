@@ -106,7 +106,7 @@ export const SpotSection = () => {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: "link",
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: "—" },
         ],

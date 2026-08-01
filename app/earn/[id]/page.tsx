@@ -20,13 +20,9 @@ import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 
-// AQUARIUS_USDC / SOROSWAP_USDC peg to USDC's oracle price (alias resolved
-// inside oracle-price.ts).
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 
 const fmt = (n: number, decimals = 4) =>
@@ -70,17 +66,21 @@ const tabs = [
 ];
 
 const toInternalAsset = (value: string): AssetType => {
-  if (value === "AqUSDC" || value === "AquiresUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
-  if (value === "SoUSDC" || value === "SoroswapUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
-  if (value === "BLUSDC" || value === "USDC") return "USDC";
-  return value.toUpperCase() as AssetType;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return (u || "XLM") as AssetType;
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === "AQUARIUS_USDC" || value === "AquiresUSDC") return "AqUSDC";
-  if (value === "SOROSWAP_USDC" || value === "SoroswapUSDC") return "SoUSDC";
-  if (value === "USDC") return "BLUSDC";
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  return "USDC";
 };
 
 export default function EarnPage({ params }: { params: Promise<{ id: string }> }) {
@@ -110,7 +110,7 @@ export default function EarnPage({ params }: { params: Promise<{ id: string }> }
 
   useEffect(() => {
     const assetType = toInternalAsset(id);
-    if (assetType === 'XLM' || assetType === 'USDC' || assetType === 'AQUARIUS_USDC' || assetType === 'SOROSWAP_USDC') {
+    if (assetType === 'XLM' || assetType === 'USDC') {
       const current = useSelectedPoolStore.getState();
       if (current.selectedAsset === assetType) return;
       setSelectedPool(assetType as AssetType, {

@@ -3,7 +3,7 @@
 //
 // Every fixture in this file references ONLY assets, protocols, and
 // addresses that exist in the live application:
-//   • Assets:    XLM, BLUSDC, AQUSDC, SOUSDC (lib/constants.ts → DropdownOptions)
+//   • Assets:    XLM, USDC (lib/constants.ts → DropdownOptions); legacy BLUSDC/AQUSDC/SOUSDC aliases map to USDC
 //   • Protocols: Blend, Aquarius, Soroswap (lib/stellar-utils.ts → CONTRACT_ADDRESSES)
 //   • Oracle:    Reflector via OracleContract (lib/oracle-price.ts)
 //   • Addresses: Stellar G... (account) / C... (contract), 56-char base32

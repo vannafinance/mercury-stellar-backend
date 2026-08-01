@@ -115,7 +115,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   }
   if (lower.includes('insufficient')) return 'Insufficient wallet balance for this deposit.';
   if (lower.includes('trustline entry is missing')) {
-    return 'Your wallet is missing the USDC trustline required to deposit BLUSDC. Open the Faucet, mint Blend USDC, then retry.';
+    return 'Your wallet is missing the USDC trustline. Buy or bridge Circle USDC on Stellar mainnet, then retry.';
   }
   if (lower.includes('hosterror'))
     return 'Deposit failed on-chain. Please retry with a slightly smaller amount.';
@@ -184,8 +184,8 @@ export function normalizeCreateAccountError(msg: string): string {
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
   if (m.includes('account not found') || m.includes('not found on network'))
-    return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
+    return 'Wallet has no XLM on mainnet. Fund your wallet with XLM, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))
-    return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
+    return "Wallet doesn't have enough XLM to pay the transaction fee. Fund your wallet, then try again.";
   return 'Failed to create margin account. Please try again.';
 }

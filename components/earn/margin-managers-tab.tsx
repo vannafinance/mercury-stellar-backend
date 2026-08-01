@@ -17,8 +17,6 @@ import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-pric
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 
 const tableHeadings = [

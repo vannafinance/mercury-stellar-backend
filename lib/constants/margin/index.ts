@@ -16,12 +16,15 @@ export const COIN_ICONS: Record<string, string> = {
   "0xETH": "/icons/eth-icon.png",
   "0xUSDC": "/icons/usdc-icon.svg",
   "0xUSDT": "/icons/usdt-icon.svg",
-  // Stellar / Soroban tokens
+  // Stellar / Soroban tokens — mainnet single Circle USDC
   XLM: "/coins/xlmbg.png",
+  USDC: "/icons/usdc-icon.svg",
+  // Legacy variant aliases → USDC icon (display safety)
   BLUSDC: "/icons/usdc-icon.svg",
   AQUSDC: "/icons/usdc-icon.svg",
   SOUSDC: "/icons/usdc-icon.svg",
-  USDC: "/icons/usdc-icon.svg",
+  AqUSDC: "/icons/usdc-icon.svg",
+  SoUSDC: "/icons/usdc-icon.svg",
 };
 
 // ============================================
