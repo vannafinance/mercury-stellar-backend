@@ -30,7 +30,7 @@ import {
   defaultCapUsdFromMcp,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
-import { classifyConcept, answerConcept } from "./concept";
+import { isAssistantChat, answerAssistant } from "./concept";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -217,14 +217,15 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     );
   }
 
-  // ── Concept / guide lane (no MCP, no routing LLM call) ────────────────────
-  // Ahead of vertexSelectTool AND the keyword override block below: that block
-  // rewrites "blend"/"supply"/"lend" into writes, so "what is Blend?" would
-  // otherwise become deploy_to_blend. Possessive live reads ("my health factor")
-  // deliberately miss classifyConcept and fall through to MCP.
-  const conceptHit = classifyConcept(message);
-  if (conceptHit) {
-    return answerConcept(conceptHit, message, req.page_context ?? null, request_id);
+  // ── Page-aware AI assistant (generative Gemini, no MCP) ───────────────────
+  // Free-form chat about the screen / product. Glossary is reference only —
+  // not a canned Q&A table. Live "my …" reads and action verbs still fall
+  // through to MCP below. Stays ahead of keyword farm/write overrides so
+  // "what is Blend?" never becomes deploy_to_blend.
+  if (isAssistantChat(message)) {
+    return answerAssistant(message, req.page_context ?? null, request_id, {
+      history: Array.isArray(req.history) ? req.history : undefined,
+    });
   }
 
   // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─

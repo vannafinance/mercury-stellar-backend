@@ -55,12 +55,28 @@ export async function POST(req: NextRequest) {
       ? (body.page_context as import("@/lib/copilot/types").PageDescriptorCtx)
       : null;
 
+  const history = Array.isArray(body.history)
+    ? (body.history as Array<{ role?: string; text?: string }>)
+        .filter(
+          (h) =>
+            (h.role === "user" || h.role === "assistant") &&
+            typeof h.text === "string" &&
+            h.text.trim(),
+        )
+        .slice(-8)
+        .map((h) => ({
+          role: h.role as "user" | "assistant",
+          text: String(h.text).slice(0, 2000),
+        }))
+    : null;
+
   const payload = {
     user_id: typeof body.user_id === "string" && body.user_id ? body.user_id : "guest",
     message: message || (autoSign ? "auto-sign" : "pending-write"),
     tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
     page_context: pageContext,
+    history,
     auto_sign: autoSign,
     pending_write: pendingWrite,
   };

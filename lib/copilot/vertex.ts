@@ -316,14 +316,18 @@ async function generateJson(system: string, user: string): Promise<Record<string
   }
 }
 
-/** Plain-text generation used by concept/guide lane and vertexExplain. */
-export async function generateText(system: string, user: string): Promise<string> {
+/** Plain-text generation used by the page assistant and vertexExplain. */
+export async function generateText(
+  system: string,
+  user: string,
+  opts?: { temperature?: number },
+): Promise<string> {
   const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
-    generationConfig: { temperature: 0.2 },
+    generationConfig: { temperature: opts?.temperature ?? 0.2 },
   };
 
   const res = await fetch(modelUrl(model), {

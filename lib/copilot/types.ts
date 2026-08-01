@@ -26,9 +26,14 @@ export interface ChatRequest {
   smart_account?: string | null;
   /**
    * Fresh page snapshot from the client registry (read at send time).
-   * Used by the concept/guide lane — never invent numbers from this.
+   * Used by the page-aware assistant lane — never invent numbers from this.
    */
   page_context?: PageDescriptorCtx | null;
+  /**
+   * Optional prior turns so the assistant can answer follow-ups naturally.
+   * Client should send only short recent history (e.g. last 8 messages).
+   */
+  history?: Array<{ role: "user" | "assistant"; text: string }> | null;
   /** Client may send auto-sign confirmation choices */
   auto_sign?: {
     action?: "start" | "use_defaults" | "custom" | "disable";

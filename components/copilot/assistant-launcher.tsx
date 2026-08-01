@@ -37,7 +37,10 @@ export function AssistantLauncher() {
   }, []);
 
   const send = useCallback(
-    async (message: string) => {
+    async (
+      message: string,
+      history: Array<{ role: "user" | "assistant"; text: string }> = [],
+    ) => {
       const res = await fetch("/api/copilot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -47,6 +50,7 @@ export function AssistantLauncher() {
           tier: "paid",
           smart_account: smartAccount ?? null,
           page_context: getPageContext(),
+          history: history.slice(-8),
         }),
       });
       if (!res.ok) {

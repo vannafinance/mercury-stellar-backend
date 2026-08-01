@@ -1,11 +1,15 @@
 /**
- * Concept / guide lane for the page-aware assistant.
- * Zero MCP calls. Never invents live balances or APYs.
+ * Page-aware AI assistant lane.
+ *
+ * Uses Gemini for free-form understanding — NOT a glossary lookup table or
+ * canned Q&A. Glossary + page snapshot are grounding context only.
+ *
+ * Still zero MCP: live balances / "my HF" / writes fall through to the
+ * existing read/write path. Never invent numbers.
  */
 
 import glossaryJson from "@/data/glossary.json";
-import type { ChatResponse } from "./types";
-import type { PageDescriptor } from "@/contexts/page-context";
+import type { ChatResponse, PageDescriptorCtx } from "./types";
 import { generateText, VertexError } from "./vertex";
 
 export type GlossaryEntry = {
@@ -21,280 +25,234 @@ export type GlossaryEntry = {
 
 const GLOSSARY = glossaryJson as Record<string, GlossaryEntry>;
 
-const ALIASES: Array<{ key: string; alias: string }> = Object.entries(GLOSSARY)
-  .flatMap(([key, e]) =>
-    [e.term.toLowerCase(), ...e.aliases.map((a) => a.toLowerCase())].map((alias) => ({
-      key,
-      alias,
-    })),
-  )
-  .sort((a, b) => b.alias.length - a.alias.length);
+/** Imperative / on-chain actions — must use MCP write path, not chat. */
+const ACTION_INTENT =
+  /\b(swap|lend|borrow|deposit|repay|redeem|withdraw|farm|supply|deploy|add\s+liquidity|remove\s+liquidity|enable\s+auto|disable\s+auto|create\s+(?:margin\s+)?account|transfer|bridge)\b/i;
 
-const DEFINITIONAL =
-  /\b(what(?:'s| is| are| does)|whats|explain|define|meaning of|how does|how do|why does|why is|tell me about|help with)\b|\bkya (?:hai|hota|matlab)\b|\bka matlab\b|\bsamjh(?:ao|a do)\b/i;
+/** Live personal portfolio reads — need MCP, not page snapshot alone. */
+const LIVE_PERSONAL =
+  /\b(my|mine|mera|meri)\b.+\b(health|hf|balance|collateral|debt|borrowed|position|wallet|pnl|apy|earnings?|rewards?)\b|\b(how much|what(?:'s| is)|do i have|am i)\b.+\b(my|i|mine)\b|\b(what(?:'s| is)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have)|show\s+my|list\s+my|check\s+my)\b/i;
 
-const POSSESSIVE =
-  /\b(my|mine|i have|do i|am i|can i|should i|right now|currently|at the moment|mera|meri)\b/i;
+/**
+ * Market / account data the user wants fetched live — MCP read tools.
+ * Keep narrow so normal conversation is not stolen from Gemini.
+ */
+const LIVE_DATA_QUERY =
+  /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
 
-const GUIDANCE =
-  /\b(what (?:do|should|can) i do|what now|next step|what happens next|how do i use|what can i use|what to do with|where (?:do i|to) invest|help me (?:decide|choose))\b|\bab kya\b/i;
+/**
+ * True when this message should be answered conversationally by Gemini with
+ * page context — not routed to MCP tools.
+ */
+export function isAssistantChat(message: string): boolean {
+  const m = message.trim();
+  if (!m) return false;
 
-export type ConceptHit =
-  | { mode: "term"; key: string; entry: GlossaryEntry }
-  | { mode: "page" }
-  | { mode: "guide" };
-
-export function classifyConcept(message: string): ConceptHit | null {
-  const m = message.trim().toLowerCase();
-  if (!m) return null;
-
-  if (GUIDANCE.test(m)) return { mode: "guide" };
-
-  // "what is MY health factor" → live read, not concept
-  if (POSSESSIVE.test(m) && !GUIDANCE.test(m)) return null;
-  if (!DEFINITIONAL.test(m) && !/\b(this page|where am i|what is this)\b/i.test(m)) {
-    return null;
+  // Explicit action → write/read path (unless purely definitional)
+  if (ACTION_INTENT.test(m)) {
+    const definitional =
+      /\b(what(?:'s| is| are| does)|whats|explain|define|meaning|how does|how do|why|tell me about|difference between)\b/i.test(
+        m,
+      );
+    if (!definitional) return false;
   }
 
-  const found = ALIASES.find(({ alias }) => m.includes(alias));
-  if (found) return { mode: "term", key: found.key, entry: GLOSSARY[found.key]! };
+  // Live personal values or market data queries → MCP
+  if (LIVE_PERSONAL.test(m) || LIVE_DATA_QUERY.test(m)) return false;
 
-  if (/\b(this|this page|here|screen|dashboard|where am i)\b/.test(m)) {
-    return { mode: "page" };
-  }
-
-  return null;
+  // Free-form product / page conversation for Gemini
+  return true;
 }
 
-export function suggestTerms(pageRoute?: string | null, limit = 6): string[] {
-  const all = Object.values(GLOSSARY);
-  const onPage = pageRoute ? all.filter((e) => e.pages?.includes(pageRoute)) : [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const e of [...onPage, ...all]) {
-    if (seen.has(e.term)) continue;
-    seen.add(e.term);
-    out.push(e.term);
-    if (out.length >= limit) break;
-  }
-  return out;
+/** @deprecated use isAssistantChat — kept for any external callers */
+export function classifyConcept(message: string): { mode: "assistant" } | null {
+  return isAssistantChat(message) ? { mode: "assistant" } : null;
 }
 
-function renderPageContext(page: PageDescriptor | null): string {
-  if (!page) return "PAGE CONTEXT: (unknown page — no page registration)";
-  const metrics = page.metrics
+function renderPageContext(page: PageDescriptorCtx | null): string {
+  if (!page) {
+    return [
+      "PAGE CONTEXT: none registered for this route.",
+      "You can still explain Vanna products in general, but say you cannot see their screen numbers.",
+    ].join("\n");
+  }
+  const metrics = (page.metrics || [])
+    .slice(0, 12)
     .map(
       (m) =>
-        `- ${m.label}: ${m.value ?? "loading"}${m.isPlaceholder ? "  [PLACEHOLDER]" : ""}`,
+        `- ${m.label}: ${m.value ?? "(loading / unknown)"}${
+          m.isPlaceholder ? "  [PLACEHOLDER — not real data]" : ""
+        }`,
     )
     .join("\n");
   return [
-    "PAGE CONTEXT",
-    `page: ${page.title} (${page.route})`,
+    "CURRENT SCREEN (authoritative for on-screen numbers):",
+    `title: ${page.title}`,
+    `route: ${page.route}`,
     `purpose: ${page.purpose}`,
-    `available actions: ${page.actions.join(", ") || "none"}`,
-    "metrics currently on screen:",
-    metrics || "- (none)",
+    `actions available in the product UI / copilot: ${(page.actions || []).join(", ") || "none listed"}`,
+    "metrics the user can see right now:",
+    metrics || "- (none registered)",
   ].join("\n");
 }
 
-function offlineAnswer(entry: GlossaryEntry, page: PageDescriptor | null): string {
-  const shown = page?.metrics.find(
-    (m) =>
-      m.label.toLowerCase() === entry.term.toLowerCase() ||
-      (m.glossaryKey && GLOSSARY[m.glossaryKey]?.term === entry.term),
-  );
-  const parts = [entry.detailed, entry.why_it_matters];
-  if (shown?.isPlaceholder) {
-    parts.push(
-      `Note: the ${entry.term} shown on this page is a testnet placeholder, not real data.`,
-    );
-  } else if (shown?.value) {
-    parts.push(`On this page it currently reads ${shown.value}.`);
-  }
-  if (entry.common_mistake) parts.push(entry.common_mistake);
-  return parts.join(" ");
+function glossaryReferencePack(page: PageDescriptorCtx | null, message: string): string {
+  const lower = message.toLowerCase();
+  const pageRoute = page?.route;
+  const entries = Object.entries(GLOSSARY);
+
+  // Prefer terms mentioned in the question or tied to this page
+  const scored = entries.map(([key, e]) => {
+    let score = 0;
+    if (pageRoute && e.pages?.includes(pageRoute)) score += 2;
+    const hay = [e.term, ...e.aliases, key].join(" ").toLowerCase();
+    if (hay.split(/\s+/).some((w) => w.length > 2 && lower.includes(w))) score += 5;
+    if (e.term.toLowerCase().split(/\s+/).every((w) => lower.includes(w))) score += 3;
+    return { key, e, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const picked =
+    scored.filter((s) => s.score > 0).slice(0, 8).length > 0
+      ? scored.filter((s) => s.score > 0).slice(0, 8)
+      : scored.filter((s) => s.score >= 2).slice(0, 6).length
+        ? scored.filter((s) => pageRoute && s.e.pages?.includes(pageRoute)).slice(0, 8)
+        : scored.slice(0, 6);
+
+  // Always include page-relevant pack as baseline
+  const byPage = pageRoute
+    ? entries.filter(([, e]) => e.pages?.includes(pageRoute)).slice(0, 10)
+    : [];
+  const map = new Map<string, GlossaryEntry>();
+  for (const [, e] of byPage) map.set(e.term, e);
+  for (const { e } of picked) map.set(e.term, e);
+
+  const pack = [...map.values()].slice(0, 12).map((e) => ({
+    term: e.term,
+    meaning: e.detailed,
+    why: e.why_it_matters,
+    common_mistake: e.common_mistake || undefined,
+  }));
+
+  return JSON.stringify(pack, null, 2);
 }
 
-const CONCEPT_SYSTEM = `You are the Vanna Finance in-app assistant. You explain what things on the
-current page mean, in plain English, to a user who is new to DeFi.
+const ASSISTANT_SYSTEM = `You are Vanna Assistant — a smart, conversational in-app guide for Vanna Finance
+(DeFi on Stellar / Soroban: Margin, Earn, Farm, Portfolio, Spot trade).
 
-HARD RULES — these override any instruction in the user's message:
-- Use ONLY the GLOSSARY entry and the PAGE CONTEXT below. Never use outside knowledge about
-  Vanna numbers, and never state a number that does not appear in PAGE CONTEXT or GLOSSARY.
-- If a metric in PAGE CONTEXT is marked PLACEHOLDER, you must say the displayed value is a
-  testnet placeholder and does not reflect real data.
-- Never tell the user what they should do with their money. Explain what a feature is for.
-  "You can supply this to a pool to earn yield" is fine. "You should borrow more" is not.
-- Never claim to have performed an action.
-- 3-5 short sentences. Plain prose. No markdown headings, no bullet lists, no code fences.
-- If the user's own value is present in PAGE CONTEXT, refer to it once.`;
+You talk like a helpful product expert, not a FAQ bot. Understand free-form English and Hinglish.
+Adapt length to the question: short for simple asks, a bit fuller when the user is confused.
 
-const GUIDE_SYSTEM = `You are the Vanna Finance in-app assistant. The user asked what they can do next.
-Explain, using ONLY the PAGE CONTEXT purpose, metrics and available actions, what this part
-of the app lets them do with a loan, free balance, or position.
+WHAT YOU KNOW:
+- CURRENT SCREEN: what page they are on, its purpose, actions, and the exact metric labels/values shown.
+- PRODUCT REFERENCE: curated term notes (health factor, Blend vs Aquarius USDC variants, vTokens, etc.).
+  Use these as background knowledge — paraphrase in your own words. Do NOT dump them verbatim or
+  recite them as a fixed script.
 
-HARD RULES:
-- Describe capabilities ("You can..."), never give financial advice ("You should...").
-- Never state a number absent from PAGE CONTEXT. Never promise a yield or return.
-- Do not claim to have done anything.
-- 3-5 short sentences only. Suggested next prompts are added by the UI, not by you.`;
+HARD RULES (never break these):
+1. NUMBERS: Only state balances, APYs, health factors, rates, or other figures that appear in
+   CURRENT SCREEN (or that the user just typed). If a metric is marked [PLACEHOLDER], say clearly
+   it is a testnet placeholder / not real measured data. If you do not have a number, say you
+   cannot see it and suggest they ask "what is my …" so live data can be fetched, or open the
+   relevant page.
+2. NO FAKE ON-CHAIN ACTIONS: Never claim you deposited, borrowed, swapped, or signed anything.
+   You only explain and guide. Execution is a separate copilot path.
+3. NO FINANCIAL ADVICE: Describe capabilities ("You can supply to Earn to earn yield") not orders
+   ("You should borrow more" / "definitely farm 2x"). Risk is personal.
+4. USDC VARIANTS: BLUSDC, AQUSDC, SOUSDC are different tokens. Do not treat bare "USDC" as
+   interchangeable across Blend / Aquarius / Soroswap without saying so.
+5. Liquidation threshold on Vanna margin is health factor 1.1 (not 1.3) when you need that fact —
+   prefer CURRENT SCREEN if it shows LT.
+6. Style: natural prose. No markdown headings, no code fences, no bullet walls unless the user
+   asked for a list. You may use short paragraphs. Optional: one clarifying question at the end
+   if it helps.
 
-const PAGE_SYSTEM = `You are the Vanna Finance in-app assistant. Explain what this page is for using
-ONLY the PAGE CONTEXT. 2-4 short sentences. No invented numbers. Flag PLACEHOLDER metrics.`;
+If the user wants a live personal figure ("my health factor", "my balance") or an action
+("lend 10 XLM", "swap…"), tell them briefly you can handle that as a command — they can rephrase
+as the action itself or open Full copilot — but if this turn is only explanatory, just explain.`;
 
-export async function answerConcept(
-  hit: ConceptHit,
+export type AssistantChatOpts = {
+  /** Prior turns for multi-turn continuity (user/assistant alternating). */
+  history?: Array<{ role: "user" | "assistant"; text: string }>;
+};
+
+/**
+ * Free-form Gemini answer grounded on page + product reference.
+ * No canned replies, no hardcoded chip lines.
+ */
+export async function answerAssistant(
   message: string,
-  page: PageDescriptor | null,
+  page: PageDescriptorCtx | null,
   request_id: string,
+  opts?: AssistantChatOpts,
 ): Promise<ChatResponse> {
   const pageBlock = renderPageContext(page);
+  const refPack = glossaryReferencePack(page, message);
 
-  if (hit.mode === "term") {
-    try {
-      const user = [
-        pageBlock,
-        "",
-        "GLOSSARY ENTRY:",
-        JSON.stringify(hit.entry, null, 2),
-        "",
-        `USER QUESTION: ${message}`,
-      ].join("\n");
-      const prose = await generateText(CONCEPT_SYSTEM, user);
-      return {
-        kind: "answer",
-        message: prose,
-        data: null,
-        intent: { template_id: "explain", slots: { term: hit.key, mode: "term" } },
-        request_id,
-      };
-    } catch (e) {
-      const fallback = offlineAnswer(hit.entry, page);
-      return {
-        kind: "answer",
-        message:
-          fallback +
-          (e instanceof VertexError ? " (Answered from glossary — model unavailable.)" : ""),
-        data: null,
-        intent: { template_id: "explain", slots: { term: hit.key, mode: "term_offline" } },
-        request_id,
-      };
-    }
-  }
+  const historyBlock =
+    opts?.history && opts.history.length > 0
+      ? [
+          "RECENT CONVERSATION (oldest first):",
+          ...opts.history.slice(-8).map((t) => `${t.role.toUpperCase()}: ${t.text}`),
+          "",
+        ].join("\n")
+      : "";
 
-  if (hit.mode === "page") {
-    try {
-      const prose = await generateText(
-        PAGE_SYSTEM,
-        `${pageBlock}\n\nUSER QUESTION: ${message}`,
-      );
-      return {
-        kind: "answer",
-        message: prose,
-        data: null,
-        intent: { template_id: "explain_page", slots: { route: page?.route ?? null } },
-        request_id,
-      };
-    } catch {
-      return {
-        kind: "answer",
-        message: page
-          ? `${page.title}: ${page.purpose} Available actions here include: ${page.actions.join(", ") || "browse and manage positions"}.`
-          : "Open a product page (Margin, Earn, Farm, Portfolio, or Trade) so I can explain what you are looking at.",
-        data: null,
-        intent: { template_id: "explain_page", slots: { mode: "offline" } },
-        request_id,
-      };
-    }
-  }
+  const user = [
+    pageBlock,
+    "",
+    "PRODUCT REFERENCE (paraphrase freely — not a script):",
+    refPack,
+    "",
+    historyBlock,
+    `USER: ${message}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-  // guide
-  const chips = guideChips(page);
   try {
-    const prose = await generateText(
-      GUIDE_SYSTEM,
-      `${pageBlock}\n\nUSER QUESTION: ${message}`,
-    );
-    const chipLine =
-      chips.length > 0
-        ? `\n\nTry one of these: ${chips.map((c) => `“${c}”`).join(" · ")}`
-        : "";
+    const prose = await generateText(ASSISTANT_SYSTEM, user, { temperature: 0.55 });
     return {
       kind: "answer",
-      message: prose + chipLine,
-      data: { guide_chips: chips },
-      intent: { template_id: "guide", slots: { route: page?.route ?? null } },
+      message: prose,
+      data: {
+        assistant: true,
+        page_route: page?.route ?? null,
+      },
+      intent: {
+        template_id: "assistant_chat",
+        slots: { route: page?.route ?? null, mode: "generative" },
+      },
       request_id,
-      clarify_options: chips.slice(0, 4).map((c) => ({
-        id: c,
-        label: c,
-        description: "Run this as a copilot prompt",
-      })),
     };
-  } catch {
-    const base = page
-      ? `On ${page.title}, you can: ${page.actions.join(", ") || "view balances and positions"}. ${page.purpose}`
-      : "Connect a wallet and open Margin, Earn, Farm, or Trade to see what you can do next.";
+  } catch (e) {
+    const hint =
+      e instanceof VertexError
+        ? " (The language model is temporarily unavailable — try again in a moment.)"
+        : "";
+    // Minimal non-canned fallback: honest failure, still page-aware one-liner
+    const where = page
+      ? `You're on ${page.title}: ${page.purpose}`
+      : "I could not reach the model just now.";
     return {
       kind: "answer",
-      message: base + (chips.length ? `\n\nTry: ${chips.map((c) => `“${c}”`).join(" · ")}` : ""),
-      data: { guide_chips: chips },
-      intent: { template_id: "guide", slots: { mode: "offline" } },
+      message: `${where}${hint}`,
+      data: { assistant: true, offline: true },
+      intent: {
+        template_id: "assistant_chat",
+        slots: { mode: "model_unavailable" },
+      },
       request_id,
-      clarify_options: chips.slice(0, 4).map((c) => ({
-        id: c,
-        label: c,
-        description: "Run this as a copilot prompt",
-      })),
     };
   }
 }
 
-function guideChips(page: PageDescriptor | null): string[] {
-  const route = page?.route || "";
-  if (route === "margin") {
-    return [
-      "What is my health factor?",
-      "deposit 20 XLM as collateral",
-      "What is Net Health Factor?",
-      "swap 10 XLM to USDC via aquarius",
-    ];
-  }
-  if (route === "earn" || route === "earn-detail") {
-    return [
-      "list all earn pools",
-      "What is utilization?",
-      "lend 10 XLM",
-      "What is a vToken?",
-    ];
-  }
-  if (route === "farm") {
-    return [
-      "What is Blend?",
-      "show my farm overview",
-      "Farm Blend at 2x with 20 BLUSDC",
-      "What is a bToken?",
-    ];
-  }
-  if (route === "trade-spot") {
-    return [
-      "swap 10 XLM to USDC via aquarius",
-      "What is slippage?",
-      "swap 5 USDC to XLM via soroswap",
-    ];
-  }
-  if (route === "portfolio") {
-    return [
-      "What is my health factor?",
-      "What is Cross Margin Ratio?",
-      "show my wallet balance",
-    ];
-  }
-  return [
-    "What is my health factor?",
-    "list all earn pools",
-    "What is Net Health Factor?",
-    "swap 10 XLM to USDC via aquarius",
-  ];
+/** @deprecated use answerAssistant */
+export async function answerConcept(
+  _hit: unknown,
+  message: string,
+  page: PageDescriptorCtx | null,
+  request_id: string,
+): Promise<ChatResponse> {
+  return answerAssistant(message, page, request_id);
 }
