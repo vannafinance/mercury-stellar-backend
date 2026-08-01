@@ -12,7 +12,7 @@ import createNewStore from "@/zustand/index";
 
 export interface CopilotSettings {
   autoApproveByWallet: Record<string, boolean>;
-  // Wallets we've already defaulted-on + shown the benefit for (first sign-in).
+  // Wallets we've already shown the first-visit notice for (do not re-toast).
   seenByWallet: Record<string, boolean>;
 }
 
@@ -39,17 +39,25 @@ export function setAutoApprove(address: string, value: boolean): void {
 }
 
 /**
- * First sign-in for this wallet: default the toggle ON and mark it seen.
- * Returns true if this was the first time (so the caller can show the benefit),
+ * First visit for this wallet: mark seen and leave auto-approve OFF.
+ * Returns true if this was the first time (caller may show an optional tip),
  * false if we've already onboarded this wallet.
+ *
+ * Safety default: user must explicitly enable auto-approve in the wallet menu.
  */
-export function markSeenAndDefaultOn(address: string): boolean {
+export function markSeenAndDefaultOff(address: string): boolean {
   if (!address) return false;
   const s = useCopilotSettingsStore.getState();
   if (s.seenByWallet[address]) return false;
   s.set({
     seenByWallet: { [address]: true },
-    autoApproveByWallet: { [address]: true },
+    // Explicit OFF — do not auto-enable session signing on first connect.
+    autoApproveByWallet: { [address]: false },
   });
   return true;
+}
+
+/** @deprecated Use markSeenAndDefaultOff — auto-approve now defaults OFF. */
+export function markSeenAndDefaultOn(address: string): boolean {
+  return markSeenAndDefaultOff(address);
 }

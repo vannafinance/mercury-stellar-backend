@@ -2,11 +2,33 @@
 
 export type RiskDecision = "allow" | "block" | "needs_confirmation";
 
+/** On-screen metric snapshot for the page-aware assistant (concept lane). */
+export type PageMetricCtx = {
+  label: string;
+  value: string | null;
+  isPlaceholder?: boolean;
+  glossaryKey?: string;
+};
+
+/** Page registry descriptor sent with chat so concept answers stay grounded. */
+export type PageDescriptorCtx = {
+  route: string;
+  title: string;
+  purpose: string;
+  metrics: PageMetricCtx[];
+  actions: string[];
+};
+
 export interface ChatRequest {
   user_id: string;
   message: string;
   tier?: "free" | "paid";
   smart_account?: string | null;
+  /**
+   * Fresh page snapshot from the client registry (read at send time).
+   * Used by the concept/guide lane — never invent numbers from this.
+   */
+  page_context?: PageDescriptorCtx | null;
   /** Client may send auto-sign confirmation choices */
   auto_sign?: {
     action?: "start" | "use_defaults" | "custom" | "disable";

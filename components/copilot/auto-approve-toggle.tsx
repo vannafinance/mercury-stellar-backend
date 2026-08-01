@@ -14,7 +14,7 @@ import { useUserStore } from "@/store/user";
 import {
   useCopilotSettingsStore,
   setAutoApprove,
-  markSeenAndDefaultOn,
+  markSeenAndDefaultOff,
 } from "@/store/copilot-settings";
 
 export function CopilotAutoApproveToggle() {
@@ -23,13 +23,13 @@ export function CopilotAutoApproveToggle() {
   const walletKind = useUserStore((s) => s.walletKind);
   const on = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
-  // First sign-in for this Privy wallet → default ON + one-time benefit toast.
+  // First sign-in for this Privy wallet → default OFF; one-time tip that they can enable.
   useEffect(() => {
     if (walletKind !== "privy" || !address) return;
-    const firstTime = markSeenAndDefaultOn(address);
+    const firstTime = markSeenAndDefaultOff(address);
     if (firstTime) {
-      toast.success(
-        "Copilot auto-approve is on — actions run without signing each time. Turn it off anytime in this menu.",
+      toast(
+        "Copilot auto-approve is off — each action needs your approval. Turn it on in this menu for hands-free runs.",
         { duration: 6000 },
       );
     }

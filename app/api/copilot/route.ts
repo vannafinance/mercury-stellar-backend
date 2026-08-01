@@ -50,11 +50,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ kind: "error", message: "Please type a question." }, { status: 400 });
   }
 
+  const pageContext =
+    body.page_context && typeof body.page_context === "object" && !Array.isArray(body.page_context)
+      ? (body.page_context as import("@/lib/copilot/types").PageDescriptorCtx)
+      : null;
+
   const payload = {
     user_id: typeof body.user_id === "string" && body.user_id ? body.user_id : "guest",
     message: message || (autoSign ? "auto-sign" : "pending-write"),
     tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
+    page_context: pageContext,
     auto_sign: autoSign,
     pending_write: pendingWrite,
   };

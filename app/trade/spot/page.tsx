@@ -11,6 +11,7 @@ import TradingPairInfo from "@/components/ui/TradingPairInfo";
 import TradingPairSearch from "@/components/spot/spot-orderbook/TradingPairSearch";
 import { useRouter } from "next/navigation";
 import { useTheme } from "@/contexts/theme-context";
+import { useRegisterPage } from "@/contexts/page-context";
 
 const SpotSwapView = dynamic(
   () => import("@/components/spot/spot-nonorderbook").then((mod) => mod.SpotSwapView),
@@ -70,6 +71,36 @@ const Spot = () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [isTradingPairSelectorOpen]);
+
+  useRegisterPage(() => ({
+    route: "trade-spot",
+    title: "Trade · Spot",
+    purpose:
+      "Swap tokens via Aquarius or Soroswap, or use the orderbook UI. Slippage and min-out protect your trade.",
+    actions: ["swap"],
+    metrics: [
+      // All five 24h stats are hardcoded placeholders on this page.
+      ...spotStats.map((s) => ({
+        label: s.label,
+        value: s.value,
+        isPlaceholder: true as const,
+      })),
+      {
+        label: "Pair",
+        value: pair,
+      },
+      {
+        label: "Slippage Tolerance",
+        value: "protects min out on swaps",
+        glossaryKey: "slippage",
+      },
+      {
+        label: "Oracle Price",
+        value: null,
+        glossaryKey: "oracle_price",
+      },
+    ],
+  }));
 
   return (
     <main

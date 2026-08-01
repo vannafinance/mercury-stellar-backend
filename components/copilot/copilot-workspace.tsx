@@ -36,6 +36,7 @@ import {
 import { useCopilotSettingsStore, setAutoApprove } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { usePageContextApi } from "@/contexts/page-context";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
 
@@ -172,6 +173,10 @@ const FOLLOW_UP: Record<string, string> = {
   vanna_can_borrow: "Borrow 2 USDC",
   vanna_get_max_borrow: "Borrow 2 USDC",
   vanna_get_wallet_balance: "Deposit 5 XLM as collateral",
+  // Concept lane → live read bridge
+  explain: "What is my health factor?",
+  explain_page: "What can I do here?",
+  guide: "What is my health factor?",
 };
 
 const EMERALD = "#10b981";
@@ -441,6 +446,7 @@ export function CopilotWorkspace() {
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
   const storeNetValue = useMarginAccountInfoStore((s) => s.totalValue);
   const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
+  const { getPageContext } = usePageContextApi();
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
@@ -623,6 +629,7 @@ export function CopilotWorkspace() {
             user_id: address ?? "guest",
             tier: "paid",
             smart_account: smartAccount ?? null,
+            page_context: getPageContext(),
             ...body,
           }),
         });
@@ -655,7 +662,7 @@ export function CopilotWorkspace() {
         setLoading(false);
       }
     },
-    [address, smartAccount, pushLog, pushActivity, refreshRailStats],
+    [address, smartAccount, getPageContext, pushLog, pushActivity, refreshRailStats],
   );
 
   const run = useCallback(

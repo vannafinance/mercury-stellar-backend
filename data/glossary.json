@@ -1,0 +1,249 @@
+{
+  "health_factor": {
+    "term": "Net Health Factor",
+    "aliases": ["health factor", "hf", "net hf", "net health factor", "health"],
+    "short": "How much buffer you have before liquidation.",
+    "detailed": "Your gross collateral value divided by your effective debt. Vanna liquidates when health factor reaches 1.1 or below. It moves as prices move.",
+    "why_it_matters": "At or below 1.1 your position can be liquidated. Higher is safer.",
+    "common_mistake": "It is a ratio, not a percentage. A very large number usually means tiny debt versus collateral — healthy, not a bug.",
+    "related": ["liquidation", "liquidation_threshold", "collateral_left"],
+    "pages": ["margin", "portfolio"]
+  },
+  "liquidation_threshold": {
+    "term": "Liquidation Threshold",
+    "aliases": ["liquidation threshold", "liq threshold", "lt"],
+    "short": "The health factor at which liquidation is allowed.",
+    "detailed": "On Vanna this is 1.1. When HF is at or below 1.1, collateral can be sold to repay debt. Debt limit is roughly gross collateral divided by 1.1.",
+    "why_it_matters": "Everything on Margin is about staying above this line.",
+    "common_mistake": "Some protocols show this as a percent LTV. Vanna shows it as a health-factor trigger.",
+    "related": ["health_factor", "liquidation"],
+    "pages": ["margin", "portfolio"]
+  },
+  "liquidation": {
+    "term": "Liquidation",
+    "aliases": ["liquidated", "get liquidated", "liquidation event"],
+    "short": "When protocol sells your collateral to repay debt because HF is too low.",
+    "detailed": "If health factor falls to 1.1 or below, anyone can liquidate your margin account. You lose some collateral; debt is reduced.",
+    "why_it_matters": "Avoid by adding collateral, repaying debt, or reducing leverage when HF falls.",
+    "related": ["health_factor", "liquidation_threshold"],
+    "pages": ["margin", "portfolio"]
+  },
+  "collateral_left": {
+    "term": "Collateral Left Before Liquidation",
+    "aliases": ["collateral left", "buffer before liquidation", "liq distance"],
+    "short": "How much collateral value you can lose before hitting the liquidation line.",
+    "detailed": "Roughly the USD cushion between current position and HF = 1.1. Shrinks when collateral prices fall or debt rises.",
+    "why_it_matters": "A small buffer means a small price move can make you liquidatable.",
+    "related": ["health_factor", "liquidation"],
+    "pages": ["margin"]
+  },
+  "net_available_collateral": {
+    "term": "Net Available Collateral",
+    "aliases": ["net available", "available collateral", "free collateral"],
+    "short": "Collateral value left after accounting for debt.",
+    "detailed": "Gross collateral minus debt (USD). Shows room you still have in the account.",
+    "why_it_matters": "Low net available means little room to borrow more safely.",
+    "related": ["health_factor", "total_borrowed"],
+    "pages": ["margin", "portfolio"]
+  },
+  "total_borrowed": {
+    "term": "Net Amount Borrowed",
+    "aliases": ["total borrowed", "debt", "what i owe", "net amount borrowed", "borrowed"],
+    "short": "How much you currently owe on the margin account.",
+    "detailed": "Sum of open debt positions, valued in USD or shown per asset on the page.",
+    "why_it_matters": "Debt drives interest and lowers health factor relative to collateral.",
+    "related": ["health_factor", "borrow_rate"],
+    "pages": ["margin", "portfolio"]
+  },
+  "borrow_rate": {
+    "term": "Net Borrow Rate",
+    "aliases": ["borrow rate", "borrow apy", "interest rate"],
+    "short": "Interest rate you pay on borrowed assets.",
+    "detailed": "Usually rises with utilization of the lending pool. Accrues over time on your debt.",
+    "why_it_matters": "Higher rates mean debt grows faster and HF can fall if you do nothing.",
+    "related": ["utilization", "total_borrowed"],
+    "pages": ["margin", "earn"]
+  },
+  "cross_margin_ratio": {
+    "term": "Cross Margin Ratio",
+    "aliases": ["cross margin ratio", "margin ratio", "ltv", "loan to value"],
+    "short": "What share of collateral you have borrowed against.",
+    "detailed": "Total borrowed value divided by gross collateral, as a percentage (loan-to-value style).",
+    "why_it_matters": "Rising LTV means more leverage and lower health factor.",
+    "related": ["health_factor", "cross_account_leverage"],
+    "pages": ["portfolio"]
+  },
+  "cross_account_leverage": {
+    "term": "Cross Account Leverage",
+    "aliases": ["leverage", "account leverage", "cross leverage"],
+    "short": "How leveraged the margin account is overall.",
+    "detailed": "Roughly how large your exposure is relative to equity. Higher leverage amplifies gains and losses.",
+    "why_it_matters": "High leverage makes HF more sensitive to price moves.",
+    "related": ["cross_margin_ratio", "health_factor"],
+    "pages": ["portfolio", "margin"]
+  },
+  "utilization": {
+    "term": "Utilization Rate",
+    "aliases": ["utilization", "util", "pool utilization"],
+    "short": "Share of a pool that is already borrowed.",
+    "detailed": "Borrowed assets divided by supplied assets in that earn pool. Higher util usually means higher borrow APY.",
+    "why_it_matters": "Affects rates for suppliers and borrowers.",
+    "related": ["supply_apy", "borrow_rate"],
+    "pages": ["earn"]
+  },
+  "supply_apy": {
+    "term": "Supply APY",
+    "aliases": ["supply apy", "earn apy", "deposit apy", "lending apy"],
+    "short": "Yield suppliers earn for lending into a pool.",
+    "detailed": "Annualized supply rate for the Vanna earn pool. Live numbers must come from pool stats tools, not guesses.",
+    "why_it_matters": "Tells you what you earn for supplying that asset.",
+    "related": ["utilization", "vtoken"],
+    "pages": ["earn"]
+  },
+  "vtoken": {
+    "term": "vToken",
+    "aliases": ["vtoken", "v token", "vault share", "receipt token", "share token"],
+    "short": "Receipt token for assets you supply to Vanna Earn.",
+    "detailed": "When you lend, you receive vTokens that grow in value as interest accrues. Redeem them to withdraw supply.",
+    "why_it_matters": "Your earn position is tracked as vToken balance, not the raw deposit alone.",
+    "related": ["supply_apy", "exchange_rate"],
+    "pages": ["earn"]
+  },
+  "exchange_rate": {
+    "term": "Share Token Exchange Rate",
+    "aliases": ["exchange rate", "vtoken rate", "share rate"],
+    "short": "How much underlying asset one vToken is worth.",
+    "detailed": "Rises as the pool earns interest. Converts between vToken and asset amounts.",
+    "why_it_matters": "Explains why redeem amount differs from original deposit over time.",
+    "related": ["vtoken"],
+    "pages": ["earn"]
+  },
+  "btoken": {
+    "term": "bToken",
+    "aliases": ["btoken", "b token", "b-token", "blend receipt"],
+    "short": "Receipt for supplying into Blend farm reserves.",
+    "detailed": "Blend positions are tracked with bTokens / b-rate, separate from Vanna Earn vTokens.",
+    "why_it_matters": "Farm Blend is a different venue from Vanna Earn pools.",
+    "related": ["farm", "blend"],
+    "pages": ["farm"]
+  },
+  "blend": {
+    "term": "Blend",
+    "aliases": ["blend capital", "blend farm", "blend reserve", "blend pool"],
+    "short": "External farm venue for single-asset supply on Stellar.",
+    "detailed": "Vanna can deploy margin funds into Blend reserves (XLM / USDC). This is Farm, not Vanna Earn. Rates and risks differ from earn pools.",
+    "why_it_matters": "Asking about Blend APY is a farm/read question; supplying to Blend is a farm write, not margin deposit alone.",
+    "common_mistake": "Do not confuse Blend USDC (BLUSDC family) with Aquarius AQUSDC — different tokens.",
+    "related": ["btoken", "farm"],
+    "pages": ["farm"]
+  },
+  "farm": {
+    "term": "Farm",
+    "aliases": ["farming", "yield farm", "external yield"],
+    "short": "Putting capital into external venues (Blend, Aquarius LP, Soroswap) for yield.",
+    "detailed": "Farm uses your margin smart account free balance or packaged deploy flows. Separate from simple Earn supply from the wallet.",
+    "why_it_matters": "Different tools, risks, and tokens than Earn.",
+    "related": ["blend", "lp_shares"],
+    "pages": ["farm"]
+  },
+  "lp_shares": {
+    "term": "LP Shares",
+    "aliases": ["lp", "liquidity shares", "pool shares", "lp tokens"],
+    "short": "Your share of a liquidity pool (Aquarius / Soroswap).",
+    "detailed": "When you add liquidity, you receive LP shares. Remove liquidity burns them for the underlying tokens.",
+    "why_it_matters": "LP positions can face impermanent loss as prices move.",
+    "related": ["impermanent_loss", "slippage"],
+    "pages": ["farm", "trade-spot"]
+  },
+  "impermanent_loss": {
+    "term": "Impermanent Loss",
+    "aliases": ["il", "impermanent loss"],
+    "short": "LP value can lag holding both tokens when prices diverge.",
+    "detailed": "In a constant-product pool, large relative price moves can leave LPs worse than simply holding the assets.",
+    "why_it_matters": "Farm APY must be weighed against IL risk.",
+    "related": ["lp_shares"],
+    "pages": ["farm"]
+  },
+  "slippage": {
+    "term": "Slippage Tolerance",
+    "aliases": ["slippage", "slip", "price impact", "min received"],
+    "short": "How much worse execution you will accept vs quote.",
+    "detailed": "Swaps set a min-out floor (often from oracle expected_out and a percent buffer). Too tight and the tx fails; too loose and you accept worse price.",
+    "why_it_matters": "Protects you from bad fills on volatile pairs.",
+    "related": ["oracle_price"],
+    "pages": ["trade-spot"]
+  },
+  "oracle_price": {
+    "term": "Oracle Price",
+    "aliases": ["oracle", "price feed", "reflector"],
+    "short": "On-chain price used for collateral and risk.",
+    "detailed": "Vanna uses an oracle (Reflector-compatible) for USD prices of assets. Margin health and limits use these prices.",
+    "why_it_matters": "Wrong or stale oracles can misprice risk — protocol uses on-chain feeds, not arbitrary website numbers.",
+    "related": ["health_factor"],
+    "pages": ["margin", "earn", "trade-spot"]
+  },
+  "available_liquidity": {
+    "term": "Available Liquidity",
+    "aliases": ["liquidity", "available to borrow", "pool liquidity"],
+    "short": "Assets still free in a pool for borrowers to take.",
+    "detailed": "Supply minus borrows (roughly). Low liquidity can raise rates or block large borrows.",
+    "why_it_matters": "You may not borrow more than available liquidity allows.",
+    "related": ["utilization"],
+    "pages": ["earn"]
+  },
+  "pnl": {
+    "term": "Net Profit and Loss",
+    "aliases": ["pnl", "profit and loss", "p&l", "net pnl", "net profit and loss"],
+    "short": "Profit or loss on the position over time.",
+    "detailed": "On some testnet UI surfaces this may still show a placeholder zero — the assistant will say so when the page marks it as placeholder.",
+    "why_it_matters": "Realized PnL needs live accounting; placeholders must not be treated as measured profit.",
+    "related": [],
+    "pages": ["margin"]
+  },
+  "liquidation_premium": {
+    "term": "Liquidation Premium",
+    "aliases": ["liquidation premium", "liq premium"],
+    "short": "Extra incentive paid to liquidators beyond debt repaid.",
+    "detailed": "Protocols often pay liquidators a premium from the liquidated account's collateral. On this testnet UI the value may be a placeholder zero until wiring is complete.",
+    "why_it_matters": "Affects how much collateral a liquidated user loses.",
+    "related": ["liquidation", "liquidation_fee"],
+    "pages": ["margin"]
+  },
+  "liquidation_fee": {
+    "term": "Liquidation Fee",
+    "aliases": ["liquidation fee", "liq fee"],
+    "short": "Protocol fee charged during a liquidation.",
+    "detailed": "A fee taken from the liquidated position in addition to debt repayment. The margin UI may still show a placeholder until live fee accounting is wired.",
+    "why_it_matters": "Another cost of being liquidated.",
+    "related": ["liquidation", "liquidation_premium"],
+    "pages": ["margin"]
+  },
+  "blusdc": {
+    "term": "BLUSDC",
+    "aliases": ["blusdc", "blend usdc", "blend-side usdc"],
+    "short": "Blend-family USDC token on this testnet.",
+    "detailed": "One of three USDC SACs. Margin MCP often maps BLUSDC to symbol USDC. Not the same as AQUSDC or SOUSDC.",
+    "why_it_matters": "Wrong USDC variant fails deposits, LP, or earn pool selection.",
+    "common_mistake": "Aquarius LP needs AQUSDC, not BLUSDC.",
+    "related": ["aqusdc", "sousdc"],
+    "pages": ["earn", "farm", "margin"]
+  },
+  "aqusdc": {
+    "term": "AQUSDC",
+    "aliases": ["aqusdc", "aquarius usdc"],
+    "short": "Aquarius USDC SAC used for Aquarius earn/LP/margin.",
+    "detailed": "Distinct from BLUSDC and SOUSDC. Use for Aquarius-related actions.",
+    "why_it_matters": "LP and Aquarius collateral use this token, not Blend USDC.",
+    "related": ["blusdc", "sousdc"],
+    "pages": ["earn", "farm", "margin"]
+  },
+  "sousdc": {
+    "term": "SOUSDC",
+    "aliases": ["sousdc", "soroswap usdc"],
+    "short": "Soroswap USDC SAC.",
+    "detailed": "Distinct from BLUSDC and AQUSDC. Used on Soroswap-related paths.",
+    "why_it_matters": "Picking the wrong USDC variant breaks swaps or earn.",
+    "related": ["blusdc", "aqusdc"],
+    "pages": ["earn", "farm", "trade-spot"]
+  }
+}

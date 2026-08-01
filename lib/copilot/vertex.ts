@@ -316,7 +316,8 @@ async function generateJson(system: string, user: string): Promise<Record<string
   }
 }
 
-async function generateText(system: string, user: string): Promise<string> {
+/** Plain-text generation used by concept/guide lane and vertexExplain. */
+export async function generateText(system: string, user: string): Promise<string> {
   const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
   const body = {
@@ -558,12 +559,24 @@ ${TOOL_CATALOG}`;
  */
 export async function vertexSelectTool(
   message: string,
-  ctx: { smartAccount?: string | null; trader?: string | null },
+  ctx: {
+    smartAccount?: string | null;
+    trader?: string | null;
+    pageContext?: {
+      route?: string;
+      title?: string;
+      metrics?: Array<{ label: string }>;
+    } | null;
+  },
 ): Promise<RoutedIntent> {
   // Per-turn context goes last, after the stable cached prefix.
+  const pageLine = ctx.pageContext
+    ? `\nPAGE: ${ctx.pageContext.title ?? "?"} (${ctx.pageContext.route ?? "?"}) — visible metrics: ` +
+      (ctx.pageContext.metrics ?? []).map((m) => m.label).join(", ")
+    : "";
   const user = [
     `USER MESSAGE: ${message}`,
-    `CONTEXT: trader=${ctx.trader ?? "unknown"} smart_account=${ctx.smartAccount ?? "unknown"}`,
+    `CONTEXT: trader=${ctx.trader ?? "unknown"} smart_account=${ctx.smartAccount ?? "unknown"}${pageLine}`,
   ].join("\n");
 
   if (copilotConfig.router === "fc") {

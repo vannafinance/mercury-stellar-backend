@@ -22,6 +22,8 @@ import { ACCOUNT_STATS_ITEMS } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
 import { useAppModeStore } from "@/store/app-mode-store";
 import { LiteHome } from "@/components/lite-mode/lite-home";
+import { useRegisterPage } from "@/contexts/page-context";
+import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 
 export default function Home() {
   const { isDark } = useTheme();
@@ -244,6 +246,74 @@ export default function Home() {
     acc[item.id] = formatAccountStatValue(item.id, value);
     return acc;
   }, {} as Record<string, string>);
+
+  // Same assistant descriptor as /margin so answers match on both routes.
+  useRegisterPage(() => ({
+    route: "margin",
+    title: "Margin Trading",
+    purpose:
+      "Deposit collateral, borrow against it, and manage leveraged positions. " +
+      "Your Health Factor here decides whether the position can be liquidated.",
+    actions: [
+      "deposit_collateral",
+      "withdraw_collateral",
+      "borrow",
+      "repay",
+      "deposit_and_borrow",
+      "swap",
+    ],
+    metrics: [
+      {
+        label: "Net Health Factor",
+        value: accountStatsValues.netHealthFactor ?? null,
+        glossaryKey: "health_factor",
+      },
+      {
+        label: "Collateral Left Before Liquidation",
+        value: accountStatsValues.collateralLeftBeforeLiquidation ?? null,
+        glossaryKey: "collateral_left",
+      },
+      {
+        label: "Net Available Collateral",
+        value: accountStatsValues.netAvailableCollateral ?? null,
+        glossaryKey: "net_available_collateral",
+      },
+      {
+        label: "Net amount Borrowed",
+        value: accountStatsValues.netAmountBorrowed ?? null,
+        glossaryKey: "total_borrowed",
+      },
+      {
+        label: "Net Borrow Rate",
+        value:
+          effBorrowRate != null ? `${Number(effBorrowRate).toFixed(2)}%` : null,
+        glossaryKey: "borrow_rate",
+      },
+      {
+        label: "Liquidation Threshold",
+        value: `${LIQUIDATION_THRESHOLD.toFixed(2)}x`,
+        glossaryKey: "liquidation_threshold",
+      },
+      {
+        label: "Net Profit and Loss",
+        value: accountStatsValues.netProfitAndLoss ?? "$0.00",
+        isPlaceholder: true,
+        glossaryKey: "pnl",
+      },
+      {
+        label: "Liquidation Premium",
+        value: "0",
+        isPlaceholder: true,
+        glossaryKey: "liquidation_premium",
+      },
+      {
+        label: "Liquidation Fee",
+        value: "0",
+        isPlaceholder: true,
+        glossaryKey: "liquidation_fee",
+      },
+    ],
+  }));
 
   // Industry-standard P&L coloring: green when positive, red when negative,
   // neutral (default) at exactly zero.

@@ -12,6 +12,7 @@ import { setSelectedPool } from "@/store/selected-pool-store";
 import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useRegisterPage } from "@/contexts/page-context";
 
 // AQUARIUS_USDC / SOROSWAP_USDC piggyback on USDC's oracle price (no separate
 // Reflector entry exists — the alias resolves inside oracle-price.ts).
@@ -424,6 +425,55 @@ export default function Earn() {
         "Vanna Protocol's smart contracts are fully audited. Secure, transparent, and built for DeFi power users.",
     },
   ];
+
+  const xlmPool = pools.XLM;
+  const usdcPool = pools.USDC;
+  useRegisterPage(() => ({
+    route: "earn",
+    title: "Earn",
+    purpose:
+      "Supply assets to Vanna lending vaults to earn supply APY. Withdraw anytime; no lockups.",
+    actions: ["lend", "redeem", "list_earn_pools"],
+    metrics: [
+      {
+        label: "Your Deposits",
+        value: fmtUsd(totalDepositedUSD),
+      },
+      {
+        label: "Earned Yield",
+        value: fmtUsd(earnedYieldUSD),
+      },
+      {
+        label: "Supply APY",
+        value: xlmPool?.supplyAPY
+          ? `XLM ${parseFloat(xlmPool.supplyAPY).toFixed(2)}%` +
+            (usdcPool?.supplyAPY
+              ? ` · USDC ${parseFloat(usdcPool.supplyAPY).toFixed(2)}%`
+              : "")
+          : null,
+        glossaryKey: "supply_apy",
+      },
+      {
+        label: "Utilization Rate",
+        value: xlmPool?.utilizationRate
+          ? `${parseFloat(xlmPool.utilizationRate).toFixed(2)}%`
+          : null,
+        glossaryKey: "utilization",
+      },
+      {
+        label: "vToken",
+        value: "receipt of supply",
+        glossaryKey: "vtoken",
+      },
+      {
+        label: "Available Liquidity",
+        value: xlmPool?.availableLiquidity
+          ? formatTokenAmount(parseFloat(xlmPool.availableLiquidity))
+          : null,
+        glossaryKey: "available_liquidity",
+      },
+    ],
+  }));
 
   return (
     <main className="w-full px-4 sm:px-10 lg:px-30 pb-8 lg:pb-0">

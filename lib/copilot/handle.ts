@@ -30,6 +30,7 @@ import {
   defaultCapUsdFromMcp,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
+import { classifyConcept, answerConcept } from "./concept";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -216,6 +217,16 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     );
   }
 
+  // ── Concept / guide lane (no MCP, no routing LLM call) ────────────────────
+  // Ahead of vertexSelectTool AND the keyword override block below: that block
+  // rewrites "blend"/"supply"/"lend" into writes, so "what is Blend?" would
+  // otherwise become deploy_to_blend. Possessive live reads ("my health factor")
+  // deliberately miss classifyConcept and fall through to MCP.
+  const conceptHit = classifyConcept(message);
+  if (conceptHit) {
+    return answerConcept(conceptHit, message, req.page_context ?? null, request_id);
+  }
+
   // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─
   // Simple single-action prompts (swap/lend/deposit…) skip Vertex for speed.
   // Multi-goal / long / strategy language always uses Gemini so understanding is
@@ -272,7 +283,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     routed = kwFast;
   } else {
     try {
-      routed = await vertexSelectTool(message, { smartAccount, trader });
+      routed = await vertexSelectTool(message, {
+        smartAccount,
+        trader,
+        pageContext: req.page_context ?? null,
+      });
     } catch (e) {
       console.warn("[copilot] vertex route failed, keyword fallback:", e instanceof Error ? e.message : e);
       routed = kwFast;

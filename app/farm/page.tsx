@@ -18,6 +18,7 @@ import { useAllSoroswapPoolStats, useSoroswapPoolStats, useSoroswapLpPosition } 
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useRegisterPage } from "@/contexts/page-context";
 
 function fmtNum(value: number, decimals = 2): string {
   if (!Number.isFinite(value)) return '0';
@@ -424,6 +425,62 @@ export default function FarmPage() {
         "All farm strategies are built on audited, battle-tested smart contracts. Your capital is always in your control.",
     },
   ];
+
+  useRegisterPage(() => ({
+    route: "farm",
+    title: "Farm",
+    purpose:
+      "Deploy capital into Blend reserves and Aquarius/Soroswap LP pools for yield. " +
+      "Single-asset Blend supply uses BLUSDC; Aquarius LP uses AQUSDC (not interchangeable).",
+    actions: [
+      "supply_to_blend",
+      "deploy_to_blend",
+      "add_liquidity",
+      "remove_liquidity",
+      "farm_overview",
+    ],
+    metrics: [
+      {
+        label: "Deposit TVL",
+        value: farmStatsValues.depositTVL ?? null,
+      },
+      {
+        label: "Earnings",
+        value: farmStatsValues.earnings ?? "$0.00",
+        isPlaceholder: true,
+      },
+      {
+        label: "Net Farm APY",
+        value: farmStatsValues.netFarmApy ?? "0%",
+        isPlaceholder: true,
+      },
+      {
+        label: "Pending Rewards",
+        value: farmStatsValues.pendingRewards ?? "$0.00",
+        isPlaceholder: true,
+      },
+      {
+        label: "Blend",
+        value: "lending market for farm strategies",
+        glossaryKey: "blend",
+      },
+      {
+        label: "bToken",
+        value: "Blend receipt token",
+        glossaryKey: "btoken",
+      },
+      {
+        label: "LP Shares",
+        value: "claim on an Aquarius/Soroswap pool",
+        glossaryKey: "lp_shares",
+      },
+      {
+        label: "Impermanent Loss",
+        value: "LP risk when prices diverge",
+        glossaryKey: "impermanent_loss",
+      },
+    ],
+  }));
 
   return (
     <main className="w-full px-4 sm:px-10 lg:px-30 pb-8 lg:pb-0">
