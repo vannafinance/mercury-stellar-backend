@@ -216,31 +216,56 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     );
   }
 
-  // ── Route intent ────────────────────────────────────────────────────────
-  // Keyword-first for high-confidence writes (swap/lend/farm/deposit…). Vertex
-  // (Gemini) can take 15–60s and was the main reason "swap 5 USDC…" felt stuck
-  // on "Parsing intent". Only call Vertex when the keyword router is ambiguous.
+  // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─
+  // Simple single-action prompts (swap/lend/deposit…) skip Vertex for speed.
+  // Multi-goal / long / strategy language always uses Gemini so understanding is
+  // free-form — not a fixed prompt list. Keyword router still corrects venue
+  // mistakes after Vertex (Blend vs Earn, USDC variants, etc.).
   const kwFast = routeMessage(message);
+  const needsSemanticIntent = (() => {
+    const t = message.trim();
+    if (t.length > 110) return true;
+    const actionVerbs =
+      t.match(/\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow)\b/gi) ||
+      [];
+    const uniqueVerbs = new Set(actionVerbs.map((v) => v.toLowerCase()));
+    if (uniqueVerbs.size >= 2) return true;
+    if (
+      /\b(invest|strategy|rebalance|optimize|max(?:imum)?\s*profit|wherever|whatever|make sure|ensure|keeping|while|then also|and also)\b/i.test(
+        t,
+      ) &&
+      !/^\s*(swap|lend|borrow|deposit|repay|supply|farm blend)\b/i.test(t)
+    ) {
+      return true;
+    }
+    // Two independent clauses joined by and/then with risk language
+    if (/\b(and|then)\b/i.test(t) && /\b(health|liquidat|profit|yield|farm|earn|hf)\b/i.test(t)) {
+      return true;
+    }
+    return false;
+  })();
+
   const keywordConfident =
-    kwFast.kind === "write" ||
-    kwFast.kind === "restricted" ||
-    kwFast.kind === "auto_sign" ||
-    (kwFast.kind === "read" &&
-      !!kwFast.template_id &&
-      [
-        "query_all_earn_pools",
-        "query_blend",
-        "query_account_health",
-        "query_prices_batch",
-        "query_price",
-        "query_pool_stats",
-        "query_wallet_balance",
-        "query_farm_overview",
-        "query_blend_position",
-        "query_collateral_config",
-        "query_addresses",
-        "query_resolve",
-      ].includes(kwFast.template_id));
+    !needsSemanticIntent &&
+    (kwFast.kind === "write" ||
+      kwFast.kind === "restricted" ||
+      kwFast.kind === "auto_sign" ||
+      (kwFast.kind === "read" &&
+        !!kwFast.template_id &&
+        [
+          "query_all_earn_pools",
+          "query_blend",
+          "query_account_health",
+          "query_prices_batch",
+          "query_price",
+          "query_pool_stats",
+          "query_wallet_balance",
+          "query_farm_overview",
+          "query_blend_position",
+          "query_collateral_config",
+          "query_addresses",
+          "query_resolve",
+        ].includes(kwFast.template_id)));
 
   let routed: RoutedIntent;
   if (keywordConfident) {
