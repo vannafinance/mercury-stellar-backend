@@ -1186,7 +1186,7 @@ async function runWrite(
       };
     }
     // Full L−1 borrow for advertised Nx; protocol can_borrow still gates.
-    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null, 1.0);
+    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null);
     const userAsset = action.asset || "BLUSDC";
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
     // After deposit+borrow, free balance ≈ borrowed amount (collateral is locked).

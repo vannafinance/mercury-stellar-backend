@@ -152,24 +152,28 @@ export function displayUsdcLabel(mcpSymbol: string, userPick?: string | null): s
  *   2× → deposit 20, borrow 20  (total 40, equity 20 → 2×)
  *   3× → deposit 20, borrow 40  (total 60, equity 20 → 3×)
  *
- * This is NOT “borrow = L × deposit” (that would be L+1× total exposure).
+ * This is NOT “borrow = L × deposit” (that would be ~3× total if L=2).
  *
- * @param maxSafeRatio Cap borrow as a fraction of deposit for LTV headroom
- *   (default 1.0 so advertised Nx matches math; protocol still enforces can_borrow).
+ * @param maxBorrowOverDeposit Optional extra cap as multiple of deposit
+ *   (e.g. 0.8 = never borrow more than 0.8×D). Default null = no extra cap;
+ *   protocol can_borrow still enforces risk. Do not use 1.0 thinking it means
+ *   “full leverage” — that wrongly caps 3× down to borrow=D.
  */
 export function splitLeverageAmounts(
   deposit: number,
   leverage?: number | null,
   borrowExplicit?: number | null,
-  maxSafeRatio = 1.0,
+  maxBorrowOverDeposit: number | null = null,
 ): { deposit: number; borrow: number } {
   if (borrowExplicit != null && borrowExplicit > 0) {
     return { deposit, borrow: borrowExplicit };
   }
   const lev = leverage != null && leverage > 1 ? leverage : 2;
-  const rawBorrow = deposit * (lev - 1);
-  const maxSafe = deposit * Math.max(0.1, maxSafeRatio);
-  return { deposit, borrow: Math.min(rawBorrow, maxSafe) };
+  let borrow = deposit * (lev - 1);
+  if (maxBorrowOverDeposit != null && maxBorrowOverDeposit > 0) {
+    borrow = Math.min(borrow, deposit * maxBorrowOverDeposit);
+  }
+  return { deposit, borrow };
 }
 
 /** One-line human explanation of the leverage split for copilot messages. */
