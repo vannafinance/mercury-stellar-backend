@@ -1513,6 +1513,11 @@ async function runWrite(
     const stagedTitle = pickSummary
       ? `${pickSummary} → ${mapped.step.label}`
       : mapped.step.label;
+    const xdr = result.unsigned_xdr ?? null;
+    const xdrNote =
+      xdr && xdr.length > 20
+        ? `\n\nWallet sign required — full unsigned_xdr is attached (${xdr.length} chars). Use Approve & sign / Freighter; do not invent a hash.`
+        : "\n\nWallet sign required but MCP returned no unsigned_xdr — rebuild the transaction.";
     const reasons = reasonsWith(
       pickSummary
         ? [
@@ -1524,13 +1529,15 @@ async function runWrite(
     );
     return {
       kind: "needs_wallet_sign",
-      message: (highestPickNote || "") + result.message,
+      message: (highestPickNote || "") + result.message + xdrNote,
       data: factsForUi({
         ...result.build,
         ...(highestPickFacts || {}),
         action_label: mapped.step.label,
+        has_unsigned_xdr: Boolean(xdr && xdr.length > 20),
+        unsigned_xdr_chars: xdr?.length ?? 0,
       }),
-      unsigned_xdr: result.unsigned_xdr ?? null,
+      unsigned_xdr: xdr,
       mcp: mcpMeta,
       intent: {
         template_id: highestPickFacts ? "lend_highest" : action.op,
