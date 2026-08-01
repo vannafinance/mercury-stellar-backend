@@ -902,6 +902,127 @@ export function CopilotWorkspace() {
     })();
   }, [response, loading, signing, postCopilot, refreshRailStats]);
 
+  /**
+   * Liquidation guardian (auto-approve / session signing only).
+   * When the user has set a HF floor (e.g. “keep HF above 1.4”) and auto-approve
+   * is on, poll account health and auto-repay a slice of the largest debt if HF
+   * drops under the floor. Does nothing when auto-approve is off (no silent moves).
+   */
+  const guardianFiredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionSigning || !address || !effHasAccount) return;
+    if (loading || signing) return;
+
+    const readFloor = (): number => {
+      try {
+        const raw = localStorage.getItem("vanna_copilot_guardian_min_hf");
+        const n = raw != null ? Number(raw) : NaN;
+        return Number.isFinite(n) && n >= 1 ? n : 1.3;
+      } catch {
+        return 1.3;
+      }
+    };
+
+    const tick = async () => {
+      await refreshRailStats({ force: true });
+      const store = useMarginAccountInfoStore.getState();
+      const gross = store.grossCollateralValue ?? 0;
+      const debt = store.totalBorrowedValue ?? 0;
+      if (debt < 0.5) return; // no meaningful debt
+      const derived = deriveMarginHealth({
+        grossCollateralValue: gross,
+        effectiveDebtValue: debt > 0.01 ? debt : 0,
+        totalBorrowedValue: debt,
+      });
+      const hf = derived.avgHealthFactor;
+      const floor = readFloor();
+      if (!(hf > 0) || hf >= floor) return;
+
+      // Cooldown: one auto-repay per floor breach window (5 min).
+      const key = `${Math.floor(Date.now() / 300_000)}:${floor.toFixed(2)}`;
+      if (guardianFiredRef.current === key) return;
+      guardianFiredRef.current = key;
+
+      const debts = store.borrowedBalances || {};
+      let bestAsset = "USDC";
+      let bestAmt = 0;
+      for (const [sym, row] of Object.entries(debts)) {
+        const amt = Number(
+          (row as { amount?: number; balance?: number; amount_human?: string })?.amount ??
+            (row as { balance?: number })?.balance ??
+            (row as { amount_human?: string })?.amount_human ??
+            0,
+        );
+        if (Number.isFinite(amt) && amt > bestAmt) {
+          bestAmt = amt;
+          bestAsset = sym;
+        }
+      }
+      if (bestAmt <= 0) {
+        // Fall back to value-based repay of ~15% of debt in USDC family.
+        bestAmt = Math.max(1, debt * 0.15);
+        bestAsset = "AQUSDC";
+      }
+      // Repay ~20% of that debt line (min 1) to lift HF without wiping the book.
+      const repayAmt = Math.max(1, Math.min(bestAmt, bestAmt * 0.2));
+      const label = `Guardian: repay ${repayAmt.toFixed(4)} ${bestAsset} (HF ${hf.toFixed(2)} < ${floor})`;
+      toast.error(`Health factor ${hf.toFixed(2)} below floor ${floor} — auto-repaying…`, {
+        duration: 6000,
+      });
+      setSubmitted(label);
+      await postCopilot(
+        {
+          message: `repay ${repayAmt} ${bestAsset} to protect health factor above ${floor}`,
+          pending_write: {
+            op: "repay",
+            asset: bestAsset,
+            amount: repayAmt,
+            leverage: null,
+          },
+        },
+        label,
+      );
+    };
+
+    const id = window.setInterval(() => {
+      void tick();
+    }, 45_000);
+    // First check shortly after enable.
+    const t0 = window.setTimeout(() => void tick(), 8_000);
+    return () => {
+      window.clearInterval(id);
+      window.clearTimeout(t0);
+    };
+  }, [
+    sessionSigning,
+    address,
+    effHasAccount,
+    loading,
+    signing,
+    refreshRailStats,
+    postCopilot,
+  ]);
+
+  // Persist HF floor whenever the user states one in a prompt.
+  useEffect(() => {
+    if (!submitted) return;
+    const m =
+      submitted.match(
+        /(?:above|over|at least|>=?)\s*(\d+(?:\.\d+)?)/i,
+      ) ||
+      submitted.match(/health factor[^\d]*(\d+(?:\.\d+)?)/i);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n) && n >= 1 && n < 20) {
+        try {
+          localStorage.setItem("vanna_copilot_guardian_min_hf", String(n));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }, [submitted]);
+
   const reset = () => {
     setSubmitted(null);
     setResponse(null);
@@ -1616,15 +1737,31 @@ export function CopilotWorkspace() {
             </button>
             <p className="mt-3 text-body-2 text-vgray-500">
               {sessionSigning
-                ? "Writes that clear the Sign Service policy execute without a signing prompt. Anything outside those caps still waits for you."
+                ? "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
                 : sessionSigningAvailable
-                  ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves."
-                  : "Every write is signed in your wallet. Session signing is available for Vanna embedded wallets."}
+                  ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
+                  : "Every write is signed in your wallet. Session signing (and HF guardian) is available for Vanna embedded wallets."}
             </p>
             <div className="mt-4 flex flex-col">
               <Row
                 k="signing"
                 v={sessionSigning ? "session key" : "wallet prompt"}
+                color={sessionSigning ? VIOLET : undefined}
+              />
+              <Row
+                k="guardian"
+                v={
+                  sessionSigning
+                    ? (() => {
+                        try {
+                          const f = localStorage.getItem("vanna_copilot_guardian_min_hf");
+                          return f ? `auto-repay if HF < ${f}` : "auto-repay if HF < 1.3";
+                        } catch {
+                          return "auto-repay if HF < 1.3";
+                        }
+                      })()
+                    : "off (enable auto-approve)"
+                }
                 color={sessionSigning ? VIOLET : undefined}
               />
               <Row k="signer" v={walletKind === "privy" ? "vanna embedded" : address ? "freighter" : "—"} />

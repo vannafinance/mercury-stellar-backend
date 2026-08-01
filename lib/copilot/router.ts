@@ -197,15 +197,23 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // DEX swap (margin account free balance).
-  // “swap 10 XLM to AQUSDC” / “swap 5 BLUSDC for XLM”
+  // DEX swap (margin account free balance) — website Trade: XLM ↔ USDC via Aquarius or Soroswap.
+  // “swap 10 XLM to USDC via aquarius” / “swap 5 USDC to XLM on soroswap”
   const swapMatch = raw.match(
     /\bswap\s+(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b(?:\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA))?/i,
   );
   if (swapMatch || (any(text, "swap") && !any(text, "liquidity") && asset && amount != null)) {
     const amountIn = swapMatch ? Number(swapMatch[1]) : amount;
     const tokenIn = (swapMatch?.[2] || asset || "XLM").toUpperCase();
-    const tokenOut = (swapMatch?.[3] || (tokenIn === "XLM" ? "AQUSDC" : "XLM")).toUpperCase();
+    const tokenOut = (
+      swapMatch?.[3] ||
+      (tokenIn === "XLM" ? "USDC" : "XLM")
+    ).toUpperCase();
+    const venue = any(text, "soroswap", "soro swap", "on soroswap", "via soroswap")
+      ? "soroswap"
+      : any(text, "aquarius", "on aquarius", "via aquarius")
+        ? "aquarius"
+        : "aquarius";
     return {
       kind: "write",
       op: "swap",
@@ -215,6 +223,7 @@ export function routeMessage(message: string): RoutedIntent {
       token_a: tokenIn,
       token_b: tokenOut,
       amount_a: amountIn != null && Number.isFinite(amountIn) ? amountIn : null,
+      venue,
       requires_account: true,
       requires_amount: true,
     };

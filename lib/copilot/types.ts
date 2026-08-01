@@ -64,6 +64,8 @@ export interface CopilotAction {
   min_hf?: number | null;
   /** Prefer max-yield venue selection (earn vs farm ranking). */
   prefer_max_yield?: boolean | null;
+  /** DEX venue: aquarius | soroswap */
+  venue?: string | null;
 }
 
 export interface RiskResult {
@@ -224,6 +226,7 @@ export type RoutedIntent =
       prefer_max_yield?: boolean | null;
       token_in?: string | null;
       token_out?: string | null;
+      venue?: string | null;
     }
   | {
       kind: "plan";

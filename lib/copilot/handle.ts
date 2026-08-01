@@ -105,6 +105,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       amount_a: req.pending_write.amount_a ?? null,
       amount_b: req.pending_write.amount_b ?? null,
       fraction: req.pending_write.fraction ?? null,
+      min_hf: parseMinHealthFactor(message) ?? null,
     };
     const writeRes = await runWrite(action, {
       userId,
@@ -389,6 +390,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       fraction: routed.fraction ?? null,
       min_hf: minHf,
       prefer_max_yield: routed.prefer_max_yield ?? null,
+      venue: routed.venue ?? null,
     };
     return runWrite(action, { userId, trader, smartAccount, request_id, message });
   }
@@ -1013,14 +1015,23 @@ async function runWrite(
     );
   if ((action.op === "lend" || action.op === "supply" || action.op === "deploy_to_blend") && wantsMaxYield) {
     try {
-      const includeFarm = /\bfarm|blend|wherever|market pool/i.test(ctx.message);
+      const namedFarm = /\bfarm|blend\b/i.test(ctx.message);
+      const riskAverse =
+        action.min_hf != null ||
+        /\b(no liquidat|avoid liquidat|never liquidat|maximum profit with no|safe|keep.*health)/i.test(
+          ctx.message,
+        );
+      // Wallet "invest N XLM" is earn-lend by default. Blend supply needs free C-balance
+      // and often hits Soroban Budget on plain execute — don't auto-route there when the
+      // user also asked for no liquidation / HF floor unless they only said farm.
+      const includeFarm = namedFarm && !riskAverse && (action.leverage == null || action.leverage <= 1);
       const pick = await pickBestYieldVenue(getMcpClient(), ctx.userId, {
         includeFarm,
         preferredAsset: action.asset,
+        preferEarn: riskAverse || !namedFarm,
       });
       if (pick) {
-        if (pick.venue === "blend") {
-          // Switch to plain Blend supply (no leverage unless user asked).
+        if (pick.venue === "blend" && !riskAverse) {
           action = {
             ...action,
             op: "deploy_to_blend",
@@ -1029,18 +1040,38 @@ async function runWrite(
             requires_account: true,
           };
         } else {
-          action = { ...action, op: "lend", asset: pick.symbol, requires_account: false };
+          // Risk-averse or Earn winner: lend from wallet (no leverage, no Blend budget).
+          action = {
+            ...action,
+            op: "lend",
+            asset: pick.symbol === "BLUSDC" && action.asset === "XLM" ? "XLM" : pick.symbol,
+            requires_account: false,
+            leverage: null,
+          };
+          // Prefer matching the user's asset when ranking was earn XLM.
+          if (action.asset && /\bxlm\b/i.test(ctx.message) && pick.symbol !== "XLM") {
+            // Keep highest earn even if not XLM — note in summary.
+          }
         }
         highestPickNote =
-          `I compared live yields and chose ${pick.venue === "blend" ? "Blend farm" : "Vanna Earn"} ` +
-          `${pick.symbol} at ~${pick.supply_apy_pct}% supply APY.\n` +
-          `Ranking: ${pick.ranking}.\n\n`;
+          `I compared live yields` +
+          (riskAverse
+            ? ` (preferring Vanna Earn because you asked for HF safety / no liquidation)`
+            : "") +
+          ` and chose ${pick.venue === "blend" && !riskAverse ? "Blend farm" : "Vanna Earn"} ` +
+          `${action.asset} at ~${pick.supply_apy_pct}% supply APY.\n` +
+          `Ranking: ${pick.ranking}.\n` +
+          (namedFarm && riskAverse
+            ? `Note: Blend often shows higher APY but needs free C-balance and can hit Soroban budget; Earn is the reliable “max profit without liquidation” path for wallet funds.\n`
+            : "") +
+          `\n`;
         highestPickFacts = {
-          chosen_pool: pick.symbol,
-          chosen_venue: pick.venue,
+          chosen_pool: action.asset,
+          chosen_venue: pick.venue === "blend" && !riskAverse ? "blend" : "earn",
           chosen_supply_apy_pct: pick.supply_apy_pct,
           pool_ranking: pick.ranking,
           selection: "max_yield_agent",
+          risk_averse: riskAverse,
         };
       }
     } catch {
@@ -1189,11 +1220,10 @@ async function runWrite(
       amount_a: action.amount_a,
       amount_b: action.amount_b,
       fraction: action.fraction,
+      venue: action.venue,
     },
     { trader: ctx.trader, smartAccount },
   );
-
-  // Prefix agent ranking note onto successful mapping messages later via highestPickNote.
 
   if (mapped.blocker || !mapped.step) {
     return {
@@ -1637,7 +1667,12 @@ async function pickHighestEarnPool(
 async function pickBestYieldVenue(
   mcp: ReturnType<typeof getMcpClient>,
   userId: string,
-  opts: { includeFarm?: boolean; preferredAsset?: string | null } = {},
+  opts: {
+    includeFarm?: boolean;
+    preferredAsset?: string | null;
+    /** When true, only Earn rows win (still show Blend in ranking if loaded). */
+    preferEarn?: boolean;
+  } = {},
 ): Promise<{
   symbol: string;
   venue: "earn" | "blend";
@@ -1669,7 +1704,8 @@ async function pickBestYieldVenue(
     }
   }
 
-  if (opts.includeFarm) {
+  if (opts.includeFarm || opts.preferEarn) {
+    // Always load Blend for ranking transparency when farm was mentioned.
     try {
       const blend = await mcp.call("vanna_list_blend_reserves", {}, userId);
       const reserves = Array.isArray(blend.reserves)
@@ -1677,7 +1713,6 @@ async function pickBestYieldVenue(
         : [];
       for (const r of reserves) {
         const symRaw = String(r.symbol || "").toUpperCase();
-        // Map Blend USDC reserve → BLUSDC label (distinct from AQUSDC/SOUSDC).
         const symbol = symRaw === "USDC" ? "BLUSDC" : symRaw || "XLM";
         const apyRaw = (r.supply_apy_pct ?? r.supply_apr_pct) as string | number;
         const apy = Number(apyRaw);
@@ -1692,20 +1727,27 @@ async function pickBestYieldVenue(
 
   if (!rows.length) return null;
 
-  // If user named an asset, prefer that asset's best venue still.
   const prefer = (opts.preferredAsset || "").toUpperCase();
-  let pool = [...rows].sort((a, b) => b.apy - a.apy);
-  if (prefer && prefer !== "USDC") {
-    const filtered = pool.filter((r) => r.symbol === prefer || (prefer === "BLUSDC" && r.symbol === "BLUSDC"));
-    if (filtered.length) pool = filtered.sort((a, b) => b.apy - a.apy);
-  }
-
-  const best = pool[0]!;
-  const ranking = rows
+  const ranking = [...rows]
     .sort((a, b) => b.apy - a.apy)
     .slice(0, 8)
     .map((r) => `${r.venue}/${r.symbol} ${r.apyRaw}%`)
     .join(" · ");
+
+  // Candidates for execution
+  let candidates = opts.preferEarn ? rows.filter((r) => r.venue === "earn") : [...rows];
+  if (!candidates.length) candidates = rows.filter((r) => r.venue === "earn");
+  if (!candidates.length) candidates = [...rows];
+
+  candidates.sort((a, b) => b.apy - a.apy);
+  if (prefer && prefer !== "USDC") {
+    const filtered = candidates.filter(
+      (r) => r.symbol === prefer || (prefer === "XLM" && r.symbol === "XLM"),
+    );
+    if (filtered.length) candidates = filtered.sort((a, b) => b.apy - a.apy);
+  }
+
+  const best = candidates[0]!;
   return {
     symbol: best.symbol,
     venue: best.venue,

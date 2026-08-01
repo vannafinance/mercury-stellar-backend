@@ -315,6 +315,8 @@ export function mapOpToMcpStep(
     amount_b?: number | null;
     /** e.g. 0.5 for remove half LP */
     fraction?: number | null;
+    /** aquarius | soroswap for DEX swap / LP */
+    venue?: string | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
@@ -457,9 +459,12 @@ export function mapOpToMcpStep(
       if (aRaw === "BLUSDC" || bRaw === "BLUSDC") {
         return {
           blocker:
-            "You named BLUSDC (Blend USDC). Aquarius LP uses AQUSDC (Aquarius USDC) — different SACs. " +
-            "Retry e.g. “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”. " +
-            "For Blend farm use “supply N BLUSDC to Blend” or “farm Blend at 2x with N BLUSDC”.",
+            "BLUSDC is the Blend-side USDC SAC (margin MCP symbol “USDC” — valid collateral). " +
+            "Aquarius AMM LP is a different pool that spends AQUSDC, not BLUSDC. " +
+            "Options:\n" +
+            "  • LP on Aquarius: “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n" +
+            "  • Or swap first: “swap 5 USDC to AQUSDC via aquarius” then add liquidity\n" +
+            "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”",
         };
       }
       const isSouswap =
@@ -550,17 +555,34 @@ export function mapOpToMcpStep(
       }
       const tokenIn = (params.token_a || params.asset || "XLM").toUpperCase();
       const tokenOut = (params.token_b || "USDC").toUpperCase();
+      const venueRaw = String((params as { venue?: string }).venue || "aquarius").toLowerCase();
+      const venue = venueRaw.includes("soro") ? "soroswap" : "aquarius";
       if (!amount || !(Number(amount) > 0)) {
         return {
-          blocker: `How much ${tokenIn} do you want to swap? e.g. “swap 10 XLM to AQUSDC”.`,
+          blocker:
+            `How much ${tokenIn} do you want to swap? ` +
+            `e.g. “swap 10 XLM to USDC via aquarius” or “swap 5 USDC to XLM on soroswap”.`,
         };
       }
-      // Map BLUSDC → USDC for Blend-side SAC on margin swap paths; keep AQ/SO explicit.
-      const inSym = tokenIn === "BLUSDC" ? "USDC" : tokenIn;
-      const outSym = tokenOut === "BLUSDC" ? "USDC" : tokenOut;
+      // Website Trade/Swap: XLM ↔ USDC, venue Aquarius or Soroswap.
+      // Map UI variants to the venue's USDC SAC (same as one-click-strategy).
+      const mapUsdForVenue = (t: string): string => {
+        if (t === "XLM" || t === "AQUA") return t;
+        if (venue === "soroswap") {
+          if (t === "SOUSDC" || t === "USDC" || t === "BLUSDC" || t === "AQUSDC") return "SOUSDC";
+        } else {
+          // Aquarius DEX uses AQUSDC
+          if (t === "AQUSDC" || t === "USDC" || t === "BLUSDC" || t === "SOUSDC") return "AQUSDC";
+        }
+        return t === "BLUSDC" ? "USDC" : t;
+      };
+      const inSym = mapUsdForVenue(tokenIn);
+      const outSym = mapUsdForVenue(tokenOut);
       if (inSym === outSym) {
-        return { blocker: `Cannot swap ${tokenIn} to itself — pick a different output token.` };
+        return { blocker: `Cannot swap ${tokenIn} to itself on ${venue} — pick XLM ↔ USDC.` };
       }
+      const uiIn = tokenIn === "USDC" || tokenIn === "BLUSDC" ? "USDC" : tokenIn;
+      const uiOut = tokenOut === "USDC" || tokenOut === "BLUSDC" ? "USDC" : tokenOut;
       return {
         step: {
           tool: "vanna_swap",
@@ -571,8 +593,10 @@ export function mapOpToMcpStep(
             amount_in: amount,
             min_amount_out: "0",
             trader,
+            venue,
+            protocol: venue,
           },
-          label: `Swap ${amount} ${tokenIn} → ${tokenOut}`,
+          label: `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`,
         },
       };
     }
@@ -802,10 +826,19 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
         );
       }
       if (/Budget|ExceededLimit|resource/i.test(raw)) {
+        if (tool === "vanna_deploy_to_blend") {
+          return (
+            `Blend levered deploy hit the Soroban CPU budget (ExceededLimit). ` +
+            `Use the split plan instead: “farm Blend at 2x with 20 BLUSDC” ` +
+            `(deposit → borrow → supply as separate txs).\n\nDetail: ${firstLine}`
+          );
+        }
         return (
-          `Blend atomic deploy hit the Soroban CPU budget (ExceededLimit). ` +
-          `The copilot now splits this into deposit → borrow → supply instead. ` +
-          `Retry “farm Blend at 2x with 20 BLUSDC” (or similar).\n\nDetail: ${firstLine}`
+          `Blend supply simulation hit the Soroban CPU budget (ExceededLimit) on this pool. ` +
+          `Plain supply from free C-balance can still fail under load. ` +
+          `Safer path for wallet XLM/USDC: lend to the Vanna earn pool instead ` +
+          `(“lend 20 XLM” or “invest 20 XLM where yield is highest” without forcing farm). ` +
+          `For levered farm: “farm Blend at 2x with 20 BLUSDC”.\n\nDetail: ${firstLine}`
         );
       }
       return (
