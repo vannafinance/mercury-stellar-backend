@@ -169,6 +169,8 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_lp_balance: { tool: "vanna_farm_lp", action: "get_lp_balance" },
   vanna_add_liquidity: { tool: "vanna_farm_lp", action: "add_liquidity" },
   vanna_remove_liquidity: { tool: "vanna_farm_lp", action: "remove_liquidity" },
+  // DEX swap via margin account
+  vanna_swap: { tool: "vanna_swap", action: "swap" },
   // wallet identity / balances
   vanna_get_wallet_balance: { tool: "vanna_wallet", action: "balance" },
   vanna_get_token_balance: { tool: "vanna_wallet", action: "token_balance" },

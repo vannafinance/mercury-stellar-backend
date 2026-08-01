@@ -791,8 +791,8 @@ export function CopilotWorkspace() {
             request_id: response?.request_id,
             next_step: nextStep,
           });
-          // Let the deposit settle before building the borrow against new collateral.
-          await new Promise((r) => setTimeout(r, 5000));
+          // Brief settle before the next leg (multi-leg farm / deposit→borrow).
+          await new Promise((r) => setTimeout(r, 2200));
           await refreshRailStats({ force: true });
           setSubmitted(label);
           await postCopilot(
@@ -880,10 +880,10 @@ export function CopilotWorkspace() {
     const label =
       next.label ||
       `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
-    toast.success("Step 1 confirmed — running next step…", { duration: 4000 });
+    toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
     void (async () => {
-      // Let the ledger settle before building the next leg.
-      await new Promise((r) => setTimeout(r, 5000));
+      // Brief ledger settle; 5s felt too slow for multi-leg farm chains.
+      await new Promise((r) => setTimeout(r, 2200));
       await refreshRailStats({ force: true });
       setSubmitted(label);
       await postCopilot(

@@ -29,7 +29,7 @@ import {
   USDC_VARIANT_OPTIONS,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
-import { findUnsupportedAsset, routeMessage } from "./router";
+import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
   BrainHealth,
@@ -215,8 +215,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
     if (kw.kind === "read" && kw.template_id === "query_all_earn_pools") {
       routed = kw;
-    } else if (kw.kind === "write" && (kw.op === "add_liquidity" || kw.op === "remove_liquidity")) {
-      // Aquarius LP must never become deposit_collateral (screenshot #32).
+    } else if (kw.kind === "write" && (kw.op === "add_liquidity" || kw.op === "remove_liquidity" || kw.op === "swap")) {
+      // LP / swap must never become deposit_collateral.
+      routed = kw;
+    } else if (kw.kind === "write" && kw.template_id === "invest_max_yield") {
       routed = kw;
     } else if (kw.kind === "write" && (kw.op === "deploy_to_blend" || kw.op === "supply_to_blend")) {
       // Always honor keyword farm write; fix bare USDC when BLUSDC was named.
@@ -369,6 +371,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   if (routed.kind === "write") {
+    const minHf = routed.min_hf ?? parseMinHealthFactor(message);
     const action: CopilotAction = {
       op: routed.op,
       asset: routed.asset ?? null,
@@ -384,6 +387,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       amount_a: routed.amount_a ?? null,
       amount_b: routed.amount_b ?? null,
       fraction: routed.fraction ?? null,
+      min_hf: minHf,
+      prefer_max_yield: routed.prefer_max_yield ?? null,
     };
     return runWrite(action, { userId, trader, smartAccount, request_id, message });
   }
@@ -684,6 +689,32 @@ async function runRead(
       prose = explainRead(routed.tool, data, ctx.message);
     }
     prose = prose.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
+
+    // Liquidation / HF guardrails on health reads (standing safety agent).
+    if (routed.tool === "vanna_get_account_health") {
+      const hf = Number(
+        (data as Record<string, unknown>).health_factor ??
+          (data as Record<string, unknown>).hf ??
+          (data as Record<string, unknown>).avg_health_factor,
+      );
+      const userFloor = parseMinHealthFactor(ctx.message);
+      const floor = userFloor ?? 1.3;
+      if (Number.isFinite(hf)) {
+        if (hf < 1.0) {
+          prose +=
+            `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is liquidatable. ` +
+            `Repay debt or deposit collateral now (e.g. “repay 5 AQUSDC” or “deposit 20 XLM as collateral”). ` +
+            `I will not auto-move funds without your go-ahead on this turn; say “repay what I need to get safe” to act.`;
+        } else if (hf < floor) {
+          prose +=
+            `\n\nCaution: HF ${hf.toFixed(2)} is below your safety floor (${floor}). ` +
+            `Avoid new borrows; consider repay or more collateral to stay clear of liquidation.`;
+        } else if (userFloor != null) {
+          prose += `\n\nYour floor HF ≥ ${userFloor} is currently satisfied (HF ${hf.toFixed(2)}).`;
+        }
+      }
+    }
+
     return {
       kind: "answer",
       message: prose,
@@ -798,8 +829,8 @@ async function runWrite(
 
   // Bare "USDC" is ambiguous (three SACs). Always ask — except highest-yield
   // path ranks concrete pools first and rewrites asset to BLUSDC/AQUSDC/SOUSDC.
-  // LP pair "XLM/USDC" legitimately uses MCP symbol USDC (Aquarius pool) —
-  // do not force BLUSDC/AQUSDC/SOUSDC chips on add/remove liquidity.
+  // LP / swap keep explicit token legs — do not force USDC variant chips on them
+  // when asset is already AQUSDC/BLUSDC/SOUSDC. Bare USDC on lend/deposit still chips.
   const usdcOps = new Set([
     "lend",
     "supply",
@@ -971,30 +1002,45 @@ async function runWrite(
     return step1Res;
   }
 
-  // Sanujit EW5: "Supply 10 USDC to the highest-yielding pool" — read APYs first,
-  // name the chosen earn pool, then build lend for that pool.
-  // Tolerates typos like "highest- yielding" (hyphen + space).
+  // Max-yield / “invest where I earn most” / Sanujit EW5 highest-yielding pool.
+  // Ranks Vanna Earn (+ optional Blend when user said farm) then rewrites asset/op.
   let highestPickNote = "";
   let highestPickFacts: Record<string, unknown> | null = null;
-  if (
-    (action.op === "lend" || action.op === "supply") &&
-    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy|highest-?\s*yielding/i.test(
+  const wantsMaxYield =
+    action.prefer_max_yield === true ||
+    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy|highest-?\s*yielding|max(?:imum)?\s*yield|best\s*return|invest.*(?:most|max|best)|earn me/i.test(
       ctx.message,
-    )
-  ) {
+    );
+  if ((action.op === "lend" || action.op === "supply" || action.op === "deploy_to_blend") && wantsMaxYield) {
     try {
-      const pick = await pickHighestEarnPool(getMcpClient(), ctx.userId);
+      const includeFarm = /\bfarm|blend|wherever|market pool/i.test(ctx.message);
+      const pick = await pickBestYieldVenue(getMcpClient(), ctx.userId, {
+        includeFarm,
+        preferredAsset: action.asset,
+      });
       if (pick) {
-        action = { ...action, asset: pick.symbol };
+        if (pick.venue === "blend") {
+          // Switch to plain Blend supply (no leverage unless user asked).
+          action = {
+            ...action,
+            op: "deploy_to_blend",
+            asset: pick.symbol,
+            leverage: action.leverage != null && action.leverage > 1 ? action.leverage : null,
+            requires_account: true,
+          };
+        } else {
+          action = { ...action, op: "lend", asset: pick.symbol, requires_account: false };
+        }
         highestPickNote =
-          `Compared Vanna earn pools — chose ${pick.symbol} ` +
-          `(supply APY ~${pick.supply_apy_pct}%).\n` +
+          `I compared live yields and chose ${pick.venue === "blend" ? "Blend farm" : "Vanna Earn"} ` +
+          `${pick.symbol} at ~${pick.supply_apy_pct}% supply APY.\n` +
           `Ranking: ${pick.ranking}.\n\n`;
         highestPickFacts = {
           chosen_pool: pick.symbol,
+          chosen_venue: pick.venue,
           chosen_supply_apy_pct: pick.supply_apy_pct,
           pool_ranking: pick.ranking,
-          selection: "highest_earn_supply_apy",
+          selection: "max_yield_agent",
         };
       }
     } catch {
@@ -1146,6 +1192,8 @@ async function runWrite(
     },
     { trader: ctx.trader, smartAccount },
   );
+
+  // Prefix agent ranking note onto successful mapping messages later via highestPickNote.
 
   if (mapped.blocker || !mapped.step) {
     return {
@@ -1576,31 +1624,93 @@ async function pickHighestEarnPool(
   mcp: ReturnType<typeof getMcpClient>,
   userId: string,
 ): Promise<{ symbol: string; supply_apy_pct: string | number; ranking: string } | null> {
-  // Query each concrete pool; map MCP "USDC" alias → BLUSDC for user clarity.
-  const pools = [
+  const pick = await pickBestYieldVenue(mcp, userId, { includeFarm: false });
+  if (!pick) return null;
+  return { symbol: pick.symbol, supply_apy_pct: pick.supply_apy_pct, ranking: pick.ranking };
+}
+
+/**
+ * Agent ranking: Earn pools always; Blend reserves when `includeFarm` (user said farm /
+ * invest wherever). Winner drives auto-route lend vs supply_to_blend.
+ * BLUSDC / AQUSDC / SOUSDC stay distinct — never merged.
+ */
+async function pickBestYieldVenue(
+  mcp: ReturnType<typeof getMcpClient>,
+  userId: string,
+  opts: { includeFarm?: boolean; preferredAsset?: string | null } = {},
+): Promise<{
+  symbol: string;
+  venue: "earn" | "blend";
+  supply_apy_pct: string | number;
+  ranking: string;
+} | null> {
+  const rows: Array<{
+    symbol: string;
+    venue: "earn" | "blend";
+    apy: number;
+    apyRaw: string | number;
+  }> = [];
+
+  const earnPools = [
     { query: "XLM", display: "XLM" },
     { query: "USDC", display: "BLUSDC" },
     { query: "AQUSDC", display: "AQUSDC" },
     { query: "SOUSDC", display: "SOUSDC" },
   ] as const;
-  const rows: Array<{ symbol: string; apy: number; apyRaw: string | number }> = [];
-  for (const p of pools) {
+  for (const p of earnPools) {
     try {
       const data = await mcp.call("vanna_get_pool_stats", { symbol: p.query }, userId);
       if (data.error) continue;
       const apyRaw = (data.supply_apy_pct ?? data.supply_apr_pct) as string | number;
       const apy = Number(apyRaw);
-      if (Number.isFinite(apy)) rows.push({ symbol: p.display, apy, apyRaw });
+      if (Number.isFinite(apy)) rows.push({ symbol: p.display, venue: "earn", apy, apyRaw });
     } catch {
       /* skip */
     }
   }
+
+  if (opts.includeFarm) {
+    try {
+      const blend = await mcp.call("vanna_list_blend_reserves", {}, userId);
+      const reserves = Array.isArray(blend.reserves)
+        ? (blend.reserves as Array<Record<string, unknown>>)
+        : [];
+      for (const r of reserves) {
+        const symRaw = String(r.symbol || "").toUpperCase();
+        // Map Blend USDC reserve → BLUSDC label (distinct from AQUSDC/SOUSDC).
+        const symbol = symRaw === "USDC" ? "BLUSDC" : symRaw || "XLM";
+        const apyRaw = (r.supply_apy_pct ?? r.supply_apr_pct) as string | number;
+        const apy = Number(apyRaw);
+        if (Number.isFinite(apy)) {
+          rows.push({ symbol, venue: "blend", apy, apyRaw });
+        }
+      }
+    } catch {
+      /* skip farm */
+    }
+  }
+
   if (!rows.length) return null;
-  rows.sort((a, b) => b.apy - a.apy);
+
+  // If user named an asset, prefer that asset's best venue still.
+  const prefer = (opts.preferredAsset || "").toUpperCase();
+  let pool = [...rows].sort((a, b) => b.apy - a.apy);
+  if (prefer && prefer !== "USDC") {
+    const filtered = pool.filter((r) => r.symbol === prefer || (prefer === "BLUSDC" && r.symbol === "BLUSDC"));
+    if (filtered.length) pool = filtered.sort((a, b) => b.apy - a.apy);
+  }
+
+  const best = pool[0]!;
+  const ranking = rows
+    .sort((a, b) => b.apy - a.apy)
+    .slice(0, 8)
+    .map((r) => `${r.venue}/${r.symbol} ${r.apyRaw}%`)
+    .join(" · ");
   return {
-    symbol: rows[0].symbol,
-    supply_apy_pct: rows[0].apyRaw,
-    ranking: rows.map((r) => `${r.symbol} ${r.apyRaw}%`).join(" · "),
+    symbol: best.symbol,
+    venue: best.venue,
+    supply_apy_pct: best.apyRaw,
+    ranking,
   };
 }
 

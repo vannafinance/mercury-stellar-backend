@@ -188,15 +188,49 @@ export async function evaluateWriteRisk(
     asset,
   };
 
-  if (hfAfter != null && hfAfter < 1.0) {
+  // User-stated floor (“keep HF above 1.5”) beats default config floor.
+  const userFloor =
+    action.min_hf != null && Number.isFinite(action.min_hf) && action.min_hf > 0
+      ? action.min_hf
+      : null;
+  const policyFloor = copilotConfig.minHealthFactor;
+  const hardFloor = 1.0;
+
+  // Already close to liquidation — warn before any debt-increasing write.
+  if (
+    hfBefore != null &&
+    hfBefore < 1.2 &&
+    (action.op === "borrow" ||
+      action.op === "deposit_and_borrow" ||
+      action.op === "withdraw_collateral" ||
+      action.op === "deploy_to_blend")
+  ) {
+    reasons.unshift(
+      `Account HF is already ${hfBefore.toFixed(2)} (near liquidation). Prefer repay or add collateral before increasing risk.`,
+    );
+    if (hfBefore < hardFloor) {
+      decision = "block";
+      reasons.unshift(`HF ${hfBefore.toFixed(2)} < 1.00 — liquidatable now. Repay debt or deposit collateral first.`);
+    } else if (decision !== "block") {
+      decision = "needs_confirmation";
+    }
+  }
+
+  if (hfAfter != null && hfAfter < hardFloor) {
     decision = "block";
     reasons.unshift(
       `projected health factor ${hfAfter.toFixed(2)} < 1.00 — would be instantly liquidatable`,
     );
-  } else if (hfAfter != null && hfAfter < copilotConfig.minHealthFactor) {
+  } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
+    decision = "block";
+    reasons.unshift(
+      `projected HF ${hfAfter.toFixed(2)} would breach your floor of ${userFloor.toFixed(2)} ` +
+        `(“keep health factor above ${userFloor}”). Lower size, add collateral, or raise your floor.`,
+    );
+  } else if (hfAfter != null && hfAfter < policyFloor) {
     if (decision !== "block") decision = "needs_confirmation";
     reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} below safety floor ${copilotConfig.minHealthFactor}`,
+      `projected health factor ${hfAfter.toFixed(2)} below safety floor ${policyFloor}`,
     );
   }
 

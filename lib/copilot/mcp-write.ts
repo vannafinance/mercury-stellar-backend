@@ -449,17 +449,37 @@ export function mapOpToMcpStep(
         return {
           blocker:
             "How much of each token? e.g. “add 20 XLM and 5 AQUSDC to Aquarius XLM/USDC”. " +
-            "Aquarius spends free XLM + AQUSDC inside the margin account (not BLUSDC).",
+            "Aquarius LP needs free XLM + AQUSDC in the margin account. " +
+            "BLUSDC is a different token (Blend USDC) — do not substitute.",
         };
       }
-      // Normalize pair: XLM + Aquarius USDC (AQUSDC). BLUSDC/bare USDC → AQUSDC
-      // (same as one-click-strategy poolTokenSymbol for Aquarius LP).
+      // BLUSDC ≠ AQUSDC ≠ SOUSDC. Never silently map BLUSDC → AQUSDC.
+      if (aRaw === "BLUSDC" || bRaw === "BLUSDC") {
+        return {
+          blocker:
+            "You named BLUSDC (Blend USDC). Aquarius LP uses AQUSDC (Aquarius USDC) — different SACs. " +
+            "Retry e.g. “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”. " +
+            "For Blend farm use “supply N BLUSDC to Blend” or “farm Blend at 2x with N BLUSDC”.",
+        };
+      }
       const isSouswap =
         aRaw === "SOUSDC" ||
         bRaw === "SOUSDC" ||
         aRaw === "SOROSWAP_USDC" ||
         bRaw === "SOROSWAP_USDC";
-      const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
+      // Bare USDC with Aquarius venue → AQUSDC; with Soroswap → SOUSDC.
+      // Explicit AQUSDC / SOUSDC always win.
+      let usdSym: string;
+      if (aRaw === "AQUSDC" || bRaw === "AQUSDC" || aRaw === "AQUARIUS_USDC" || bRaw === "AQUARIUS_USDC") {
+        usdSym = "AQUSDC";
+      } else if (isSouswap) {
+        usdSym = "SOUSDC";
+      } else if (aRaw === "USDC" || bRaw === "USDC") {
+        // Ambiguous bare USDC on LP — Aquarius is the default farm LP on testnet.
+        usdSym = "AQUSDC";
+      } else {
+        usdSym = "AQUSDC";
+      }
       const amountXlm = aRaw === "XLM" ? aa : bRaw === "XLM" ? bb : aa;
       const amountUsd = aRaw === "XLM" ? bb : bRaw === "XLM" ? aa : bb;
       return {
@@ -473,7 +493,7 @@ export function mapOpToMcpStep(
             amount_b: String(amountUsd),
             min_liquidity_out: "0",
             trader,
-            venue: isSouswap ? "soroswap" : "aquarius",
+            venue: usdSym === "SOUSDC" ? "soroswap" : "aquarius",
           },
           label: `Add ${amountXlm} XLM + ${amountUsd} ${usdSym} LP`,
         },
@@ -482,6 +502,14 @@ export function mapOpToMcpStep(
     case "remove_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
       const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
+      if (bRaw === "BLUSDC") {
+        return {
+          blocker:
+            "BLUSDC is Blend USDC, not an Aquarius LP token. " +
+            "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
+            "or name AQUSDC/SOUSDC explicitly.",
+        };
+      }
       const isSouswap = bRaw === "SOUSDC" || bRaw === "SOROSWAP_USDC";
       const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
       const frac =
@@ -513,6 +541,38 @@ export function mapOpToMcpStep(
           label: frac
             ? `Remove ${Math.round(frac * 100)}% XLM/${usdSym} LP`
             : `Remove ${lpAmt} XLM/${usdSym} LP`,
+        },
+      };
+    }
+    case "swap": {
+      if (!trader || !smart) {
+        return { blocker: "Need wallet + smart account to swap. Create a margin account first." };
+      }
+      const tokenIn = (params.token_a || params.asset || "XLM").toUpperCase();
+      const tokenOut = (params.token_b || "USDC").toUpperCase();
+      if (!amount || !(Number(amount) > 0)) {
+        return {
+          blocker: `How much ${tokenIn} do you want to swap? e.g. “swap 10 XLM to AQUSDC”.`,
+        };
+      }
+      // Map BLUSDC → USDC for Blend-side SAC on margin swap paths; keep AQ/SO explicit.
+      const inSym = tokenIn === "BLUSDC" ? "USDC" : tokenIn;
+      const outSym = tokenOut === "BLUSDC" ? "USDC" : tokenOut;
+      if (inSym === outSym) {
+        return { blocker: `Cannot swap ${tokenIn} to itself — pick a different output token.` };
+      }
+      return {
+        step: {
+          tool: "vanna_swap",
+          args: {
+            smart_account: smart,
+            token_in: inSym,
+            token_out: outSym,
+            amount_in: amount,
+            min_amount_out: "0",
+            trader,
+          },
+          label: `Swap ${amount} ${tokenIn} → ${tokenOut}`,
         },
       };
     }
@@ -760,17 +820,25 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
       const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
       if (/balance is not sufficient|#10|insufficient/i.test(raw)) {
         return (
-          `Aquarius LP needs free XLM + AQUSDC inside the margin account (C-address). ` +
-          `BLUSDC is the wrong USDC for Aquarius — use AQUSDC.\n\n` +
-          `Prep (amounts ≥ 15 each):\n` +
-          `  1) deposit 20 XLM as collateral\n` +
-          `  2) deposit 20 AQUSDC as collateral\n` +
-          `  3) borrow a bit of each if free balance is still 0, or transfer free funds into the C-account\n` +
+          `LP needs free XLM + the matching USDC variant inside the margin account (C-address).\n` +
+          `• Aquarius pair → free XLM + AQUSDC (not BLUSDC)\n` +
+          `• Soroswap pair → free XLM + SOUSDC\n\n` +
+          `Prep (amounts ≥ 15):\n` +
+          `  1) deposit 25 XLM as collateral\n` +
+          `  2) deposit 25 AQUSDC as collateral\n` +
+          `  3) borrow 15 XLM and 5 AQUSDC (borrow creates free balance)\n` +
           `  4) “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n\n` +
           `Detail: ${firstLine}`
         );
       }
       return `LP simulation failed: ${firstLine}`;
+    }
+    if (tool === "vanna_swap") {
+      const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
+      return (
+        `Swap simulation failed. Need free balance of the input token inside the margin account.\n` +
+        `${firstLine}`
+      );
     }
     if (tool === "vanna_lend") {
       // Try to extract balance from diagnostic: balance], data:9150000000 (7-dec SAC)

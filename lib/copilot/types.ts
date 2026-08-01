@@ -57,6 +57,13 @@ export interface CopilotAction {
   amount_b?: number | null;
   /** e.g. 0.5 for "remove half my liquidity" */
   fraction?: number | null;
+  /**
+   * User-stated health-factor floor (“keep HF above 1.5”, “avoid liquidation”).
+   * Risk gate blocks writes that would project below this.
+   */
+  min_hf?: number | null;
+  /** Prefer max-yield venue selection (earn vs farm ranking). */
+  prefer_max_yield?: boolean | null;
 }
 
 export interface RiskResult {
@@ -213,6 +220,10 @@ export type RoutedIntent =
       amount_a?: number | null;
       amount_b?: number | null;
       fraction?: number | null;
+      min_hf?: number | null;
+      prefer_max_yield?: boolean | null;
+      token_in?: string | null;
+      token_out?: string | null;
     }
   | {
       kind: "plan";

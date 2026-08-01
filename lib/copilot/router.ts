@@ -122,6 +122,48 @@ function any(text: string, ...words: string[]): boolean {
   return words.some((w) => text.includes(w));
 }
 
+/** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
+export function parseMinHealthFactor(text: string): number | null {
+  const m =
+    text.match(
+      /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
+  if (m) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n) && n > 0 && n < 50) return n;
+  }
+  // Soft floor when user only says avoid liquidation (no number).
+  if (
+    /\b(avoid|prevent|never|no)\s+liquidat/i.test(text) ||
+    /\bdon'?t\s+(get\s+)?liquidat/i.test(text) ||
+    /\bprotect\s+(me|my\s+account)\s+from\s+liquidat/i.test(text)
+  ) {
+    return 1.3;
+  }
+  return null;
+}
+
+/** “invest where max profit” / “best yield” / “earn me something” allocation intent */
+export function isMaxYieldInvestIntent(text: string): boolean {
+  const t = text.toLowerCase();
+  if (/\b(what|which|show|list|how much)\b/.test(t) && /\b(apy|apr|yield|pays)\b/.test(t)) {
+    return false; // pure read
+  }
+  return (
+    /\b(invest|allocate|put|deploy|park|earn me|make me|grow)\b/.test(t) &&
+    /\b(max|maximum|best|highest|most|optimal)\b/.test(t) &&
+    /\b(yield|profit|return|apy|earn|pay)\b/.test(t)
+  ) || (
+    /\b(earn me|make me money|grow my|invest my)\b/.test(t) &&
+    /\b(farm|earn|pool|market|blend|wherever)\b/.test(t)
+  ) || (
+    /\b(where|wherever).*(best|highest|max).*(yield|apy|return|profit)\b/.test(t) &&
+    /\b(invest|put|supply|lend|farm|deposit)\b/.test(t)
+  );
+}
+
 /**
  * Route a natural-language message to a read tool, write action, restricted op, or clarify.
  */
@@ -152,6 +194,45 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "create_account",
       requires_account: false,
       requires_amount: false,
+    };
+  }
+
+  // DEX swap (margin account free balance).
+  // “swap 10 XLM to AQUSDC” / “swap 5 BLUSDC for XLM”
+  const swapMatch = raw.match(
+    /\bswap\s+(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b(?:\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA))?/i,
+  );
+  if (swapMatch || (any(text, "swap") && !any(text, "liquidity") && asset && amount != null)) {
+    const amountIn = swapMatch ? Number(swapMatch[1]) : amount;
+    const tokenIn = (swapMatch?.[2] || asset || "XLM").toUpperCase();
+    const tokenOut = (swapMatch?.[3] || (tokenIn === "XLM" ? "AQUSDC" : "XLM")).toUpperCase();
+    return {
+      kind: "write",
+      op: "swap",
+      template_id: "swap",
+      asset: tokenIn,
+      amount: amountIn != null && Number.isFinite(amountIn) ? amountIn : null,
+      token_a: tokenIn,
+      token_b: tokenOut,
+      amount_a: amountIn != null && Number.isFinite(amountIn) ? amountIn : null,
+      requires_account: true,
+      requires_amount: true,
+    };
+  }
+
+  // Soft NL: “earn me yield from farm / invest for max profit” — handled in runWrite ranking.
+  if (isMaxYieldInvestIntent(text) || any(text, "earn me something", "earn me yield from farm", "invest in market pools")) {
+    const minHf = parseMinHealthFactor(raw);
+    return {
+      kind: "write",
+      op: "lend",
+      template_id: "invest_max_yield",
+      asset: asset ?? "USDC",
+      amount,
+      requires_account: false,
+      requires_amount: true,
+      prefer_max_yield: true,
+      min_hf: minHf,
     };
   }
 
@@ -390,27 +471,31 @@ export function routeMessage(message: string): RoutedIntent {
   // Word-boundary "lend" so "lending pool" (a READ) does not become a write.
   const hasLendVerb = /\blend\b/.test(text);
   const wantsHighestPool =
-    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy/i.test(text) &&
-    any(text, "supply", "lend", "deposit");
+    /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy|max(?:imum)?\s*yield|best\s*return/i.test(
+      text,
+    ) && any(text, "supply", "lend", "deposit", "invest", "put", "earn", "farm");
   const isLendWrite =
     !isSupplyApyRead &&
     !isBlendOrFarmVenue &&
     (hasLendVerb ||
-      any(text, "earn yield", "yield on my", "want to earn") ||
+      any(text, "earn yield", "yield on my", "want to earn", "earn me") ||
       wantsHighestPool ||
       (any(text, "supply") &&
         !any(text, "supplied", "have i supplied", "my supply", "total supplied")) ||
       (any(text, "deposit") &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
+    const minHf = parseMinHealthFactor(raw);
     return {
       kind: "write",
       op: "lend",
-      template_id: wantsHighestPool ? "lend_highest" : "lend",
+      template_id: wantsHighestPool || isMaxYieldInvestIntent(text) ? "lend_highest" : "lend",
       asset: asset ?? "USDC",
       amount,
       requires_account: false,
       requires_amount: true,
+      prefer_max_yield: wantsHighestPool || isMaxYieldInvestIntent(text) || null,
+      min_hf: minHf,
     };
   }
 
@@ -631,11 +716,24 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // Standing risk preference without a write verb — still answer with guidance.
+  const minHfOnly = parseMinHealthFactor(raw);
+  if (minHfOnly != null && any(text, "health", "liquidat", "safe", "risk", "hf")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_account_health",
+      args: {},
+      requires_account: true,
+      template_id: "query_health_with_floor",
+    };
+  }
+
   return {
     kind: "clarify",
     message:
       "I can help with market data (prices, pool stats), your account (health, debt, collateral), " +
-      "and actions (lend, deposit collateral, borrow, repay, withdraw). " +
-      'Try e.g. "price of XLM", "USDC pool stats", "deposit 5 USDC as collateral", or "borrow 10 USDC".',
+      "and actions (lend, deposit, borrow, repay, farm Blend, Aquarius LP, swap). " +
+      "Examples: “lend 10 XLM”, “farm Blend at 2x with 20 BLUSDC”, “swap 10 XLM to AQUSDC”, " +
+      "“invest 50 XLM where yield is highest”, “keep my health factor above 1.5”.",
   };
 }

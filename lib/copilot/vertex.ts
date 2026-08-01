@@ -446,7 +446,18 @@ WRITE ops (MCP executes; Sign Service auto-signs when enabled):
 - create_account | lend | redeem | deposit_collateral | withdraw_collateral
 - borrow | repay | deposit_and_borrow | settle_account | close_account
 - deploy_to_blend (Farm: "supply X to Blend" / leverage farm — NOT deposit_collateral)
+- add_liquidity | remove_liquidity (Aquarius/Soroswap LP — AQUSDC ≠ BLUSDC)
+- swap (DEX via margin account free balance)
 - enable_auto_sign | disable_auto_sign
+
+AGENT-LEVEL UNDERSTANDING (intent, not word-match):
+- “earn me yield / invest for max profit / put my bag where it pays most” → lend or
+  farm with prefer highest APY; server ranks live Earn (+ Blend if farm named).
+- “keep HF above 1.5 / avoid liquidation at all costs” → set risk floor; block writes
+  that project below that HF; on health reads warn if already low.
+- “swap 10 XLM to AQUSDC” → write op=swap.
+- BLUSDC, AQUSDC, SOUSDC are DIFFERENT tokens — never treat as interchangeable.
+- Do NOT invent numbers; do NOT invent C-addresses.
 
 RESTRICTED: liquidate (keeper-only unless user is liquidator)
 
