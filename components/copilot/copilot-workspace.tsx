@@ -453,8 +453,8 @@ export function CopilotWorkspace() {
   const [response, setResponse] = useState<ChatResponse | null>(null);
   const [health, setHealth] = useState<BrainHealth | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [customTx, setCustomTx] = useState("250");
-  const [customDay, setCustomDay] = useState("1000");
+  const [customTx, setCustomTx] = useState("500");
+  const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -676,7 +676,7 @@ export function CopilotWorkspace() {
         action === "disable"
           ? "Disable auto-sign"
           : action === "use_defaults"
-            ? "Enable auto-sign ($1000/$1000)"
+            ? "Enable auto-sign (MCP defaults)"
             : action === "custom"
               ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
               : "Enable auto-sign";
@@ -695,9 +695,7 @@ export function CopilotWorkspace() {
             action,
             ...(action === "custom"
               ? { max_per_tx_usd: customTx, max_per_day_usd: customDay || customTx }
-              : action === "use_defaults"
-                ? { max_per_tx_usd: 1000, max_per_day_usd: 1000 }
-                : {}),
+              : {}),
           },
           pending_write: response?.auto_sign?.pending_write
             ? {
@@ -718,9 +716,13 @@ export function CopilotWorkspace() {
         } else if (action === "use_defaults" || action === "custom") {
           if (data.kind !== "needs_auto_sign") {
             setAutoApprove(address, true);
-            const txCap = action === "custom" ? Number(customTx) || 1000 : 1000;
+            const fromMcp = Number(
+              (data.data as { default_cap_usd?: number } | null | undefined)?.default_cap_usd,
+            );
+            const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
+            const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
             const dayCap =
-              action === "custom" ? Number(customDay || customTx) || 1000 : 1000;
+              action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
             try {
               localStorage.setItem(
                 "vanna_copilot_auto_caps",
@@ -1534,7 +1536,19 @@ export function CopilotWorkspace() {
                           onClick={() => enableAutoSign("use_defaults")}
                           className="rounded-full bg-gradient px-5 py-2.5 text-btn-sm font-semibold text-white disabled:opacity-40"
                         >
-                          Defaults ($1000 / $1000)
+                          {(() => {
+                            try {
+                              const raw = response?.auto_sign?.raw as
+                                | { default_cap_usd?: number }
+                                | null
+                                | undefined;
+                              const d = Number(raw?.default_cap_usd);
+                              if (Number.isFinite(d) && d > 0) return `Defaults ($${d} / $${d})`;
+                            } catch {
+                              /* ignore */
+                            }
+                            return "Defaults (MCP default caps)";
+                          })()}
                         </button>
                         <button
                           type="button"
@@ -1761,7 +1775,7 @@ export function CopilotWorkspace() {
                   toast.success("Auto-approve off");
                   return;
                 }
-                // Turning on: same as MCP — ask for $1000/$1000 defaults or custom caps.
+                // Turning on: same as MCP — ask for default caps (from MCP) or custom.
                 setSubmitted("Enable auto-approve");
                 void (async () => {
                   await postCopilot(
@@ -1795,9 +1809,9 @@ export function CopilotWorkspace() {
                           } catch {
                             /* ignore */
                           }
-                          return "Defaults $1000/tx · $1000/day";
+                          return "Defaults (MCP default_cap_usd)";
                         })()
-                      : "Turn on → choose $1000 defaults or custom caps"}
+                      : "Turn on → choose MCP defaults or custom caps"}
                 </span>
               </span>
               <span

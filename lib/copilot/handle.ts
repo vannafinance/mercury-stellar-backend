@@ -27,6 +27,7 @@ import {
   needsUsdcVariant,
   usdcVariantClarifyMessage,
   USDC_VARIANT_OPTIONS,
+  defaultCapUsdFromMcp,
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
@@ -215,13 +216,42 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     );
   }
 
-  // ── Route intent (Vertex primary) ───────────────────────────────────────
+  // ── Route intent ────────────────────────────────────────────────────────
+  // Keyword-first for high-confidence writes (swap/lend/farm/deposit…). Vertex
+  // (Gemini) can take 15–60s and was the main reason "swap 5 USDC…" felt stuck
+  // on "Parsing intent". Only call Vertex when the keyword router is ambiguous.
+  const kwFast = routeMessage(message);
+  const keywordConfident =
+    kwFast.kind === "write" ||
+    kwFast.kind === "restricted" ||
+    kwFast.kind === "auto_sign" ||
+    (kwFast.kind === "read" &&
+      !!kwFast.template_id &&
+      [
+        "query_all_earn_pools",
+        "query_blend",
+        "query_account_health",
+        "query_prices_batch",
+        "query_price",
+        "query_pool_stats",
+        "query_wallet_balance",
+        "query_farm_overview",
+        "query_blend_position",
+        "query_collateral_config",
+        "query_addresses",
+        "query_resolve",
+      ].includes(kwFast.template_id));
+
   let routed: RoutedIntent;
-  try {
-    routed = await vertexSelectTool(message, { smartAccount, trader });
-  } catch (e) {
-    console.warn("[copilot] vertex route failed, keyword fallback:", e instanceof Error ? e.message : e);
-    routed = routeMessage(message);
+  if (keywordConfident) {
+    routed = kwFast;
+  } else {
+    try {
+      routed = await vertexSelectTool(message, { smartAccount, trader });
+    } catch (e) {
+      console.warn("[copilot] vertex route failed, keyword fallback:", e instanceof Error ? e.message : e);
+      routed = kwFast;
+    }
   }
 
   // Prefer deterministic keyword routes for Sanujit earn multi-pool / farm / lend
@@ -242,7 +272,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         request_id,
       };
     }
-    const kw = routeMessage(message);
+    const kw = keywordConfident ? kwFast : routeMessage(message);
     const lowerMsg = message.toLowerCase();
     const blendWrite =
       /\bblend\b/.test(lowerMsg) &&
@@ -476,30 +506,32 @@ async function handleAutoSignAction(
     }
 
     if (action === "start") {
-      // Bare call → MCP returns needs_confirmation with two options
+      // Bare call → MCP returns needs_confirmation with two options + default_cap_usd
       const r = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
       const st = String(r.status || "");
+      const defCap = defaultCapUsdFromMcp(r);
       if (st === "needs_confirmation" || !r.enabled) {
         return {
           kind: "needs_auto_sign",
           message:
+            (r.question as string) ||
             (r.message as string) ||
-            "Enable auto-approve / auto-sign so cleared writes can run without a per-tx prompt.\n\n" +
-              "MCP Sign Service default policy is **$1000 per transaction** and **$1000 per day**. " +
-              "Pick defaults, set custom USD caps, or later say “set auto-sign cap to 500 per tx and 2000 per day”.",
+            (r.summary as string) ||
+            `Enable auto-approve / auto-sign. MCP default is $${defCap}/tx and $${defCap}/day ` +
+              `(testnet stand-in; Sign Service may clamp). Pick defaults or custom USD caps.`,
           auto_sign: {
             status: "needs_confirmation",
-            message: "Choose spend limits (MCP default $1000 / $1000):",
+            message: `Choose spend limits (MCP default_cap_usd=$${defCap}):`,
             options: [
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: "$1000 per transaction · $1000 per day (MCP + copilot default)",
+                description: `$${defCap} per transaction · $${defCap} per day (from MCP)`,
               },
               {
                 id: "custom",
                 label: "Set my own limits",
-                description: "Choose per-tx and daily USD caps",
+                description: "Choose per-tx and daily USD caps (day can differ from tx)",
               },
             ],
             pending_write: req.pending_write
@@ -525,18 +557,17 @@ async function handleAutoSignAction(
     }
 
     if (action === "use_defaults") {
+      // Only use_default_caps — do not also send max_per_tx_usd (MCP then applies SS defaults).
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
         useDefaultCaps: true,
-        // Explicit defaults matching MCP Sign Service policy ($1000 / $1000).
-        maxPerTxUsd: 1000,
-        maxPerDayUsd: 1000,
       });
+      const defCap = defaultCapUsdFromMcp(r);
       const msg =
         (r.summary as string) ||
         (r.message as string) ||
-        "Auto-sign / auto-approve enabled with default caps: $1000 per transaction · $1000 per day." +
+        `Auto-sign / auto-approve enabled with MCP default caps (≈ $${defCap}/tx · $${defCap}/day).` +
           (r.error
             ? ` (MCP note: ${String(r.error)} — wallet session signing may still work for in-app approve.)`
             : "");
@@ -577,11 +608,19 @@ async function handleAutoSignAction(
     if (action === "custom") {
       const tx = req.auto_sign?.max_per_tx_usd;
       if (tx == null || tx === "") {
+        // Probe MCP for default_cap_usd so UI numbers are not invented.
+        let defCap = 1000;
+        try {
+          const probe = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
+          defCap = defaultCapUsdFromMcp(probe);
+        } catch {
+          /* keep fallback */
+        }
         return {
           kind: "needs_auto_sign",
           message:
             "Set your auto-approve / auto-sign spend caps (same as MCP Sign Service).\n" +
-            "Default is $1000 per transaction and $1000 per day.\n" +
+            `MCP default_cap_usd is $${defCap} per tx and per day (you may set a higher day cap).\n` +
             "Pick defaults, enter custom USD limits, or say e.g. “set auto-sign cap to 500 per tx and 2000 per day”.",
           auto_sign: {
             status: "needs_confirmation",
@@ -590,12 +629,12 @@ async function handleAutoSignAction(
               {
                 id: "use_defaults",
                 label: "Use defaults",
-                description: "$1000 per transaction · $1000 per day",
+                description: `$${defCap} per transaction · $${defCap} per day (MCP)`,
               },
               {
                 id: "custom",
                 label: "Set my own limits",
-                description: "Choose per-tx and daily USD caps",
+                description: "Per-tx required; daily optional (defaults to per-tx if omitted)",
               },
             ],
             pending_write: null,
@@ -604,20 +643,27 @@ async function handleAutoSignAction(
           request_id,
         };
       }
-      const day = req.auto_sign?.max_per_day_usd ?? tx;
+      // If user only sets per-tx, omit day so MCP mirrors (sign_tools: day = tx).
+      const dayRaw = req.auto_sign?.max_per_day_usd;
       const r = await enableAutoSign(mcp, {
         wallet: trader,
         userId: userId || trader,
         maxPerTxUsd: tx,
-        maxPerDayUsd: day,
+        ...(dayRaw != null && dayRaw !== "" ? { maxPerDayUsd: dayRaw } : {}),
       });
+      const dayShown = dayRaw != null && dayRaw !== "" ? dayRaw : tx;
       return {
         kind: r.error ? "error" : "answer",
         message:
           (r.summary as string) ||
           (r.message as string) ||
-          `Auto-sign / auto-approve enabled with your caps: $${tx} per tx · $${day} per day.`,
-        data: factsForUi({ ...r, max_per_tx_usd: tx, max_per_day_usd: day, default_note: "MCP default is $1000/$1000 when use_default_caps is true." }),
+          `Auto-sign / auto-approve enabled with your caps: $${tx} per tx · $${dayShown} per day.`,
+        data: factsForUi({
+          ...r,
+          max_per_tx_usd: tx,
+          max_per_day_usd: dayShown,
+          default_cap_usd: defaultCapUsdFromMcp(r),
+        }),
         request_id,
       };
     }
@@ -1254,8 +1300,9 @@ async function runWrite(
     }
   }
 
-  // DEX swap — MCP requires expected_out or min_out (no on-chain quote in MCP).
-  // Quote via oracle: expected_out = amount_in * price_in / price_out.
+  // DEX swap — prefer one MCP call: server auto-quotes from oracle when
+  // expected_out/min_out omitted (after MCP redeploy). Optionally pre-quote
+  // with a single prices batch for older MCP deploys that still require floors.
   let swapExpectedOut: string | null = null;
   let swapMinOut: string | null = null;
   let swapSlippagePct = "0.5";
@@ -1276,50 +1323,35 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
-    const tokenIn = (action.token_a || action.asset || "XLM").toUpperCase();
-    const tokenOut = (action.token_b || "USDC").toUpperCase();
     const venue = (action.venue || "aquarius").toLowerCase().includes("soro")
       ? "soroswap"
       : "aquarius";
-    // Oracle symbols: XLM as-is; USDC-family → USDC (stable ~1) for pricing.
+    action = { ...action, venue };
+    // Best-effort pre-quote (one batch call). If it fails, mapOp still sends the
+    // swap and MCP may auto-quote after redeploy.
+    const tokenIn = (action.token_a || action.asset || "XLM").toUpperCase();
+    const tokenOut = (action.token_b || "USDC").toUpperCase();
     const oracleIn = tokenIn === "XLM" || tokenIn === "AQUA" ? tokenIn : "USDC";
     const oracleOut = tokenOut === "XLM" || tokenOut === "AQUA" ? tokenOut : "USDC";
     try {
-      const mcp = getMcpClient();
-      const [pin, pout] = await Promise.all([
-        mcp.call("vanna_get_price", { symbol: oracleIn }, ctx.userId),
-        mcp.call("vanna_get_price", { symbol: oracleOut }, ctx.userId),
-      ]);
-      const priceIn = Number(pin.price_usd ?? pin.price ?? (oracleIn === "XLM" ? 0.17 : 1));
-      const priceOut = Number(pout.price_usd ?? pout.price ?? (oracleOut === "XLM" ? 0.17 : 1));
-      if (Number.isFinite(priceIn) && Number.isFinite(priceOut) && priceOut > 0) {
-        const expected = (action.amount * priceIn) / priceOut;
-        const slip = 0.5; // percent
-        const minOut = expected * (1 - slip / 100);
+      const batch = await getMcpClient().call(
+        "vanna_get_prices_batch",
+        { symbols: [oracleIn, oracleOut] },
+        ctx.userId,
+      );
+      const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
+      const pin = Number(prices[oracleIn]?.price_usd ?? prices[oracleIn.toLowerCase()]?.price_usd);
+      const pout = Number(prices[oracleOut]?.price_usd ?? prices[oracleOut.toLowerCase()]?.price_usd);
+      if (Number.isFinite(pin) && Number.isFinite(pout) && pout > 0) {
+        const expected = (action.amount * pin) / pout;
+        const slip = 0.5;
         swapExpectedOut = expected.toFixed(7);
-        swapMinOut = Math.max(0, minOut).toFixed(7);
+        swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
         swapSlippagePct = String(slip);
       }
     } catch {
-      // Fall back to ~1:1 for stables or rough XLM
-      const fallback =
-        oracleIn === "XLM" && oracleOut === "USDC"
-          ? action.amount * 0.17
-          : oracleIn === "USDC" && oracleOut === "XLM"
-            ? action.amount / 0.17
-            : action.amount;
-      swapExpectedOut = fallback.toFixed(7);
-      swapMinOut = (fallback * 0.995).toFixed(7);
+      /* MCP auto-quote or retry path */
     }
-    if (!swapExpectedOut) {
-      return {
-        kind: "error",
-        message: "Could not price this swap from the oracle. Try again in a moment.",
-        request_id: ctx.request_id,
-      };
-    }
-    // Stash venue on action for mapOp
-    action = { ...action, venue };
   }
 
   // Blend farm supply — resolve Registry blend pool C-address for MCP deploy tool.
@@ -1513,7 +1545,7 @@ async function runWrite(
           {
             id: "use_defaults",
             label: "Enable auto-sign (defaults)",
-            description: "$1000 per tx · $1000 per day",
+            description: "MCP default caps (see default_cap_usd)",
           },
           {
             id: "custom",

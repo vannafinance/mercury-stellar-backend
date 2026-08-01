@@ -587,8 +587,8 @@ export function mapOpToMcpStep(
       }
       const uiIn = tokenIn === "USDC" || tokenIn === "BLUSDC" ? "USDC" : tokenIn;
       const uiOut = tokenOut === "USDC" || tokenOut === "BLUSDC" ? "USDC" : tokenOut;
-      // MCP requires min_out OR expected_out (+ optional slippage_pct, default 0.5).
-      // expected_out comes from oracle quote in runWrite (passed via params).
+      // Prefer expected_out from copilot pre-quote; if omitted, MCP auto-quotes
+      // from oracle (after MCP redeploy of swap auto-quote).
       const expectedOut =
         params.expected_out != null && Number(params.expected_out) > 0
           ? String(params.expected_out)
@@ -599,12 +599,6 @@ export function mapOpToMcpStep(
         params.slippage_pct != null && Number(params.slippage_pct) > 0
           ? String(params.slippage_pct)
           : "0.5";
-      if (!expectedOut && !minOut) {
-        return {
-          blocker:
-            "Swap needs a price floor (expected_out or min_out). Re-run so the agent can quote via oracle.",
-        };
-      }
       return {
         step: {
           tool: "vanna_swap",
@@ -1264,8 +1258,12 @@ export async function executeMcpWrite(
 }
 
 /**
- * Enable Sign Service auto-sign. MCP default policy is **$1000 per tx / $1000 per day**
- * when `use_default_caps` is true (same numbers the copilot UI shows).
+ * Enable Sign Service auto-sign.
+ *
+ * MCP `use_default_caps=true` must NOT also send max_per_tx_usd — the MCP server
+ * then omits stroops so Sign Service applies its env defaults
+ * (`DEFAULT_CAP_PER_TX` / `DEFAULT_CAP_PER_DAY`, testnet stand-in ≈ $1000 each).
+ * Custom path sends only USD fields; if only per-tx is set, MCP mirrors it to day.
  */
 export async function enableAutoSign(
   mcp: MCPClient,
@@ -1283,12 +1281,19 @@ export async function enableAutoSign(
   };
   if (opts.useDefaultCaps) {
     args.use_default_caps = true;
-    // Explicit numbers so MCP + copilot stay aligned even if server defaults drift.
-    args.max_per_tx_usd = opts.maxPerTxUsd ?? 1000;
-    args.max_per_day_usd = opts.maxPerDayUsd ?? 1000;
   } else {
     if (opts.maxPerTxUsd != null) args.max_per_tx_usd = opts.maxPerTxUsd;
     if (opts.maxPerDayUsd != null) args.max_per_day_usd = opts.maxPerDayUsd;
   }
   return mcp.call("vanna_enable_auto_sign", args, opts.userId);
+}
+
+/** Read default_cap_usd from MCP needs_confirmation / enabled payloads (no hardcode). */
+export function defaultCapUsdFromMcp(data: Record<string, unknown> | null | undefined): number {
+  const n = Number(data?.default_cap_usd);
+  if (Number.isFinite(n) && n > 0) return n;
+  // Fallback only when MCP did not return the field (older deploy).
+  const envN = Number(process.env.DEFAULT_AUTO_SIGN_CAP_USD || process.env.COPILOT_DEFAULT_AUTO_SIGN_CAP_USD);
+  if (Number.isFinite(envN) && envN > 0) return envN;
+  return 1000;
 }
