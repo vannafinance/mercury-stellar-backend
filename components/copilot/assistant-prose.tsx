@@ -1,29 +1,41 @@
 "use client";
 
 /**
- * Renders assistant replies as polished document prose — no raw ** markdown stars.
- * Uses app font stack (Plus Jakarta via body).
+ * Renders assistant replies with clear spacing, bullets, and numbered steps.
+ * Strips ** markdown stars; keeps structure AI models typically emit.
  */
 
 import { useMemo } from "react";
 import { useTheme } from "@/contexts/theme-context";
 
-/** Strip markdown emphasis / headings / fences the model sometimes still emits. */
+/** Normalize model text for structured rendering. */
 export function sanitizeAssistantText(raw: string): string {
   let s = raw.replace(/\r\n/g, "\n").trim();
-  // code fences
   s = s.replace(/```[\s\S]*?```/g, (block) =>
     block.replace(/```\w*\n?/g, "").replace(/```/g, "").trim(),
   );
-  // **bold** / *italic* / __bold__
   s = s.replace(/\*\*([^*]+)\*\*/g, "$1");
   s = s.replace(/__([^_]+)__/g, "$1");
   s = s.replace(/\*([^*\n]+)\*/g, "$1");
-  // markdown headings
   s = s.replace(/^#{1,6}\s+/gm, "");
-  // markdown list markers to bullet
+  // markdown / dash lists → bullet
   s = s.replace(/^\s*[-*+]\s+/gm, "• ");
-  // collapse excess blank lines
+  // First,/Second, → numbered
+  s = s.replace(
+    /^(First|Second|Third|Fourth|Fifth|Finally),?\s+/gim,
+    (_m, w: string) => {
+      const map: Record<string, string> = {
+        first: "1. ",
+        second: "2. ",
+        third: "3. ",
+        fourth: "4. ",
+        fifth: "5. ",
+        finally: "6. ",
+      };
+      return map[w.toLowerCase()] || "• ";
+    },
+  );
+  // Keep intentional blank lines; cap runs of 3+
   s = s.replace(/\n{3,}/g, "\n\n");
   return s.trim();
 }
@@ -34,89 +46,114 @@ type Block =
   | { type: "ol"; items: string[] }
   | { type: "ul"; items: string[] };
 
+function isSectionTitle(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.length > 80) return false;
+  if (/^\d+[\.)]\s+/.test(t) || /^•\s+/.test(t)) return false;
+  if (/[:：]$/.test(t) && t.length < 70) return true;
+  if (
+    /^(What it means|How to do it|How it works|Key points|Options|Summary|Next steps|Steps|Overview|On this page|Balances|Risks?|Tips?)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  // Short Title Case line without end punctuation
+  if (
+    /^[A-Z][\w\s/&,'-]{1,55}$/.test(t) &&
+    !/[.!?]$/.test(t) &&
+    t.split(/\s+/).length <= 8
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function parseBlocks(text: string): Block[] {
   const lines = text.split("\n");
   const blocks: Block[] = [];
   let i = 0;
 
-  const isSectionTitle = (line: string) => {
-    const t = line.trim();
-    if (!t || t.length > 72) return false;
-    // "Swap on this page" or "1. Swap on this page" or ends with :
-    if (/^\d+\.\s+\S/.test(t) && t.length < 60 && !t.includes(". ")) {
-      // numbered title-only line handled as list item usually
-    }
-    if (/^[A-Z0-9].{2,60}:$/.test(t)) return true;
-    if (/^(What you can do|Options|Summary|On this page|Balances|Next steps|Overview)\b/i.test(t))
-      return true;
-    // Title-case short line without trailing period
-    if (/^[A-Z][\w\s/&,-]{2,50}$/.test(t) && !/[.!?]$/.test(t) && t.split(" ").length <= 8)
-      return true;
-    return false;
-  };
-
   while (i < lines.length) {
-    const raw = lines[i];
-    const line = raw.trim();
+    const line = lines[i].trim();
     if (!line) {
       i++;
       continue;
     }
 
-    // Ordered list run
+    // Ordered list
     if (/^\d+[\.)]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\d+[\.)]\s+/.test(lines[i].trim())) {
-        items.push(lines[i].trim().replace(/^\d+[\.)]\s+/, ""));
-        i++;
-        // continuation lines indented
-        while (
-          i < lines.length &&
-          lines[i].trim() &&
-          !/^\d+[\.)]\s+/.test(lines[i].trim()) &&
-          !/^•\s+/.test(lines[i].trim()) &&
-          !isSectionTitle(lines[i]) &&
-          (lines[i].startsWith("  ") || lines[i].startsWith("\t") || /^[a-z(]/.test(lines[i].trim()))
-        ) {
-          items[items.length - 1] += " " + lines[i].trim();
+      while (i < lines.length) {
+        const L = lines[i].trim();
+        if (!L) {
+          // blank inside list ends the list (cleaner spacing)
+          if (items.length) break;
           i++;
+          continue;
         }
+        if (/^\d+[\.)]\s+/.test(L)) {
+          items.push(L.replace(/^\d+[\.)]\s+/, ""));
+          i++;
+          // soft wrap continuations
+          while (
+            i < lines.length &&
+            lines[i].trim() &&
+            !/^\d+[\.)]\s+/.test(lines[i].trim()) &&
+            !/^•\s+/.test(lines[i].trim()) &&
+            !isSectionTitle(lines[i]) &&
+            (lines[i].startsWith("  ") ||
+              lines[i].startsWith("\t") ||
+              /^[a-z(]/.test(lines[i].trim()))
+          ) {
+            items[items.length - 1] += " " + lines[i].trim();
+            i++;
+          }
+          continue;
+        }
+        break;
       }
-      blocks.push({ type: "ol", items });
+      if (items.length) blocks.push({ type: "ol", items });
       continue;
     }
 
-    // Unordered bullets
+    // Unordered list
     if (/^•\s+/.test(line) || /^[-–—]\s+/.test(line)) {
       const items: string[] = [];
-      while (
-        i < lines.length &&
-        (/^•\s+/.test(lines[i].trim()) || /^[-–—]\s+/.test(lines[i].trim()))
-      ) {
-        items.push(lines[i].trim().replace(/^([•\-–—])\s+/, ""));
-        i++;
+      while (i < lines.length) {
+        const L = lines[i].trim();
+        if (!L) {
+          if (items.length) break;
+          i++;
+          continue;
+        }
+        if (/^•\s+/.test(L) || /^[-–—]\s+/.test(L)) {
+          items.push(L.replace(/^([•\-–—])\s+/, ""));
+          i++;
+          continue;
+        }
+        break;
       }
-      blocks.push({ type: "ul", items });
+      if (items.length) blocks.push({ type: "ul", items });
       continue;
     }
 
     if (isSectionTitle(line)) {
-      blocks.push({ type: "h", text: line.replace(/:$/, "") });
+      blocks.push({ type: "h", text: line.replace(/[:：]\s*$/, "") });
       i++;
       continue;
     }
 
-    // Paragraph: merge consecutive non-empty non-special lines
+    // Paragraph: only merge until blank or structure
     const para: string[] = [line];
     i++;
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !/^\d+[\.)]\s+/.test(lines[i].trim()) &&
-      !/^•\s+/.test(lines[i].trim()) &&
-      !isSectionTitle(lines[i])
-    ) {
-      para.push(lines[i].trim());
+    while (i < lines.length) {
+      const L = lines[i];
+      if (!L.trim()) break;
+      if (/^\d+[\.)]\s+/.test(L.trim())) break;
+      if (/^•\s+/.test(L.trim()) || /^[-–—]\s+/.test(L.trim())) break;
+      if (isSectionTitle(L)) break;
+      para.push(L.trim());
       i++;
     }
     blocks.push({ type: "p", text: para.join(" ") });
@@ -131,13 +168,14 @@ export function AssistantProse({ text }: { text: string }) {
   const blocks = useMemo(() => parseBlocks(cleaned), [cleaned]);
 
   const ink = isDark ? "text-[#F2F2F2]" : "text-[#1A1A1A]";
-  const muted = isDark ? "text-[#A0A0A0]" : "text-[#5C5C5C]";
-  const accent = "text-[#703AE6]";
+  const body = isDark ? "text-[#D0D0D0]" : "text-[#3A3A3A]";
+  const accent = isDark ? "text-[#C4B0FF]" : "text-[#703AE6]";
   const bullet = isDark ? "text-[#B8A0F0]" : "text-[#703AE6]";
+  const stepBg = isDark ? "bg-[#703AE6]/25 text-[#E8E0FF]" : "bg-[#703AE6]/12 text-[#703AE6]";
 
   return (
     <div
-      className={`assistant-prose space-y-3 text-[13.5px] leading-[1.65] tracking-[-0.01em] ${ink}`}
+      className={`assistant-prose flex flex-col gap-4 text-[13.5px] leading-[1.7] tracking-[-0.01em] ${ink}`}
       style={{ fontFamily: "var(--font-plus-jakarta-sans), system-ui, sans-serif" }}
     >
       {blocks.map((b, i) => {
@@ -145,7 +183,7 @@ export function AssistantProse({ text }: { text: string }) {
           return (
             <h3
               key={i}
-              className={`pt-1 text-[12px] font-semibold uppercase tracking-[0.06em] ${accent}`}
+              className={`mt-1 text-[12px] font-semibold uppercase tracking-[0.07em] ${accent}`}
             >
               {b.text}
             </h3>
@@ -153,17 +191,15 @@ export function AssistantProse({ text }: { text: string }) {
         }
         if (b.type === "ol") {
           return (
-            <ol key={i} className="m-0 list-none space-y-2.5 p-0">
+            <ol key={i} className="m-0 flex list-none flex-col gap-3 p-0">
               {b.items.map((item, j) => (
-                <li key={j} className="flex gap-2.5">
+                <li key={j} className="flex gap-3">
                   <span
-                    className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${
-                      isDark ? "bg-[#703AE6]/25 text-[#D4C4FF]" : "bg-[#703AE6]/12 text-[#703AE6]"
-                    }`}
+                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold ${stepBg}`}
                   >
                     {j + 1}
                   </span>
-                  <span className="min-w-0 flex-1">{item}</span>
+                  <span className={`min-w-0 flex-1 pt-0.5 ${body}`}>{item}</span>
                 </li>
               ))}
             </ol>
@@ -171,18 +207,28 @@ export function AssistantProse({ text }: { text: string }) {
         }
         if (b.type === "ul") {
           return (
-            <ul key={i} className="m-0 list-none space-y-1.5 p-0">
+            <ul key={i} className="m-0 flex list-none flex-col gap-2.5 p-0">
               {b.items.map((item, j) => (
-                <li key={j} className="flex gap-2">
-                  <span className={`mt-[0.35em] shrink-0 text-[10px] ${bullet}`}>●</span>
-                  <span className="min-w-0 flex-1">{item}</span>
+                <li key={j} className="flex gap-2.5">
+                  <span className={`mt-[0.45em] shrink-0 text-[8px] leading-none ${bullet}`}>
+                    ●
+                  </span>
+                  <span className={`min-w-0 flex-1 ${body}`}>{item}</span>
                 </li>
               ))}
             </ul>
           );
         }
+        // Lead paragraph slightly stronger; later paras normal
         return (
-          <p key={i} className={i === 0 ? `font-medium ${ink}` : muted}>
+          <p
+            key={i}
+            className={
+              i === 0
+                ? `font-medium leading-[1.7] ${ink}`
+                : `leading-[1.7] ${body}`
+            }
+          >
             {b.text}
           </p>
         );

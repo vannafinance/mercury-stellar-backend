@@ -1,6 +1,5 @@
 /**
  * Page-aware agent (Gemini plan): structured pageContext + client tool calling.
- * System prompt follows the master assistant plan from Gemini.
  */
 
 import type { ChatResponse, SemanticPageContextCtx } from "./types";
@@ -9,41 +8,60 @@ import { isAssistantChat } from "./concept";
 
 export { isAssistantChat };
 
-/** Plan Section 2 — system prompt (stable for cache). */
+/** Shared formatting contract so every answer looks like a clean AI reply. */
+const FORMAT_RULES = `
+### OUTPUT FORMAT (required — the UI renders this with spacing and bullets)
+Structure every answer like a modern AI assistant:
+
+1) Open with 1–2 short sentences that answer the question directly.
+2) Blank line.
+3) If you list options or concepts, use a section title on its own line, then bullets:
+   What it means
+   • Point one
+   • Point two
+4) Blank line before steps. For how-to, use a section title then numbered steps:
+   How to do it
+   1. First action — brief detail.
+   2. Second action — brief detail.
+   3. Third action — brief detail.
+5) Optional closing tip on its own line after a blank line (no section needed).
+
+Hard rules:
+- Put a blank line between the intro, each section, and the steps.
+- One idea per bullet or step. Keep steps short.
+- Use "• " for bullets (bullet character) and "1. " "2. " for steps — never walls of paragraphs.
+- Do NOT use **bold**, *italic*, markdown # headings, or code fences.
+- Do NOT write First,/Second,/Third, as prose — always use numbered "1. 2. 3." instead.
+- No fake numbers. Only cite balances/APYs if they appear in pageContext.
+`;
+
 export const PAGE_AGENT_SYSTEM = `You are an intelligent, page-aware AI Copilot for Vanna Finance (Stellar DeFi).
 Help users understand what they see and how to use the product.
 
 CRITICAL — ALWAYS ANSWER IN TEXT:
-- Every reply MUST include a full natural-language answer the user can read.
-- NEVER respond with tools only. Tools are optional extras, never a substitute for an explanation.
-- Questions like "what is X", "what can X do", "how do I…", "explain…" → answer fully in prose first.
-  Do NOT call tools for pure explanation questions.
+- Every reply MUST include a full natural-language answer.
+- NEVER respond with tools only.
+- Pure explain questions (what is / what can / how do I) → full structured answer, no tools.
 
-### pageContext (sent as JSON each turn)
-path, title, sections (headings + DOM ids), mainText, selectedText, interactiveHints.
+### pageContext (JSON each turn)
+path, title, sections, mainText, selectedText, interactiveHints.
 
-### Tools (only when the user wants to be shown or taken somewhere)
-- scrollToSection: they ask where something is ON THIS page / "show me that section".
-- navigateToRoute: they ask to GO to another page ("open earn", "take me to farm").
-- highlightElement: they ask where to click a specific control.
-Known paths: /, /margin, /earn, /earn/XLM, /farm, /portfolio, /trade/spot, /copilot, /analytics...
+### Tools (only for show me / take me / where do I click)
+- scrollToSection, navigateToRoute, highlightElement
+Paths: /, /margin, /earn, /farm, /portfolio, /trade/spot, /copilot, /analytics...
 
-### Rules
-1. If selectedText is set, treat the question as about that highlight unless they say otherwise.
-2. Ground answers in mainText / selectedText / sections. Do not invent balances, APYs, or UI that is not present.
-3. Product knowledge for Vanna: margin = deposit collateral / borrow / health factor (~1.1 liq); earn = supply to vaults; farm = Blend / Aquarius / Soroswap LP; spot = swap. BLUSDC, AQUSDC, SOUSDC are different USDC tokens.
-4. "Leverage your assets" / leveraged strategies usually means using margin (collateral + borrow) or farm leverage paths — explain using page text when available, else general Vanna product language without fake numbers.
-5. Formatting: plain prose, no ** markdown stars, no # headings, no code fences. Use "1. " for steps.
-6. Never claim you signed or submitted a transaction.
+### Product notes
+Margin: deposit collateral, borrow, health factor (~1.1 liquidation). Earn: supply vaults.
+Farm: Blend / Aquarius / Soroswap. Spot: swap. BLUSDC / AQUSDC / SOUSDC are different.
+Leverage: deposit collateral + borrow (and related farm leverage) — explain from page text when present.
+Never claim you signed a transaction.
+${FORMAT_RULES}`;
 
-When you use a tool, still write the full answer in the same turn (e.g. explain the feature AND scroll).`;
+const ANSWER_ONLY_SYSTEM = `You are Vanna’s page-aware assistant. Answer fully using pageContext when useful.
+No tools. Be concrete and helpful about Vanna (margin, earn, farm, spot).
+${FORMAT_RULES}`;
 
-/** Text-only follow-up when the model returned tools without prose. */
-const ANSWER_ONLY_SYSTEM = `You are Vanna’s page-aware assistant. Answer the user fully in plain prose.
-Use the pageContext JSON. No tools. No ** markdown. No code fences.
-Explain what they asked and how to do it on Vanna when relevant. Be concrete and helpful.`;
-
-/** Vertex function declarations for client-side tools (plan Section 1.2). */
+/** Vertex function declarations for client-side tools. */
 export const CLIENT_TOOL_DECLS = [
   {
     name: "navigateToRoute",
@@ -63,7 +81,7 @@ export const CLIENT_TOOL_DECLS = [
   {
     name: "scrollToSection",
     description:
-      "Smooth-scroll to a section on the current page by DOM element id (from pageContext.sections). Optionally pulse-highlight it.",
+      "Smooth-scroll to a section on the current page by DOM element id (from pageContext.sections).",
     parameters: {
       type: "object",
       properties: {
@@ -82,14 +100,13 @@ export const CLIENT_TOOL_DECLS = [
   {
     name: "highlightElement",
     description:
-      "Highlight an interactive UI element using a CSS selector or data-copilot-id value from interactiveHints.",
+      "Highlight an interactive UI element using a CSS selector or data-copilot-id value.",
     parameters: {
       type: "object",
       properties: {
         selector: {
           type: "string",
-          description:
-            "CSS selector or data-copilot-id value, e.g. [data-copilot-id='swap-button'] or #deposit",
+          description: "CSS selector or data-copilot-id value",
         },
       },
       required: ["selector"],
@@ -103,6 +120,19 @@ function sanitizeProse(s: string): string {
     .replace(/__([^_]+)__/g, "$1")
     .replace(/\*([^*\n]+)\*/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")
+    .replace(/```[\s\S]*?```/g, (b) => b.replace(/```\w*\n?/g, "").replace(/```/g, ""))
+    // Normalize First,/Second, prose into numbered steps when model slips
+    .replace(/^(First|Second|Third|Fourth|Fifth|Finally),?\s+/gim, (_m, w) => {
+      const map: Record<string, string> = {
+        first: "1. ",
+        second: "2. ",
+        third: "3. ",
+        fourth: "4. ",
+        fifth: "5. ",
+        finally: "6. ",
+      };
+      return map[String(w).toLowerCase()] || "• ";
+    })
     .trim();
 }
 
@@ -122,7 +152,6 @@ export async function runPageAgent(
           sections: pageContext.sections,
           selectedText: pageContext.selectedText,
           interactiveHints: pageContext.interactiveHints,
-          // Cap mainText in the prompt body
           mainText: String(pageContext.mainText || "").slice(0, 10_000),
         },
         null,
@@ -139,29 +168,24 @@ export async function runPageAgent(
         ].join("\n")
       : "";
 
-  const user = [
-    "pageContext JSON:",
-    ctxJson,
-    "",
-    historyBlock,
-    `USER: ${message}`,
-  ]
+  const user = ["pageContext JSON:", ctxJson, "", historyBlock, `USER: ${message}`]
     .filter(Boolean)
     .join("\n");
 
-  // Pure how/what questions should not waste a turn on tool-only replies
   const wantsGuidanceOnly =
     /\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
       message,
-    ) && !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(message);
+    ) &&
+    !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(
+      message,
+    );
 
   try {
     let text = "";
     let client_tools: Array<{ name: string; args: Record<string, unknown> }> = [];
 
     if (wantsGuidanceOnly) {
-      // Explanation path: always full prose, no tools
-      text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.45 });
+      text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
     } else {
       const result = await generateWithClientTools(
         PAGE_AGENT_SYSTEM,
@@ -170,9 +194,8 @@ export async function runPageAgent(
       );
       text = result.text;
       client_tools = result.client_tools;
-      // Model returned tools with no answer → second pass for real prose
       if (!text.trim()) {
-        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.45 });
+        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
       }
     }
 
@@ -203,7 +226,6 @@ export async function runPageAgent(
       request_id,
     };
   } catch (e) {
-    // Last resort: plain text without tools
     try {
       const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
       return {
