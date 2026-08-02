@@ -28,19 +28,41 @@ const LIVE_PERSONAL =
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
 
+/** Explicit "explain something to me" framing. */
+const DEFINITIONAL =
+  /\b(what(?:'s| is| are| does)|whats|explain|define|definition|meaning|how\s+(?:does|do|can|to)|why|tell me about|difference between|what happens|is it safe|should i)\b/i;
+
+/** A concrete market datum… */
+const MARKET_NOUN =
+  /\b(price|prices|apy|apr|yield|tvl|utilization|liquidity|pool|pools|reserve|reserves|stats|rate|rates)\b/i;
+/** …attached to a real asset means "look it up", not "explain it". */
+const ASSET_SYMBOL = /\b(XLM|USDC|BLUSDC|AQUSDC|SOUSDC|USDT|AQUA|EURC)\b/i;
+
+/**
+ * True only for genuine concept questions ("what is Blend?").
+ *
+ * This deliberately defaults to FALSE. It used to default to true — anything that did
+ * not match an allow-list of "live" phrasings fell through to the page assistant, which
+ * has no MCP access and so answered market questions with "I do not have access to
+ * real-time prices". That swallowed the most basic reads there are: "price of XLM",
+ * "which Blend reserve pays more", "compare the XLM and USDC pools". Routing is now
+ * opt-in for the assistant, so an unrecognised message goes to the copilot, where the
+ * router can at worst ask for clarification instead of refusing outright.
+ */
 export function isAssistantChat(message: string): boolean {
   const m = message.trim();
   if (!m) return false;
 
-  if (ACTION_INTENT.test(m)) {
-    const definitional =
-      /\b(what(?:'s| is| are| does)|whats|explain|define|meaning|how does|how do|why|tell me about|difference between)\b/i.test(
-        m,
-      );
-    if (!definitional) return false;
-  }
+  // Live data wins even when phrased as a question: "what is the price of XLM?" is a
+  // lookup, not a concept question.
   if (LIVE_PERSONAL.test(m) || LIVE_DATA_QUERY.test(m)) return false;
-  return true;
+  if (MARKET_NOUN.test(m) && ASSET_SYMBOL.test(m)) return false;
+
+  // An action instruction is a write unless it is framed as a how-to
+  // ("how do I deposit XLM as collateral?" is still assistant work).
+  if (ACTION_INTENT.test(m) && !DEFINITIONAL.test(m)) return false;
+
+  return DEFINITIONAL.test(m);
 }
 
 export function classifyConcept(message: string): { mode: "assistant" } | null {
