@@ -1207,6 +1207,56 @@ async function runRead(
       e instanceof Error &&
       /Budget|ExceededLimit|resource/i.test(e.message)
     ) {
+      // Prefer the SAME source the margin page renders. computeMarginSnapshot is what
+      // /api/account serves, so using it here means the copilot and the margin page
+      // cannot disagree about the number that decides liquidation. They did disagree:
+      // MCP's vanna_get_collateral reported $214.72 of collateral where the page showed
+      // $382.87 gross, which dragged the health factor to 1.95 against the page's 3.47.
+      // Two different answers to "am I about to be liquidated" is worse than one slow
+      // answer, so the shared calculation wins and the MCP probes stay as a last resort.
+      if (ctx.smartAccount) {
+        try {
+          const [{ computeMarginSnapshot }, { HEALTH_FACTOR_INFINITY_SENTINEL }] =
+            await Promise.all([
+              import("@/lib/account-snapshot"),
+              import("@/lib/margin-health"),
+            ]);
+          const snap = await computeMarginSnapshot(ctx.smartAccount);
+          const hf = snap.avgHealthFactor;
+          const parts = [
+            "The protocol's health endpoint hit a Soroban CPU budget limit, so these come from the same on-chain read the margin page uses:",
+            hf >= HEALTH_FACTOR_INFINITY_SENTINEL
+              ? "health factor ∞ (no debt)"
+              : `health factor ${hf.toFixed(2)}`,
+            `collateral $${snap.grossCollateralValue.toFixed(2)}`,
+            `borrowed $${snap.totalBorrowedValue.toFixed(2)}`,
+            `$${snap.collateralLeftBeforeLiquidation.toFixed(2)} of collateral left before liquidation`,
+          ];
+          return {
+            kind: "answer",
+            message: parts.join(" · "),
+            data: factsForUi({
+              health_factor: hf,
+              collateral_usd: snap.grossCollateralValue,
+              debt_usd: snap.totalBorrowedValue,
+              collateral_left_before_liquidation: snap.collateralLeftBeforeLiquidation,
+              net_available_collateral: snap.netAvailableCollateral,
+              note: "on_chain_snapshot_fallback",
+            }),
+            intent: {
+              template_id: "query_account_health",
+              slots: { mode: "margin_snapshot_fallback" },
+            },
+            mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
+            request_id: ctx.request_id,
+          };
+        } catch (snapErr) {
+          console.warn(
+            `[copilot] margin snapshot fallback failed -> ${snapErr instanceof Error ? snapErr.message.slice(0, 160) : String(snapErr)}`,
+          );
+        }
+      }
+
       try {
         const mcp = getMcpClient();
         const sa = ctx.smartAccount;
@@ -1254,12 +1304,13 @@ async function runRead(
           parts.push(
             hf >= 999
               ? "health factor ∞ (no meaningful debt)"
-              : // collateral ÷ debt ignores per-asset liquidation thresholds, which are
-                // all below 1, so the true health factor is always LOWER than this.
-                // Saying "approx" invited reading it as the real figure — dangerous on
-                // the one number that decides whether someone is about to be liquidated.
-                `collateral ÷ debt = ${hf.toFixed(2)} — treat as a best case only. ` +
-                `It ignores liquidation thresholds, so your real health factor is lower`,
+              : // Health factor IS gross collateral / debt — see lib/margin-health.ts,
+                // which is checked against the protocol math reference. There is no
+                // liquidation-threshold haircut on the collateral side; the threshold
+                // (1.1) is the level HF is compared against, not a multiplier. This
+                // figure can still differ from the margin page when MCP's collateral
+                // view is incomplete, which is why the snapshot path above is preferred.
+                `health factor ~${hf.toFixed(2)} (collateral ÷ debt; liquidation at 1.1)`,
           );
         }
         return {
