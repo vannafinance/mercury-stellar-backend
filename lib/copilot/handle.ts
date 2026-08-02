@@ -379,7 +379,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     if (t.length > 90) return true;
     const actionVerbs =
       t.match(
-        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy)\b/gi,
+        // "create"/"open"/"connect" count as actions: without them "create a wallet and
+        // deposit 10 XLM" scored one verb, took the fast keyword path, and returned only
+        // the wallet dialog — silently dropping the deposit.
+        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy|create|open|connect)\b/gi,
       ) || [];
     const uniqueVerbs = new Set(actionVerbs.map((v) => v.toLowerCase()));
     if (uniqueVerbs.size >= 2) return true;
