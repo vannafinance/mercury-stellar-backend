@@ -405,6 +405,10 @@ export function routeMessage(message: string): RoutedIntent {
       "create wallet",
       "create a wallet",
       "create vanna wallet",
+      // Bare "vanna wallet" so "create a vanna wallet" matches too — the phrases here
+      // are substrings, so an article between the verb and the noun defeated them.
+      // "what is a vanna wallet?" never reaches here: it is a concept question.
+      "vanna wallet",
       "create my wallet",
       "create g-wallet",
       "create g wallet",
@@ -419,7 +423,12 @@ export function routeMessage(message: string): RoutedIntent {
       "get a wallet",
       "get me a wallet",
     ) &&
-    !any(text, "smart account", "margin account", "c-account", "c account")
+    // These phrases are substring matches, so "new wallet" also fired on
+    // "what's in my new wallet?" — a balance question that opened the create dialog.
+    // Exclude possessive/interrogative framings rather than dropping the phrase, so a
+    // plain "create a new wallet" still works.
+    !any(text, "smart account", "margin account", "c-account", "c account") &&
+    !any(text, "my new wallet", "what's in", "whats in", "what is in", "how much is in")
   ) {
     return {
       kind: "client",
@@ -643,7 +652,23 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  if (any(text, "borrow") && !any(text, "can i borrow", "how much can i borrow", "borrow apr", "borrow rate")) {
+  // "available to borrow" / "liquidity … to borrow" are pool-liquidity READS. Without
+  // these exclusions the bare "borrow" match turned "how much liquidity is available to
+  // borrow from the XLM pool?" into a borrow write that then asked "how much do you want
+  // to borrow?" — a question answered with a question.
+  if (
+    any(text, "borrow") &&
+    !any(
+      text,
+      "can i borrow",
+      "how much can i borrow",
+      "borrow apr",
+      "borrow rate",
+      "available to borrow",
+      "left to borrow",
+      "liquidity",
+    )
+  ) {
     return {
       kind: "write",
       op: "borrow",
