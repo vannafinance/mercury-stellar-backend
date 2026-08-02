@@ -87,6 +87,46 @@ function looksLikeWallet(id: string): boolean {
   return /^G[A-Z0-9]{55}$/.test(id);
 }
 
+/**
+ * Pull a USD total out of a collateral or debt payload.
+ *
+ * The field name is not stable across tools — collateral reports `collateral_usd`
+ * while debt reports `debt_usd`/`total_debt_usd`, and values arrive as strings as
+ * often as numbers. The budget-limit fallback previously guessed a single name
+ * (`total_value_usd`), missed on both, and reported "$0.00" for an account actually
+ * holding $214.71 of collateral against $110.25 of debt — a zero that reads as "you
+ * have nothing" rather than "I could not tell". Falls back to summing the per-asset
+ * `<SYM>_usd` entries so a renamed total degrades to arithmetic, not to zero.
+ */
+function usdTotal(payload: unknown, kind: "collateral" | "debt"): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const entries = Object.entries(payload as Record<string, unknown>).map(
+    ([k, v]) => [k.toLowerCase().replace(/\s+/g, "_"), v] as const,
+  );
+  const byKey = new Map(entries);
+
+  const candidates =
+    kind === "collateral"
+      ? ["collateral_usd", "total_collateral_usd", "total_value_usd", "value_usd"]
+      : ["total_debt_usd", "debt_usd", "total_borrowed_usd", "borrowed_usd"];
+  for (const k of candidates) {
+    const n = Number(byKey.get(k));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+
+  let sum = 0;
+  let seen = false;
+  for (const [k, v] of entries) {
+    if (!/_usd$/.test(k) || /^(total|collateral|debt|value|borrowed)_/.test(k)) continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) {
+      sum += n;
+      seen = true;
+    }
+  }
+  return seen ? sum : null;
+}
+
 /** True when the router already resolved this to a Blend-venue read. */
 function isBlendRead(routed: RoutedIntent): boolean {
   return (
@@ -1092,6 +1132,21 @@ async function runRead(
   try {
     const mcp = getMcpClient();
     const data = await mcp.call(routed.tool, built.args, ctx.userId);
+
+    // A Soroban budget overrun comes back as a SUCCESSFUL response carrying an error
+    // field — it never rejects. So the ExceededLimit fallback in the catch below was
+    // unreachable, and "my health factor" answered "no value available" while
+    // vanna_get_collateral ($214.70) and vanna_get_debt ($110.25) were both returning
+    // fine. Re-raise so that fallback runs. Scoped to budget/resource faults: other
+    // error payloads keep their existing handling.
+    {
+      const payload = data as Record<string, unknown> | null;
+      const detail = String(payload?.message ?? payload?.error ?? "");
+      if (payload?.error && /Budget|ExceededLimit|resource limit/i.test(detail)) {
+        throw new Error(detail);
+      }
+    }
+
     let prose: string;
     const hinglish = /\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i.test(ctx.message);
     try {
@@ -1155,12 +1210,33 @@ async function runRead(
       try {
         const mcp = getMcpClient();
         const sa = ctx.smartAccount;
-        const [col, debt] = await Promise.all([
-          mcp.call("vanna_get_collateral", sa ? { smart_account: sa } : {}, ctx.userId).catch(() => null),
-          mcp.call("vanna_get_debt", sa ? { smart_account: sa } : {}, ctx.userId).catch(() => null),
-        ]);
-        const colUsd = col ? Number((col as any).total_value_usd ?? 0) : null;
-        const debtUsd = debt ? Number((debt as any).total_debt_usd ?? 0) : null;
+        const probe = async (tool: string) => {
+          try {
+            const r = await mcp.call(tool, sa ? { smart_account: sa } : {}, ctx.userId);
+            const p = r as Record<string, unknown> | null;
+            // An error payload is a successful response here, so check for it rather
+            // than relying on a rejection that never comes.
+            if (p?.error) {
+              console.warn(`[copilot] health fallback: ${tool} -> ${String(p.message ?? p.error).slice(0, 160)}`);
+              return null;
+            }
+            return r;
+          } catch (err) {
+            console.warn(
+              `[copilot] health fallback: ${tool} threw -> ${err instanceof Error ? err.message.slice(0, 160) : String(err)}`,
+            );
+            return null;
+          }
+        };
+        // Sequential, not Promise.all. These share one reused MCP session, and firing
+        // both at once had vanna_get_collateral — the heavier of the two, it walks every
+        // collateral token plus LP positions — abort on timeout while debt returned
+        // fine. The same call succeeds on its own, so the concurrency is the problem,
+        // not the call. This path is already degraded; correctness beats latency here.
+        const debt = await probe("vanna_get_debt");
+        const col = await probe("vanna_get_collateral");
+        const colUsd = usdTotal(col, "collateral");
+        const debtUsd = usdTotal(debt, "debt");
         const hf =
           colUsd != null && debtUsd != null && debtUsd > 0.01
             ? colUsd / debtUsd
@@ -1170,13 +1246,20 @@ async function runRead(
         const parts = [
           "Full health endpoint hit a Soroban CPU budget limit on this account — using collateral + debt instead:",
         ];
-        if (colUsd != null) parts.push(`collateral ~$${colUsd.toFixed(2)}`);
-        if (debtUsd != null) parts.push(`debt ~$${debtUsd.toFixed(2)}`);
+        // Name what is missing. Omitting a component silently made the line read as a
+        // complete picture when it was half of one.
+        parts.push(colUsd != null ? `collateral ~$${colUsd.toFixed(2)}` : "collateral unavailable");
+        parts.push(debtUsd != null ? `debt ~$${debtUsd.toFixed(2)}` : "debt unavailable");
         if (hf != null) {
           parts.push(
             hf >= 999
               ? "health factor ∞ (no meaningful debt)"
-              : `approx health factor ${hf.toFixed(2)} (collateral ÷ debt)`,
+              : // collateral ÷ debt ignores per-asset liquidation thresholds, which are
+                // all below 1, so the true health factor is always LOWER than this.
+                // Saying "approx" invited reading it as the real figure — dangerous on
+                // the one number that decides whether someone is about to be liquidated.
+                `collateral ÷ debt = ${hf.toFixed(2)} — treat as a best case only. ` +
+                `It ignores liquidation thresholds, so your real health factor is lower`,
           );
         }
         return {

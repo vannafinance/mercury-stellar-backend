@@ -680,9 +680,26 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // "as collateral" on its own is not an instruction — "what can I use as collateral?"
+  // is asking for the accepted-collateral list, and it was becoming a deposit write
+  // that then asked which USDC variant to deposit. Questions are excluded so they fall
+  // through to the collateral-config read below.
+  const asksWhichAssets = any(
+    text,
+    "what can",
+    "which can",
+    "what assets",
+    "which assets",
+    "what tokens",
+    "which tokens",
+    "allowed collateral",
+    "collateral config",
+    "accepted",
+  );
   if (
-    (any(text, "deposit") && any(text, "collateral")) ||
-    any(text, "add collateral", "post collateral", "as collateral")
+    !asksWhichAssets &&
+    ((any(text, "deposit") && any(text, "collateral")) ||
+      any(text, "add collateral", "post collateral", "as collateral"))
   ) {
     return {
       kind: "write",
