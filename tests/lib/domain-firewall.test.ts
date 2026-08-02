@@ -32,6 +32,12 @@ describe("domain firewall", () => {
     expect(evaluateDomainFirewall("lend 10 XLM").allow).toBe(true);
   });
 
+  it("allows create / connect wallet", () => {
+    expect(evaluateDomainFirewall("create a wallet").allow).toBe(true);
+    expect(evaluateDomainFirewall("create vanna wallet").allow).toBe(true);
+    expect(evaluateDomainFirewall("connect wallet").allow).toBe(true);
+  });
+
   it("blocks bare language asks for free coding", () => {
     expect(evaluateDomainFirewall("help me with python").allow).toBe(false);
     expect(evaluateDomainFirewall("help me code a website").allow).toBe(false);

@@ -405,6 +405,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     (kwFast.kind === "write" ||
       kwFast.kind === "restricted" ||
       kwFast.kind === "auto_sign" ||
+      // G-wallet create/connect is always client-side — never let Vertex map it to create_account
+      kwFast.kind === "client" ||
       (kwFast.kind === "read" &&
         !!kwFast.template_id &&
         [
@@ -587,10 +589,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       const before = routed.kind;
       routed = preferMultiGoalPlan(routed, kw, message);
       // LangChain-style: deterministic ordered decomposition of long prompts
-      routed = preferExtractedPlan(routed, message);
-      if (routed.kind === "plan" && before !== "plan") {
+      const extracted = preferExtractedPlan(routed, message);
+      routed = extracted;
+      if (extracted.kind === "plan" && before !== "plan") {
         console.warn(
-          `[copilot] multi-goal: plan with ${routed.steps?.length ?? 0} steps (was ${before})`,
+          `[copilot] multi-goal: plan with ${extracted.steps.length} steps (was ${before})`,
         );
       }
     }
@@ -655,6 +658,19 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       kind: "clarification",
       message: routed.message,
       intent: { template_id: routed.template_id ?? null },
+      request_id,
+    };
+  }
+  // G-wallet create/connect — browser client tool only (Privy/Freighter). No MCP.
+  if (routed.kind === "client") {
+    return {
+      kind: "answer",
+      message: routed.message,
+      intent: {
+        template_id: routed.template_id,
+        slots: { tool: routed.tool, ...(routed.args || {}) },
+      },
+      client_tools: [{ name: routed.tool, args: routed.args || {} }],
       request_id,
     };
   }

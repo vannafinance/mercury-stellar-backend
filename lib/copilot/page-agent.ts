@@ -115,6 +115,26 @@ export const CLIENT_TOOL_DECLS = [
       required: ["selector"],
     },
   },
+  {
+    name: "openConnectWallet",
+    description:
+      "Open the Connect / Create Vanna wallet dialog (Privy email/Google or Freighter). " +
+      "Use when the user asks to create a wallet, create a Vanna wallet, connect a wallet, " +
+      "or set up a G-wallet. Never invent wallet keys or claim MCP creates wallets.",
+    parameters: {
+      type: "object",
+      properties: {
+        prefer: {
+          type: "string",
+          description: 'prefer "privy" for create, "modal" to show both options, or "freighter"',
+        },
+        intent: {
+          type: "string",
+          description: '"create" for new Vanna wallet, "connect" for existing wallet',
+        },
+      },
+    },
+  },
 ] as const;
 
 function sanitizeProse(s: string): string {

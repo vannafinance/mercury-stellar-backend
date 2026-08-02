@@ -458,8 +458,9 @@ export const ROUTER_TOOLS: ToolEntry[] = [
     decl: {
       name: "create_margin_account",
       description:
-        "Create the user's margin (smart) account. Use for \"create a margin account\", " +
-        "\"open a smart account\". Takes no amount.",
+        "Create the user's margin smart account (C-address) via MCP open. " +
+        "Use ONLY for \"create a margin account\", \"open a smart account\", \"open margin account\". " +
+        "Do NOT use for \"create wallet\" / \"create Vanna wallet\" / G-wallet — that is client-side Privy, not MCP.",
     },
     toIntent: () => write("create_account", {}),
   },

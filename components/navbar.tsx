@@ -14,6 +14,8 @@ import { useAppModeStore } from "@/store/app-mode-store";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { FaucetPopup } from "./faucet/faucet-popup";
 import { ConnectWalletModal } from "./wallet/connect-wallet-modal";
+import { OPEN_CONNECT_WALLET_EVENT } from "@/lib/assistant/client-tools";
+import { getPrivyAuthControls } from "@/lib/wallet-adapter";
 
 interface Navbar {
   /** Nav entries; `group` ("primary" | "bordered" | "secondary") controls placement/styling. */
@@ -142,6 +144,34 @@ export const Navbar = (props: Navbar) => {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // Copilot / Ask: open Connect or Create Vanna wallet (Privy/Freighter).
+  // Event is dispatched by openConnectWallet client tool — keys stay client-side.
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ prefer?: string; intent?: string }>).detail || {};
+      const prefer = String(detail.prefer || "modal").toLowerCase();
+      // Already connected — just surface the wallet menu instead of re-login.
+      if (address) {
+        setIsWalletDropdownOpen(true);
+        return;
+      }
+      // Prefer Freighter only when explicitly requested.
+      if (prefer === "freighter") {
+        void connectWallet("freighter");
+        return;
+      }
+      // Create path: auto-Privy only when bridge is ready; else open modal
+      // (avoids "Privy login is not available" race with no fallback UI).
+      if (prefer === "privy" && privyEnabled && getPrivyAuthControls()) {
+        void connectWallet("privy");
+        return;
+      }
+      setIsConnectModalOpen(true);
+    };
+    window.addEventListener(OPEN_CONNECT_WALLET_EVENT, handler);
+    return () => window.removeEventListener(OPEN_CONNECT_WALLET_EVENT, handler);
+  }, [address, privyEnabled, connectWallet]);
 
   const handleNavItemClickWithLink = (item: {
     title: string;

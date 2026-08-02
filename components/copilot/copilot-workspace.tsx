@@ -38,6 +38,7 @@ import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
+import { executeClientTools } from "@/lib/assistant/client-tools";
 
 interface BrainHealth {
   status: string;
@@ -97,6 +98,8 @@ interface ChatResponse {
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
   request_id?: string | null;
+  /** Browser-only tools (navigate, open Create Vanna wallet modal, etc.). */
+  client_tools?: Array<{ name: string; args: Record<string, unknown> }> | null;
   clarify_options?: ClarifyOption[] | null;
   pending_write?: {
     op: string;
@@ -160,6 +163,8 @@ const PROMPTS: Record<string, string[]> = {
     "Can I borrow 20 USDC?",
   ],
   actions: [
+    "Create Vanna wallet",
+    "Open a margin account",
     "Deposit 5 XLM",
     "Lend 5 USDC",
     "Borrow 2 USDC",
@@ -1022,6 +1027,10 @@ export function CopilotWorkspace() {
         if (data.message) data.message = stripMarkdownLite(data.message);
         if (data.preview?.human_summary) {
           data.preview.human_summary = stripMarkdownLite(data.preview.human_summary);
+        }
+        // G-wallet create/connect and page tools run in the browser only.
+        if (Array.isArray(data.client_tools) && data.client_tools.length) {
+          executeClientTools(data.client_tools);
         }
         setResponse(data);
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.

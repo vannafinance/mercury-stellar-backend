@@ -51,6 +51,8 @@ const ALLOW_PATTERNS: RegExp[] = [
   /\b(blend|aquarius|soroswap|xlm|blusdc|aqusdc|sousdc|btoken|vtoken)\b/i,
   /\b(swap|liquidity|pool|apy|tvl|leverage|liquidat|smart\s+account|g-?wallet|c-?address)\b/i,
   /\b(auto[- ]?sign|auto[- ]?approve|wallet\s+connect|open\s+(margin\s+)?account)\b/i,
+  /\b(create|connect|setup|set\s*up|make|get|link)\b.+\b(wallet|g-?wallet|vanna\s+wallet|freighter|privy)\b/i,
+  /\b(wallet|g-?wallet|freighter|privy)\b/i,
   /\b(what(?:'s| is| are).+\b(on\s+(my\s+)?screen|this\s+page|shown|showing)\b)/i,
   /\b(how\s+(do|does|can|to).+\b(vanna|earn|farm|margin|lend|borrow|deposit|swap)\b)/i,
   /\b(park|supply|withdraw|position|debt|balance|oracle|price)\b/i,

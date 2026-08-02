@@ -396,12 +396,85 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // ── G-wallet create/connect (client-side Privy/Freighter — NOT MCP) ──────
+  // Must run before multi-goal / create_account so "create a wallet" never
+  // becomes open-margin-account (C-address). MCP has no create_wallet tool.
+  if (
+    any(
+      text,
+      "create wallet",
+      "create a wallet",
+      "create vanna wallet",
+      "create my wallet",
+      "create g-wallet",
+      "create g wallet",
+      "new vanna wallet",
+      "new g-wallet",
+      "new wallet",
+      "make a wallet",
+      "make me a wallet",
+      "set up a wallet",
+      "setup a wallet",
+      "setup wallet",
+      "get a wallet",
+      "get me a wallet",
+    ) &&
+    !any(text, "smart account", "margin account", "c-account", "c account")
+  ) {
+    return {
+      kind: "client",
+      tool: "openConnectWallet",
+      args: { prefer: "privy", intent: "create" },
+      template_id: "create_g_wallet",
+      message:
+        "Opening Create Vanna wallet…\n\n" +
+        "1. Choose Create Vanna wallet (email or Google) — Privy creates an embedded Stellar G-wallet for you.\n" +
+        "2. Or connect Freighter if you already have an extension wallet.\n\n" +
+        "Keys stay in your browser (Privy/Freighter). MCP never creates G-wallets — only opens margin C-accounts after you connect.",
+    };
+  }
+
+  if (
+    any(
+      text,
+      "connect wallet",
+      "connect my wallet",
+      "connect a wallet",
+      "link wallet",
+      "link my wallet",
+    ) &&
+    !any(text, "smart account", "margin account")
+  ) {
+    return {
+      kind: "client",
+      tool: "openConnectWallet",
+      args: { prefer: "modal", intent: "connect" },
+      template_id: "connect_g_wallet",
+      message:
+        "Opening wallet connect…\n\n" +
+        "Pick Freighter (existing extension) or Create Vanna wallet (email/Google via Privy).",
+    };
+  }
+
   // Multi-goal BEFORE single-op writes (repay/deposit/lend/swap alone)
   const multiGoal = tryMultiGoalPlan(raw, text, asset, amount, leverage);
   if (multiGoal) return multiGoal;
 
   // ── writes (checked before reads that share words like "borrow") ────────
-  if (any(text, "create smart account", "create margin account", "open a margin account", "open margin account", "create my smart account", "open a smart account")) {
+  // C-account / margin smart account only — not G-wallet create (see client path above).
+  if (
+    any(
+      text,
+      "create smart account",
+      "create margin account",
+      "open a margin account",
+      "open margin account",
+      "create my smart account",
+      "open a smart account",
+      "open margin c-account",
+      "open a c-account",
+    )
+  ) {
     return {
       kind: "write",
       op: "create_account",

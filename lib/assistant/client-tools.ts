@@ -102,6 +102,40 @@ export function navigateToRoute(
   }
 }
 
+/** Custom event name — navbar opens Connect / Create Vanna wallet modal. */
+export const OPEN_CONNECT_WALLET_EVENT = "vanna:open-connect-wallet";
+
+/**
+ * openConnectWallet({ prefer?, intent? })
+ * Opens the app's wallet modal (or jumps straight to Privy when prefer=privy).
+ * G-wallet keys stay client-side; never calls MCP create.
+ */
+export function openConnectWallet(args?: Record<string, unknown>): ClientToolResult {
+  if (typeof window === "undefined") {
+    return { name: "openConnectWallet", ok: false, detail: "not in browser" };
+  }
+  const prefer = String(args?.prefer ?? "modal").toLowerCase();
+  const intent = String(args?.intent ?? "connect").toLowerCase();
+  try {
+    window.dispatchEvent(
+      new CustomEvent(OPEN_CONNECT_WALLET_EVENT, {
+        detail: { prefer, intent },
+      }),
+    );
+    return {
+      name: "openConnectWallet",
+      ok: true,
+      detail: `dispatched prefer=${prefer} intent=${intent}`,
+    };
+  } catch (e) {
+    return {
+      name: "openConnectWallet",
+      ok: false,
+      detail: e instanceof Error ? e.message : "dispatch failed",
+    };
+  }
+}
+
 /**
  * Dispatch one or more tool calls from the LLM response.
  */
@@ -125,6 +159,8 @@ export function executeClientTools(
       );
     } else if (name === "highlightElement") {
       results.push(highlightElement(String(args.selector ?? args.elementId ?? "")));
+    } else if (name === "openConnectWallet") {
+      results.push(openConnectWallet(args));
     } else {
       results.push({ name, ok: false, detail: `unknown client tool: ${name}` });
     }

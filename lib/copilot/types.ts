@@ -332,4 +332,15 @@ export type RoutedIntent =
       max_per_tx_usd?: number | string;
       max_per_day_usd?: number | string;
       template_id: string;
+    }
+  | {
+      /**
+       * Browser-only action (no MCP). Used for G-wallet create/connect via Privy/Freighter.
+       * Keys never leave the client — MCP has no create_wallet tool.
+       */
+      kind: "client";
+      tool: string;
+      args?: Record<string, unknown>;
+      message: string;
+      template_id: string;
     };
