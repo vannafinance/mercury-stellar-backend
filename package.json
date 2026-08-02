@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:multi-leg": "vitest run tests/lib/multi-leg-agent.test.ts tests/lib/plan-sanitize.test.ts"
+    "test:multi-leg": "vitest run tests/lib/multi-leg-agent.test.ts tests/lib/plan-sanitize.test.ts tests/lib/step-extractor.test.ts"
   },
   "dependencies": {
     "@google-cloud/bigquery": "8.3.1",

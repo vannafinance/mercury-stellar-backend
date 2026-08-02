@@ -24,7 +24,6 @@ import {
   CircleAlert,
   ShieldCheck,
   ExternalLink,
-  RefreshCw,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useUserStore } from "@/store/user";
@@ -1625,27 +1624,6 @@ export function CopilotWorkspace() {
     inputRef.current?.focus();
   };
 
-  /** Full new chat: wipe answer, log, activity, and strategy parent. */
-  const newChat = useCallback(() => {
-    if (loading || signing) {
-      toast.error("Wait for the current step to finish before starting a new chat");
-      return;
-    }
-    setSubmitted(null);
-    setResponse(null);
-    setIntentText("");
-    setShowCustom(false);
-    setPaletteOpen(false);
-    setLog([]);
-    setActivity([]);
-    autoSubmittedRef.current = null;
-    nextStepFiredRef.current = null;
-    strategyParentRef.current = null;
-    guardianFiredRef.current = null;
-    inputRef.current?.focus();
-    toast.success("New chat — previous session cleared", { duration: 2500 });
-  }, [loading, signing]);
-
   const brainOnline = health?.status === "ok";
   const multiLeg = isMultiLegResponse(response?.data ?? null);
   // Multi-leg uses a structured card — don't paint the whole turn imperial red.
@@ -1742,7 +1720,6 @@ export function CopilotWorkspace() {
     sessionSigning &&
     decision !== "block";
   const txHash = response?.execution?.tx_hash ?? null;
-  const canClear = phase !== "running" && !signing && (submitted || log.length > 0 || response);
 
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
@@ -1764,16 +1741,6 @@ export function CopilotWorkspace() {
           </h1>
         </div>
         <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={newChat}
-            disabled={!canClear}
-            title="Clear this chat and start fresh"
-            className="flex items-center gap-1.5 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] font-semibold text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <RefreshCw size={12} />
-            New chat
-          </button>
           <div className="flex items-center gap-2 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] text-vgray-500">
             <span
               className={`h-1.5 w-1.5 rounded-full ${brainOnline ? "animate-pulse" : ""}`}

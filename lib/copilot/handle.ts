@@ -48,6 +48,7 @@ import {
 } from "./multi-leg-agent";
 import { preflightExpandedLegs } from "./multi-leg-preflight";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
+import { preferExtractedPlan } from "./step-extractor";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -557,18 +558,29 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       routed = kw;
     }
 
-    // Phase 2: multi-goal plans — never let Vertex collapse park+farm into one write.
-    // Keyword plan has safer amounts (N ASSET only; HF floor never becomes size).
+    // Multi-goal: keyword plan + clause-order extraction (plan-then-execute).
+    // Never let Vertex collapse park+farm / swap+farm into one write.
     if (looksLikeMultiGoal(message) || kw.kind === "plan") {
       const before = routed.kind;
       routed = preferMultiGoalPlan(routed, kw, message);
-      if (before !== routed.kind || (routed.kind === "plan" && before === "plan")) {
-        if (routed.kind === "plan" && before !== "plan") {
-          console.warn(
-            `[copilot] multi-goal: preferred keyword plan over vertex ${before} (${routed.steps?.length ?? 0} steps)`,
-          );
-        }
+      // LangChain-style: deterministic ordered decomposition of long prompts
+      routed = preferExtractedPlan(routed, message);
+      if (routed.kind === "plan" && before !== "plan") {
+        console.warn(
+          `[copilot] multi-goal: plan with ${routed.steps?.length ?? 0} steps (was ${before})`,
+        );
       }
+    }
+  }
+
+  // Late catch: long multi-verb messages that still arrived as a single write
+  if (routed.kind === "write" && looksLikeMultiGoal(message)) {
+    const upgraded = preferExtractedPlan(routed, message);
+    if (upgraded.kind === "plan") {
+      console.warn(
+        `[copilot] multi-goal: upgraded single write to extracted plan (${upgraded.steps.length} steps)`,
+      );
+      routed = upgraded;
     }
   }
 
