@@ -76,6 +76,64 @@ npm test
 
 ---
 
+## Wallet create: what’s done vs MCP
+
+| Feature | Where | Status |
+|---------|--------|--------|
+| Create **G-wallet** (Privy email/Google) | App: `PrivyWalletBridge` + Connect modal | **Done** (create-on-login + toast) |
+| Freighter connect | App wallet adapter | Existing |
+| Open **margin C-account** | MCP `vanna_account` action `open` / copilot `create_account` | **MCP exists** — use “open margin account” in copilot |
+| MCP tool `create_wallet` for Privy | vanna-mcp server | **Not required / not implemented** — wallet is client-side |
+
+Multi-leg does **not** need a new MCP wallet-create tool. MCP must stay up for lend/deposit/borrow/swap/supply.
+
+---
+
+## GCP deploy (existing project — no new project)
+
+Deploy **this Next app** (copilot brain) to the **existing** Cloud Run service. Owner/ops with deploy rights:
+
+```bash
+# From repo root (branch copilot-assistant or merged main)
+export PROJECT=vanna-mcp          # or your existing project id
+export REGION=us-central1         # match current service region
+export SERVICE=vanna-app          # match existing Cloud Run service name
+
+gcloud config set project $PROJECT
+
+# Build + deploy from source (Cloud Build)
+gcloud run deploy $SERVICE \
+  --project=$PROJECT \
+  --region=$REGION \
+  --source=. \
+  --platform=managed \
+  --allow-unauthenticated \
+  --timeout=300 \
+  --cpu=2 \
+  --memory=2Gi \
+  --set-env-vars="MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,COPILOT_READS_ONLY=false"
+
+# Ensure secrets already attached on the service (do not recreate project):
+# WORKOS_M2M_CLIENT_ID, WORKOS_M2M_CLIENT_SECRET, WORKOS_M2M_TOKEN_URL,
+# GOOGLE_CLOUD_PROJECT / Vertex SA, NEXT_PUBLIC_PRIVY_APP_ID (build-time if needed)
+```
+
+**MCP server** (separate if you redeploy MCP, not required for multi-leg copilot code):
+
+```bash
+# Only if MCP code changed — example shape; use your real MCP service name
+export MCP_SERVICE=vanna-mcp
+gcloud run deploy $MCP_SERVICE \
+  --project=$PROJECT \
+  --region=$REGION \
+  --source=. \
+  --timeout=300
+```
+
+Multi-leg readiness on MCP: existing tools + Sign Service Blend deposit decode. No MCP multi-leg tool.
+
+---
+
 ## Rollout recommendation
 
 1. **Staging** full multi-leg with auto-sign + real SA  

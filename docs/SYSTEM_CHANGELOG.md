@@ -16,8 +16,13 @@ Living log of upgrades on branch `copilot-assistant`.
 | Planner breadth (repay→deposit, swap→farm, …) | **Shipped** |
 | Privy create/save copy + toast | **Shipped** (light) |
 | Production canary deploy | **Deferred** (by product choice) |
-| Streaming live steps | **Next slice** (not started) |
-| Free-balance preflight before Blend supply | **Next slice** (not started) |
+| Streaming live steps | Next slice (not started) |
+| Free-balance preflight before Blend supply | Next slice (not started) |
+| New chat / clear session button | **Shipped** |
+| Soft network retry on multi-leg legs | **Shipped** |
+| Word-boundary multi-goal (Blend ≠ lend) | **Shipped** |
+| Wallet create (Privy G-wallet) | **App-side done** (not MCP tool) |
+| Open margin account (MCP) | **Exists** (`create_account` / `vanna_account open`) |
 
 **Branch:** `copilot-assistant` (ahead of origin; push when ready)  
 **Commits:**
@@ -103,6 +108,25 @@ Disable auto-approve, then core multi-leg.
 ---
 
 ## Change log (chronological)
+
+### 2026-08-02 — Multi-leg heavy-use + New chat + wallet/deploy notes
+
+**UI**
+- **New chat** button on copilot page: clears answer, session log, activity, strategy parent → fresh start
+- Agent-run panel shows multi-leg step list when `multi_leg_steps` present
+- Session signing auto-submit no longer blocked by multi_leg flag on atomic legs
+
+**Multi-leg**
+- Soft **1× network retry** per leg on fetch/timeout errors
+- Broader multi-goal detection (swap/farm/then/; multi-step language)
+- Nested chain + resume already in place for farm tails
+
+**Wallet create**
+- **Privy embedded Stellar wallet**: client (`PrivyWalletBridge` + connect modal) — create & save on login — **done**
+- **Not** an MCP `create_wallet` tool on vanna-mcp (G-wallet is Privy/Freighter, not MCP)
+- **Margin C-account**: MCP `vanna_account` / `create_account` — product open-account path
+
+**Deploy**: see `docs/PRODUCTION_MULTI_LEG.md` § GCP commands (existing Cloud Run, no new project)
 
 ### 2026-08-02 — “Blend” was matching “lend” (critical planner bug)
 

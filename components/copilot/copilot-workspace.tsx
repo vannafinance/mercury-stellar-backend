@@ -24,6 +24,7 @@ import {
   CircleAlert,
   ShieldCheck,
   ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useUserStore } from "@/store/user";
@@ -1612,6 +1613,7 @@ export function CopilotWorkspace() {
     }
   }, [submitted]);
 
+  /** Clear current answer / staged action but keep session log. */
   const reset = () => {
     setSubmitted(null);
     setResponse(null);
@@ -1622,6 +1624,27 @@ export function CopilotWorkspace() {
     strategyParentRef.current = null;
     inputRef.current?.focus();
   };
+
+  /** Full new chat: wipe answer, log, activity, and strategy parent. */
+  const newChat = useCallback(() => {
+    if (loading || signing) {
+      toast.error("Wait for the current step to finish before starting a new chat");
+      return;
+    }
+    setSubmitted(null);
+    setResponse(null);
+    setIntentText("");
+    setShowCustom(false);
+    setPaletteOpen(false);
+    setLog([]);
+    setActivity([]);
+    autoSubmittedRef.current = null;
+    nextStepFiredRef.current = null;
+    strategyParentRef.current = null;
+    guardianFiredRef.current = null;
+    inputRef.current?.focus();
+    toast.success("New chat — previous session cleared", { duration: 2500 });
+  }, [loading, signing]);
 
   const brainOnline = health?.status === "ok";
   const multiLeg = isMultiLegResponse(response?.data ?? null);
@@ -1645,13 +1668,39 @@ export function CopilotWorkspace() {
     if (loading) {
       return [
         { label: "Parsing intent", detail: "gemini · vertex", state: "active" },
-        { label: "MCP tool call", detail: "pending", state: "pending" },
+        { label: "MCP tool call", detail: multiLeg ? "multi-leg plan…" : "pending", state: "pending" },
         { label: "Composing response", detail: "pending", state: "pending" },
       ];
     }
     if (!response) return [];
     const template = response.intent?.template_id || response.preview?.template_id || "—";
     const tool = response.mcp?.tool || "—";
+    // Multi-leg strategy: show plan steps as the agent trace
+    const mlSteps = Array.isArray((response.data as any)?.multi_leg_steps)
+      ? ((response.data as any).multi_leg_steps as Array<{
+          label?: string;
+          status?: string;
+          op?: string;
+        }>)
+      : null;
+    if (mlSteps?.length) {
+      return mlSteps.map((s) => {
+        const st = String(s.status || "");
+        const state: Step["state"] =
+          st === "ok" || st === "done"
+            ? "done"
+            : st === "pending" || st === "needs_sign"
+              ? "active"
+              : st === "skipped"
+                ? "pending"
+                : "done";
+        return {
+          label: s.label || s.op || "step",
+          detail: st === "ok" ? "done" : st || "—",
+          state,
+        };
+      });
+    }
     const write =
       response.kind === "executed" ||
       response.kind === "needs_wallet_sign" ||
@@ -1687,12 +1736,13 @@ export function CopilotWorkspace() {
   const action = response?.preview?.action;
   const followUp = response?.intent?.template_id ? FOLLOW_UP[response.intent.template_id] : undefined;
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
+  // Multi-leg atomic legs set multi_leg:false — still auto-submit when session signing is on.
   const willAutoSubmit =
     response?.kind === "needs_wallet_sign" &&
     sessionSigning &&
-    !action?.multi_leg &&
     decision !== "block";
   const txHash = response?.execution?.tx_hash ?? null;
+  const canClear = phase !== "running" && !signing && (submitted || log.length > 0 || response);
 
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
@@ -1714,6 +1764,16 @@ export function CopilotWorkspace() {
           </h1>
         </div>
         <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={newChat}
+            disabled={!canClear}
+            title="Clear this chat and start fresh"
+            className="flex items-center gap-1.5 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] font-semibold text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <RefreshCw size={12} />
+            New chat
+          </button>
           <div className="flex items-center gap-2 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] text-vgray-500">
             <span
               className={`h-1.5 w-1.5 rounded-full ${brainOnline ? "animate-pulse" : ""}`}

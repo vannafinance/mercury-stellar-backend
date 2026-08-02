@@ -194,17 +194,21 @@ function tryMultiGoalPlan(
     multiVerbCount >= 1 ||
     any(text, "park", "allocate", "add liquidity", "remove liquidity");
 
-  if (
-    !hasActionWriteIntent ||
-    !(
-      (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
-      (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
-      (any(text, "repay") && any(text, "deposit", "lend", "borrow")) ||
-      (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply")) ||
-      (/\b(then|and then|after that)\b/i.test(text) && multiVerbCount >= 2) ||
-      (/\band\b/i.test(text) && multiVerbCount >= 2 && any(text, "health", "hf", "liquidat", "farm", "yield"))
-    )
-  ) {
+  // Prefer multi-leg whenever the user stacks actions — heavy production use case.
+  const multiGoalShape =
+    (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
+    (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
+    (any(text, "repay") && any(text, "deposit", "lend", "borrow", "farm")) ||
+    (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply", "borrow")) ||
+    (any(text, "farm", "blend") && any(text, "lend", "park", "swap", "repay", "deposit")) ||
+    (/\b(then|and then|after that|;)\b/i.test(text) && multiVerbCount >= 2) ||
+    (/\band\b/i.test(text) &&
+      multiVerbCount >= 2 &&
+      any(text, "health", "hf", "liquidat", "farm", "yield", "swap", "borrow")) ||
+    // Explicit multi-step language even with one verb family
+    /\b(multi[- ]?step|multi[- ]?leg|in order|step by step|sequentially)\b/i.test(text);
+
+  if (!hasActionWriteIntent || !multiGoalShape) {
     return null;
   }
 

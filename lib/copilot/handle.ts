@@ -2100,12 +2100,26 @@ async function runPlan(
     action.requires_amount = !amountOptional;
     action.leverage = w.leverage ?? null;
 
-    const writeRes = await runWrite(action, {
+    // Soft network retry once — multi-leg is latency-sensitive and MCP cold starts fail often.
+    let writeRes = await runWrite(action, {
       ...ctx,
       smartAccount,
       // Avoid raw multi-goal text re-triggering negative-amount / max-yield heuristics
       message: `multi-leg step ${writeCursor}/${totalWriteLegs}: ${w.label}`,
     });
+    if (
+      writeRes.kind === "error" &&
+      /fetch failed|network|timed out|timeout|ECONNRESET|could not reach/i.test(
+        writeRes.message || "",
+      )
+    ) {
+      await new Promise((r) => setTimeout(r, 1200));
+      writeRes = await runWrite(action, {
+        ...ctx,
+        smartAccount,
+        message: `multi-leg step ${writeCursor}/${totalWriteLegs} retry: ${w.label}`,
+      });
+    }
     lastPartial = writeRes;
 
     if (writeRes.data && typeof writeRes.data === "object") {
