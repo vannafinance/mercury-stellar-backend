@@ -33,6 +33,7 @@ import {
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
+import { freezePlan, verifyApprovedPlan } from "./plan-approval";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -144,6 +145,38 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   let smartAccount = req.smart_account ?? null;
   const trader = looksLikeWallet(userId) ? userId : null;
   const mcp = getMcpClient();
+
+  // ── Approved plan → execute verbatim ────────────────────────────────────
+  // First thing in the function, ahead of the firewall, the auto-sign NL detection and
+  // routing. An approved plan is a structured client action, so it must not depend on
+  // the accompanying message text at all — the word "approve" was being read as an
+  // auto-sign request and swallowed the approval entirely.
+  //
+  // It also must never be re-inferred: running the model a second time can produce a
+  // different plan, and the user only ever saw the first. Replaying the frozen steps is
+  // both the safety property and faster, since it skips a routing round-trip.
+  if (req.approved_plan?.steps?.length) {
+    const check = verifyApprovedPlan(req.approved_plan, Date.now());
+    if (!check.ok) {
+      console.warn(`[copilot] approved plan rejected: ${check.reason}`);
+      return {
+        kind: "clarification",
+        message: check.message,
+        intent: { template_id: `plan_rejected_${check.reason}` },
+        request_id,
+      };
+    }
+    console.warn(
+      `[copilot] executing approved plan ${req.approved_plan.plan_id} (${check.plan.steps.length} steps)`,
+    );
+    return runPlan(check.plan, {
+      userId,
+      trader,
+      smartAccount: req.smart_account ?? null,
+      request_id,
+      message,
+    });
+  }
 
   // ── LLM domain firewall (before Vertex — blocks free coding / off-domain billing) ──
   // Skip for auto-sign control payloads and pending_write / resume (already product actions).
@@ -705,6 +738,34 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         kind: "clarification",
         message: gap.message,
         intent: { template_id: `unsupported_${gap.kind}` },
+        request_id,
+      };
+    }
+  }
+
+  // Plan → approve → execute. A freshly routed plan is SHOWN, not run; it only
+  // executes once the user sends it back as approved_plan (handled near the top of
+  // this function, before routing, so approval never re-infers anything).
+  if (routed.kind === "plan") {
+    const frozen = freezePlan(routed, Date.now());
+    if (frozen.steps.length) {
+      console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval`);
+      const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
+      return {
+        kind: "plan_preview",
+        message: [
+          `Here's the plan — nothing has run yet.`,
+          "",
+          ...lines,
+          "",
+          ...(frozen.warnings.length ? frozen.warnings.map((w) => `Note: ${w}`) : []),
+          frozen.warnings.length ? "" : "",
+          "Approve it to run, or tell me what to change.",
+        ]
+          .filter((l, i, a) => !(l === "" && a[i - 1] === ""))
+          .join("\n"),
+        plan: frozen,
+        intent: { template_id: "plan_preview", slots: { plan_id: frozen.plan_id } },
         request_id,
       };
     }

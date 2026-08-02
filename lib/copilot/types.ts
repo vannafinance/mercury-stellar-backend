@@ -95,6 +95,21 @@ export interface ChatRequest {
     follow_up?: NextStepHop | null;
   } | null;
   /**
+   * A plan the user has explicitly approved, sent back verbatim from a plan_preview.
+   * Replayed as-is — never re-inferred — so what executes is what was shown. The
+   * plan_id must still match the steps or the server refuses to run it.
+   */
+  approved_plan?: {
+    plan_id: string;
+    created_at: number;
+    steps: Array<{
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+    }>;
+  } | null;
+  /**
    * Resume a multi-leg strategy from remaining / failed legs (client button).
    * Server builds a plan from these legs and runs MultiLegAgent.
    */
@@ -211,8 +226,28 @@ export interface ChatResponse {
     | "preview"
     | "executed"
     | "needs_auto_sign"
-    | "needs_wallet_sign";
+    | "needs_wallet_sign"
+    /** A multi-leg plan awaiting the user's approval. Nothing has executed. */
+    | "plan_preview";
   message: string;
+  /**
+   * Present on plan_preview. Send the whole thing back as `approved_plan` to run it.
+   */
+  plan?: {
+    plan_id: string;
+    summary: string;
+    created_at: number;
+    warnings: string[];
+    steps: Array<{
+      n: number;
+      op: string;
+      asset: string | null;
+      amount: number | null;
+      leverage: number | null;
+      label: string;
+      venue: "earn" | "margin" | "farm" | "wallet" | "other";
+    }>;
+  } | null;
   preview?: Preview | null;
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null; slots?: Record<string, unknown> } | null;

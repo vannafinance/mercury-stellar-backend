@@ -65,7 +65,23 @@ export async function POST(req: NextRequest) {
         })
       : null;
 
-  if (!message && !autoSign && !pendingWrite && !resumeMultiLeg?.legs?.length) {
+  const approvedPlan =
+    body.approved_plan &&
+    typeof body.approved_plan === "object" &&
+    Array.isArray((body.approved_plan as { steps?: unknown }).steps)
+      ? (body.approved_plan as {
+          plan_id: string;
+          created_at: number;
+          steps: Array<{
+            op: string;
+            asset?: string | null;
+            amount?: number | null;
+            leverage?: number | null;
+          }>;
+        })
+      : null;
+
+  if (!message && !autoSign && !pendingWrite && !resumeMultiLeg?.legs?.length && !approvedPlan) {
     return NextResponse.json({ kind: "error", message: "Please type a question." }, { status: 400 });
   }
 
@@ -135,6 +151,7 @@ export async function POST(req: NextRequest) {
     history,
     auto_sign: autoSign,
     pending_write: pendingWrite,
+    approved_plan: approvedPlan,
     resume_multi_leg:
       resumeMultiLeg?.legs?.length
         ? {
