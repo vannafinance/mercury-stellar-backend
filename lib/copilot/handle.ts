@@ -32,6 +32,7 @@ import {
 } from "./mcp-write";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
+import { detectAutomationGap } from "./conditional-guard";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -648,6 +649,24 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       }
     } catch {
       /* keep write */
+    }
+  }
+
+  // Never execute a write whose defining clause we cannot honour — a dropped
+  // condition or an unwatchable standing order must be said out loud, not ignored.
+  {
+    const gap = detectAutomationGap(
+      message,
+      routed.kind === "write" || routed.kind === "plan",
+    );
+    if (gap) {
+      console.warn(`[copilot] automation gap (${gap.kind}) — refused to execute silently`);
+      return {
+        kind: "clarification",
+        message: gap.message,
+        intent: { template_id: `unsupported_${gap.kind}` },
+        request_id,
+      };
     }
   }
 
