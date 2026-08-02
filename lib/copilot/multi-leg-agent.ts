@@ -359,8 +359,8 @@ export function affectsHealth(op: string): boolean {
 }
 
 /**
- * Build client next_step chain for remaining expanded legs (max 2 deep via follow_up).
- * Used when auto-sign pauses mid-plan.
+ * Build client next_step chain for remaining expanded legs.
+ * Nests follow_up recursively so deposit→borrow→supply is not truncated.
  */
 export function remainingNextStep(
   remaining: ExpandedWrite[],
@@ -369,7 +369,7 @@ export function remainingNextStep(
 ): NonNullable<ChatResponse["next_step"]> | null {
   if (!remaining.length) return null;
   const [first, ...rest] = remaining;
-  const head: NonNullable<ChatResponse["next_step"]> = {
+  return {
     op: first.op,
     asset: first.asset ?? null,
     amount: first.amount ?? null,
@@ -377,21 +377,8 @@ export function remainingNextStep(
     label: first.label,
     step: stepIndex1Based,
     total_steps: totalSteps,
-    follow_up: null,
+    follow_up: remainingNextStep(rest, stepIndex1Based + 1, totalSteps),
   };
-  if (rest.length > 0) {
-    const second = rest[0];
-    head.follow_up = {
-      op: second.op,
-      asset: second.asset ?? null,
-      amount: second.amount ?? null,
-      leverage: second.leverage ?? null,
-      label: second.label,
-      step: stepIndex1Based + 1,
-      total_steps: totalSteps,
-    };
-  }
-  return head;
 }
 
 /** Map MultiLegStep → execution.steps row. */

@@ -89,18 +89,10 @@ export interface ChatRequest {
     amount_b?: number | null;
     fraction?: number | null;
     /**
-     * Remaining hop after this write confirms (e.g. borrow → then supply_to_blend).
-     * Client echoes this on the next auto step so the server can attach next_step.
+     * Remaining hop after this write confirms (e.g. borrow → supply_to_blend).
+     * May nest further via follow_up.
      */
-    follow_up?: {
-      op: string;
-      asset?: string | null;
-      amount?: number | null;
-      leverage?: number | null;
-      label?: string;
-      step?: number;
-      total_steps?: number;
-    } | null;
+    follow_up?: NextStepHop | null;
   } | null;
   /**
    * Resume a multi-leg strategy from remaining / failed legs (client button).
@@ -197,6 +189,18 @@ export interface ClarifyOption {
   description?: string;
 }
 
+/** One hop in a client agent chain (may nest via follow_up for 3+ leg farms). */
+export type NextStepHop = {
+  op: string;
+  asset?: string | null;
+  amount?: number | null;
+  leverage?: number | null;
+  label?: string;
+  step?: number;
+  total_steps?: number;
+  follow_up?: NextStepHop | null;
+};
+
 export interface ChatResponse {
   kind:
     | "answer"
@@ -241,29 +245,8 @@ export interface ChatResponse {
   } | null;
   /** Present when MCP built XDR but Sign Service cannot auto-sign (user must wallet-sign once) */
   unsigned_xdr?: string | null;
-  /**
-   * Next write the client should run automatically after the current step
-   * confirms on-chain (e.g. borrow after deposit in a 2× leverage plan).
-   */
-  next_step?: {
-    op: string;
-    asset?: string | null;
-    amount?: number | null;
-    leverage?: number | null;
-    label?: string;
-    step?: number;
-    total_steps?: number;
-    /** Nested hop after this step confirms (3-leg Blend farm). */
-    follow_up?: {
-      op: string;
-      asset?: string | null;
-      amount?: number | null;
-      leverage?: number | null;
-      label?: string;
-      step?: number;
-      total_steps?: number;
-    } | null;
-  } | null;
+  /** Next write after current step confirms (agent chain). Nested follow_up allowed. */
+  next_step?: NextStepHop | null;
   execution?: {
     status: string;
     tx_hash?: string | null;

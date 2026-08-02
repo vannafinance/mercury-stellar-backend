@@ -102,6 +102,24 @@ describe("planner breadth + resume payload", () => {
     expect(ops.some((o) => o === "deposit_collateral" || o === "deposit_and_borrow")).toBe(true);
   });
 
+  it("does not treat Blend as lend (substring bug)", () => {
+    const r = routeMessage("swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC");
+    expect(r.kind).toBe("plan");
+    if (r.kind !== "plan") return;
+    const ops = r.steps.filter((s) => s.kind === "write").map((s) => s.op);
+    expect(ops).not.toContain("lend");
+    expect(ops[0]).toBe("swap");
+    expect(ops).toContain("deploy_to_blend");
+    const expanded = expandPlanWrites(r.steps);
+    expect(expanded.map((e) => e.op)).toEqual([
+      "swap",
+      "deposit_collateral",
+      "borrow",
+      "supply_to_blend",
+    ]);
+    expect(expanded[0].token_out).toBe("BLUSDC");
+  });
+
   it("exposes resume_legs when steps failed", () => {
     const data = multiLegUiData({
       summary: "test",

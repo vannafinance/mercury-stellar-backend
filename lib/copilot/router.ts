@@ -118,8 +118,20 @@ function has(text: string, ...words: string[]): boolean {
   return words.every((w) => text.includes(w));
 }
 
+/**
+ * Phrase/word match. Single tokens use word boundaries so “lend” does **not**
+ * match inside “blend” (was breaking swap→farm into a fake lend leg).
+ * Multi-word phrases still use substring includes.
+ */
 function any(text: string, ...words: string[]): boolean {
-  return words.some((w) => text.includes(w));
+  return words.some((w) => {
+    const needle = w.toLowerCase();
+    if (!needle) return false;
+    if (/\s/.test(needle)) return text.includes(needle);
+    // Escape regex metacharacters in the keyword
+    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^a-z0-9])${esc}(?:[^a-z0-9]|$)`, "i").test(text);
+  });
 }
 
 /** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */

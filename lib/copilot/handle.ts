@@ -148,6 +148,46 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
   // ── Resume pending write after auto-sign enable / agent chain hop ───────
   if (req.pending_write?.op) {
+    // Prefer full multi-leg resume when client sent remaining legs alongside hop
+    const extraLegs = req.resume_multi_leg?.legs?.filter(
+      (l) => l.op && l.op !== req.pending_write!.op && l.amount != null && Number(l.amount) > 0,
+    );
+    if (extraLegs && extraLegs.length > 0) {
+      const legs = [
+        {
+          op: req.pending_write.op,
+          asset: req.pending_write.asset ?? null,
+          amount: req.pending_write.amount ?? null,
+          leverage: req.pending_write.leverage ?? null,
+        },
+        ...extraLegs,
+      ];
+      return runPlan(
+        {
+          kind: "plan",
+          template_id: "multi_leg_resume",
+          summary:
+            req.resume_multi_leg?.summary ||
+            `Continue strategy (${legs.length} steps)`,
+          steps: legs.map((l) => ({
+            kind: "write" as const,
+            op: l.op,
+            asset: l.asset ?? null,
+            amount: l.amount != null ? Number(l.amount) : null,
+            args: l.leverage != null ? { leverage: l.leverage } : undefined,
+            leverage: l.leverage ?? null,
+          })),
+        },
+        {
+          userId,
+          trader,
+          smartAccount,
+          request_id,
+          message: message || "continue multi-leg",
+        },
+      );
+    }
+
     const action: CopilotAction = {
       op: req.pending_write.op,
       asset: req.pending_write.asset ?? null,
@@ -197,6 +237,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           label: follow.label,
           step: follow.step,
           total_steps: follow.total_steps,
+          // Preserve nested farm legs (borrow → supply)
+          follow_up: follow.follow_up ?? null,
         },
       };
     }

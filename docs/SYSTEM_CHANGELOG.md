@@ -104,6 +104,16 @@ Disable auto-approve, then core multi-leg.
 
 ## Change log (chronological)
 
+### 2026-08-02 — “Blend” was matching “lend” (critical planner bug)
+
+**Bug:** `any(text, "lend")` used `text.includes("lend")`, so **“Blend”** matched **lend**.  
+`swap … then farm Blend @2x` wrongly planned a **lend 10 XLM** leg and broke the chain.
+
+**Fix:** Word-boundary matching in `router.any()`.  
+**Expand now:** `swap → deposit → borrow → supply` (no lend).
+
+Also: nested `next_step.follow_up` for 3+ legs; deposit-only dead-ends after swap less likely.
+
 ### 2026-08-02 — Swap → farm multi-leg fixes
 
 **Problems:**
