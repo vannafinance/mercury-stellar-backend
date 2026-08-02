@@ -1265,11 +1265,14 @@ export function CopilotWorkspace() {
               prompt: parentPrompt,
             };
           }
+          // Prevent the executed-effect from also firing resume_multi_leg
+          const resumeKey = `${response?.request_id ?? "exec"}:resume:${remainingFromData.map((l) => l.op).join(",")}`;
+          nextStepFiredRef.current = resumeKey;
           toast.success(
             `Step confirmed — continuing ${remainingFromData.length} remaining leg(s)…`,
             { duration: 3500 },
           );
-          // Keep multi_leg payload so strategy card stays mounted
+          // Strip remaining_legs so interim executed response does not re-trigger resume
           setResponse({
             kind: "executed",
             message: `Step done${result.hash ? ` · ${result.hash.slice(0, 12)}…` : ""}. Continuing strategy…`,
@@ -1280,6 +1283,8 @@ export function CopilotWorkspace() {
             data: {
               ...(response?.data || {}),
               multi_leg: true,
+              remaining_legs: null,
+              prefer_resume_multi_leg: false,
             },
           });
           await new Promise((r) => setTimeout(r, 2200));
