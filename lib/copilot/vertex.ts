@@ -258,7 +258,8 @@ function logUsage(tag: string, parsed: unknown): void {
   }
 }
 
-async function generateJson(system: string, user: string): Promise<Record<string, unknown>> {
+/** JSON-mode Vertex call — used by router + LLM strategy planner. */
+export async function generateJson(system: string, user: string): Promise<Record<string, unknown>> {
   const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
   const body = {
