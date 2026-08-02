@@ -54,6 +54,8 @@ interface AutoSignPrompt {
   message: string;
   options?: Array<{ id: string; label: string; description?: string }>;
   pending_write?: CopilotAction | null;
+  /** MCP payload (e.g. default_cap_usd) — keep for UI labels, never invent caps. */
+  raw?: Record<string, unknown> | null;
 }
 
 interface Simulation {
@@ -1545,12 +1547,8 @@ export function CopilotWorkspace() {
       let bestAsset = "USDC";
       let bestAmt = 0;
       for (const [sym, row] of Object.entries(debts)) {
-        const amt = Number(
-          (row as { amount?: number; balance?: number; amount_human?: string })?.amount ??
-            (row as { balance?: number })?.balance ??
-            (row as { amount_human?: string })?.amount_human ??
-            0,
-        );
+        // BorrowedBalance.amount is a decimal string from the store — always Number().
+        const amt = Number(row?.amount ?? 0);
         if (Number.isFinite(amt) && amt > bestAmt) {
           bestAmt = amt;
           bestAsset = sym;

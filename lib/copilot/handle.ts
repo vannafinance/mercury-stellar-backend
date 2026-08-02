@@ -1630,7 +1630,8 @@ async function runWrite(
   let swapMinOut: string | null = null;
   let swapSlippagePct = "0.5";
   if (action.op === "swap") {
-    if (action.amount == null || !(action.amount > 0)) {
+    const swapAmount = action.amount;
+    if (swapAmount == null || !(swapAmount > 0)) {
       return {
         kind: "clarification",
         message:
@@ -1666,7 +1667,8 @@ async function runWrite(
       const pin = Number(prices[oracleIn]?.price_usd ?? prices[oracleIn.toLowerCase()]?.price_usd);
       const pout = Number(prices[oracleOut]?.price_usd ?? prices[oracleOut.toLowerCase()]?.price_usd);
       if (Number.isFinite(pin) && Number.isFinite(pout) && pout > 0) {
-        const expected = (action.amount * pin) / pout;
+        // Use local swapAmount — spreading action widens amount to number | null again.
+        const expected = (swapAmount * pin) / pout;
         const slip = 0.5;
         swapExpectedOut = expected.toFixed(7);
         swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
