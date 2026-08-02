@@ -169,7 +169,8 @@ export const ConnectWalletModal = ({
               >
                 New to crypto? <span className={isDark ? "text-[#999]" : "text-[#555]"}>Create Vanna wallet</span>{" "}
                 signs you in with email or Google, creates an embedded Stellar wallet, and saves it to your
-                account — no seed phrase to copy.
+                Privy account automatically — no seed phrase to copy. You can reconnect anytime with the same
+                login.
               </div>
             )}
           </motion.div>

@@ -78,7 +78,15 @@ export const PrivyWalletBridge = () => {
         setTimeout(() => {
           try {
             if (syncStellarWallet()) {
-              toast.success("Vanna wallet created and saved to your account", { duration: 4000 });
+              const addr = useUserStore.getState().address;
+              const short =
+                addr && addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
+              toast.success(
+                short
+                  ? `Vanna wallet created & saved · ${short}`
+                  : "Vanna wallet created and saved to your account",
+                { duration: 5000 },
+              );
             }
           } catch {
             /* ignore */

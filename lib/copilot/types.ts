@@ -102,6 +102,20 @@ export interface ChatRequest {
       total_steps?: number;
     } | null;
   } | null;
+  /**
+   * Resume a multi-leg strategy from remaining / failed legs (client button).
+   * Server builds a plan from these legs and runs MultiLegAgent.
+   */
+  resume_multi_leg?: {
+    summary?: string;
+    legs: Array<{
+      op: string;
+      asset?: string | null;
+      amount?: number | null;
+      leverage?: number | null;
+      label?: string;
+    }>;
+  } | null;
 }
 
 export interface CopilotAction {

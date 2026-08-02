@@ -51,8 +51,21 @@ export async function POST(req: NextRequest) {
   const autoSign = body.auto_sign && typeof body.auto_sign === "object" ? (body.auto_sign as any) : null;
   const pendingWrite =
     body.pending_write && typeof body.pending_write === "object" ? (body.pending_write as any) : null;
+  const resumeMultiLeg =
+    body.resume_multi_leg && typeof body.resume_multi_leg === "object"
+      ? (body.resume_multi_leg as {
+          summary?: string;
+          legs?: Array<{
+            op: string;
+            asset?: string | null;
+            amount?: number | null;
+            leverage?: number | null;
+            label?: string;
+          }>;
+        })
+      : null;
 
-  if (!message && !autoSign && !pendingWrite) {
+  if (!message && !autoSign && !pendingWrite && !resumeMultiLeg?.legs?.length) {
     return NextResponse.json({ kind: "error", message: "Please type a question." }, { status: 400 });
   }
 
@@ -107,7 +120,13 @@ export async function POST(req: NextRequest) {
 
   const payload = {
     user_id: typeof body.user_id === "string" && body.user_id ? body.user_id : "guest",
-    message: message || (autoSign ? "auto-sign" : "pending-write"),
+    message:
+      message ||
+      (autoSign
+        ? "auto-sign"
+        : resumeMultiLeg?.legs?.length
+          ? "resume multi-leg"
+          : "pending-write"),
     tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
     page_context: pageContext,
@@ -116,6 +135,13 @@ export async function POST(req: NextRequest) {
     history,
     auto_sign: autoSign,
     pending_write: pendingWrite,
+    resume_multi_leg:
+      resumeMultiLeg?.legs?.length
+        ? {
+            summary: resumeMultiLeg.summary,
+            legs: resumeMultiLeg.legs,
+          }
+        : null,
   };
 
   try {

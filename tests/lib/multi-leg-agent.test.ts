@@ -7,6 +7,7 @@ import {
   multiLegUiData,
 } from "@/lib/copilot/multi-leg-agent";
 import { routeMessage } from "@/lib/copilot/router";
+// multiLegUiData already imported above
 
 describe("multi-leg-agent expand", () => {
   it("expands park+farm plan into 4 clean legs", () => {
@@ -88,5 +89,46 @@ describe("single-op regression", () => {
   it("keeps health as a read", () => {
     const r = routeMessage("what is my health factor");
     expect(r.kind).toBe("read");
+  });
+});
+
+describe("planner breadth + resume payload", () => {
+  it("plans repay then deposit as multi-goal", () => {
+    const r = routeMessage("repay 5 BLUSDC then deposit 10 XLM as collateral");
+    expect(r.kind).toBe("plan");
+    if (r.kind !== "plan") return;
+    const ops = r.steps.filter((s) => s.kind === "write").map((s) => s.op);
+    expect(ops).toContain("repay");
+    expect(ops.some((o) => o === "deposit_collateral" || o === "deposit_and_borrow")).toBe(true);
+  });
+
+  it("exposes resume_legs when steps failed", () => {
+    const data = multiLegUiData({
+      summary: "test",
+      minHf: 1.4,
+      steps: [
+        {
+          index: 1,
+          op: "lend",
+          label: "Lend 20 XLM on Earn",
+          asset: "XLM",
+          amount: 20,
+          status: "error",
+          message: "network",
+        },
+        {
+          index: 2,
+          op: "borrow",
+          label: "Borrow 10 BLUSDC",
+          asset: "BLUSDC",
+          amount: 10,
+          status: "skipped",
+          message: "skip",
+        },
+      ],
+    });
+    expect(data.can_resume).toBe(true);
+    expect(Array.isArray(data.resume_legs)).toBe(true);
+    expect((data.resume_legs as unknown[]).length).toBe(2);
   });
 });

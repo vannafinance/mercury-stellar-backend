@@ -165,6 +165,189 @@ export function isMaxYieldInvestIntent(text: string): boolean {
 }
 
 /**
+ * Multi-domain narratives → plan (must run *before* single-op deposit/repay/lend
+ * so “repay then deposit” is not collapsed to repay alone).
+ */
+function tryMultiGoalPlan(
+  raw: string,
+  text: string,
+  asset: string | null,
+  amount: number | null,
+  leverage: number | null,
+): RoutedIntent | null {
+  const multiVerbCount = (
+    text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay|redeem|withdraw)\b/gi) || []
+  ).length;
+  const hasActionWriteIntent =
+    multiVerbCount >= 1 ||
+    any(text, "park", "allocate", "add liquidity", "remove liquidity");
+
+  if (
+    !hasActionWriteIntent ||
+    !(
+      (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
+      (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
+      (any(text, "repay") && any(text, "deposit", "lend", "borrow")) ||
+      (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply")) ||
+      (/\b(then|and then|after that)\b/i.test(text) && multiVerbCount >= 2) ||
+      (/\band\b/i.test(text) && multiVerbCount >= 2 && any(text, "health", "hf", "liquidat", "farm", "yield"))
+    )
+  ) {
+    return null;
+  }
+
+  const minHf = parseMinHealthFactor(raw);
+  const steps: Array<{
+    kind: "read" | "write";
+    op?: string;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+  }> = [];
+
+  if (any(text, "open account", "create account", "new margin", "open margin")) {
+    steps.push({ kind: "write", op: "create_account", asset: null, amount: null });
+  }
+
+  if (any(text, "repay") && multiVerbCount >= 2 && /\brepay\b/i.test(raw)) {
+    const repayM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
+    steps.push({
+      kind: "write",
+      op: "repay",
+      asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
+      amount: repayM ? Number(repayM[1]) : null,
+    });
+  }
+
+  if (any(text, "park", "lend", "earn", "yield") && !any(text, "farm blend only")) {
+    const earnAsset = /\bxlm\b/i.test(raw) ? "XLM" : asset;
+    const xlmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*xlm\b/i);
+    const earnAmtM =
+      xlmAmtM ||
+      raw.match(/(\d+(?:\.\d+)?)\s*(?:on\s+)?(?:earn|vanna)\b/i) ||
+      (/\bxlm\b/i.test(raw) ? raw.match(/(?:lend|park|supply)\s+(\d+(?:\.\d+)?)/i) : null);
+    const earnAmt = earnAmtM ? Number(earnAmtM[1]) : null;
+    if (
+      any(text, "park", "lend", "earn yield", "for yield", "supply to earn") ||
+      (any(text, "yield") && any(text, "xlm"))
+    ) {
+      steps.push({
+        kind: "write",
+        op: "lend",
+        asset: earnAsset ?? "XLM",
+        amount: earnAmt != null && Number.isFinite(earnAmt) && earnAmt > 0 ? earnAmt : null,
+      });
+    }
+  }
+
+  if (any(text, "swap") && multiVerbCount >= 2) {
+    const swapM = raw.match(
+      /(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
+    );
+    if (swapM) {
+      steps.push({
+        kind: "write",
+        op: "swap",
+        asset: swapM[2].toUpperCase(),
+        amount: Number(swapM[1]),
+      });
+    }
+  }
+
+  if (
+    any(text, "deposit") &&
+    !any(text, "borrow") &&
+    multiVerbCount >= 2 &&
+    !steps.some((s) => s.op === "deposit_collateral")
+  ) {
+    // Prefer the amount next to the deposit verb / second asset mention
+    const afterThen = raw.split(/\bthen\b/i)[1] || raw;
+    const depM =
+      afterThen.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i) ||
+      raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
+    let depAmt = depM ? Number(depM[1]) : amount;
+    if (depAmt != null && minHf != null && Math.abs(depAmt - minHf) < 1e-9) depAmt = null;
+    if (/\bdeposit\b/i.test(raw)) {
+      steps.push({
+        kind: "write",
+        op: "deposit_collateral",
+        asset: depM?.[2]?.toUpperCase() ?? asset ?? "XLM",
+        amount: depAmt,
+      });
+    }
+  }
+
+  if (any(text, "farm", "blend", "deploy")) {
+    const farmAsset =
+      (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
+      (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
+      (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
+      (asset && asset !== "XLM" ? asset : null) ||
+      "BLUSDC";
+    const farmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*(?:blusdc|aqusdc|sousdc|usdc)\b/i);
+    const farmAmt = farmAmtM ? Number(farmAmtM[1]) : null;
+    steps.push({
+      kind: "write",
+      op: "deploy_to_blend",
+      asset: farmAsset,
+      amount: farmAmt != null && Number.isFinite(farmAmt) && farmAmt > 0 ? farmAmt : null,
+      leverage: leverage ?? 2,
+    });
+  }
+
+  if (any(text, "deposit") && any(text, "borrow") && !steps.some((s) => s.op === "deploy_to_blend")) {
+    let depAmt = amount;
+    const depM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
+    if (depM) depAmt = Number(depM[1]);
+    if (depAmt != null && minHf != null && Math.abs(depAmt - minHf) < 1e-9) depAmt = null;
+    steps.push({
+      kind: "write",
+      op: "deposit_and_borrow",
+      asset: asset ?? "XLM",
+      amount: depAmt,
+      leverage: leverage ?? 2,
+    });
+  }
+
+  if (any(text, "redeem", "withdraw from earn", "unstake") && multiVerbCount >= 2) {
+    const redM = raw.match(/(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i);
+    steps.unshift({
+      kind: "write",
+      op: "redeem",
+      asset: redM?.[2]?.toUpperCase() ?? "XLM",
+      amount: redM ? Number(redM[1]) : null,
+    });
+  }
+
+  const deduped = steps.filter((s, i, arr) => {
+    if (i === 0) return true;
+    const p = arr[i - 1];
+    return !(s.op === p.op && s.asset === p.asset && s.amount === p.amount);
+  });
+
+  if (deduped.length < 2) return null;
+
+  const parts = deduped.map((s, i) => {
+    const a = s.amount != null ? `${s.amount} ` : "";
+    const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
+    return `${i + 1}) ${s.op} ${a}${s.asset ?? ""}${L}`.trim();
+  });
+  return {
+    kind: "plan",
+    template_id: "multi_goal_strategy",
+    summary: `Multi-step strategy: ${parts.join(" → ")}`,
+    steps: deduped.map((s) => ({
+      kind: "write" as const,
+      op: s.op,
+      asset: s.asset ?? null,
+      amount: s.amount ?? null,
+      args: s.leverage != null ? { leverage: s.leverage } : undefined,
+      leverage: s.leverage ?? null,
+    })),
+  };
+}
+
+/**
  * Route a natural-language message to a read tool, write action, restricted op, or clarify.
  */
 export function routeMessage(message: string): RoutedIntent {
@@ -185,6 +368,10 @@ export function routeMessage(message: string): RoutedIntent {
       reason: "Liquidation of other accounts is a restricted keeper/protocol action — the copilot won't run it.",
     };
   }
+
+  // Multi-goal BEFORE single-op writes (repay/deposit/lend/swap alone)
+  const multiGoal = tryMultiGoalPlan(raw, text, asset, amount, leverage);
+  if (multiGoal) return multiGoal;
 
   // ── writes (checked before reads that share words like "borrow") ────────
   if (any(text, "create smart account", "create margin account", "open a margin account", "open margin account", "create my smart account", "open a smart account")) {
@@ -574,138 +761,7 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Multi-domain narratives: park/lend yield AND farm / deposit+borrow / then-chains.
-  // Emit a plan so handleChat runs MultiLegAgent instead of collapsing to one write.
-  const multiVerbCount = (
-    text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay|redeem|withdraw)\b/gi) || []
-  ).length;
-  if (
-    hasActionWriteIntent &&
-    ((any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
-      (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
-      (any(text, "repay") && any(text, "deposit", "lend", "borrow")) ||
-      (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply")) ||
-      (/\b(then|and then|after that)\b/i.test(text) && multiVerbCount >= 2) ||
-      (/\band\b/i.test(text) && multiVerbCount >= 2 && any(text, "health", "hf", "liquidat", "farm", "yield")))
-  ) {
-    const minHf = parseMinHealthFactor(raw);
-    // minHf is a safety constraint (MultiLegAgent), never an amount
-    const steps: Array<{
-      kind: "read" | "write";
-      op?: string;
-      asset?: string | null;
-      amount?: number | null;
-      leverage?: number | null;
-    }> = [];
-
-    // Optional: repay first when user says repay then …
-    if (any(text, "repay") && multiVerbCount >= 2) {
-      const repayM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
-      // Only if "repay" appears before "then" or is first action
-      if (/\brepay\b/i.test(raw)) {
-        steps.push({
-          kind: "write",
-          op: "repay",
-          asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
-          amount: repayM ? Number(repayM[1]) : null,
-        });
-      }
-    }
-
-    // Leg: earn / park XLM (or first yield intent)
-    // Never reuse HF floors ("above 1.4") as deposit amounts — only explicit "N XLM".
-    if (any(text, "park", "lend", "earn", "yield") && !any(text, "farm blend only")) {
-      const earnAsset = /\bxlm\b/i.test(raw) ? "XLM" : asset;
-      const xlmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*xlm\b/i);
-      const earnAmt = xlmAmtM ? Number(xlmAmtM[1]) : null;
-      if (any(text, "park", "lend", "earn yield", "for yield") || (any(text, "yield") && any(text, "xlm"))) {
-        steps.push({
-          kind: "write",
-          op: "lend",
-          asset: earnAsset ?? "XLM",
-          amount: earnAmt != null && Number.isFinite(earnAmt) && earnAmt > 0 ? earnAmt : null,
-        });
-      }
-    }
-
-    // Swap leg when named with another action
-    if (any(text, "swap") && multiVerbCount >= 2) {
-      const swapM = raw.match(
-        /(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
-      );
-      if (swapM) {
-        steps.push({
-          kind: "write",
-          op: "swap",
-          asset: swapM[2].toUpperCase(),
-          amount: Number(swapM[1]),
-        });
-      }
-    }
-
-    // Leg: farm blend / levered farm — amount only from "N BLUSDC" style, not HF floors
-    if (any(text, "farm", "blend", "deploy")) {
-      const farmAsset =
-        (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
-        (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
-        (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
-        (asset && asset !== "XLM" ? asset : null) ||
-        "BLUSDC";
-      const farmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*(?:blusdc|aqusdc|sousdc|usdc)\b/i);
-      const farmAmt = farmAmtM ? Number(farmAmtM[1]) : null;
-      steps.push({
-        kind: "write",
-        op: "deploy_to_blend",
-        asset: farmAsset,
-        amount: farmAmt != null && Number.isFinite(farmAmt) && farmAmt > 0 ? farmAmt : null,
-        leverage: leverage ?? 2,
-      });
-    }
-
-    // deposit + borrow when not already covered by farm expand
-    if (any(text, "deposit") && any(text, "borrow") && !steps.some((s) => s.op === "deploy_to_blend")) {
-      // Prefer amount tied to asset, not HF floor
-      let depAmt = amount;
-      const depM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
-      if (depM) depAmt = Number(depM[1]);
-      if (depAmt != null && minHf != null && Math.abs(depAmt - minHf) < 1e-9) depAmt = null;
-      steps.push({
-        kind: "write",
-        op: "deposit_and_borrow",
-        asset: asset ?? "XLM",
-        amount: depAmt,
-        leverage: leverage ?? 2,
-      });
-    }
-
-    // Dedupe consecutive identical ops
-    const deduped = steps.filter((s, i, arr) => {
-      if (i === 0) return true;
-      const p = arr[i - 1];
-      return !(s.op === p.op && s.asset === p.asset && s.amount === p.amount);
-    });
-
-    if (deduped.length >= 2) {
-      const parts = deduped.map((s, i) => {
-        const a = s.amount != null ? `${s.amount} ` : "";
-        const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
-        return `${i + 1}) ${s.op} ${a}${s.asset ?? ""}${L}`.trim();
-      });
-      return {
-        kind: "plan",
-        template_id: "multi_goal_strategy",
-        summary: `Multi-step strategy: ${parts.join(" → ")}`,
-        steps: deduped.map((s) => ({
-          kind: "write" as const,
-          op: s.op,
-          asset: s.asset ?? null,
-          amount: s.amount ?? null,
-          args: s.leverage != null ? { leverage: s.leverage } : undefined,
-          leverage: s.leverage ?? null,
-        })),
-      };
-    }
-  }
+  // (multi-goal handled early via tryMultiGoalPlan)
 
   if (any(text, "how much do i owe", "my debt", "how much have i borrowed", "what do i owe")) {
     return {

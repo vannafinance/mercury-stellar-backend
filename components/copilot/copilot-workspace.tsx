@@ -164,6 +164,8 @@ const PROMPTS: Record<string, string[]> = {
     "Lend 5 USDC",
     "Borrow 2 USDC",
     "Park 20 XLM for yield then farm 10 BLUSDC at 2x keep HF above 1.4",
+    "Repay 5 BLUSDC then deposit 10 XLM as collateral",
+    "Swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC",
     "Enable auto-sign",
   ],
 };
@@ -364,13 +366,25 @@ type MultiLegStepUi = {
   message?: string;
 };
 
+type ResumeLeg = {
+  op: string;
+  asset?: string | null;
+  amount?: number | null;
+  leverage?: number | null;
+  label?: string;
+};
+
 /** Structured multi-leg strategy card (replaces red wall of text + facts dump). */
 function MultiLegStrategyCard({
   data,
   headline,
+  onResume,
+  resumeBusy,
 }: {
   data: Record<string, unknown>;
   headline?: string | null;
+  onResume?: (legs: ResumeLeg[], summary: string) => void;
+  resumeBusy?: boolean;
 }) {
   const steps = (Array.isArray(data.multi_leg_steps) ? data.multi_leg_steps : []) as MultiLegStepUi[];
   if (!steps.length) return null;
@@ -380,6 +394,8 @@ function MultiLegStrategyCard({
   const finalHf = data.final_hf != null ? Number(data.final_hf) : null;
   const sa = data.smart_account != null ? String(data.smart_account) : null;
   const title = String(data.headline || headline || "Strategy progress");
+  const resumeLegs = (Array.isArray(data.resume_legs) ? data.resume_legs : []) as ResumeLeg[];
+  const canResume = data.can_resume === true && resumeLegs.length > 0 && !!onResume;
 
   const anyFail = steps.some((s) =>
     ["error", "blocked", "stopped_hf"].includes(String(s.status || "")),
@@ -508,6 +524,23 @@ function MultiLegStrategyCard({
               ? "Stopped early. Only steps marked Done are on-chain — nothing later was claimed as done."
               : "In progress or waiting on the next action."}
         </p>
+        {canResume && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={resumeBusy}
+              onClick={() =>
+                onResume?.(
+                  resumeLegs,
+                  `Continue: ${summary}`.slice(0, 120),
+                )
+              }
+              className="rounded-full bg-gradient px-4 py-2 text-btn-sm font-semibold text-white disabled:opacity-40"
+            >
+              {resumeBusy ? "Resuming…" : `Continue remaining (${resumeLegs.length})`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -851,6 +884,24 @@ export function CopilotWorkspace() {
       setIntentText(t);
       setPaletteOpen(false);
       await postCopilot({ message: t }, t);
+    },
+    [loading, postCopilot],
+  );
+
+  const resumeMultiLeg = useCallback(
+    async (legs: ResumeLeg[], summary: string) => {
+      if (!legs.length || loading) return;
+      const label = summary || `Resume ${legs.length} steps`;
+      setSubmitted(label);
+      setIntentText(label);
+      setPaletteOpen(false);
+      await postCopilot(
+        {
+          message: label,
+          resume_multi_leg: { summary: label, legs },
+        },
+        label,
+      );
     },
     [loading, postCopilot],
   );
@@ -1504,7 +1555,12 @@ export function CopilotWorkspace() {
                       {decision && !multiLeg && <RiskChip decision={decision} />}
                     </div>
                     {multiLeg && response.data ? (
-                      <MultiLegStrategyCard data={response.data} headline={response.message} />
+                      <MultiLegStrategyCard
+                        data={response.data}
+                        headline={response.message}
+                        onResume={resumeMultiLeg}
+                        resumeBusy={loading}
+                      />
                     ) : (
                       <div className="mt-3 flex gap-3">
                         {isError ? (
@@ -1797,7 +1853,12 @@ export function CopilotWorkspace() {
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <Eyebrow n="04">{multiLeg ? "Strategy" : "Executed"}</Eyebrow>
                     {multiLeg && response.data ? (
-                      <MultiLegStrategyCard data={response.data} headline={response.message} />
+                      <MultiLegStrategyCard
+                        data={response.data}
+                        headline={response.message}
+                        onResume={resumeMultiLeg}
+                        resumeBusy={loading}
+                      />
                     ) : (
                       <>
                         <div className="mt-4 flex items-center gap-4">

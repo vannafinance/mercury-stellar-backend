@@ -46,6 +46,7 @@ import {
   toExecutionStep,
   type MultiLegStep,
 } from "./multi-leg-agent";
+import { preflightExpandedLegs } from "./multi-leg-preflight";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
@@ -103,6 +104,46 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // ── Auto-sign control actions (from UI buttons or NL) ───────────────────
   if (req.auto_sign?.action) {
     return handleAutoSignAction(req, request_id, trader, userId);
+  }
+
+  // ── Resume multi-leg strategy (retry failed / continue remaining legs) ──
+  if (req.resume_multi_leg?.legs?.length) {
+    const legs = req.resume_multi_leg.legs.filter(
+      (l) => l.op && l.amount != null && Number(l.amount) > 0,
+    );
+    if (legs.length) {
+      const plan: Extract<RoutedIntent, { kind: "plan" }> = {
+        kind: "plan",
+        template_id: "multi_leg_resume",
+        summary:
+          req.resume_multi_leg.summary ||
+          `Resume strategy (${legs.length} remaining step${legs.length === 1 ? "" : "s"})`,
+        steps: legs.map((l) => ({
+          kind: "write" as const,
+          op: l.op,
+          asset: l.asset ?? null,
+          amount: l.amount != null ? Number(l.amount) : null,
+          args: l.leverage != null ? { leverage: l.leverage } : undefined,
+          leverage: l.leverage ?? null,
+        })),
+      };
+      return runPlan(plan, {
+        userId,
+        trader,
+        smartAccount,
+        request_id,
+        message: message || plan.summary || "resume multi-leg",
+      });
+    }
+  }
+
+  // Natural-language resume when prior context isn't attached
+  if (
+    /\b(continue|resume|retry|finish)\b/i.test(message) &&
+    /\b(strateg|multi[- ]?leg|remaining|failed|farm|blend|steps?)\b/i.test(message)
+  ) {
+    // Without structured resume_legs the client should send resume_multi_leg.
+    // Fall through so keyword/Vertex can still build a full plan if the user re-states it.
   }
 
   // ── Resume pending write after auto-sign enable / agent chain hop ───────
@@ -1889,6 +1930,62 @@ async function runPlan(
   }));
   facts.smart_account = smartAccount;
 
+  // ── Phase B0: preflight (wallet balance, account presence) ──────────────
+  // Hard block → no writes. Soft warn → continue (recorded in facts).
+  if (expanded.length > 0) {
+    try {
+      const issues = await preflightExpandedLegs(mcp, expanded, {
+        userId: ctx.userId,
+        trader: ctx.trader,
+        smartAccount,
+      });
+      facts.preflight = issues;
+      const blocks = issues.filter((i) => i.severity === "block");
+      if (blocks.length) {
+        for (const b of blocks) {
+          stepIndex += 1;
+          multiSteps.push({
+            index: stepIndex,
+            op: b.op,
+            label: b.label,
+            status: "blocked",
+            message: b.message,
+          });
+        }
+        for (const rest of expanded) {
+          stepIndex += 1;
+          multiSteps.push({
+            index: stepIndex,
+            op: rest.op,
+            label: rest.label,
+            asset: rest.asset,
+            amount: rest.amount,
+            leverage: rest.leverage,
+            status: "skipped",
+            message: "Skipped — preflight blocked earlier step",
+          });
+        }
+        return {
+          kind: "blocked",
+          message: multiLegHeadline(multiSteps),
+          data: multiLegUiData({
+            steps: multiSteps,
+            summary: plan.summary || "Multi-step strategy",
+            minHf,
+            finalHf,
+            smartAccount,
+            extra: { preflight_blocked: true },
+          }),
+          intent: { template_id: plan.template_id, slots: { preflight: true } },
+          execution: { status: "preflight_blocked", steps: multiSteps.map(toExecutionStep) },
+          request_id: ctx.request_id,
+        };
+      }
+    } catch {
+      /* preflight is best-effort — never block the whole agent on preflight crash */
+    }
+  }
+
   const totalWriteLegs = expanded.length;
   let writeCursor = 0;
 
@@ -1896,8 +1993,11 @@ async function runPlan(
     writeCursor += 1;
     stepIndex += 1;
 
-    // Need amount for write ops
-    if (w.amount == null || !(w.amount > 0)) {
+    // Need amount for write ops (except open/close account)
+    const amountOptional = ["create_account", "open_account", "close_account", "settle_account"].includes(
+      w.op,
+    );
+    if (!amountOptional && (w.amount == null || !(w.amount > 0))) {
       const msg =
         w.op === "lend" || w.op === "supply"
           ? `How much do you want to ${w.op === "lend" ? "lend / park" : "supply"}? e.g. “park 20 XLM for yield”.`
@@ -1955,7 +2055,7 @@ async function runPlan(
       minHf,
     });
     action.multi_leg = false;
-    action.requires_amount = true;
+    action.requires_amount = !amountOptional;
     action.leverage = w.leverage ?? null;
 
     const writeRes = await runWrite(action, {

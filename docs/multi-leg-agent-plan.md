@@ -2,8 +2,9 @@
 
 **Branch:** `copilot-assistant`  
 **Date:** 2026-08-02  
-**Status:** Phase 1–3 complete + production hardening — see `docs/PRODUCTION_MULTI_LEG.md`  
-**Wallet / Privy:** Connect modal create/save copy + toast; create-on-login in PrivyWalletBridge 
+**Status:** Phase 1–3 + prod harden + next steps (preflight, resume, planner breadth, Privy polish)  
+**See:** `docs/PRODUCTION_MULTI_LEG.md`  
+**Deferred:** production canary deploy
 
 ---
 

@@ -414,6 +414,28 @@ export function multiLegHeadline(steps: MultiLegStep[]): string {
   return "Strategy did not complete.";
 }
 
+/** Legs that can still be (re)run: failed, skipped, pending, needs_sign. */
+export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
+  op: string;
+  asset?: string | null;
+  amount?: number | null;
+  leverage?: number | null;
+  label?: string;
+}> {
+  return steps
+    .filter((s) =>
+      ["error", "skipped", "pending", "needs_sign", "blocked", "clarification"].includes(s.status),
+    )
+    .filter((s) => s.amount != null && s.amount > 0)
+    .map((s) => ({
+      op: s.op,
+      asset: s.asset ?? null,
+      amount: s.amount ?? null,
+      leverage: s.leverage ?? null,
+      label: s.label,
+    }));
+}
+
 /** Clean payload for the UI card — never dump internal plan flags into FactsGrid. */
 export function multiLegUiData(opts: {
   steps: MultiLegStep[];
@@ -423,6 +445,7 @@ export function multiLegUiData(opts: {
   smartAccount?: string | null;
   extra?: Record<string, unknown>;
 }): Record<string, unknown> {
+  const resume_legs = resumableLegsFromSteps(opts.steps);
   return {
     multi_leg: true,
     multi_leg_steps: opts.steps.map((s) => ({
@@ -434,6 +457,9 @@ export function multiLegUiData(opts: {
     final_hf: opts.finalHf ?? null,
     smart_account: opts.smartAccount ?? null,
     headline: multiLegHeadline(opts.steps),
+    /** Client “Continue remaining” / “Retry failed” uses this payload. */
+    resume_legs: resume_legs.length ? resume_legs : null,
+    can_resume: resume_legs.length > 0,
     ...(opts.extra || {}),
   };
 }
