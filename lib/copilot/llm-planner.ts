@@ -8,9 +8,35 @@
  * the allowlist + sanitize are the safety rails (not hard-coded user phrases).
  */
 
-import { generateJson, VertexError } from "./vertex";
+import { generateText, VertexError } from "./vertex";
 import { sanitizePlan } from "./plan-sanitize";
 import type { RoutedIntent } from "./types";
+
+/**
+ * JSON plan via generateText (public Vertex API).
+ * Avoids importing generateJson — Turbopack sometimes fails to resolve that
+ * export from the large vertex module even when it is present.
+ */
+async function planJson(system: string, user: string): Promise<Record<string, unknown>> {
+  const out = await generateText(
+    `${system}\n\nIMPORTANT: Reply with one JSON object only. No markdown fences, no prose.`,
+    user,
+    { temperature: 0 },
+  );
+  const cleaned = out
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  try {
+    const data = JSON.parse(cleaned);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("not a JSON object");
+    }
+    return data as Record<string, unknown>;
+  } catch {
+    throw new VertexError(`Planner JSON parse failed: ${cleaned.slice(0, 400)}`);
+  }
+}
 
 const ALLOWED_OPS = new Set([
   "lend",
@@ -126,7 +152,7 @@ export async function llmPlanStrategy(
       `CONTEXT: trader=${ctx?.trader ?? "unknown"} smart_account=${ctx?.smartAccount ?? "unknown"}`,
       "Output the plan JSON only.",
     ].join("\n");
-    const data = await generateJson(PLANNER_SYSTEM, user);
+    const data = await planJson(PLANNER_SYSTEM, user);
     return normalizeLlmPlan(data, message);
   } catch (e) {
     console.warn(
