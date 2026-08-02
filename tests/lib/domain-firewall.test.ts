@@ -31,4 +31,16 @@ describe("domain firewall", () => {
   it("allows lend", () => {
     expect(evaluateDomainFirewall("lend 10 XLM").allow).toBe(true);
   });
+
+  it("blocks bare language asks for free coding", () => {
+    expect(evaluateDomainFirewall("help me with python").allow).toBe(false);
+    expect(evaluateDomainFirewall("help me code a website").allow).toBe(false);
+  });
+
+  it("blocks off-domain long ramble", () => {
+    const r = evaluateDomainFirewall(
+      "I need a long explanation of European medieval history for my class presentation tomorrow please write something detailed",
+    );
+    expect(r.allow).toBe(false);
+  });
 });

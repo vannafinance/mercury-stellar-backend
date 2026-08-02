@@ -25,20 +25,23 @@ const BLOCK_MESSAGE =
 
 /** Clear off-domain abuse vectors (billing / policy). */
 const BLOCK_PATTERNS: RegExp[] = [
-  // Coding / software engineering free work
+  // Coding / software engineering free work (billing abuse)
   /\b(write|generate|debug|fix|implement|refactor|code\s+review)\b.+\b(code|function|class|script|program|api|endpoint)\b/i,
-  /\b(python|javascript|typescript|java|golang|rust|c\+\+|react|next\.js|django|flask|sql query)\b.+\b(code|function|write|how to|example)\b/i,
-  /\b(leetcode|hackerrank|coding\s+interview|solve\s+this\s+problem)\b/i,
-  /\b(write\s+(me\s+)?a\s+(function|class|script|program|regex|dockerfile|kubernetes))\b/i,
-  /\b(github\s+actions|ci\/cd|terraform|ansible)\b/i,
+  /\b(python|javascript|typescript|java|golang|rust|c\+\+|react|next\.js|django|flask|sql query)\b/i,
+  /\b(leetcode|hackerrank|coding\s+interview|solve\s+this\s+problem|coding\s+challenge)\b/i,
+  /\b(write\s+(me\s+)?a\s+(function|class|script|program|regex|dockerfile|kubernetes|app|website|bot))\b/i,
+  /\b(help\s+me\s+(code|program|debug|build\s+(an?\s+)?(app|website|api)))\b/i,
+  /\b(github\s+actions|ci\/cd|terraform|ansible|npm\s+install|pip\s+install)\b/i,
+  /\b(stack\s*overflow|copy\s+paste\s+code|boilerplate)\b/i,
   // Homework / essays / general AI abuse
   /\b(write\s+(me\s+)?(an?\s+)?(essay|homework|assignment|thesis|paper|cover\s+letter|resume)\b)/i,
-  /\b(do\s+my\s+homework|solve\s+this\s+math|calculus|integral|derivative)\b/i,
+  /\b(do\s+my\s+homework|solve\s+this\s+math|calculus|integral|derivative|physics\s+problem)\b/i,
   // Unrelated life / entertainment
-  /\b(recipe|cook|dating|horoscope|joke|poem|song\s+lyrics|movie\s+plot)\b/i,
+  /\b(recipe|cook|dating|horoscope|joke|poem|song\s+lyrics|movie\s+plot|netflix)\b/i,
   /\b(crypto\s+scam|how\s+to\s+(hack|phish|exploit)\b)/i,
-  // Other chains / non-Vanna products (hard off-domain)
-  /\b(ethereum|solana|bitcoin\s+script|metamask\s+dapp\s+code|solidity\s+contract\s+write)\b.+\b(code|write|deploy\s+contract\s+code)\b/i,
+  // Other chains as coding help
+  /\b(solidity|smart\s+contract\s+code|metamask\s+dapp)\b.+\b(write|code|implement)\b/i,
+  /\b(write|implement|code)\b.+\b(solidity|ethereum\s+contract)\b/i,
 ];
 
 /** Strong in-domain signals for Vanna Finance. */
