@@ -215,6 +215,7 @@ function tryMultiGoalPlan(
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    args?: Record<string, unknown>;
   }> = [];
 
   if (any(text, "open account", "create account", "new margin", "open margin")) {
@@ -351,14 +352,21 @@ function tryMultiGoalPlan(
     kind: "plan",
     template_id: "multi_goal_strategy",
     summary: `Multi-step strategy: ${parts.join(" → ")}`,
-    steps: deduped.map((s) => ({
-      kind: "write" as const,
-      op: s.op,
-      asset: s.asset ?? null,
-      amount: s.amount ?? null,
-      args: s.leverage != null ? { leverage: s.leverage } : undefined,
-      leverage: s.leverage ?? null,
-    })),
+    steps: deduped.map((s) => {
+      // Preserve swap token_in/out etc. — do not replace args with only leverage.
+      const args: Record<string, unknown> = {
+        ...((s as { args?: Record<string, unknown> }).args || {}),
+      };
+      if (s.leverage != null) args.leverage = s.leverage;
+      return {
+        kind: "write" as const,
+        op: s.op,
+        asset: s.asset ?? null,
+        amount: s.amount ?? null,
+        args: Object.keys(args).length ? args : undefined,
+        leverage: s.leverage ?? null,
+      };
+    }),
   };
 }
 
