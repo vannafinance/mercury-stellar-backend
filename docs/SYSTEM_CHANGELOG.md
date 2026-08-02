@@ -104,6 +104,21 @@ Disable auto-approve, then core multi-leg.
 
 ## Change log (chronological)
 
+### 2026-08-02 — Swap → farm multi-leg fixes
+
+**Problems:**
+1. Plan swap step had no `token_out` → label/default **USDC** instead of **BLUSDC**
+2. After wallet-sign mid-plan, client only chained **2-deep** `next_step` (lost supply leg)
+3. Sign response wiped `multi_leg` data → strategy UI dropped to single “Executed”
+
+**Fixes:**
+- Router + expand: swap carries `token_in` / `token_out` (e.g. XLM → BLUSDC)
+- Swap labels keep user symbols (BLUSDC not collapsed to “USDC” in UI)
+- On sign success / executed hop: **`resume_multi_leg` with full `remaining_legs`** (deposit + borrow + supply)
+- Preserve `data.multi_leg` through client sign interim responses
+
+**Test:** `swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC`
+
 ### 2026-08-02 — Session log grouping for multi-leg (UI)
 
 **Problem:** Client `next_step` chain logged each hop as a separate session turn  

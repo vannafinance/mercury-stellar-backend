@@ -245,11 +245,14 @@ function tryMultiGoalPlan(
       /(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
     );
     if (swapM) {
+      const tokenIn = swapM[2].toUpperCase();
+      const tokenOut = swapM[3].toUpperCase();
       steps.push({
         kind: "write",
         op: "swap",
-        asset: swapM[2].toUpperCase(),
+        asset: tokenIn,
         amount: Number(swapM[1]),
+        args: { token_in: tokenIn, token_out: tokenOut, token_a: tokenIn, token_b: tokenOut },
       });
     }
   }

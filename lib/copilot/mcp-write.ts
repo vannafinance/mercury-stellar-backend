@@ -614,8 +614,9 @@ export function mapOpToMcpStep(
       if (inSym === outSym) {
         return { blocker: `Cannot swap ${tokenIn} to itself on ${venue} — pick XLM ↔ USDC.` };
       }
-      const uiIn = tokenIn === "USDC" || tokenIn === "BLUSDC" ? "USDC" : tokenIn;
-      const uiOut = tokenOut === "USDC" || tokenOut === "BLUSDC" ? "USDC" : tokenOut;
+      // Keep the user's symbol in the label (BLUSDC stays BLUSDC; wire map is inSym/outSym).
+      const uiIn = tokenIn;
+      const uiOut = tokenOut;
       // Prefer expected_out from copilot pre-quote; if omitted, MCP auto-quotes
       // from oracle (after MCP redeploy of swap auto-quote).
       const expectedOut =

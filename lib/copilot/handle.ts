@@ -2118,15 +2118,31 @@ async function runPlan(
           message: "Waiting for signature on the previous step",
         });
       }
+      // remaining_legs = full rest of plan after this leg (client should resume_multi_leg
+      // so deposit→borrow→supply is not truncated by 2-deep follow_up).
+      const remainingPayload = remaining.map((r) => ({
+        op: r.op,
+        asset: r.asset ?? null,
+        amount: r.amount ?? null,
+        leverage: r.leverage ?? null,
+        label: r.label,
+        token_in: r.token_in ?? null,
+        token_out: r.token_out ?? null,
+      }));
       return {
         ...writeRes,
         // Keep needs_* kind so client can auto-sign / wallet-sign
         message: multiLegHeadline(multiSteps),
-        data: packUi({ remaining_legs: remaining }),
+        data: packUi({
+          remaining_legs: remainingPayload,
+          // Prefer full resume over shallow next_step.follow_up chains
+          prefer_resume_multi_leg: remainingPayload.length > 0,
+        }),
         intent: {
           template_id: plan.template_id,
           slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs },
         },
+        // Still attach next_step for first remaining hop (compat), but UI should prefer resume
         next_step:
           writeRes.next_step || remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
         execution: {

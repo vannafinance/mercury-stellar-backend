@@ -43,6 +43,9 @@ export type ExpandedWrite = {
   leverage?: number | null;
   label: string;
   multi_leg?: boolean;
+  /** Swap legs */
+  token_in?: string | null;
+  token_out?: string | null;
 };
 
 /** Clean product labels for agent runs / step table (no "2× leg 2/3" clutter). */
@@ -80,11 +83,24 @@ export function humanWriteLabel(
         : "Deposit and borrow";
     case "create_account":
       return "Open margin account";
+    case "swap":
+      return qty ? `Swap ${qty}` : "Swap";
     default:
       return `${op.replace(/_/g, " ")}${qty ? ` ${qty}` : ""}${
         leverage != null && leverage > 1 ? ` at ${leverage}×` : ""
       }`.trim();
   }
+}
+
+export function humanSwapLabel(
+  amount?: number | null,
+  tokenIn?: string | null,
+  tokenOut?: string | null,
+): string {
+  const n = amount != null && Number.isFinite(amount) ? String(amount) : "";
+  const a = (tokenIn || "XLM").toUpperCase();
+  const b = (tokenOut || "USDC").toUpperCase();
+  return n ? `Swap ${n} ${a} → ${b}` : `Swap ${a} → ${b}`;
 }
 
 /**
@@ -108,6 +124,27 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
             Number.isFinite(Number((step as { leverage?: number | null }).leverage))
           ? Number((step as { leverage?: number | null }).leverage)
           : null;
+
+    if (op === "swap") {
+      const tokenIn =
+        (step.args?.token_in as string) ||
+        (step.args?.token_a as string) ||
+        asset ||
+        "XLM";
+      const tokenOut =
+        (step.args?.token_out as string) ||
+        (step.args?.token_b as string) ||
+        null;
+      out.push({
+        op: "swap",
+        asset: tokenIn,
+        amount,
+        token_in: tokenIn,
+        token_out: tokenOut,
+        label: humanSwapLabel(amount, tokenIn, tokenOut),
+      });
+      continue;
+    }
 
     if ((op === "deploy_to_blend" || op === "supply_to_blend") && leverage != null && leverage > 1) {
       if (amount == null || !(amount > 0)) {
@@ -285,11 +322,14 @@ export function actionFromExpanded(
     amount: w.amount ?? null,
     leverage: w.leverage ?? null,
     multi_leg: !!w.multi_leg,
-    requires_amount: w.amount == null,
+    requires_amount: w.amount == null && !["create_account", "open_account"].includes(w.op),
     requires_account: !["lend", "redeem", "create_account"].includes(w.op),
     smart_account: ctx.smartAccount,
     trader: ctx.trader,
     min_hf: ctx.minHf,
+    // Swap: token_a / token_b map to mapOpToMcpStep swap params
+    token_a: w.token_in ?? null,
+    token_b: w.token_out ?? null,
   };
 }
 

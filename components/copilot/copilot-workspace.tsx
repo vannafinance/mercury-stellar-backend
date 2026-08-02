@@ -1241,12 +1241,70 @@ export function CopilotWorkspace() {
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true });
 
-        // Agent chain: after deposit confirms, automatically plan/build the borrow.
+        // Multi-leg: resume full remaining plan (not 2-deep follow_up only).
+        const remainingFromData = Array.isArray((response?.data as any)?.remaining_legs)
+          ? ((response!.data as any).remaining_legs as Array<{
+              op: string;
+              asset?: string | null;
+              amount?: number | null;
+              leverage?: number | null;
+              label?: string;
+            }>)
+          : null;
+        const preferResume =
+          (response?.data as any)?.prefer_resume_multi_leg === true ||
+          (remainingFromData && remainingFromData.length > 0);
+
+        if (preferResume && remainingFromData && remainingFromData.length > 0) {
+          const parentPrompt =
+            strategyParentRef.current?.prompt ||
+            String((response?.data as any)?.strategy_summary || submitted || "Continue strategy");
+          if (!strategyParentRef.current) {
+            strategyParentRef.current = {
+              id: response?.request_id || `strat-${Date.now()}`,
+              prompt: parentPrompt,
+            };
+          }
+          toast.success(
+            `Step confirmed — continuing ${remainingFromData.length} remaining leg(s)…`,
+            { duration: 3500 },
+          );
+          // Keep multi_leg payload so strategy card stays mounted
+          setResponse({
+            kind: "executed",
+            message: `Step done${result.hash ? ` · ${result.hash.slice(0, 12)}…` : ""}. Continuing strategy…`,
+            mcp: response?.mcp ?? null,
+            preview: response?.preview ?? null,
+            execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
+            request_id: response?.request_id,
+            data: {
+              ...(response?.data || {}),
+              multi_leg: true,
+            },
+          });
+          await new Promise((r) => setTimeout(r, 2200));
+          await refreshRailStats({ force: true });
+          setSubmitted(parentPrompt);
+          await postCopilot(
+            {
+              message: parentPrompt,
+              resume_multi_leg: {
+                summary: parentPrompt,
+                legs: remainingFromData,
+              },
+            },
+            parentPrompt,
+            { chainHop: true },
+          );
+          return;
+        }
+
+        // Legacy 2-hop next_step chain (deposit→borrow only)
         if (nextStep?.op && nextStep.amount != null && nextStep.amount > 0) {
           const label =
             nextStep.label ||
             `Auto step ${nextStep.step ?? 2}: ${nextStep.op} ${nextStep.amount} ${nextStep.asset || ""}`.trim();
-          toast.success("Deposit confirmed — running next step automatically…", { duration: 4000 });
+          toast.success("Step confirmed — running next step automatically…", { duration: 4000 });
           if (!strategyParentRef.current) {
             strategyParentRef.current = {
               id: response?.request_id || `strat-${Date.now()}`,
@@ -1263,11 +1321,10 @@ export function CopilotWorkspace() {
             execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
             request_id: response?.request_id,
             next_step: nextStep,
+            data: response?.data ?? null,
           });
-          // Brief settle before the next leg (multi-leg farm / deposit→borrow).
           await new Promise((r) => setTimeout(r, 2200));
           await refreshRailStats({ force: true });
-          // Keep original strategy text in the header; hop label only in log legs
           setSubmitted(strategyParentRef.current?.prompt || submitted || label);
           await postCopilot(
             {
@@ -1293,6 +1350,7 @@ export function CopilotWorkspace() {
           preview: response?.preview ?? null,
           execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
           request_id: response?.request_id,
+          data: response?.data ?? null,
         });
       } else {
         toast.error(result.error);
@@ -1345,9 +1403,54 @@ export function CopilotWorkspace() {
    */
   useEffect(() => {
     if (response?.kind !== "executed") return;
+    if (loading || signing) return;
+
+    // Prefer full remaining multi-leg resume (swap→farm has 3+ legs after first)
+    const remaining = Array.isArray((response.data as any)?.remaining_legs)
+      ? ((response.data as any).remaining_legs as Array<{
+          op: string;
+          asset?: string | null;
+          amount?: number | null;
+          leverage?: number | null;
+          label?: string;
+        }>)
+      : null;
+    const preferResume =
+      (response.data as any)?.prefer_resume_multi_leg === true ||
+      (remaining && remaining.length > 0 && (response.data as any)?.multi_leg);
+
+    if (preferResume && remaining && remaining.length > 0) {
+      const key = `${response.request_id ?? "exec"}:resume:${remaining.map((l) => l.op).join(",")}`;
+      if (nextStepFiredRef.current === key) return;
+      nextStepFiredRef.current = key;
+      const parentPrompt =
+        strategyParentRef.current?.prompt ||
+        String((response.data as any)?.strategy_summary || submitted || "Continue strategy");
+      if (!strategyParentRef.current) {
+        strategyParentRef.current = {
+          id: response.request_id || `strat-${Date.now()}`,
+          prompt: parentPrompt,
+        };
+      }
+      toast.success(`Continuing ${remaining.length} remaining step(s)…`, { duration: 3000 });
+      void (async () => {
+        await new Promise((r) => setTimeout(r, 2200));
+        await refreshRailStats({ force: true });
+        setSubmitted(parentPrompt);
+        await postCopilot(
+          {
+            message: parentPrompt,
+            resume_multi_leg: { summary: parentPrompt, legs: remaining },
+          },
+          parentPrompt,
+          { chainHop: true },
+        );
+      })();
+      return;
+    }
+
     const next = response.next_step;
     if (!next?.op || next.amount == null || !(next.amount > 0)) return;
-    if (loading || signing) return;
     const key = `${response.request_id ?? "exec"}:${next.op}:${next.amount}:${next.asset ?? ""}`;
     if (nextStepFiredRef.current === key) return;
     nextStepFiredRef.current = key;
@@ -1357,10 +1460,8 @@ export function CopilotWorkspace() {
       `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
     toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
     void (async () => {
-      // Brief ledger settle; 5s felt too slow for multi-leg farm chains.
       await new Promise((r) => setTimeout(r, 2200));
       await refreshRailStats({ force: true });
-      // Keep user strategy prompt in the header (not “Borrow 10…”)
       if (!strategyParentRef.current && submitted) {
         strategyParentRef.current = {
           id: response.request_id || `strat-${Date.now()}`,
