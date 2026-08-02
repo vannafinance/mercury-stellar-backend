@@ -64,9 +64,40 @@ Vanna is aligned: **MCP = tools**, **copilot = orchestrator**.
 
 ---
 
+## Architecture we target (false-proof enough for DeFi)
+
+```
+                 ┌─────────────────────┐
+  User prompt ──►│ Understanding layer │  Vertex free-form (llm-planner)
+                 │ + clause extractor  │  + keyword fallback
+                 └──────────┬──────────┘
+                            ▼
+                 ┌─────────────────────┐
+                 │ Validated plan JSON │  allowlisted ops only
+                 │ sanitize amounts/HF │
+                 └──────────┬──────────┘
+                            ▼
+                 ┌─────────────────────┐
+                 │ MultiLegAgent       │  expand @Nx → atomic legs
+                 │ plan-then-execute   │  preflight → MCP write → observe
+                 └──────────┬──────────┘
+                            ▼
+                 ┌─────────────────────┐
+                 │ MCP tools + Sign    │  policy / custody boundary
+                 └─────────────────────┘
+```
+
+**Not hardcoding user phrases** — the LLM planner accepts any English;  
+**not free agents** — ops must pass allowlist + MultiLegAgent order rules.
+
+### Model flexibility
+- Primary: `VERTEX_MODEL` (default gemini-3.6-flash)
+- Fallbacks: `VERTEX_MODEL_FALLBACKS` (gemini-2.5-flash, …) when primary 404s
+- Changing models improves language understanding; **execution safety stays in code**
+
 ## What to improve next (priority)
 
-1. ~~Clause-order extraction for long prompts~~ (step-extractor)  
+1. ~~Clause-order extraction~~ + ~~LLM planner~~  
 2. Streaming plan progress (UI)  
 3. Free C-balance observe before Blend supply  
 4. Optional: short “plan preview” confirm for high-notional multi-leg  

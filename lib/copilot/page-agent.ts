@@ -136,6 +136,57 @@ function sanitizeProse(s: string): string {
     .trim();
 }
 
+/**
+ * Offline answer from pageContext when Vertex is down — still answers
+ * “what is on my screen” without inventing numbers.
+ */
+function offlineScreenAnswer(pageContext: SemanticPageContextCtx | null): string {
+  if (!pageContext) {
+    return (
+      "I cannot reach the AI model right now, and I did not receive a page snapshot from your browser.\n\n" +
+      "How to fix\n" +
+      "1. Confirm you are logged into Google Cloud (gcloud auth login) for Vertex.\n" +
+      "2. Refresh the page and open Ask again.\n" +
+      "3. Retry your question."
+    );
+  }
+  const path = pageContext.path || pageContext.url || "this page";
+  const title = pageContext.title || "Untitled";
+  const sections = (pageContext.sections || [])
+    .map((s) => s.text)
+    .filter(Boolean)
+    .slice(0, 12);
+  const main = String(pageContext.mainText || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 900);
+  const selected = pageContext.selectedText?.trim();
+
+  const lines: string[] = [
+    `You are on ${title} (${path}). I am answering from the live page text because the model was temporarily unreachable.`,
+    "",
+  ];
+  if (selected) {
+    lines.push("Selected text");
+    lines.push(`• ${selected.slice(0, 400)}`);
+    lines.push("");
+  }
+  if (sections.length) {
+    lines.push("Sections visible");
+    for (const s of sections) lines.push(`• ${s}`);
+    lines.push("");
+  }
+  if (main) {
+    lines.push("On-screen text (excerpt)");
+    lines.push(`• ${main}${main.length >= 900 ? "…" : ""}`);
+    lines.push("");
+  }
+  lines.push(
+    "Tip: once Vertex is reachable again, ask the same question for a fuller structured answer.",
+  );
+  return lines.join("\n");
+}
+
 export async function runPageAgent(
   message: string,
   pageContext: SemanticPageContextCtx | null,
@@ -226,6 +277,8 @@ export async function runPageAgent(
       request_id,
     };
   } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    console.warn("[copilot:page-agent] primary failed:", errMsg.slice(0, 200));
     try {
       const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
       return {
@@ -236,17 +289,20 @@ export async function runPageAgent(
         intent: { template_id: "page_assist", slots: { mode: "fallback_text" } },
         request_id,
       };
-    } catch {
+    } catch (e2) {
+      // Still answer screen questions from DOM — never dead-end on Vertex outage.
+      const offline = offlineScreenAnswer(pageContext);
       return {
         kind: "answer",
-        message: "I could not reach the assistant model just now. Try again in a moment.",
+        message: sanitizeProse(offline),
         data: {
           assistant: true,
           offline: true,
-          error: String(e instanceof Error ? e.message : e),
+          error: String(e2 instanceof Error ? e2.message : e2),
+          primary_error: errMsg.slice(0, 300),
         },
         client_tools: [],
-        intent: { template_id: "page_assist", slots: { mode: "unavailable" } },
+        intent: { template_id: "page_assist", slots: { mode: "offline_dom" } },
         request_id,
       };
     }

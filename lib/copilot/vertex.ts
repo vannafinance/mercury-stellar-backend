@@ -316,18 +316,22 @@ async function generateJson(system: string, user: string): Promise<Record<string
   }
 }
 
-/** Plain-text generation used by the page assistant and vertexExplain. */
-export async function generateText(
+/** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */
+function modelCandidates(): string[] {
+  return [copilotConfig.vertexModel, ...copilotConfig.vertexModelFallbacks];
+}
+
+async function generateTextOnce(
+  model: string,
   system: string,
   user: string,
-  opts?: { temperature?: number },
+  temperature: number,
 ): Promise<string> {
   const token = await getAccessToken();
-  const model = copilotConfig.vertexModel;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
-    generationConfig: { temperature: opts?.temperature ?? 0.2 },
+    generationConfig: { temperature },
   };
 
   const res = await fetch(modelUrl(model), {
@@ -352,6 +356,30 @@ export async function generateText(
     "";
   if (!out.trim()) throw new VertexError("Vertex returned empty explanation");
   return out.trim();
+}
+
+/** Plain-text generation used by the page assistant and vertexExplain. */
+export async function generateText(
+  system: string,
+  user: string,
+  opts?: { temperature?: number },
+): Promise<string> {
+  const temperature = opts?.temperature ?? 0.2;
+  const errors: string[] = [];
+  for (const model of modelCandidates()) {
+    try {
+      return await generateTextOnce(model, system, user, temperature);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(msg);
+      // Only fall through on not-found / unavailable / model errors
+      if (!/HTTP 404|HTTP 400|not found|NOT_FOUND|unsupported|does not exist|invalid model/i.test(msg)) {
+        throw e instanceof VertexError ? e : new VertexError(msg);
+      }
+      console.warn(`[copilot:vertex] model ${model} failed, trying fallback: ${msg.slice(0, 120)}`);
+    }
+  }
+  throw new VertexError(`All Vertex models failed: ${errors.join(" | ").slice(0, 500)}`);
 }
 
 export type ClientToolDecl = {

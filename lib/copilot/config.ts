@@ -51,6 +51,21 @@ export const copilotConfig = {
   get vertexModel(): string {
     return env("VERTEX_MODEL", "gemini-3.6-flash");
   },
+  /**
+   * Fallback models when primary Vertex model returns 404/unavailable.
+   * Comma-separated env VERTEX_MODEL_FALLBACKS or built-in list.
+   */
+  get vertexModelFallbacks(): string[] {
+    const raw = env(
+      "VERTEX_MODEL_FALLBACKS",
+      "gemini-2.5-flash,gemini-2.0-flash-001,gemini-2.0-flash",
+    );
+    const primary = this.vertexModel;
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((m) => m && m !== primary);
+  },
 
   /**
    * Routing mechanism.

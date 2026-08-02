@@ -49,6 +49,7 @@ import {
 import { preflightExpandedLegs } from "./multi-leg-preflight";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
 import { preferExtractedPlan } from "./step-extractor";
+import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -581,6 +582,44 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         `[copilot] multi-goal: upgraded single write to extracted plan (${upgraded.steps.length} steps)`,
       );
       routed = upgraded;
+    }
+  }
+
+  // LLM plan-then-execute (primary understanding for free-form multi-leg).
+  // Keywords/extractors already ran; model fills gaps and free-form English.
+  // Allowlist + sanitize keep this safe (not unrestricted tool calling).
+  if (shouldLlmPlan(message) && (routed.kind === "plan" || looksLikeMultiGoal(message))) {
+    try {
+      const llmPlan = await llmPlanStrategy(message, { trader, smartAccount });
+      if (llmPlan && llmPlan.kind === "plan" && llmPlan.steps.length > 0) {
+        // Prefer LLM order when it has ≥2 steps or richer swap args
+        if (
+          routed.kind !== "plan" ||
+          llmPlan.steps.length >= (routed.steps?.filter((s) => s.kind === "write").length || 0)
+        ) {
+          console.warn(
+            `[copilot] llm-planner: using model plan (${llmPlan.steps.length} steps)`,
+          );
+          routed = preferExtractedPlan(llmPlan, message);
+        } else if (routed.kind === "plan") {
+          // Merge: keep keyword structure, fill from LLM
+          routed = preferMultiGoalPlan(llmPlan, routed, message);
+        }
+      }
+    } catch (e) {
+      console.warn("[copilot] llm-planner skipped:", e instanceof Error ? e.message : e);
+    }
+  }
+
+  // Single write that LLM can still promote to multi-leg
+  if (routed.kind === "write" && shouldLlmPlan(message)) {
+    try {
+      const llmPlan = await llmPlanStrategy(message, { trader, smartAccount });
+      if (llmPlan?.kind === "plan" && llmPlan.steps.length >= 2) {
+        routed = llmPlan;
+      }
+    } catch {
+      /* keep write */
     }
   }
 
