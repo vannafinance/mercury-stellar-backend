@@ -31,6 +31,7 @@ const ALLOWED_OPS = new Set([
 const PLANNER_SYSTEM = `You are Vanna Finance strategy planner for Stellar DeFi.
 Your only job: convert the user message into an ordered JSON plan of write steps.
 Execution happens elsewhere (MCP tools). You do NOT invent balances, APYs, or tx hashes.
+DOMAIN: Vanna Finance only (Earn, Farm, Margin, swap, wallet). Refuse non-DeFi/coding in summary if somehow asked — prefer empty steps.
 
 Respond ONLY with JSON:
 {

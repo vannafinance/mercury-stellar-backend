@@ -1,0 +1,123 @@
+/**
+ * LLM domain firewall — hard boundary so Vanna Copilot/MCP only burns
+ * model tokens on Vanna Finance / Stellar DeFi product work.
+ *
+ * Why: open-ended chatbots get used for free coding/homework and rack up
+ * Vertex/LLM bills (classic support-bot abuse). Firewall runs BEFORE Vertex.
+ *
+ * Layers:
+ *  1) Fast blocklist (coding, homework, unrelated)
+ *  2) Allowlist (product domain signals)
+ *  3) Soft allow when ambiguous short product questions
+ *  4) Systems prompts still restate domain (defense in depth)
+ */
+
+export type FirewallResult =
+  | { allow: true; reason: string }
+  | { allow: false; reason: string; message: string };
+
+const BLOCK_MESSAGE =
+  "I only help with Vanna Finance on Stellar — Earn, Farm, Margin, wallet connect, " +
+  "swaps, health factor, and related product questions.\n\n" +
+  "I can’t help with general coding, homework, or unrelated chat. " +
+  "Try something like “what’s my health factor?”, “lend 10 XLM”, or " +
+  "“park 20 XLM then farm 10 BLUSDC at 2x”.";
+
+/** Clear off-domain abuse vectors (billing / policy). */
+const BLOCK_PATTERNS: RegExp[] = [
+  // Coding / software engineering free work
+  /\b(write|generate|debug|fix|implement|refactor|code\s+review)\b.+\b(code|function|class|script|program|api|endpoint)\b/i,
+  /\b(python|javascript|typescript|java|golang|rust|c\+\+|react|next\.js|django|flask|sql query)\b.+\b(code|function|write|how to|example)\b/i,
+  /\b(leetcode|hackerrank|coding\s+interview|solve\s+this\s+problem)\b/i,
+  /\b(write\s+(me\s+)?a\s+(function|class|script|program|regex|dockerfile|kubernetes))\b/i,
+  /\b(github\s+actions|ci\/cd|terraform|ansible)\b/i,
+  // Homework / essays / general AI abuse
+  /\b(write\s+(me\s+)?(an?\s+)?(essay|homework|assignment|thesis|paper|cover\s+letter|resume)\b)/i,
+  /\b(do\s+my\s+homework|solve\s+this\s+math|calculus|integral|derivative)\b/i,
+  // Unrelated life / entertainment
+  /\b(recipe|cook|dating|horoscope|joke|poem|song\s+lyrics|movie\s+plot)\b/i,
+  /\b(crypto\s+scam|how\s+to\s+(hack|phish|exploit)\b)/i,
+  // Other chains / non-Vanna products (hard off-domain)
+  /\b(ethereum|solana|bitcoin\s+script|metamask\s+dapp\s+code|solidity\s+contract\s+write)\b.+\b(code|write|deploy\s+contract\s+code)\b/i,
+];
+
+/** Strong in-domain signals for Vanna Finance. */
+const ALLOW_PATTERNS: RegExp[] = [
+  /\b(vanna|stellar|soroban|freighter|privy)\b/i,
+  /\b(earn|farm|margin|lend|borrow|repay|deposit|redeem|collateral|health\s*factor|\bhf\b)\b/i,
+  /\b(blend|aquarius|soroswap|xlm|blusdc|aqusdc|sousdc|btoken|vtoken)\b/i,
+  /\b(swap|liquidity|pool|apy|tvl|leverage|liquidat|smart\s+account|g-?wallet|c-?address)\b/i,
+  /\b(auto[- ]?sign|auto[- ]?approve|wallet\s+connect|open\s+(margin\s+)?account)\b/i,
+  /\b(what(?:'s| is| are).+\b(on\s+(my\s+)?screen|this\s+page|shown|showing)\b)/i,
+  /\b(how\s+(do|does|can|to).+\b(vanna|earn|farm|margin|lend|borrow|deposit|swap)\b)/i,
+  /\b(park|supply|withdraw|position|debt|balance|oracle|price)\b/i,
+  // Multi-leg strategy language when tied to assets/actions above often co-occurs
+  /\b(then|and\s+then).+\b(farm|lend|borrow|deposit|swap|repay)\b/i,
+];
+
+/**
+ * Evaluate whether we should call the LLM / MCP path at all.
+ * Call this at the top of handleChat before Vertex.
+ */
+export function evaluateDomainFirewall(message: string): FirewallResult {
+  const m = (message || "").trim();
+  if (!m) {
+    return {
+      allow: false,
+      reason: "empty",
+      message: "Please type a question about Vanna Finance.",
+    };
+  }
+
+  // 1) Hard block first
+  for (const re of BLOCK_PATTERNS) {
+    if (re.test(m)) {
+      return { allow: false, reason: `block:${re.source.slice(0, 40)}`, message: BLOCK_MESSAGE };
+    }
+  }
+
+  // 2) Explicit allow
+  for (const re of ALLOW_PATTERNS) {
+    if (re.test(m)) {
+      return { allow: true, reason: `allow:${re.source.slice(0, 40)}` };
+    }
+  }
+
+  // 3) Very short product-ish tokens
+  if (m.length <= 40 && /^(hi|hello|hey|help|thanks|thank you|ok|yes|no)\.?$/i.test(m)) {
+    return {
+      allow: true,
+      reason: "allow:greeting",
+    };
+  }
+
+  // 4) Ambiguous long text with no domain signal → refuse (saves billing)
+  if (m.length > 80) {
+    return { allow: false, reason: "block:no_domain_signal", message: BLOCK_MESSAGE };
+  }
+
+  // 5) Short ambiguous — still refuse unless it looks like a product noun
+  if (
+    /\b(what|how|why|when|where|explain|show|list|help|can\s+i|do\s+i)\b/i.test(m) &&
+    !ALLOW_PATTERNS.some((re) => re.test(m))
+  ) {
+    // Allow only if mentions screen/page without other domain — already in ALLOW
+    return { allow: false, reason: "block:off_domain_question", message: BLOCK_MESSAGE };
+  }
+
+  // Default: allow short leftovers that might be asset ticks (e.g. "BLUSDC")
+  if (m.length <= 24 && /^[A-Za-z0-9\s?.!]+$/.test(m)) {
+    return { allow: true, reason: "allow:short_token" };
+  }
+
+  return { allow: false, reason: "block:default", message: BLOCK_MESSAGE };
+}
+
+/** System-prompt addendum for every LLM surface. */
+export const DOMAIN_FIREWALL_SYSTEM = `
+DOMAIN FIREWALL (hard):
+- You ONLY answer about Vanna Finance on Stellar/Soroban: Earn, Farm, Margin, wallet, swaps, health factor, pools, APY, multi-step strategies.
+- REFUSE coding, homework, essays, other products, or general knowledge that is not Vanna-related.
+- If off-domain, reply briefly that you only handle Vanna Finance and give one example prompt.
+- Never write application code, Solidity/Python scripts, or general tech tutorials.
+`;

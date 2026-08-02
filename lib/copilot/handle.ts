@@ -50,6 +50,7 @@ import { preflightExpandedLegs } from "./multi-leg-preflight";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
 import { preferExtractedPlan } from "./step-extractor";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
+import { evaluateDomainFirewall } from "./domain-firewall";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import type {
@@ -102,6 +103,27 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   let smartAccount = req.smart_account ?? null;
   const trader = looksLikeWallet(userId) ? userId : null;
   const mcp = getMcpClient();
+
+  // ── LLM domain firewall (before Vertex — blocks free coding / off-domain billing) ──
+  // Skip for auto-sign control payloads and pending_write / resume (already product actions).
+  if (
+    message &&
+    !req.auto_sign?.action &&
+    !req.pending_write?.op &&
+    !req.resume_multi_leg?.legs?.length
+  ) {
+    const fw = evaluateDomainFirewall(message);
+    if (!fw.allow) {
+      console.warn(`[copilot:firewall] blocked reason=${fw.reason} msg=${message.slice(0, 80)}`);
+      return {
+        kind: "blocked",
+        message: fw.message,
+        data: { domain_firewall: true, reason: fw.reason },
+        intent: { template_id: "domain_firewall", slots: { reason: fw.reason } },
+        request_id,
+      };
+    }
+  }
 
   // ── Auto-sign control actions (from UI buttons or NL) ───────────────────
   if (req.auto_sign?.action) {

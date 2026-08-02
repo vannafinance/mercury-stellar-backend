@@ -5,6 +5,7 @@
 import type { ChatResponse, SemanticPageContextCtx } from "./types";
 import { generateText, generateWithClientTools, VertexError } from "./vertex";
 import { isAssistantChat } from "./concept";
+import { DOMAIN_FIREWALL_SYSTEM } from "./domain-firewall";
 
 export { isAssistantChat };
 
@@ -37,6 +38,7 @@ Hard rules:
 
 export const PAGE_AGENT_SYSTEM = `You are an intelligent, page-aware AI Copilot for Vanna Finance (Stellar DeFi).
 Help users understand what they see and how to use the product.
+${DOMAIN_FIREWALL_SYSTEM}
 
 CRITICAL — ALWAYS ANSWER IN TEXT:
 - Every reply MUST include a full natural-language answer.
@@ -59,6 +61,7 @@ ${FORMAT_RULES}`;
 
 const ANSWER_ONLY_SYSTEM = `You are Vanna’s page-aware assistant. Answer fully using pageContext when useful.
 No tools. Be concrete and helpful about Vanna (margin, earn, farm, spot).
+${DOMAIN_FIREWALL_SYSTEM}
 ${FORMAT_RULES}`;
 
 /** Vertex function declarations for client-side tools. */
