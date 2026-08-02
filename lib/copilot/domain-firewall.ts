@@ -55,7 +55,9 @@ const ALLOW_PATTERNS: RegExp[] = [
   /\b(wallet|g-?wallet|freighter|privy)\b/i,
   /\b(what(?:'s| is| are).+\b(on\s+(my\s+)?screen|this\s+page|shown|showing)\b)/i,
   /\b(how\s+(do|does|can|to).+\b(vanna|earn|farm|margin|lend|borrow|deposit|swap)\b)/i,
-  /\b(park|supply|withdraw|position|debt|balance|oracle|price)\b/i,
+  // "owe" is how users actually ask about debt — without it, "how much do I owe?"
+  // fell through to the off-domain question block at step 5 and was refused.
+  /\b(park|supply|withdraw|position|debt|owe|owes|owed|owing|balance|oracle|price)\b/i,
   // Multi-leg strategy language when tied to assets/actions above often co-occurs
   /\b(then|and\s+then).+\b(farm|lend|borrow|deposit|swap|repay)\b/i,
 ];
