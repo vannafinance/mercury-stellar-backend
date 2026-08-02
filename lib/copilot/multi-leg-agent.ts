@@ -473,6 +473,9 @@ export function multiLegUiData(opts: {
   extra?: Record<string, unknown>;
 }): Record<string, unknown> {
   const resume_legs = resumableLegsFromSteps(opts.steps);
+  const done = opts.steps.filter((s) => s.status === "ok").length;
+  const total = opts.steps.length;
+  // Plan-and-execute pattern (LangChain / Anthropic): always surface progress + observe.
   return {
     multi_leg: true,
     multi_leg_steps: opts.steps.map((s) => ({
@@ -487,6 +490,9 @@ export function multiLegUiData(opts: {
     /** Client “Continue remaining” / “Retry failed” uses this payload. */
     resume_legs: resume_legs.length ? resume_legs : null,
     can_resume: resume_legs.length > 0,
+    /** Observe: how far through the fixed plan we got */
+    progress: { done, total, pct: total > 0 ? Math.round((done / total) * 100) : 0 },
+    pattern: "plan_then_execute",
     ...(opts.extra || {}),
   };
 }

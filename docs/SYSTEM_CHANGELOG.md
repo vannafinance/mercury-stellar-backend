@@ -109,6 +109,25 @@ Disable auto-approve, then core multi-leg.
 
 ## Change log (chronological)
 
+### 2026-08-02 — Gemini-style New chat (side assistant) + research notes
+
+**Problem:** Side panel “Ask about this page” history is **persisted** in `localStorage` (`assistant-session`). Restarting Next does **not** clear it — only an explicit new chat does.
+
+**Fix:**
+- Refresh / **New chat** button in assistant header (Gemini-like)
+- `clearAssistantTurns()` also removes `localStorage.assistant-session`
+- Empty state explains multi-step + new chat
+
+**Research applied to multi-leg (industry patterns):**
+| Pattern | Source | Vanna application |
+|---------|--------|-------------------|
+| Plan-then-execute | LangChain planning agents | Expand plan → run legs in order (already) + `pattern: plan_then_execute` |
+| Observe after act | Anthropic agent loop | HF sample + progress `{done,total}` on each strategy payload |
+| Prefer workflows over free agents for fixed chains | Anthropic “Building effective agents” | Keyword/Vertex plan + expand (not free tool roulette) |
+| Clear session boundaries | Product UX (Gemini/ChatGPT) | New chat clears history so old multi-leg context doesn’t poison the next run |
+
+**MCP deploy:** No MCP server code changes in this copilot multi-leg work. You do **not** deploy MCP for these features — only the **Next/copilot app** when going to prod (owner).
+
 ### 2026-08-02 — Multi-leg heavy-use + New chat + wallet/deploy notes
 
 **UI**

@@ -36,8 +36,25 @@ export function setAssistantOpen(open: boolean) {
   useAssistantSessionStore.getState().set({ open });
 }
 
+/**
+ * Gemini-style “new chat”: wipe in-memory turns and the persisted session
+ * (survives route changes and page reloads via zustand persist).
+ */
 export function clearAssistantTurns() {
   useAssistantSessionStore.getState().set({ turns: [] });
+  // Ensure localStorage key is cleared even if middleware lag leaves a stale blob.
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.removeItem("assistant-session");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Alias for UI “New chat / refresh” actions. */
+export function newAssistantChat() {
+  clearAssistantTurns();
 }
 
 export function getAssistantHistory(

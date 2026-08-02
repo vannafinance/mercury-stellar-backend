@@ -8,9 +8,10 @@
  */
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { Sparkles, X } from "lucide-react";
+import { Sparkles, X, RefreshCw } from "lucide-react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter } from "next/navigation";
+import toast from "react-hot-toast";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
@@ -18,6 +19,7 @@ import { captureSemanticPageContext } from "@/lib/assistant/semantic-page-contex
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import {
   appendAssistantTurn,
+  clearAssistantTurns,
   getAssistantHistory,
   setAssistantOpen,
   useAssistantSessionStore,
@@ -166,6 +168,22 @@ function AssistantLauncherInner() {
                 </p>
                 <p className={`truncate text-[11px] ${muted}`}>{pathname || "/"}</p>
               </div>
+              <button
+                type="button"
+                aria-label="New chat"
+                title="Clear history and start a new chat"
+                onClick={() => {
+                  clearAssistantTurns();
+                  setPrefill(null);
+                  toast.success("New chat — history cleared", { duration: 2000 });
+                }}
+                disabled={turns.length === 0}
+                className={`flex h-8 w-8 items-center justify-center rounded-lg disabled:opacity-30 ${
+                  isDark ? "hover:bg-[#222] text-[#aaa]" : "hover:bg-[#f0f0f0] text-[#666]"
+                }`}
+              >
+                <RefreshCw size={15} />
+              </button>
               <button
                 type="button"
                 aria-label="Close"

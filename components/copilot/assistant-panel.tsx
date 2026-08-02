@@ -79,7 +79,8 @@ export function AssistantPanel({
           <div className="space-y-2 pt-2">
             <p className={`text-[15px] font-semibold tracking-tight ${ink}`}>Ask anything</p>
             <p className={`text-[13px] leading-relaxed ${muted}`}>
-              About this page, Vanna products, or what to do next.
+              About this page, Vanna products, or multi-step strategies (park then farm, swap then
+              leverage). Use the refresh icon for a new chat — history is cleared completely.
             </p>
           </div>
         )}
