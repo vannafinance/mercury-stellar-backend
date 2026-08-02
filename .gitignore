@@ -91,3 +91,7 @@ testsprite_tests/
 
 # Binary doc exports — the source of truth is docs/*.md (diffable, reviewable)
 docs/*.docx
+
+# Local-only docs (do not push)
+/private-docs/
+
