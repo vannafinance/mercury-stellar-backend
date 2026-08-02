@@ -258,11 +258,21 @@ function txUrl(hash: string): string {
   return `https://stellar.expert/explorer/testnet/tx/${hash}`;
 }
 
+interface LogLeg {
+  label: string;
+  tool: string;
+  status: string;
+}
+
 interface LogEntry {
+  id: string;
   prompt: string;
   tool: string;
   status: string;
   color: string;
+  /** Multi-leg / agent-chain parent — child hops update this instead of new rows. */
+  strategy?: boolean;
+  legs?: LogLeg[];
 }
 interface ActivityEntry {
   label: string;
@@ -675,6 +685,8 @@ export function CopilotWorkspace() {
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
+  /** Parent strategy prompt for client next_step hops (session log grouping). */
+  const strategyParentRef = useRef<{ id: string; prompt: string } | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -787,41 +799,198 @@ export function CopilotWorkspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const pushLog = useCallback((prompt: string, data: ChatResponse) => {
-    const status =
-      data.kind === "executed"
-        ? "executed"
-        : data.kind === "needs_wallet_sign"
-          ? "staged"
-          : data.kind === "needs_auto_sign"
-            ? "needs sign"
-            : data.kind === "blocked"
-              ? "blocked"
-              : data.kind === "error"
-                ? "error"
-                : data.kind === "answer"
-                  ? "answered"
-                  : "clarify";
-    const color =
-      data.kind === "executed"
-        ? EMERALD
-        : data.kind === "blocked" || data.kind === "error"
-          ? IMPERIAL
-          : data.kind === "needs_wallet_sign" || data.kind === "needs_auto_sign"
-            ? VIOLET
-            : AMBER;
-    setLog((prev) =>
-      [
-        {
-          prompt,
-          tool: data.mcp?.tool || data.intent?.template_id || "router",
-          status,
-          color: data.kind === "answer" ? EMERALD : color,
-        },
-        ...prev,
-      ].slice(0, 6),
-    );
-  }, []);
+  const statusFromKind = (kind: ChatResponse["kind"] | undefined): string => {
+    if (kind === "executed") return "executed";
+    if (kind === "needs_wallet_sign") return "staged";
+    if (kind === "needs_auto_sign") return "needs sign";
+    if (kind === "blocked") return "blocked";
+    if (kind === "error") return "error";
+    if (kind === "answer") return "answered";
+    return "clarify";
+  };
+
+  const colorFromKind = (kind: ChatResponse["kind"] | undefined): string => {
+    if (kind === "executed" || kind === "answer") return EMERALD;
+    if (kind === "blocked" || kind === "error") return IMPERIAL;
+    if (kind === "needs_wallet_sign" || kind === "needs_auto_sign") return VIOLET;
+    return AMBER;
+  };
+
+  /**
+   * Session log: multi-leg / agent-chain hops update ONE parent row instead of
+   * flooding the log with “Lend…”, “Deposit…”, “Borrow…” as separate turns.
+   */
+  const pushLog = useCallback(
+    (
+      prompt: string,
+      data: ChatResponse,
+      opts?: { chainHop?: boolean; hopLabel?: string },
+    ) => {
+      const status = statusFromKind(data.kind);
+      const color = colorFromKind(data.kind);
+      const tool = data.mcp?.tool || data.intent?.template_id || "router";
+      const multi =
+        !!(data.data && (data.data as Record<string, unknown>).multi_leg) ||
+        Array.isArray((data.data as Record<string, unknown> | undefined)?.multi_leg_steps);
+      const multiSteps = Array.isArray((data.data as any)?.multi_leg_steps)
+        ? ((data.data as any).multi_leg_steps as Array<{
+            label?: string;
+            op?: string;
+            status?: string;
+          }>)
+        : null;
+
+      // Parent multi-leg strategy response from server
+      if (multi && multiSteps?.length) {
+        const id = data.request_id || `strat-${Date.now()}`;
+        const parentPrompt =
+          String((data.data as any)?.strategy_summary || "").trim() ||
+          prompt ||
+          "Multi-step strategy";
+        strategyParentRef.current = { id, prompt: parentPrompt };
+        const legs: LogLeg[] = multiSteps.map((s) => ({
+          label: s.label || s.op || "step",
+          tool: s.op || "leg",
+          status: s.status === "ok" ? "done" : s.status === "skipped" ? "skip" : s.status || "…",
+        }));
+        const overall =
+          multiSteps.every((s) => s.status === "ok")
+            ? "executed"
+            : multiSteps.some((s) => s.status === "error" || s.status === "blocked")
+              ? status
+              : status;
+        setLog((prev) => {
+          const without = prev.filter((e) => e.id !== id);
+          return [
+            {
+              id,
+              prompt: parentPrompt,
+              tool: "multi_leg",
+              status: overall,
+              color: overall === "executed" ? EMERALD : color,
+              strategy: true,
+              legs,
+            },
+            ...without,
+          ].slice(0, 8);
+        });
+        return;
+      }
+
+      // Client next_step / wallet-sign hop — fold into parent strategy if any
+      if (opts?.chainHop && strategyParentRef.current) {
+        const parentId = strategyParentRef.current.id;
+        const hopLabel = opts.hopLabel || prompt;
+        setLog((prev) => {
+          const idx = prev.findIndex((e) => e.id === parentId || e.strategy);
+          if (idx < 0) {
+            // Promote hop into a strategy parent row
+            return [
+              {
+                id: parentId,
+                prompt: strategyParentRef.current!.prompt,
+                tool: "multi_leg",
+                status: status === "executed" ? "in progress" : status,
+                color: AMBER,
+                strategy: true,
+                legs: [
+                  {
+                    label: hopLabel,
+                    tool,
+                    status: status === "executed" ? "done" : status,
+                  },
+                ],
+              },
+              ...prev,
+            ].slice(0, 8);
+          }
+          const copy = [...prev];
+          const parent = { ...copy[idx] };
+          const legs = [...(parent.legs || [])];
+          const hopKey = hopLabel.toLowerCase();
+          const legIdx = legs.findIndex((l) => {
+            const ll = l.label.toLowerCase();
+            return (
+              ll === hopKey ||
+              l.tool === tool ||
+              hopKey.includes(l.tool.replace(/_/g, " ")) ||
+              ll.includes(tool.replace(/^vanna_/, "").replace(/_/g, " "))
+            );
+          });
+          if (legIdx >= 0) {
+            legs[legIdx] = {
+              ...legs[legIdx],
+              status: status === "executed" ? "done" : status,
+              tool,
+            };
+          } else {
+            legs.push({
+              label: hopLabel,
+              tool,
+              status: status === "executed" ? "done" : status,
+            });
+          }
+          parent.legs = legs;
+          parent.status =
+            status === "executed" && legs.every((l) => l.status === "done" || l.status === "skip")
+              ? "executed"
+              : status === "staged" || status === "needs sign"
+                ? "in progress"
+                : "in progress";
+          parent.color =
+            parent.status === "executed" ? EMERALD : status === "staged" ? VIOLET : AMBER;
+          parent.tool = "multi_leg";
+          parent.strategy = true;
+          copy[idx] = parent;
+          return copy;
+        });
+        return;
+      }
+
+      // First response that will continue via next_step — open a strategy parent row
+      if (data.next_step && !opts?.chainHop) {
+        const id = data.request_id || `strat-${Date.now()}`;
+        strategyParentRef.current = { id, prompt };
+        setLog((prev) =>
+          [
+            {
+              id,
+              prompt,
+              tool: "multi_leg",
+              status: status === "executed" ? "in progress" : status,
+              color: status === "executed" ? AMBER : color,
+              strategy: true,
+              legs: [
+                {
+                  label: prompt.length > 60 ? tool.replace(/^vanna_/, "").replace(/_/g, " ") : prompt,
+                  tool,
+                  status: status === "executed" ? "done" : status,
+                },
+              ],
+            },
+            ...prev,
+          ].slice(0, 8),
+        );
+        return;
+      }
+
+      // Plain single-op turn
+      if (!opts?.chainHop) strategyParentRef.current = null;
+      setLog((prev) =>
+        [
+          {
+            id: data.request_id || `turn-${Date.now()}`,
+            prompt,
+            tool,
+            status,
+            color,
+          },
+          ...prev,
+        ].slice(0, 8),
+      );
+    },
+    [],
+  );
 
   const pushActivity = useCallback((label: string, hash: string | null | undefined) => {
     if (!hash) return;
@@ -829,7 +998,11 @@ export function CopilotWorkspace() {
   }, []);
 
   const postCopilot = useCallback(
-    async (body: Record<string, unknown>, promptLabel: string) => {
+    async (
+      body: Record<string, unknown>,
+      promptLabel: string,
+      opts?: { chainHop?: boolean },
+    ) => {
       setLoading(true);
       setResponse(null);
       setShowCustom(false);
@@ -851,7 +1024,12 @@ export function CopilotWorkspace() {
           data.preview.human_summary = stripMarkdownLite(data.preview.human_summary);
         }
         setResponse(data);
-        pushLog(promptLabel, data);
+        // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
+        // Full multi_leg payloads create/refresh the parent strategy row.
+        pushLog(promptLabel, data, {
+          chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
+          hopLabel: promptLabel,
+        });
         if (data.kind === "executed") {
           toast.success(data.execution?.tx_hash ? `Submitted · ${data.execution.tx_hash.slice(0, 10)}…` : "Done");
           pushActivity(data.preview?.human_summary || promptLabel, data.execution?.tx_hash);
@@ -1045,11 +1223,20 @@ export function CopilotWorkspace() {
       if (result.ok) {
         toast.success(result.hash ? `Submitted · ${result.hash.slice(0, 10)}…` : "Submitted");
         const summary = response?.preview?.human_summary || submitted || "Write submitted";
-        setLog((prev) =>
-          [
-            { prompt: summary, tool: response?.mcp?.tool || "wallet", status: "executed", color: EMERALD },
-            ...prev,
-          ].slice(0, 6),
+        // Fold wallet-sign success into strategy parent log when chaining; else one row.
+        pushLog(
+          strategyParentRef.current?.prompt || summary,
+          {
+            kind: "executed",
+            message: summary,
+            mcp: response?.mcp ?? null,
+            request_id: response?.request_id,
+            data: strategyParentRef.current ? undefined : null,
+          } as ChatResponse,
+          {
+            chainHop: !!strategyParentRef.current || !!nextStep,
+            hopLabel: summary,
+          },
         );
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true });
@@ -1060,10 +1247,16 @@ export function CopilotWorkspace() {
             nextStep.label ||
             `Auto step ${nextStep.step ?? 2}: ${nextStep.op} ${nextStep.amount} ${nextStep.asset || ""}`.trim();
           toast.success("Deposit confirmed — running next step automatically…", { duration: 4000 });
+          if (!strategyParentRef.current) {
+            strategyParentRef.current = {
+              id: response?.request_id || `strat-${Date.now()}`,
+              prompt: submitted || summary,
+            };
+          }
           setResponse({
             kind: "executed",
             message:
-              `Step 1 done${result.hash ? ` · ${result.hash.slice(0, 12)}…` : ""}.\n` +
+              `Step done${result.hash ? ` · ${result.hash.slice(0, 12)}…` : ""}.\n` +
               `Waiting a few seconds for the ledger, then automatically: ${label}.`,
             mcp: response?.mcp ?? null,
             preview: response?.preview ?? null,
@@ -1074,7 +1267,8 @@ export function CopilotWorkspace() {
           // Brief settle before the next leg (multi-leg farm / deposit→borrow).
           await new Promise((r) => setTimeout(r, 2200));
           await refreshRailStats({ force: true });
-          setSubmitted(label);
+          // Keep original strategy text in the header; hop label only in log legs
+          setSubmitted(strategyParentRef.current?.prompt || submitted || label);
           await postCopilot(
             {
               message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
@@ -1087,6 +1281,7 @@ export function CopilotWorkspace() {
               },
             },
             label,
+            { chainHop: true },
           );
           return;
         }
@@ -1165,7 +1360,14 @@ export function CopilotWorkspace() {
       // Brief ledger settle; 5s felt too slow for multi-leg farm chains.
       await new Promise((r) => setTimeout(r, 2200));
       await refreshRailStats({ force: true });
-      setSubmitted(label);
+      // Keep user strategy prompt in the header (not “Borrow 10…”)
+      if (!strategyParentRef.current && submitted) {
+        strategyParentRef.current = {
+          id: response.request_id || `strat-${Date.now()}`,
+          prompt: submitted,
+        };
+      }
+      setSubmitted(strategyParentRef.current?.prompt || submitted || label);
       await postCopilot(
         {
           message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
@@ -1178,9 +1380,10 @@ export function CopilotWorkspace() {
           },
         },
         label,
+        { chainHop: true },
       );
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -1310,6 +1513,7 @@ export function CopilotWorkspace() {
     setShowCustom(false);
     autoSubmittedRef.current = null;
     nextStepFiredRef.current = null;
+    strategyParentRef.current = null;
     inputRef.current?.focus();
   };
 
@@ -1922,7 +2126,9 @@ export function CopilotWorkspace() {
           <div className="rounded-3xl border border-vgray-100 bg-surface px-6 py-6 sm:px-7">
             <div className="flex items-center justify-between">
               <Eyebrow>Session log</Eyebrow>
-              <span className="font-mono text-[11px] text-vgray-400">{log.length} turns</span>
+              <span className="font-mono text-[11px] text-vgray-400">
+                {log.length} {log.length === 1 ? "turn" : "turns"}
+              </span>
             </div>
             {log.length === 0 ? (
               <p className="mt-3 font-mono text-[11px] text-vgray-400">
@@ -1930,17 +2136,37 @@ export function CopilotWorkspace() {
               </p>
             ) : (
               <div className="mt-2">
-                {log.map((e, i) => (
-                  <div key={i} className="flex items-center gap-3.5 border-b border-vgray-100 py-3 last:border-0">
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: e.color }} />
-                    <span className="min-w-0 flex-1 truncate text-body-2 text-vgray-700">{e.prompt}</span>
-                    <span className="hidden shrink-0 font-mono text-[11px] text-vgray-400 sm:block">{e.tool}</span>
-                    <span
-                      className="w-[74px] shrink-0 text-right font-mono text-[11px]"
-                      style={{ color: e.color }}
-                    >
-                      {e.status}
-                    </span>
+                {log.map((e) => (
+                  <div key={e.id} className="border-b border-vgray-100 py-3 last:border-0">
+                    <div className="flex items-center gap-3.5">
+                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: e.color }} />
+                      <span className="min-w-0 flex-1 truncate text-body-2 text-vgray-700" title={e.prompt}>
+                        {e.prompt}
+                      </span>
+                      <span className="hidden shrink-0 font-mono text-[11px] text-vgray-400 sm:block">
+                        {e.strategy ? "strategy" : e.tool}
+                      </span>
+                      <span
+                        className="w-[74px] shrink-0 text-right font-mono text-[11px]"
+                        style={{ color: e.color }}
+                      >
+                        {e.status}
+                      </span>
+                    </div>
+                    {e.strategy && e.legs && e.legs.length > 0 && (
+                      <ul className="mt-2 ml-5 space-y-1 border-l border-vgray-100 pl-3">
+                        {e.legs.map((leg, j) => (
+                          <li
+                            key={`${e.id}-leg-${j}`}
+                            className="flex items-center gap-2 font-mono text-[11px] text-vgray-500"
+                          >
+                            <span className="text-vgray-400">{j + 1}.</span>
+                            <span className="min-w-0 flex-1 truncate text-vgray-600">{leg.label}</span>
+                            <span className="shrink-0 text-vgray-400">{leg.status}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 ))}
               </div>
