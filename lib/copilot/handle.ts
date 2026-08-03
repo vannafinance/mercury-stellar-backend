@@ -1298,6 +1298,147 @@ async function handleAutoSignAction(
 
 // ── Reads ─────────────────────────────────────────────────────────────────
 
+/**
+ * Reads whose answer must match the margin page exactly.
+ *
+ * These are the only tools where MCP and the website were observed to disagree, because
+ * they are the ones that report a *position* rather than protocol-wide facts. Pool stats,
+ * prices and reserve configs are the same number from either source, so they stay on MCP.
+ */
+const SNAPSHOT_TRUTH_TOOLS = new Set([
+  "vanna_get_account_health",
+  "vanna_get_collateral",
+  "vanna_get_debt",
+]);
+
+/**
+ * Answer a position question from the same on-chain read the margin page renders.
+ *
+ * WHY THIS OVERRIDES MCP RATHER THAN FALLING BACK TO IT
+ *
+ * MCP and the website returned different collateral for the same account — XLM 796.29 vs
+ * 93.22, BLEND_USDC 42.00 vs 0, and a gross figure of $214.72 against the page's $382.87,
+ * which dragged the reported health factor to 1.95 where the page showed 3.47. That is not
+ * a rounding difference or a second formula; the two reads do different work.
+ * `computeMarginSnapshot` runs `reconcileMarginRawSacCollateral`, checking the margin
+ * account's raw Stellar Asset Contract holdings against the collateral the lending contract
+ * has recorded. MCP's `get_collateral_token_balance_wad` reports the recorded balance only,
+ * so anything held but not yet recorded is invisible to it.
+ *
+ * The website is the correct one, so it is the source of truth here — not a fallback for
+ * when MCP errors, which is how this was wired before and why the disagreement survived.
+ * Two different answers to "am I about to be liquidated" is the worst failure this surface
+ * has, and the shared calculation is the one the user already trusts because it is what
+ * their dashboard shows.
+ *
+ * Returns null on any failure so the MCP path still runs — a slower answer beats no answer.
+ */
+async function snapshotPositionAnswer(
+  routed: Extract<RoutedIntent, { kind: "read" }>,
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+): Promise<ChatResponse | null> {
+  if (!ctx.smartAccount) return null;
+  try {
+    const [{ computeMarginSnapshot }, { HEALTH_FACTOR_INFINITY_SENTINEL }] = await Promise.all([
+      import("@/lib/account-snapshot"),
+      import("@/lib/margin-health"),
+    ]);
+    const snap = await computeMarginSnapshot(ctx.smartAccount);
+    const hf = snap.avgHealthFactor;
+    const hfText =
+      hf >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞ (no debt)" : hf.toFixed(2);
+
+    /** Per-token rows, so "what collateral do I have" lists the same assets the page does. */
+    const positions = Object.entries(snap.collateralBalances)
+      .map(([symbol, bal]) => ({
+        symbol,
+        amount: bal.amount,
+        usd: Number.parseFloat(bal.usdValue) || 0,
+      }))
+      .filter((p) => p.usd > 0.01)
+      .sort((a, b) => b.usd - a.usd);
+
+    const borrowed = Object.entries(snap.borrowedBalances)
+      .map(([symbol, bal]) => ({
+        symbol,
+        amount: bal.amount,
+        usd: Number.parseFloat(bal.usdValue) || 0,
+      }))
+      .filter((p) => p.usd > 0.01)
+      .sort((a, b) => b.usd - a.usd);
+
+    const money = (n: number) => `$${n.toFixed(2)}`;
+    const list = (rows: Array<{ symbol: string; amount: string; usd: number }>) =>
+      rows.map((r) => `${r.amount} ${r.symbol} (${money(r.usd)})`).join(", ");
+
+    let message: string;
+    if (routed.tool === "vanna_get_collateral") {
+      message = positions.length
+        ? `Your collateral: ${list(positions)} — ${money(snap.grossCollateralValue)} in total.`
+        : "You have no collateral posted on your margin account.";
+    } else if (routed.tool === "vanna_get_debt") {
+      message = borrowed.length
+        ? `You owe ${list(borrowed)} — ${money(snap.totalBorrowedValue)} in total.`
+        : "You have no outstanding debt on your margin account.";
+    } else {
+      message =
+        `Health factor ${hfText} · collateral ${money(snap.grossCollateralValue)} · ` +
+        `borrowed ${money(snap.totalBorrowedValue)} · ` +
+        `${money(snap.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
+    }
+
+    // The same HF guardrails the MCP path applies, so the warning does not depend on which
+    // source answered.
+    const userFloor = parseMinHealthFactor(ctx.message);
+    const floor = userFloor ?? copilotConfig.minHealthFactor;
+    if (Number.isFinite(hf) && hf < HEALTH_FACTOR_INFINITY_SENTINEL) {
+      if (hf < 1.0) {
+        message +=
+          `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is liquidatable. ` +
+          `Repay debt or deposit collateral now.`;
+      } else if (hf < floor) {
+        message += `\n\nCaution: HF ${hf.toFixed(2)} is below your safety floor (${floor}).`;
+      } else if (userFloor != null) {
+        message += `\n\nYour floor HF ≥ ${userFloor} is currently satisfied (HF ${hf.toFixed(2)}).`;
+      }
+    }
+
+    return {
+      kind: "answer",
+      message,
+      data: factsForUi({
+        health_factor: hf,
+        collateral_usd: snap.grossCollateralValue,
+        debt_usd: snap.totalBorrowedValue,
+        net_value_usd: snap.totalValue,
+        collateral_left_before_liquidation: snap.collateralLeftBeforeLiquidation,
+        net_available_collateral: snap.netAvailableCollateral,
+        collateral_positions: positions,
+        borrowed_positions: borrowed,
+        source: "margin_page_snapshot",
+      }),
+      intent: {
+        template_id: routed.template_id,
+        slots: { source: "computeMarginSnapshot" },
+      },
+      mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
+      request_id: ctx.request_id,
+    };
+  } catch (e) {
+    console.warn(
+      `[copilot] snapshot truth read failed for ${routed.tool}, falling back to MCP -> ` +
+        `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+    return null;
+  }
+}
+
 async function runRead(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -1422,6 +1563,14 @@ async function runRead(
       request_id: ctx.request_id,
     };
   }
+
+  // Position questions answer from the same read the margin page renders, before MCP is
+  // consulted at all. See snapshotPositionAnswer for why the two sources disagree.
+  if (SNAPSHOT_TRUTH_TOOLS.has(routed.tool) && ctx.smartAccount) {
+    const fromSnapshot = await snapshotPositionAnswer(routed, ctx);
+    if (fromSnapshot) return fromSnapshot;
+  }
+
   try {
     const mcp = getMcpClient();
     const data = await mcp.call(routed.tool, built.args, ctx.userId);
