@@ -28,6 +28,30 @@ describe("domain firewall", () => {
     expect(evaluateDomainFirewall("what is being shown on my screen").allow).toBe(true);
   });
 
+  it("allows the ways people actually ask about the page", () => {
+    for (const q of [
+      "What am I looking at on this page?",
+      "what is this?",
+      "explain this screen",
+      "what does this mean",
+      "walk me through this page",
+    ]) {
+      expect(evaluateDomainFirewall(q).allow, q).toBe(true);
+    }
+  });
+
+  it("allows a deictic question when a page is attached", () => {
+    const q = "why is my number red?";
+    expect(evaluateDomainFirewall(q).allow).toBe(false);
+    expect(evaluateDomainFirewall(q, { hasPageContext: true }).allow).toBe(true);
+  });
+
+  it("a page does not turn it into an open chatbot", () => {
+    for (const q of ["what is the capital of France?", "write me a python function"]) {
+      expect(evaluateDomainFirewall(q, { hasPageContext: true }).allow, q).toBe(false);
+    }
+  });
+
   it("allows lend", () => {
     expect(evaluateDomainFirewall("lend 10 XLM").allow).toBe(true);
   });

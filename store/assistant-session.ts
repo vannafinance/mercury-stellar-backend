@@ -4,10 +4,19 @@
  */
 
 import createNewStore from "@/zustand/index";
+import type { GuideAnswer } from "@/lib/copilot/guide-schema";
 
 export type AssistantTurn = {
   role: "user" | "assistant";
   text: string;
+  /**
+   * Structured Guide answer for this turn, when the brain returned one. `text` always
+   * carries the same content flattened, so a turn without it still reads correctly —
+   * it just loses the sections, formula and glossary.
+   */
+  guide?: GuideAnswer | null;
+  /** Whether a page was readable when this turn was sent, for the "general answer" note. */
+  hasPageContext?: boolean;
 };
 
 export interface AssistantSession {
@@ -57,8 +66,12 @@ export function newAssistantChat() {
   clearAssistantTurns();
 }
 
+/** Role + text only — the structured answer stays client-side, out of the prompt. */
 export function getAssistantHistory(
   limit = 8,
 ): Array<{ role: "user" | "assistant"; text: string }> {
-  return useAssistantSessionStore.getState().turns.slice(-limit);
+  return useAssistantSessionStore
+    .getState()
+    .turns.slice(-limit)
+    .map(({ role, text }) => ({ role, text }));
 }
