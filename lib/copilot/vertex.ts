@@ -22,6 +22,12 @@ import {
   guardIntent,
   intentFromFunctionCall,
 } from "./vertex-tools";
+import {
+  ANSWER_RESPONSE_SCHEMA,
+  ANSWER_SYSTEM,
+  normalizeAnswer,
+  type StructuredAnswer,
+} from "./answer-schema";
 
 const execFileAsync = promisify(execFile);
 
@@ -918,6 +924,143 @@ export async function vertexExplain(
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
   return generateText(EXPLAIN_SYSTEM, user);
+}
+
+/**
+ * Structured version of vertexExplain.
+ *
+ * Uses responseSchema so the shape is constrained at generation time rather than
+ * requested in the prompt. Returns null on any failure — the caller keeps the prose
+ * path, so a schema this endpoint dislikes degrades instead of breaking the read path.
+ */
+export async function vertexExplainStructured(
+  question: string,
+  tool: string,
+  data: Record<string, unknown>,
+): Promise<StructuredAnswer | null> {
+  const tidy = roundForProse(data) as Record<string, unknown>;
+  const clipped = JSON.stringify(tidy).slice(0, 6000);
+  const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
+
+  const token = await getAccessToken();
+  const model = copilotConfig.vertexModel;
+  const body = {
+    systemInstruction: { parts: [{ text: ANSWER_SYSTEM }] },
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: {
+      temperature: 0.2,
+      responseMimeType: "application/json",
+      responseSchema: ANSWER_RESPONSE_SCHEMA,
+    },
+  };
+
+  try {
+    const res = await fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+      cache: "no-store",
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) tokenCache = null;
+      console.warn(`[copilot:vertex] structured answer HTTP ${res.status}: ${text.slice(0, 200)}`);
+      return null;
+    }
+    const parsed = JSON.parse(text) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    logUsage("answer", parsed);
+    const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("");
+    if (!out.trim()) return null;
+    return normalizeAnswer(JSON.parse(out));
+  } catch (e) {
+    console.warn(
+      `[copilot:vertex] structured answer failed, using prose: ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+    return null;
+  }
+}
+
+const RECEIPT_SYSTEM = `You write the closing summary for a multi-step DeFi strategy that has just finished running on Stellar.
+
+The user approved a plan and it executed. Tell them what actually happened, in the past tense, as a short report.
+
+You return DATA, not prose layout. Never write markdown or bullet characters.
+
+headline
+- One sentence stating what was accomplished overall, in plain past tense.
+- If some legs did not run, say so in this sentence. Never imply completion that DATA does not show.
+
+facts
+- One entry per leg that ran: label is the action ("supplied 20 XLM"), value is its outcome ("done" or a short transaction reference).
+- tone "good" for a leg that succeeded, "warn" for skipped, "bad" for failed.
+- Include a final entry for anything DATA gives about the resulting position.
+- Only what is in DATA. Never invent a transaction hash, a balance, or a health factor.
+
+note
+- One or two sentences on what the user now holds, or what still needs doing. Omit if the headline covers it.
+
+venue
+- The product the strategy mainly touched.
+
+Never claim a leg succeeded unless DATA says so. A partial run reported as a success is the worst possible output here.`;
+
+/**
+ * Closing summary for a finished strategy.
+ *
+ * Reuses the structured-answer contract so it renders through the same component. Data
+ * is the executed legs and their outcomes only — nothing derived — because a receipt that
+ * overstates what landed on-chain is worse than no receipt.
+ */
+export async function vertexSummarizeExecution(
+  intent: string,
+  execution: Record<string, unknown>,
+): Promise<StructuredAnswer | null> {
+  const clipped = JSON.stringify(roundForProse(execution)).slice(0, 5000);
+  const user = `WHAT THE USER ASKED FOR: ${intent}\nWHAT RAN:\n${clipped}`;
+
+  const token = await getAccessToken();
+  const model = copilotConfig.vertexModel;
+  try {
+    const res = await fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: RECEIPT_SYSTEM }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: ANSWER_RESPONSE_SCHEMA,
+        },
+      }),
+      signal: AbortSignal.timeout(45_000),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) tokenCache = null;
+      return null;
+    }
+    const parsed = JSON.parse(await res.text()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    logUsage("receipt", parsed);
+    const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("");
+    return out.trim() ? normalizeAnswer(JSON.parse(out)) : null;
+  } catch (e) {
+    console.warn(
+      `[copilot:vertex] receipt summary failed: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
+    );
+    return null;
+  }
 }
 
 /** Cheap health probe used by /api/copilot GET */

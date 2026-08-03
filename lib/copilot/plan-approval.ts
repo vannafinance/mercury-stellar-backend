@@ -44,6 +44,11 @@ export interface FrozenPlan {
   summary: string;
   steps: PlanStepView[];
   created_at: number;
+  /**
+   * Total on-chain legs, which is what the user will actually be asked to sign.
+   * Higher than steps.length whenever a step is levered — see legCount().
+   */
+  signature_count: number;
   /** Things the user should read before approving. */
   warnings: string[];
 }
@@ -94,13 +99,38 @@ const VENUE_SUFFIX: Record<PlanStepView["venue"], string> = {
   other: "",
 };
 
-function labelFor(op: string, asset: string | null, amount: number | null, venue: PlanStepView["venue"]): string {
+function labelFor(
+  op: string,
+  asset: string | null,
+  amount: number | null,
+  venue: PlanStepView["venue"],
+  leverage: number | null,
+): string {
   const verb = OP_VERB[op] ?? op.replace(/_/g, " ");
   if (op === "create_account") return "Open your margin account";
   const qty = amount != null ? `${amount} ` : "";
   const sym = asset ?? "";
   const tail = VENUE_SUFFIX[venue];
-  return [verb, `${qty}${sym}`.trim(), tail].filter(Boolean).join(" ");
+  // Leverage changes what the step does, so it belongs in the label. "farm 10 BLUSDC at
+  // 2x" was rendering as "Supply 10 BLUSDC into Blend", which reads as an unlevered
+  // supply and hides the borrow the leverage implies.
+  const lev = leverage != null && leverage > 1 ? `at ${leverage}× leverage` : "";
+  return [verb, `${qty}${sym}`.trim(), tail, lev].filter(Boolean).join(" ");
+}
+
+/**
+ * On-chain legs this step becomes, and therefore signatures.
+ *
+ * Mirrors expandPlanWrites() in multi-leg-agent.ts: a levered farm is not one
+ * transaction, it is deposit → borrow → supply. Counting steps instead of legs told the
+ * user "2 signatures" for a plan that actually asks for four.
+ */
+function legCount(op: string, leverage: number | null): number {
+  const levered = leverage != null && leverage > 1;
+  if (!levered) return 1;
+  if (op === "deploy_to_blend" || op === "supply_to_blend") return 3;
+  if (op === "deposit_and_borrow") return 2;
+  return 1;
 }
 
 /**
@@ -129,9 +159,18 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         typeof (s as { leverage?: unknown }).leverage === "number"
           ? ((s as { leverage?: number }).leverage as number)
           : null;
-      return { n: i + 1, op, asset, amount, leverage, label: labelFor(op, asset, amount, venue), venue };
+      return {
+        n: i + 1,
+        op,
+        asset,
+        amount,
+        leverage,
+        label: labelFor(op, asset, amount, venue, leverage),
+        venue,
+      };
     });
 
+  const signatureCount = steps.reduce((n, s) => n + legCount(s.op, s.leverage), 0);
   const warnings: string[] = [];
 
   // A missing amount becomes a prompt mid-execution, after earlier legs have already
@@ -154,9 +193,24 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
     warnings.push("This plan touches both Earn and Farm — check each step is against the product you meant.");
   }
 
+  // A levered step is several transactions, so say what it expands into rather than
+  // letting "2 steps" imply two signatures.
+  const levered = steps.filter((s) => legCount(s.op, s.leverage) > 1);
+  for (const s of levered) {
+    warnings.push(
+      `Step ${s.n} is ${s.leverage}× leverage, so it runs as ${legCount(s.op, s.leverage)} transactions: ` +
+        `deposit ${s.asset ?? ""} as collateral, borrow against it, then supply. The borrow is what creates the leverage.`.replace(
+          /\s+/g,
+          " ",
+        ),
+    );
+  }
+
   // Every leg needs its own signature; there is no batching today.
-  if (steps.length > 1) {
-    warnings.push(`${steps.length} separate signatures — the plan stops if you cancel partway.`);
+  if (signatureCount > 1) {
+    warnings.push(
+      `${signatureCount} separate signatures — the plan stops if you cancel partway.`,
+    );
   }
 
   return {
@@ -164,6 +218,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
     summary: plan.summary?.trim() || "Multi-step strategy",
     steps,
     created_at: nowMs,
+    signature_count: signatureCount,
     warnings,
   };
 }
@@ -233,7 +288,13 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       steps: approved.steps.map((s) => ({
         kind: "write" as const,
         op: s.op,
-        args: {},
+        // Leverage must survive the replay. expandPlanWrites() reads it from either
+        // step.args.leverage or step.leverage, and dropping it turned an approved
+        // "deploy_to_blend 10 BLUSDC at 2x" into a plain 1x supply — a silently
+        // different trade from the one the user approved. Both spellings are set so a
+        // change to which one the expander prefers cannot reintroduce this.
+        args: s.leverage != null ? { leverage: s.leverage } : {},
+        leverage: s.leverage ?? null,
         asset: s.asset ?? null,
         amount: s.amount ?? null,
       })),

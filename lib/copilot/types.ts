@@ -1,3 +1,5 @@
+import type { StructuredAnswer } from "./answer-schema";
+
 /** Contracts shared between the in-process brain and /api/copilot. */
 
 export type RiskDecision = "allow" | "block" | "needs_confirmation";
@@ -239,12 +241,20 @@ export interface ChatResponse {
     | "plan_preview";
   message: string;
   /**
+   * Structured read answer. Present when the model returned data rather than prose;
+   * `message` always carries the same content flattened to text, so a surface without
+   * the renderer loses formatting, never the answer.
+   */
+  answer?: StructuredAnswer | null;
+  /**
    * Present on plan_preview. Send the whole thing back as `approved_plan` to run it.
    */
   plan?: {
     plan_id: string;
     summary: string;
     created_at: number;
+    /** On-chain legs the user will sign; exceeds steps.length when a step is levered. */
+    signature_count: number;
     warnings: string[];
     steps: Array<{
       n: number;

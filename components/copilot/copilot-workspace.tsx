@@ -39,6 +39,9 @@ import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
 import { executeClientTools } from "@/lib/assistant/client-tools";
+import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
+import { AnswerView } from "./answer-view";
+import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 interface BrainHealth {
   status: string;
@@ -88,8 +91,13 @@ interface ChatResponse {
     | "preview"
     | "executed"
     | "needs_auto_sign"
-    | "needs_wallet_sign";
+    | "needs_wallet_sign"
+    | "plan_preview";
   message: string;
+  /** Present on plan_preview — posted back verbatim as approved_plan. */
+  plan?: PlanPreview | null;
+  /** Structured read answer; `message` holds the same content as plain text. */
+  answer?: StructuredAnswer | null;
   preview?: {
     template_id: string;
     human_summary: string;
@@ -306,15 +314,83 @@ function Eyebrow({ n, children }: { n?: string; children: React.ReactNode }) {
 }
 
 /** Mono key → value row; the repeating unit of every panel in the right rail. */
+/**
+ * Middle-truncate a value that cannot wrap usefully.
+ *
+ * A 56-character Stellar address has no natural break point, so it ran straight through
+ * the next grid column. Both ends carry the information people actually check, so the
+ * middle is what goes; the full value stays in `title` and remains selectable.
+ */
+function shortenValue(v: string): { text: string; full: string | null } {
+  const s = v.trim();
+  if (/^[GC][A-Z0-9]{40,}$/.test(s)) {
+    return { text: `${s.slice(0, 8)}…${s.slice(-6)}`, full: s };
+  }
+  // Long hex (tx hashes, XDR fragments) gets the same treatment.
+  if (s.length > 34 && /^[0-9a-fA-F]{34,}$/.test(s)) {
+    return { text: `${s.slice(0, 10)}…${s.slice(-6)}`, full: s };
+  }
+  return { text: s, full: null };
+}
+
 function Row({ k, v, color }: { k: string; v: string; color?: string }) {
+  const { text, full } = shortenValue(v);
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-vgray-100 py-2 last:border-0">
-      <span className="font-mono text-[11px] uppercase tracking-wider text-vgray-400">{k}</span>
-      <span className="font-mono text-[13px] text-vgray-900" style={color ? { color } : undefined}>
-        {v}
+      <span className="min-w-0 shrink-0 font-mono text-[11px] uppercase tracking-wider text-vgray-400">
+        {k}
+      </span>
+      <span
+        className="min-w-0 truncate font-mono text-[13px] text-vgray-900"
+        style={color ? { color } : undefined}
+        title={full ?? undefined}
+      >
+        {text}
       </span>
     </div>
   );
+}
+
+/**
+ * Pause between chained legs.
+ *
+ * The gap exists so the previous transaction is visible on-chain before the next leg
+ * reads state — not for the user's benefit. 2.2s was tuned when every leg needed a
+ * manual signature, where the delay was hidden by the click. With auto-approve on there
+ * is no click, so it became dead waiting between four legs.
+ */
+const CHAIN_DELAY_MS = 900;
+
+/**
+ * Identity for a strategy leg, stable across planning and execution.
+ *
+ * Legs arrive with only a human label, and the planner and the executor word it
+ * differently — "Deposit 10 BLUSDC as collateral" becomes "Deposit 10 BLUSDC
+ * collateral". Merging on the raw label therefore appended a duplicate instead of
+ * updating, which left the original leg frozen at needs_sign while a second copy of it
+ * reported done. Keying on the parts that actually identify the action survives the
+ * rewording. Venue is only included for supply/deploy, where the same verb, amount and
+ * asset can legitimately mean two different legs (earn pool vs Blend); for other verbs
+ * it would wrongly split "Lend 20 XLM on Earn" from "Lend 20 XLM".
+ */
+function legKey(label: string): string {
+  const s = (label || "").toLowerCase();
+  const verb = s.match(/^[a-z_]+/)?.[0] ?? "";
+  const nums = (s.match(/\d+(?:\.\d+)?/g) ?? []).join(",");
+  const assets = (
+    (label || "").match(/\b(?:BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b/g) ?? []
+  ).join(",");
+  const ambiguousVerb = verb === "supply" || verb === "deploy";
+  const venue = !ambiguousVerb
+    ? ""
+    : /blend/.test(s)
+      ? "blend"
+      : /aquarius|soroswap|\blp\b/.test(s)
+        ? "lp"
+        : /earn|pool/.test(s)
+          ? "earn"
+          : "";
+  return [verb, nums, assets, venue].join("|");
 }
 
 const RISK_TONE = {
@@ -397,11 +473,14 @@ function MultiLegStrategyCard({
   headline,
   onResume,
   resumeBusy,
+  autoContinues = false,
 }: {
   data: Record<string, unknown>;
   headline?: string | null;
   onResume?: (legs: ResumeLeg[], summary: string) => void;
   resumeBusy?: boolean;
+  /** Auto-approve will continue the chain, so no manual button is offered. */
+  autoContinues?: boolean;
 }) {
   const steps = (Array.isArray(data.multi_leg_steps) ? data.multi_leg_steps : []) as MultiLegStepUi[];
   if (!steps.length) return null;
@@ -412,7 +491,10 @@ function MultiLegStrategyCard({
   const sa = data.smart_account != null ? String(data.smart_account) : null;
   const title = String(data.headline || headline || "Strategy progress");
   const resumeLegs = (Array.isArray(data.resume_legs) ? data.resume_legs : []) as ResumeLeg[];
-  const canResume = data.can_resume === true && resumeLegs.length > 0 && !!onResume;
+  // With auto-approve on, the chain effect continues by itself, so offering a button
+  // alongside it invited a double-run and made the card look stalled when it was not.
+  const canResume =
+    data.can_resume === true && resumeLegs.length > 0 && !!onResume && !autoContinues;
 
   const anyFail = steps.some((s) =>
     ["error", "blocked", "stopped_hf"].includes(String(s.status || "")),
@@ -534,12 +616,22 @@ function MultiLegStrategyCard({
       </ol>
 
       <div className="border-t border-vgray-100 px-5 py-3">
-        <p className="text-[12px] leading-relaxed text-vgray-500">
-          {allOk
-            ? "All steps completed on-chain."
-            : anyFail
-              ? "Stopped early. Only steps marked Done are on-chain — nothing later was claimed as done."
-              : "In progress or waiting on the next action."}
+        {/* A spinner while legs remain. Without it, a chain that is genuinely mid-flight
+            looked identical to one that had stalled waiting for input — the text said
+            "in progress" but nothing on screen moved. */}
+        <p className="flex items-center gap-2 text-[12px] leading-relaxed text-vgray-500">
+          {allOk ? (
+            "All steps completed on-chain."
+          ) : anyFail ? (
+            "Stopped early. Only steps marked Done are on-chain — nothing later was claimed as done."
+          ) : (
+            <>
+              <Loader2 size={13} className="shrink-0 animate-spin text-violet-500" />
+              {autoContinues
+                ? "Running the next step — signing with your session key."
+                : "In progress or waiting on the next action."}
+            </>
+          )}
         </p>
         {canResume && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -617,6 +709,28 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
     },
     { k: "size", before: "—", after: usd(sim.amount_usd) },
   ];
+
+  // A zeroed baseline means the account read failed, not that the position is empty —
+  // the two are indistinguishable in this payload. Rendering it drew a full panel of
+  // "$0.00 → $0.00" and "∞ → ∞" beside a funded account, which reads as a real
+  // projection of nothing happening. Say what we know instead of drawing a false one.
+  const noBaseline =
+    !(Number.isFinite(sim.collateral_before) && sim.collateral_before > 0) &&
+    !(sim.hf_before != null && Number.isFinite(sim.hf_before) && sim.hf_before > 0);
+  if (noBaseline) {
+    return (
+      <div className="mt-[18px] rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4">
+        <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-violet-500">
+          projected impact
+        </p>
+        <p className="text-[13px] leading-[19px] text-vgray-500">
+          Not available — reading your current position failed, so there is no baseline to
+          project from. Your live figures are on the margin page.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-[18px] rounded-2xl border border-vgray-100 bg-vgray-50 p-5">
       <p className="mb-3.5 font-mono text-[10px] uppercase tracking-[0.2em] text-violet-500">projected impact</p>
@@ -849,8 +963,16 @@ export function CopilotWorkspace() {
 
       // Parent multi-leg strategy response from server
       if (multi && multiSteps?.length) {
-        const id = data.request_id || `strat-${Date.now()}`;
+        // Reuse the strategy's own id across chained hops. Keying on data.request_id
+        // meant every continuation — a fresh POST with a fresh request_id — produced
+        // another "Approved plan" row, so one four-leg strategy filled the log with five
+        // near-identical entries that each told a partial story.
+        const id =
+          (opts?.chainHop && strategyParentRef.current?.id) ||
+          data.request_id ||
+          `strat-${Date.now()}`;
         const parentPrompt =
+          (opts?.chainHop && strategyParentRef.current?.prompt) ||
           String((data.data as any)?.strategy_summary || "").trim() ||
           prompt ||
           "Multi-step strategy";
@@ -867,16 +989,39 @@ export function CopilotWorkspace() {
               ? status
               : status;
         setLog((prev) => {
-          const without = prev.filter((e) => e.id !== id);
+          const existing = prev.find((e) => e.id === id);
+          // Each hop only reports the legs it ran, so replacing wholesale made completed
+          // legs vanish and the row read as if the strategy had restarted. Merge by
+          // label: keep the original order, take the newer status, append anything new.
+          const merged: LogLeg[] = existing?.legs ? [...existing.legs] : [];
+          for (const leg of legs) {
+            const k = legKey(leg.label);
+            const at = merged.findIndex((m) => legKey(m.label) === k);
+            if (at >= 0) {
+              // Keep the first label seen so the row does not re-word itself mid-run,
+              // but always take the newer status.
+              merged[at] = { ...merged[at], status: leg.status };
+            } else {
+              merged.push(leg);
+            }
+          }
+          const finalLegs = merged.length ? merged : legs;
+          const allDone = finalLegs.every((l) => l.status === "done" || l.status === "skip");
+          // Also drop the plan_preview row for this same prompt. It was the placeholder
+          // that led to this strategy, and leaving it next to the executing row showed
+          // the same request twice with two different statuses.
+          const without = prev.filter(
+            (e) => e.id !== id && !(!e.strategy && e.prompt === parentPrompt),
+          );
           return [
             {
               id,
               prompt: parentPrompt,
               tool: "multi_leg",
-              status: overall,
-              color: overall === "executed" ? EMERALD : color,
+              status: allDone ? "executed" : overall,
+              color: allDone || overall === "executed" ? EMERALD : color,
               strategy: true,
-              legs,
+              legs: finalLegs,
             },
             ...without,
           ].slice(0, 8);
@@ -1075,6 +1220,45 @@ export function CopilotWorkspace() {
       await postCopilot({ message: t }, t);
     },
     [loading, postCopilot],
+  );
+
+  /**
+   * Send an approved plan back for execution.
+   *
+   * Posts the plan verbatim — same plan_id, same created_at, same steps. The server
+   * re-hashes the steps and refuses anything that no longer matches what was shown, so
+   * this must not normalise, reorder or "tidy" the payload on the way out.
+   */
+  const approvePlan = useCallback(
+    async (plan: PlanPreview) => {
+      if (loading) return;
+      // Keep the user's original wording as the log label and adopt the plan as the
+      // strategy parent, so approval and every leg after it update one row rather than
+      // opening a second "Approved plan" entry beside the prompt that created it.
+      const label = submitted || plan.summary || `Approve ${plan.steps.length} steps`;
+      strategyParentRef.current = { id: `plan-${plan.plan_id}`, prompt: label };
+      setPaletteOpen(false);
+      await postCopilot(
+        {
+          message: "approve plan",
+          approved_plan: {
+            plan_id: plan.plan_id,
+            created_at: plan.created_at,
+            steps: plan.steps.map((s) => ({
+              op: s.op,
+              asset: s.asset,
+              amount: s.amount,
+              leverage: s.leverage,
+            })),
+          },
+        },
+        label,
+        // chainHop so the strategy row merges into the parent set just above rather
+        // than starting a fresh entry.
+        { chainHop: true },
+      );
+    },
+    [loading, postCopilot, submitted],
   );
 
   const resumeMultiLeg = useCallback(
@@ -1298,7 +1482,7 @@ export function CopilotWorkspace() {
               prefer_resume_multi_leg: false,
             },
           });
-          await new Promise((r) => setTimeout(r, 2200));
+          await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           await refreshRailStats({ force: true });
           setSubmitted(parentPrompt);
           await postCopilot(
@@ -1339,7 +1523,7 @@ export function CopilotWorkspace() {
             next_step: nextStep,
             data: response?.data ?? null,
           });
-          await new Promise((r) => setTimeout(r, 2200));
+          await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           await refreshRailStats({ force: true });
           setSubmitted(strategyParentRef.current?.prompt || submitted || label);
           await postCopilot(
@@ -1421,18 +1605,28 @@ export function CopilotWorkspace() {
     if (response?.kind !== "executed") return;
     if (loading || signing) return;
 
-    // Prefer full remaining multi-leg resume (swap→farm has 3+ legs after first)
-    const remaining = Array.isArray((response.data as any)?.remaining_legs)
-      ? ((response.data as any).remaining_legs as Array<{
-          op: string;
-          asset?: string | null;
-          amount?: number | null;
-          leverage?: number | null;
-          label?: string;
-        }>)
-      : null;
+    // Two field names carry the same thing. `remaining_legs` came from the older
+    // next_step chain; the plan/MultiLegAgent path returns `resume_legs` with
+    // `can_resume`, which is what powers the manual "Continue remaining" button. Only
+    // the first was checked here, so an approved plan executed one leg, offered a button,
+    // and waited — even with auto-approve on, which is exactly what it is meant to avoid.
+    const legsFrom = (key: string) =>
+      Array.isArray((response.data as any)?.[key])
+        ? ((response.data as any)[key] as Array<{
+            op: string;
+            asset?: string | null;
+            amount?: number | null;
+            leverage?: number | null;
+            label?: string;
+          }>)
+        : null;
+    const remaining = legsFrom("remaining_legs") ?? legsFrom("resume_legs");
+    const canResumeFlag = (response.data as any)?.can_resume === true;
     const preferResume =
       (response.data as any)?.prefer_resume_multi_leg === true ||
+      // Auto-approve is a standing instruction to continue without asking. Without it,
+      // the button stays and the user drives each leg.
+      (canResumeFlag && autoApprove) ||
       (remaining && remaining.length > 0 && (response.data as any)?.multi_leg);
 
     if (preferResume && remaining && remaining.length > 0) {
@@ -1450,7 +1644,7 @@ export function CopilotWorkspace() {
       }
       toast.success(`Continuing ${remaining.length} remaining step(s)…`, { duration: 3000 });
       void (async () => {
-        await new Promise((r) => setTimeout(r, 2200));
+        await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
         await refreshRailStats({ force: true });
         setSubmitted(parentPrompt);
         await postCopilot(
@@ -1476,7 +1670,7 @@ export function CopilotWorkspace() {
       `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
     toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
     void (async () => {
-      await new Promise((r) => setTimeout(r, 2200));
+      await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
       await refreshRailStats({ force: true });
       if (!strategyParentRef.current && submitted) {
         strategyParentRef.current = {
@@ -1500,7 +1694,7 @@ export function CopilotWorkspace() {
         { chainHop: true },
       );
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -1638,15 +1832,17 @@ export function CopilotWorkspace() {
     !multiLeg && (response?.kind === "error" || response?.kind === "blocked");
   const phase = loading
     ? "running"
-    : response?.kind === "needs_auto_sign"
-      ? "autosign"
-      : response?.kind === "needs_wallet_sign"
-        ? "staged"
-        : response?.kind === "executed"
-          ? "done"
-          : response
-            ? "answer"
-            : "idle";
+    : response?.kind === "plan_preview"
+      ? "plan"
+      : response?.kind === "needs_auto_sign"
+        ? "autosign"
+        : response?.kind === "needs_wallet_sign"
+          ? "staged"
+          : response?.kind === "executed"
+            ? "done"
+            : response
+              ? "answer"
+              : "idle";
 
   /** Agent-run trace, built from the turn that actually happened. */
   const steps = useMemo<Step[]>(() => {
@@ -1731,9 +1927,40 @@ export function CopilotWorkspace() {
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
       <style>{`
-        .cp-root{--cp-violet-soft:#f1ebfd;--cp-violet-soft-border:#d3c2f7;}
-        html.dark .cp-root{--cp-violet-soft:#2a1a3e;--cp-violet-soft-border:#3b2560;}
+        /* Tokens from the Claude Design Copilot.dc.html :root / .dark blocks, scoped to
+           this page and prefixed cp- so they cannot collide with app-wide Tailwind vars.
+           Venue colours are semantic: a step's product (earn / margin / farm) has to be
+           readable at a glance in the plan card, because confusing them is the costliest
+           mistake available on this page. */
+        .cp-root{
+          --cp-violet-soft:#f1ebfd;--cp-violet-soft-border:#d3c2f7;
+          --cp-surface:#ffffff;
+          --cp-g50:#f7f8fa;--cp-g100:#e6e8ee;--cp-g200:#d0d5dd;--cp-g400:#8b95a7;
+          --cp-g500:#667085;--cp-g600:#475467;--cp-g700:#344054;--cp-g900:#111827;
+          --cp-violet-500:#703ae6;
+          --cp-gradient:linear-gradient(135deg,#FC5457 10%,#703AE6 80%);
+          --cp-venue-margin-fg:#5f2fd0;--cp-venue-margin-bg:rgba(112,58,230,.10);--cp-venue-margin-bd:rgba(112,58,230,.28);
+          --cp-venue-earn-fg:#0b7a63;--cp-venue-earn-bg:rgba(11,122,99,.10);--cp-venue-earn-bd:rgba(11,122,99,.28);
+          --cp-venue-farm-fg:#8a5a06;--cp-venue-farm-bg:rgba(245,158,11,.14);--cp-venue-farm-bd:rgba(245,158,11,.32);
+          --cp-venue-wallet-fg:#4b5563;--cp-venue-wallet-bg:rgba(102,112,133,.12);--cp-venue-wallet-bd:rgba(102,112,133,.28);
+          --cp-warn-fg:#8a5a06;--cp-warn-bg:rgba(245,158,11,.10);--cp-warn-bd:rgba(245,158,11,.3);
+          --cp-danger-fg:#c9333b;
+        }
+        html.dark .cp-root{
+          --cp-violet-soft:#2a1a3e;--cp-violet-soft-border:#3b2560;
+          --cp-surface:#1c1c24;
+          --cp-g50:#27272a;--cp-g100:#3f3f46;--cp-g200:#52525b;--cp-g400:#a1a1aa;
+          --cp-g500:#c8c8d0;--cp-g600:#d4d4d8;--cp-g700:#e4e4e7;--cp-g900:#fafafa;
+          --cp-violet-500:#9a72f0;
+          --cp-venue-margin-fg:#a686f2;--cp-venue-margin-bg:rgba(154,114,240,.14);--cp-venue-margin-bd:rgba(154,114,240,.34);
+          --cp-venue-earn-fg:#3fc0a3;--cp-venue-earn-bg:rgba(63,192,163,.12);--cp-venue-earn-bd:rgba(63,192,163,.3);
+          --cp-venue-farm-fg:#dfa24a;--cp-venue-farm-bg:rgba(223,162,74,.12);--cp-venue-farm-bd:rgba(223,162,74,.3);
+          --cp-venue-wallet-fg:#a8b0c0;--cp-venue-wallet-bg:rgba(168,176,192,.11);--cp-venue-wallet-bd:rgba(168,176,192,.26);
+          --cp-warn-fg:#e0ac5c;--cp-warn-bg:rgba(223,162,74,.09);--cp-warn-bd:rgba(223,162,74,.28);
+          --cp-danger-fg:#f0666e;
+        }
         @keyframes cp-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+        @keyframes copilot-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
         @keyframes cp-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
       `}</style>
 
@@ -1904,6 +2131,7 @@ export function CopilotWorkspace() {
                         headline={response.message}
                         onResume={resumeMultiLeg}
                         resumeBusy={loading}
+                        autoContinues={autoApprove}
                       />
                     ) : (
                       <div className="mt-3 flex gap-3">
@@ -1912,13 +2140,22 @@ export function CopilotWorkspace() {
                         ) : (
                           <Sparkles size={18} className="mt-1.5 shrink-0 text-violet-500" />
                         )}
-                        <p
-                          className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
-                            isError ? "text-imperial-600" : "text-vgray-800"
-                          }`}
-                        >
-                          {response.message}
-                        </p>
+                        {/* Structured answer when the model returned data; the prose
+                            paragraph remains for errors, clarifications, Hinglish and
+                            anything the structured call could not produce. */}
+                        {response.answer && !isError ? (
+                          <div className="min-w-0 flex-1">
+                            <AnswerView answer={response.answer} />
+                          </div>
+                        ) : (
+                          <p
+                            className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
+                              isError ? "text-imperial-600" : "text-vgray-800"
+                            }`}
+                          >
+                            {response.message}
+                          </p>
+                        )}
                       </div>
                     )}
                     {sim && !multiLeg && <ImpactPanel sim={sim} />}
@@ -1979,6 +2216,24 @@ export function CopilotWorkspace() {
                       )}
                     </div>
                   </div>
+                )}
+
+                {/* Multi-leg plan awaiting approval. Nothing has executed yet — the
+                    server froze these steps and will only run them if we post the same
+                    plan back, fingerprint intact. */}
+                {phase === "plan" && response?.plan && (
+                  <PlanApprovalCard
+                    plan={response.plan}
+                    busy={loading}
+                    onApprove={approvePlan}
+                    onModify={() => {
+                      // Put the original wording back in the composer so it can be
+                      // edited — v1 "modify" is re-prompting, not inline step editing.
+                      setIntentText(submitted || "");
+                      setResponse(null);
+                    }}
+                    onCancel={() => setResponse(null)}
+                  />
                 )}
 
                 {/* Staged write — MCP built the XDR, wallet signs once */}
@@ -2196,12 +2451,27 @@ export function CopilotWorkspace() {
                 {phase === "done" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <Eyebrow n="04">{multiLeg ? "Strategy" : "Executed"}</Eyebrow>
+                    {/* Closing summary of what actually ran. Before this, a finished
+                        strategy ended on its last leg's status and never said what had
+                        been accomplished. */}
+                    {response.answer && (
+                      <div
+                        className="mt-4 rounded-2xl px-5 py-4"
+                        style={{
+                          border: "1px solid var(--cp-g100)",
+                          background: "var(--cp-surface)",
+                        }}
+                      >
+                        <AnswerView answer={response.answer} />
+                      </div>
+                    )}
                     {multiLeg && response.data ? (
                       <MultiLegStrategyCard
                         data={response.data}
                         headline={response.message}
                         onResume={resumeMultiLeg}
                         resumeBusy={loading}
+                        autoContinues={autoApprove}
                       />
                     ) : (
                       <>

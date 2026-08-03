@@ -34,6 +34,7 @@ import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
+import { answerToText, type StructuredAnswer } from "./answer-schema";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -63,7 +64,13 @@ import type {
   RoutedIntent,
   Simulation,
 } from "./types";
-import { vertexExplain, vertexSelectTool, VertexError } from "./vertex";
+import {
+  vertexExplain,
+  vertexExplainStructured,
+  vertexSelectTool,
+  vertexSummarizeExecution,
+  VertexError,
+} from "./vertex";
 
 export function getBrainHealth(): BrainHealth {
   return {
@@ -1287,16 +1294,31 @@ async function runRead(
 
     let prose: string;
     const hinglish = /\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i.test(ctx.message);
-    try {
-      prose = await vertexExplain(
-        hinglish
-          ? `${ctx.message}\n\n(Reply in the same language mix as the user — clear Hinglish is fine.)`
-          : ctx.message,
-        routed.tool,
-        data,
-      );
-    } catch {
-      prose = explainRead(routed.tool, data, ctx.message);
+
+    // Structured first: the UI renders headline/facts/venue itself, so number formatting
+    // and venue labelling stop depending on the model following prompt rules. Falls back
+    // to the prose path on any failure, and is skipped for Hinglish, where the value is
+    // in the model's own phrasing rather than in a fixed layout.
+    let structured: StructuredAnswer | null = null;
+    if (!hinglish) {
+      structured = await vertexExplainStructured(ctx.message, routed.tool, data);
+    }
+    // Deliberately not an early return: the HF guardrails and response assembly below
+    // must still run, so this only supplies the text and rides along as `answer`.
+    if (structured) {
+      prose = answerToText(structured);
+    } else {
+      try {
+        prose = await vertexExplain(
+          hinglish
+            ? `${ctx.message}\n\n(Reply in the same language mix as the user — clear Hinglish is fine.)`
+            : ctx.message,
+          routed.tool,
+          data,
+        );
+      } catch {
+        prose = explainRead(routed.tool, data, ctx.message);
+      }
     }
     prose = prose.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
 
@@ -1328,6 +1350,9 @@ async function runRead(
     return {
       kind: "answer",
       message: prose,
+      // Present only when the structured path succeeded. The UI renders this and falls
+      // back to `message` when absent, so both paths stay usable.
+      ...(structured ? { answer: structured } : {}),
       data: factsForUi(data),
       intent: { template_id: routed.template_id, slots: built.args },
       mcp: {
@@ -2252,42 +2277,78 @@ async function runWrite(
  * Sample approx HF after a margin-affecting leg.
  * Prefer health tool; on Budget/ExceededLimit use collateral÷debt fallback.
  */
+/**
+ * Health factor after a strategy. Always answers when a smart account is known.
+ *
+ * The on-chain snapshot is tried FIRST, not as a fallback. It is the same function the
+ * margin page renders from, so the figure the copilot reports and the figure the user
+ * sees cannot disagree — and it works where the protocol's own health endpoint does not
+ * (get_current_total_balance exceeds the Soroban CPU budget on active accounts).
+ *
+ * The MCP path is kept behind it for the case where no smart account resolved but a
+ * trader did. Its previous incarnation could not recover from the budget fault at all:
+ * the error arrives as a SUCCESSFUL response carrying an error field, so the catch that
+ * held the recovery never ran, and the recovery itself read total_value_usd where the
+ * payload says collateral_usd, and issued both reads concurrently on one shared MCP
+ * session where the heavier one times out.
+ */
 async function sampleApproxHf(
   userId: string,
   smartAccount: string | null,
   trader: string | null,
 ): Promise<number | null> {
   if (!smartAccount && !trader) return null;
+
+  if (smartAccount) {
+    try {
+      const [{ computeMarginSnapshot }, { HEALTH_FACTOR_INFINITY_SENTINEL }] = await Promise.all([
+        import("@/lib/account-snapshot"),
+        import("@/lib/margin-health"),
+      ]);
+      const snap = await computeMarginSnapshot(smartAccount);
+      const hf = Number(snap.avgHealthFactor);
+      if (Number.isFinite(hf) && hf > 0) return hf;
+      // No debt is a real answer, not a missing one.
+      if (Number.isFinite(snap.grossCollateralValue) && snap.grossCollateralValue > 0) {
+        return HEALTH_FACTOR_INFINITY_SENTINEL;
+      }
+    } catch (e) {
+      console.warn(
+        `[copilot] hf snapshot failed, trying MCP: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
+      );
+    }
+  }
+
   const mcp = getMcpClient();
   const args: Record<string, unknown> = {};
   if (smartAccount) args.smart_account = smartAccount;
   if (trader) args.trader = trader;
-  try {
-    const r = (await mcp.call("vanna_get_account_health", args, userId)) as Record<string, unknown>;
-    const direct = Number(r.health_factor ?? r.hf ?? r.avg_health_factor);
-    if (Number.isFinite(direct) && direct > 0) return direct;
-    const col = Number(r.collateral_usd ?? r.total_collateral_usd ?? 0);
-    const debt = Number(r.debt_usd ?? r.total_debt_usd ?? 0);
-    if (debt > 0.01 && col > 0) return col / debt;
-    if (col > 0 && debt <= 0.01) return 999;
-    return null;
-  } catch (e) {
-    if (!(e instanceof Error) || !/Budget|ExceededLimit|resource/i.test(e.message)) return null;
+
+  const read = async (tool: string) => {
     try {
-      const saArgs = smartAccount ? { smart_account: smartAccount } : {};
-      const [col, debt] = await Promise.all([
-        mcp.call("vanna_get_collateral", saArgs, userId).catch(() => null),
-        mcp.call("vanna_get_debt", saArgs, userId).catch(() => null),
-      ]);
-      const colUsd = col ? Number((col as any).total_value_usd ?? 0) : null;
-      const debtUsd = debt ? Number((debt as any).total_debt_usd ?? 0) : null;
-      if (colUsd != null && debtUsd != null && debtUsd > 0.01) return colUsd / debtUsd;
-      if (colUsd != null && colUsd > 0 && (debtUsd == null || debtUsd <= 0.01)) return 999;
+      const r = (await mcp.call(tool, args, userId)) as Record<string, unknown> | null;
+      // A budget overrun is a 200 with an error field, never a rejection.
+      if (r?.error) return null;
+      return r;
     } catch {
-      /* ignore */
+      return null;
     }
-    return null;
+  };
+
+  const health = await read("vanna_get_account_health");
+  if (health) {
+    const direct = Number(health.health_factor ?? health.hf ?? health.avg_health_factor);
+    if (Number.isFinite(direct) && direct > 0) return direct;
   }
+
+  // Sequential: these share one MCP session and the collateral read is the heavy one.
+  const col = await read("vanna_get_collateral");
+  const debt = await read("vanna_get_debt");
+  const colUsd = usdTotal(col, "collateral");
+  const debtUsd = usdTotal(debt, "debt");
+  if (colUsd != null && debtUsd != null && debtUsd > 0.01) return colUsd / debtUsd;
+  if (colUsd != null && colUsd > 0) return 999;
+  return null;
 }
 
 async function runPlan(
@@ -2713,9 +2774,34 @@ async function runPlan(
     [...multiSteps].reverse().find((s) => s.tx_hash)?.tx_hash ??
     (lastPartial ? extractTxHash(lastPartial) : null);
 
+  // Closing summary. Without one, a finished strategy just stopped on its last leg's
+  // status and never said what had been accomplished — the step the owner's reference
+  // flow ends on. Built strictly from the legs that ran and their outcomes, with no
+  // derived figures, so it cannot overstate what reached the chain. Only worth writing
+  // once something actually executed.
+  let receipt: StructuredAnswer | null = null;
+  if (anyOk) {
+    receipt = await vertexSummarizeExecution(ctx.message || plan.summary || "strategy", {
+      asked_for: plan.summary ?? null,
+      all_legs_succeeded: allOk,
+      legs: multiSteps.map((s) => ({
+        step: s.index,
+        action: s.label ?? s.op,
+        status: s.status,
+        tx_hash: s.tx_hash ?? null,
+        message: s.message ?? null,
+      })),
+      // Present only when a real reading came back; a null here keeps the model from
+      // narrating a health factor that the budget-limited read could not produce.
+      final_health_factor: finalHf ?? null,
+      health_factor_floor: minHf ?? null,
+    });
+  }
+
   return {
     kind: anyOk || allOk ? "executed" : "answer",
     message: multiLegHeadline(multiSteps),
+    ...(receipt ? { answer: receipt } : {}),
     data: multiLegUiData({
       steps: multiSteps,
       summary: plan.summary || "Multi-step strategy",

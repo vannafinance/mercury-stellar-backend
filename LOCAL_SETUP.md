@@ -58,25 +58,3 @@ npm run dev
 Open `http://localhost:3000/copilot`. Connect a Freighter or Privy wallet and try a
 prompt — e.g. `price of XLM` (read-only, no signature) before anything that writes.
 
-## Sanity checks
-
-```
-npm test                 # 195 tests should pass
-npx tsc --noEmit          # 2 known pre-existing errors outside lib/copilot are fine
-                           # (components/copilot/execute.ts BigInt, lib/copilot/risk.ts);
-                           # anything new is a real regression
-```
-
-## If something breaks
-
-**Turbopack panics / `ENOENT build-manifest.json` / `Compaction failed`** — the
-`.next` cache is corrupted, not a code problem:
-
-```
-# stop the dev server first
-rm -rf .next
-npm run dev
-```
-
-**Only run one `npm run dev` at a time.** Two dev servers sharing one `.next` is
-what corrupts the cache above.
