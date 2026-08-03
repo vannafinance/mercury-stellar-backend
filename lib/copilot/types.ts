@@ -83,6 +83,8 @@ export interface ChatRequest {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** Carried through a variant clarification — see CopilotAction.explain. */
+    explain?: boolean | null;
     token_a?: string | null;
     token_b?: string | null;
     amount_a?: number | null;
@@ -126,6 +128,12 @@ export interface ChatRequest {
 }
 
 export interface CopilotAction {
+  /**
+   * The user also asked what this action does, so the response should include the
+   * projected impact. Carried on the action so it survives a variant clarification,
+   * after which the incoming message is just "BLUSDC" and the original ask is lost.
+   */
+  explain?: boolean | null;
   op: string;
   asset?: string | null;
   amount?: number | null;
@@ -268,6 +276,8 @@ export interface ChatResponse {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** Carried through a variant clarification — see CopilotAction.explain. */
+    explain?: boolean | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
   /** Proof the live MCP server was used */

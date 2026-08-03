@@ -128,6 +128,82 @@ function usdTotal(payload: unknown, kind: "collateral" | "debt"): number | null 
   return seen ? sum : null;
 }
 
+/**
+ * True when a write prompt also asks what the action will do.
+ *
+ * "borrow 5 USDC against my XLM and explain what that does to my liquidation price" is
+ * two requests. The borrow ran and the explanation was dropped with no acknowledgement,
+ * which is the silent-omission shape again — the user asked a question and got no answer
+ * and no indication one was missing.
+ */
+function wantsImpactExplanation(message: string): boolean {
+  return /\b(explain|what does (that|this|it) do|what happens|how does (that|this|it) affect|what will (that|this|it) do|impact on|effect on|walk me through)\b/i.test(
+    message || "",
+  );
+}
+
+/**
+ * Plain-language impact from a projected simulation.
+ *
+ * Deliberately does NOT quote a per-asset liquidation price. Simulation carries USD
+ * aggregates, not the per-asset amounts a price threshold needs, and inventing a number
+ * for "the price XLM has to fall to" would be worse than saying it is not available.
+ */
+function impactExplanation(sim: Simulation | null): string | null {
+  if (!sim) return null;
+
+  // Refuse to narrate a zeroed baseline. evaluateWriteRisk returns
+  // collateral_before = 0 / hf_before = null when its account read fails, which is
+  // indistinguishable from a genuinely empty account — and on a funded account that
+  // produced "debt goes from $0.00 to $2.00 … you would be at or past the liquidation
+  // point" for a wallet holding $383 of collateral against $110 of debt. A false
+  // liquidation warning is worse than no projection, so say nothing was computed.
+  const hasBaseline =
+    (Number.isFinite(sim.collateral_before) && sim.collateral_before > 0) ||
+    (sim.hf_before != null && Number.isFinite(sim.hf_before) && sim.hf_before > 0);
+  if (!hasBaseline) {
+    return (
+      "I can't project the impact right now — reading your current position failed, and " +
+      "I won't estimate a liquidation figure from an incomplete baseline. Your live " +
+      "health factor is on the margin page."
+    );
+  }
+  const fmt = (n: number | null) =>
+    n == null || !Number.isFinite(n) ? null : n >= 999 ? "∞" : n.toFixed(2);
+  const usd = (n: number) => `$${n.toFixed(2)}`;
+
+  const lines: string[] = [];
+  const before = fmt(sim.hf_before);
+  const after = fmt(sim.hf_after);
+  if (before && after) {
+    lines.push(`Health factor moves from ${before} to ${after} (liquidation happens at 1.10).`);
+  } else if (after) {
+    lines.push(`Projected health factor after this: ${after} (liquidation happens at 1.10).`);
+  }
+
+  if (Number.isFinite(sim.debt_after)) {
+    lines.push(`Debt goes from ${usd(sim.debt_before)} to ${usd(sim.debt_after)}.`);
+  }
+
+  // Cushion is the honest version of "how close to liquidation am I".
+  if (Number.isFinite(sim.collateral_after) && Number.isFinite(sim.debt_after)) {
+    const cushion = sim.collateral_after - sim.debt_after * 1.1;
+    if (Number.isFinite(cushion)) {
+      lines.push(
+        cushion > 0
+          ? `Your collateral could lose ${usd(cushion)} of value before you reach liquidation.`
+          : `This leaves no cushion — you would be at or past the liquidation point.`,
+      );
+    }
+  }
+
+  if (!lines.length) return null;
+  lines.push(
+    "A precise price for each collateral asset isn't included here — that needs the per-asset breakdown, which you can see on the margin page.",
+  );
+  return lines.join("\n");
+}
+
 /** True when the router already resolved this to a Blend-venue read. */
 function isBlendRead(routed: RoutedIntent): boolean {
   return (
@@ -291,6 +367,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       asset: req.pending_write.asset ?? null,
       amount: req.pending_write.amount ?? null,
       leverage: req.pending_write.leverage ?? null,
+      explain: req.pending_write.explain ?? null,
       requires_amount:
         req.pending_write.op !== "create_account" &&
         !(req.pending_write.op === "remove_liquidity" && req.pending_write.fraction != null),
@@ -1765,6 +1842,9 @@ async function runWrite(
         asset: null,
         amount: action.amount ?? null,
         leverage: action.leverage ?? null,
+        // Preserve a pending "…and explain what that does": once the user taps a
+        // variant chip, ctx.message is just "BLUSDC" and the original ask is gone.
+        explain: action.explain || wantsImpactExplanation(ctx.message) || null,
       },
       intent: {
         template_id: "clarify_usdc_variant",
@@ -1981,6 +2061,14 @@ async function runWrite(
   /** Projection lines read first; the MCP path's own reason stays as the tail. */
   const reasonsWith = (base: string[]) => (projected.length ? [...projected, ...base] : base);
 
+  // Honour an explanation the user asked for alongside the action. action.explain
+  // survives the USDC-variant clarification, where ctx.message is only the variant
+  // choice and the original wording is long gone.
+  const explainImpact =
+    action.explain || wantsImpactExplanation(ctx.message) ? impactExplanation(simulation) : null;
+  const withImpact = (msg: string) =>
+    explainImpact ? `${String(msg).replace(/\*\*([^*]+)\*\*/g, "$1")}\n\n${explainImpact}` : msg;
+
   const mcpMeta = {
     tool: result.mcp_trace.tool,
     simulation_success: result.mcp_trace.simulation_success,
@@ -1998,7 +2086,7 @@ async function runWrite(
     const cleanMsg = String(result.message || "").replace(/\*\*([^*]+)\*\*/g, "$1");
     return {
       kind: "executed",
-      message: cleanMsg,
+      message: withImpact(cleanMsg),
       data: factsForUi({ ...result.build, ...(result.submitted || {}) }),
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       mcp: mcpMeta,
@@ -2046,7 +2134,7 @@ async function runWrite(
     );
     return {
       kind: "needs_wallet_sign",
-      message: (highestPickNote || "") + result.message + xdrNote,
+      message: withImpact((highestPickNote || "") + result.message + xdrNote),
       data: factsForUi({
         ...result.build,
         ...(highestPickFacts || {}),
@@ -2085,7 +2173,7 @@ async function runWrite(
   if (result.status === "needs_auto_sign") {
     return {
       kind: "needs_auto_sign",
-      message: result.message,
+      message: withImpact(result.message),
       mcp: mcpMeta,
       auto_sign: {
         status: "needs_enable",
@@ -2817,8 +2905,10 @@ async function pickBestYieldVenue(
     }
   }
 
-  if (opts.includeFarm || opts.preferEarn) {
-    // Always load Blend for ranking transparency when farm was mentioned.
+  if (opts.includeFarm) {
+    // Only when the user actually mentioned farm/Blend. Loading it for preferEarn too
+    // cost an extra MCP round-trip whose only effect was to put a Blend reserve in an
+    // Earn-only ranking (see the filter below).
     try {
       const blend = await mcp.call("vanna_list_blend_reserves", {}, userId);
       const reserves = Array.isArray(blend.reserves)
@@ -2841,7 +2931,13 @@ async function pickBestYieldVenue(
   if (!rows.length) return null;
 
   const prefer = (opts.preferredAsset || "").toUpperCase();
-  const ranking = [...rows]
+  // Rank only what was eligible to win. "whichever earn pool is paying the most" used to
+  // print "blend/XLM 349.10% · earn/SOUSDC 15.27% · …" and then supply to SOUSDC — the
+  // ranking answered a question the user had not asked and made the correct choice look
+  // like a mistake. Blend stays in the ranking only when farm was actually mentioned.
+  const rankingRows =
+    opts.preferEarn && !opts.includeFarm ? rows.filter((r) => r.venue === "earn") : rows;
+  const ranking = [...rankingRows]
     .sort((a, b) => b.apy - a.apy)
     .slice(0, 8)
     .map((r) => `${r.venue}/${r.symbol} ${r.apyRaw}%`)
