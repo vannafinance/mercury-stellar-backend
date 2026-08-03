@@ -9,9 +9,9 @@
 //
 // Theming: every surface/border/text colour comes from the app's own dark-aware
 // tokens (`surface`, `vgray-*`, `shadow-vanna`), so the page follows the global
-// light/dark toggle with no per-page theme state. The only colours the app's
-// tokens don't invert are the violet-tinted panels, handled by the scoped
-// `--cp-*` vars below.
+// light/dark toggle with no per-page theme state. The violet-tinted panels and
+// venue colours the app's tokens don't invert come from the `.cp-root` scope in
+// globals.css, which also re-themes the violet ramp for dark.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -300,16 +300,33 @@ interface Step {
   state: "done" | "active" | "pending";
 }
 
-function Eyebrow({ n, children }: { n?: string; children: React.ReactNode }) {
+/**
+ * The label above each block of the page.
+ *
+ * These are headings, and they render as headings: the Assistant builds its picture of
+ * the page from h1/h2/h3, so as paragraphs they were invisible to it — asked what this
+ * page was, it saw one heading ("Vanna Copilot") and a wall of undifferentiated text,
+ * and had nothing to scroll to. `as="p"` is for the kicker above the h1, which labels
+ * the page rather than a section within it.
+ */
+function Eyebrow({
+  n,
+  as: Tag = "h2",
+  children,
+}: {
+  n?: string;
+  as?: "h2" | "p";
+  children: React.ReactNode;
+}) {
   return (
-    <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-vgray-400">
+    <Tag className="font-mono text-[11px] font-normal uppercase tracking-[0.25em] text-vgray-400">
       {n ? (
         <>
           <span className="text-violet-500">{n}</span> ·{" "}
         </>
       ) : null}
       {children}
-    </p>
+    </Tag>
   );
 }
 
@@ -392,6 +409,27 @@ function legKey(label: string): string {
           : "";
   return [verb, nums, assets, venue].join("|");
 }
+
+/**
+ * Button surfaces from the design: 8px for inline actions, 12px for the commit row.
+ *
+ * Hover is the violet tint, never a grey. The tint re-themes itself in dark through the
+ * `.cp-root` violet ramp, so one class works on both surfaces; the grey it replaced was
+ * a literal that stayed light-mode-pale on a #111 panel.
+ */
+const BTN_QUIET =
+  "rounded-r2 border border-vgray-100 bg-transparent text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 " +
+  "disabled:cursor-not-allowed disabled:text-vgray-300 disabled:hover:border-vgray-100 disabled:hover:bg-transparent disabled:hover:text-vgray-300";
+const BTN_TINT =
+  "rounded-r2 border border-violet-50 bg-violet-50 text-[13px] font-semibold text-violet-500 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50";
+/**
+ * Disabled drops the gradient rather than fading it. A translucent gradient over a dark
+ * panel is a muddy brown-violet that reads as a rendering fault, not as "not yet" — the
+ * plan card already solves this by swapping to flat grey, and this matches it.
+ */
+const BTN_GRADIENT =
+  "rounded-r2 bg-gradient text-[13px] font-semibold text-white transition-opacity hover:opacity-90 " +
+  "disabled:cursor-not-allowed disabled:bg-none disabled:bg-vgray-100 disabled:text-vgray-400 disabled:opacity-100";
 
 const RISK_TONE = {
   allow: { label: "risk gate · allow", color: EMERALD, bg: "rgba(16,185,129,.12)" },
@@ -489,7 +527,18 @@ function MultiLegStrategyCard({
   const minHf = data.min_hf != null ? Number(data.min_hf) : null;
   const finalHf = data.final_hf != null ? Number(data.final_hf) : null;
   const sa = data.smart_account != null ? String(data.smart_account) : null;
-  const title = String(data.headline || headline || "Strategy progress");
+  const rawTitle = String(data.headline || headline || "Strategy progress");
+  /**
+   * "Paused for signature — finish signing to continue" is written server-side, which
+   * cannot know whether auto-approve is on. With it on there is nothing for the user to
+   * finish: the session key signs. The instruction was telling them to act while the
+   * agent was already acting, so it reads as a stall.
+   */
+  const title = /paused for signature/i.test(rawTitle)
+    ? autoContinues
+      ? "Waiting for auto-sign — your session key is signing this leg."
+      : "Needs your signature — approve in your wallet to continue."
+    : rawTitle;
   const resumeLegs = (Array.isArray(data.resume_legs) ? data.resume_legs : []) as ResumeLeg[];
   // With auto-approve on, the chain effect continues by itself, so offering a button
   // alongside it invited a double-run and made the card look stalled when it was not.
@@ -644,7 +693,7 @@ function MultiLegStrategyCard({
                   `Continue: ${summary}`.slice(0, 120),
                 )
               }
-              className="rounded-full bg-gradient px-4 py-2 text-btn-sm font-semibold text-white disabled:opacity-40"
+              className="rounded-r2 bg-gradient px-4 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {resumeBusy ? "Resuming…" : `Continue remaining (${resumeLegs.length})`}
             </button>
@@ -668,6 +717,29 @@ function FactsGrid({ data }: { data: Record<string, unknown> }) {
     "remaining_legs",
     "multi_leg_agent",
     "plan_summary",
+    // Multi-leg bookkeeping. It rendered a panel of MULTI LEG / STRATEGY SUMMARY /
+    // CAN RESUME / TOTAL / PCT / PATTERN / PREFER RESUME MULTI LEG next to the step
+    // list that already says all of it more clearly. Internal orchestration state is
+    // not information the user needs to act on.
+    "multi_leg",
+    "strategy_summary",
+    "can_resume",
+    "resume_legs",
+    "total",
+    "pct",
+    "done",
+    "pattern",
+    "prefer_resume_multi_leg",
+    "headline",
+    "min_hf",
+    "final_hf",
+    "hf_stopped",
+    "all_legs_ok",
+    // The user's own smart account address, echoed back at them on every turn. It is
+    // already in the right-hand rail, and a 56-character C-address earns its space only
+    // where it can be acted on.
+    "smart_account",
+    "smartAccount",
   ]);
   const rows: [string, string][] = [];
   for (const [k, v] of Object.entries(data)) {
@@ -805,7 +877,32 @@ export function CopilotWorkspace() {
   const [customTx, setCustomTx] = useState("500");
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
-  const [log, setLog] = useState<LogEntry[]>([]);
+  const [log, setLogRaw] = useState<LogEntry[]>([]);
+
+  /**
+   * Every log write goes through here so ids stay unique.
+   *
+   * React warned "two children with the same key" because rows are keyed on entry id, and
+   * several writers mint one: the strategy branch reuses the parent id across hops, the
+   * hop fold promotes a parent with that same id, and single-turn rows use request_id.
+   * Two of those could land on one id, and duplicate keys make React drop or duplicate
+   * rows silently. Deduping on write keeps the newest copy — the one carrying the latest
+   * leg statuses — rather than papering over it with a composite key in the JSX.
+   */
+  const setLog = useCallback(
+    (updater: LogEntry[] | ((prev: LogEntry[]) => LogEntry[])) => {
+      setLogRaw((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        const seen = new Set<string>();
+        return next.filter((e) => {
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        });
+      });
+    },
+    [],
+  );
   /** Parent strategy prompt for client next_step hops (session log grouping). */
   const strategyParentRef = useRef<{ id: string; prompt: string } | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -1059,16 +1156,13 @@ export function CopilotWorkspace() {
           const copy = [...prev];
           const parent = { ...copy[idx] };
           const legs = [...(parent.legs || [])];
-          const hopKey = hopLabel.toLowerCase();
-          const legIdx = legs.findIndex((l) => {
-            const ll = l.label.toLowerCase();
-            return (
-              ll === hopKey ||
-              l.tool === tool ||
-              hopKey.includes(l.tool.replace(/_/g, " ")) ||
-              ll.includes(tool.replace(/^vanna_/, "").replace(/_/g, " "))
-            );
-          });
+          // Same identity rule as the strategy branch. This used a looser match — equal
+          // labels, or equal tool, or either string containing the other — which is why a
+          // leg could stay frozen at needs_sign while a near-identically worded duplicate
+          // was appended reporting done. `l.tool === tool` was the worst of it: with two
+          // deposit legs it matched whichever came first, regardless of amount or asset.
+          const hopKey = legKey(hopLabel);
+          const legIdx = legs.findIndex((l) => legKey(l.label) === hopKey);
           if (legIdx >= 0) {
             legs[legIdx] = {
               ...legs[legIdx],
@@ -1926,48 +2020,10 @@ export function CopilotWorkspace() {
 
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
-      <style>{`
-        /* Tokens from the Claude Design Copilot.dc.html :root / .dark blocks, scoped to
-           this page and prefixed cp- so they cannot collide with app-wide Tailwind vars.
-           Venue colours are semantic: a step's product (earn / margin / farm) has to be
-           readable at a glance in the plan card, because confusing them is the costliest
-           mistake available on this page. */
-        .cp-root{
-          --cp-violet-soft:#f1ebfd;--cp-violet-soft-border:#d3c2f7;
-          --cp-surface:#ffffff;
-          --cp-g50:#f7f8fa;--cp-g100:#e6e8ee;--cp-g200:#d0d5dd;--cp-g400:#8b95a7;
-          --cp-g500:#667085;--cp-g600:#475467;--cp-g700:#344054;--cp-g900:#111827;
-          --cp-violet-500:#703ae6;
-          --cp-gradient:linear-gradient(135deg,#FC5457 10%,#703AE6 80%);
-          --cp-venue-margin-fg:#5f2fd0;--cp-venue-margin-bg:rgba(112,58,230,.10);--cp-venue-margin-bd:rgba(112,58,230,.28);
-          --cp-venue-earn-fg:#0b7a63;--cp-venue-earn-bg:rgba(11,122,99,.10);--cp-venue-earn-bd:rgba(11,122,99,.28);
-          --cp-venue-farm-fg:#8a5a06;--cp-venue-farm-bg:rgba(245,158,11,.14);--cp-venue-farm-bd:rgba(245,158,11,.32);
-          --cp-venue-wallet-fg:#4b5563;--cp-venue-wallet-bg:rgba(102,112,133,.12);--cp-venue-wallet-bd:rgba(102,112,133,.28);
-          --cp-warn-fg:#8a5a06;--cp-warn-bg:rgba(245,158,11,.10);--cp-warn-bd:rgba(245,158,11,.3);
-          --cp-danger-fg:#c9333b;
-        }
-        html.dark .cp-root{
-          --cp-violet-soft:#2a1a3e;--cp-violet-soft-border:#3b2560;
-          --cp-surface:#1c1c24;
-          --cp-g50:#27272a;--cp-g100:#3f3f46;--cp-g200:#52525b;--cp-g400:#a1a1aa;
-          --cp-g500:#c8c8d0;--cp-g600:#d4d4d8;--cp-g700:#e4e4e7;--cp-g900:#fafafa;
-          --cp-violet-500:#9a72f0;
-          --cp-venue-margin-fg:#a686f2;--cp-venue-margin-bg:rgba(154,114,240,.14);--cp-venue-margin-bd:rgba(154,114,240,.34);
-          --cp-venue-earn-fg:#3fc0a3;--cp-venue-earn-bg:rgba(63,192,163,.12);--cp-venue-earn-bd:rgba(63,192,163,.3);
-          --cp-venue-farm-fg:#dfa24a;--cp-venue-farm-bg:rgba(223,162,74,.12);--cp-venue-farm-bd:rgba(223,162,74,.3);
-          --cp-venue-wallet-fg:#a8b0c0;--cp-venue-wallet-bg:rgba(168,176,192,.11);--cp-venue-wallet-bd:rgba(168,176,192,.26);
-          --cp-warn-fg:#e0ac5c;--cp-warn-bg:rgba(223,162,74,.09);--cp-warn-bd:rgba(223,162,74,.28);
-          --cp-danger-fg:#f0666e;
-        }
-        @keyframes cp-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-        @keyframes copilot-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-        @keyframes cp-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(320%)}}
-      `}</style>
-
       {/* Page header */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
         <div className="flex flex-col gap-1.5">
-          <Eyebrow>
+          <Eyebrow as="p">
             <span className="text-violet-500">agent-native</span> · orchestrator
           </Eyebrow>
           <h1 className="text-h5 font-semibold text-vgray-900">
@@ -1987,10 +2043,7 @@ export function CopilotWorkspace() {
                 : "brain offline"}
           </div>
           {sessionSigning && (
-            <div
-              className="flex items-center gap-[7px] rounded-full px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500"
-              style={{ background: "var(--cp-violet-soft)", border: "1px solid var(--cp-violet-soft-border)" }}
-            >
+            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500">
               <ShieldCheck size={13} /> auto-approve on
             </div>
           )}
@@ -2022,14 +2075,14 @@ export function CopilotWorkspace() {
                 <button
                   type="button"
                   onClick={() => setPaletteOpen((o) => !o)}
-                  className="hidden shrink-0 items-center gap-1.5 rounded-full border border-vgray-200 px-3 py-1.5 font-mono text-[11px] text-vgray-500 transition-colors hover:border-violet-400 hover:text-violet-600 sm:flex"
+                  className={`hidden shrink-0 items-center gap-1.5 px-3 py-2 text-[12px] sm:flex ${BTN_QUIET}`}
                 >
-                  <LayoutTemplate size={12} /> prompts
+                  <LayoutTemplate size={12} /> Prompts
                 </button>
                 <button
                   type="submit"
                   disabled={loading || !intentText.trim()}
-                  className="shrink-0 rounded-full bg-gradient px-5 py-2 text-btn-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-30"
+                  className={`shrink-0 px-[22px] py-2.5 ${BTN_GRADIENT}`}
                 >
                   {loading ? "…" : "Run"}
                 </button>
@@ -2058,7 +2111,7 @@ export function CopilotWorkspace() {
                             key={q}
                             type="button"
                             onClick={() => run(q)}
-                            className="rounded-full border border-vgray-200 bg-surface px-[11px] py-[5px] text-[12px] text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600"
+                            className="rounded-r2 border border-vgray-100 bg-surface px-3 py-[7px] text-[12.5px] font-medium text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
                           >
                             {q}
                           </button>
@@ -2177,7 +2230,7 @@ export function CopilotWorkspace() {
                                 disabled={loading}
                                 onClick={() => void pickClarifyOption(opt)}
                                 title={opt.description}
-                                className="rounded-2xl border border-violet-300/50 bg-[var(--cp-violet-soft)] px-4 py-3 text-left transition-colors hover:border-violet-500 disabled:opacity-50"
+                                className="rounded-r3 border border-violet-100 bg-violet-50 px-4 py-3 text-left transition-colors hover:border-violet-400 disabled:opacity-50"
                               >
                                 <span className="block font-mono text-[13px] font-semibold text-violet-600">
                                   {opt.label}
@@ -2197,7 +2250,7 @@ export function CopilotWorkspace() {
                       <button
                         type="button"
                         onClick={reset}
-                        className="rounded-full border border-vgray-200 px-5 py-2.5 text-btn-sm font-semibold text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600"
+                        className={`px-[18px] py-2.5 ${BTN_QUIET}`}
                       >
                         Ask another
                       </button>
@@ -2205,11 +2258,7 @@ export function CopilotWorkspace() {
                         <button
                           type="button"
                           onClick={() => run(followUp)}
-                          className="rounded-full px-5 py-2.5 text-btn-sm font-semibold text-violet-500 transition-colors hover:border-violet-400"
-                          style={{
-                            background: "var(--cp-violet-soft)",
-                            border: "1px solid var(--cp-violet-soft-border)",
-                          }}
+                          className={`px-[18px] py-2.5 ${BTN_TINT}`}
                         >
                           {followUp}
                         </button>
@@ -2324,37 +2373,58 @@ export function CopilotWorkspace() {
                         button at all — offering "Approve & sign" for a second before
                         submitting on its own is the confusing part. */}
                     {willAutoSubmit ? (
-                      <div
-                        className="mt-[22px] flex items-center gap-2.5 rounded-full px-6 py-4 font-mono text-[12px] font-semibold text-violet-500"
-                        style={{ background: "var(--cp-violet-soft)", border: "1px solid var(--cp-violet-soft-border)" }}
-                      >
-                        <Loader2 size={15} className="animate-spin" />
-                        auto-approving — signing and submitting for you, no click needed
+                      <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
+                        <div className="flex flex-1 items-center gap-2.5 rounded-r3 border border-violet-50 bg-violet-50 px-6 py-4 font-mono text-[12px] font-semibold text-violet-500">
+                          <Loader2 size={15} className="animate-spin" />
+                          auto-approving — signing and submitting for you, no click needed
+                        </div>
+                        <button
+                          type="button"
+                          onClick={reset}
+                          className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                        >
+                          Cancel
+                        </button>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        disabled={!address || signing}
-                        onClick={signWithWallet}
-                        className="mt-[22px] w-full rounded-full bg-gradient px-6 py-4 text-btn-md font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                        style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
-                      >
-                        {signing
-                          ? "Signing…"
-                          : !address
-                            ? "Connect wallet to sign"
-                            : action?.multi_leg
-                              ? "Confirm all legs & sign"
-                              : "Approve & sign"}
-                      </button>
+                      <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
+                        <button
+                          type="button"
+                          disabled={!address || signing}
+                          onClick={signWithWallet}
+                          className="flex-1 rounded-r3 bg-gradient px-6 py-[15px] text-[15px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                          style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
+                        >
+                          {signing
+                            ? "Signing…"
+                            : !address
+                              ? "Connect wallet to sign"
+                              : action?.multi_leg
+                                ? "Confirm all legs & sign"
+                                : "Approve & sign"}
+                        </button>
+                        {/* Modify is re-prompting, not inline editing — the original wording
+                            goes back in the composer so it can be reworded and re-run. */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIntentText(submitted || "");
+                            setResponse(null);
+                            inputRef.current?.focus();
+                          }}
+                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
+                        >
+                          Modify
+                        </button>
+                        <button
+                          type="button"
+                          onClick={reset}
+                          className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={reset}
-                      className="mt-3.5 text-btn-sm font-semibold text-vgray-400 transition-colors hover:text-vgray-700"
-                    >
-                      Cancel
-                    </button>
                   </div>
                 )}
 
@@ -2367,13 +2437,7 @@ export function CopilotWorkspace() {
                     </div>
                     <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
                     {sim && <ImpactPanel sim={sim} />}
-                    <div
-                      className="rounded-2xl p-4"
-                      style={{
-                        background: "var(--cp-violet-soft)",
-                        border: "1px solid var(--cp-violet-soft-border)",
-                      }}
-                    >
+                    <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                       <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                         <ShieldCheck size={14} /> enable auto-sign
                       </p>
@@ -2383,7 +2447,7 @@ export function CopilotWorkspace() {
                           type="button"
                           disabled={!address || loading}
                           onClick={() => enableAutoSign("use_defaults")}
-                          className="rounded-full bg-gradient px-5 py-2.5 text-btn-sm font-semibold text-white disabled:opacity-40"
+                          className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
                         >
                           {(() => {
                             try {
@@ -2403,7 +2467,7 @@ export function CopilotWorkspace() {
                           type="button"
                           disabled={!address || loading}
                           onClick={() => setShowCustom((s) => !s)}
-                          className="rounded-full border border-vgray-200 bg-surface px-5 py-2.5 text-btn-sm font-semibold text-vgray-700 disabled:opacity-40"
+                          className={`px-[18px] py-2.5 ${BTN_QUIET}`}
                         >
                           Custom limits
                         </button>
@@ -2430,7 +2494,7 @@ export function CopilotWorkspace() {
                             type="button"
                             disabled={!address || loading}
                             onClick={() => enableAutoSign("custom")}
-                            className="rounded-full bg-gradient px-5 py-2.5 text-btn-sm font-semibold text-white disabled:opacity-40 sm:col-span-2"
+                            className={`px-[18px] py-2.5 sm:col-span-2 ${BTN_GRADIENT}`}
                           >
                             Enable custom
                           </button>
@@ -2440,7 +2504,7 @@ export function CopilotWorkspace() {
                     <button
                       type="button"
                       onClick={reset}
-                      className="text-btn-sm font-semibold text-vgray-400 transition-colors hover:text-vgray-700"
+                      className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
                     >
                       Cancel
                     </button>
@@ -2511,7 +2575,7 @@ export function CopilotWorkspace() {
                       <button
                         type="button"
                         onClick={reset}
-                        className="rounded-full border border-vgray-200 px-5 py-2.5 text-btn-sm font-semibold text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600"
+                        className={`px-[18px] py-2.5 ${BTN_QUIET}`}
                       >
                         New intent
                       </button>
@@ -2520,7 +2584,7 @@ export function CopilotWorkspace() {
                           href={txUrl(txHash)}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 rounded-full border border-vgray-200 px-5 py-2.5 text-btn-sm font-semibold text-vgray-600 transition-colors hover:border-violet-400 hover:text-violet-600"
+                          className={`flex items-center gap-1.5 px-[18px] py-2.5 ${BTN_QUIET}`}
                         >
                           View on Stellar Expert <ExternalLink size={12} />
                         </a>

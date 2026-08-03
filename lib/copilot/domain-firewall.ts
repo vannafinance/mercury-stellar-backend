@@ -44,8 +44,27 @@ const BLOCK_PATTERNS: RegExp[] = [
   /\b(write|implement|code)\b.+\b(solidity|ethereum\s+contract)\b/i,
 ];
 
+/**
+ * Questions about the surface the user is on.
+ *
+ * Every page in this app is a Vanna product page, so "what am I looking at?" is a
+ * product question no matter how it is phrased — it was being refused because the old
+ * screen pattern only matched "what is / what are", and the way people actually ask is
+ * "what am I looking at on this page?". A refusal here is the worst possible answer:
+ * the Assistant's whole pitch is that it reads the page.
+ */
+const PAGE_REFERENTIAL: RegExp[] = [
+  /\b(this|the|current)\s+(page|screen|tile|panel|card|section|view|number|figure|chart|table|column|row)\b/i,
+  /\b(what|where)\s+am\s+i\b/i,
+  /\b(looking\s+at|on\s+screen|on\s+my\s+screen|shown\s+here|right\s+here)\b/i,
+  /\b(what|how)\s+does\s+(this|that|it)\b/i,
+  /\b(what|who)\s+(is|are)\s+(this|that|these|those)\b/i,
+  /\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen|what)\b/i,
+];
+
 /** Strong in-domain signals for Vanna Finance. */
 const ALLOW_PATTERNS: RegExp[] = [
+  ...PAGE_REFERENTIAL,
   /\b(vanna|stellar|soroban|freighter|privy)\b/i,
   /\b(earn|farm|margin|lend|borrow|repay|deposit|redeem|collateral|health\s*factor|\bhf\b)\b/i,
   /\b(blend|aquarius|soroswap|xlm|blusdc|aqusdc|sousdc|btoken|vtoken)\b/i,
@@ -63,10 +82,24 @@ const ALLOW_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * A word that only means something in front of a page.
+ *
+ * With a captured page attached, a question containing one of these is about what the
+ * user is looking at, so it is in-domain even without a product noun. Without one it
+ * decides nothing: "what is the capital of France?" still gets refused whether or not
+ * the drawer had a page, which is what keeps this from becoming an open chatbot.
+ */
+const DEICTIC =
+  /\b(this|that|these|those|here|above|below|screen|page|tile|panel|card|section|view|number|figure|chart|table|column|row|badge|button)\b/i;
+
+/**
  * Evaluate whether we should call the LLM / MCP path at all.
  * Call this at the top of handleChat before Vertex.
  */
-export function evaluateDomainFirewall(message: string): FirewallResult {
+export function evaluateDomainFirewall(
+  message: string,
+  opts?: { hasPageContext?: boolean },
+): FirewallResult {
   const m = (message || "").trim();
   if (!m) {
     return {
@@ -88,6 +121,11 @@ export function evaluateDomainFirewall(message: string): FirewallResult {
     if (re.test(m)) {
       return { allow: true, reason: `allow:${re.source.slice(0, 40)}` };
     }
+  }
+
+  // 2b) Asked in front of a page, about something on it.
+  if (opts?.hasPageContext && DEICTIC.test(m)) {
+    return { allow: true, reason: "allow:page_context" };
   }
 
   // 3) Very short product-ish tokens

@@ -269,7 +269,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     !req.pending_write?.op &&
     !req.resume_multi_leg?.legs?.length
   ) {
-    const fw = evaluateDomainFirewall(message);
+    const fw = evaluateDomainFirewall(message, {
+      hasPageContext: Boolean(req.semantic_page_context || req.page_snapshot),
+    });
     if (!fw.allow) {
       console.warn(`[copilot:firewall] blocked reason=${fw.reason} msg=${message.slice(0, 80)}`);
       return {

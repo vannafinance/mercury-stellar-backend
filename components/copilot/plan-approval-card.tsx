@@ -394,7 +394,7 @@ export function PlanApprovalCard({
           type="button"
           onClick={() => onApprove(plan)}
           disabled={approveDisabled}
-          className="flex-1 rounded-full font-semibold transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
+          className="flex-1 rounded-r3 font-semibold transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
           style={{
             border: 0,
             padding: "15px 24px",
@@ -408,35 +408,21 @@ export function PlanApprovalCard({
         >
           {approveLabel}
         </button>
+        {/* Hover lives in classes, not inline style: an inline `color` wins over a
+            `hover:` utility, so the tint never appeared while the colour was set here. */}
         <button
           type="button"
           onClick={onModify}
-          className="rounded-full font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
-          style={{
-            border: "1px solid var(--cp-g200)",
-            background: "transparent",
-            padding: "14px 22px",
-            fontSize: 14,
-            color: "var(--cp-g600)",
-            cursor: "pointer",
-            outlineColor: "var(--cp-violet-500)",
-          }}
+          className="cursor-pointer rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[14px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
+          style={{ outlineColor: "var(--cp-violet-500)" }}
         >
           Modify
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-full font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
-          style={{
-            border: 0,
-            background: "transparent",
-            padding: "14px 16px",
-            fontSize: 14,
-            color: "var(--cp-g400)",
-            cursor: "pointer",
-            outlineColor: "var(--cp-violet-500)",
-          }}
+          className="cursor-pointer rounded-r3 border-0 bg-transparent px-4 py-[14px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
+          style={{ outlineColor: "var(--cp-violet-500)" }}
         >
           Cancel
         </button>

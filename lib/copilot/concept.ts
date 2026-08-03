@@ -28,9 +28,29 @@ const LIVE_PERSONAL =
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
 
-/** Explicit "explain something to me" framing. */
+/**
+ * Explicit "explain something to me" framing.
+ *
+ * Comparisons count. The Guide's own follow-up chips are phrased as them ("how is that
+ * different from Earn?") and only matched "difference between", so clicking the question
+ * the Guide had just offered routed to the MCP router instead of back to the Guide. A
+ * comparison of two real assets is caught earlier by MARKET_NOUN + ASSET_SYMBOL, so this
+ * cannot swallow "compare the XLM and USDC pools".
+ */
 const DEFINITIONAL =
-  /\b(what(?:'s| is| are| does)|whats|explain|define|definition|meaning|how\s+(?:does|do|can|to)|why|tell me about|difference between|what happens|is it safe|should i)\b/i;
+  /\b(what(?:'s| is| are| does)|whats|explain|define|definition|meaning|how\s+(?:does|do|can|to)|why|tell me about|differ|differs|different|difference|compared\s+to|versus|vs\.?|what happens|is it safe|should i)\b/i;
+
+/**
+ * "Tell me about what I'm looking at" — the page agent's home question.
+ *
+ * Kept separate from DEFINITIONAL because the phrasings share no stem: people ask
+ * "what am I looking at?", "walk me through this screen", "what does this mean?", none
+ * of which start with "what is". Without this they missed the assistant, fell through
+ * to the MCP router, and came back as a clarification for a question about a page that
+ * was sitting right there in the request.
+ */
+const PAGE_REFERENTIAL =
+  /\b(what|where)\s+am\s+i\b|\b(looking\s+at|on\s+(?:my\s+)?screen|this\s+page|this\s+screen|shown\s+here)\b|\b(what|how)\s+does\s+(this|that|it)\b|\b(what|who)\s+(is|are)\s+(this|that|these|those)\b|\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen)\b/i;
 
 /** A concrete market datum… */
 const MARKET_NOUN =
@@ -57,6 +77,9 @@ export function isAssistantChat(message: string): boolean {
   // lookup, not a concept question.
   if (LIVE_PERSONAL.test(m) || LIVE_DATA_QUERY.test(m)) return false;
   if (MARKET_NOUN.test(m) && ASSET_SYMBOL.test(m)) return false;
+
+  // Questions about the surface itself: only the page agent has the page.
+  if (PAGE_REFERENTIAL.test(m)) return true;
 
   // An action instruction is a write unless it is framed as a how-to
   // ("how do I deposit XLM as collateral?" is still assistant work).

@@ -143,6 +143,14 @@ export const CLIENT_TOOL_DECLS = [
   },
 ] as const;
 
+/**
+ * "What am I looking at?" and its cousins. These want an explanation of the page, not a
+ * tool call, but none of them start with "what is", so they were taking the tool path:
+ * one call to decide no tool was needed, then a second for the answer.
+ */
+const PAGE_QUESTION =
+  /\b(what|where)\s+am\s+i\b|\b(looking\s+at|on\s+(?:my\s+)?screen|this\s+page|this\s+screen)\b|\b(what|who)\s+(is|are)\s+(this|that|these|those)\b|\bwalk\s+me\s+through\b/i;
+
 function sanitizeProse(s: string): string {
   return s
     .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -253,9 +261,10 @@ export async function runPageAgent(
     .join("\n");
 
   const wantsGuidanceOnly =
-    /\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
+    (/\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
       message,
-    ) &&
+    ) ||
+      PAGE_QUESTION.test(message)) &&
     !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(
       message,
     );
@@ -263,9 +272,16 @@ export async function runPageAgent(
   try {
     let text = "";
     let client_tools: Array<{ name: string; args: Record<string, unknown> }> = [];
+    let guide: GuideAnswer | null = null;
 
     if (wantsGuidanceOnly) {
-      text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+      // Guide first, and alone when it succeeds. This used to generate prose and then
+      // generate the guide, which doubled the wait for an answer whose prose was then
+      // discarded (`message` is the flattened guide whenever there is one).
+      guide = await vertexGuideAnswer(message, ctxJson || null, history);
+      if (!guide) {
+        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+      }
     } else {
       const result = await generateWithClientTools(
         PAGE_AGENT_SYSTEM,
@@ -277,20 +293,17 @@ export async function runPageAgent(
       if (!text.trim()) {
         text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
       }
+      // A turn that navigated or highlighted something is an action: its reply is a
+      // short confirmation, not an article. Only the rest get the structured answer.
+      if (!client_tools.length) {
+        guide = await vertexGuideAnswer(message, ctxJson || null, history);
+      }
     }
 
     const messageOut = sanitizeProse(
       text.trim() ||
         "I could not produce an answer from the current page. Try rephrasing your question.",
     );
-
-    // Structured Guide answer for explanation questions. Only attempted when no client
-    // tool was invoked: a turn that navigated or highlighted something is an action, and
-    // its reply is a short confirmation, not an article. Failure leaves the prose intact.
-    let guide: GuideAnswer | null = null;
-    if (!client_tools.length) {
-      guide = await vertexGuideAnswer(message, ctxJson || null);
-    }
 
     return {
       kind: "answer",

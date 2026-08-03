@@ -1076,11 +1076,22 @@ export async function vertexSummarizeExecution(
 export async function vertexGuideAnswer(
   question: string,
   pageContextJson: string | null,
+  history?: Array<{ role: "user" | "assistant"; text: string }>,
 ): Promise<GuideAnswer | null> {
+  // Follow-ups are the Guide's own suggestion chips ("how is that different from Earn?"),
+  // so without the preceding turns the pronoun in every one of them dangles.
+  const priorTurns = (history ?? [])
+    .slice(-6)
+    .map((t) => `${t.role}: ${t.text.slice(0, 800)}`)
+    .join("\n");
+
   const user = [
+    priorTurns ? `EARLIER IN THIS CONVERSATION:\n${priorTurns}` : "",
     `QUESTION: ${question}`,
     pageContextJson ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 6000)}` : "PAGE CONTEXT: none",
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
