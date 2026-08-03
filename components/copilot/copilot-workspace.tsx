@@ -1683,13 +1683,20 @@ export function CopilotWorkspace() {
           : strategyStepsRef.current.length
             ? strategyStepsRef.current
             : null;
-        const settled = new Set(["needs_sign", "needs_wallet_sign", "staged", "pending"]);
+        // Exactly ONE leg is settled by one signature: the one that was awaiting it.
+        // Including "pending" here, and stamping every match with this hash, made a single
+        // signature mark legs 3 and 4 as "DONE tx c7ec9aa…" — leg 2's hash — while only
+        // two transactions existed on-chain. Claiming a transaction that never happened is
+        // the worst thing this UI can do, so pending legs are never touched and only the
+        // first awaiting leg takes the hash.
+        const awaiting = new Set(["needs_sign", "needs_wallet_sign", "staged"]);
+        let claimed = false;
         const patched: MultiLegStepUi[] = raw
-          ? raw.map((s) =>
-              settled.has(String(s?.status ?? ""))
-                ? { ...s, status: "ok", tx_hash: s.tx_hash ?? result.hash ?? null }
-                : s,
-            )
+          ? raw.map((s) => {
+              if (claimed || !awaiting.has(String(s?.status ?? ""))) return s;
+              claimed = true;
+              return { ...s, status: "ok", tx_hash: result.hash ?? s.tx_hash ?? null };
+            })
           : [];
         if (patched.length) {
           absorbStrategySteps(patched);
@@ -1699,7 +1706,11 @@ export function CopilotWorkspace() {
             multi_leg_steps: strategyStepsRef.current,
           };
         }
-        const done = !preferResume || !remainingFromData?.length;
+        // "Done" requires every leg to actually be ok, not merely that nothing is queued.
+        const done =
+          patched.length > 0 &&
+          patched.every((s) => String(s?.status ?? "") === "ok") &&
+          (!preferResume || !remainingFromData?.length);
 
         setResponse((prev) => {
           if (!prev) return prev;
@@ -2827,14 +2838,22 @@ export function CopilotWorkspace() {
                       </div>
                     )}
                     {multiLeg ? (
-                      <MultiLegStrategyCard
-                        data={strategyCardData}
-                        steps={strategySteps}
-                        headline={response.message}
-                        onResume={resumeMultiLeg}
-                        resumeBusy={loading}
-                        autoContinues={autoApprove}
-                      />
+                      /* Once every leg has settled the plan has served its purpose: it
+                         exists to be reviewed BEFORE approving. Repeating it underneath
+                         the summary showed the same four legs twice, the second time with
+                         nothing left to decide. While legs remain it stays — that is the
+                         progress view. */
+                      strategySteps.length > 0 &&
+                      strategySteps.every((s) => String(s?.status ?? "") === "ok") ? null : (
+                        <MultiLegStrategyCard
+                          data={strategyCardData}
+                          steps={strategySteps}
+                          headline={response.message}
+                          onResume={resumeMultiLeg}
+                          resumeBusy={loading}
+                          autoContinues={autoApprove}
+                        />
+                      )
                     ) : (
                       <>
                         <div className="mt-4 flex items-center gap-4">

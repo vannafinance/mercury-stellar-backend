@@ -1003,13 +1003,15 @@ headline
 - If some legs did not run, say so in this sentence. Never imply completion that DATA does not show.
 
 facts
-- One entry per leg that ran: label is the action ("supplied 20 XLM"), value is its outcome ("done" or a short transaction reference).
-- tone "good" for a leg that succeeded, "warn" for skipped, "bad" for failed.
-- Include a final entry for anything DATA gives about the resulting position.
-- Only what is in DATA. Never invent a transaction hash, a balance, or a health factor.
+- ALWAYS an empty list. Return facts: [].
+- The interface already shows every leg with its own status and transaction link. Repeating
+  them here produced a wall of raw 64-character hashes with the action labels wrapping one
+  word per line — unreadable, and duplicating what is directly above it.
 
 note
 - One or two sentences on what the user now holds, or what still needs doing. Omit if the headline covers it.
+- Never put a transaction hash, a contract address or an XDR reference in any field. Say
+  "submitted" or "confirmed on-chain"; the interface links the transaction itself.
 
 venue
 - The product the strategy mainly touched.
@@ -1060,7 +1062,20 @@ export async function vertexSummarizeExecution(
       .map((p) => p.text)
       .filter(Boolean)
       .join("");
-    return out.trim() ? normalizeAnswer(JSON.parse(out)) : null;
+    if (!out.trim()) return null;
+    const answer = normalizeAnswer(JSON.parse(out));
+    if (!answer) return null;
+    // Enforce prose-only in code, not just in the prompt. A receipt is read straight
+    // after the step list that already shows each leg and links its transaction, so any
+    // fact here is a duplicate — and a 64-character hash in a label/value grid wraps to
+    // one word per line. Also strip hashes from the prose in case the model inlines one.
+    const noHashes = (s: string) => s.replace(/\b[0-9a-f]{16,}\b/gi, "").replace(/\s{2,}/g, " ").trim();
+    return {
+      ...answer,
+      headline: noHashes(answer.headline),
+      facts: [],
+      ...(answer.note ? { note: noHashes(answer.note) } : {}),
+    };
   } catch (e) {
     console.warn(
       `[copilot:vertex] receipt summary failed: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
