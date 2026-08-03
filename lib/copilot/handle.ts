@@ -51,7 +51,9 @@ import {
 } from "./multi-leg-agent";
 import { preflightExpandedLegs } from "./multi-leg-preflight";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
-import { preferExtractedPlan } from "./step-extractor";
+import { extractPlanIR, preferExtractedPlan } from "./step-extractor";
+import { classifyCoverage, residueIsMaterial } from "./residue";
+import { logCopilotEvent } from "./log";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { evaluateDomainFirewall } from "./domain-firewall";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
@@ -219,6 +221,43 @@ function isBlendRead(routed: RoutedIntent): boolean {
       routed.tool === "vanna_get_blend_reserve_stats" ||
       routed.tool === "vanna_get_blend_position")
   );
+}
+
+/**
+ * Measure how much of the message the deterministic extractor accounted for, and log it.
+ *
+ * Shadow only: nothing here changes the response. The point is to collect a real over-ask
+ * rate before the coverage check is allowed to interrupt anyone — turning it loud on an
+ * assumed rate is how a safety check becomes a nuisance the user learns to click past.
+ * Scoped to plan-shaped messages, since residue on "what is XLM worth" is not the signal.
+ */
+function logPlanCoverageShadow(
+  message: string,
+  routed: RoutedIntent,
+  request_id: string,
+): void {
+  if (!looksLikeMultiGoal(message) && routed.kind !== "plan") return;
+  try {
+    const ir = extractPlanIR(message);
+    const verdicts = classifyCoverage(ir.coverage);
+    logCopilotEvent("plan_coverage_shadow", {
+      request_id,
+      routed: routed.kind,
+      template_id: routed.kind === "plan" ? routed.template_id : null,
+      steps: ir.steps.length,
+      source: ir.source,
+      verdict: ir.coverage.verdict,
+      residue: verdicts.map((v) => `${v.class}:${v.decision}:${v.reason}`),
+      residue_text: ir.coverage.residue.map((r) => r.text),
+      material: residueIsMaterial(verdicts),
+      intra_clause: ir.coverage.intraClause.map((r) => r.text),
+      min_hf: ir.constraints.minHf,
+      leverage: ir.constraints.leverage,
+    });
+  } catch (e) {
+    // A measurement must never break a turn it is only observing.
+    console.warn(`[copilot] coverage shadow failed: ${String(e)}`);
+  }
 }
 
 export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
@@ -862,6 +901,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       routed = upgraded;
     }
   }
+
+  logPlanCoverageShadow(message, routed, request_id);
 
   // LLM plan-then-execute (primary understanding for free-form multi-leg).
   // Keywords/extractors already ran; model fills gaps and free-form English.
@@ -2470,7 +2511,10 @@ async function runPlan(
 ): Promise<ChatResponse> {
   const mcp = getMcpClient();
   let smartAccount = ctx.smartAccount;
-  const minHf = parseMinHealthFactor(ctx.message);
+  // Prefer the floor the extractor already read from this message. Plans from the LLM
+  // planner and the template router carry no constraints, so the parse remains the
+  // fallback and their behaviour is unchanged.
+  const minHf = plan.constraints?.minHf ?? parseMinHealthFactor(ctx.message);
   const facts: Record<string, unknown> = {
     plan_summary: plan.summary,
     min_hf: minHf,

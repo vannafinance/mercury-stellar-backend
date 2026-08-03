@@ -1,5 +1,6 @@
 import type { StructuredAnswer } from "./answer-schema";
 import type { GuideAnswer } from "./guide-schema";
+import type { PlanConstraints } from "./plan-ir";
 
 /** Contracts shared between the in-process brain and /api/copilot. */
 
@@ -388,6 +389,12 @@ export type RoutedIntent =
       }>;
       template_id: string;
       summary?: string;
+      /**
+       * Constraints read once from the raw message. Optional because plans from the LLM
+       * planner and the template router do not carry them; consumers fall back to parsing
+       * the message, so an absent value behaves exactly as before.
+       */
+      constraints?: PlanConstraints;
     }
   | {
       kind: "restricted";

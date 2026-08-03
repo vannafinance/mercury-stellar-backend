@@ -134,27 +134,43 @@ function any(text: string, ...words: string[]): boolean {
   });
 }
 
+/**
+ * The floor with the character range it was read from.
+ *
+ * Span accounting (plan-ir.ts) needs to know which part of the message the floor
+ * consumed, so that "keep me above 1.4" is not later reported as text no component
+ * claimed. The regexes live here only — `parseMinHealthFactor` reads its value from
+ * this, so the two can never disagree about what counts as a floor.
+ */
+export type MinHealthFactorMatch = { value: number; start: number; end: number };
+
 /** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
-export function parseMinHealthFactor(text: string): number | null {
+export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
   const m =
     text.match(
       /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i,
     ) ||
     text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
     text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
-  if (m) {
+  if (m && m.index != null) {
     const n = Number(m[1]);
-    if (Number.isFinite(n) && n > 0 && n < 50) return n;
+    if (Number.isFinite(n) && n > 0 && n < 50) {
+      return { value: n, start: m.index, end: m.index + m[0].length };
+    }
   }
   // Soft floor when user only says avoid liquidation (no number).
-  if (
-    /\b(avoid|prevent|never|no)\s+liquidat/i.test(text) ||
-    /\bdon'?t\s+(get\s+)?liquidat/i.test(text) ||
-    /\bprotect\s+(me|my\s+account)\s+from\s+liquidat/i.test(text)
-  ) {
-    return 1.3;
+  const soft =
+    text.match(/\b(?:avoid|prevent|never|no)\s+liquidat\w*/i) ||
+    text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
+    text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
+  if (soft && soft.index != null) {
+    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length };
   }
   return null;
+}
+
+export function parseMinHealthFactor(text: string): number | null {
+  return matchMinHealthFactor(text)?.value ?? null;
 }
 
 /** “invest where max profit” / “best yield” / “earn me something” allocation intent */
