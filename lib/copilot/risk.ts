@@ -211,7 +211,10 @@ export async function evaluateWriteRisk(
     if (hfBefore < hardFloor) {
       decision = "block";
       reasons.unshift(`HF ${hfBefore.toFixed(2)} < 1.00 — liquidatable now. Repay debt or deposit collateral first.`);
-    } else if (decision !== "block") {
+    } else {
+      // No `decision !== "block"` guard: nothing above this point can have set "block",
+      // so TS narrows it away and the comparison fails `next build`. The escalation is
+      // one-directional anyway — a later block below still wins.
       decision = "needs_confirmation";
     }
   }

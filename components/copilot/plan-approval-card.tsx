@@ -3,9 +3,23 @@
 /**
  * Plan approval card — the checkpoint between a multi-leg plan and the first signature.
  *
- * Ported from the Claude Design `Copilot.dc.html` "03 · Approve plan" section. The
- * design's own state machine and mock data are dropped; this renders the real
- * `plan_preview` payload from /api/copilot and posts it back as `approved_plan`.
+ * Ported from the Claude Design `Plan Approval Card.dc.html`. The design's mock data and
+ * its own state machine are dropped; this renders the real `plan_preview` payload from
+ * /api/copilot and posts it back as `approved_plan`.
+ *
+ * The card owns its colours through `--pc-*` (see the `.plan-card` block in
+ * app/globals.css) rather than the shared `--cp-*` scale. It is the gate in front of
+ * transactions that move real money, so it has to be the most legible element on screen
+ * in both themes, and it must not be able to lose a colour because a token was declared
+ * in one theme block and not the other. Three specific failures this shape prevents:
+ *
+ *   - No entry animation. An earlier version animated `copilot-in`, a keyframe that only
+ *     exists in the design file — a missing keyframe with `forwards` still applies, so the
+ *     card sat in an unresolved state and rendered washed out.
+ *   - No `opacity`, anywhere. Disabled and busy states change colour instead.
+ *   - Busy never repaints the primary button grey. Only an expired or empty plan does,
+ *     and it swaps to a solid violet-slate fill with white text, not a surface grey —
+ *     grey-on-grey reads as "broken" rather than "not yet".
  *
  * Two properties the design encodes that matter more than the styling:
  *
@@ -49,13 +63,12 @@ export interface PlanPreview {
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
-/** Venue tokens are defined on .cp-root so they follow the app's light/dark toggle. */
 function venueTokens(venue: PlanVenue) {
   const key = venue === "other" ? "wallet" : venue;
   return {
-    fg: `var(--cp-venue-${key}-fg)`,
-    bg: `var(--cp-venue-${key}-bg)`,
-    bd: `var(--cp-venue-${key}-bd)`,
+    fg: `var(--pc-${key}-fg)`,
+    bg: `var(--pc-${key}-bg)`,
+    bd: `var(--pc-${key}-bd)`,
   };
 }
 
@@ -95,11 +108,9 @@ export function PlanApprovalCard({
   const msLeft = Math.max(0, plan.created_at + PLAN_TTL_MS - now);
   const expired = msLeft <= 0;
   const urgent = !expired && msLeft < 60_000;
-  const clock = expired
-    ? "--:--"
-    : `${String(Math.floor(msLeft / 60_000)).padStart(2, "0")}:${String(
-        Math.floor((msLeft % 60_000) / 1000),
-      ).padStart(2, "0")}`;
+  const clock = `${String(Math.floor(msLeft / 60_000)).padStart(2, "0")}:${String(
+    Math.floor((msLeft % 60_000) / 1000),
+  ).padStart(2, "0")}`;
 
   const meta = useMemo(() => {
     const stepCount = plan.steps.length;
@@ -107,261 +118,331 @@ export function PlanApprovalCard({
     // supply, so a 2-step plan can be 4 signatures.
     const sigs = plan.signature_count || stepCount;
     const venues: string[] = [];
-    for (const s of plan.steps) if (!venues.includes(s.venue)) venues.push(s.venue);
-    const stepPart = stepCount === 1 ? "1 step" : `${stepCount} steps`;
-    const sigPart = sigs === 1 ? "1 signature" : `${sigs} signatures`;
-    return `${stepPart} · ${sigPart} · ${venues.join(" → ")}`;
+    for (const s of plan.steps)
+      if (!venues.includes(s.venue)) venues.push(s.venue);
+    return {
+      stepsText: stepCount === 1 ? "1 step" : `${stepCount} steps`,
+      sigText: sigs === 1 ? "1 signature" : `${sigs} signatures`,
+      sigNote: sigs > stepCount ? " (a levered step signs more than once)" : "",
+      levered: sigs > stepCount,
+      venueText: venues.join(" → "),
+    };
   }, [plan.steps, plan.signature_count]);
 
-  const approveDisabled = expired || busy || plan.steps.length === 0;
-  const approveLabel = busy
-    ? "Running…"
-    : expired
-      ? "Plan expired"
+  // Styling is driven by `unusable`, never by `busy`. A running plan keeps its full
+  // gradient and says "Running…" — greying it out while the quote is still valid is what
+  // made the button look unavailable.
+  const unusable = expired || plan.steps.length === 0;
+  const approveBlocked = unusable || busy || autoPending;
+  const approveLabel = expired
+    ? "Plan expired"
+    : busy
+      ? "Running…"
       : autoPending
         ? "Auto-approving…"
         : "Approve & run";
 
+  const clockColor = expired
+    ? "var(--pc-danger-fg)"
+    : urgent
+      ? "var(--pc-warn-fg)"
+      : "var(--pc-heading)";
+  const clockLabelColor = expired
+    ? "var(--pc-danger-fg)"
+    : urgent
+      ? "var(--pc-warn-fg)"
+      : "var(--pc-muted)";
+
+  const showNotices = expired || plan.warnings.length > 0;
+
   return (
-    // No entry animation. This referenced `copilot-in`, a keyframe that only exists in
-    // the Claude Design file — the app defines `cp-in`. An animation naming a keyframe
-    // that does not exist still applies `forwards`, so the card was left holding an
-    // unresolved state and rendered washed out and barely readable. The card is the
-    // approval gate; it must be the most legible thing on screen, so it now just renders.
-    <div className="mt-7">
+    <div
+      className="plan-card mt-7"
+      role="group"
+      aria-label="Plan approval"
+      style={{
+        border: "1px solid var(--pc-line)",
+        borderRadius: 14,
+        background: "var(--pc-surface)",
+        padding: "20px 22px 18px",
+      }}
+    >
       {/* header: stage label, validity clock */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-5">
         <p
           className="m-0 uppercase"
-          style={{ fontFamily: MONO, fontSize: 11, letterSpacing: ".25em", color: "var(--cp-g400)" }}
-        >
-          <span style={{ color: "var(--cp-violet-500)" }}>03</span> · Approve plan
-        </p>
-        <span
-          aria-live="polite"
-          className="flex items-center gap-2 rounded-full"
           style={{
-            border: "1px solid var(--cp-g100)",
-            padding: "5px 12px",
             fontFamily: MONO,
             fontSize: 11,
-            fontVariantNumeric: "tabular-nums",
-            color: expired
-              ? "var(--cp-danger-fg)"
-              : urgent
-                ? "var(--cp-warn-fg)"
-                : "var(--cp-g900)",
+            letterSpacing: ".2em",
+            color: "var(--pc-muted)",
           }}
         >
-          {clock}
+          <span style={{ color: "var(--pc-accent)" }}>03</span> · approve plan
+        </p>
+        <p
+          aria-live="polite"
+          className="m-0 flex items-baseline gap-2"
+          style={{
+            fontFamily: MONO,
+            fontVariantNumeric: "tabular-nums",
+            color: clockColor,
+          }}
+        >
+          <span
+            style={{ fontSize: 17, fontWeight: 700, letterSpacing: ".02em" }}
+          >
+            {clock}
+          </span>
           <span
             className="uppercase"
-            style={{ fontSize: 10, letterSpacing: ".15em", color: "var(--cp-g400)" }}
+            style={{
+              fontSize: 10,
+              letterSpacing: ".18em",
+              color: clockLabelColor,
+            }}
           >
             {expired ? "expired" : "quote valid"}
           </span>
-        </span>
+        </p>
       </div>
 
-      <p
+      <h2
         className="m-0 mt-3.5 font-semibold"
-        style={{ fontSize: 24, lineHeight: "32px", color: "var(--cp-g900)", maxWidth: 520 }}
+        style={{
+          fontSize: 20,
+          lineHeight: "29px",
+          color: "var(--pc-heading)",
+          textWrap: "pretty",
+        }}
       >
         {plan.summary}
-      </p>
+      </h2>
 
       {/* execution plan */}
       <div
-        className="mt-4 rounded-2xl"
+        className="mt-4"
         style={{
-          border: "1px solid var(--cp-g100)",
-          background: "var(--cp-surface)",
-          padding: "18px 20px 6px",
+          border: "1px solid var(--pc-line-soft)",
+          borderRadius: 12,
+          background: "var(--pc-inset)",
+          padding: "4px 16px",
         }}
       >
-        <div className="flex items-baseline justify-between gap-3">
-          <p
-            className="m-0 uppercase"
-            style={{
-              fontFamily: MONO,
-              fontSize: 10,
-              letterSpacing: ".2em",
-              color: "var(--cp-violet-500)",
-            }}
-          >
-            execution plan
-          </p>
-          <p className="m-0" style={{ fontFamily: MONO, fontSize: 10.5, color: "var(--cp-g400)" }}>
-            {meta}
-          </p>
-        </div>
-
-        <div className="mt-1.5">
-          {plan.steps.map((s, i) => {
-            const v = venueTokens(s.venue);
-            const last = i === plan.steps.length - 1;
-            const amount = formatAmount(s.amount);
-            return (
-              <div key={`${s.n}-${s.op}`} className="flex items-stretch gap-3.5">
-                {/* rail: number + connector */}
-                <div className="flex w-6 flex-shrink-0 flex-col items-center pt-3.5">
-                  <span
-                    className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full font-bold"
-                    style={{
-                      background: "var(--cp-violet-soft)",
-                      color: "var(--cp-violet-500)",
-                      fontFamily: MONO,
-                      fontSize: 11,
-                    }}
-                  >
-                    {s.n}
-                  </span>
-                  <span
-                    className="mt-1.5 w-px flex-1"
-                    style={{ background: last ? "transparent" : "var(--cp-g100)" }}
-                  />
-                </div>
-
-                <div
-                  className="flex min-w-0 flex-1 items-start justify-between gap-4"
+        {plan.steps.map((s, i) => {
+          const v = venueTokens(s.venue);
+          const last = i === plan.steps.length - 1;
+          const amount = formatAmount(s.amount);
+          return (
+            <div key={`${s.n}-${s.op}`} className="flex items-stretch gap-3.5">
+              {/* rail: number + connector */}
+              <div className="flex w-[26px] flex-shrink-0 flex-col items-center pt-[15px]">
+                <span
                   style={{
-                    padding: "13px 0",
-                    borderBottom: `1px solid ${last ? "transparent" : "var(--cp-g100)"}`,
+                    fontFamily: MONO,
+                    fontSize: 17,
+                    lineHeight: "20px",
+                    fontWeight: 700,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--pc-accent)",
                   }}
                 >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className="inline-flex items-center gap-1.5 rounded-full font-bold uppercase"
-                        style={{
-                          border: `1px solid ${v.bd}`,
-                          background: v.bg,
-                          color: v.fg,
-                          padding: "3px 10px 3px 8px",
-                          fontFamily: MONO,
-                          fontSize: 9.5,
-                          letterSpacing: ".16em",
-                        }}
-                      >
-                        <span
-                          className="h-[5px] w-[5px] rounded-full"
-                          style={{ background: v.fg }}
-                          aria-hidden="true"
-                        />
-                        {s.venue}
-                      </span>
-                      <span
-                        className="uppercase"
-                        style={{
-                          fontFamily: MONO,
-                          fontSize: 9.5,
-                          letterSpacing: ".14em",
-                          color: "var(--cp-g400)",
-                        }}
-                      >
-                        {s.op.replace(/_/g, " ")}
-                      </span>
-                    </div>
-                    <p
-                      className="m-0 mt-[7px]"
+                  {s.n}
+                </span>
+                <span
+                  className="mt-1.5 w-px flex-1"
+                  style={{
+                    background: last ? "transparent" : "var(--pc-line)",
+                  }}
+                />
+              </div>
+
+              <div
+                className="flex min-w-0 flex-1 items-start justify-between gap-[18px]"
+                style={{
+                  padding: "14px 0",
+                  borderBottom: `1px solid ${last ? "transparent" : "var(--pc-line-soft)"}`,
+                }}
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-[9px]">
+                    <span
+                      className="uppercase"
                       style={{
-                        fontSize: 14,
-                        lineHeight: "21px",
-                        color: "var(--cp-g700)",
-                        textWrap: "pretty",
+                        border: `1px solid ${v.bd}`,
+                        background: v.bg,
+                        color: v.fg,
+                        borderRadius: 5,
+                        padding: "3px 8px",
+                        fontFamily: MONO,
+                        fontSize: 9.5,
+                        fontWeight: 700,
+                        letterSpacing: ".18em",
                       }}
                     >
-                      {s.label}
-                    </p>
+                      {s.venue}
+                    </span>
+                    <span
+                      className="uppercase"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: ".14em",
+                        color: "var(--pc-muted)",
+                      }}
+                    >
+                      {s.op.replace(/_/g, " ")}
+                    </span>
                   </div>
+                  <p
+                    className="m-0 mt-2"
+                    style={{
+                      fontSize: 14.5,
+                      lineHeight: "21px",
+                      color: "var(--pc-body)",
+                      textWrap: "pretty",
+                    }}
+                  >
+                    {s.label}
+                  </p>
+                </div>
 
-                  <div className="flex-shrink-0 text-right">
-                    {amount ? (
-                      <p
-                        className="m-0"
-                        style={{
-                          fontFamily: MONO,
-                          fontSize: 19,
-                          lineHeight: "24px",
-                          fontVariantNumeric: "tabular-nums",
-                          color: "var(--cp-g900)",
-                        }}
-                      >
-                        {amount}
-                      </p>
-                    ) : (
-                      <p
-                        className="m-0"
-                        style={{
-                          fontFamily: MONO,
-                          fontSize: 11,
-                          lineHeight: "24px",
-                          color: "var(--cp-warn-fg)",
-                          maxWidth: 116,
-                        }}
-                      >
-                        amount to be confirmed
-                      </p>
-                    )}
-                    {s.asset ? (
-                      <p
-                        className="m-0 mt-0.5"
-                        style={{
-                          fontFamily: MONO,
-                          fontSize: 11,
-                          letterSpacing: ".14em",
-                          color: "var(--cp-g400)",
-                        }}
-                      >
-                        {s.asset}
-                      </p>
-                    ) : null}
-                  </div>
+                <div className="flex-shrink-0 text-right">
+                  {amount ? (
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 21,
+                        lineHeight: "26px",
+                        fontWeight: 600,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--pc-heading)",
+                      }}
+                    >
+                      {amount}
+                    </p>
+                  ) : (
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11.5,
+                        lineHeight: "26px",
+                        fontWeight: 600,
+                        color: "var(--pc-warn-fg)",
+                        maxWidth: 124,
+                      }}
+                    >
+                      amount to be confirmed
+                    </p>
+                  )}
+                  {s.asset ? (
+                    <p
+                      className="m-0 mt-0.5"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        letterSpacing: ".12em",
+                        color: "var(--pc-muted)",
+                      }}
+                    >
+                      {s.asset}
+                    </p>
+                  ) : null}
                 </div>
               </div>
-            );
-          })}
-        </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* Warnings — never dismissable, always above the buttons.
-          One tinted block holding compact rows rather than a stack of full-size cards:
-          three boxed panels each the height of a paragraph dominated the card and pushed
-          Approve below the fold, which made the plan itself the smaller element. */}
-      {plan.warnings.length > 0 || expired ? (
-        <div
-          className="mt-4 flex flex-col gap-1.5 rounded-xl"
+      {/* Signature count can exceed step count. That difference is not a typo, so it is
+          weighted differently from the rest of the line. */}
+      <p
+        className="m-0 mt-3"
+        style={{
+          fontFamily: MONO,
+          fontSize: 11.5,
+          lineHeight: "18px",
+          color: "var(--pc-muted)",
+        }}
+      >
+        {meta.stepsText} ·{" "}
+        <span
           style={{
-            border: `1px solid ${expired ? "var(--cp-danger-fg)" : "var(--cp-warn-bd)"}`,
-            background: expired ? "rgba(201,51,59,.07)" : "var(--cp-warn-bg)",
-            padding: "10px 13px",
+            color: meta.levered ? "var(--pc-accent)" : "var(--pc-body)",
+            fontWeight: 700,
+          }}
+        >
+          {meta.sigText}
+        </span>
+        {meta.sigNote}
+        {meta.venueText ? ` · ${meta.venueText}` : ""}
+      </p>
+
+      {/* Warnings — never dismissable, always above the buttons. One tinted block holding
+          compact rows rather than a stack of full-size panels: boxed panels each the
+          height of a paragraph pushed Approve below the fold, which made the plan itself
+          the smaller element. */}
+      {showNotices ? (
+        <div
+          className="mt-3.5 flex flex-col gap-1.5"
+          style={{
+            border: `1px solid ${expired ? "var(--pc-danger-bd)" : "var(--pc-warn-bd)"}`,
+            background: expired ? "var(--pc-danger-bg)" : "var(--pc-warn-bg)",
+            borderRadius: 10,
+            padding: "9px 12px",
           }}
         >
           {expired ? (
             <p
               role="alert"
-              className="m-0 flex gap-2"
-              style={{ fontSize: 12.5, lineHeight: "18px", color: "var(--cp-danger-fg)" }}
+              className="m-0 flex items-start gap-[9px]"
+              style={{
+                fontSize: 13,
+                lineHeight: "19px",
+                color: "var(--pc-danger-fg)",
+              }}
             >
-              <span aria-hidden="true" style={{ fontFamily: MONO, fontWeight: 700 }}>
+              <span
+                aria-hidden="true"
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  lineHeight: "19px",
+                }}
+              >
                 !
               </span>
-              Plan expired — prices and your health factor have moved. Ask again for a fresh one.
+              Prices moved while this plan sat idle — ask again for a fresh
+              quote.
             </p>
           ) : null}
           {plan.warnings.map((text) => (
             <p
               key={text}
               role="note"
-              className="m-0 flex gap-2"
+              className="m-0 flex items-start gap-[9px]"
               style={{
-                fontSize: 12.5,
-                lineHeight: "18px",
-                color: expired ? "var(--cp-g500)" : "var(--cp-warn-fg)",
+                fontSize: 13,
+                lineHeight: "19px",
+                color: expired ? "var(--pc-danger-fg)" : "var(--pc-warn-fg)",
                 textWrap: "pretty",
               }}
             >
-              <span aria-hidden="true" style={{ fontFamily: MONO, fontWeight: 700 }}>
+              <span
+                aria-hidden="true"
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  lineHeight: "19px",
+                }}
+              >
                 !
               </span>
               {text}
@@ -372,62 +453,86 @@ export function PlanApprovalCard({
 
       {autoPending && !expired ? (
         <p
-          className="m-0 mt-4 flex items-center gap-[7px]"
-          style={{ fontFamily: MONO, fontSize: 11, color: "var(--cp-violet-500)" }}
+          className="m-0 mt-3 flex items-center gap-2"
+          style={{
+            fontFamily: MONO,
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--pc-accent)",
+          }}
         >
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+          <span
             aria-hidden="true"
-          >
-            <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
-            <path d="m9 12 2 2 4-4" />
-          </svg>
-          auto-approve on — signing and submitting for you, no click needed
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: 999,
+              background: "var(--pc-accent)",
+              animation: "pc-pulse 1.4s ease-in-out infinite",
+            }}
+          />
+          session key is signing — no click needed
         </p>
       ) : null}
 
       {/* actions */}
-      <div className="mt-5 flex items-center gap-2.5">
+      <div className="mt-4 flex items-stretch gap-2.5">
         <button
           type="button"
           onClick={() => onApprove(plan)}
-          disabled={approveDisabled}
-          className="flex-1 rounded-r3 font-semibold transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
+          disabled={approveBlocked}
+          aria-disabled={approveBlocked ? "true" : "false"}
+          className="pc-btn-1 flex-1"
           style={{
-            border: 0,
-            padding: "15px 24px",
+            border: "1px solid transparent",
+            borderRadius: 10,
+            padding: "14px 22px",
+            fontFamily: "inherit",
             fontSize: 15,
-            cursor: approveDisabled ? "not-allowed" : busy ? "progress" : "pointer",
-            background: approveDisabled ? "var(--cp-g100)" : "var(--cp-gradient)",
-            color: approveDisabled ? "var(--cp-g400)" : "#ffffff",
-            boxShadow: approveDisabled ? "none" : "0 12px 30px -10px rgba(112,58,230,.6)",
-            outlineColor: "var(--cp-violet-500)",
+            fontWeight: 700,
+            letterSpacing: ".01em",
+            cursor: unusable
+              ? "not-allowed"
+              : busy || autoPending
+                ? "progress"
+                : "pointer",
+            background: unusable
+              ? "var(--pc-btn-off-bg)"
+              : "var(--pc-btn-fill)",
+            color: unusable ? "var(--pc-btn-off-fg)" : "var(--pc-btn-fg)",
           }}
         >
           {approveLabel}
         </button>
-        {/* Hover lives in classes, not inline style: an inline `color` wins over a
-            `hover:` utility, so the tint never appeared while the colour was set here. */}
         <button
           type="button"
           onClick={onModify}
-          className="cursor-pointer rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[14px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
-          style={{ outlineColor: "var(--cp-violet-500)" }}
+          className="pc-btn-2 cursor-pointer transition-colors"
+          // Border and colour come from .pc-btn-2 in globals.css — inline values here
+          // would outrank the :hover rule and kill the tint.
+          style={{
+            borderRadius: 10,
+            background: "transparent",
+            padding: "14px 20px",
+            fontFamily: "inherit",
+            fontSize: 14,
+            fontWeight: 600,
+          }}
         >
           Modify
         </button>
         <button
           type="button"
           onClick={onCancel}
-          className="cursor-pointer rounded-r3 border-0 bg-transparent px-4 py-[14px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[3px]"
-          style={{ outlineColor: "var(--cp-violet-500)" }}
+          className="pc-btn-3 cursor-pointer transition-colors"
+          style={{
+            borderRadius: 10,
+            background: "transparent",
+            padding: "14px",
+            fontFamily: "inherit",
+            fontSize: 14,
+            fontWeight: 600,
+          }}
         >
           Cancel
         </button>
@@ -437,9 +542,14 @@ export function PlanApprovalCard({
       <p
         className="m-0 mt-3 text-right"
         title={`plan_id ${plan.plan_id}`}
-        style={{ fontFamily: MONO, fontSize: 11, letterSpacing: ".06em", color: "var(--cp-g500)" }}
+        style={{
+          fontFamily: MONO,
+          fontSize: 11,
+          letterSpacing: ".04em",
+          color: "var(--pc-quiet)",
+        }}
       >
-        plan {plan.plan_id.slice(0, 6)}…{plan.plan_id.slice(-3)}
+        plan {plan.plan_id.slice(0, 10)}…{plan.plan_id.slice(-3)}
       </p>
     </div>
   );

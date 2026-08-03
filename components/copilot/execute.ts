@@ -48,11 +48,15 @@ export function isExecutable(action: CopilotAction | null | undefined): boolean 
   return !!action && EXECUTABLE_OPS.has(action.op);
 }
 
+/** 10^18 as a BigInt. Constructed, not a `n` literal: tsconfig targets below ES2020,
+ *  where a BigInt literal is a type error and fails `next build`. */
+const WAD = BigInt("1000000000000000000");
+
 /** Decimal amount → 18-decimal WAD string, precise (no float rounding). */
 function toWad(amount: number): string {
   const [intPart, fracPart = ""] = String(amount).split(".");
   const frac = (fracPart + "0".repeat(18)).slice(0, 18);
-  return (BigInt(intPart || "0") * 1_000000000000000000n + BigInt(frac || "0")).toString();
+  return (BigInt(intPart || "0") * WAD + BigInt(frac || "0")).toString();
 }
 
 /** Map a free-text asset symbol to a pool AssetType for ContractService. */

@@ -424,3 +424,274 @@ html.dark * {
 
 }
 
+/* ── Copilot / Assistant surfaces ──────────────────────────────────────────
+   Tokens from the Claude Design Copilot.dc.html :root / .dark blocks. Scoped to
+   `.cp-root` so they cannot collide app-wide, and applied to both the Copilot
+   page and the Assistant drawer (which portals to <body>, outside the page tree).
+
+   The violet and rose scales are re-declared for dark because the app's own
+   scales are light-only: `bg-violet-50 text-violet-500` renders a near-white
+   lavender chip with dark-violet ink, which on a #111 surface reads as a
+   light-mode button someone forgot to theme. Tailwind resolves these through
+   `var()` at the use site, so redeclaring them here re-themes every
+   `violet-*` / `rose-*` utility inside a copilot surface and nothing outside it. */
+.cp-root {
+  --cp-violet-soft: #f1ebfd;
+  --cp-violet-soft-border: #d3c2f7;
+  --cp-surface: #ffffff;
+  --cp-g50: #f7f8fa;
+  --cp-g100: #e6e8ee;
+  --cp-g200: #d0d5dd;
+  --cp-g300: #b8c0cc;
+  --cp-g400: #8b95a7;
+  --cp-g500: #667085;
+  --cp-g600: #475467;
+  --cp-g700: #344054;
+  --cp-g900: #111827;
+  --cp-violet-500: #703ae6;
+  --cp-gradient: linear-gradient(135deg, #fc5457 10%, #703ae6 80%);
+  --cp-venue-margin-fg: #5f2fd0;
+  --cp-venue-margin-bg: rgba(112, 58, 230, 0.1);
+  --cp-venue-margin-bd: rgba(112, 58, 230, 0.28);
+  --cp-venue-earn-fg: #0b7a63;
+  --cp-venue-earn-bg: rgba(11, 122, 99, 0.1);
+  --cp-venue-earn-bd: rgba(11, 122, 99, 0.28);
+  --cp-venue-farm-fg: #8a5a06;
+  --cp-venue-farm-bg: rgba(245, 158, 11, 0.14);
+  --cp-venue-farm-bd: rgba(245, 158, 11, 0.32);
+  --cp-venue-wallet-fg: #4b5563;
+  --cp-venue-wallet-bg: rgba(102, 112, 133, 0.12);
+  --cp-venue-wallet-bd: rgba(102, 112, 133, 0.28);
+  --cp-warn-fg: #8a5a06;
+  --cp-warn-bg: rgba(245, 158, 11, 0.1);
+  --cp-warn-bd: rgba(245, 158, 11, 0.3);
+  --cp-danger-fg: #c9333b;
+  --cp-danger-bg: rgba(252, 84, 87, 0.1);
+  --cp-danger-bd: rgba(252, 84, 87, 0.3);
+  --cp-emerald: #10b981;
+  --cp-amber: #f59e0b;
+  --cp-imperial: #fc5457;
+  --cp-skel: #ededf1;
+  --cp-mark: rgba(112, 58, 230, 0.1);
+}
+
+html.dark .cp-root {
+  --cp-violet-soft: #2a1a3e;
+  --cp-violet-soft-border: #3b2560;
+  --cp-surface: #1c1c24;
+  --cp-g50: #27272a;
+  --cp-g100: #3f3f46;
+  --cp-g200: #52525b;
+  --cp-g300: #71717a;
+  --cp-g400: #a1a1aa;
+  --cp-g500: #c8c8d0;
+  --cp-g600: #d4d4d8;
+  --cp-g700: #e4e4e7;
+  --cp-g900: #fafafa;
+  --cp-violet-500: #9a72f0;
+  --cp-venue-margin-fg: #a686f2;
+  --cp-venue-margin-bg: rgba(154, 114, 240, 0.14);
+  --cp-venue-margin-bd: rgba(154, 114, 240, 0.34);
+  --cp-venue-earn-fg: #3fc0a3;
+  --cp-venue-earn-bg: rgba(63, 192, 163, 0.12);
+  --cp-venue-earn-bd: rgba(63, 192, 163, 0.3);
+  --cp-venue-farm-fg: #dfa24a;
+  --cp-venue-farm-bg: rgba(223, 162, 74, 0.12);
+  --cp-venue-farm-bd: rgba(223, 162, 74, 0.3);
+  --cp-venue-wallet-fg: #a8b0c0;
+  --cp-venue-wallet-bg: rgba(168, 176, 192, 0.11);
+  --cp-venue-wallet-bd: rgba(168, 176, 192, 0.26);
+  --cp-warn-fg: #e0ac5c;
+  --cp-warn-bg: rgba(223, 162, 74, 0.09);
+  --cp-warn-bd: rgba(223, 162, 74, 0.28);
+  --cp-danger-fg: #f0666e;
+  --cp-danger-bg: rgba(240, 102, 110, 0.1);
+  --cp-danger-bd: rgba(240, 102, 110, 0.3);
+  --cp-emerald: #3fc0a3;
+  --cp-amber: #dfa24a;
+  --cp-imperial: #f0666e;
+  --cp-skel: #2a2a32;
+  --cp-mark: rgba(154, 114, 240, 0.16);
+
+  /* Dark violet / rose ramps — every violet-* utility on a copilot surface. */
+  --violet-50: #2a1a3e;
+  --violet-100: #3b2560;
+  --violet-200: #4d3080;
+  --violet-300: #b69bf5;
+  --violet-400: #a686f2;
+  --violet-500: #9a72f0;
+  --violet-600: #ab8af4;
+  --rose-50: #3a0f27;
+}
+
+/* ── Plan approval card ────────────────────────────────────────────────────
+   From the Claude Design `Plan Approval Card.dc.html`. Deliberately NOT built on
+   `--cp-*`: this card is the approval gate for transactions that move real money,
+   so it owns every colour it paints and cannot be washed out by a token that
+   exists in one theme block and not the other.
+
+   Two rules the design encodes and this block preserves:
+     - No `opacity` anywhere. A dimmed ancestor is what made the card unreadable.
+     - Disabled primary keeps a solid fill (--pc-btn-off-*), never a surface grey.
+       A grey-on-grey repaint reads as "broken", not "not yet".
+
+   Contrast measured against each card's own surface (from the design):
+     light  #ffffff : heading 18.9:1 · body 12.4:1 · muted 8.6:1
+     dark   #16161d : heading 17.2:1 · body 14.3:1 · muted 8.6:1
+     primary label #ffffff on the gradient's darkest stop #6b2fd6 = 7.2:1 */
+.plan-card {
+  --pc-surface: #ffffff;
+  --pc-inset: #f4f5f8;
+  --pc-line: #d9dce3;
+  --pc-line-soft: #e7e9ef;
+  --pc-heading: #0e1116;
+  --pc-body: #262c38;
+  --pc-muted: #414a58;
+  --pc-quiet: #5a6472;
+  --pc-accent: #5b23d6;
+  --pc-accent-soft: #ede6fd;
+  --pc-margin-fg: #3f1a9e;
+  --pc-margin-bg: #ede6fd;
+  --pc-margin-bd: #c9b6f6;
+  --pc-earn-fg: #08544a;
+  --pc-earn-bg: #dff2ee;
+  --pc-earn-bd: #a9d9cf;
+  --pc-farm-fg: #6a3d05;
+  --pc-farm-bg: #fbeed6;
+  --pc-farm-bd: #e8cf9c;
+  --pc-wallet-fg: #33404f;
+  --pc-wallet-bg: #eaedf2;
+  --pc-wallet-bd: #c3cad4;
+  --pc-warn-fg: #6a3d05;
+  --pc-warn-bg: #fbeed6;
+  --pc-warn-bd: #e8cf9c;
+  --pc-danger-fg: #8c1620;
+  --pc-danger-bg: #fde9ea;
+  --pc-danger-bd: #f2bfc3;
+  --pc-btn-fill: linear-gradient(135deg, #fc5457 0%, #6b2fd6 100%);
+  --pc-btn-fg: #ffffff;
+  --pc-btn-off-bg: #4b4660;
+  --pc-btn-off-fg: #ffffff;
+  --pc-btn-2-bd: #b9bfcb;
+  --pc-btn-2-fg: #1b2029;
+  --pc-focus: #5b23d6;
+}
+
+html.dark .plan-card,
+.dark .plan-card {
+  --pc-surface: #16161d;
+  --pc-inset: #1e1e27;
+  --pc-line: #3a3a46;
+  --pc-line-soft: #2b2b35;
+  --pc-heading: #f8f9fc;
+  --pc-body: #e6e9f0;
+  --pc-muted: #b9bfcd;
+  --pc-quiet: #a2a9b8;
+  --pc-accent: #c0a5ff;
+  --pc-accent-soft: #2b2050;
+  --pc-margin-fg: #cdb8ff;
+  --pc-margin-bg: #2b2050;
+  --pc-margin-bd: #4a3a7d;
+  --pc-earn-fg: #8ce8d2;
+  --pc-earn-bg: #0f3730;
+  --pc-earn-bd: #1f5b4f;
+  --pc-farm-fg: #f6cf90;
+  --pc-farm-bg: #3b2a11;
+  --pc-farm-bd: #5f4620;
+  --pc-wallet-fg: #cdd3df;
+  --pc-wallet-bg: #262631;
+  --pc-wallet-bd: #454552;
+  --pc-warn-fg: #f6cf90;
+  --pc-warn-bg: #2a2113;
+  --pc-warn-bd: #54401c;
+  --pc-danger-fg: #ffb3b8;
+  --pc-danger-bg: #3a1a1d;
+  --pc-danger-bd: #6b2b31;
+  --pc-btn-fill: linear-gradient(135deg, #ff6b6e 0%, #8557ef 100%);
+  --pc-btn-fg: #ffffff;
+  --pc-btn-off-bg: #3a3550;
+  --pc-btn-off-fg: #e7e4f2;
+  --pc-btn-2-bd: #4d4d5c;
+  --pc-btn-2-fg: #eceef4;
+  --pc-focus: #c0a5ff;
+}
+
+/* The secondary buttons' border and text colour live here, not inline, because an inline
+   `color` outranks any stylesheet `:hover` — set them inline and the hover tint never
+   lands. Only layout stays inline for these two. */
+.plan-card .pc-btn-2 {
+  border: 1px solid var(--pc-btn-2-bd);
+  color: var(--pc-btn-2-fg);
+}
+.plan-card .pc-btn-3 {
+  border: 1px solid transparent;
+  color: var(--pc-quiet);
+}
+.plan-card .pc-btn-1:hover:not(:disabled) {
+  filter: saturate(1.15);
+}
+.plan-card .pc-btn-2:hover {
+  border-color: var(--pc-accent);
+  color: var(--pc-accent);
+}
+.plan-card .pc-btn-3:hover {
+  color: var(--pc-body);
+}
+.plan-card .pc-btn-1:focus-visible,
+.plan-card .pc-btn-2:focus-visible,
+.plan-card .pc-btn-3:focus-visible {
+  outline: 3px solid var(--pc-focus);
+  outline-offset: 2px;
+}
+
+@keyframes pc-pulse {
+  0%,
+  100% {
+    background: var(--pc-accent);
+  }
+  50% {
+    background: var(--pc-accent-soft);
+  }
+}
+
+@keyframes cp-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cp-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+@keyframes cp-shimmer {
+  0% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.5;
+  }
+}
+
+@keyframes cp-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+
