@@ -41,6 +41,7 @@ import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-x
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { AnswerView } from "./answer-view";
+import { legKey } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 interface BrainHealth {
@@ -379,38 +380,6 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
 const CHAIN_DELAY_MS = 900;
 
 /**
- * Identity for a strategy leg, stable across planning and execution.
- *
- * Legs arrive with only a human label, and the planner and the executor word it
- * differently — "Deposit 10 BLUSDC as collateral" becomes "Deposit 10 BLUSDC
- * collateral". Merging on the raw label therefore appended a duplicate instead of
- * updating, which left the original leg frozen at needs_sign while a second copy of it
- * reported done. Keying on the parts that actually identify the action survives the
- * rewording. Venue is only included for supply/deploy, where the same verb, amount and
- * asset can legitimately mean two different legs (earn pool vs Blend); for other verbs
- * it would wrongly split "Lend 20 XLM on Earn" from "Lend 20 XLM".
- */
-function legKey(label: string): string {
-  const s = (label || "").toLowerCase();
-  const verb = s.match(/^[a-z_]+/)?.[0] ?? "";
-  const nums = (s.match(/\d+(?:\.\d+)?/g) ?? []).join(",");
-  const assets = (
-    (label || "").match(/\b(?:BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b/g) ?? []
-  ).join(",");
-  const ambiguousVerb = verb === "supply" || verb === "deploy";
-  const venue = !ambiguousVerb
-    ? ""
-    : /blend/.test(s)
-      ? "blend"
-      : /aquarius|soroswap|\blp\b/.test(s)
-        ? "lp"
-        : /earn|pool/.test(s)
-          ? "earn"
-          : "";
-  return [verb, nums, assets, venue].join("|");
-}
-
-/**
  * Button surfaces from the design: 8px for inline actions, 12px for the commit row.
  *
  * Hover is the violet tint, never a grey. The tint re-themes itself in dark through the
@@ -518,19 +487,26 @@ type ResumeLeg = {
 /** Structured multi-leg strategy card (replaces red wall of text + facts dump). */
 function MultiLegStrategyCard({
   data,
+  steps: stepsProp,
   headline,
   onResume,
   resumeBusy,
   autoContinues = false,
 }: {
   data: Record<string, unknown>;
+  /**
+   * Accumulated legs across hops (workspace merge via legKey). Prefer this over
+   * data.multi_leg_steps, which only contains the current hop.
+   */
+  steps?: MultiLegStepUi[] | null;
   headline?: string | null;
   onResume?: (legs: ResumeLeg[], summary: string) => void;
   resumeBusy?: boolean;
   /** Auto-approve will continue the chain, so no manual button is offered. */
   autoContinues?: boolean;
 }) {
-  const steps = (Array.isArray(data.multi_leg_steps) ? data.multi_leg_steps : []) as MultiLegStepUi[];
+  const fromData = (Array.isArray(data.multi_leg_steps) ? data.multi_leg_steps : []) as MultiLegStepUi[];
+  const steps = stepsProp?.length ? stepsProp : fromData;
   if (!steps.length) return null;
 
   const summary = String(data.strategy_summary || data.plan_summary || "Strategy");
@@ -547,7 +523,13 @@ function MultiLegStrategyCard({
   const anyFail = steps.some((s) =>
     ["error", "blocked", "stopped_hf"].includes(String(s.status || "")),
   );
-  const allOk = steps.every((s) => s.status === "ok");
+  const allOk = steps.every((s) => {
+    const st = String(s.status || "");
+    return st === "ok" || st === "done" || st === "skipped";
+  }) && steps.some((s) => {
+    const st = String(s.status || "");
+    return st === "ok" || st === "done";
+  });
 
   /**
    * Title derived from the card's OWN steps, not from the server headline.
@@ -571,14 +553,22 @@ function MultiLegStrategyCard({
         : rawTitle;
 
   const tone = (status?: string) => {
-    if (status === "ok") return EMERALD;
-    if (status === "needs_sign" || status === "pending" || status === "clarification") return AMBER;
+    if (status === "ok" || status === "done") return EMERALD;
+    if (
+      status === "needs_sign" ||
+      status === "needs_wallet_sign" ||
+      status === "staged" ||
+      status === "pending" ||
+      status === "clarification"
+    )
+      return AMBER;
     if (status === "error" || status === "blocked" || status === "stopped_hf") return IMPERIAL;
     return "var(--color-vgray-400)";
   };
   const mark = (status?: string) => {
-    if (status === "ok") return "Done";
-    if (status === "needs_sign") return "Sign";
+    // Never show SIGN on completed legs — only while that leg still needs a signature.
+    if (status === "ok" || status === "done") return "Done";
+    if (status === "needs_sign" || status === "needs_wallet_sign" || status === "staged") return "Sign";
     if (status === "stopped_hf") return "HF";
     if (status === "skipped") return "Skip";
     if (status === "pending") return "Next";
@@ -637,16 +627,17 @@ function MultiLegStrategyCard({
       <ol className="divide-y divide-vgray-100 px-2 py-1 sm:px-3">
         {steps.map((s, i) => {
           const st = String(s.status || "");
+          const isOk = st === "ok" || st === "done";
+          // XDR byte counts / "do not invent a hash" are model instructions — only show
+          // messages that explain a real failure.
           const showDetail =
-            s.message &&
-            st !== "ok" &&
-            st !== "pending" &&
-            st !== "skipped";
+            !!s.message &&
+            (st === "error" || st === "blocked" || st === "stopped_hf");
           return (
-            <li key={i} className="flex gap-3 px-3 py-3.5">
+            <li key={`${legKey(String(s.label || ""))}-${s.index ?? i}`} className="flex gap-3 px-3 py-3.5">
               <span
                 className="mt-0.5 flex h-6 min-w-[3.25rem] shrink-0 items-center justify-center rounded-full px-2 font-mono text-[10px] font-semibold uppercase tracking-wide"
-                style={{ color: tone(st), background: `${tone(st)}18` }}
+                style={{ color: tone(isOk ? "ok" : st), background: `${tone(isOk ? "ok" : st)}18` }}
               >
                 {mark(st)}
               </span>
@@ -685,9 +676,7 @@ function MultiLegStrategyCard({
       </ol>
 
       <div className="border-t border-vgray-100 px-5 py-3">
-        {/* A spinner while legs remain. Without it, a chain that is genuinely mid-flight
-            looked identical to one that had stalled waiting for input — the text said
-            "in progress" but nothing on screen moved. */}
+        {/* Spinner only while legs remain incomplete — never under fully done strategies. */}
         <p className="flex items-center gap-2 text-[12px] leading-relaxed text-vgray-500">
           {allOk ? (
             "All steps completed on-chain."
@@ -925,8 +914,63 @@ export function CopilotWorkspace() {
   );
   /** Parent strategy prompt for client next_step hops (session log grouping). */
   const strategyParentRef = useRef<{ id: string; prompt: string } | null>(null);
+  /**
+   * Accumulated multi-leg steps across sequential hop POSTs. Each hop only returns
+   * the legs it ran; the session log already merges via legKey — the strategy card
+   * must use the same accumulator or it renumbers the last hop as "1.".
+   */
+  const strategyStepsRef = useRef<MultiLegStepUi[]>([]);
+  const [strategySteps, setStrategySteps] = useState<MultiLegStepUi[]>([]);
+  /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
+  const strategyMetaRef = useRef<Record<string, unknown>>({});
+  const abortRef = useRef<AbortController | null>(null);
+  /** Stops chain effect + in-flight fetch without wiping settled log legs. */
+  const cancelledRef = useRef(false);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /** Merge hop legs into strategySteps with the same legKey rule as pushLog. */
+  const absorbStrategySteps = useCallback((incoming: MultiLegStepUi[]) => {
+    if (!incoming?.length) return strategyStepsRef.current;
+    const merged: MultiLegStepUi[] = strategyStepsRef.current.map((s) => ({ ...s }));
+    for (const leg of incoming) {
+      const label = String(leg.label || "").trim();
+      if (!label && leg.index == null) continue;
+      const k = legKey(label || `step-${leg.index ?? ""}`);
+      const at = merged.findIndex((m) => legKey(String(m.label || "")) === k);
+      if (at >= 0) {
+        // Keep first label + index; newer status / tx / hf wins.
+        merged[at] = {
+          ...merged[at],
+          status: leg.status ?? merged[at].status,
+          tx_hash: leg.tx_hash != null ? leg.tx_hash : merged[at].tx_hash,
+          hf_after: leg.hf_after != null ? leg.hf_after : merged[at].hf_after,
+          message: leg.message != null ? leg.message : merged[at].message,
+        };
+      } else {
+        const nextIndex =
+          leg.index != null && Number.isFinite(Number(leg.index))
+            ? Number(leg.index)
+            : (merged.reduce((m, s) => Math.max(m, Number(s.index) || 0), 0) || 0) + 1;
+        merged.push({
+          ...leg,
+          label: label || leg.label,
+          index: nextIndex,
+        });
+      }
+    }
+    // Preserve first-seen order (append-only merge); stable sort by index for display.
+    merged.sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+    strategyStepsRef.current = merged;
+    setStrategySteps(merged);
+    return merged;
+  }, []);
+
+  const resetStrategyAccumulator = useCallback(() => {
+    strategyStepsRef.current = [];
+    setStrategySteps([]);
+    strategyMetaRef.current = {};
+  }, []);
 
   // Session signing only applies to Privy embedded wallets — Freighter always
   // prompts through its extension, so the toggle can't apply there.
@@ -1269,8 +1313,20 @@ export function CopilotWorkspace() {
       promptLabel: string,
       opts?: { chainHop?: boolean },
     ) => {
+      if (cancelledRef.current && opts?.chainHop) {
+        return null;
+      }
+
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
       setLoading(true);
-      setResponse(null);
+      // Keep last response on chain hops so the strategy card doesn't flash empty;
+      // full new prompts still clear.
+      if (!opts?.chainHop && !body.summarize_execution) {
+        setResponse(null);
+      }
       setShowCustom(false);
       try {
         const res = await fetch("/api/copilot", {
@@ -1282,7 +1338,11 @@ export function CopilotWorkspace() {
             smart_account: smartAccount ?? null,
             ...body,
           }),
+          signal: ac.signal,
         });
+        if (cancelledRef.current) {
+          return null;
+        }
         const data = (await res.json()) as ChatResponse;
         // Strip markdown stars so the UI never shows **BLUSDC**
         if (data.message) data.message = stripMarkdownLite(data.message);
@@ -1293,14 +1353,46 @@ export function CopilotWorkspace() {
         if (Array.isArray(data.client_tools) && data.client_tools.length) {
           executeClientTools(data.client_tools);
         }
+
+        // Absorb multi-leg hop legs into the shared accumulator (same legKey as log).
+        const d = (data.data ?? null) as Record<string, unknown> | null;
+        const hopSteps = Array.isArray(d?.multi_leg_steps)
+          ? (d!.multi_leg_steps as MultiLegStepUi[])
+          : null;
+        if (hopSteps?.length) {
+          absorbStrategySteps(hopSteps);
+          strategyMetaRef.current = {
+            ...strategyMetaRef.current,
+            ...(d || {}),
+            multi_leg_steps: strategyStepsRef.current,
+            strategy_summary:
+              d?.strategy_summary ??
+              d?.plan_summary ??
+              strategyMetaRef.current.strategy_summary,
+          };
+        }
+
+        // Summarize round-trip has answer only — keep strategy meta for the card.
+        if (body.summarize_execution && strategyStepsRef.current.length) {
+          data.data = {
+            ...strategyMetaRef.current,
+            multi_leg: true,
+            multi_leg_steps: strategyStepsRef.current,
+            ...(data.data && typeof data.data === "object" ? data.data : {}),
+          };
+        }
+
         setResponse(data);
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
-        pushLog(promptLabel, data, {
-          chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
-          hopLabel: promptLabel,
-        });
-        if (data.kind === "executed") {
+        // Do not log pure summarize receipts as a new turn noise — still fold if multi.
+        if (!body.summarize_execution) {
+          pushLog(promptLabel, data, {
+            chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
+            hopLabel: promptLabel,
+          });
+        }
+        if (data.kind === "executed" && !body.summarize_execution) {
           toast.success(data.execution?.tx_hash ? `Submitted · ${data.execution.tx_hash.slice(0, 10)}…` : "Done");
           pushActivity(data.preview?.human_summary || promptLabel, data.execution?.tx_hash);
         }
@@ -1312,28 +1404,48 @@ export function CopilotWorkspace() {
           Boolean(data.execution?.tx_hash);
         void refreshRailStats({ force });
         return data;
-      } catch {
+      } catch (e) {
+        // Cancel must leave already-executed legs in the log and on the card.
+        if (
+          (e instanceof DOMException && e.name === "AbortError") ||
+          (e instanceof Error && e.name === "AbortError") ||
+          cancelledRef.current
+        ) {
+          return null;
+        }
         const failed: ChatResponse = { kind: "error", message: "Copilot request failed." };
         setResponse(failed);
         pushLog(promptLabel, failed);
         return failed;
       } finally {
+        if (abortRef.current === ac) abortRef.current = null;
         setLoading(false);
       }
     },
-    [address, smartAccount, pushLog, pushActivity, refreshRailStats],
+    [address, smartAccount, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
   );
+
+  const cancelInFlight = useCallback(() => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setSigning(false);
+    toast("Request cancelled — completed steps stay in the log.", { duration: 3500 });
+  }, []);
 
   const run = useCallback(
     async (text: string) => {
       const t = text.trim();
       if (!t || loading) return;
+      cancelledRef.current = false;
+      resetStrategyAccumulator();
       setSubmitted(t);
       setIntentText(t);
       setPaletteOpen(false);
       await postCopilot({ message: t }, t);
     },
-    [loading, postCopilot],
+    [loading, postCopilot, resetStrategyAccumulator],
   );
 
   /**
@@ -1564,32 +1676,42 @@ export function CopilotWorkspace() {
           (response?.data as any)?.prefer_resume_multi_leg === true ||
           (remainingFromData && remainingFromData.length > 0);
 
-        // pushLog above updated the session log; `response` was left untouched, so the
-        // strategy card kept rendering the payload from BEFORE this signature — the leg
-        // still at needs_sign, the headline still asking to sign. Advance the response so
-        // the card sees the same reality the log does. Only the legs this signature
-        // settled are marked; if more remain, the next hop's response replaces this.
+        // Advance hop legs to ok in the shared accumulator (and current payload).
+        const d0 = (response?.data ?? {}) as Record<string, unknown>;
+        const raw = Array.isArray(d0.multi_leg_steps)
+          ? (d0.multi_leg_steps as MultiLegStepUi[])
+          : strategyStepsRef.current.length
+            ? strategyStepsRef.current
+            : null;
+        const settled = new Set(["needs_sign", "needs_wallet_sign", "staged", "pending"]);
+        const patched: MultiLegStepUi[] = raw
+          ? raw.map((s) =>
+              settled.has(String(s?.status ?? ""))
+                ? { ...s, status: "ok", tx_hash: s.tx_hash ?? result.hash ?? null }
+                : s,
+            )
+          : [];
+        if (patched.length) {
+          absorbStrategySteps(patched);
+          strategyMetaRef.current = {
+            ...strategyMetaRef.current,
+            ...d0,
+            multi_leg_steps: strategyStepsRef.current,
+          };
+        }
+        const done = !preferResume || !remainingFromData?.length;
+
         setResponse((prev) => {
           if (!prev) return prev;
           const d = (prev.data ?? {}) as Record<string, unknown>;
-          const raw = Array.isArray(d.multi_leg_steps)
-            ? (d.multi_leg_steps as Array<Record<string, unknown>>)
-            : null;
-          if (!raw) return prev;
-          const settled = new Set(["needs_sign", "needs_wallet_sign", "staged", "pending"]);
-          const patched = raw.map((s) =>
-            settled.has(String(s?.status ?? ""))
-              ? { ...s, status: "ok", tx_hash: s.tx_hash ?? result.hash ?? null }
-              : s,
-          );
-          const done = !preferResume || !remainingFromData?.length;
           return {
             ...prev,
             kind: "executed",
             data: {
               ...d,
-              multi_leg_steps: patched,
-              // Drop the stale per-hop headline; the card derives its own title.
+              multi_leg_steps: strategyStepsRef.current.length
+                ? strategyStepsRef.current
+                : patched,
               headline: done ? "All steps completed — strategy is live." : undefined,
               can_resume: done ? false : d.can_resume,
             },
@@ -1602,6 +1724,7 @@ export function CopilotWorkspace() {
         });
 
         if (preferResume && remainingFromData && remainingFromData.length > 0) {
+          if (cancelledRef.current) return;
           const parentPrompt =
             strategyParentRef.current?.prompt ||
             String((response?.data as any)?.strategy_summary || submitted || "Continue strategy");
@@ -1629,11 +1752,13 @@ export function CopilotWorkspace() {
             data: {
               ...(response?.data || {}),
               multi_leg: true,
+              multi_leg_steps: strategyStepsRef.current,
               remaining_legs: null,
               prefer_resume_multi_leg: false,
             },
           });
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
+          if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
           setSubmitted(parentPrompt);
           await postCopilot(
@@ -1652,6 +1777,7 @@ export function CopilotWorkspace() {
 
         // Legacy 2-hop next_step chain (deposit→borrow only)
         if (nextStep?.op && nextStep.amount != null && nextStep.amount > 0) {
+          if (cancelledRef.current) return;
           const label =
             nextStep.label ||
             `Auto step ${nextStep.step ?? 2}: ${nextStep.op} ${nextStep.amount} ${nextStep.asset || ""}`.trim();
@@ -1672,9 +1798,13 @@ export function CopilotWorkspace() {
             execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
             request_id: response?.request_id,
             next_step: nextStep,
-            data: response?.data ?? null,
+            data: {
+              ...(response?.data || {}),
+              multi_leg_steps: strategyStepsRef.current,
+            },
           });
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
+          if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
           setSubmitted(strategyParentRef.current?.prompt || submitted || label);
           await postCopilot(
@@ -1694,6 +1824,59 @@ export function CopilotWorkspace() {
           return;
         }
 
+        // Final client-signed leg: request a model receipt (server only summarizes when
+        // it runs the last leg itself). Legs + hashes only — never invent HF/balances.
+        const finalLegs = strategyStepsRef.current;
+        const hasStrategy = finalLegs.length > 0;
+        const ranLegs = finalLegs
+          .filter((s) => {
+            const st = String(s.status || "");
+            return (
+              st === "ok" ||
+              st === "done" ||
+              st === "error" ||
+              st === "blocked" ||
+              st === "stopped_hf" ||
+              !!s.tx_hash
+            );
+          })
+          .map((s) => ({
+            action: String(s.label || `Step ${s.index ?? ""}`),
+            status: String(s.status || "unknown"),
+            tx_hash: s.tx_hash != null ? String(s.tx_hash) : null,
+          }));
+        const intent =
+          strategyParentRef.current?.prompt ||
+          String(strategyMetaRef.current.strategy_summary || submitted || summary);
+
+        if (hasStrategy && ranLegs.some((l) => l.status === "ok" || l.status === "done")) {
+          setResponse({
+            kind: "executed",
+            message: `Submitted with your wallet${result.hash ? ` · ${result.hash}` : ""}.`,
+            mcp: response?.mcp ?? null,
+            preview: response?.preview ?? null,
+            execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
+            request_id: response?.request_id,
+            data: {
+              ...strategyMetaRef.current,
+              multi_leg: true,
+              multi_leg_steps: strategyStepsRef.current,
+              headline: "All steps completed — strategy is live.",
+            },
+          });
+          if (!cancelledRef.current) {
+            await postCopilot(
+              {
+                message: intent,
+                summarize_execution: { intent, legs: ranLegs },
+              },
+              intent,
+              { chainHop: true },
+            );
+          }
+          return;
+        }
+
         setResponse({
           kind: "executed",
           message: `Submitted with your wallet${result.hash ? ` · ${result.hash}` : ""}.`,
@@ -1701,7 +1884,14 @@ export function CopilotWorkspace() {
           preview: response?.preview ?? null,
           execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
           request_id: response?.request_id,
-          data: response?.data ?? null,
+          data: response?.data
+            ? {
+                ...response.data,
+                multi_leg_steps: strategyStepsRef.current.length
+                  ? strategyStepsRef.current
+                  : (response.data as any).multi_leg_steps,
+              }
+            : null,
         });
       } else {
         toast.error(result.error);
@@ -1716,7 +1906,16 @@ export function CopilotWorkspace() {
     } finally {
       setSigning(false);
     }
-  }, [response, address, smartAccount, submitted, pushActivity, postCopilot, refreshRailStats]);
+  }, [
+    response,
+    address,
+    smartAccount,
+    submitted,
+    pushActivity,
+    postCopilot,
+    refreshRailStats,
+    absorbStrategySteps,
+  ]);
 
   /**
    * Session signing: submit a staged write without the manual approve click.
@@ -1755,6 +1954,7 @@ export function CopilotWorkspace() {
   useEffect(() => {
     if (response?.kind !== "executed") return;
     if (loading || signing) return;
+    if (cancelledRef.current) return;
 
     // Two field names carry the same thing. `remaining_legs` came from the older
     // next_step chain; the plan/MultiLegAgent path returns `resume_legs` with
@@ -1796,7 +1996,9 @@ export function CopilotWorkspace() {
       toast.success(`Continuing ${remaining.length} remaining step(s)…`, { duration: 3000 });
       void (async () => {
         await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
+        if (cancelledRef.current) return;
         await refreshRailStats({ force: true });
+        if (cancelledRef.current) return;
         setSubmitted(parentPrompt);
         await postCopilot(
           {
@@ -1822,7 +2024,9 @@ export function CopilotWorkspace() {
     toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
     void (async () => {
       await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
+      if (cancelledRef.current) return;
       await refreshRailStats({ force: true });
+      if (cancelledRef.current) return;
       if (!strategyParentRef.current && submitted) {
         strategyParentRef.current = {
           id: response.request_id || `strat-${Date.now()}`,
@@ -1966,6 +2170,11 @@ export function CopilotWorkspace() {
 
   /** Clear current answer / staged action but keep session log. */
   const reset = () => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setSigning(false);
     setSubmitted(null);
     setResponse(null);
     setIntentText("");
@@ -1973,11 +2182,21 @@ export function CopilotWorkspace() {
     autoSubmittedRef.current = null;
     nextStepFiredRef.current = null;
     strategyParentRef.current = null;
+    resetStrategyAccumulator();
     inputRef.current?.focus();
   };
 
   const brainOnline = health?.status === "ok";
-  const multiLeg = isMultiLegResponse(response?.data ?? null);
+  const multiLeg =
+    isMultiLegResponse(response?.data ?? null) || strategySteps.length > 0;
+  const strategyCardData: Record<string, unknown> = {
+    ...strategyMetaRef.current,
+    ...(response?.data && typeof response.data === "object" ? response.data : {}),
+    multi_leg: true,
+    multi_leg_steps: strategySteps.length
+      ? strategySteps
+      : (response?.data as any)?.multi_leg_steps,
+  };
   // Multi-leg uses a structured card — don't paint the whole turn imperial red.
   const isError =
     !multiLeg && (response?.kind === "error" || response?.kind === "blocked");
@@ -2007,14 +2226,17 @@ export function CopilotWorkspace() {
     if (!response) return [];
     const template = response.intent?.template_id || response.preview?.template_id || "—";
     const tool = response.mcp?.tool || "—";
-    // Multi-leg strategy: show plan steps as the agent trace
-    const mlSteps = Array.isArray((response.data as any)?.multi_leg_steps)
-      ? ((response.data as any).multi_leg_steps as Array<{
-          label?: string;
-          status?: string;
-          op?: string;
-        }>)
-      : null;
+    // Multi-leg strategy: show accumulated legs (not just the current hop).
+    const mlSteps =
+      strategySteps.length > 0
+        ? strategySteps
+        : Array.isArray((response.data as any)?.multi_leg_steps)
+          ? ((response.data as any).multi_leg_steps as Array<{
+              label?: string;
+              status?: string;
+              op?: string;
+            }>)
+          : null;
     if (mlSteps?.length) {
       return mlSteps.map((s) => {
         const st = String(s.status || "");
@@ -2027,8 +2249,8 @@ export function CopilotWorkspace() {
                 ? "pending"
                 : "done";
         return {
-          label: s.label || s.op || "step",
-          detail: st === "ok" ? "done" : st || "—",
+          label: s.label || (s as { op?: string }).op || "step",
+          detail: st === "ok" || st === "done" ? "done" : st || "—",
           state,
         };
       });
@@ -2060,7 +2282,7 @@ export function CopilotWorkspace() {
       state: response.kind === "executed" ? "done" : response.kind === "blocked" ? "done" : "active",
     });
     return out;
-  }, [loading, response]);
+  }, [loading, response, strategySteps]);
 
   const sim = response?.preview?.simulation ?? null;
   const reasons = response?.preview?.risk?.reasons ?? [];
@@ -2137,11 +2359,16 @@ export function CopilotWorkspace() {
                   <LayoutTemplate size={12} /> Prompts
                 </button>
                 <button
-                  type="submit"
-                  disabled={loading || !intentText.trim()}
-                  className={`shrink-0 px-[22px] py-2.5 ${BTN_GRADIENT}`}
+                  type={loading ? "button" : "submit"}
+                  disabled={!loading && !intentText.trim()}
+                  onClick={loading ? (e) => { e.preventDefault(); cancelInFlight(); } : undefined}
+                  className={
+                    loading
+                      ? `shrink-0 px-[22px] py-2.5 ${BTN_QUIET}`
+                      : `shrink-0 px-[22px] py-2.5 ${BTN_GRADIENT}`
+                  }
                 >
-                  {loading ? "…" : "Run"}
+                  {loading ? "Cancel" : "Run"}
                 </button>
               </div>
             </form>
@@ -2226,8 +2453,8 @@ export function CopilotWorkspace() {
                   </div>
                 )}
 
-                {/* Answer / note */}
-                {phase === "answer" && response && (
+                {/* Answer / note — also keep strategy card while a hop is in flight */}
+                {(phase === "answer" || (phase === "running" && multiLeg)) && (response || multiLeg) && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <Eyebrow n="03">
@@ -2235,15 +2462,29 @@ export function CopilotWorkspace() {
                       </Eyebrow>
                       {decision && !multiLeg && <RiskChip decision={decision} />}
                     </div>
-                    {multiLeg && response.data ? (
-                      <MultiLegStrategyCard
-                        data={response.data}
-                        headline={response.message}
-                        onResume={resumeMultiLeg}
-                        resumeBusy={loading}
-                        autoContinues={autoApprove}
-                      />
-                    ) : (
+                    {multiLeg ? (
+                      <>
+                        {response?.answer && (
+                          <div
+                            className="mt-4 rounded-2xl px-5 py-4"
+                            style={{
+                              border: "1px solid var(--cp-g100)",
+                              background: "var(--cp-surface)",
+                            }}
+                          >
+                            <AnswerView answer={response.answer} />
+                          </div>
+                        )}
+                        <MultiLegStrategyCard
+                          data={strategyCardData}
+                          steps={strategySteps}
+                          headline={response?.message}
+                          onResume={resumeMultiLeg}
+                          resumeBusy={loading}
+                          autoContinues={autoApprove}
+                        />
+                      </>
+                    ) : response ? (
                       <div className="mt-3 flex gap-3">
                         {isError ? (
                           <CircleAlert size={18} className="mt-1.5 shrink-0 text-imperial-500" />
@@ -2267,12 +2508,12 @@ export function CopilotWorkspace() {
                           </p>
                         )}
                       </div>
-                    )}
+                    ) : null}
                     {sim && !multiLeg && <ImpactPanel sim={sim} />}
-                    {response.data && !multiLeg && <FactsGrid data={response.data} />}
+                    {response?.data && !multiLeg && <FactsGrid data={response.data} />}
 
                     {/* USDC variant (or other) clarify chips */}
-                    {response.kind === "clarification" &&
+                    {response?.kind === "clarification" &&
                       response.clarify_options &&
                       response.clarify_options.length > 0 && (
                         <div className="mt-5 flex flex-col gap-2.5">
@@ -2572,9 +2813,8 @@ export function CopilotWorkspace() {
                 {phase === "done" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <Eyebrow n="04">{multiLeg ? "Strategy" : "Executed"}</Eyebrow>
-                    {/* Closing summary of what actually ran. Before this, a finished
-                        strategy ended on its last leg's status and never said what had
-                        been accomplished. */}
+                    {/* Closing summary of what actually ran. Server-side when the brain
+                        finishes the last leg; client-signed finals POST summarize_execution. */}
                     {response.answer && (
                       <div
                         className="mt-4 rounded-2xl px-5 py-4"
@@ -2586,9 +2826,10 @@ export function CopilotWorkspace() {
                         <AnswerView answer={response.answer} />
                       </div>
                     )}
-                    {multiLeg && response.data ? (
+                    {multiLeg ? (
                       <MultiLegStrategyCard
-                        data={response.data}
+                        data={strategyCardData}
+                        steps={strategySteps}
                         headline={response.message}
                         onResume={resumeMultiLeg}
                         resumeBusy={loading}

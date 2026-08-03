@@ -229,6 +229,66 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const trader = looksLikeWallet(userId) ? userId : null;
   const mcp = getMcpClient();
 
+  // ── Client-signed final leg → structured receipt ────────────────────────
+  // Browser signs the last hop, so runPlan never runs vertexSummarizeExecution.
+  // Client posts only legs that actually ran + real tx hashes — no invented HF.
+  if (req.summarize_execution?.legs?.length) {
+    const intent =
+      (req.summarize_execution.intent || message || "strategy").trim() || "strategy";
+    const legs = req.summarize_execution.legs
+      .filter((l) => l && String(l.action || "").trim())
+      .map((l) => ({
+        action: String(l.action).trim(),
+        status: String(l.status || "unknown"),
+        tx_hash: l.tx_hash != null && String(l.tx_hash).trim() ? String(l.tx_hash) : null,
+      }));
+    if (!legs.length) {
+      return {
+        kind: "clarification",
+        message: "No executed legs were provided to summarize.",
+        intent: { template_id: "summarize_execution_empty" },
+        request_id,
+      };
+    }
+    const anyOk = legs.some((l) => l.status === "ok" || l.status === "done");
+    const allOk = legs.every((l) => l.status === "ok" || l.status === "done" || l.status === "skip" || l.status === "skipped");
+    let receipt: StructuredAnswer | null = null;
+    try {
+      receipt = await vertexSummarizeExecution(intent, {
+        asked_for: intent,
+        all_legs_succeeded: allOk && anyOk,
+        legs: legs.map((l, i) => ({
+          step: i + 1,
+          action: l.action,
+          status: l.status,
+          tx_hash: l.tx_hash,
+        })),
+      });
+    } catch (e) {
+      console.warn(
+        "[copilot] summarize_execution failed:",
+        e instanceof Error ? e.message.slice(0, 160) : e,
+      );
+    }
+    const fallback =
+      anyOk
+        ? allOk
+          ? `All ${legs.length} step(s) completed on-chain.`
+          : `Partial strategy: ${legs.filter((l) => l.status === "ok" || l.status === "done").length}/${legs.length} legs succeeded.`
+        : "No legs completed successfully.";
+    return {
+      kind: anyOk ? "executed" : "answer",
+      message: receipt ? answerToText(receipt) : fallback,
+      ...(receipt ? { answer: receipt } : {}),
+      intent: { template_id: "summarize_execution" },
+      request_id,
+      execution: {
+        status: allOk && anyOk ? "completed" : anyOk ? "partial" : "stopped",
+        tx_hash: [...legs].reverse().find((l) => l.tx_hash)?.tx_hash ?? null,
+      },
+    };
+  }
+
   // ── Approved plan → execute verbatim ────────────────────────────────────
   // First thing in the function, ahead of the firewall, the auto-sign NL detection and
   // routing. An approved plan is a structured client action, so it must not depend on
@@ -267,7 +327,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     message &&
     !req.auto_sign?.action &&
     !req.pending_write?.op &&
-    !req.resume_multi_leg?.legs?.length
+    !req.resume_multi_leg?.legs?.length &&
+    !req.summarize_execution?.legs?.length
   ) {
     const fw = evaluateDomainFirewall(message, {
       hasPageContext: Boolean(req.semantic_page_context || req.page_snapshot),

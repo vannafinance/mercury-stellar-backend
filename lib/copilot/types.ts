@@ -128,6 +128,18 @@ export interface ChatRequest {
       label?: string;
     }>;
   } | null;
+  /**
+   * Client-signed final leg: ask Vertex for a structured receipt from legs that
+   * actually ran (and their real tx hashes). No invented HF/balances.
+   */
+  summarize_execution?: {
+    intent: string;
+    legs: Array<{
+      action: string;
+      status: string;
+      tx_hash?: string | null;
+    }>;
+  } | null;
 }
 
 export interface CopilotAction {

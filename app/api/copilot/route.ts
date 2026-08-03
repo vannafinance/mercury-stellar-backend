@@ -81,7 +81,28 @@ export async function POST(req: NextRequest) {
         })
       : null;
 
-  if (!message && !autoSign && !pendingWrite && !resumeMultiLeg?.legs?.length && !approvedPlan) {
+  const summarizeExecution =
+    body.summarize_execution &&
+    typeof body.summarize_execution === "object" &&
+    Array.isArray((body.summarize_execution as { legs?: unknown }).legs)
+      ? (body.summarize_execution as {
+          intent?: string;
+          legs: Array<{
+            action?: string;
+            status?: string;
+            tx_hash?: string | null;
+          }>;
+        })
+      : null;
+
+  if (
+    !message &&
+    !autoSign &&
+    !pendingWrite &&
+    !resumeMultiLeg?.legs?.length &&
+    !approvedPlan &&
+    !summarizeExecution?.legs?.length
+  ) {
     return NextResponse.json({ kind: "error", message: "Please type a question." }, { status: 400 });
   }
 
@@ -142,7 +163,9 @@ export async function POST(req: NextRequest) {
         ? "auto-sign"
         : resumeMultiLeg?.legs?.length
           ? "resume multi-leg"
-          : "pending-write"),
+          : summarizeExecution?.legs?.length
+            ? "summarize execution"
+            : "pending-write"),
     tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
     page_context: pageContext,
@@ -159,6 +182,21 @@ export async function POST(req: NextRequest) {
             legs: resumeMultiLeg.legs,
           }
         : null,
+    summarize_execution: summarizeExecution?.legs?.length
+      ? {
+          intent:
+            typeof summarizeExecution.intent === "string" && summarizeExecution.intent.trim()
+              ? summarizeExecution.intent.trim()
+              : message || "strategy",
+          legs: summarizeExecution.legs
+            .filter((l) => l && typeof l === "object")
+            .map((l) => ({
+              action: String(l.action || "step"),
+              status: String(l.status || "unknown"),
+              tx_hash: l.tx_hash != null ? String(l.tx_hash) : null,
+            })),
+        }
+      : null,
   };
 
   try {
