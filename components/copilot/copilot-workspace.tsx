@@ -1691,17 +1691,29 @@ export function CopilotWorkspace() {
         await refreshRailStats({ force: true });
 
         // Multi-leg: resume full remaining plan (not 2-deep follow_up only).
-        const remainingFromData = Array.isArray((response?.data as any)?.remaining_legs)
-          ? ((response!.data as any).remaining_legs as Array<{
-              op: string;
-              asset?: string | null;
-              amount?: number | null;
-              leverage?: number | null;
-              label?: string;
-            }>)
-          : null;
+        //
+        // Both field names carry the same thing: `remaining_legs` is the older next_step
+        // chain, `resume_legs` (with `can_resume`) is what the plan / MultiLegAgent path
+        // returns. The `executed` chain effect below was fixed to read both; THIS path —
+        // the one taken after a client wallet signature — still read only the first. So an
+        // approved plan signed in the wallet found `remainingFromData` null, skipped the
+        // resume, and fell through to the "final leg" branch, which announced the strategy
+        // was live after a single leg had settled.
+        const legsFromData = (key: string) =>
+          Array.isArray((response?.data as any)?.[key])
+            ? ((response!.data as any)[key] as Array<{
+                op: string;
+                asset?: string | null;
+                amount?: number | null;
+                leverage?: number | null;
+                label?: string;
+              }>)
+            : null;
+        const remainingFromData = legsFromData("remaining_legs") ?? legsFromData("resume_legs");
         const preferResume =
           (response?.data as any)?.prefer_resume_multi_leg === true ||
+          // Auto-approve is a standing instruction to keep going without asking.
+          ((response?.data as any)?.can_resume === true && autoApprove) ||
           (remainingFromData && remainingFromData.length > 0);
 
         // Advance hop legs to ok in the shared accumulator (and current payload).
@@ -1889,6 +1901,16 @@ export function CopilotWorkspace() {
           String(strategyMetaRef.current.strategy_summary || submitted || summary);
 
         if (hasStrategy && ranLegs.some((l) => l.status === "ok" || l.status === "done")) {
+          /**
+           * "All steps completed" only when they are. This branch is reached after the
+           * last signature the CLIENT was asked for, which is not the same as the last
+           * leg of the strategy: a leg still waiting on an amount was never staged, so it
+           * never asked for a signature. Announcing completion there told the user a
+           * delta-neutral carry was live when only its collateral leg had settled.
+           */
+          const unfinished = strategyStepsRef.current.filter(
+            (s) => !["ok", "done"].includes(String(s.status ?? "")),
+          );
           setResponse({
             kind: "executed",
             message: `Submitted with your wallet${result.hash ? ` · ${result.hash}` : ""}.`,
@@ -1900,7 +1922,9 @@ export function CopilotWorkspace() {
               ...strategyMetaRef.current,
               multi_leg: true,
               multi_leg_steps: strategyStepsRef.current,
-              headline: "All steps completed — strategy is live.",
+              headline: unfinished.length
+                ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled — ${unfinished.length} still to run.`
+                : "All steps completed — strategy is live.",
             },
           });
           if (!cancelledRef.current) {
@@ -1954,6 +1978,10 @@ export function CopilotWorkspace() {
     postCopilot,
     refreshRailStats,
     absorbStrategySteps,
+    // Read inside `preferResume`. Omitting it would capture the toggle's value from the
+    // render this callback was created in, so turning auto-approve on mid-strategy would
+    // not take effect until something else re-created the callback.
+    autoApprove,
   ]);
 
   /**

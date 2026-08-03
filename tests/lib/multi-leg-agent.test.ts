@@ -5,6 +5,7 @@ import {
   humanizeLegError,
   multiLegHeadline,
   multiLegUiData,
+  resumableLegsFromSteps,
 } from "@/lib/copilot/multi-leg-agent";
 import { routeMessage } from "@/lib/copilot/router";
 // multiLegUiData already imported above
@@ -148,5 +149,68 @@ describe("planner breadth + resume payload", () => {
     expect(data.can_resume).toBe(true);
     expect(Array.isArray(data.resume_legs)).toBe(true);
     expect((data.resume_legs as unknown[]).length).toBe(2);
+  });
+});
+
+describe("resumable legs keep amount-less steps", () => {
+  /** A delta-neutral carry after its collateral leg settled. */
+  const carryMidRun = [
+    {
+      index: 1,
+      op: "deposit_collateral",
+      label: "Deposit 50 BLUSDC as collateral",
+      asset: "BLUSDC",
+      amount: 50,
+      status: "ok" as const,
+      message: "settled",
+      tx_hash: "aad19ce0f1",
+    },
+    {
+      index: 2,
+      op: "borrow",
+      label: "Borrow XLM",
+      asset: "XLM",
+      amount: null,
+      status: "pending" as const,
+      message: "",
+    },
+    {
+      index: 3,
+      op: "lend",
+      label: "Lend XLM on Earn",
+      asset: "XLM",
+      amount: null,
+      status: "pending" as const,
+      message: "",
+    },
+  ];
+
+  it("keeps a leg whose amount is not known yet", () => {
+    // The amount filter used to require > 0, which made these legs invisible to the
+    // resume machinery: can_resume went false, the chain had nothing to continue, and the
+    // only way forward was re-sending the prompt — which re-planned and re-deposited.
+    const legs = resumableLegsFromSteps(carryMidRun);
+    expect(legs.map((l) => l.op)).toEqual(["borrow", "lend"]);
+    expect(legs[0].amount).toBeNull();
+    expect(legs[0].asset).toBe("XLM");
+  });
+
+  it("reports can_resume so the run can ask for the amount", () => {
+    const data = multiLegUiData({ steps: carryMidRun, summary: "Delta-neutral XLM carry" });
+    expect(data.can_resume).toBe(true);
+    expect((data.resume_legs as unknown[]).length).toBe(2);
+  });
+
+  it("still drops a malformed non-positive amount", () => {
+    const legs = resumableLegsFromSteps([
+      { ...carryMidRun[1], amount: 0 },
+      { ...carryMidRun[2], amount: -5 },
+    ]);
+    expect(legs).toHaveLength(0);
+  });
+
+  it("never offers a settled leg for resume", () => {
+    const legs = resumableLegsFromSteps(carryMidRun);
+    expect(legs.some((l) => l.op === "deposit_collateral")).toBe(false);
   });
 });

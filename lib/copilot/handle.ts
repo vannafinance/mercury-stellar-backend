@@ -352,10 +352,39 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
   // ── Resume multi-leg strategy (retry failed / continue remaining legs) ──
   if (req.resume_multi_leg?.legs?.length) {
+    /**
+     * A leg with NO amount is kept. `runPlan` will stop on it and return a
+     * `clarification`, which is how the UI knows to ask for the size — that is the
+     * intended path, not an error.
+     *
+     * Only a non-positive amount is dropped, because that is malformed rather than
+     * merely unknown. Requiring `amount > 0` here meant an amount-less leg was filtered
+     * out, `legs.length` fell to 0, and control fell through to full re-routing of
+     * `message` — the ORIGINAL prompt. That re-planned the whole strategy from scratch
+     * and returned a fresh plan_preview whose first leg was the deposit that had already
+     * settled, so approving it deposited the collateral a second time.
+     */
     const legs = req.resume_multi_leg.legs.filter(
-      (l) => l.op && l.amount != null && Number(l.amount) > 0,
+      (l) => l.op && (l.amount == null || Number(l.amount) > 0),
     );
-    if (legs.length) {
+    if (!legs.length) {
+      /**
+       * A resume was explicitly requested and nothing in it is runnable. Never fall
+       * through to re-routing: `message` is the original prompt, and re-planning it would
+       * re-execute legs that have already settled on chain. Say so instead.
+       */
+      console.warn("[copilot] resume_multi_leg: no runnable legs — refusing to re-plan");
+      return {
+        kind: "clarification",
+        message:
+          "I could not work out which steps are still outstanding, and I will not re-run the " +
+          "whole strategy because the earlier steps have already settled on chain. Tell me the " +
+          "next step you want, including its size.",
+        intent: { template_id: "resume_no_runnable_legs" },
+        request_id,
+      };
+    }
+    {
       const plan: Extract<RoutedIntent, { kind: "plan" }> = {
         kind: "plan",
         template_id: "multi_leg_resume",

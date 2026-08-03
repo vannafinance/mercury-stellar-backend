@@ -441,7 +441,25 @@ export function multiLegHeadline(steps: MultiLegStep[]): string {
   return "Strategy did not complete.";
 }
 
-/** Legs that can still be (re)run: failed, skipped, pending, needs_sign. */
+/**
+ * Legs that can still be (re)run: failed, skipped, pending, needs_sign, clarification.
+ *
+ * A leg with NO amount is included, and that is the whole point.
+ *
+ * This used to require `amount != null && amount > 0`, which made an amount-less leg
+ * invisible to the entire resume machinery: `resume_legs` came back empty, `can_resume`
+ * came back false, so the auto-approve chain had nothing to continue and the client's
+ * post-signature path fell through to "final leg" and declared the strategy live. A
+ * delta-neutral carry therefore deposited its collateral and stopped dead — the borrow
+ * and lend legs sat on "pending" forever, nothing ever asked for their size, and the
+ * user's only way forward was to re-send the prompt, which re-planned from scratch and
+ * deposited the collateral A SECOND TIME.
+ *
+ * Passing the amount-less leg through instead lets `runPlan` reach it and return its
+ * `clarification` status, which the run card renders as a "needs input" leg with a
+ * number field. Only a non-positive amount is dropped now, since that is malformed
+ * rather than merely unknown.
+ */
 export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
   op: string;
   asset?: string | null;
@@ -453,7 +471,7 @@ export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
     .filter((s) =>
       ["error", "skipped", "pending", "needs_sign", "blocked", "clarification"].includes(s.status),
     )
-    .filter((s) => s.amount != null && s.amount > 0)
+    .filter((s) => s.amount == null || s.amount > 0)
     .map((s) => ({
       op: s.op,
       asset: s.asset ?? null,
