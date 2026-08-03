@@ -8,7 +8,7 @@ interface AddressBadgeProps {
   address: string;
   /** Optional small label rendered before the address (e.g. "Account:"). */
   label?: string;
-  /** Stellar Expert network slug; testnet matches our deployed contracts. */
+  /** Stellar Expert network slug; mainnet uses `"public"`. */
   network?: "testnet" | "public";
   className?: string;
 }

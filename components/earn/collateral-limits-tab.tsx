@@ -16,20 +16,16 @@ const tableHeadings = [
   { label: "Limits Usage", id: "limits-usage" },
 ];
 
-// Map internal asset key → display symbol
+// Map internal asset key → display symbol (mainnet: one Circle USDC)
 const DISPLAY_SYMBOL: Record<string, string> = {
   XLM: "XLM",
-  USDC: "BLUSDC",
-  AQUARIUS_USDC: "AqUSDC",
-  SOROSWAP_USDC: "SoUSDC",
+  USDC: "USDC",
 };
 
 // Supply caps per asset (token units)
 const SUPPLY_CAPS: Record<string, number> = {
   XLM: 10000000,
   USDC: 1000000,
-  AQUARIUS_USDC: 1000000,
-  SOROSWAP_USDC: 1000000,
 };
 
 /**

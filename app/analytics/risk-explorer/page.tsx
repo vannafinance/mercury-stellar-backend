@@ -46,7 +46,7 @@ export default function RiskExplorerPage() {
 
       <RiskExplorer
         wallets={wallets}
-        chainName="Stellar (Soroban testnet)"
+        chainName="Stellar (Soroban mainnet)"
         tokenPrices={ACTIVE_ASSETS.reduce((acc, s) => {
           acc[s] = livePrices[s] ?? TOKEN_PRICES[s];
           return acc;

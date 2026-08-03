@@ -43,9 +43,22 @@ export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppresse
 
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
-  if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
-  if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
-  if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
+  // Mainnet: one Circle USDC. Collapse legacy testnet per-DEX aliases +
+  // display shorthand. Keep BLEND_* / AQ_* / SS_* tracking receipts intact
+  // (those are position receipts, not wallet USDC variants).
+  if (
+    normalized === "USDC" ||
+    normalized === "BLUSDC" ||
+    normalized === "BLEND_USDC" ||
+    normalized === "AQUSDC" ||
+    normalized === "AQUIRESUSDC" ||
+    normalized === "AQUARIUS_USDC" ||
+    normalized === "SOUSDC" ||
+    normalized === "SOROSWAPUSDC" ||
+    normalized === "SOROSWAP_USDC"
+  ) {
+    return "USDC";
+  }
   return normalized;
 };
 

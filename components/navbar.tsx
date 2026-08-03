@@ -952,7 +952,7 @@ export const Navbar = (props: Navbar) => {
                           </div>
                           <div className="flex-1">
                             <p className="text-[13px] font-semibold leading-tight">
-                              Stellar Testnet
+                              Stellar Mainnet
                             </p>
                             <p
                               className={`text-[11px] mt-0.5 ${
@@ -1328,7 +1328,7 @@ export const Navbar = (props: Navbar) => {
                           </div>
                           <div className="flex-1">
                             <p className="text-[13px] font-semibold leading-tight">
-                              Stellar Testnet
+                              Stellar Mainnet
                             </p>
                             <p
                               className={`text-[11px] mt-0.5 ${

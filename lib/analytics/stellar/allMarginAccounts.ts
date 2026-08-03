@@ -41,10 +41,11 @@ import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
 const STELLAR_CHAIN_ID = 0;
 
-// Public, funded testnet G-account used purely as the simulation source for
-// read-only contract queries. Mirrors `FALLBACK_SOURCE` in oracle-price.ts.
+// Public, funded mainnet G-account used purely as the simulation source for
+// read-only contract queries. Mirrors `FALLBACK_SOURCE` in oracle-price.ts
+// (`vanna_mainnet_deployer`).
 const READ_SOURCE_ADDRESS =
-  "GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D";
+  "GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP";
 
 const WAD = BigInt("1000000000000000000"); // 1e18
 

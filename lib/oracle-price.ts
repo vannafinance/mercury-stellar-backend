@@ -26,7 +26,7 @@ const PRICE_ALIASES: Record<string, string> = {
 
 // Static fallbacks used only when the oracle is unreachable on first probe
 // (network hiccup before any cache entry exists). Once we have a real price
-// it overrides this. Numbers reflect the long-run testnet prices.
+// it overrides this.
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
@@ -38,7 +38,7 @@ const FALLBACK_PRICES: Record<string, number> = {
 // Aligned to the ledger cadence (~5 s) so the price tracks the on-chain oracle
 // per ledger close, matching the app-wide tick pattern. Just under one ledger so
 // each tick reads fresh while still de-duping multiple same-ledger reads (with
-// the inflight map). Revisit on mainnet if oracle RPC cost warrants a longer TTL.
+// the inflight map).
 const PRICE_TTL_MS = 4_000;
 // On error we cache the fallback briefly so a flaky RPC doesn't trigger a
 // flood of retries from every component on the page.
@@ -65,10 +65,9 @@ const notify = () => {
   }
 };
 
-// We need a funded G-account to source simulation transactions. We use the
-// connected wallet when available and fall back to the testnet deployer key
-// for unauthenticated reads (e.g. landing-page price probes before connect).
-const FALLBACK_SOURCE = 'GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D';
+// Funded mainnet G-account for simulation source when no wallet is connected
+// (`vanna_mainnet_deployer`). Prefer the connected wallet when available.
+const FALLBACK_SOURCE = 'GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP';
 
 async function buildSimulationTx(
   server: StellarSdk.rpc.Server,

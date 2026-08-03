@@ -17,22 +17,6 @@ export const DropdownOptions = [
   "USDC",
 ];
 
-// Legacy ETH options (deprecated)
-export const LegacyDropdownOptions = [
-  "USDT",
-  "USDC",
-  "ETH",
-  "SCROLL",
-  "AVALANCHE",
-  "OPTIMISM",
-  "POLYGON",
-  "APE",
-  "KATANA",
-  "ARBITRUM",
-  "BASE",
-];
-
-
 export const iconPaths: Record<string, string> = {
   // Stellar assets
   XLM: "/coins/xlmbg.png",

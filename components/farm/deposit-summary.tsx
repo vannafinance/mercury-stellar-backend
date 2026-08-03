@@ -19,7 +19,7 @@ interface DepositSummaryProps {
   fromBorrowAmount?: number;
   /** Margin: XLM taken from own deposit collateral. */
   fromOwnCollateralAmount?: number;
-  /** Network label shown on the first row (defaults to "Stellar Testnet"). */
+  /** Network label shown on the first row (defaults to "Stellar Mainnet"). */
   networkLabel?: string;
   /** Network swatch colour for the small dot left of the label. */
   networkAccent?: string;
@@ -40,7 +40,7 @@ export const DepositSummary = ({
   supplyApyPct,
   fromBorrowAmount = 0,
   fromOwnCollateralAmount = 0,
-  networkLabel = "Stellar Testnet",
+  networkLabel = "Stellar Mainnet",
   networkAccent = "#703AE6",
 }: DepositSummaryProps) => {
   const { isDark } = useTheme();

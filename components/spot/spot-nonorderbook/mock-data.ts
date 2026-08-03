@@ -84,11 +84,11 @@ export const MOCK_TOKENS: Token[] = [
     isNative: true,
     isVerified: true,
   },
-  // Soroswap testnet tokens (wrapped XLM contract + USDC contract)
+  // Mainnet Stellar Asset Contracts (XLM SAC + Circle USDC)
   {
-    id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+    id: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
     symbol: "XLM",
-    name: "Stellar Lumens (Soroswap)",
+    name: "Stellar Lumens",
     logo: "/coins/xlm.png",
     decimals: 7,
     chain: "stellar",
@@ -96,9 +96,9 @@ export const MOCK_TOKENS: Token[] = [
     isVerified: true,
   },
   {
-    id: "CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F",
+    id: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
     symbol: "USDC",
-    name: "USD Coin (Soroswap)",
+    name: "USD Coin",
     logo: "/icons/usdc-icon.svg",
     decimals: 7,
     chain: "stellar",
