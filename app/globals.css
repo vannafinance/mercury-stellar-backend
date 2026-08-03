@@ -654,6 +654,176 @@ html.dark .plan-card,
   }
 }
 
+/* ── Run execution card ────────────────────────────────────────────────────
+   From the Claude Design `Run Execution Card.dc.html`. Self-contained for the same
+   reason as `.plan-card`: this is the only thing on screen while three signed
+   transactions move real money, so it owns every colour it paints.
+
+   The rule that matters most here: a leg must never read as done before it is done.
+   Status is carried by SHAPE + LABEL + COLOUR (dashed ring, square, spinner, check,
+   pause bars, cross) so pending / running / settled are distinguishable at a glance
+   without reading. `opacity` is not used anywhere — a "later leg" is a muted colour
+   token, never a faded box.
+
+   Contrast measured against each element's own surface (from the design):
+     light  card #ffffff : heading 18.9:1 · body 12.4:1 · muted 8.6:1
+            inset #f4f5f8 : body 11.8:1 · focus leg #f7f4ff : body 11.3:1
+     dark   card #16161d : heading 17.2:1 · body 14.3:1 · muted 8.6:1
+            inset #1e1e27 : body 12.9:1 · focus leg #221b3a : body 11.9:1 */
+.run-card {
+  --rc-surface: #ffffff;
+  --rc-inset: #f4f5f8;
+  --rc-focus-bg: #f7f4ff;
+  --rc-line: #d9dce3;
+  --rc-line-soft: #e7e9ef;
+  --rc-heading: #0e1116;
+  --rc-body: #262c38;
+  --rc-muted: #414a58;
+  --rc-quiet: #56606e;
+  --rc-accent: #4b1bc4;
+  --rc-accent-bd: #c9b6f6;
+  --rc-accent-soft: #ede6fd;
+  --rc-margin-fg: #3f1a9e;
+  --rc-margin-bg: #ede6fd;
+  --rc-margin-bd: #c9b6f6;
+  --rc-earn-fg: #08544a;
+  --rc-earn-bg: #dff2ee;
+  --rc-earn-bd: #a9d9cf;
+  --rc-farm-fg: #6a3d05;
+  --rc-farm-bg: #fbeed6;
+  --rc-farm-bd: #e8cf9c;
+  --rc-wallet-fg: #33404f;
+  --rc-wallet-bg: #eaedf2;
+  --rc-wallet-bd: #c3cad4;
+  --rc-ok-fg: #0a5c3f;
+  --rc-ok-bg: #e3f5ec;
+  --rc-ok-bd: #a8dcc4;
+  --rc-warn-fg: #6a3d05;
+  --rc-warn-bg: #fbeed6;
+  --rc-warn-bd: #e8cf9c;
+  --rc-danger-fg: #8c1620;
+  --rc-danger-bg: #fde9ea;
+  --rc-danger-bd: #f2bfc3;
+  --rc-track: #e2e4ea;
+  --rc-btn-fill: linear-gradient(135deg, #fc5457 0%, #6b2fd6 100%);
+  --rc-btn-fg: #ffffff;
+  --rc-btn-2-bd: #b9bfcb;
+  --rc-btn-2-fg: #1b2029;
+  --rc-field-bg: #ffffff;
+  --rc-field-bd: #9aa2b1;
+}
+
+html.dark .run-card,
+.dark .run-card {
+  --rc-surface: #16161d;
+  --rc-inset: #1e1e27;
+  --rc-focus-bg: #221b3a;
+  --rc-line: #3a3a46;
+  --rc-line-soft: #2b2b35;
+  --rc-heading: #f8f9fc;
+  --rc-body: #e6e9f0;
+  --rc-muted: #b9bfcd;
+  --rc-quiet: #a2a9b8;
+  --rc-accent: #c0a5ff;
+  --rc-accent-bd: #4a3a7d;
+  --rc-accent-soft: #2b2050;
+  --rc-margin-fg: #cdb8ff;
+  --rc-margin-bg: #2b2050;
+  --rc-margin-bd: #4a3a7d;
+  --rc-earn-fg: #8ce8d2;
+  --rc-earn-bg: #0f3730;
+  --rc-earn-bd: #1f5b4f;
+  --rc-farm-fg: #f6cf90;
+  --rc-farm-bg: #3b2a11;
+  --rc-farm-bd: #5f4620;
+  --rc-wallet-fg: #cdd3df;
+  --rc-wallet-bg: #262631;
+  --rc-wallet-bd: #454552;
+  --rc-ok-fg: #86e8b6;
+  --rc-ok-bg: #0e3326;
+  --rc-ok-bd: #1d5a41;
+  --rc-warn-fg: #f6cf90;
+  --rc-warn-bg: #2a2113;
+  --rc-warn-bd: #54401c;
+  --rc-danger-fg: #ffb3b8;
+  --rc-danger-bg: #3a1a1d;
+  --rc-danger-bd: #6b2b31;
+  --rc-track: #2f2f3a;
+  --rc-btn-fill: linear-gradient(135deg, #ff6b6e 0%, #8557ef 100%);
+  --rc-btn-fg: #ffffff;
+  --rc-btn-2-bd: #4d4d5c;
+  --rc-btn-2-fg: #eceef4;
+  --rc-field-bg: #101016;
+  --rc-field-bd: #5b5b6c;
+}
+
+/* Border and text colour for the secondary/quiet buttons live here, not inline: an
+   inline `color` outranks a stylesheet `:hover` and the tint would never land. */
+.run-card .rc-btn-s {
+  border: 1px solid var(--rc-btn-2-bd);
+  color: var(--rc-btn-2-fg);
+}
+.run-card .rc-btn-q {
+  border: 1px solid transparent;
+  color: var(--rc-quiet);
+}
+.run-card .rc-btn-max {
+  border: 1px solid var(--rc-warn-bd);
+  color: var(--rc-warn-fg);
+}
+.run-card .rc-btn-p:hover:not(:disabled) {
+  filter: saturate(1.14);
+}
+.run-card .rc-btn-s:hover,
+.run-card .rc-btn-max:hover {
+  border-color: var(--rc-accent);
+  color: var(--rc-accent);
+}
+.run-card .rc-btn-q:hover {
+  color: var(--rc-body);
+}
+.run-card .rc-btn-p:focus-visible,
+.run-card .rc-btn-s:focus-visible,
+.run-card .rc-btn-q:focus-visible,
+.run-card .rc-btn-max:focus-visible,
+.run-card .rc-field input:focus-visible {
+  outline: 3px solid var(--rc-accent);
+  outline-offset: 2px;
+}
+.run-card .rc-field:focus-within {
+  border-color: var(--rc-accent);
+}
+/* The field owns its outline via :focus-within above; the inner input must not draw
+   a second one on top of it. */
+.run-card .rc-field input:focus {
+  outline: none;
+}
+
+@keyframes rc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rc-blink {
+  0%,
+  100% {
+    background: var(--rc-accent);
+  }
+  50% {
+    background: var(--rc-accent-soft);
+  }
+}
+
+@keyframes rc-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 @keyframes cp-in {
   from {
     opacity: 0;

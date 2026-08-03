@@ -55,7 +55,12 @@ export interface FrozenPlan {
 
 type PlanIntent = Extract<RoutedIntent, { kind: "plan" }>;
 
-const VENUE_BY_OP: Record<string, PlanStepView["venue"]> = {
+/**
+ * Exported so the live run card badges legs from the same table the plan card does.
+ * A second copy would drift, and a leg labelled with the wrong venue is precisely the
+ * mistake the badge exists to prevent.
+ */
+export const VENUE_BY_OP: Record<string, PlanStepView["venue"]> = {
   lend: "earn",
   redeem: "earn",
   deposit_collateral: "margin",

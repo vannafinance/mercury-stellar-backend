@@ -40,6 +40,8 @@ import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } f
 import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
+import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
+import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
 import { legKey } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
@@ -274,6 +276,22 @@ function txUrl(hash: string): string {
   return `https://stellar.expert/explorer/testnet/tx/${hash}`;
 }
 
+/** Key the liquidation guardian stores the user's "keep HF above X" floor under. */
+const GUARDIAN_FLOOR_KEY = "vanna_copilot_guardian_min_hf";
+/**
+ * The floor the guardian actually enforces. Shared with the run card's meter so the tick
+ * labelled "your floor" and the level that triggers an auto-repay cannot disagree.
+ */
+function readGuardianFloor(): number {
+  try {
+    const raw = localStorage.getItem(GUARDIAN_FLOOR_KEY);
+    const n = raw != null ? Number(raw) : NaN;
+    return Number.isFinite(n) && n >= 1 ? n : 1.3;
+  } catch {
+    return 1.3;
+  }
+}
+
 interface LogLeg {
   label: string;
   tool: string;
@@ -467,8 +485,18 @@ function StepList({ steps, running }: { steps: Step[]; running: boolean }) {
   );
 }
 
+/**
+ * A leg as the server sends it. `multiLegUiData` spreads the whole MultiLegStep, so
+ * op/asset/amount arrive too — declared here rather than cast at each use site, because
+ * the run card badges legs by `op` and getting that wrong mislabels the venue.
+ * `index` is 1-based (handle.ts increments before assigning).
+ */
 type MultiLegStepUi = {
   index?: number;
+  op?: string;
+  asset?: string | null;
+  amount?: number | null;
+  leverage?: number | null;
   label?: string;
   status?: string;
   tx_hash?: string | null;
@@ -2073,15 +2101,7 @@ export function CopilotWorkspace() {
     if (!sessionSigning || !address || !effHasAccount) return;
     if (loading || signing) return;
 
-    const readFloor = (): number => {
-      try {
-        const raw = localStorage.getItem("vanna_copilot_guardian_min_hf");
-        const n = raw != null ? Number(raw) : NaN;
-        return Number.isFinite(n) && n >= 1 ? n : 1.3;
-      } catch {
-        return 1.3;
-      }
-    };
+    const readFloor = readGuardianFloor;
 
     const tick = async () => {
       await refreshRailStats({ force: true });
@@ -2295,6 +2315,98 @@ export function CopilotWorkspace() {
     return out;
   }, [loading, response, strategySteps]);
 
+  /**
+   * The same legs the agent-run list shows, in the shape the run card renders.
+   *
+   * Two things are derived here rather than sent by the server:
+   *   - `running`. The server has no such status — a leg is either not started or it has
+   *     a result. But while a request is on the wire, exactly one leg is in flight: the
+   *     first one without a terminal result. Marking it lets the card show a spinner and
+   *     an elapsed time instead of calling a live leg "pending".
+   *   - the venue, from VENUE_BY_OP — the same table the plan card badges with.
+   */
+  const TERMINAL_LEG = useMemo(
+    () =>
+      new Set([
+        "ok",
+        "done",
+        "signed_and_submitted",
+        "error",
+        "blocked",
+        "preflight_blocked",
+        "stopped",
+        "stopped_hf",
+        "skipped",
+      ]),
+    [],
+  );
+  const runLegs = useMemo<RunLeg[]>(() => {
+    const src: MultiLegStepUi[] = strategySteps.length
+      ? strategySteps
+      : Array.isArray((response?.data as { multi_leg_steps?: unknown })?.multi_leg_steps)
+        ? ((response!.data as { multi_leg_steps: MultiLegStepUi[] }).multi_leg_steps)
+        : [];
+    if (!src.length) return [];
+    const inFlightIdx = loading
+      ? src.findIndex((s) => !TERMINAL_LEG.has(String(s.status ?? "")))
+      : -1;
+    return src.map((s, i) => {
+      const op = String(s.op ?? "step");
+      const amt = s.amount;
+      const hasAmt = amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0;
+      return {
+        n: typeof s.index === "number" && s.index > 0 ? s.index : i + 1,
+        venue: VENUE_BY_OP[op] ?? "other",
+        op,
+        label: s.label || op.replace(/_/g, " "),
+        amount: hasAmt
+          ? Number(amt).toLocaleString(undefined, { maximumFractionDigits: 7 })
+          : null,
+        asset: s.asset ?? null,
+        status: toRunLegStatus(s.status, i === inFlightIdx),
+        txHash: s.tx_hash ? truncHash(String(s.tx_hash)) : null,
+        // The server's `message` is a humanized reason. Only surface it where it is one:
+        // on a leg that failed or is asking for something, never on a settled leg.
+        error:
+          s.message && toRunLegStatus(s.status) === "failed" ? String(s.message) : null,
+        question:
+          s.message && toRunLegStatus(s.status) === "needs_input" ? String(s.message) : null,
+      };
+    });
+  }, [strategySteps, response, loading, TERMINAL_LEG]);
+
+  /**
+   * Resume from a paused leg once the user supplies the amount the plan never carried.
+   * The leg goes first with its new amount, then every leg still unstarted after it —
+   * the server runs them in order, so the rest of the strategy continues untouched.
+   */
+  const submitLegAmount = useCallback(
+    (leg: RunLeg, amount: number) => {
+      const rest = runLegs
+        .filter((l) => l.n > leg.n && l.status !== "ok")
+        .map((l) => ({
+          op: l.op,
+          asset: l.asset,
+          amount: l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null,
+          label: l.label,
+        }));
+      const summary =
+        String(strategyMetaRef.current.strategy_summary || submitted || "Continue strategy");
+      void resumeMultiLeg(
+        [{ op: leg.op, asset: leg.asset, amount, label: leg.label }, ...rest],
+        summary,
+      );
+    },
+    [runLegs, resumeMultiLeg, submitted],
+  );
+
+  /**
+   * Read after mount, not during render: localStorage does not exist during SSR, and
+   * defaulting to 1.3 on the server while the stored floor is 1.4 is a hydration mismatch.
+   */
+  const [guardianFloor, setGuardianFloor] = useState(1.3);
+  useEffect(() => setGuardianFloor(readGuardianFloor()), []);
+
   const sim = response?.preview?.simulation ?? null;
   const reasons = response?.preview?.risk?.reasons ?? [];
   const decision = response?.preview?.risk?.decision;
@@ -2455,10 +2567,43 @@ export function CopilotWorkspace() {
               <div style={{ animation: "cp-in 300ms ease-out forwards" }}>
                 {submitted && <p className="mb-[18px] text-h7 leading-snug text-vgray-900">{submitted}</p>}
 
-                <Eyebrow n="02">Agent run</Eyebrow>
-                <StepList steps={steps} running={loading} />
+                {/* A multi-leg run gets the live execution card — one card that advances
+                    in place, narrating each leg as it settles. The plain step list stays
+                    for single-turn work, where there is no chain to narrate. */}
+                {multiLeg && runLegs.length > 0 ? (
+                  <RunExecutionCard
+                    eyebrow="02"
+                    legs={runLegs}
+                    hf={liveHf}
+                    floor={
+                      // "keep me above 1.4" in the prompt wins over the stored default.
+                      strategyMetaRef.current.min_hf != null &&
+                      Number.isFinite(Number(strategyMetaRef.current.min_hf))
+                        ? Number(strategyMetaRef.current.min_hf)
+                        : guardianFloor
+                    }
+                    busy={loading}
+                    signerLive={sessionSigning}
+                    signerText={
+                      sessionSigning
+                        ? "vanna embedded signer"
+                        : walletKind === "privy"
+                          ? "privy wallet"
+                          : "freighter wallet"
+                    }
+                    onCancel={loading ? cancelInFlight : undefined}
+                    onSubmitAmount={submitLegAmount}
+                  />
+                ) : (
+                  <>
+                    <Eyebrow n="02">Agent run</Eyebrow>
+                    <StepList steps={steps} running={loading} />
+                  </>
+                )}
 
-                {loading && (
+                {/* The run card carries its own in-flight indicator; a second spinner
+                    underneath read as a separate thing still loading. */}
+                {loading && !(multiLeg && runLegs.length > 0) && (
                   <div className="mt-5 flex items-center gap-2 text-body-2 text-violet-500">
                     <Loader2 size={15} className="animate-spin" /> working…
                   </div>
