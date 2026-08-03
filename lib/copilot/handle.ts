@@ -837,7 +837,22 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // LLM plan-then-execute (primary understanding for free-form multi-leg).
   // Keywords/extractors already ran; model fills gaps and free-form English.
   // Allowlist + sanitize keep this safe (not unrestricted tool calling).
-  if (shouldLlmPlan(message) && (routed.kind === "plan" || looksLikeMultiGoal(message))) {
+  //
+  // Skipped entirely once `routed` is a deterministically-recognized carry plan
+  // (template_id "delta_neutral_carry", from step-extractor.ts). That decomposition
+  // needs no network call and is already correct; a Vertex round-trip here could only
+  // replace it with a plan of equal or greater length that still has to win the
+  // `>=` comparison below — and this exact strategy has previously come back from the
+  // model with the wrong asset on the borrow leg and the legs out of order. Once the
+  // deterministic path has it right, a model call is pure downside: latency with a
+  // chance of a wrong swap, no chance of an improvement.
+  const isConfirmedCarryPlan =
+    routed.kind === "plan" && routed.template_id === "delta_neutral_carry";
+  if (
+    !isConfirmedCarryPlan &&
+    shouldLlmPlan(message) &&
+    (routed.kind === "plan" || looksLikeMultiGoal(message))
+  ) {
     try {
       const llmPlan = await llmPlanStrategy(message, { trader, smartAccount });
       if (llmPlan && llmPlan.kind === "plan" && llmPlan.steps.length > 0) {

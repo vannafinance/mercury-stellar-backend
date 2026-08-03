@@ -34,6 +34,43 @@ describe("step-extractor", () => {
     expect(lend?.amount).toBe(20);
   });
 
+  it("decomposes a delta-neutral carry with no 'then' separator", () => {
+    // This exact prompt has no clause-split marker ("then"/"after that"/";"), so it used
+    // to arrive at clauseToStep as ONE clause, whose first matching rule (bare "deposit")
+    // collapsed the whole strategy to a single deposit_collateral write — the borrow and
+    // lend legs were silently dropped, and the run finished after one transaction.
+    const p = extractOrderedPlan(
+      "Deposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health",
+    );
+    expect(p?.kind).toBe("plan");
+    expect(p?.template_id).toBe("delta_neutral_carry");
+    expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow", "lend"]);
+    expect(p!.steps[0]).toMatchObject({ asset: "BLUSDC", amount: 50 });
+    // The carry asset is XLM, not BLUSDC — borrowing the deposited asset back would not
+    // be delta-neutral. This is the second bug already seen on this exact prompt.
+    expect(p!.steps[1]).toMatchObject({ op: "borrow", asset: "XLM" });
+    expect(p!.steps[2]).toMatchObject({ op: "lend", asset: "XLM" });
+    // Never invented: the user gave no borrow/lend amount, so neither leg gets one.
+    expect(p!.steps[1].amount).toBeNull();
+    expect(p!.steps[2].amount).toBeNull();
+  });
+
+  it("recognizes carry-trade phrasing without an adjacent asset", () => {
+    const p = extractOrderedPlan("run a carry trade with 200 USDC, borrowing and lending XLM");
+    expect(p?.kind).toBe("plan");
+    expect(p?.template_id).toBe("delta_neutral_carry");
+    expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow", "lend"]);
+    expect(p!.steps[0]).toMatchObject({ asset: "USDC", amount: 200 });
+    expect(p!.steps[1].asset).toBe("XLM");
+  });
+
+  it("does not treat an unrelated 'and ... health' prompt as a carry strategy", () => {
+    const p = extractOrderedPlan("deposit 10 XLM and check my health factor");
+    // No "carry"/"delta-neutral" vocabulary present — must fall through to the
+    // ordinary clause extractor, which finds only one write and returns null.
+    expect(p).toBeNull();
+  });
+
   it("upgrades a collapsed single write to a plan", () => {
     const single = {
       kind: "write" as const,

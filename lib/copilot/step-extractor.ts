@@ -196,6 +196,76 @@ export function clauseToStep(
   return null;
 }
 
+const VOLATILE_ASSETS = new Set(["XLM", "AQUA"]);
+const STABLE_ASSETS = new Set(["BLUSDC", "AQUSDC", "SOUSDC", "USDC", "EURC"]);
+
+function isCarryStrategy(message: string): boolean {
+  const t = message.toLowerCase();
+  if (/\b(delta[- ]?neutral)\b/.test(t) && /\bcarry\b/.test(t)) return true;
+  if (/\bcarry[- ]trade\b/.test(t)) return true;
+  if (/\bbasis[- ]trade\b/.test(t)) return true;
+  if (/\bcash[- ]and[- ]carry\b/.test(t)) return true;
+  return false;
+}
+
+/**
+ * Deterministic decomposition of a named delta-neutral / carry-trade strategy.
+ *
+ * This bypasses `splitStrategyClauses` + `clauseToStep` entirely. Those split on
+ * "then" / "after that" / ";" — a prompt like "deposit my 50 BLUSDC and run a
+ * delta-neutral XLM carry, keep me above 1.4 health" has none of those markers, so it
+ * arrives as ONE clause. `clauseToStep` has no rule for "carry" at all, so its first
+ * matching rule wins: `/\bdeposit\b/.test(t)` fires and the whole message collapses to
+ * a single `deposit_collateral` write — the rest of the sentence is silently dropped.
+ *
+ * The LLM planner (llm-planner.ts) already knows this vocabulary, but it is a network
+ * call: when Vertex is slow, rate-limited, or returns a malformed plan, the fallback is
+ * exactly the single-write collapse above. This function makes the common case — one
+ * named strategy, one stable deposit, one volatile carry asset — correct with zero
+ * network dependency, so the LLM path only has to cover phrasing this does not.
+ *
+ * Produces: deposit_collateral(stable, amount) → borrow(carry, null) → lend(carry,
+ * null). Borrow/lend amount is deliberately left null rather than mirroring the
+ * deposit amount — the two assets differ, so "the same amount" from the strategy
+ * description means value-equivalent, not numerically equal, and that conversion is
+ * not this function's job to invent. A null amount below asks the user for it as a
+ * `needs_input` leg once the deposit has settled, never guesses it.
+ */
+function deltaNeutralCarrySteps(message: string): ExtractedStep[] | null {
+  if (!isCarryStrategy(message)) return null;
+  const pairs = allAmtAssets(message);
+  if (!pairs.length) return null;
+
+  // Primary signal: the asset named directly before "carry" ("XLM carry").
+  const adjacency = message.match(new RegExp(`\\b(${ASSET})\\s+carry\\b`, "i"));
+  let carryAsset = adjacency ? adjacency[1].toUpperCase() : null;
+
+  if (!carryAsset) {
+    // "carry trade" / "basis trade" / "cash and carry" without the asset adjacent to
+    // the word "carry" — fall back to the domain split: the carry leg is the volatile
+    // asset, the deposit is the stable one. Checked first against pairs (asset WITH an
+    // amount), then against bare mentions ("lending XLM" names the asset with no
+    // number attached, since the carry leg's amount is never given up front).
+    carryAsset =
+      pairs.find((p) => VOLATILE_ASSETS.has(p.asset))?.asset ??
+      [...VOLATILE_ASSETS].find((a) => new RegExp(`\\b${a}\\b`, "i").test(message)) ??
+      null;
+  }
+  if (!carryAsset) return null;
+
+  const depositPair =
+    pairs.find((p) => p.asset === carryAsset ? false : STABLE_ASSETS.has(p.asset)) ||
+    pairs.find((p) => p.asset !== carryAsset) ||
+    null;
+  if (!depositPair || depositPair.asset === carryAsset) return null;
+
+  return [
+    { kind: "write", op: "deposit_collateral", asset: depositPair.asset, amount: depositPair.amount },
+    { kind: "write", op: "borrow", asset: carryAsset, amount: null },
+    { kind: "write", op: "lend", asset: carryAsset, amount: null },
+  ];
+}
+
 /**
  * Extract an ordered multi-leg plan from free-form English.
  * Returns null if fewer than 2 write steps (not multi-leg).
@@ -206,22 +276,27 @@ export function extractOrderedPlan(message: string): Extract<RoutedIntent, { kin
   const globalLev =
     leverageM && Number.isFinite(Number(leverageM[1])) ? Number(leverageM[1]) : null;
 
-  const clauses = splitStrategyClauses(message);
+  const carry = deltaNeutralCarrySteps(message);
   const steps: ExtractedStep[] = [];
 
-  for (const clause of clauses) {
-    const step = clauseToStep(clause, { leverage: globalLev, minHf });
-    if (!step) continue;
-    // Drop HF-floor-as-amount
-    if (
-      step.amount != null &&
-      minHf != null &&
-      Math.abs(step.amount - minHf) < 1e-9 &&
-      !new RegExp(`${step.amount}\\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)`, "i").test(message)
-    ) {
-      step.amount = null;
+  if (carry) {
+    steps.push(...carry);
+  } else {
+    const clauses = splitStrategyClauses(message);
+    for (const clause of clauses) {
+      const step = clauseToStep(clause, { leverage: globalLev, minHf });
+      if (!step) continue;
+      // Drop HF-floor-as-amount
+      if (
+        step.amount != null &&
+        minHf != null &&
+        Math.abs(step.amount - minHf) < 1e-9 &&
+        !new RegExp(`${step.amount}\\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)`, "i").test(message)
+      ) {
+        step.amount = null;
+      }
+      steps.push(step);
     }
-    steps.push(step);
   }
 
   // Deduplicate consecutive identical ops
@@ -243,8 +318,15 @@ export function extractOrderedPlan(message: string): Extract<RoutedIntent, { kin
 
   return {
     kind: "plan",
-    template_id: "extracted_multi_goal",
-    summary: `Multi-step strategy: ${parts.join(" → ")}`,
+    // Distinct from the generic "extracted_multi_goal": handle.ts checks this to skip
+    // the LLM-planner override for a carry plan. Once the deterministic decomposition
+    // has correctly recognized the strategy, a model call returning a DIFFERENT but
+    // equal-length plan must not be allowed to replace it with a wrong one — that
+    // "same step count, different content" swap is exactly how this broke before.
+    template_id: carry ? "delta_neutral_carry" : "extracted_multi_goal",
+    summary: carry
+      ? `Delta-neutral carry: deposit ${carry[0].amount ?? "?"} ${carry[0].asset}, borrow ${carry[1].asset}, lend ${carry[1].asset}`
+      : `Multi-step strategy: ${parts.join(" → ")}`,
     steps: deduped.map((s) => ({
       kind: "write" as const,
       op: s.op,
