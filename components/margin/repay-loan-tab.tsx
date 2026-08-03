@@ -49,9 +49,11 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   if (!raw) return null;
   const cleaned = raw.replace(/^0x/i, "").toUpperCase();
   if (cleaned === "XLM") return "XLM";
-  if (cleaned === "USDC" || cleaned === "BLUSDC" || cleaned === "BLEND_USDC") return "BLUSDC";
-  if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "AqUSDC";
-  if (cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC") return "SoUSDC";
+  if (
+    cleaned === "USDC" || cleaned === "BLUSDC" || cleaned === "BLEND_USDC" ||
+    cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC" ||
+    cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC"
+  ) return "USDC";
   return null;
 };
 
@@ -70,14 +72,16 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
-  const normalizeContractTokenSymbol = (symbol: string) =>
-    symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
-      ? "BLUSDC"
-      : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-        ? "AQUSDC"
-        : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
-          ? "SOUSDC"
-          : symbol;
+  const normalizeContractTokenSymbol = (symbol: string) => {
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUIRESUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAPUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC" || symbol === "AquiresUSDC" || symbol === "SoroswapUSDC"
+    ) return "USDC";
+    return symbol === "XLM" || s === "XLM" ? "XLM" : symbol;
+  };
   // Wallet and margin account state
   const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
@@ -129,7 +133,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
-  const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
@@ -174,9 +178,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       const balances = await ContractService.getAllTokenBalances(address);
       const token = normalizeContractTokenSymbol(selectedToken);
 
-      if (token === "BLUSDC") return parseFloat(balances.BLEND_USDC) || 0;
-      if (token === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
-      if (token === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
+      if (token === "USDC" || token === "BLUSDC" || token === "AQUSDC" || token === "SOUSDC")
+        return parseFloat(balances.USDC || "0") || 0;
 
       return parseFloat(balances.XLM) || 0;
     } catch (error) {

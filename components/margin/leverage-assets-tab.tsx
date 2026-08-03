@@ -76,10 +76,14 @@ export const LeverageAssetsTab = () => {
   const { isDark } = useTheme();
   const { refreshBalances } = useWallet();
   const normalizeContractTokenSymbol = (symbol: string) => {
-    if (symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC") return "BLUSDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC") return "AQUSDC";
-    if (symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC") return "SOUSDC";
-    return symbol;
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUIRESUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAPUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC" || symbol === "AquiresUSDC" || symbol === "SoroswapUSDC"
+    ) return "USDC";
+    return symbol === "XLM" || s === "XLM" ? "XLM" : symbol;
   };
   // Component state
   const hasMarginAccount = useMarginAccountInfoStore((state) => state.hasMarginAccount);
@@ -177,7 +181,7 @@ export const LeverageAssetsTab = () => {
 
   // Live oracle prices for USD conversions in deposit/borrow flows. Aliased
   // tokens (BLUSDC/AQUSDC/SOUSDC) resolve to USDC inside oracle-price.ts.
-  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC']);
 
   // Same per-account /api/account snapshot the page HEADER reads (React Query
   // dedupes by key — no extra fetch; it's already cached in memory + localStorage
@@ -677,12 +681,8 @@ export const LeverageAssetsTab = () => {
 
         const walletBalanceForAsset = (asset: string): number => {
           switch (normalizeContractTokenSymbol(asset)) {
-            case "BLUSDC":
-              return parseFloat(tokenBalances.USDC || tokenBalances.BLEND_USDC || "0") || 0;
-            case "AQUSDC":
-              return parseFloat(tokenBalances.AQUARIUS_USDC || "0") || 0;
-            case "SOUSDC":
-              return parseFloat(tokenBalances.SOROSWAP_USDC || "0") || 0;
+            case "USDC":
+              return parseFloat(tokenBalances.USDC || "0") || 0;
             default:
               return parseFloat(tokenBalances.XLM || "0") || 0;
           }
@@ -693,16 +693,8 @@ export const LeverageAssetsTab = () => {
           const available = walletBalanceForAsset(item.asset);
           if (item.amount > available + XLM_DEPOSIT_EPSILON) {
             if (available <= XLM_DEPOSIT_EPSILON) {
-              const faucetHint =
-                item.asset === "BLUSDC"
-                  ? "Blend USDC"
-                  : item.asset === "AQUSDC"
-                    ? "Aquarius USDC"
-                    : item.asset === "SOUSDC"
-                      ? "Soroswap USDC"
-                      : item.asset;
               toast.error(
-                `You have no ${item.asset} in your wallet. Use the Faucet to mint ${faucetHint} first, then retry.`,
+                `You have no ${item.asset} in your wallet. Buy or bridge Circle USDC on Stellar mainnet, then retry.`,
               );
             } else {
               toast.error(

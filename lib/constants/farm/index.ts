@@ -11,13 +11,13 @@ export const farmTableHeadings = [
 
 export const farmTableBody = {
   rows: [
-    // Row 0: Soroswap AMM, XLM/USDC on Stellar (Testnet)
+    // Row 0: Soroswap AMM, XLM/USDC on Stellar (Mainnet)
     {
       cell: [
         {
           chain: "XLM",
           titles: ["XLM", "USDC"],
-          tags: ["Soroswap", "0.30%", "Testnet"],
+          tags: ["Soroswap", "0.30%", "Mainnet"],
         },
         {
           title: "Soroswap",
@@ -45,13 +45,13 @@ export const farmTableBody = {
         },
       ],
     },
-    // Row 1: Aquarius AMM, XLM/USDC on Stellar (Testnet)
+    // Row 1: Aquarius AMM, XLM/USDC on Stellar (Mainnet)
     {
       cell: [
         {
           chain: "XLM",
           titles: ["XLM", "USDC"],
-          tags: ["Aquarius", "0.30%", "Testnet"],
+          tags: ["Aquarius", "0.30%", "Mainnet"],
         },
         {
           title: "Aquarius",
@@ -388,8 +388,8 @@ export const spotBalancesTableHeadings = [
   { label: "Value (USD)", id: "value", icon: true },
 ];
 
-// Blend Capital uses a SINGLE pool contract for all assets.
-// The pool address is CCEBVDYM32YNYCVNRXQKDFFPISJJCV557CDZEIRBEE4NCV4KHPQ44HGF (TestnetV2).
+// YieldBlox / Blend uses a SINGLE pool contract for all assets.
+// YieldBlox V2 pool: CCCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS
 // The asset to deposit/withdraw is specified via the `tokens_out` field in ExternalProtocolCall.
 export const BLEND_POOL_ASSETS_CONFIG = [
   { symbol: "XLM", iconPath: "/coins/xlmbg.png" },

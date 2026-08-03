@@ -1,13 +1,15 @@
 // Blend Capital integration: deposit/withdraw into the single shared Blend pool
 // via the Vanna smart account, plus reserve-stats and position reads. APY math
-// mirrors blend-sdk-js so figures match testnet.blend.capital exactly.
+// mirrors blend-sdk-js so figures match mainnet.blend.capital exactly.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@/lib/wallet-adapter';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
+import { getBlendPoolAddress, getProtocolConfig, getUsdcAddress, getXlmAddress } from './protocol-config';
+import { execViaAccountManager } from './exec-helpers';
 
-/** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
-export type BlendAction = 'Deposit' | 'Withdraw';
+/** Blend exec action — Deposit mapped to on-chain ExternalAction::Supply. */
+export type BlendAction = 'Supply' | 'Withdraw';
 
 /** Asset display info (icons/UI only — pool address is fetched from Registry at runtime). */
 export interface BlendPoolAsset {
@@ -20,8 +22,8 @@ export interface BlendPoolAsset {
 /**
  * Asset display configuration for Blend pools.
  * NOTE: There is ONE Blend Capital pool contract that handles all assets.
- * The pool address is NOT per-token — it is fetched dynamically from the Registry
- * via `get_blend_pool_address()`.
+ * The pool address is NOT per-token — it is fetched dynamically from
+ * Registry.get_protocol_config().blend_pool (fallback: CONTRACT_ADDRESSES.BLEND_POOL).
  */
 export const BLEND_POOL_ASSETS: BlendPoolAsset[] = [
   {
@@ -93,139 +95,39 @@ export interface BlendEvent {
 
 /**
  * Stateless façade over the single shared Blend Capital pool, reached through
- * the Vanna smart account (AccountManager.execute) for writes and via Soroban
+ * the Vanna smart account (AccountManager.exec) for writes and via Soroban
  * simulation for reads. Amounts crossing the contract boundary are WAD (1e18);
  * b-token / tracking balances are 7-decimal; reserve APYs mirror blend-sdk-js.
  * All methods are static — no instance state.
  */
 export class BlendService {
   /**
-   * Fetch the Blend Capital pool address from the Registry contract.
-   * Returns null if no Blend pool is configured.
-   *
-   * Registry method: `get_blend_pool_address()` → Address (panics, so simulation
-   * fails, if nothing has been registered yet — there is no separate `has_*`
-   * probe function on the deployed contract).
+   * Fetch the Blend Capital pool address from Registry.get_protocol_config().
+   * Falls back to CONTRACT_ADDRESSES.BLEND_POOL. Returns null if neither is set.
    */
   static async getBlendPoolAddressFromRegistry(): Promise<string | null> {
     try {
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const tempKeypair = StellarSdk.Keypair.random();
-      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('get_blend_pool_address'))
-        .setTimeout(30)
-        .build();
-
-      const getSim = await server.simulateTransaction(getTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) {
-        console.warn('[BlendService] get_blend_pool_address simulation failed — Blend pool not configured in Registry');
-        return null;
-      }
-
-      const address = StellarSdk.scValToNative(getSim.result.retval);
-      return address as string;
+      return await getBlendPoolAddress();
     } catch (error: any) {
       console.error('[BlendService] getBlendPoolAddressFromRegistry error:', error);
-      return null;
+      return CONTRACT_ADDRESSES.BLEND_POOL || null;
     }
   }
 
-  /**
-   * Build the ExternalProtocolCall XDR bytes for a Blend deposit or withdraw.
-   *
-   * The struct is serialized as ScVal::Map with alphabetically sorted keys:
-   *   amount_in, amount_out, fee_fraction, is_token_pair, margin_account,
-   *   min_liquidity_out, protocol_address, token_pair_ratio, tokens_in,
-   *   tokens_out, type_action
-   *
-   * @param blendPoolAddress - The Blend Capital pool address from Registry
-   * @param action - 'Deposit' or 'Withdraw'
-  * @param tokenSymbol - 'XLM' or 'USDC'
-   * @param amountWad - Amount in WAD (18 decimals)
-   * @param marginAccountAddress - User's smart account address
-   */
-  static buildExternalProtocolCallBytes(
-    blendPoolAddress: string,
-    action: BlendAction,
-    tokenSymbol: string,
-    amountWad: bigint,
-    marginAccountAddress: string
-  ): Buffer {
-    const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
-
-    // amount_in: Vec<U256> = [] (empty for Blend)
-    const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    // amount_out: Vec<U256> = [amountWad]
-    const amountOut = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.nativeToScVal(amountWad, { type: 'u256' }),
-    ]);
-
-    // fee_fraction: u32 = 0
-    const feeFraction = StellarSdk.xdr.ScVal.scvU32(0);
-
-    // is_token_pair: bool = false
-    const isTokenPair = StellarSdk.xdr.ScVal.scvBool(false);
-
-    // margin_account: Address (the smart account)
-    const marginAccount = StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' });
-
-    // min_liquidity_out: U256 = 0
-    const minLiquidityOut = StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' });
-
-    // protocol_address: Address = Blend Capital pool address (from Registry)
-    const protocolAddress = StellarSdk.nativeToScVal(blendPoolAddress, { type: 'address' });
-
-    // token_pair_ratio: u64 = 0
-    const tokenPairRatio = StellarSdk.xdr.ScVal.scvU64(
-      StellarSdk.xdr.Uint64.fromString('0')
-    );
-
-    // tokens_in: Vec<Symbol> = [] (empty for Blend)
-    const tokensIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    // tokens_out: Vec<Symbol> = [tokenSymbol] — tells contract which asset to deposit
-    const tokensOut = StellarSdk.xdr.ScVal.scvVec([
-      StellarSdk.xdr.ScVal.scvSymbol(tokenSymbol),
-    ]);
-
-    // type_action: SmartAccExternalAction = 'Deposit' or 'Withdraw'
-    // Soroban #[contracttype] enum unit variants are encoded as Vec([Symbol("VariantName")]),
-    // NOT as a bare Symbol. Using bare scvSymbol causes from_xdr to fail with UnreachableCodeReached.
-    const typeAction = StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(action)]);
-
-    // Build alphabetically sorted ScVal::Map
-    const mapEntries = [
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_in'), val: amountIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_out'), val: amountOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('fee_fraction'), val: feeFraction }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('is_token_pair'), val: isTokenPair }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('margin_account'), val: marginAccount }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('min_liquidity_out'), val: minLiquidityOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('protocol_address'), val: protocolAddress }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('token_pair_ratio'), val: tokenPairRatio }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_in'), val: tokensIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_out'), val: tokensOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('type_action'), val: typeAction }),
-    ];
-
-    const scvMap = StellarSdk.xdr.ScVal.scvMap(mapEntries);
-    return Buffer.from(scvMap.toXDR());
+  /** Resolve underlying SAC address for a Blend token symbol. */
+  private static async resolveTokenAddress(tokenSymbol: string): Promise<string> {
+    const sym = tokenSymbol.toUpperCase();
+    if (sym === 'XLM') return getXlmAddress();
+    if (sym === 'USDC' || sym === 'BLUSDC' || sym === 'BLEND_USDC') return getUsdcAddress();
+    throw new Error(`Unsupported Blend token: ${tokenSymbol}`);
   }
 
   /**
-   * Deposit tokens into the Blend Capital pool via AccountManager.execute().
+   * Supply (deposit) tokens into the Blend Capital pool via AccountManager.exec.
    *
    * Flow:
-   * 1. Fetch Blend pool address from Registry
-   * 2. Build XDR-encoded ExternalProtocolCall with Deposit action
-   * 3. Call AccountManager.execute(smart_account, xdr_bytes)
+   * 1. Fetch Blend pool address from get_protocol_config
+   * 2. Call exec(sa, blend_pool, Supply, [token_addr], [amount_wad], 0)
    */
   static async depositToBlendPool(
     walletAddress: string,
@@ -234,84 +136,45 @@ export class BlendService {
     amount: number
   ): Promise<BlendTransactionResult> {
     try {
-      // Validate token
       const assetInfo = BLEND_POOL_ASSETS.find((a) => a.symbol === tokenSymbol);
       if (!assetInfo) {
         throw new Error(`Unsupported token: ${tokenSymbol}`);
       }
 
-      // Get the Blend pool address from Registry.
-      const registryAddr = await BlendService.getBlendPoolAddressFromRegistry();
-      if (!registryAddr) {
+      const blendPoolAddress = await BlendService.getBlendPoolAddressFromRegistry();
+      if (!blendPoolAddress) {
         return {
           success: false,
           error:
-            'Blend pool is not configured in the Registry. Ask the admin to run set_blend_pool_address before depositing XLM.',
+            'Blend pool is not configured. Set Registry blend_pool (or CONTRACT_ADDRESSES.BLEND_POOL) before depositing.',
         };
       }
-      const blendPoolAddress = registryAddr;
 
-      // Convert amount to WAD (18 decimals)
+      const tokenAddress = await BlendService.resolveTokenAddress(tokenSymbol);
       const amountWad = BigInt(Math.floor(amount * 1e18));
 
-      const callBytes = BlendService.buildExternalProtocolCallBytes(
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         blendPoolAddress,
-        'Deposit',
-        tokenSymbol,
-        amountWad,
-        marginAccountAddress
+        'Supply',
+        [tokenAddress],
+        [amountWad],
+        BigInt(0),
+        20,
       );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-
-      if (result.status === 'PENDING') {
-        await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
-      } else {
-        throw new Error('Transaction rejected by network');
-      }
     } catch (error: any) {
-      console.error('[BlendService] Deposit error:', error);
-      return { success: false, error: error?.message || 'Deposit failed' };
+      console.error('[BlendService] Supply error:', error);
+      return { success: false, error: error?.message || 'Supply failed' };
     }
   }
 
   /**
-   * Withdraw tokens from the Blend Capital pool via AccountManager.execute().
+   * Withdraw tokens from the Blend Capital pool via AccountManager.exec.
    *
    * Flow:
-   * 1. Fetch Blend pool address from Registry
-   * 2. Build XDR-encoded ExternalProtocolCall with Withdraw action
-   * 3. Call AccountManager.execute(smart_account, xdr_bytes)
+   * 1. Fetch Blend pool address from get_protocol_config
+   * 2. Call exec(sa, blend_pool, Withdraw, [token_addr], [amount_wad], 0)
    */
   static async withdrawFromBlendPool(
     walletAddress: string,
@@ -325,65 +188,28 @@ export class BlendService {
         throw new Error(`Unsupported token: ${tokenSymbol}`);
       }
 
-      // Get the Blend pool address from Registry.
-      const registryAddr = await BlendService.getBlendPoolAddressFromRegistry();
-      if (!registryAddr) {
+      const blendPoolAddress = await BlendService.getBlendPoolAddressFromRegistry();
+      if (!blendPoolAddress) {
         return {
           success: false,
           error:
-            'Blend pool is not configured in the Registry. Ask the admin to run set_blend_pool_address before withdrawing XLM.',
+            'Blend pool is not configured. Set Registry blend_pool (or CONTRACT_ADDRESSES.BLEND_POOL) before withdrawing.',
         };
       }
-      const blendPoolAddress = registryAddr;
 
-      // Convert amount to WAD (18 decimals)
+      const tokenAddress = await BlendService.resolveTokenAddress(tokenSymbol);
       const amountWad = BigInt(Math.floor(amount * 1e18));
 
-      const callBytes = BlendService.buildExternalProtocolCallBytes(
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         blendPoolAddress,
         'Withdraw',
-        tokenSymbol,
-        amountWad,
-        marginAccountAddress
+        [tokenAddress],
+        [amountWad],
+        BigInt(0),
+        20,
       );
-
-      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
-      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-        fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          contract.call(
-            'execute',
-            StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-            StellarSdk.xdr.ScVal.scvBytes(callBytes)
-          )
-        )
-        .setTimeout(30)
-        .build();
-
-      const preparedTx = await server.prepareTransaction(transaction);
-
-      const signResult = await signTransaction(preparedTx.toXDR(), {
-        networkPassphrase: NETWORK_PASSPHRASE,
-      });
-
-      const signedTx = StellarSdk.TransactionBuilder.fromXDR(
-        signResult.signedTxXdr,
-        NETWORK_PASSPHRASE
-      );
-
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-
-      if (result.status === 'PENDING') {
-        await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
-      } else {
-        throw new Error('Transaction rejected by network');
-      }
     } catch (error: any) {
       console.error('[BlendService] Withdraw error:', error);
       return { success: false, error: error?.message || 'Withdraw failed' };
@@ -411,21 +237,11 @@ export class BlendService {
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
 
-      // Get tracking token contract from Registry
-      const registryContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-      const trackingAddrTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(registryContract.call('get_tracking_token_contract_addr'))
-        .setTimeout(30)
-        .build();
-
-      const trackingAddrSim = await server.simulateTransaction(trackingAddrTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(trackingAddrSim) || !trackingAddrSim.result?.retval) {
+      const cfg = await getProtocolConfig();
+      const trackingTokenAddress = cfg.tracking_token || CONTRACT_ADDRESSES.TRACKING_TOKEN;
+      if (!trackingTokenAddress) {
         return { bTokenBalance: '0', underlyingBalance: '0' };
       }
-      const trackingTokenAddress = StellarSdk.scValToNative(trackingAddrSim.result.retval) as string;
 
       // Call balance(margin_account, tracking_symbol)
       const trackingContract = new StellarSdk.Contract(trackingTokenAddress);
@@ -475,8 +291,8 @@ export class BlendService {
   ): Promise<string> {
     try {
       const tokenContractId = token === 'XLM'
-        ? CONTRACT_ADDRESSES.BLEND_XLM
-        : CONTRACT_ADDRESSES.BLEND_USDC;
+        ? await getXlmAddress()
+        : await getUsdcAddress();
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const tempKeypair = StellarSdk.Keypair.random();
@@ -628,16 +444,14 @@ export class BlendService {
     tokenSymbol: 'XLM' | 'USDC',
     blendPoolAddress?: string
   ): Promise<BlendReserveData | null> {
-    // Asset contract addresses in the Blend pool
-    const assetAddresses: Record<string, string> = {
-      XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-      USDC: CONTRACT_ADDRESSES.BLEND_USDC,
-    };
-
-    const assetAddress = assetAddresses[tokenSymbol];
+    const assetAddress =
+      tokenSymbol === 'XLM' ? await getXlmAddress() : await getUsdcAddress();
     if (!assetAddress) return null;
 
-    const poolAddress = blendPoolAddress ?? CONTRACT_ADDRESSES.BLEND_POOL;
+    const poolAddress =
+      blendPoolAddress ??
+      (await BlendService.getBlendPoolAddressFromRegistry()) ??
+      CONTRACT_ADDRESSES.BLEND_POOL;
 
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
@@ -677,7 +491,7 @@ export class BlendService {
    * Parse raw reserve data from scValToNative into BlendReserveData.
    *
    * Mirrors blend-sdk-js' Reserve.estimateInterestRate / estApy logic so our
-   * APYs match testnet.blend.capital exactly:
+   * APYs match mainnet.blend.capital exactly:
    *   - r_base / r_one / r_two / r_three / util are SCALAR_7 fixed-point
    *   - ir_mod is SCALAR_7 on V2 pools (TestnetV2 etc.); pre-V2 used SCALAR_9
    *   - curIr (after IR_MOD application) is SCALAR_7 representing the
@@ -697,7 +511,7 @@ export class BlendService {
     const dSupply = Number(reserve.data.d_supply);   // d-tokens (7-decimal)
 
     // ir_mod is stored in SCALAR_7 on V2 pools (the only pool version we use
-    // — CONTRACT_ADDRESSES.BLEND_POOL is the TestnetV2 pool). DO NOT magnitude-
+    // — CONTRACT_ADDRESSES.BLEND_POOL is the Blend v2 pool). DO NOT magnitude-
     // detect: at high utilization the dynamic ir_mod can rise well above 1e8
     // (10x), which would falsely look like a V1 (SCALAR_9) value and crash
     // the rate by 100x. Hardcoding SCALAR_7 keeps the math correct.
@@ -757,9 +571,9 @@ export class BlendService {
 
     // Supply APR = borrow APR × utilization × (1 − backstop_take_rate).
     // Blend's bstop_rate is on-chain at pool_config().bstop_rate (SCALAR_7).
-    // For the four supported testnet pools it has historically been 0.10
+    // For supported Blend pools it has historically been 0.10
     // (10%); fetching it dynamically would require an extra simulate call
-    // per pool, so we keep the constant in sync with current testnet config.
+    // per pool, so we keep the constant in sync with current mainnet config.
     const BACKSTOP_TAKE_RATE = 0.10;
     const supplyAprDecimal = borrowAprDecimal * utilization * (1 - BACKSTOP_TAKE_RATE);
     // Blend UI compounds supply APR weekly (52 periods/yr).
@@ -805,17 +619,12 @@ export class BlendService {
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
 
-      // Fetch tracking token contract address from Registry
-      const regContract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-      const trackAddrTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
-      }).addOperation(regContract.call('get_tracking_token_contract_addr')).setTimeout(30).build();
-
-      const trackAddrSim = await server.simulateTransaction(trackAddrTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(trackAddrSim) || !trackAddrSim.result?.retval) {
+      // Fetch tracking token contract address from get_protocol_config
+      const cfg = await getProtocolConfig();
+      const trackingAddress = cfg.tracking_token || CONTRACT_ADDRESSES.TRACKING_TOKEN;
+      if (!trackingAddress) {
         return result;
       }
-      const trackingAddress = StellarSdk.scValToNative(trackAddrSim.result.retval) as string;
       const trackContract = new StellarSdk.Contract(trackingAddress);
 
       // Fetch b-rates for value calculation
@@ -873,8 +682,12 @@ export class BlendService {
     blendPoolAddress?: string
   ): Promise<BlendEvent[]> {
     const registryPoolAddress = await BlendService.getBlendPoolAddressFromRegistry();
+    const xlmAddr = await getXlmAddress();
+    const usdcAddr = await getUsdcAddress();
     const poolAddress = blendPoolAddress ?? registryPoolAddress ?? CONTRACT_ADDRESSES.BLEND_POOL;
     const assetMap: Record<string, string> = {
+      [xlmAddr]: 'XLM',
+      [usdcAddr]: 'USDC',
       [CONTRACT_ADDRESSES.BLEND_XLM]: 'XLM',
       [CONTRACT_ADDRESSES.BLEND_USDC]: 'USDC',
     };

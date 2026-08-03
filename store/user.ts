@@ -14,15 +14,10 @@ export interface User {
   tokenBalances: {
     XLM: string;
     USDC: string;
-    BLEND_USDC: string;
-    AQUARIUS_USDC: string;
-    SOROSWAP_USDC: string;
   };
   depositedBalances: {
     XLM: string;
     USDC: string;
-    AQUARIUS_USDC: string;
-    SOROSWAP_USDC: string;
   };
   isLoading: boolean;
   manuallyDisconnected: boolean; // Track if user manually disconnected
@@ -37,15 +32,10 @@ const initialState: User = {
   tokenBalances: {
     XLM: '0',
     USDC: '0',
-    BLEND_USDC: '0',
-    AQUARIUS_USDC: '0',
-    SOROSWAP_USDC: '0',
   },
   depositedBalances: {
     XLM: '0',
     USDC: '0',
-    AQUARIUS_USDC: '0',
-    SOROSWAP_USDC: '0',
   },
   isLoading: false,
   manuallyDisconnected: false,
@@ -61,12 +51,19 @@ export const useUserStore = createNewStore(initialState, {
   devTools: true,
   persist: {
     name: "user-store",
-    version: 1,
-    migrate: (persistedState: any, version: number) => {
-      // Always reset isLoading to false on load to prevent stuck "Connecting..." state
+    // v2: mainnet — strip testnet multi-USDC keys that survived deepmerge.
+    version: 2,
+    migrate: (persistedState: any, _version: number) => {
+      const keep = (raw: Record<string, string> | undefined) => ({
+        XLM: raw?.XLM ?? "0",
+        USDC: raw?.USDC ?? "0",
+      });
       return {
         ...persistedState,
+        // Always reset isLoading so a reload mid-connect never sticks on "Connecting..."
         isLoading: false,
+        tokenBalances: keep(persistedState?.tokenBalances),
+        depositedBalances: keep(persistedState?.depositedBalances),
       };
     },
   },

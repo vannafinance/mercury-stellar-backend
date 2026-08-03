@@ -11,6 +11,14 @@ vi.mock('@/lib/oracle-price', () => ({
   getCachedTokenPrice: vi.fn(),
 }));
 vi.mock('@/lib/blend-utils', () => ({ BlendService: {} }));
+vi.mock('@/lib/protocol-config', () => ({
+  getProtocolConfig: vi.fn(),
+  getBlendPoolAddress: vi.fn(),
+  getXlmAddress: vi.fn(),
+  getUsdcAddress: vi.fn(),
+  fallbackXlmAddress: vi.fn(() => 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'),
+  fallbackUsdcAddress: vi.fn(() => 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU'),
+}));
 
 import { MarginAccountService } from '@/lib/margin-utils';
 
@@ -23,12 +31,16 @@ describe('MarginAccountService.normalizeContractTokenSymbol', () => {
   const normalize = (s: string) => svc['normalizeContractTokenSymbol'](s);
 
   it('maps BLUSDC → USDC', () => expect(normalize('BLUSDC')).toBe('USDC'));
-  it('maps BLEND_USDC → USDC', () => expect(normalize('BLEND_USDC')).toBe('USDC'));
+  // BLEND_USDC is a Blend tracking receipt symbol — must not collapse to USDC.
+  it('passes through BLEND_USDC tracking symbol', () => expect(normalize('BLEND_USDC')).toBe('BLEND_USDC'));
   it('maps USDC → USDC', () => expect(normalize('USDC')).toBe('USDC'));
-  it('maps AQUARIUS_USDC → AQUSDC', () => expect(normalize('AQUARIUS_USDC')).toBe('AQUSDC'));
-  it('maps AQUSDC → AQUSDC', () => expect(normalize('AQUSDC')).toBe('AQUSDC'));
-  it('maps SOROSWAP_USDC → SOUSDC', () => expect(normalize('SOROSWAP_USDC')).toBe('SOUSDC'));
-  it('maps SOUSDC → SOUSDC', () => expect(normalize('SOUSDC')).toBe('SOUSDC'));
+  it('maps AQUARIUS_USDC → USDC', () => expect(normalize('AQUARIUS_USDC')).toBe('USDC'));
+  it('maps AQUSDC → USDC', () => expect(normalize('AQUSDC')).toBe('USDC'));
+  it('maps SOROSWAP_USDC → USDC', () => expect(normalize('SOROSWAP_USDC')).toBe('USDC'));
+  it('maps SOUSDC → USDC', () => expect(normalize('SOUSDC')).toBe('USDC'));
+  it('passes through BLEND_XLM tracking symbol', () => expect(normalize('BLEND_XLM')).toBe('BLEND_XLM'));
+  it('passes through AQ_XLM_USDC tracking symbol', () => expect(normalize('AQ_XLM_USDC')).toBe('AQ_XLM_USDC'));
+  it('passes through SS_XLM_USDC tracking symbol', () => expect(normalize('SS_XLM_USDC')).toBe('SS_XLM_USDC'));
   it('uppercases unrecognised symbols', () => expect(normalize('xlm')).toBe('XLM'));
 });
 

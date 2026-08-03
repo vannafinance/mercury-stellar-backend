@@ -60,20 +60,16 @@ export const useWallet = () => {
         tokenBalances: tokenBalances,
       });
       
-      // Get all deposited balances in parallel
+      // Get all deposited balances in parallel (XLM + Circle USDC earn pools)
       const depositedBalancesPromise = Promise.all([
         ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
         ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
       ]);
 
       try {
         const [
           xlmDeposited,
           usdcDeposited,
-          aquariusUsdcDeposited,
-          soroswapUsdcDeposited,
         ] = await Promise.race([
           depositedBalancesPromise,
           timeoutPromise
@@ -83,8 +79,6 @@ export const useWallet = () => {
           depositedBalances: {
             XLM: xlmDeposited,
             USDC: usdcDeposited,
-            AQUARIUS_USDC: aquariusUsdcDeposited,
-            SOROSWAP_USDC: soroswapUsdcDeposited,
           },
         });
       } catch (depositedError) {
@@ -130,8 +124,8 @@ export const useWallet = () => {
           isConnected: false,
           walletKind: null,
           balance: '0',
-          tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
-          depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+          tokenBalances: { XLM: '0', USDC: '0' },
+          depositedBalances: { XLM: '0', USDC: '0' },
           isLoading: false,
         });
       }
@@ -220,8 +214,8 @@ export const useWallet = () => {
       isConnected: false,
       walletKind: null,
       balance: '0',
-      tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
-      depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
+      tokenBalances: { XLM: '0', USDC: '0' },
+      depositedBalances: { XLM: '0', USDC: '0' },
       manuallyDisconnected: true, // Mark as manually disconnected to prevent auto-reconnect
       isLoading: false,
     });

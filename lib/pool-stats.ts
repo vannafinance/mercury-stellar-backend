@@ -1,5 +1,5 @@
-// Shared, server-safe lending-pool stats for all earn pools (XLM, USDC
-// variants). Powers both the cached /api/pools route and
+// Shared, server-safe lending-pool stats for earn pools (XLM + Circle USDC).
+// Powers both the cached /api/pools route and
 // the client `usePoolData` hook, so the APY/exchange-rate math lives in one
 // place. `getPoolStats` uses a throwaway keypair as its sim source, so this
 // runs server-side with no wallet.
@@ -53,8 +53,6 @@ export type PoolStats = RawPoolStats & {
 export type AllPoolStats = {
   XLM: PoolStats;
   USDC: PoolStats;
-  AQUARIUS_USDC: PoolStats;
-  SOROSWAP_USDC: PoolStats;
 };
 
 const enrich = (s: RawPoolStats): PoolStats => ({
@@ -66,23 +64,19 @@ const enrich = (s: RawPoolStats): PoolStats => ({
 
 /** Read all lending pools concurrently and enrich with APY/exchange-rate. */
 export async function computeAllPoolStats(): Promise<AllPoolStats> {
-  const [xlm, usdc, aquarius, soroswap] = await Promise.all([
+  const [xlm, usdc] = await Promise.all([
     ContractService.getPoolStats(ASSET_TYPES.XLM),
     ContractService.getPoolStats(ASSET_TYPES.USDC),
-    ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
-    ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
   ]);
   return {
     XLM: enrich(xlm),
     USDC: enrich(usdc),
-    AQUARIUS_USDC: enrich(aquarius),
-    SOROSWAP_USDC: enrich(soroswap),
   };
 }
 
 // Shared 30s in-memory memo so the two edge routes that need pool stats
 // (`/api/pools` and `/api/analytics/pool-stats`) don't each fire their own
-// 4-pool RPC read within the same serverless instance — the first call scans,
+// 2-pool RPC read within the same serverless instance — the first call scans,
 // the second reuses it. The per-route edge cache (s-maxage 30s) shares across
 // instances/visitors; this collapses the duplicate read within one instance.
 let poolStatsCache: { data: AllPoolStats; ts: number } | null = null;
@@ -91,7 +85,7 @@ const POOL_STATS_TTL_MS = 30_000;
 /**
  * `computeAllPoolStats` behind a 30s in-memory memo — the single source of pool
  * stats for every caller (the `/api/pools` route and the analytics pool-stats
- * reader), so the 4-pool RPC read isn't duplicated.
+ * reader), so the 2-pool RPC read isn't duplicated.
  */
 export async function getAllPoolStats(): Promise<AllPoolStats> {
   const now = Date.now();

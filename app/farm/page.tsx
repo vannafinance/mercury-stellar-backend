@@ -83,7 +83,7 @@ export default function FarmPage() {
   const priceForSymbol = useCallback((sym: string): number => {
     const s = sym.toUpperCase();
     if (s === "XLM") return farmTokenPrices.XLM ?? 0;
-    if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC") return farmTokenPrices.USDC ?? 1;
+    if (s === "USDC" || s === "BLUSDC" || s === "AQUSDC" || s === "SOUSDC" || s === "BLEND_USDC") return farmTokenPrices.USDC ?? 1;
     if (s === "USDT") return farmTokenPrices.USDT ?? 1;
     return 0;
   }, [farmTokenPrices]);

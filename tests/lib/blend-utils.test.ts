@@ -6,9 +6,11 @@ vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
   return actual;
 });
 vi.mock('@stellar/freighter-api', () => ({ signTransaction: vi.fn() }));
+vi.mock('@/lib/wallet-adapter', () => ({ signTransaction: vi.fn() }));
 
 import { BlendService } from '@/lib/blend-utils';
 import { CONTRACT_ADDRESSES } from '@/lib/stellar-utils';
+import { buildExecArgs, externalActionScVal } from '@/lib/exec-helpers';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -161,36 +163,30 @@ describe('BlendService._parseReserveData', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// buildExternalProtocolCallBytes — structural checks
+// externalActionScVal / buildExecArgs — structural checks for AccountManager.exec
 // ─────────────────────────────────────────────────────────────────────────────
-describe('BlendService.buildExternalProtocolCallBytes', () => {
-  const poolAddr = CONTRACT_ADDRESSES.BLEND_POOL;
-  const marginAddr = CONTRACT_ADDRESSES.ACCOUNT_MANAGER; // real address with valid checksum
-  const amount = BigInt('100000000000000000000'); // 100 tokens in WAD
-
-  it('returns a non-empty Buffer for Deposit action', () => {
-    const buf = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Deposit', 'XLM', amount, marginAddr
-    );
-    expect(buf).toBeInstanceOf(Buffer);
-    expect(buf.byteLength).toBeGreaterThan(0);
+describe('exec-helpers ExternalAction encoding', () => {
+  it('encodes Supply as Vec([Symbol])', () => {
+    const val = externalActionScVal('Supply');
+    expect(val.switch().name).toBe('scvVec');
+    const vec = val.vec();
+    if (!vec) throw new Error('expected scvVec payload');
+    expect(vec).toHaveLength(1);
+    expect(vec[0]!.sym().toString()).toBe('Supply');
   });
 
-  it('returns a non-empty Buffer for Withdraw action', () => {
-    const buf = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Withdraw', 'USDC', amount, marginAddr
-    );
-    expect(buf).toBeInstanceOf(Buffer);
-    expect(buf.byteLength).toBeGreaterThan(0);
+  it('encodes Withdraw differently from Supply', () => {
+    const supply = externalActionScVal('Supply').toXDR('base64');
+    const withdraw = externalActionScVal('Withdraw').toXDR('base64');
+    expect(supply).not.toBe(withdraw);
   });
 
-  it('Deposit and Withdraw produce different XDR bytes (action is encoded)', () => {
-    const deposit = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Deposit', 'XLM', amount, marginAddr
-    );
-    const withdraw = BlendService.buildExternalProtocolCallBytes(
-      poolAddr, 'Withdraw', 'XLM', amount, marginAddr
-    );
-    expect(deposit.equals(withdraw)).toBe(false);
+  it('buildExecArgs returns 6 ScVals for exec', () => {
+    // Vanna ACCOUNT_MANAGER is empty until mainnet deploy — use valid C-addresses for encoding.
+    const sa = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M';
+    const pool = CONTRACT_ADDRESSES.BLEND_POOL;
+    const token = CONTRACT_ADDRESSES.BLEND_XLM;
+    const args = buildExecArgs(sa, pool, 'Supply', [token], [BigInt('100000000000000000000')], BigInt(0));
+    expect(args).toHaveLength(6);
   });
 });

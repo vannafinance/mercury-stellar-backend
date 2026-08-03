@@ -44,10 +44,10 @@ const STELLAR_TOKENS: Token[] = [
     isVerified: true,
   },
   {
-    id: CONTRACT_ADDRESSES.AQUARIUS_USDC,
+    id: CONTRACT_ADDRESSES.USDC_TOKEN || CONTRACT_ADDRESSES.BLEND_USDC,
     symbol: "USDC",
-    name: "USD Coin (Aquarius)",
-    logo: "/coins/usdc.svg",
+    name: "USD Coin",
+    logo: "/icons/usdc-icon.svg",
     decimals: 7,
     chain: "stellar",
     isVerified: true,
@@ -68,7 +68,7 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
     isVerified: true,
   },
   {
-    id: CONTRACT_ADDRESSES.SOROSWAP_USDC,
+    id: CONTRACT_ADDRESSES.USDC_TOKEN || CONTRACT_ADDRESSES.BLEND_USDC,
     symbol: "USDC",
     name: "USD Coin",
     logo: "/icons/usdc-icon.svg",

@@ -59,26 +59,24 @@ export const transactionTableHeadings = [
 // Map internal asset key → display symbol
 const DISPLAY_SYMBOL: Record<string, string> = {
   XLM: "XLM",
-  USDC: "BLUSDC",
-  AQUARIUS_USDC: "AqUSDC",
-  SOROSWAP_USDC: "SoUSDC",
+  USDC: "USDC",
 };
 
 const toInternalAsset = (value: string): string => {
-  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
-  if (value === "SoUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
-  if (value === "BLEND_USDC") return "USDC";
-  if (value === "BLUSDC") return "USDC";
-  return value.toUpperCase();
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return u || "XLM";
 };
 
-// Aquarius / Soroswap USDC variants share USDC's oracle price (no separate
-// Reflector entry exists). The hook resolves the alias internally.
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 
 const normalizeTimestamp = (value: number | string | undefined): number => {
@@ -202,7 +200,7 @@ export const ActivityTab = () => {
           {
             title: tx.hash ? `${tx.hash.slice(0, 8)}...${tx.hash.slice(-4)}` : "—",
             clickable: tx.hash ? "link" : undefined,
-            link: tx.hash ? `https://stellar.expert/explorer/testnet/tx/${tx.hash}` : undefined,
+            link: tx.hash ? `https://stellar.expert/explorer/public/tx/${tx.hash}` : undefined,
           },
         ],
       })),
@@ -250,7 +248,7 @@ export const ActivityTab = () => {
       {/* Stellar Explorer Link */}
       <div className={`text-center py-4 rounded-xl ${isDark ? "bg-[#1a1a1a]" : "bg-gray-100"}`}>
         <a
-          href="https://stellar.expert/explorer/testnet"
+          href="https://stellar.expert/explorer/public"
           target="_blank"
           rel="noopener noreferrer"
           className="text-[#703AE6] hover:underline text-sm font-medium"

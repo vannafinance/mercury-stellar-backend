@@ -1,18 +1,20 @@
 import Image from "next/image";
 
 // Analytics-only icon map. Restricted to the asset universe Vanna actually
-// supports on Soroban (XLM + BLUSDC/AQUSDC/SOUSDC) plus the symbols the
+// supports on Soroban (XLM + Circle USDC) plus legacy USDC-variant aliases
+// mapped to the USDC icon for display safety, plus the symbols the
 // risk-explorer simulators reference (USDC canonical, USDT). Anything
 // outside this list falls through to the generic coin placeholder in
 // `default.svg`.
 const COIN_ICON_MAP: Record<string, string> = {
   // ── Stellar-native assets ────────────────────────────────────
   XLM:       "/coins/xlmbg.png",
+  USDC:      "/icons/usdc-icon.svg",
+  // Legacy USDC-variant aliases → same Circle USDC icon
   BLUSDC:    "/icons/usdc-icon.svg",
   AQUSDC:    "/icons/usdc-icon.svg",
   SOUSDC:    "/icons/usdc-icon.svg",
   // ── Canonical references used by risk-engine pricing ────────
-  USDC:      "/icons/usdc.svg",
   USDT:      "/icons/usdt.svg",
 };
 

@@ -6,7 +6,7 @@ interface MarginAccountAddressProps {
   /** Margin account contract address. When null, the component renders nothing. */
   address: string | null;
   className?: string;
-  /** Explorer network the copyable badge links into. Defaults to testnet. */
+  /** Explorer network the copyable badge links into. Defaults to public (mainnet). */
   network?: "testnet" | "public";
 }
 
@@ -19,7 +19,7 @@ interface MarginAccountAddressProps {
 export const MarginAccountAddress = ({
   address,
   className = "",
-  network = "testnet",
+  network = "public",
 }: MarginAccountAddressProps) => {
   if (!address) return null;
 

@@ -13,8 +13,8 @@ import { fetchContractEvents } from "./mercury-client";
 //   data(deposit)  = { amount, asset_symbol, lender, timestamp }
 //   data(withdraw) = { asset_symbol, lender, timestamp, vtoken_amount, asset_amount }
 // amounts are i128 WAD (÷ 1e18); timestamp is unix seconds. The pool's asset is
-// taken from the contract we queried (asset_symbol can't tell USDC / AQUARIUS_USDC
-// / SOROSWAP_USDC apart — they all report "USDC"). Withdraw's `amount` below reads
+// taken from the contract we queried (mainnet: XLM + Circle USDC only).
+// Withdraw's `amount` below reads
 // `asset_amount` (the real underlying transferred), NOT `vtoken_amount` (vToken
 // shares burned) — the two only match 1:1 at a 1.0 exchange rate. Using shares
 // would silently understate every withdrawal once the pool's exchange rate has
@@ -35,8 +35,6 @@ export interface EarnTxEntry {
 const POOLS: { contract: string; asset: string }[] = [
   { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM, asset: "XLM" },
   { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC, asset: "USDC" },
-  { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC, asset: "AQUARIUS_USDC" },
-  { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC, asset: "SOROSWAP_USDC" },
 ];
 
 const WAD = BigInt("1000000000000000000");

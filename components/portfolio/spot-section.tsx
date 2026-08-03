@@ -9,7 +9,6 @@ import { spotBalancesTableHeadings } from "@/lib/constants/farm";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { useAquariusTokenBalance } from "@/hooks/use-farm";
 import { useSoroswapTokenBalance } from "@/hooks/use-soroswap";
 import { getSpotHistory } from "@/lib/spot-history";
 
@@ -26,11 +25,9 @@ const fmtUsd = (n: number): string =>
 /**
  * Portfolio "Spot" tab — the margin account's real spot token balances held
  * directly from Aquarius/Soroswap swaps (not lent to Blend, not deposited as
- * LP — those live under the Farm tab). XLM is ONE shared native-token balance
- * across both venues (same SAC), so it's queried once and shown once — reading
- * it per-venue would show the same balance twice and double-count it into the
- * total. USDC is a genuinely distinct SAC per venue (AQUSDC/SOUSDC), so those
- * two are queried and shown separately.
+ * LP — those live under the Farm tab). XLM and Circle USDC are each ONE SAC
+ * balance on the margin account — query once each. (Testnet had per-DEX USDC
+ * SACs; mainnet does not — dual USDC rows would double-count.)
  */
 export const SpotSection = () => {
   const { isDark } = useTheme();
@@ -39,8 +36,7 @@ export const SpotSection = () => {
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
   const { balance: xlm } = useSoroswapTokenBalance(marginAccountAddress, "XLM");
-  const { balance: aqUsdc } = useAquariusTokenBalance(marginAccountAddress, "USDC");
-  const { balance: ssUsdc } = useSoroswapTokenBalance(marginAccountAddress, "USDC");
+  const { balance: usdc } = useSoroswapTokenBalance(marginAccountAddress, "USDC");
 
   const prices = useTokenPrices(["XLM", "USDC"]);
 
@@ -49,8 +45,7 @@ export const SpotSection = () => {
 
     const entries: { symbol: "XLM" | "USDC"; venue: string; balance: string }[] = [
       { symbol: "XLM", venue: "Margin Account", balance: xlm },
-      { symbol: "USDC", venue: "Aquarius", balance: aqUsdc },
-      { symbol: "USDC", venue: "Soroswap", balance: ssUsdc },
+      { symbol: "USDC", venue: "Margin Account", balance: usdc },
     ];
 
     entries.forEach(({ symbol, venue, balance }) => {
@@ -69,7 +64,7 @@ export const SpotSection = () => {
     });
 
     return out;
-  }, [xlm, aqUsdc, ssUsdc, prices]);
+  }, [xlm, usdc, prices]);
 
   const totalSpotUsd = rows.reduce((s, r) => s + r.usd, 0);
 
@@ -106,7 +101,7 @@ export const SpotSection = () => {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: "link",
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: "—" },
         ],

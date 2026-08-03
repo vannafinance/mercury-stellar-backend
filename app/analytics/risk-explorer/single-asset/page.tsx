@@ -173,7 +173,7 @@ export default function SingleAssetSimPage() {
               <label className="text-[10px] font-semibold uppercase tracking-wide text-vgray-400">Network</label>
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-r2 border border-vgray-100 bg-vgray-50">
                 <span className="w-1.5 h-1.5 rounded-full bg-electric-500" />
-                <span className="text-[10px] font-semibold text-vgray-700">Stellar (Soroban testnet)</span>
+                <span className="text-[10px] font-semibold text-vgray-700">Stellar (Soroban mainnet)</span>
               </div>
             </div>
 

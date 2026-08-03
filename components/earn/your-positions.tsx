@@ -31,17 +31,21 @@ const tabs = [
 ];
 
 const toInternalAsset = (value: string) => {
-  if (value === "AqUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
-  if (value === "SoUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
-  if (value === "BLUSDC") return "USDC";
-  return value.toUpperCase();
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return u || "XLM";
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === "AQUARIUS_USDC") return "AqUSDC";
-  if (value === "SOROSWAP_USDC") return "SoUSDC";
-  if (value === "USDC") return "BLUSDC";
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  return "USDC";
 };
 
 type EarnTxLike = {
@@ -63,13 +67,9 @@ const toIsoDate = (timestamp: number): string => {
   return new Date(timestamp).toISOString().split("T")[0];
 };
 
-// AQUARIUS_USDC / SOROSWAP_USDC have no separate Reflector entry; they peg
-// to USDC via the alias map inside oracle-price.ts.
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 
 /** Memoized positions panel; merges on-chain + local history (de-duped by hash) for the selected pool. */
@@ -239,7 +239,7 @@ export const YourPositions = memo(function YourPositions() {
             ? {
                 title: `${tx.hash.slice(0, 8)}...${tx.hash.slice(-4)}`,
                 clickable: "link",
-                link: `https://stellar.expert/explorer/testnet/tx/${tx.hash}`,
+                link: `https://stellar.expert/explorer/public/tx/${tx.hash}`,
               }
             : { title: "—" },
         ],

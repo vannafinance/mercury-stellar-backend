@@ -47,10 +47,12 @@ const getActions = <S>(setState: Setter<S>, getState: Getter<S>, state: S) => ({
     return fn(getState());
   },
 
+  // Top-level shallow merge. Nested objects passed to set() fully replace that
+  // field — deepmerge would keep stale keys (e.g. testnet BLEND_USDC /
+  // AQUARIUS_USDC / SOROSWAP_USDC in tokenBalances) after a refresh that only
+  // writes { XLM, USDC }, which inflated Portfolio "Wallet Balance".
   set: (update: RecursivePartial<S>) => {
-    const obj = { ...getState() } as any;
-    deepmerge(obj, update);
-    setState(() => obj);
+    setState(() => ({ ...getState(), ...update }) as any);
   },
 
   reset: () => {

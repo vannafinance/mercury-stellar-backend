@@ -70,7 +70,7 @@ export function attributeFarmDeposit(
 
 const TRACKING_TO_UNDERLYING: Record<string, string> = {
   BLEND_XLM: "XLM",
-  BLEND_USDC: "BLUSDC",
+  BLEND_USDC: "USDC",
   AQ_XLM_USDC: "XLM",
   SS_XLM_USDC: "XLM",
 };
@@ -80,7 +80,7 @@ export function trackingSymbolToUnderlying(symbol: string): string | null {
   if (TRACKING_TO_UNDERLYING[u]) return TRACKING_TO_UNDERLYING[u];
   if (u.startsWith("BLEND_")) {
     const tail = u.replace("BLEND_", "");
-    return tail === "USDC" ? "BLUSDC" : tail;
+    return tail === "USDC" || tail === "BLUSDC" ? "USDC" : tail;
   }
   return null;
 }

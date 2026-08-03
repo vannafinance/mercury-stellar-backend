@@ -4,12 +4,11 @@ import { getAddress } from "@/lib/wallet-adapter";
 // supplies fee/sequence context for a simulation — it NEVER affects a view
 // call's result — so any funded account works. We use the connected wallet on
 // the client (so a user's own sim is attributed to them), and a public funded
-// account on the server or before wallet-connect. This lets the same read
-// methods run in API routes (no Freighter) without changing any read result.
+// mainnet account on the server or before wallet-connect.
 //
 // Mirrors FALLBACK_SOURCE in oracle-price.ts / READ_SOURCE_ADDRESS in
-// allMarginAccounts.ts (a funded public testnet account).
-const READ_SOURCE_FALLBACK = "GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D";
+// allMarginAccounts.ts (`vanna_mainnet_deployer` G-address — funded on pubnet).
+const READ_SOURCE_FALLBACK = "GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP";
 
 export async function getReadSourceAddress(): Promise<string> {
   // Server (no browser) → never touch Freighter; use the public source.

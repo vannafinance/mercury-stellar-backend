@@ -129,9 +129,11 @@ const toWad = (amount: number): string =>
 /** Maps a display/asset-type symbol to the raw contract collateral symbol. */
 const normalizeContractTokenSymbol = (symbol: string): string => {
   const s = symbol.toUpperCase();
-  if (s === 'BLUSDC' || s === 'BLEND_USDC' || s === 'USDC') return 'USDC';
-  if (s === 'AQUSDC' || s === 'AQUIRESUSDC' || s === 'AQUARIUS_USDC') return 'AQUSDC';
-  if (s === 'SOUSDC' || s === 'SOROSWAPUSDC' || s === 'SOROSWAP_USDC') return 'SOUSDC';
+  if (
+    s === 'BLUSDC' || s === 'BLEND_USDC' || s === 'USDC' ||
+    s === 'AQUSDC' || s === 'AQUIRESUSDC' || s === 'AQUARIUS_USDC' ||
+    s === 'SOUSDC' || s === 'SOROSWAPUSDC' || s === 'SOROSWAP_USDC'
+  ) return 'USDC';
   return s;
 };
 

@@ -10,14 +10,11 @@ import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { formatTokenAmount } from "@/lib/utils/format-amount";
 import { useTheme } from "@/contexts/theme-context";
 
-const ASSETS = ["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+const ASSETS = ["XLM", "USDC"] as const;
 
-// AQ/SO USDC variants peg to USDC — they have no separate oracle entry.
 const PRICE_TOKEN: Record<string, string> = {
   XLM: "XLM",
   USDC: "USDC",
-  AQUARIUS_USDC: "USDC",
-  SOROSWAP_USDC: "USDC",
 };
 
 const POSITION_TABS = [
@@ -110,7 +107,7 @@ export const LenderTab = () => {
           ? {
               title: `${ev.hash.slice(0, 8)}...${ev.hash.slice(-4)}`,
               clickable: "link",
-              link: `https://stellar.expert/explorer/testnet/tx/${ev.hash}`,
+              link: `https://stellar.expert/explorer/public/tx/${ev.hash}`,
             }
           : { title: "—" },
       ],

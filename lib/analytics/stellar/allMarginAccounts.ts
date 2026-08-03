@@ -41,24 +41,26 @@ import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
 const STELLAR_CHAIN_ID = 0;
 
-// Public, funded testnet G-account used purely as the simulation source for
-// read-only contract queries. Mirrors `FALLBACK_SOURCE` in oracle-price.ts.
+// Public, funded mainnet G-account used purely as the simulation source for
+// read-only contract queries. Mirrors `FALLBACK_SOURCE` in oracle-price.ts
+// (`vanna_mainnet_deployer`).
 const READ_SOURCE_ADDRESS =
-  "GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D";
+  "GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP";
 
 const WAD = BigInt("1000000000000000000"); // 1e18
 
-// "USDC" is the canonical peg BLUSDC/AQUSDC/SOUSDC (already in ACTIVE_ASSETS)
-// resolve to on-chain.
+// "USDC" is the canonical peg — legacy BLUSDC/AQUSDC/SOUSDC aliases collapse here.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 
 // Maps the symbol stored on the smart account back to a canonical price key
-// resolvable through the oracle cache (which already aliases BLUSDC→USDC etc).
+// resolvable through the oracle cache.
 const canonicalSymbol = (sym: string): string => {
   const u = sym.toUpperCase();
-  if (u === "USDC" || u === "BLEND_USDC") return "BLUSDC";
-  if (u === "AQUARIUS_USDC") return "AQUSDC";
-  if (u === "SOROSWAP_USDC") return "SOUSDC";
+  if (
+    u === "USDC" || u === "BLEND_USDC" || u === "BLUSDC" ||
+    u === "AQUARIUS_USDC" || u === "AQUSDC" ||
+    u === "SOROSWAP_USDC" || u === "SOUSDC"
+  ) return "USDC";
   return u;
 };
 
@@ -92,11 +94,11 @@ const sacToNumber = (raw: unknown): number => {
 // Mirrors MARGIN_SAC_TOKENS in farmTrackingCollateral.ts.
 const SAC_TOKEN_CONFIGS = [
   { contractId: CONTRACT_ADDRESSES.BLEND_XLM, symbol: "XLM" },
-  { contractId: CONTRACT_ADDRESSES.BLEND_USDC, symbol: "BLUSDC" },
+  { contractId: CONTRACT_ADDRESSES.USDC_TOKEN || CONTRACT_ADDRESSES.BLEND_USDC, symbol: "USDC" },
 ] as const;
 
 /**
- * Read the live XLM and BLUSDC SAC balances held by a margin smart account.
+ * Read the live XLM and USDC SAC balances held by a margin smart account.
  * Returns a map of symbol → amount (human units). Mirrors the behaviour of
  * reconcileMarginRawSacCollateral in farmTrackingCollateral.ts so that the
  * protocol-wide scan uses the same gross-collateral formula as the connected-

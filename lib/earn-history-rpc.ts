@@ -34,8 +34,6 @@ const accountTopicXdr = (address: string): string => {
 const POOLS: { contract: string; asset: string }[] = [
   { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM, asset: 'XLM' },
   { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC, asset: 'USDC' },
-  { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC, asset: 'AQUARIUS_USDC' },
-  { contract: CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC, asset: 'SOROSWAP_USDC' },
 ];
 
 async function readPoolEventsFromRpc(

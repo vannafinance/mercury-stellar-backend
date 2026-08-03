@@ -3,6 +3,7 @@
 
 const STABLE_PRICE_USD: Record<string, number> = {
   USDC: 1.0,
+  // Legacy aliases → same $1 peg (display safety during migration)
   BLUSDC: 1.0,
   AQUSDC: 1.0,
   SOUSDC: 1.0,
@@ -13,16 +14,11 @@ const STABLE_PRICE_USD: Record<string, number> = {
 export interface TokenPrices {
   XLM: number;
   USDC: number;
-  BLUSDC: number;
-  AQUSDC: number;
-  SOUSDC: number;
-  AQUARIUS_USDC: number;
-  SOROSWAP_USDC: number;
 }
 
 export const buildPrices = (xlmUsd: number): TokenPrices => ({
   XLM: xlmUsd,
-  ...(STABLE_PRICE_USD as Omit<TokenPrices, "XLM">),
+  USDC: STABLE_PRICE_USD.USDC,
 });
 
 export const getStablePrice = (asset: string): number | undefined =>

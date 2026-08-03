@@ -13,18 +13,13 @@ import { ACTIVE_ASSETS, FALLBACK_PRICES, ORACLE, type StellarAsset } from "./can
 
 const POOL_ASSETS: AssetType[] = [
   ASSET_TYPES.XLM,
-  ASSET_TYPES.USDC, // Blend USDC pool
-  ASSET_TYPES.AQUARIUS_USDC,
-  ASSET_TYPES.SOROSWAP_USDC,
+  ASSET_TYPES.USDC,
 ];
 
 /** Map a pool AssetType to the canonical app symbol used in the UI. */
-const ASSET_TYPE_TO_SYMBOL: Record<AssetType, StellarAsset> = {
+const ASSET_TYPE_TO_SYMBOL: Partial<Record<AssetType, StellarAsset>> = {
   XLM: "XLM",
-  USDC: "BLUSDC",
-  BLEND_USDC: "BLUSDC",
-  AQUARIUS_USDC: "AQUSDC",
-  SOROSWAP_USDC: "SOUSDC",
+  USDC: "USDC",
 };
 
 export type StellarPoolStats = {
@@ -61,7 +56,7 @@ export type StellarAnalyticsSource = {
     /** Block ledger-sequence (or `Date.now()` proxy) for "last updated". */
     fetchedAt: number;
   };
-  /** Aggregated totals across the 4 pools — drives Protocol Overview KPIs. */
+  /** Aggregated totals across the lending pools — drives Protocol Overview KPIs. */
   totals: {
     totalSupplyUsd: number;
     totalBorrowedUsd: number;
@@ -78,7 +73,7 @@ export async function readAllPoolStats(): Promise<StellarPoolStats[]> {
   await fetchTokenPrices([...ACTIVE_ASSETS]).catch(() => undefined);
 
   // Derive from the shared, memoized pool-stats (the same source `/api/pools`
-  // uses) instead of re-reading the 4 pools — dedupes the RPC. `getAllPoolStats`
+  // uses) instead of re-reading the pools — dedupes the RPC. `getAllPoolStats`
   // already degrades each failing pool to zeros, so we only add the USD/price
   // re-shaping the analytics consumers need.
   let all: AllPoolStats | null = null;
@@ -89,7 +84,7 @@ export async function readAllPoolStats(): Promise<StellarPoolStats[]> {
   }
 
   return POOL_ASSETS.map((a) => {
-    const sym = ASSET_TYPE_TO_SYMBOL[a];
+    const sym = ASSET_TYPE_TO_SYMBOL[a] ?? "USDC";
     const priceUsd = getCachedTokenPrice(sym) || FALLBACK_PRICES[sym] || 0;
     const stats = all?.[a as keyof AllPoolStats];
     const totalSupply = stats ? parseFloat(stats.totalSupply) || 0 : 0;

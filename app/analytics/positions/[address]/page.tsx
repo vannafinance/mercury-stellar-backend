@@ -295,7 +295,7 @@ export default function UserPortfolioPage() {
     {
       label: "Network",
       value: "Stellar",
-      sub: "Soroban testnet",
+      sub: "Soroban mainnet",
     },
   ];
 

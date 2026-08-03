@@ -41,9 +41,13 @@ const CollateralComponent = (props: Collateral) => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();
   const getTokenBalanceKey = (symbol: string) => {
-    if (symbol === "BLUSDC" || symbol === "BLEND_USDC") return "BLEND_USDC";
-    if (symbol === "AqUSDC" || symbol === "AquiresUSDC") return "AQUARIUS_USDC";
-    if (symbol === "SoUSDC" || symbol === "SoroswapUSDC") return "SOROSWAP_USDC";
+    const s = symbol.toUpperCase();
+    if (
+      s === "BLUSDC" || s === "BLEND_USDC" || s === "USDC" ||
+      s === "AQUSDC" || s === "AQUARIUS_USDC" ||
+      s === "SOUSDC" || s === "SOROSWAP_USDC" ||
+      symbol === "AqUSDC" || symbol === "SoUSDC"
+    ) return "USDC";
     return symbol;
   };
 
@@ -118,10 +122,10 @@ const CollateralComponent = (props: Collateral) => {
   // Live oracle-backed prices. AqUSDC / SoUSDC fall through the canonicalize
   // step inside oracle-price.ts (alias → USDC), so we only request the base
   // symbols and then look the selection up directly.
-  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC']);
   const priceFor = (symbol: string): number => {
     const upper = symbol.toUpperCase();
-    if (upper === 'AQUSDC' || upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC') {
+    if (upper === 'AQUSDC' || upper === 'SOUSDC' || upper === 'BLUSDC' || upper === 'USDC' || upper === 'AQUARIUS_USDC' || upper === 'SOROSWAP_USDC') {
       return tokenPrices[upper] ?? tokenPrices.USDC ?? 1;
     }
     return tokenPrices[upper] ?? 1;

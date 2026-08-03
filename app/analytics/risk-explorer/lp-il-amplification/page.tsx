@@ -13,14 +13,12 @@ const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
-// Real LP pools deployed on Stellar testnet (see CONTRACT_ADDRESSES in
-// lib/stellar-utils.ts and AQUARIUS_POOLS/SOROSWAP_POOLS in
-// lib/analytics/aquarius-utils.ts / soroswap-utils.ts). All 3 are XLM-paired
+// Real LP pools on Stellar mainnet. All are XLM-paired with Circle USDC
 // (XLM being the primary volatile asset) — `stableAsset` is a loose label
 // here (this page's IL math only needs a price RATIO, not a literal peg).
 const POOLS = [
-  { id: "aq_xlm_blusdc", label: "Aquarius XLM/USDC", volatileAsset: "XLM",  stableAsset: "AQUSDC", protocol: "Aquarius" as const },
-  { id: "ss_xlm_susdc", label: "Soroswap XLM/USDC", volatileAsset: "XLM",  stableAsset: "SOUSDC", protocol: "Soroswap" as const },
+  { id: "aq_xlm_usdc", label: "Aquarius XLM/USDC", volatileAsset: "XLM",  stableAsset: "USDC", protocol: "Aquarius" as const },
+  { id: "ss_xlm_usdc", label: "Soroswap XLM/USDC", volatileAsset: "XLM",  stableAsset: "USDC", protocol: "Soroswap" as const },
   { id: "aq_xlm_usdt",  label: "Aquarius XLM/USDT", volatileAsset: "XLM",  stableAsset: "USDT",   protocol: "Aquarius" as const },
 ] as const;
 

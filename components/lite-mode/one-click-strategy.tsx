@@ -37,7 +37,7 @@ interface PoolOption {
   protocol: string;
   poolVersion: string;
   feeTier: string;
-  storeKey: "XLM" | "USDC" | "AQUARIUS_USDC" | "SOROSWAP_USDC";
+  storeKey: "XLM" | "USDC";
   tags: string[];
 }
 
@@ -49,14 +49,6 @@ const POOL_OPTIONS: PoolOption[] = [
   {
     id: "xlm-blend", type: "single", tokens: ["XLM"], protocol: "Blend", poolVersion: "V1",
     feeTier: "-", storeKey: "XLM", tags: ["Vanna", "Blend"],
-  },
-  {
-    id: "xlm-usdc-aquarius", type: "lp", tokens: ["XLM", "USDC"], protocol: "Aquarius", poolVersion: "AMM",
-    feeTier: "0.3%", storeKey: "AQUARIUS_USDC", tags: ["Vanna", "Aquarius"],
-  },
-  {
-    id: "xlm-usdc-soroswap", type: "lp", tokens: ["XLM", "USDC"], protocol: "Soroswap", poolVersion: "DEX",
-    feeTier: "0.3%", storeKey: "SOROSWAP_USDC", tags: ["Vanna", "Soroswap"],
   },
 ];
 
@@ -104,7 +96,7 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
     return <Image src={icon} alt={symbol} width={size} height={size} className="rounded-full" />;
   }
   const palette: Record<string, string> = {
-    XLM: "#703AE6", USDC: "#2775CA", BLUSDC: "#10B981", AqUSDC: "#F59E0B", SoUSDC: "#FF007A",
+    XLM: "#703AE6", USDC: "#2775CA",
   };
   const bg = palette[symbol] || "#595959";
   return (
@@ -208,16 +200,6 @@ export const OneClickStrategy = () => {
       supplyApr: parseFloat(earnPools.USDC.supplyAPY) || 0,
       borrowApr: parseFloat(earnPools.USDC.borrowAPY) || 0,
       tvl: formatTvl(earnPools.USDC.totalSupply, prices.USDC || 1),
-    },
-    "xlm-usdc-aquarius": {
-      supplyApr: parseFloat(earnPools.AQUARIUS_USDC.supplyAPY) || 0,
-      borrowApr: parseFloat(earnPools.AQUARIUS_USDC.borrowAPY) || 0,
-      tvl: formatTvl(earnPools.AQUARIUS_USDC.totalSupply, prices.USDC || 1),
-    },
-    "xlm-usdc-soroswap": {
-      supplyApr: parseFloat(earnPools.SOROSWAP_USDC.supplyAPY) || 0,
-      borrowApr: parseFloat(earnPools.SOROSWAP_USDC.borrowAPY) || 0,
-      tvl: formatTvl(earnPools.SOROSWAP_USDC.totalSupply, prices.USDC || 1),
     },
   }), [earnPools, prices]);
 
@@ -1366,7 +1348,7 @@ export const OneClickStrategy = () => {
             </div>
             <div>
               <p className={`text-[13px] font-semibold ${headingText}`}>Stellar Network</p>
-              <p className={`text-[11px] ${mutedText}`}>Testnet</p>
+              <p className={`text-[11px] ${mutedText}`}>Mainnet</p>
             </div>
             <div className="ml-auto flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
@@ -1401,16 +1383,6 @@ export const OneClickStrategy = () => {
                 name: "Blend Capital",
                 desc: "Lending & borrowing",
                 apr: `${Math.min(livePools["xlm-blend"].supplyApr, livePools["usdc-blend"].supplyApr).toFixed(1)}–${Math.max(livePools["xlm-blend"].supplyApr, livePools["usdc-blend"].supplyApr).toFixed(1)}% APY`,
-              },
-              {
-                name: "Aquarius AMM",
-                desc: "XLM/USDC LP yield",
-                apr: `${livePools["xlm-usdc-aquarius"].supplyApr.toFixed(1)}% APY`,
-              },
-              {
-                name: "Soroswap DEX",
-                desc: "XLM/USDC LP yield",
-                apr: `${livePools["xlm-usdc-soroswap"].supplyApr.toFixed(1)}% APY`,
               },
             ].map((proto) => (
               <div key={proto.name} className="flex items-center justify-between">

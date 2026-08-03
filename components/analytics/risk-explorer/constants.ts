@@ -25,17 +25,14 @@ function walletPrimaryAsset(snapshot: AccountSnapshot): StellarAsset {
   const topCollateral = snapshot.collateral
     .slice()
     .sort((a, b) => b.usd - a.usd)[0]?.symbol;
-  const symbol = (topCollateral || "BLUSDC").toUpperCase();
+  const symbol = (topCollateral || "USDC").toUpperCase();
   if (ACTIVE_ASSETS.includes(symbol as StellarAsset)) {
     return symbol as StellarAsset;
   }
   // Fallback for a tracking/alias symbol (e.g. BLEND_USDC, AQ_XLM_USDC)
-  // that isn't itself one of the 4 ACTIVE_ASSETS — route it to its real
-  // underlying bucket via the same canonical resolution the contract uses,
-  // instead of collapsing every non-XLM asset into BLUSDC.
-  const canonical = resolveUsdAlias(symbol);
-  if (canonical === "USDC") return "BLUSDC";
-  return canonical;
+  // that isn't itself an ACTIVE_ASSET — route it to its real underlying
+  // bucket (XLM | USDC) via the same canonical resolution the contract uses.
+  return resolveUsdAlias(symbol);
 }
 
 export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosition[] {
@@ -57,17 +54,13 @@ export function mapSnapshotsToWallets(snapshots: AccountSnapshot[]): WalletPosit
  *  before live oracle prices land. */
 export const TOKEN_PRICES: Record<StellarAsset, number> = {
   XLM: FALLBACK_PRICES.XLM,
-  BLUSDC: FALLBACK_PRICES.BLUSDC,
-  AQUSDC: FALLBACK_PRICES.AQUSDC,
-  SOUSDC: FALLBACK_PRICES.SOUSDC,
+  USDC: FALLBACK_PRICES.USDC,
 };
 
 /** Asset selector entries shown in the Risk Explorer side panel. */
 export const SIM_ASSETS = [
   { symbol: "XLM", name: "Stellar Lumens", icon: "★" },
-  { symbol: "BLUSDC", name: "Blend USDC", icon: "$" },
-  { symbol: "AQUSDC", name: "Aquarius USDC", icon: "$" },
-  { symbol: "SOUSDC", name: "Soroswap USDC", icon: "$" },
+  { symbol: "USDC", name: "USD Coin", icon: "$" },
 ] as const;
 
 const COLLATERAL_SYMBOLS: StellarAsset[] = ACTIVE_ASSETS;

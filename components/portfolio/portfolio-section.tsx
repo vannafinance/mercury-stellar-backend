@@ -42,17 +42,13 @@ export const PortfolioSection = () => {
   const netAvailableCollateral = snapshot?.netAvailableCollateral ?? store.netAvailableCollateral ?? 0;
   const totalBorrowed = snapshot?.totalBorrowedValue ?? store.totalBorrowedValue ?? 0;
 
-  // Wallet (spendable) USD = Σ wallet token balance × live oracle price.
-  const prices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  // Wallet (spendable) USD = XLM + Circle USDC only. Ignore leftover protocol-
+  // flavored keys that may still exist in persisted zustand from testnet.
+  const prices = useTokenPrices(["XLM", "USDC"]);
   const walletUsd = useMemo(() => {
-    const priceKey = (sym: string): string =>
-      sym === "BLEND_USDC" ? "BLUSDC"
-      : sym === "AQUARIUS_USDC" ? "AQUSDC"
-      : sym === "SOROSWAP_USDC" ? "SOUSDC"
-      : sym;
-    return Object.entries(tokenBalances).reduce((sum, [sym, amt]) => {
-      const price = prices[priceKey(sym)] ?? 0;
-      return sum + (parseFloat(String(amt)) || 0) * price;
+    return (["XLM", "USDC"] as const).reduce((sum, sym) => {
+      const price = prices[sym] ?? 0;
+      return sum + (parseFloat(String(tokenBalances[sym] ?? "0")) || 0) * price;
     }, 0);
   }, [tokenBalances, prices]);
 
@@ -67,17 +63,20 @@ export const PortfolioSection = () => {
   const { transactions: earnTx, isLoading: earnTxLoading } = useEarnTransactions();
   const netEarnings = useMemo(() => {
     const priceFor: Record<string, string> = {
-      XLM: "XLM", USDC: "USDC", AQUARIUS_USDC: "USDC", SOROSWAP_USDC: "USDC",
+      XLM: "XLM", USDC: "USDC",
     };
     if (earnTxLoading) return 0;
     const netPrincipalByAsset: Record<string, number> = {};
     for (const tx of earnTx) {
       const amt = parseFloat(tx.amount) || 0;
       if (!(amt > 0)) continue;
-      netPrincipalByAsset[tx.asset] = (netPrincipalByAsset[tx.asset] ?? 0) +
+      const assetKey = tx.asset === "AQUARIUS_USDC" || tx.asset === "SOROSWAP_USDC" || tx.asset === "BLUSDC"
+        ? "USDC"
+        : tx.asset;
+      netPrincipalByAsset[assetKey] = (netPrincipalByAsset[assetKey] ?? 0) +
         (tx.type === "supply" ? amt : -amt);
     }
-    return (["XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const).reduce((sum, asset) => {
+    return (["XLM", "USDC"] as const).reduce((sum, asset) => {
       // A missing history entry means "we don't know this asset's principal",
       // NOT "principal is 0" — defaulting to 0 misreports the ENTIRE deposit
       // as earned yield whenever Mercury hasn't (yet) indexed this asset's

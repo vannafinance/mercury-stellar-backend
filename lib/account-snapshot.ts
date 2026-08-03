@@ -20,9 +20,8 @@ import {
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 
-// "USDC" is the canonical peg the three USDC-flavoured collateral variants
-// (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
-// as its own priced symbol since Reflector exposes it as a real feed.
+// "USDC" is the canonical peg — legacy BLUSDC/AQUSDC/SOUSDC aliases collapse
+// here for display attribution. Reflector exposes USDC as a real feed.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
 const USD_DUST_EPSILON = 0.01;
 
@@ -30,18 +29,32 @@ const tokenPrice = (token: string): number => getCachedTokenPrice(token);
 
 const canonicalMarginToken = (token: string): string => {
   const n = token.toUpperCase();
-  if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
-  if (n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "AQUSDC";
-  if (n === "SOROSWAPUSDC" || n === "SOROSWAP_USDC") return "SOUSDC";
+  if (
+    n === "BLEND_USDC" ||
+    n === "USDC" ||
+    n === "BLUSDC" ||
+    n === "AQUSDC" ||
+    n === "AQUIRESUSDC" ||
+    n === "AQUARIUS_USDC" ||
+    n === "SOUSDC" ||
+    n === "SOROSWAPUSDC" ||
+    n === "SOROSWAP_USDC"
+  ) {
+    return "USDC";
+  }
   return n;
 };
 
 const debtSymbolToAssetType = (symbol: string): AssetType | null => {
   switch (symbol.toUpperCase()) {
     case "XLM": return ASSET_TYPES.XLM;
-    case "BLUSDC": return ASSET_TYPES.USDC;
-    case "AQUSDC": return ASSET_TYPES.AQUARIUS_USDC;
-    case "SOUSDC": return ASSET_TYPES.SOROSWAP_USDC;
+    case "USDC":
+    case "BLUSDC":
+    case "AQUSDC":
+    case "SOUSDC":
+    case "AQUARIUS_USDC":
+    case "SOROSWAP_USDC":
+      return ASSET_TYPES.USDC;
     default: return null;
   }
 };
@@ -186,7 +199,7 @@ export async function computeMarginSnapshot(
   // All three remaining reads are independent — run them concurrently:
   //  • borrow rate  (uses borrowedBalances only)
   //  • farm enrichment (writes BLEND_/AQ_/SS_ tracking keys)
-  //  • SAC reconcile   (writes XLM/BLUSDC raw balances)
+  //  • SAC reconcile   (writes XLM/USDC raw balances)
   // farm and SAC touch disjoint keys, so concurrent writes don't collide.
   const [borrowRate, enriched, rawAssetValue] = await Promise.all([
     fetchBorrowRate(borrowedBalances, effectiveDebtValue),
@@ -202,9 +215,9 @@ export async function computeMarginSnapshot(
     }),
   ]);
 
-  // Apply farm tracking keys only — XLM/BLUSDC are owned by the SAC reconcile.
+  // Apply farm tracking keys only — XLM/USDC are owned by the SAC reconcile.
   for (const [sym, val] of Object.entries(enriched)) {
-    if (sym === "XLM" || sym === "BLUSDC") continue;
+    if (sym === "XLM" || sym === "USDC" || sym === "BLUSDC") continue;
     const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? "0");
     const newUsd = parseFloat(val.usdValue);
     if (newUsd > existingUsd) collateralBalances[sym] = val;
@@ -216,7 +229,7 @@ export async function computeMarginSnapshot(
     .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
 
   const nonSacCollateralValue = Object.entries(collateralBalances)
-    .filter(([sym]) => sym !== "XLM" && sym !== "BLUSDC" && !isTrackingSymbol(sym))
+    .filter(([sym]) => sym !== "XLM" && sym !== "USDC" && sym !== "BLUSDC" && !isTrackingSymbol(sym))
     .reduce((sum, [, bal]) => sum + (parseFloat(bal.usdValue) || 0), 0);
 
   let grossCollateralValue = farmPositionValue + rawAssetValue + nonSacCollateralValue;

@@ -1,8 +1,19 @@
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
-  if (normalized === "BLEND_USDC" || normalized === "USDC") return "BLUSDC";
-  if (normalized === "AQUIRESUSDC" || normalized === "AQUARIUS_USDC") return "AQUSDC";
-  if (normalized === "SOROSWAPUSDC" || normalized === "SOROSWAP_USDC") return "SOUSDC";
+  // Display attribution: collapse USDC variants + Blend tracking receipt → USDC
+  if (
+    normalized === "BLEND_USDC" ||
+    normalized === "USDC" ||
+    normalized === "BLUSDC" ||
+    normalized === "AQUSDC" ||
+    normalized === "AQUIRESUSDC" ||
+    normalized === "AQUARIUS_USDC" ||
+    normalized === "SOUSDC" ||
+    normalized === "SOROSWAPUSDC" ||
+    normalized === "SOROSWAP_USDC"
+  ) {
+    return "USDC";
+  }
   return normalized;
 };
 

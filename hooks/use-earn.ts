@@ -98,22 +98,16 @@ const EMPTY_POSITION = {
 const EMPTY_POSITIONS = {
   XLM: { ...EMPTY_POSITION },
   USDC: { ...EMPTY_POSITION },
-  AQUARIUS_USDC: { ...EMPTY_POSITION },
-  SOROSWAP_USDC: { ...EMPTY_POSITION },
 };
 
 const EARN_ASSETS = [
   ASSET_TYPES.XLM,
   ASSET_TYPES.USDC,
-  ASSET_TYPES.AQUARIUS_USDC,
-  ASSET_TYPES.SOROSWAP_USDC,
 ] as const;
 
 const EMPTY_DEPOSITED = {
   XLM: '0',
   USDC: '0',
-  AQUARIUS_USDC: '0',
-  SOROSWAP_USDC: '0',
 };
 
 /**
@@ -266,7 +260,7 @@ export const useWithdrawLiquidity = () => {
       if (!address) throw new Error('Please connect your wallet first');
       if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-      const userPosition = assetType === ASSET_TYPES.BLEND_USDC ? userPositions.USDC : userPositions[assetType];
+      const userPosition = userPositions[assetType];
       const depositedAmount = parseFloat(userPosition?.vTokenBalance || '0');
       if (amount > depositedAmount) {
         throw new Error(`Cannot withdraw more than deposited balance (${depositedAmount.toFixed(7)} v${assetType})`);
@@ -298,8 +292,6 @@ export const useWithdrawLiquidity = () => {
     depositedBalances: {
       XLM: userPositions.XLM?.vTokenBalance || '0',
       USDC: userPositions.USDC?.vTokenBalance || '0',
-      AQUARIUS_USDC: userPositions.AQUARIUS_USDC?.vTokenBalance || '0',
-      SOROSWAP_USDC: userPositions.SOROSWAP_USDC?.vTokenBalance || '0',
     },
   });
 };

@@ -1,6 +1,6 @@
 // Hubble (BigQuery) analytics queries for the /stats page, scoped to the
-// CURRENT 4-pool architecture (XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC) +
-// AccountManager. Each builder returns { query, params } for `runQuery`.
+// CURRENT 2-pool architecture (XLM + Circle USDC) + AccountManager.
+// Each builder returns { query, params } for `runQuery`.
 //
 // ─────────────────────────────────────────────────────────────────────────
 // SCHEMA: verified live against the dataset (2026-06-16).
@@ -12,11 +12,8 @@
 //     JSON_VALUE(data_decoded,'$.<field>.i128'). closed_at/contract_id as expected.
 //
 // ⚠️  NETWORK: SDF's public Hubble (`crypto-stellar.crypto_stellar`) indexes
-//     PUBNET (mainnet) ONLY — there is no public testnet Hubble. Our protocol
-//     is on testnet, so these queries return EMPTY until we deploy to mainnet.
-//     The wiring is verified (auth + schema), but the `data_decoded.<field>`
-//     paths below are validated only once OUR contracts appear on pubnet —
-//     re-run a sample then and adjust field names if the payloads differ.
+//     PUBNET (mainnet). Wire contract IDs to mainnet deployments before relying
+//     on live results.
 // ─────────────────────────────────────────────────────────────────────────
 
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
@@ -27,8 +24,6 @@ const EVENT_NAME = "JSON_VALUE(topics_decoded, '$[0].symbol')";
 const POOLS = [
   CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM,
   CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC,
-  CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC,
-  CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC,
 ].filter(Boolean) as string[];
 
 const ACCOUNT_MANAGER = CONTRACT_ADDRESSES.ACCOUNT_MANAGER;
@@ -37,7 +32,7 @@ const LOOKBACK_DAYS = 90;
 
 type Built = { query: string; params: Record<string, unknown> };
 
-/** Daily deposit / withdraw flow across the 4 lending pools (90 days). */
+/** Daily deposit / withdraw flow across the lending pools (90 days). */
 export function tvlQuery(): Built {
   return {
     query: `

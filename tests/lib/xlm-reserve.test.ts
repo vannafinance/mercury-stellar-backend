@@ -59,7 +59,7 @@ describe("maxSpendableXlm", () => {
 
 describe("getXlmMinReserve (reads the account's real subentry count from chain)", () => {
   // A valid testnet G-address so Keypair.fromPublicKey / xdrAccountId don't throw.
-  const ADDR = "GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D";
+  const ADDR = "GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP";
 
   const mockLedgerEntries = (resolver: () => unknown) =>
     vi

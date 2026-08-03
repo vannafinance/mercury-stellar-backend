@@ -29,8 +29,6 @@ const poolStub = {
 const mockPools = {
   XLM: poolStub,
   USDC: poolStub,
-  AQUARIUS_USDC: poolStub,
-  SOROSWAP_USDC: poolStub,
 };
 
 function makeWrapper(qc: QueryClient) {

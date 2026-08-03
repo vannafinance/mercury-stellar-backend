@@ -1,8 +1,9 @@
 // Soroswap (AMM) integration: XLM/USDC pool stats, LP positions, swap quotes,
 // and add/remove-liquidity + swap, both from the Vanna margin account (via
-// AccountManager.execute) and directly from the user's wallet. Reads use a
-// throwaway sim source; the XDR call struct sends amounts in WAD (1e18) while
-// on-chain reserves/LP balances are 7-decimal (STROOP).
+// AccountManager.exec) and directly from the user's wallet. Reads use a
+// throwaway sim source; amounts for exec are WAD (1e18) while on-chain
+// reserves/LP balances are 7-decimal (STROOP). RemoveLiquidity LP amount stays
+// in raw LP units (Soroswap controller legacy quirk).
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@/lib/wallet-adapter';
@@ -12,11 +13,20 @@ import {
   SOROBAN_RPC_URL,
 } from './stellar-utils';
 import { floorAmountToStroops, stroopsToWad } from './utils/swap-amount';
+import {
+  fallbackUsdcAddress,
+  fallbackXlmAddress,
+  getProtocolConfig,
+  getSoroswapRouter,
+  getUsdcAddress,
+  getXlmAddress,
+} from './protocol-config';
+import { execViaAccountManager } from './exec-helpers';
 
-// ── Soroswap Testnet Constants ────────────────────────────────────────────────
+// ── Soroswap Constants ────────────────────────────────────────────────────────
 const SOROSWAP_ROUTER = CONTRACT_ADDRESSES.SOROSWAP_ROUTER;
-const SOROSWAP_XLM   = CONTRACT_ADDRESSES.SOROSWAP_XLM;
-const SOROSWAP_USDC  = CONTRACT_ADDRESSES.SOROSWAP_USDC;
+const SOROSWAP_XLM   = fallbackXlmAddress();
+const SOROSWAP_USDC  = fallbackUsdcAddress();
 const SOROSWAP_XLM_USDC_POOL = CONTRACT_ADDRESSES.SOROSWAP_XLM_USDC_POOL;
 const SOROSWAP_API   = 'https://api.soroswap.finance';
 const LP_TRACKING_SYMBOL = 'SS_XLM_USDC'; // Registry tracking token symbol
@@ -40,7 +50,6 @@ const STROOP = 1e7; // Stellar 7-decimal precision
 
 const toWad  = (amount: number): bigint => BigInt(Math.floor(amount * WAD));
 const toStroop = (amount: number): bigint => BigInt(Math.floor(amount * STROOP + 1e-9));
-const makeKey  = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -135,59 +144,35 @@ export class SoroswapService {
 
   // ── Registry helpers ───────────────────────────────────────────────────────
 
-  /** Returns the Soroswap router address stored in Registry, or null if not set. */
+  /** Returns the Soroswap router address from get_protocol_config, or null. */
   static async getRegistrySoroswapRouterAddress(): Promise<string | null> {
     try {
-      const [server, acct] = tempAccount();
-      const registry = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasSim = await simulateTx(server, acct,
-        registry.call('has_soroswap_router_address'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) return null;
-      const has = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!has) return null;
-
-      const getSim = await simulateTx(server, acct,
-        registry.call('get_soroswap_router_address'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) return null;
-      return (StellarSdk.scValToNative(getSim.result.retval) as string) ?? null;
+      return await getSoroswapRouter();
     } catch {
       return null;
     }
   }
 
-  /** Returns the Soroswap USDC address stored in Registry, or null if not set. */
+  /** Returns the canonical USDC address from get_protocol_config, or null. */
   static async getRegistrySoroswapUsdcAddress(): Promise<string | null> {
     try {
-      const [server, acct] = tempAccount();
-      const registry = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasSim = await simulateTx(server, acct,
-        registry.call('has_soroswap_usdc_addr'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) return null;
-      const has = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!has) return null;
-
-      const getSim = await simulateTx(server, acct,
-        registry.call('get_soroswap_usdc_addr'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) return null;
-      return (StellarSdk.scValToNative(getSim.result.retval) as string) ?? null;
+      const cfg = await getProtocolConfig();
+      return cfg.usdc || null;
     } catch {
       return null;
     }
   }
 
-  /** Returns the Soroswap router address (static protocol config). */
+  /** Returns the Soroswap router address (Registry → CONTRACT_ADDRESSES fallback). */
   static async getEffectiveRouterAddress(): Promise<string> {
     const router = await SoroswapService.getRegistrySoroswapRouterAddress();
     if (router) return router;
     return SOROSWAP_ROUTER;
   }
 
-  /** Returns Soroswap XLM/USDC token addresses effective for current Registry config. */
+  /** Returns Soroswap XLM/USDC token addresses effective for current config. */
   private static async getSwapTokenAddresses(): Promise<{ xlm: string; usdc: string }> {
     // Prefer the token pair actually configured on the live Soroswap pool.
-    // This avoids UI/account balance mismatches when constants drift.
     try {
       const [server, acct] = tempAccount();
       const pool = new StellarSdk.Contract(SOROSWAP_XLM_USDC_POOL);
@@ -202,18 +187,18 @@ export class SoroswapService {
       ) {
         const token0 = StellarSdk.scValToNative(token0Sim.result.retval) as string;
         const token1 = StellarSdk.scValToNative(token1Sim.result.retval) as string;
+        const xlm = SOROSWAP_XLM;
 
-        if (token0 === SOROSWAP_XLM) return { xlm: SOROSWAP_XLM, usdc: token1 };
-        if (token1 === SOROSWAP_XLM) return { xlm: SOROSWAP_XLM, usdc: token0 };
+        if (token0 === xlm) return { xlm, usdc: token1 };
+        if (token1 === xlm) return { xlm, usdc: token0 };
       }
     } catch {
       // fall through to registry/config fallback
     }
 
-    const usdc = await SoroswapService.getRegistrySoroswapUsdcAddress();
     return {
-      xlm: SOROSWAP_XLM,
-      usdc: usdc || SOROSWAP_USDC,
+      xlm: await getXlmAddress(),
+      usdc: await getUsdcAddress(),
     };
   }
 
@@ -223,22 +208,11 @@ export class SoroswapService {
     return symbol === 'XLM' ? xlm : usdc;
   }
 
-  /** Returns the tracking token contract address from Registry, or null. */
+  /** Returns the tracking token contract address from get_protocol_config, or null. */
   static async getTrackingTokenAddress(): Promise<string | null> {
     try {
-      const [server, acct] = tempAccount();
-      const registry = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasSim = await simulateTx(server, acct,
-        registry.call('has_tracking_token_contract_addr'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) return null;
-      const has = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!has) return null;
-
-      const getSim = await simulateTx(server, acct,
-        registry.call('get_tracking_token_contract_addr'));
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(getSim) || !getSim.result?.retval) return null;
-      return (StellarSdk.scValToNative(getSim.result.retval) as string) ?? null;
+      const cfg = await getProtocolConfig();
+      return cfg.tracking_token || CONTRACT_ADDRESSES.TRACKING_TOKEN || null;
     } catch {
       return null;
     }
@@ -482,94 +456,12 @@ export class SoroswapService {
     throw new Error('Transaction timed out');
   }
 
-  // ── XDR builder ───────────────────────────────────────────────────────────
-
-  /**
-   * Build ExternalProtocolCall XDR bytes for AccountManager.execute().
-   * Matches the struct expected by SmartAccountContract.execute_soroswap().
-   */
-  private static buildExternalProtocolCallBytes(
-    routerAddress:       string,
-    action:              'AddLiquidity' | 'RemoveLiquidity' | 'Swap',
-    tokensOut:           string[],        // symbol strings e.g. ['XLM','USDC']
-    amountsOutWad:       bigint[],
-    marginAccountAddress: string,
-    isTokenPair:         boolean,
-  ): Buffer {
-    const amountOut = StellarSdk.xdr.ScVal.scvVec(
-      amountsOutWad.map((amt) => StellarSdk.nativeToScVal(amt, { type: 'u256' }))
-    );
-    // Testnet has 3 genuinely distinct USDC tokens (one per DEX's own pool) —
-    // the generic "USDC" symbol resolves to Blend's token, not Soroswap's own,
-    // so it fails this Controller's can_call check. Map it to the real
-    // on-chain symbol here rather than trusting every caller to know that.
-    const tokensOutVal = StellarSdk.xdr.ScVal.scvVec(
-      tokensOut.map((t) => StellarSdk.xdr.ScVal.scvSymbol(t === 'USDC' ? 'SOUSDC' : t))
-    );
-    const amountIn = StellarSdk.xdr.ScVal.scvVec([]);
-    const tokensIn = StellarSdk.xdr.ScVal.scvVec([]);
-
-    const scvMap = StellarSdk.xdr.ScVal.scvMap([
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_in'),        val: amountIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('amount_out'),       val: amountOut }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('fee_fraction'),     val: StellarSdk.xdr.ScVal.scvU32(30) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('is_token_pair'),    val: StellarSdk.xdr.ScVal.scvBool(isTokenPair) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('margin_account'),   val: StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('min_liquidity_out'),val: StellarSdk.nativeToScVal(BigInt(0), { type: 'u256' }) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('protocol_address'), val: StellarSdk.nativeToScVal(routerAddress, { type: 'address' }) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('token_pair_ratio'), val: StellarSdk.xdr.ScVal.scvU64(StellarSdk.xdr.Uint64.fromString('0')) }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_in'),        val: tokensIn }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('tokens_out'),       val: tokensOutVal }),
-      new StellarSdk.xdr.ScMapEntry({ key: makeKey('type_action'),      val: StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(action)]) }),
-    ]);
-
-    return Buffer.from(scvMap.toXDR());
-  }
-
-  /** Execute a prepared call bytes via AccountManager.execute(). */
-  private static async executeViaAccountManager(
-    walletAddress:        string,
-    marginAccountAddress: string,
-    callBytes:            Buffer,
-    feeMultiplier = 100,
-  ): Promise<SoroswapTransactionResult> {
-    const server        = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-    const sourceAccount = await server.getAccount(walletAddress);
-    const accountManager = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-
-    const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
-      fee: (parseInt(StellarSdk.BASE_FEE) * feeMultiplier).toString(),
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(
-        accountManager.call(
-          'execute',
-          StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-          StellarSdk.xdr.ScVal.scvBytes(callBytes),
-        ))
-      .setTimeout(30)
-      .build();
-
-    const preparedTx  = await server.prepareTransaction(transaction);
-    const signResult  = await signTransaction(preparedTx.toXDR(), { networkPassphrase: NETWORK_PASSPHRASE });
-    const signedTx    = StellarSdk.TransactionBuilder.fromXDR(signResult.signedTxXdr, NETWORK_PASSPHRASE);
-    const result      = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-
-    if (result.status === 'PENDING') {
-      await SoroswapService.pollTransactionStatus(server, result.hash);
-      return { success: true, hash: result.hash };
-    }
-    return { success: false, error: `Network rejected (status: ${result.status})` };
-  }
-
-  // ── Margin account operations ──────────────────────────────────────────────
+  // ── Margin account operations (AccountManager.exec) ────────────────────────
 
   /**
    * Add liquidity to a Soroswap pool from the margin account. Defaults to
-   * XLM/USDC for backward compatibility (e.g. `one-click-strategy.ts`) —
-   * any other pool MUST pass its own `tokenA`/`tokenB`, or this builds the
-   * call against the wrong token address entirely.
-   * Amounts are in human-readable token units (e.g. 100.5 XLM).
+   * XLM/USDC for backward compatibility. Amounts are human-readable token units.
+   * amounts_wad = [amountA_wad, amountB_wad, minA, minB] (M-02 per-leg mins).
    */
   static async addLiquidity(
     walletAddress:        string,
@@ -583,16 +475,21 @@ export class SoroswapService {
       if (!marginAccountAddress) return { success: false, error: 'Margin account required' };
 
       const routerAddress = await SoroswapService.getEffectiveRouterAddress();
-      const callBytes = SoroswapService.buildExternalProtocolCallBytes(
+      const tokens = [
+        await SoroswapService.getSwapTokenContract(tokenA),
+        await SoroswapService.getSwapTokenContract(tokenB),
+      ];
+
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         routerAddress,
         'AddLiquidity',
-        [tokenA, tokenB],
-        [toWad(amountA), toWad(amountB)],
-        marginAccountAddress,
-        true,
+        tokens,
+        [toWad(amountA), toWad(amountB), BigInt(0), BigInt(0)],
+        BigInt(0),
+        100,
       );
-
-      return await SoroswapService.executeViaAccountManager(walletAddress, marginAccountAddress, callBytes, 100);
     } catch (err: any) {
       console.error('[SoroswapService] addLiquidity error:', err);
       return { success: false, error: err?.message || 'Add liquidity failed' };
@@ -600,9 +497,9 @@ export class SoroswapService {
   }
 
   /**
-   * Remove liquidity from a Soroswap pool from the margin account. Defaults
-   * to XLM/USDC for backward compatibility — any other pool MUST pass its
-   * own `tokenA`/`tokenB`. lpAmount is in LP token units (7 decimals).
+   * Remove liquidity from a Soroswap pool. lpAmount is in LP token units
+   * (7 decimals / stroops) — Soroswap controller expects raw LP units, not WAD.
+   * amounts_wad = [lp_units, minA, minB].
    */
   static async removeLiquidity(
     walletAddress:        string,
@@ -613,19 +510,22 @@ export class SoroswapService {
   ): Promise<SoroswapTransactionResult> {
     try {
       const routerAddress = await SoroswapService.getEffectiveRouterAddress();
-      // LP amount is passed as raw units (7 decimals), not WAD — SmartAccount casts i128 directly
       const lpUnits = toStroop(lpAmount);
+      const tokens = [
+        await SoroswapService.getSwapTokenContract(tokenA),
+        await SoroswapService.getSwapTokenContract(tokenB),
+      ];
 
-      const callBytes = SoroswapService.buildExternalProtocolCallBytes(
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         routerAddress,
         'RemoveLiquidity',
-        [tokenA, tokenB],
-        [lpUnits],
-        marginAccountAddress,
-        true,
+        tokens,
+        [lpUnits, BigInt(0), BigInt(0)],
+        BigInt(0),
+        50,
       );
-
-      return await SoroswapService.executeViaAccountManager(walletAddress, marginAccountAddress, callBytes, 50);
     } catch (err: any) {
       console.error('[SoroswapService] removeLiquidity error:', err);
       return { success: false, error: err?.message || 'Remove liquidity failed' };
@@ -633,7 +533,7 @@ export class SoroswapService {
   }
 
   /**
-   * Swap XLM → USDC or USDC → XLM from the margin account.
+   * Swap XLM → USDC or USDC → XLM from the margin account via exec(Swap).
    */
   static async swapFromMargin(
     walletAddress:        string,
@@ -654,16 +554,21 @@ export class SoroswapService {
         return { success: false, error: 'Invalid swap amount' };
       }
 
-      const callBytes = SoroswapService.buildExternalProtocolCallBytes(
+      const tokens = [
+        await SoroswapService.getSwapTokenContract(tokenIn),
+        await SoroswapService.getSwapTokenContract(tokenOut),
+      ];
+
+      return await execViaAccountManager(
+        walletAddress,
+        marginAccountAddress,
         routerAddress,
         'Swap',
-        [tokenIn, tokenOut],
-        [stroopsToWad(amountStroops), BigInt(0)],
-        marginAccountAddress,
-        false,
+        tokens,
+        [stroopsToWad(amountStroops)],
+        BigInt(0),
+        100,
       );
-
-      return await SoroswapService.executeViaAccountManager(walletAddress, marginAccountAddress, callBytes, 100);
     } catch (err: any) {
       console.error('[SoroswapService] swapFromMargin error:', err);
       return { success: false, error: err?.message || 'Swap from margin failed' };

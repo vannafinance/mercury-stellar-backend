@@ -29,7 +29,7 @@ export default function PositionsPage() {
         meta={<PageHeaderMeta timeLabel={timeStr} mock={false} />}
       />
 
-      <PositionsMonitor wallets={wallets} chainName="Stellar (Soroban testnet)" />
+      <PositionsMonitor wallets={wallets} chainName="Stellar (Soroban mainnet)" />
     </div>
   );
 }

@@ -31,8 +31,6 @@ const poolStat = (over: Partial<Record<string, string>> = {}) => ({
 const allPools = () => ({
   XLM: poolStat(),
   USDC: poolStat(),
-  AQUARIUS_USDC: poolStat(),
-  SOROSWAP_USDC: poolStat(),
 });
 
 describe("GET /api/pools", () => {
@@ -49,7 +47,7 @@ describe("GET /api/pools", () => {
 
     const body = await res.json();
     expect(Object.keys(body).sort()).toEqual(
-      ["AQUARIUS_USDC", "SOROSWAP_USDC", "USDC", "XLM"],
+      ["USDC", "XLM"],
     );
     expect(body).toEqual(pools);
     // Each pool carries the enriched fields the Earn page reads.

@@ -14,43 +14,38 @@ const INSURANCE_FUND = 5_400_000;
 const LIQ_THRESHOLD = 1.1;
 const dr = (s: number) => { const x = Math.sin(s * 9301 + 49297) * 233280; return x - Math.floor(x); };
 
-// Stellar-native multi-asset shocks. XLM is the only volatile asset in
-// the universe; the three USDC variants depeg independently per pool
-// (Blend / Aquarius / Soroswap). Presets reflect events that could
-// realistically affect this protocol.
-// Every preset's `shocks` must cover all 4 ACTIVE_ASSETS keys — `applyPreset`
-// below replaces the whole `shocks` state object, so a missing key here
-// leaves that asset's shock silently `undefined` until the user manually
-// touches its slider.
+// Stellar-native multi-asset shocks. XLM is the volatile asset; Circle USDC
+// is the single stable. Presets reflect events that could realistically
+// affect this protocol. Every preset's `shocks` must cover all ACTIVE_ASSETS.
 const PRESETS = [
   {
     id: "xlm-deep-bear",
     label: "XLM Deep Bear",
-    shocks: { XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0 },
-    desc: "XLM -50% over multi-week drawdown — stables hold their peg",
+    shocks: { XLM: -50, USDC: 0 },
+    desc: "XLM -50% over multi-week drawdown — USDC holds its peg",
   },
   {
     id: "stellar-flash-crash",
     label: "Stellar Flash Crash",
-    shocks: { XLM: -35, BLUSDC: -2, AQUSDC: -3, SOUSDC: -2 },
-    desc: "XLM -35% in 1h with mild stable wobble across all pools",
+    shocks: { XLM: -35, USDC: -2 },
+    desc: "XLM -35% in 1h with mild USDC wobble",
   },
   {
     id: "stable-contagion",
-    label: "Stable Pool Contagion",
-    shocks: { XLM: -10, BLUSDC: -8, AQUSDC: -7, SOUSDC: -6 },
-    desc: "Cross-pool USDC depeg (~7%) with XLM partially affected",
+    label: "USDC Depeg Stress",
+    shocks: { XLM: -10, USDC: -7 },
+    desc: "Circle USDC depeg (~7%) with XLM partially affected",
   },
   {
     id: "reflector-failure-proxy",
     label: "Reflector Oracle Failure",
-    shocks: { XLM: -20, BLUSDC: -3, AQUSDC: -3, SOUSDC: -3 },
+    shocks: { XLM: -20, USDC: -3 },
     desc: "Stale/incorrect oracle prints — stress proxy across the board",
   },
   {
     id: "custom",
     label: "Custom",
-    shocks: { XLM: -30, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0 },
+    shocks: { XLM: -30, USDC: 0 },
     desc: "Set your own per-asset shocks",
   },
 ];
@@ -88,7 +83,7 @@ export default function MultiAssetCrashPage() {
   const cc = useChartColors();
   const [activePreset, setActivePreset] = useState("xlm-deep-bear");
   const [shocks, setShocks] = useState<Record<Asset, number>>({
-    XLM: -50, BLUSDC: 0, AQUSDC: 0, SOUSDC: 0,
+    XLM: -50, USDC: 0,
   });
   const [hasRun, setHasRun] = useState(false);
 

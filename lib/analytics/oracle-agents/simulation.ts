@@ -96,7 +96,7 @@ export function createOracleAgentsInitialState(): {
       status: "healthy",
     },
     {
-      asset: "BLUSDC",
+      asset: "USDC",
       source: "Reflector",
       lastUpdateTimestamp: now - 8_000,
       freshnessSeconds: 8,

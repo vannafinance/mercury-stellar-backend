@@ -359,7 +359,7 @@ export default function FarmDetailPage() {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: 'link',
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: '—' },
         ],
@@ -490,7 +490,7 @@ export default function FarmDetailPage() {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: 'link',
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: '—' },
         ],
@@ -577,7 +577,7 @@ export default function FarmDetailPage() {
             ? {
                 title: `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-4)}`,
                 clickable: 'link',
-                link: `https://stellar.expert/explorer/testnet/tx/${ev.txHash}`,
+                link: `https://stellar.expert/explorer/public/tx/${ev.txHash}`,
               }
             : { title: '—' },
         ],
@@ -725,7 +725,7 @@ export default function FarmDetailPage() {
       if (pool.id === searchId.toLowerCase()) {
         const row = {
           cell: [
-            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Soroswap', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
+            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Soroswap', (pool.feeFraction / 100).toFixed(2) + '%', 'Mainnet'] },
             { title: 'Soroswap' },
           ],
         };
@@ -738,7 +738,7 @@ export default function FarmDetailPage() {
       if (pool.id === searchId.toLowerCase() || poolId === searchId.toLowerCase()) {
         const row = {
           cell: [
-            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Aquarius', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
+            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Aquarius', (pool.feeFraction / 100).toFixed(2) + '%', 'Mainnet'] },
             { title: 'Aquarius' },
           ],
         };

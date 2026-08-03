@@ -86,7 +86,7 @@ export const positionsTableHeadings = [
 // Back-compat alias — kept in case anything still imports the old name.
 export const tableHeadings = vaultsTableHeadings
 
-// Stellar Blockchain Pool Data
+// Stellar Blockchain Pool Data — mainnet: XLM + Circle USDC only
 export const tableBody = {
   rows: [
     {
@@ -126,8 +126,8 @@ export const tableBody = {
     {
       cell: [
         {
-          chain: "BLUSDC",
-          title: "BLUSDC",
+          chain: "USDC",
+          title: "USDC",
           tag: "Active",
         },
         {
@@ -151,41 +151,7 @@ export const tableBody = {
           tag: "35.05%",
         },
         {
-          onlyIcons: ["BLUSDC", "XLM"],
-          tag: "Collateral",
-          clickable: "toggle",
-        },
-      ],
-    },
-    {
-      cell: [
-        {
-          chain: "AqUSDC",
-          title: "AqUSDC",
-          tag: "Active",
-        },
-        {
-          title: "0 AqUSDC",
-          tag: "0.0000 AqUSDC",
-        },
-        {
-          title: "2.50%",
-          tag: "2.50%",
-        },
-        {
-          title: "0 AqUSDC",
-          tag: "0.0000 AqUSDC",
-        },
-        {
-          title: "4.00%",
-          tag: "4.00%",
-        },
-        {
-          title: "0.00%",
-          tag: "0.00%",
-        },
-        {
-          onlyIcons: ["BLUSDC", "XLM"],
+          onlyIcons: ["USDC", "XLM"],
           tag: "Collateral",
           clickable: "toggle",
         },
@@ -194,53 +160,32 @@ export const tableBody = {
   ],
 };
 
-// Pool configuration with contract addresses (Stellar Testnet)
+// Pool configuration with contract addresses (Stellar Mainnet)
 export const STELLAR_POOLS = {
   XLM: {
     id: 'XLM',
     name: 'Stellar Lumens',
     symbol: 'XLM',
-    icon: '/icons/usdc-icon.svg', // Placeholder - replace with proper XLM icon
+    icon: '/coins/xlmbg.png',
     decimals: 7,
     lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_XLM,
     vToken: CONTRACT_ADDRESSES.VXLM_TOKEN,
-    nativeContract: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+    nativeContract: 'CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA',
   },
   USDC: {
     id: 'USDC',
     name: 'USD Coin',
-    symbol: 'BLUSDC',
+    symbol: 'USDC',
     icon: '/icons/usdc-icon.svg',
     decimals: 7,
     lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC,
     vToken: CONTRACT_ADDRESSES.VUSDC_TOKEN,
-    nativeContract: 'CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU',
-  },
-  AQUARIUS_USDC: {
-    id: 'AQUARIUS_USDC',
-    name: 'Aquarius USD Coin',
-    symbol: 'AqUSDC',
-    icon: '/icons/usdc-icon.svg',
-    decimals: 7,
-    issuer: 'GAHPYWLK6YRN7CVYZOO4H3VDRZ7PVF5UJGLZCSPAEIKJE2XSWF5LAGER',
-    nativeContract: 'CAZRY5GSFBFXD7H6GAFBA5YGYQTDXU4QKWKMYFWBAZFUCURN3WKX6LF5',
-    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC,
-    vToken: CONTRACT_ADDRESSES.VAQUARIUS_USDC_TOKEN,
-  },
-  SOROSWAP_USDC: {
-    id: 'SOROSWAP_USDC',
-    name: 'Soroswap USD Coin',
-    symbol: 'SoUSDC',
-    icon: '/icons/usdc-icon.svg',
-    decimals: 7,
-    nativeContract: 'CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F',
-    lendingProtocol: CONTRACT_ADDRESSES.LENDING_PROTOCOL_SOROSWAP_USDC,
-    vToken: CONTRACT_ADDRESSES.VSOROSWAP_USDC_TOKEN,
+    nativeContract: 'CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75',
   },
 } as const;
 
 // Supported assets for dropdown
 export const STELLAR_ASSETS = [
-  'XLM', 'USDC', 'AQUARIUS_USDC', 'SOROSWAP_USDC',
+  'XLM', 'USDC',
 ] as const;
 export type StellarAsset = typeof STELLAR_ASSETS[number];

@@ -1,15 +1,16 @@
 // USD price oracle reads with a short, ledger-aligned cache. Resolves token
-// aliases (BLUSDC→USDC, BLEND_XLM→XLM, …) to a base symbol, then reads
-// `get_price_latest` off the on-chain oracle via simulation. A per-symbol cache
-// (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe the many concurrent
-// reads a single page issues; static fallbacks cover the unreachable-oracle case.
+// aliases (legacy BLUSDC/AQUSDC/SOUSDC → USDC, BLEND_XLM→XLM, …) to a base
+// symbol, then reads `get_price_latest` off the on-chain oracle via simulation.
+// A per-symbol cache (PRICE_TTL_MS ≈ one ledger) and an in-flight map de-dupe
+// the many concurrent reads a single page issues; static fallbacks cover the
+// unreachable-oracle case.
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from './stellar-utils';
 
 // Tokens without their own oracle entry are priced off a base symbol that
-// represents the same underlying USD value (Blend / Aquarius / Soroswap USDC
-// all peg to USDC, and any future Blend XLM tracking token tracks XLM).
+// represents the same underlying USD value. Mainnet: single Circle USDC;
+// legacy testnet variant aliases still resolve here for safety.
 const PRICE_ALIASES: Record<string, string> = {
   BLUSDC: 'USDC',
   BLEND_USDC: 'USDC',
@@ -17,13 +18,15 @@ const PRICE_ALIASES: Record<string, string> = {
   AQUARIUS_USDC: 'USDC',
   SOUSDC: 'USDC',
   SOROSWAP_USDC: 'USDC',
+  AqUSDC: 'USDC',
+  SoUSDC: 'USDC',
   BLXLM: 'XLM',
   BLEND_XLM: 'XLM',
 };
 
 // Static fallbacks used only when the oracle is unreachable on first probe
 // (network hiccup before any cache entry exists). Once we have a real price
-// it overrides this. Numbers reflect the long-run testnet prices.
+// it overrides this.
 const FALLBACK_PRICES: Record<string, number> = {
   XLM: 0.16,
   USDC: 1.0,
@@ -35,7 +38,7 @@ const FALLBACK_PRICES: Record<string, number> = {
 // Aligned to the ledger cadence (~5 s) so the price tracks the on-chain oracle
 // per ledger close, matching the app-wide tick pattern. Just under one ledger so
 // each tick reads fresh while still de-duping multiple same-ledger reads (with
-// the inflight map). Revisit on mainnet if oracle RPC cost warrants a longer TTL.
+// the inflight map).
 const PRICE_TTL_MS = 4_000;
 // On error we cache the fallback briefly so a flaky RPC doesn't trigger a
 // flood of retries from every component on the page.
@@ -62,10 +65,9 @@ const notify = () => {
   }
 };
 
-// We need a funded G-account to source simulation transactions. We use the
-// connected wallet when available and fall back to the testnet deployer key
-// for unauthenticated reads (e.g. landing-page price probes before connect).
-const FALLBACK_SOURCE = 'GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D';
+// Funded mainnet G-account for simulation source when no wallet is connected
+// (`vanna_mainnet_deployer`). Prefer the connected wallet when available.
+const FALLBACK_SOURCE = 'GDT7ZBFWPYUY44QOA5TH3TGUYNPP6R5CF7EVXNYIW4U2ZQBUZ5NM3WYP';
 
 async function buildSimulationTx(
   server: StellarSdk.rpc.Server,

@@ -13,16 +13,12 @@ import { AssetType } from "@/lib/stellar-utils";
 import { usePoolData, useUserPositions, useEarnTransactions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 
-// AQUARIUS_USDC / SOROSWAP_USDC piggyback on USDC's oracle price (no separate
-// Reflector entry exists — the alias resolves inside oracle-price.ts).
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 const ALL_ASSETS = [
-  "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+  "XLM", "USDC",
 ] as const;
 
 // Chart data is derived entirely from Mercury's real per-account event
@@ -309,9 +305,7 @@ export default function Earn() {
     return {
       rows: [
         buildPoolRow("XLM", pools.XLM, tokenPrices["XLM"] ?? 0, suppliedAmount("XLM")),
-        buildPoolRow("BLUSDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
-        buildPoolRow("AqUSDC", pools.AQUARIUS_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("AQUARIUS_USDC")),
-        buildPoolRow("SoUSDC", pools.SOROSWAP_USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("SOROSWAP_USDC")),
+        buildPoolRow("USDC", pools.USDC, tokenPrices["USDC"] ?? 1, suppliedAmount("USDC")),
       ],
     };
   }, [pools, userPositions, tokenPrices]);
@@ -322,7 +316,7 @@ export default function Earn() {
     if (!userAddress) return { rows: [] };
 
     const assetKeys = [
-      "XLM", "USDC", "AQUARIUS_USDC", "SOROSWAP_USDC",
+      "XLM", "USDC",
     ] as const;
     const rows = assetKeys
       .filter(
@@ -330,11 +324,7 @@ export default function Earn() {
                    parseFloat(userPositions[asset]?.borrowed || "0") > POSITION_DUST
       )
       .map((asset) => {
-        const displaySymbol =
-          asset === "AQUARIUS_USDC" ? "AqUSDC"
-          : asset === "SOROSWAP_USDC" ? "SoUSDC"
-          : asset === "USDC" ? "BLUSDC"
-          : asset;
+        const displaySymbol = asset;
         const price = tokenPrices[PRICE_TOKEN_FOR_ASSET[asset] ?? asset] ?? (asset === "XLM" ? 0 : 1);
         return buildPositionRow(displaySymbol, userPositions[asset], pools[asset], price);
       });
@@ -366,16 +356,13 @@ export default function Earn() {
 
       if (id) {
         const assetType =
-          id === "AqUSDC" || id === "AquiresUSDC"
-            ? "AQUARIUS_USDC"
-            : id === "SoUSDC" || id === "SoroswapUSDC"
-              ? "SOROSWAP_USDC"
-              : id === "BLUSDC"
-                ? "USDC"
-                : id.toUpperCase();
+          id === "AqUSDC" || id === "AquiresUSDC" ||
+          id === "SoUSDC" || id === "SoroswapUSDC" ||
+          id === "BLUSDC" || id === "USDC"
+            ? "USDC"
+            : id.toUpperCase();
         if (
-          assetType === "XLM" || assetType === "USDC" ||
-          assetType === "AQUARIUS_USDC" || assetType === "SOROSWAP_USDC"
+          assetType === "XLM" || assetType === "USDC"
         ) {
           setSelectedPool(assetType as AssetType, {
             id: id,

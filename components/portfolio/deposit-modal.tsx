@@ -23,25 +23,17 @@ interface DepositModalProps {
 const ASSET_DISPLAY: Record<string, { label: string; sub: string }> = {
   XLM: { label: "XLM", sub: "Stellar Lumens" },
   USDC: { label: "USDC", sub: "USD Coin" },
-  AQUARIUS_USDC: { label: "AqUSDC", sub: "Aquarius USDC" },
-  SOROSWAP_USDC: { label: "SoUSDC", sub: "Soroswap USDC" },
-};
+  };
 
 const DEPOSIT_ASSETS: AssetType[] = [
   ASSET_TYPES.XLM,
   ASSET_TYPES.USDC,
-  ASSET_TYPES.AQUARIUS_USDC,
-  ASSET_TYPES.SOROSWAP_USDC,
 ];
 
 /** Maps an AssetType to the price-hook's/margin store's token key (matches withdraw-modal.tsx). */
 const normalizeContractTokenSymbol = (symbol: string): string =>
-  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC"
+  symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "BLUSDC" || symbol === "AQUARIUS_USDC" || symbol === "AqUSDC" || symbol === "SOROSWAP_USDC" || symbol === "SoUSDC" || symbol === "AQUSDC" || symbol === "SOUSDC"
     ? "USDC"
-    : symbol === "AQUARIUS_USDC" || symbol === "AqUSDC"
-      ? "AQUSDC"
-      : symbol === "SOROSWAP_USDC" || symbol === "SoUSDC"
-        ? "SOUSDC"
         : symbol;
 
 export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) => {
@@ -76,7 +68,7 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
   const tokenBalances = useUserStore((state) => state.tokenBalances);
   const userAddress = useUserStore((state) => state.address);
   const { totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
-  const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const tokenPrices = useTokenPrices(["XLM", "USDC"]);
   const { isDark } = useTheme();
 
   // Ensure the margin-account store is resolved/fresh while the modal is open

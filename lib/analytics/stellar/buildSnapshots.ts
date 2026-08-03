@@ -50,12 +50,11 @@ async function fetchProtocolSnapshots(force: boolean): Promise<AccountSnapshot[]
 const TOKEN_DECIMALS: Record<string, number> = {
   XLM: 7,
   USDC: 7,
+  // Legacy aliases (display safety)
   BLUSDC: 7,
   AQUSDC: 7,
   SOUSDC: 7,
   BLEND_USDC: 7,
-  AQUARIUS_USDC: 7,
-  SOROSWAP_USDC: 7,
 };
 
 function entriesToCollateral(entries: Record<string, BorrowedBalance>): CollateralPosition[] {

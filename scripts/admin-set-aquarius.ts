@@ -235,10 +235,7 @@ const main = async () => {
     poolIndex = await getPoolIndexFromRouter(routerId, tokenIds, poolId);
     console.log('Pool index (from router, hex):', poolIndex.toString('hex'));
   } catch (err) {
-    if (
-      CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX &&
-      CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX.length === 64
-    ) {
+    if (String(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX || '').length === 64) {
       console.warn('Router lookup failed, using configured AQUARIUS_POOL_INDEX_HEX fallback...');
       poolIndex = Buffer.from(CONTRACT_ADDRESSES.AQUARIUS_POOL_INDEX_HEX, 'hex');
       console.log('Pool index (configured fallback, hex):', poolIndex.toString('hex'));
@@ -298,7 +295,7 @@ const main = async () => {
   );
 
   console.log('✓ Registry Aquarius USDC token set to:', tokenBContractId);
-  console.log('✓ Registry Aquarius USDC lending pool is configured via frontend constants:', CONTRACT_ADDRESSES.LENDING_PROTOCOL_AQUARIUS_USDC);
+  console.log('✓ Registry Aquarius USDC lending pool is configured via frontend constants:', CONTRACT_ADDRESSES.LENDING_PROTOCOL_USDC);
 };
 
 main().catch((err) => {

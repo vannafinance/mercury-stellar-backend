@@ -28,20 +28,24 @@ import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
-const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
+const POOL_OPTIONS = ["XLM", "USDC"] as const;
 
 const toInternalAsset = (value: string) => {
-  if (value === 'BLUSDC' || value === 'USDC') return 'USDC';
-  if (value === 'AqUSDC' || value === 'AquiresUSDC' || value === 'AQUARIUS_USDC') return 'AQUARIUS_USDC';
-  if (value === 'SoUSDC' || value === 'SoroswapUSDC' || value === 'SOROSWAP_USDC') return 'SOROSWAP_USDC';
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return u || "XLM";
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === 'USDC') return 'BLUSDC';
-  if (value === 'AQUARIUS_USDC' || value === 'AquiresUSDC') return 'AqUSDC';
-  if (value === 'SOROSWAP_USDC' || value === 'SoroswapUSDC') return 'SoUSDC';
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  return "USDC";
 };
 
 /** Memoized supply-liquidity panel; selected pool is driven by the route/store. */
@@ -74,7 +78,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
 
   const supply = useSupplyLiquidity();
   const { pools } = usePoolData();
-  const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
+  const tokenPrices = useTokenPrices(['XLM', 'USDC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
@@ -85,11 +89,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       const xlmBalance = parseFloat(balance) || 0;
       return Math.max(0, xlmBalance - 1);
     } else if (normalizedAsset === 'USDC') {
-      return parseFloat(storeTokenBalances.BLEND_USDC || storeTokenBalances.USDC || '0');
-    } else if (normalizedAsset === 'AQUARIUS_USDC') {
-      return parseFloat(storeTokenBalances.AQUARIUS_USDC || '0');
-    } else if (normalizedAsset === 'SOROSWAP_USDC') {
-      return parseFloat(storeTokenBalances.SOROSWAP_USDC || '0');
+      return parseFloat(storeTokenBalances.USDC || storeTokenBalances.BLEND_USDC || '0');
     }
     return 0;
   }, [normalizedAsset, balance, storeTokenBalances]);
@@ -139,9 +139,7 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const unitPriceUsd =
     tokenPrices[
       normalizedAsset === 'XLM' ? 'XLM'
-        : normalizedAsset === 'AQUARIUS_USDC' ? 'AQUSDC'
-        : normalizedAsset === 'SOROSWAP_USDC' ? 'SOUSDC'
-        : 'BLUSDC'
+        : 'USDC'
     ] || (normalizedAsset === 'XLM' ? 0 : 1);
   const usdValue = amountNum * unitPriceUsd;
   const formattedUsd = `$${usdValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

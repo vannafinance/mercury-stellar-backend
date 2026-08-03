@@ -21,8 +21,6 @@ import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-pric
 const PRICE_TOKEN_FOR_ASSET: Record<string, string> = {
   XLM: 'XLM',
   USDC: 'USDC',
-  AQUARIUS_USDC: 'USDC',
-  SOROSWAP_USDC: 'USDC',
 };
 
 /**
@@ -45,18 +43,24 @@ const shortenAddress = (addr: string | undefined): string => {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 };
 
-const STELLAR_EXPLORER = "https://stellar.expert/explorer/testnet/contract";
+const STELLAR_EXPLORER = "https://stellar.expert/explorer/public/contract";
 
 const toInternalAsset = (value: string) => {
-  if (value === "AqUSDC" || value === "AquiresUSDC" || value === "AQUARIUS_USDC") return "AQUARIUS_USDC";
-  if (value === "SoUSDC" || value === "SoroswapUSDC" || value === "SOROSWAP_USDC") return "SOROSWAP_USDC";
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  if (
+    u === "BLUSDC" || u === "USDC" || u === "BLEND_USDC" ||
+    u === "AQUSDC" || u === "AQUIRESUSDC" || u === "AQUARIUS_USDC" ||
+    u === "SOUSDC" || u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC" ||
+    value === "AqUSDC" || value === "SoUSDC" || value === "AquiresUSDC" || value === "SoroswapUSDC"
+  ) return "USDC";
+  return u || "XLM";
 };
 
 const toDisplayAsset = (value: string) => {
-  if (value === "AQUARIUS_USDC" || value === "AquiresUSDC") return "AqUSDC";
-  if (value === "SOROSWAP_USDC" || value === "SoroswapUSDC") return "SoUSDC";
-  return value;
+  const u = (value || "").toUpperCase();
+  if (u === "XLM") return "XLM";
+  return "USDC";
 };
 
 const getAddresses = (selectedAssetKey: string, selectedAssetLabel: string) => {

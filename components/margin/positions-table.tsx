@@ -27,13 +27,15 @@ const ITEMS_PER_PAGE = 5;
 const BORROW_DUST_USD = 0.01;
 const BORROW_DUST_EPSILON = 1e-6;
 
-const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC'];
+const PRICEABLE_TOKENS = ['XLM', 'USDC'];
 
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
-  if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
-  if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
-  if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
+  if (
+    normalized === 'BLEND_USDC' || normalized === 'USDC' || normalized === 'BLUSDC' ||
+    normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC' || normalized === 'AQUSDC' ||
+    normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC' || normalized === 'SOUSDC'
+  ) return 'USDC';
   return normalized;
 };
 
@@ -418,7 +420,7 @@ export const Positionstable = ({
         <div className="w-full flex items-center py-[16px] px-[12px]">
           {item.hash ? (
             <a
-              href={`https://stellar.expert/explorer/testnet/tx/${item.hash}`}
+              href={`https://stellar.expert/explorer/public/tx/${item.hash}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[13px] font-medium text-[#703AE6] hover:underline"
@@ -783,7 +785,7 @@ export const Positionstable = ({
         </div>
         {item.hash ? (
           <a
-            href={`https://stellar.expert/explorer/testnet/tx/${item.hash}`}
+            href={`https://stellar.expert/explorer/public/tx/${item.hash}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-[12px] font-medium text-[#703AE6] hover:underline shrink-0"
