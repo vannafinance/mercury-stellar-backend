@@ -71,6 +71,57 @@ describe("step-extractor", () => {
     expect(p).toBeNull();
   });
 
+  it("splits a comma-separated action list", () => {
+    const p = extractOrderedPlan("deposit 100 BLUSDC, borrow 50 XLM, lend 50 XLM");
+    expect(p?.kind).toBe("plan");
+    expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow", "lend"]);
+    expect(p!.steps[0]).toMatchObject({ asset: "BLUSDC", amount: 100 });
+    expect(p!.steps[1]).toMatchObject({ asset: "XLM", amount: 50 });
+    expect(p!.steps[2]).toMatchObject({ asset: "XLM", amount: 50 });
+  });
+
+  it("splits on a bare 'and' when each verb owns an amount", () => {
+    const p = extractOrderedPlan("deposit 100 BLUSDC and borrow 50 XLM");
+    expect(p?.kind).toBe("plan");
+    expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow"]);
+    expect(p!.steps[1]).toMatchObject({ asset: "XLM", amount: 50 });
+  });
+
+  it("keeps 'deposit and borrow' as one levered op", () => {
+    // Splitting the idiom would leave a bare "deposit" clause with no amount.
+    const c = splitStrategyClauses("deposit and borrow 100 BLUSDC at 2x");
+    expect(c).toHaveLength(1);
+    expect(c[0]).toBe("deposit and borrow 100 BLUSDC at 2x");
+  });
+
+  it("does not split a thousands separator", () => {
+    const c = splitStrategyClauses("borrow 1,240 XLM");
+    expect(c).toHaveLength(1);
+    const p = extractOrderedPlan("deposit 2,000 BLUSDC, borrow 1,240 XLM");
+    expect(p!.steps[0]).toMatchObject({ amount: 2000 });
+    expect(p!.steps[1]).toMatchObject({ amount: 1240, asset: "XLM" });
+  });
+
+  it("reads a thousands-separated amount at full magnitude", () => {
+    // Regression: the amount matcher's \d+ could not span "1,240", so the scan slid to
+    // the tail and produced 240 — a silent 10x error on a real borrow, with no
+    // clarification raised. Asserted on its own because a wrong amount that still
+    // executes is worse than a parse failure.
+    const p = extractOrderedPlan("deposit 10,000 BLUSDC, borrow 1,240 XLM");
+    expect(p!.steps[0].amount).toBe(10000);
+    expect(p!.steps[1].amount).toBe(1240);
+  });
+
+  it("does not split a decimal", () => {
+    const c = splitStrategyClauses("park 0.5 XLM for yield keep HF above 1.4");
+    expect(c).toHaveLength(1);
+  });
+
+  it("splits on sentence periods", () => {
+    const p = extractOrderedPlan("Deposit 50 BLUSDC. Borrow 20 XLM.");
+    expect(p!.steps.map((s) => s.op)).toEqual(["deposit_collateral", "borrow"]);
+  });
+
   it("upgrades a collapsed single write to a plan", () => {
     const single = {
       kind: "write" as const,

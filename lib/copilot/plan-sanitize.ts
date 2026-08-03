@@ -176,6 +176,23 @@ export function looksLikeMultiGoal(message: string): boolean {
     if (new Set(verbs.map((v) => v.toLowerCase())).size >= 2) return true;
   }
   if (/\b(park|lend|earn|yield)\b/i.test(t) && /\b(farm|blend|deploy)\b/i.test(t)) return true;
+  /**
+   * Comma- or "and"-separated action lists, at any length:
+   * "deposit 100 BLUSDC, borrow 50 XLM, lend 50 XLM".
+   *
+   * Without this, a prompt like that is under the 90-char bar above and contains no
+   * "then", so it never registered as multi-goal — which meant `preferExtractedPlan`
+   * was never called and the whole list collapsed to whichever single op
+   * `clauseToStep` matched first. The comma is doing the same work "then" does; it
+   * just was not being read that way.
+   */
+  if (/,|\band\b/i.test(t)) {
+    const verbs =
+      t.match(
+        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|park|deploy)\b/gi,
+      ) || [];
+    if (new Set(verbs.map((v) => v.toLowerCase())).size >= 2) return true;
+  }
   if (/\bthen\b/i.test(t)) {
     const n = (t.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay)\b/gi) || [])
       .length;

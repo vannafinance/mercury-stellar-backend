@@ -22,13 +22,27 @@ export type ExtractedStep = {
 };
 
 const ASSET = "BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC";
-const AMT_ASSET = new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${ASSET})\\b`, "i");
+/**
+ * Amount + asset, e.g. "50 BLUSDC". Accepts thousands separators.
+ *
+ * Before this accepted commas, `\\d+` could not match across "1,240", so the scan slid
+ * forward and matched the TAIL: "borrow 1,240 XLM" parsed as 240 XLM. That was not a
+ * parse failure surfacing as a clarification — it was a silent order-of-magnitude error
+ * in a real transaction amount. Commas are stripped before Number().
+ */
+const NUM = "\\d[\\d,]*(?:\\.\\d+)?";
+const AMT_ASSET = new RegExp(`(${NUM})\\s*(${ASSET})\\b`, "i");
 const LEVERAGE = /(\d+(?:\.\d+)?)\s*x\b/i;
+
+/** Parse a matched amount, dropping thousands separators. */
+function toNum(raw: string): number {
+  return Number(raw.replace(/,/g, ""));
+}
 
 function firstAmtAsset(clause: string): { amount: number; asset: string } | null {
   const m = clause.match(AMT_ASSET);
   if (!m) return null;
-  const amount = Number(m[1]);
+  const amount = toNum(m[1]);
   if (!Number.isFinite(amount) || amount <= 0) return null;
   return { amount, asset: m[2].toUpperCase() };
 }
@@ -38,7 +52,7 @@ function allAmtAssets(clause: string): Array<{ amount: number; asset: string }> 
   const re = new RegExp(AMT_ASSET.source, "gi");
   let m: RegExpExecArray | null;
   while ((m = re.exec(clause)) !== null) {
-    const amount = Number(m[1]);
+    const amount = toNum(m[1]);
     if (Number.isFinite(amount) && amount > 0) out.push({ amount, asset: m[2].toUpperCase() });
   }
   return out;
@@ -50,18 +64,52 @@ function lev(clause: string, globalLev: number | null): number | null {
   return globalLev;
 }
 
+/** Write verbs, used to protect the "deposit and borrow" idiom from the "and" split. */
+const STEP_VERB =
+  "deposit|borrow|lend|park|farm|supply|swap|repay|redeem|withdraw|deploy|invest";
+
 /**
- * Split long prompts into ordered clauses on then / after / next / ;
- * Keeps multi-sentence strategies intact.
+ * Split long prompts into ordered clauses.
+ *
+ * Separators: "and then" / "then" / "after that" / "afterwards" / "next" / "finally" /
+ * "also" / "plus", plus the punctuation people actually use — comma, semicolon,
+ * sentence-ending period, newline — and a bare "and".
+ *
+ * Three things this must not break, each a real ambiguity rather than a hypothetical:
+ *
+ *   1. Thousands separators. "borrow 1,240 XLM" must stay one number. A comma is only a
+ *      separator when it is NOT followed by a three-digit group, so "1,240" and
+ *      "1,240,000" survive while "50 BLUSDC, keep me above 1.4" splits.
+ *   2. Decimals. The period rule requires trailing whitespace (`\.\s+`), so "1.4 health"
+ *      and "0.5 XLM" are untouched while "Deposit 5 XLM. Borrow XLM." splits.
+ *   3. The "deposit and borrow" idiom. `clauseToStep` maps that phrase to the single
+ *      `deposit_and_borrow` op, which the executor expands with leverage. Splitting on
+ *      the "and" there would produce a bare "deposit" clause with no amount. So verb-
+ *      immediately-and-verb pairs are guarded before the split and restored after —
+ *      "deposit and borrow 100 USDC at 2x" stays one clause, while
+ *      "deposit 100 USDC and borrow 50 XLM", where each verb owns an amount, splits.
  */
 export function splitStrategyClauses(message: string): string[] {
   const raw = message.trim();
   if (!raw) return [];
-  // Split on sequence markers (keep content)
-  const parts = raw
-    .split(/\b(?:and\s+then|then|after\s+that|afterwards|next|finally|;)\b/i)
-    .map((p) => p.trim())
+
+  // Guard `verb and verb` (no object between) so the bare-"and" rule cannot break it.
+  // The sentinel must contain no letters: the split matches `\band\b`
+  // case-insensitively, so any placeholder containing "and" is split right back.
+  const GUARD = "\u0001";
+  const guarded = raw.replace(
+    new RegExp(`\\b(${STEP_VERB})\\s+and\\s+(${STEP_VERB})\\b`, "gi"),
+    (_m, a: string, b: string) => `${a}${GUARD}${b}`,
+  );
+
+  const parts = guarded
+    .split(
+      // Word separators first so "and then" wins over bare "and".
+      /\b(?:and\s+then|then|after\s+that|afterwards|next|finally|also|plus)\b|\band\b|;|,(?!\d{3}\b)|\.\s+|\n+/i,
+    )
+    .map((p) => p.replaceAll(GUARD, " and ").trim())
     .filter((p) => p.length > 2);
+
   return parts.length ? parts : [raw];
 }
 
