@@ -79,6 +79,26 @@ Allowed ops only:
 lend, redeem, deposit_collateral, withdraw_collateral, borrow, repay, swap,
 deploy_to_blend, supply_to_blend, deposit_and_borrow, create_account, add_liquidity, remove_liquidity
 
+STRATEGY VOCABULARY — named strategies you must decompose yourself:
+
+"delta-neutral carry" / "carry trade" / "basis trade" / "cash and carry" on asset X:
+  The user wants yield without price exposure to X. Achieved by owing X and holding
+  the same amount of X, so the two cancel:
+    1. deposit_collateral with the STABLE asset the user named (their USDC variant)
+    2. borrow X  ← this creates the short leg
+    3. lend X (Vanna earn) or deploy_to_blend X  ← the long leg, and where yield comes from
+  Borrow and deploy the SAME amount of X — that is what makes it delta-neutral. The
+  profit is the deploy yield minus the borrow cost, not price movement.
+  "delta-neutral XLM carry with 1,000 USDC" → deposit_collateral USDC 1000, then
+  borrow XLM, then lend XLM the same amount.
+
+"leveraged farm" / "lever up and farm" on asset X:
+  deposit_collateral X, borrow X, deploy_to_blend X — or a single deploy_to_blend with
+  leverage set, which the executor expands.
+
+"loop" / "recursive borrow": repeat deposit → borrow on the same asset. Never emit more
+  than 3 iterations.
+
 Rules:
 1. Preserve USER ORDER of actions (then / and then / after).
 2. Amounts ONLY from explicit "N ASSET" (e.g. 20 XLM, 10 BLUSDC). Never invent.

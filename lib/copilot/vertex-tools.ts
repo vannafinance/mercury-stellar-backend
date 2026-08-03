@@ -620,7 +620,13 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         "A multi-step strategy that needs more than one call: park/lend for yield THEN farm Blend, " +
         "deposit then borrow, rebalances, multi-venue goals. Order steps as they must run. " +
         "Amounts ONLY from explicit N ASSET (e.g. 20 XLM) — never use health-factor floors as amounts. " +
-        "Use a single-purpose tool instead whenever one call is enough.",
+        "Use a single-purpose tool instead whenever one call is enough. " +
+        "Named strategies you must DECOMPOSE here rather than refuse or clarify: " +
+        "a DELTA-NEUTRAL CARRY (also \"carry trade\", \"basis trade\", \"cash and carry\") on asset X " +
+        "is deposit_collateral with the stable asset the user named, then borrow X, then lend or " +
+        "deploy_to_blend the SAME amount of X — owing X while holding X cancels the price exposure, " +
+        "and the return is the deploy yield minus the borrow cost. " +
+        "A LEVERAGED FARM is deposit_collateral, borrow, then deploy_to_blend.",
       parameters: params(
         {
           summary: str("One line describing the strategy."),
