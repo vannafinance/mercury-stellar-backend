@@ -55,6 +55,15 @@ function isNavItemActive(
 }
 
 /**
+ * Active nav pill. The pink was a light-mode literal, so on the dark bar it lit up as a
+ * near-white chip — the one thing in the header brighter than the logo. Dark gets the
+ * deep rose the rest of the dark palette is built on, with the same brand pink ink.
+ */
+function activePillClass(isDark: boolean): string {
+  return isDark ? "bg-[#3A0F27] text-[#FF3D91]" : "bg-[#FFE6F2] text-[#FF007A]";
+}
+
+/**
  * Top application navigation bar. Renders the logo, the Pro/Lite mode toggle,
  * grouped nav items (with a hover/focus Trade dropdown), and the right-hand
  * cluster: testnet faucet (wallet-gated), wallet connect / account menu, theme
@@ -391,7 +400,7 @@ export const Navbar = (props: Navbar) => {
                 tabIndex={0}
                 className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                   isActive
-                    ? "bg-[#FFE6F2] text-[#FF007A]"
+                    ? activePillClass(isDark)
                     : isDark
                     ? "text-white"
                     : ""
@@ -435,7 +444,7 @@ export const Navbar = (props: Navbar) => {
                       tabIndex={0}
                       className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                         isActive
-                          ? "bg-[#FFE6F2] text-[#FF007A]"
+                          ? activePillClass(isDark)
                           : isDark
                           ? "text-white"
                           : ""
@@ -624,7 +633,7 @@ export const Navbar = (props: Navbar) => {
                   tabIndex={0}
                   className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                     isActive
-                      ? "bg-[#FFE6F2] text-[#FF007A]"
+                      ? activePillClass(isDark)
                       : isDark
                       ? "text-white"
                       : ""
@@ -711,7 +720,7 @@ export const Navbar = (props: Navbar) => {
                 tabIndex={0}
                 className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                   isActive
-                    ? "bg-[#FFE6F2] text-[#FF007A]"
+                    ? activePillClass(isDark)
                     : isDark
                     ? "text-white"
                     : ""
