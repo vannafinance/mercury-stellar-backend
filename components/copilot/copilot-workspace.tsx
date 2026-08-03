@@ -2341,11 +2341,28 @@ export function CopilotWorkspace() {
     [],
   );
   const runLegs = useMemo<RunLeg[]>(() => {
-    const src: MultiLegStepUi[] = strategySteps.length
+    const raw: MultiLegStepUi[] = strategySteps.length
       ? strategySteps
       : Array.isArray((response?.data as { multi_leg_steps?: unknown })?.multi_leg_steps)
         ? ((response!.data as { multi_leg_steps: MultiLegStepUi[] }).multi_leg_steps)
         : [];
+    /**
+     * Drop the pseudo-leg.
+     *
+     * When the router cannot resolve part of a strategy it appends a clarification row
+     * whose label is the ENTIRE original prompt. That is the turn's clarification, not a
+     * leg: it has no op and no amount, so it took focus in the card, reported "paused on
+     * leg 1 of 3", and opened a number field for a question that was really "I could not
+     * decompose this". Anything whose label is the prompt back at us is not a step.
+     */
+    const promptEcho = (submitted || "").trim().toLowerCase();
+    const src = raw.filter((s) => {
+      const label = String(s.label ?? "").trim().toLowerCase();
+      if (!label) return true;
+      const echo = promptEcho.length > 24 && (label === promptEcho || label.startsWith(promptEcho));
+      const noOp = !s.op || s.op === "step";
+      return !(echo && noOp);
+    });
     if (!src.length) return [];
     const inFlightIdx = loading
       ? src.findIndex((s) => !TERMINAL_LEG.has(String(s.status ?? "")))
@@ -2373,7 +2390,7 @@ export function CopilotWorkspace() {
           s.message && toRunLegStatus(s.status) === "needs_input" ? String(s.message) : null,
       };
     });
-  }, [strategySteps, response, loading, TERMINAL_LEG]);
+  }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
 
   /**
    * Resume from a paused leg once the user supplies the amount the plan never carried.

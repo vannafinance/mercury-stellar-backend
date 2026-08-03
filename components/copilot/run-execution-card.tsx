@@ -100,7 +100,15 @@ export interface RunExecutionCardProps {
   onConfirmGate?: (leg: RunLeg) => void;
 }
 
-/** Map the server's leg vocabulary onto the design's. */
+/**
+ * Map the server's leg vocabulary onto the design's.
+ *
+ * `clarification` becomes `needs_input` — the run is paused on a question. Whether that
+ * question gets a NUMERIC FIELD is a separate decision, made per leg from whether an
+ * amount is actually missing (see `showInput` below). A clarification that already has
+ * its amount is asking about something else — which USDC, usually — and answering it
+ * with a number box would be asking the wrong question.
+ */
 export function toRunLegStatus(raw: string | null | undefined, inFlight = false): RunLegStatus {
   switch (String(raw ?? "")) {
     case "ok":
@@ -593,7 +601,12 @@ export function RunExecutionCard({
           const later = i > shape.focus && !shape.complete;
           const last = i === total - 1;
           const missing = l.amount == null;
-          const showInput = l.status === "needs_input";
+          // The number field appears only when the paused leg is actually short a number.
+          // A paused leg that already has its amount is being asked about something else
+          // (asset ambiguity, a confirmation) — it gets the question as prose and is
+          // answered in the composer, because a numeric input would not answer it.
+          const showInput = l.status === "needs_input" && missing;
+          const showQuestionOnly = l.status === "needs_input" && !missing;
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
 
           return (
@@ -944,6 +957,41 @@ export function RunExecutionCard({
                         </button>
                       ) : null}
                     </div>
+                  </div>
+                ) : null}
+
+                {/* Paused on a question that is not a number — no field, because there is
+                    nothing numeric to type. The answer goes in the composer. */}
+                {showQuestionOnly ? (
+                  <div
+                    className="mt-[11px]"
+                    style={{
+                      border: "1px solid var(--rc-warn-bd)",
+                      background: "var(--rc-warn-bg)",
+                      borderRadius: 10,
+                      padding: "13px 14px",
+                    }}
+                  >
+                    <p
+                      className="m-0 font-bold"
+                      style={{ fontSize: 14.5, lineHeight: "21px", color: "var(--rc-warn-fg)" }}
+                    >
+                      {l.question || "This leg needs one more detail before it can run."}
+                    </p>
+                    <p
+                      className="m-0 mt-1.5"
+                      style={{
+                        fontSize: 13,
+                        lineHeight: "19px",
+                        color: "var(--rc-warn-fg)",
+                        textWrap: "pretty",
+                      }}
+                    >
+                      Answer below and the run continues from here.
+                      {shape.doneCount > 0
+                        ? ` ${shape.doneCount === 1 ? "Leg 1 has" : `Legs 1–${shape.doneCount} have`} already settled on chain.`
+                        : ""}
+                    </p>
                   </div>
                 ) : null}
 
