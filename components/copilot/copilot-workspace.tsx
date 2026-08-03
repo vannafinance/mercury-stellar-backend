@@ -427,9 +427,19 @@ const BTN_TINT =
  * panel is a muddy brown-violet that reads as a rendering fault, not as "not yet" — the
  * plan card already solves this by swapping to flat grey, and this matches it.
  */
+/**
+ * Primary action button.
+ *
+ * The disabled state used to strip the gradient (`disabled:bg-none`) and repaint the
+ * button grey with grey text. In dark mode that grey sat almost exactly on the surface
+ * colour, so Run looked broken rather than idle — and in light mode it read as
+ * permanently unavailable. The design keeps the gradient in every state; a disabled
+ * control should look *quiet*, not absent, so it now just loses some opacity and keeps
+ * white text, which stays legible against the gradient in both themes.
+ */
 const BTN_GRADIENT =
   "rounded-r2 bg-gradient text-[13px] font-semibold text-white transition-opacity hover:opacity-90 " +
-  "disabled:cursor-not-allowed disabled:bg-none disabled:bg-vgray-100 disabled:text-vgray-400 disabled:opacity-100";
+  "disabled:cursor-not-allowed disabled:opacity-45";
 
 const RISK_TONE = {
   allow: { label: "risk gate · allow", color: EMERALD, bg: "rgba(16,185,129,.12)" },

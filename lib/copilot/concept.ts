@@ -52,6 +52,15 @@ const DEFINITIONAL =
 const PAGE_REFERENTIAL =
   /\b(what|where)\s+am\s+i\b|\b(looking\s+at|on\s+(?:my\s+)?screen|this\s+page|this\s+screen|shown\s+here)\b|\b(what|how)\s+does\s+(this|that|it)\b|\b(what|who)\s+(is|are)\s+(this|that|these|those)\b|\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen)\b/i;
 
+/**
+ * "What can you do?" — a question about the assistant, answered by the assistant.
+ *
+ * Mirrors SELF_REFERENTIAL in domain-firewall.ts. Kept in both places deliberately: the
+ * firewall decides whether to spend a token at all, this decides which surface answers.
+ */
+const SELF_REFERENTIAL =
+  /\b(what|which)\s+(can|could|do|does)\s+(you|u|this|it)\b|\bwhat\s+(are\s+you|is\s+this)\b|\b(who|what)\s+are\s+you\b|\b(your|you)\s+(capabilities|features|abilities|commands|tools)\b|\b(how\s+do\s+i\s+(use|start)|getting\s+started|what\s+should\s+i\s+ask)\b/i;
+
 /** A concrete market datum… */
 const MARKET_NOUN =
   /\b(price|prices|apy|apr|yield|tvl|utilization|liquidity|pool|pools|reserve|reserves|stats|rate|rates)\b/i;
@@ -80,6 +89,11 @@ export function isAssistantChat(message: string): boolean {
 
   // Questions about the surface itself: only the page agent has the page.
   if (PAGE_REFERENTIAL.test(m)) return true;
+
+  // Questions about the assistant's own capabilities. These belong to the Guide, not the
+  // MCP router — there is no tool that answers "what can you do", so routing them to the
+  // copilot produced a clarification asking the user to rephrase.
+  if (SELF_REFERENTIAL.test(m)) return true;
 
   // An action instruction is a write unless it is framed as a how-to
   // ("how do I deposit XLM as collateral?" is still assistant work).

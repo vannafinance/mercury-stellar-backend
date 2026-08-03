@@ -62,9 +62,27 @@ const PAGE_REFERENTIAL: RegExp[] = [
   /\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen|what)\b/i,
 ];
 
+/**
+ * Questions about the assistant itself.
+ *
+ * "what can you do", "who are you", "help" are the first things a new user types, and
+ * they were refused with "I only help with Vanna Finance…" — an answer that is both
+ * unhelpful and self-contradictory, since describing what it helps with is precisely
+ * what was asked. These are in-domain by definition: the subject is the product.
+ */
+const SELF_REFERENTIAL: RegExp[] = [
+  /\b(what|which)\s+(can|could|do|does)\s+(you|u|this|it)\b/i,
+  /\bwhat\s+(are\s+you|is\s+this)\b/i,
+  /\b(who|what)\s+are\s+you\b/i,
+  /\b(your|you)\s+(capabilities|features|abilities|commands|tools)\b/i,
+  /\b(how\s+do\s+i\s+(use|start)|getting\s+started|what\s+should\s+i\s+ask)\b/i,
+  /\b(help|examples?|options)\b\s*\??$/i,
+];
+
 /** Strong in-domain signals for Vanna Finance. */
 const ALLOW_PATTERNS: RegExp[] = [
   ...PAGE_REFERENTIAL,
+  ...SELF_REFERENTIAL,
   /\b(vanna|stellar|soroban|freighter|privy)\b/i,
   /\b(earn|farm|margin|lend|borrow|repay|deposit|redeem|collateral|health\s*factor|\bhf\b)\b/i,
   /\b(blend|aquarius|soroswap|xlm|blusdc|aqusdc|sousdc|btoken|vtoken)\b/i,
