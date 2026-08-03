@@ -2486,14 +2486,10 @@ export function CopilotWorkspace() {
                             <AnswerView answer={response.answer} />
                           </div>
                         )}
-                        <MultiLegStrategyCard
-                          data={strategyCardData}
-                          steps={strategySteps}
-                          headline={response?.message}
-                          onResume={resumeMultiLeg}
-                          resumeBusy={loading}
-                          autoContinues={autoApprove}
-                        />
+                        {/* No strategy card here. The plan is reviewed once in
+                            "03 Approve plan"; from then on "02 Agent run" IS the live
+                            step view. Repeating the same legs in a second card during and
+                            after execution showed them twice with nothing left to decide. */}
                       </>
                     ) : response ? (
                       <div className="mt-3 flex gap-3">
@@ -2823,7 +2819,7 @@ export function CopilotWorkspace() {
                 {/* Executed */}
                 {phase === "done" && response && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                    <Eyebrow n="04">{multiLeg ? "Strategy" : "Executed"}</Eyebrow>
+                    <Eyebrow n="04">{multiLeg ? "Response" : "Executed"}</Eyebrow>
                     {/* Closing summary of what actually ran. Server-side when the brain
                         finishes the last leg; client-signed finals POST summarize_execution. */}
                     {response.answer && (
@@ -2843,17 +2839,9 @@ export function CopilotWorkspace() {
                          the summary showed the same four legs twice, the second time with
                          nothing left to decide. While legs remain it stays — that is the
                          progress view. */
-                      strategySteps.length > 0 &&
-                      strategySteps.every((s) => String(s?.status ?? "") === "ok") ? null : (
-                        <MultiLegStrategyCard
-                          data={strategyCardData}
-                          steps={strategySteps}
-                          headline={response.message}
-                          onResume={resumeMultiLeg}
-                          resumeBusy={loading}
-                          autoContinues={autoApprove}
-                        />
-                      )
+                      /* Nothing. "02 Agent run" above already lists every leg with its
+                         live status, and the summary sits directly beneath it. */
+                      null
                     ) : (
                       <>
                         <div className="mt-4 flex items-center gap-4">

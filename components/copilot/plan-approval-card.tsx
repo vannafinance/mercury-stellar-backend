@@ -123,7 +123,12 @@ export function PlanApprovalCard({
         : "Approve & run";
 
   return (
-    <div className="mt-7" style={{ animation: "copilot-in 300ms ease-out forwards" }}>
+    // No entry animation. This referenced `copilot-in`, a keyframe that only exists in
+    // the Claude Design file — the app defines `cp-in`. An animation naming a keyframe
+    // that does not exist still applies `forwards`, so the card was left holding an
+    // unresolved state and rendered washed out and barely readable. The card is the
+    // approval gate; it must be the most legible thing on screen, so it now just renders.
+    <div className="mt-7">
       {/* header: stage label, validity clock */}
       <div className="flex items-center justify-between gap-4">
         <p
