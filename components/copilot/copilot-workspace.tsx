@@ -538,17 +538,6 @@ function MultiLegStrategyCard({
   const finalHf = data.final_hf != null ? Number(data.final_hf) : null;
   const sa = data.smart_account != null ? String(data.smart_account) : null;
   const rawTitle = String(data.headline || headline || "Strategy progress");
-  /**
-   * "Paused for signature — finish signing to continue" is written server-side, which
-   * cannot know whether auto-approve is on. With it on there is nothing for the user to
-   * finish: the session key signs. The instruction was telling them to act while the
-   * agent was already acting, so it reads as a stall.
-   */
-  const title = /paused for signature/i.test(rawTitle)
-    ? autoContinues
-      ? "Waiting for auto-sign — your session key is signing this leg."
-      : "Needs your signature — approve in your wallet to continue."
-    : rawTitle;
   const resumeLegs = (Array.isArray(data.resume_legs) ? data.resume_legs : []) as ResumeLeg[];
   // With auto-approve on, the chain effect continues by itself, so offering a button
   // alongside it invited a double-run and made the card look stalled when it was not.
@@ -559,6 +548,27 @@ function MultiLegStrategyCard({
     ["error", "blocked", "stopped_hf"].includes(String(s.status || "")),
   );
   const allOk = steps.every((s) => s.status === "ok");
+
+  /**
+   * Title derived from the card's OWN steps, not from the server headline.
+   *
+   * The headline is written per hop and describes that hop's moment. Once the client
+   * signed the final leg it was never refreshed, so a card whose every step read "done"
+   * still announced "Paused for signature — finish signing to continue", and the session
+   * log said executed while the card asked for a signature that had already happened.
+   *
+   * A card can always see its own step list, so it decides from that: nothing here can
+   * claim to be waiting while every step says done, whatever arrives in the payload.
+   */
+  const title = allOk
+    ? "All steps completed — strategy is live."
+    : anyFail
+      ? rawTitle
+      : /paused for signature|finish signing/i.test(rawTitle)
+        ? autoContinues
+          ? "Waiting for auto-sign — your session key is signing this leg."
+          : "Needs your signature — approve in your wallet to continue."
+        : rawTitle;
 
   const tone = (status?: string) => {
     if (status === "ok") return EMERALD;
@@ -1553,6 +1563,43 @@ export function CopilotWorkspace() {
         const preferResume =
           (response?.data as any)?.prefer_resume_multi_leg === true ||
           (remainingFromData && remainingFromData.length > 0);
+
+        // pushLog above updated the session log; `response` was left untouched, so the
+        // strategy card kept rendering the payload from BEFORE this signature — the leg
+        // still at needs_sign, the headline still asking to sign. Advance the response so
+        // the card sees the same reality the log does. Only the legs this signature
+        // settled are marked; if more remain, the next hop's response replaces this.
+        setResponse((prev) => {
+          if (!prev) return prev;
+          const d = (prev.data ?? {}) as Record<string, unknown>;
+          const raw = Array.isArray(d.multi_leg_steps)
+            ? (d.multi_leg_steps as Array<Record<string, unknown>>)
+            : null;
+          if (!raw) return prev;
+          const settled = new Set(["needs_sign", "needs_wallet_sign", "staged", "pending"]);
+          const patched = raw.map((s) =>
+            settled.has(String(s?.status ?? ""))
+              ? { ...s, status: "ok", tx_hash: s.tx_hash ?? result.hash ?? null }
+              : s,
+          );
+          const done = !preferResume || !remainingFromData?.length;
+          return {
+            ...prev,
+            kind: "executed",
+            data: {
+              ...d,
+              multi_leg_steps: patched,
+              // Drop the stale per-hop headline; the card derives its own title.
+              headline: done ? "All steps completed — strategy is live." : undefined,
+              can_resume: done ? false : d.can_resume,
+            },
+            execution: {
+              status: done ? "completed" : "partial",
+              tx_hash: result.hash ?? prev.execution?.tx_hash ?? null,
+              steps: prev.execution?.steps,
+            },
+          } as ChatResponse;
+        });
 
         if (preferResume && remainingFromData && remainingFromData.length > 0) {
           const parentPrompt =
