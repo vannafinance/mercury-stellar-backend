@@ -1,4 +1,5 @@
 import type { StructuredAnswer } from "./answer-schema";
+import type { GuideAnswer } from "./guide-schema";
 
 /** Contracts shared between the in-process brain and /api/copilot. */
 
@@ -246,6 +247,11 @@ export interface ChatResponse {
    * the renderer loses formatting, never the answer.
    */
   answer?: StructuredAnswer | null;
+  /**
+   * Structured Guide explanation. Present when the Guide answered with data rather
+   * than prose; `message` carries the same content flattened.
+   */
+  guide?: GuideAnswer | null;
   /**
    * Present on plan_preview. Send the whole thing back as `approved_plan` to run it.
    */

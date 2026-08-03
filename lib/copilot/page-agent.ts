@@ -3,7 +3,13 @@
  */
 
 import type { ChatResponse, SemanticPageContextCtx } from "./types";
-import { generateText, generateWithClientTools, VertexError } from "./vertex";
+import {
+  generateText,
+  generateWithClientTools,
+  vertexGuideAnswer,
+  VertexError,
+} from "./vertex";
+import { guideAnswerToText, type GuideAnswer } from "./guide-schema";
 import { isAssistantChat } from "./concept";
 import { DOMAIN_FIREWALL_SYSTEM } from "./domain-firewall";
 
@@ -278,11 +284,21 @@ export async function runPageAgent(
         "I could not produce an answer from the current page. Try rephrasing your question.",
     );
 
+    // Structured Guide answer for explanation questions. Only attempted when no client
+    // tool was invoked: a turn that navigated or highlighted something is an action, and
+    // its reply is a short confirmation, not an article. Failure leaves the prose intact.
+    let guide: GuideAnswer | null = null;
+    if (!client_tools.length) {
+      guide = await vertexGuideAnswer(message, ctxJson || null);
+    }
+
     return {
       kind: "answer",
-      message: messageOut,
+      message: guide ? guideAnswerToText(guide) : messageOut,
+      ...(guide ? { guide } : {}),
       data: {
         assistant: true,
+        structured_guide: Boolean(guide),
         page_path: pageContext?.path ?? null,
         used_semantic_context: Boolean(pageContext),
         selected: Boolean(pageContext?.selectedText),

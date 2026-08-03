@@ -28,6 +28,12 @@ import {
   normalizeAnswer,
   type StructuredAnswer,
 } from "./answer-schema";
+import {
+  GUIDE_RESPONSE_SCHEMA,
+  GUIDE_SYSTEM,
+  normalizeGuideAnswer,
+  type GuideAnswer,
+} from "./guide-schema";
 
 const execFileAsync = promisify(execFile);
 
@@ -1058,6 +1064,59 @@ export async function vertexSummarizeExecution(
   } catch (e) {
     console.warn(
       `[copilot:vertex] receipt summary failed: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Structured Guide answer. Returns null on any failure so the caller keeps its prose
+ * path — an explanation surface degrading to plain text is fine; going blank is not.
+ */
+export async function vertexGuideAnswer(
+  question: string,
+  pageContextJson: string | null,
+): Promise<GuideAnswer | null> {
+  const user = [
+    `QUESTION: ${question}`,
+    pageContextJson ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 6000)}` : "PAGE CONTEXT: none",
+  ].join("\n\n");
+
+  const token = await getAccessToken();
+  const model = copilotConfig.vertexModel;
+  try {
+    const res = await fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          temperature: 0.3,
+          responseMimeType: "application/json",
+          responseSchema: GUIDE_RESPONSE_SCHEMA,
+        },
+      }),
+      signal: AbortSignal.timeout(60_000),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) tokenCache = null;
+      console.warn(`[copilot:vertex] guide HTTP ${res.status}`);
+      return null;
+    }
+    const parsed = JSON.parse(await res.text()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    logUsage("guide", parsed);
+    const out = (parsed?.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text)
+      .filter(Boolean)
+      .join("");
+    return out.trim() ? normalizeGuideAnswer(JSON.parse(out), question) : null;
+  } catch (e) {
+    console.warn(
+      `[copilot:vertex] guide failed, using prose: ${e instanceof Error ? e.message.slice(0, 140) : String(e)}`,
     );
     return null;
   }
