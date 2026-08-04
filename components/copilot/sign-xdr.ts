@@ -54,7 +54,13 @@ export function isSignableXdr(xdr: string | null | undefined): xdr is string {
 async function pollTransaction(
   server: StellarSdk.rpc.Server,
   hash: string,
-  { attempts = 20, delayMs = 1500 } = {},
+  // 60 × 1s ≈ 60s, was 20 × 1.5s = 30s. Testnet regularly needs 30–60s, so the
+  // old window gave up on transactions that were about to land and reported them
+  // as failures with a hash — the worst of both readings. Polling a little
+  // faster also shortens the gap between confirmation and the UI showing it.
+  // This strengthens confirmation: nothing is accepted earlier, we just stop
+  // abandoning it sooner than the network answers.
+  { attempts = 60, delayMs = 1000 } = {},
 ): Promise<{ status: string; reason?: string }> {
   for (let i = 0; i < attempts; i += 1) {
     try {
@@ -92,6 +98,16 @@ async function pollTransaction(
 export async function signAndSubmitMcpXdr(
   unsignedXdr: string,
   expectedSigner?: string | null,
+  /**
+   * Fired the moment the network accepts the envelope, BEFORE polling starts.
+   *
+   * Confirmation can take the better part of a minute, and until this existed
+   * the caller had nothing to show for that time — the leg sat on a spinner with
+   * no hash, which reads as hung rather than pending. The hash exists as soon as
+   * the submit returns, so hand it over then; the user can check the explorer
+   * even if they close the tab.
+   */
+  onSubmitted?: (hash: string) => void,
 ): Promise<SignXdrResult> {
   if (!unsignedXdr || unsignedXdr.length < 20) {
     return { ok: false, error: "No transaction to sign — re-run the request." };
@@ -182,6 +198,12 @@ export async function signAndSubmitMcpXdr(
       };
     }
     // PENDING and DUPLICATE both mean "it's in", so poll for the outcome.
+    // Tell the caller now — the wait that follows is the long part.
+    try {
+      onSubmitted?.(sent.hash);
+    } catch {
+      /* a UI callback must never take down the submit path */
+    }
 
     const final = await pollTransaction(server, sent.hash);
     if (final.status === "SUCCESS") return { ok: true, hash: sent.hash };
@@ -189,7 +211,10 @@ export async function signAndSubmitMcpXdr(
       return {
         ok: false,
         hash: sent.hash,
-        error: `Submitted but not confirmed in time — check ${sent.hash.slice(0, 10)}… on the explorer.`,
+        error:
+          `Submitted, but the ledger had not confirmed it after 60s. It may still land — ` +
+          `check ${sent.hash.slice(0, 10)}… on the explorer before retrying, so you do not ` +
+          `send the same transaction twice.`,
       };
     }
     return {

@@ -28,6 +28,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LEDGER_CONFIRM_HINT } from "./resume-policy";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
@@ -166,7 +167,15 @@ const STATUS: Record<RunLegStatus, StatusMeta> = {
   pending: { text: "pending", color: "var(--rc-quiet)", mark: "hollow" },
   staged: { text: "staged · xdr built", color: "var(--rc-accent)", mark: "staged" },
   needs_sign: { text: "waiting on your signature", color: "var(--rc-warn-fg)", mark: "pause" },
-  running: { text: "submitted · waiting on ledger", color: "var(--rc-accent)", mark: "spin" },
+  // Names the expected duration. "waiting on ledger" with no sense of how long
+  // reads as hung after about ten seconds, and Soroban testnet routinely takes
+  // three to six times that. The hash renders alongside this as soon as the
+  // submit returns, so there is something checkable during the wait.
+  running: {
+    text: `confirming on ledger (${LEDGER_CONFIRM_HINT})`,
+    color: "var(--rc-accent)",
+    mark: "spin",
+  },
   ok: { text: "settled", color: "var(--rc-ok-fg)", mark: "check" },
   needs_input: { text: "paused · needs input", color: "var(--rc-warn-fg)", mark: "pause" },
   failed: { text: "failed", color: "var(--rc-danger-fg)", mark: "fail" },

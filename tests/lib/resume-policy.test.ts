@@ -1,0 +1,232 @@
+/**
+ * Multi-leg resume policy: one leg per hop, and who owns the queue.
+ *
+ * The bug these pin: continuing a 4-leg run posted every remaining leg in one
+ * request, the server executed the whole tail inside that hop, and with no
+ * streaming the card could not repaint until the batch finished. Leg 2 sat on
+ * "waiting on ledger" for tens of seconds and then legs 3 and 4 appeared
+ * already settled, having never been shown running. Correct final state,
+ * invisible progress — which on a money path is its own failure.
+ */
+
+import { describe, expect, it } from "vitest";
+import {
+  LEDGER_CONFIRM_HINT,
+  claimFirstAwaitingLeg,
+  hasMoreLegs,
+  ledgerWaitCopy,
+  pickRemainingLegs,
+  splitResumeBatch,
+  type ResumeLegLike,
+} from "@/components/copilot/resume-policy";
+
+/** Park 20 XLM then farm 10 BLUSDC at 2x — the repro from the report. */
+const FOUR_LEGS: ResumeLegLike[] = [
+  { op: "lend", asset: "XLM", amount: 20, label: "Lend 20 XLM" },
+  { op: "deposit_collateral", asset: "BLUSDC", amount: 10, label: "Deposit 10 BLUSDC" },
+  { op: "borrow", asset: "BLUSDC", amount: 10, label: "Borrow 10 BLUSDC" },
+  { op: "supply_to_blend", asset: "BLUSDC", amount: 20, label: "Supply 20 BLUSDC to Blend" },
+];
+
+describe("splitResumeBatch — one leg per hop", () => {
+  it("sends exactly one leg and keeps the rest", () => {
+    const { head, tail } = splitResumeBatch(FOUR_LEGS);
+    expect(head).toHaveLength(1);
+    expect(head[0].op).toBe("lend");
+    expect(tail).toHaveLength(3);
+    expect(tail.map((l) => l.op)).toEqual(["deposit_collateral", "borrow", "supply_to_blend"]);
+  });
+
+  it("walks the whole strategy in order, one hop at a time", () => {
+    // The behaviour the user should see: four separate hops, so four repaints.
+    const order: string[] = [];
+    let queue: ResumeLegLike[] = FOUR_LEGS;
+    let hops = 0;
+    while (queue.length) {
+      const { head, tail } = splitResumeBatch(queue);
+      order.push(head[0].op);
+      queue = tail;
+      hops += 1;
+      if (hops > 10) throw new Error("did not terminate");
+    }
+    expect(hops).toBe(4);
+    expect(order).toEqual(["lend", "deposit_collateral", "borrow", "supply_to_blend"]);
+  });
+
+  it("never batches, even for a two-leg tail", () => {
+    expect(splitResumeBatch(FOUR_LEGS.slice(2)).head).toHaveLength(1);
+  });
+
+  it("a single leg leaves an empty tail (the run ends)", () => {
+    const { head, tail } = splitResumeBatch([FOUR_LEGS[3]]);
+    expect(head).toHaveLength(1);
+    expect(tail).toEqual([]);
+  });
+
+  it("handles empty / null / undefined without throwing", () => {
+    for (const input of [[], null, undefined]) {
+      expect(splitResumeBatch(input as ResumeLegLike[] | null)).toEqual({ head: [], tail: [] });
+    }
+  });
+
+  it("does not mutate the input", () => {
+    const legs = [...FOUR_LEGS];
+    splitResumeBatch(legs);
+    expect(legs).toHaveLength(4);
+  });
+
+  it("carries the leg payload through untouched", () => {
+    // Dropping leverage here would resume a levered leg unlevered — a different
+    // transaction from the one that was approved.
+    const levered: ResumeLegLike = { op: "borrow", asset: "XLM", amount: 5, leverage: 2 };
+    expect(splitResumeBatch([levered]).head[0]).toEqual(levered);
+  });
+});
+
+describe("pickRemainingLegs — the server stops knowing, the client keeps knowing", () => {
+  it("prefers the server list while it still reports later legs", () => {
+    const server = FOUR_LEGS.slice(1);
+    expect(pickRemainingLegs(server, [FOUR_LEGS[3]])).toEqual(server);
+  });
+
+  it("THE FIX: falls back to the client tail when the server reports none", () => {
+    // Hand the server one leg and it plans one leg, so remaining_legs comes back
+    // empty and it declares the strategy finished. Without this fallback the run
+    // stops silently after leg 2.
+    const tail = FOUR_LEGS.slice(2);
+    expect(pickRemainingLegs([], tail)).toEqual(tail);
+    expect(pickRemainingLegs(null, tail)).toEqual(tail);
+    expect(pickRemainingLegs(undefined, tail)).toEqual(tail);
+  });
+
+  it("is empty only when both sources are", () => {
+    expect(pickRemainingLegs(null, [])).toEqual([]);
+    expect(pickRemainingLegs(undefined, undefined)).toEqual([]);
+  });
+
+  it("returns a copy, so the caller cannot mutate the queue by accident", () => {
+    const tail = FOUR_LEGS.slice(2);
+    const out = pickRemainingLegs(null, tail);
+    out.pop();
+    expect(tail).toHaveLength(2);
+  });
+
+  it("hasMoreLegs mirrors it — used to hold back 'All steps completed'", () => {
+    expect(hasMoreLegs([], FOUR_LEGS.slice(3))).toBe(true);
+    expect(hasMoreLegs(FOUR_LEGS.slice(1), [])).toBe(true);
+    expect(hasMoreLegs([], [])).toBe(false);
+    expect(hasMoreLegs(null, null)).toBe(false);
+  });
+});
+
+describe("full auto-approve walk", () => {
+  it("four legs produce four hops and finish exactly once", () => {
+    // Simulates the client loop: post head, server returns nothing remaining
+    // (it only saw one leg), client tail drives the next hop.
+    let tail: ResumeLegLike[] = [];
+    let remaining = pickRemainingLegs(FOUR_LEGS, tail);
+    const posted: string[] = [];
+
+    while (remaining.length) {
+      const split = splitResumeBatch(remaining);
+      posted.push(split.head[0].op);
+      tail = split.tail;
+      // Server saw one leg → reports no remaining legs of its own.
+      remaining = pickRemainingLegs([], tail);
+    }
+
+    expect(posted).toEqual(["lend", "deposit_collateral", "borrow", "supply_to_blend"]);
+    expect(tail).toEqual([]);
+    expect(hasMoreLegs([], tail)).toBe(false);
+  });
+});
+
+describe("claimFirstAwaitingLeg — one signature settles one leg", () => {
+  const steps = [
+    { n: 1, status: "ok", tx_hash: "hash_leg1" },
+    { n: 2, status: "needs_sign", tx_hash: null as string | null },
+    { n: 3, status: "pending", tx_hash: null as string | null },
+    { n: 4, status: "pending", tx_hash: null as string | null },
+  ];
+
+  it("claims only the first awaiting leg", () => {
+    const { steps: out, claimed } = claimFirstAwaitingLeg(steps, (s) => ({
+      ...s,
+      status: "ok",
+      tx_hash: "hash_leg2",
+    }));
+    expect(claimed).toBe(true);
+    expect(out[1]).toMatchObject({ n: 2, status: "ok", tx_hash: "hash_leg2" });
+  });
+
+  it("NEVER stamps a pending leg with an earlier hash", () => {
+    // The regression: legs 3 and 4 once read "DONE tx c7ec9aa…" — leg 2's hash —
+    // while only two transactions existed on chain.
+    const { steps: out } = claimFirstAwaitingLeg(steps, (s) => ({
+      ...s,
+      status: "ok",
+      tx_hash: "hash_leg2",
+    }));
+    expect(out[2]).toMatchObject({ n: 3, status: "pending", tx_hash: null });
+    expect(out[3]).toMatchObject({ n: 4, status: "pending", tx_hash: null });
+  });
+
+  it("leaves already-settled legs alone", () => {
+    const { steps: out } = claimFirstAwaitingLeg(steps, (s) => ({ ...s, tx_hash: "other" }));
+    expect(out[0]).toMatchObject({ n: 1, status: "ok", tx_hash: "hash_leg1" });
+  });
+
+  it("treats staged and needs_wallet_sign as awaiting too", () => {
+    for (const status of ["staged", "needs_wallet_sign", "needs_sign"]) {
+      const { claimed } = claimFirstAwaitingLeg([{ status }], (s) => s);
+      expect(claimed).toBe(true);
+    }
+  });
+
+  it("claims nothing when no leg is awaiting", () => {
+    const { claimed } = claimFirstAwaitingLeg(
+      [{ status: "ok" }, { status: "pending" }],
+      (s) => ({ ...s, status: "ok" }),
+    );
+    expect(claimed).toBe(false);
+  });
+
+  it("the submit-time stamp adds a hash WITHOUT settling the leg", () => {
+    // Submitted ≠ confirmed. Marking it ok here would claim an outcome the
+    // ledger has not given yet.
+    const { steps: out } = claimFirstAwaitingLeg(steps, (s) => ({
+      ...s,
+      tx_hash: "hash_leg2",
+      message: ledgerWaitCopy("hash_leg2"),
+    }));
+    expect(out[1].status).toBe("needs_sign");
+    expect(out[1].tx_hash).toBe("hash_leg2");
+  });
+
+  it("handles empty input", () => {
+    expect(claimFirstAwaitingLeg([], (s) => s)).toEqual({ steps: [], claimed: false });
+    expect(claimFirstAwaitingLeg(null, (s) => s)).toEqual({ steps: [], claimed: false });
+  });
+});
+
+describe("ledger wait copy", () => {
+  it("leads with the hash so there is something checkable during the wait", () => {
+    const copy = ledgerWaitCopy("abc123def456789");
+    expect(copy).toContain("abc123def4…");
+    expect(copy).toContain(LEDGER_CONFIRM_HINT);
+    expect(copy).toMatch(/confirming on ledger/i);
+  });
+
+  it("still says something useful before a hash exists", () => {
+    for (const h of [null, undefined, ""]) {
+      const copy = ledgerWaitCopy(h);
+      expect(copy).toMatch(/confirming on ledger/i);
+      expect(copy).toContain(LEDGER_CONFIRM_HINT);
+    }
+  });
+
+  it("names a duration, so a normal wait does not read as a hang", () => {
+    expect(LEDGER_CONFIRM_HINT).toMatch(/30/);
+    expect(LEDGER_CONFIRM_HINT).toMatch(/60/);
+  });
+});

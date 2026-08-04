@@ -2,10 +2,10 @@
 
 // Vanna Copilot workspace — Gemini understands intent; MCP executes.
 //
-// Layout follows the Copilot design: an intent card that walks a turn through
-// agent-run → answer / staged action / executed, a session log beneath it, and a
-// right rail carrying live account health, autonomy state, and this session's
-// on-chain writes.
+// Layout follows the Copilot design: a full-width intent composer, a left-column
+// turn card (agent-run → answer / staged / executed), an independent session log
+// beneath that card, and a right rail with live account health, open positions,
+// autonomy, and on-chain writes.
 //
 // Theming: every surface/border/text colour comes from the app's own dark-aware
 // tokens (`surface`, `vgray-*`, `shadow-vanna`), so the page follows the global
@@ -35,9 +35,16 @@ import {
 } from "@/store/margin-account-info-store";
 import { useCopilotSettingsStore, setAutoApprove } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
+import {
+  claimFirstAwaitingLeg,
+  ledgerWaitCopy,
+  pickRemainingLegs,
+  splitResumeBatch,
+} from "./resume-policy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
@@ -288,6 +295,44 @@ function readGuardianFloor(): number {
     return 1.3;
   }
 }
+
+/** Key the auto-sign spend caps the user last confirmed are stored under. */
+const AUTO_CAPS_KEY = "vanna_copilot_auto_caps";
+/**
+ * The caps the Autonomy card reports. Read through one function so the summary chip and
+ * the value written after MCP replies cannot drift apart — brief §6.5: two numbers about
+ * the same thing must never disagree.
+ */
+function readAutoCaps(): { tx: number; day: number } | null {
+  try {
+    const raw = localStorage.getItem(AUTO_CAPS_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as { max_per_tx_usd?: number; max_per_day_usd?: number };
+    const tx = Number(c.max_per_tx_usd);
+    const day = Number(c.max_per_day_usd);
+    if (!Number.isFinite(tx) || tx <= 0) return null;
+    return { tx, day: Number.isFinite(day) && day > 0 ? day : tx };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The two spend budgets the Autonomy card offers.
+ *
+ * The default's hint does not name a figure. MCP owns `default_cap_usd` and only reports it
+ * in the enable response, so printing "$1000 / tx" here would be this UI inventing a policy
+ * before the server has stated one — the exact failure in brief §6.6.
+ */
+const CAPS_CHOICES = [
+  { id: "defaults", label: "Default caps", hint: "the server's own limit · shown once enabled" },
+  { id: "custom", label: "Custom limits", hint: "set your own per-tx and daily caps" },
+] as const;
+
+const CAPS_FIELDS = [
+  { id: "tx", label: "per tx", placeholder: "500", aria: "Per transaction cap in USD" },
+  { id: "day", label: "per day", placeholder: "2000", aria: "Per day cap in USD" },
+] as const;
 
 interface LogLeg {
   label: string;
@@ -939,6 +984,18 @@ export function CopilotWorkspace() {
   const [customTx, setCustomTx] = useState("500");
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
+  /**
+   * Spend-budget picker lives inside the rail's Autonomy card.
+   *
+   * Turning the switch on used to POST `auto_sign: {action:"start"}`, which answered with
+   * `kind:"needs_auto_sign"` and moved the whole main column to the 03 · AUTO-SIGN gate —
+   * so a rail control silently took over the transcript, and the choice appeared nowhere
+   * near the switch that asked for it. The caps question belongs on the card that owns the
+   * setting; only the confirmed choice goes to MCP.
+   */
+  const [railBudgetOpen, setRailBudgetOpen] = useState(false);
+  const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
+  const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1031,6 +1088,16 @@ export function CopilotWorkspace() {
    */
   const strategyStepsRef = useRef<MultiLegStepUi[]>([]);
   const [strategySteps, setStrategySteps] = useState<MultiLegStepUi[]>([]);
+  /**
+   * Legs this client is holding back so each one gets its own hop.
+   *
+   * A resume posts only the first remaining leg (splitResumeBatch) so the card
+   * repaints between legs instead of freezing while the server runs the whole
+   * tail in one request. The server plans only what it is given, so its
+   * `remaining_legs` comes back empty and cannot carry the queue — this ref is
+   * the queue. See resume-policy.ts.
+   */
+  const strategyTailRef = useRef<ResumeLeg[]>([]);
   /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
   const strategyMetaRef = useRef<Record<string, unknown>>({});
   const abortRef = useRef<AbortController | null>(null);
@@ -1123,6 +1190,7 @@ export function CopilotWorkspace() {
 
   const resetStrategyAccumulator = useCallback(() => {
     strategyStepsRef.current = [];
+    strategyTailRef.current = [];
     setStrategySteps([]);
     strategyMetaRef.current = {};
   }, []);
@@ -1150,6 +1218,13 @@ export function CopilotWorkspace() {
     status: "unknown" | "ok" | "unavailable";
     reason: string | null;
   }>({ status: "unknown", reason: null });
+
+  /** Switch clicked on, budget not yet confirmed — engaged but not asserting a policy. */
+  const autoPending = railBudgetOpen && !sessionSigning;
+  /** Only the per-tx cap is required; a blank daily cap falls back to it in enableAutoSign. */
+  const capsValid = railCapsMode === "defaults" || Number(customTx) > 0;
+  /** Whether anything server-side is actually holding the caps. */
+  const capsEnforced = signServiceState.status === "ok";
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -1201,32 +1276,68 @@ export function CopilotWorkspace() {
   const liveHf = effHasAccount && healthFactor ? healthFactor : null;
 
   /**
-   * Open positions, per token, for the rail.
+   * Open positions for the rail — same rules as the Margin positions table.
    *
-   * The rail showed three totals — collateral, debt, net value — which answer "how much"
-   * but never "in what". Asked what he was holding, the CTO's only recourse was to leave
-   * for the Portfolio page. These rows come from the SAME `snapshot` the totals above use
-   * (which is `/api/account`, which is `computeMarginSnapshot`, which is what the margin
-   * page renders), so the rail cannot disagree with either the totals beside it or the
-   * copilot's own answer to "what are my positions".
-   *
-   * Store balances are the fallback for the moment before the first snapshot lands, so a
-   * reload does not blank the list it just showed.
+   * Source: `/api/account` snapshot (fallback: store). Farm/LP receipt symbols
+   * (`BLEND_*`, `AQ_*`, `SS_*`) live in collateralBalances for HF math but are
+   * not margin positions — skip them via `isTrackingSymbol`. Same-token debt is
+   * netted out of deposited collateral so borrowed proceeds do not look like a
+   * supply. Venue is always `margin` here; Earn/Farm holdings stay on those pages.
    */
   const positionRows = useMemo(() => {
-    const toRows = (balances: Record<string, { amount: string; usdValue: string }> | undefined) =>
-      Object.entries(balances ?? {})
-        .map(([symbol, b]) => ({
-          symbol,
-          amount: b.amount,
-          usd: Number.parseFloat(b.usdValue) || 0,
-        }))
-        // Below a cent is dust, not a position.
-        .filter((r) => r.usd > 0.01)
-        .sort((a, b) => b.usd - a.usd);
+    type Bal = { amount: string; usdValue: string };
+    const DUST_USD = 0.01;
+    const DUST_AMT = 1e-6;
+    const canon = (token: string): string => {
+      const u = token.toUpperCase();
+      if (u === "BLEND_USDC" || u === "USDC") return "BLUSDC";
+      if (u === "AQUIRESUSDC" || u === "AQUARIUS_USDC") return "AQUSDC";
+      if (u === "SOROSWAPUSDC" || u === "SOROSWAP_USDC") return "SOUSDC";
+      return u;
+    };
+    const borrowedSrc = snapshot?.borrowedBalances ?? storeBorrowedBalances;
+    const collSrc = snapshot?.collateralBalances ?? storeCollateralBalances;
+
+    const borrowedMap = new Map<string, { symbol: string; amount: number; usd: number }>();
+    for (const [token, b] of Object.entries(borrowedSrc ?? {}) as [string, Bal][]) {
+      const amount = Number.parseFloat(b.amount) || 0;
+      const usd = Number.parseFloat(b.usdValue) || 0;
+      if (!(amount > DUST_AMT) || !(usd > DUST_USD)) continue;
+      const c = canon(token);
+      const prev = borrowedMap.get(c);
+      if (!prev || amount > prev.amount) borrowedMap.set(c, { symbol: token, amount, usd });
+    }
+
+    const collMap = new Map<string, { symbol: string; amount: number; usd: number }>();
+    for (const [token, b] of Object.entries(collSrc ?? {}) as [string, Bal][]) {
+      if (isTrackingSymbol(token)) continue;
+      const grossAmt = Number.parseFloat(b.amount) || 0;
+      const grossUsd = Number.parseFloat(b.usdValue) || 0;
+      if (!(grossAmt > DUST_AMT) || !(grossUsd > DUST_USD)) continue;
+      const c = canon(token);
+      const debt = borrowedMap.get(c);
+      const amount = Math.max(0, grossAmt - (debt?.amount ?? 0));
+      const usd = Math.max(0, grossUsd - (debt?.usd ?? 0));
+      if (!(amount > DUST_AMT) || !(usd > DUST_USD)) continue;
+      const prev = collMap.get(c);
+      if (!prev || usd > prev.usd) collMap.set(c, { symbol: token, amount, usd });
+    }
+
+    const fmtAmt = (n: number) =>
+      n.toLocaleString(undefined, { maximumFractionDigits: 7 });
+    const toList = (m: Map<string, { symbol: string; amount: number; usd: number }>) =>
+      Array.from(m.values())
+        .sort((a, b) => b.usd - a.usd)
+        .map((r) => ({
+          symbol: r.symbol,
+          amount: fmtAmt(r.amount),
+          usd: r.usd,
+          venue: "margin" as const,
+        }));
+
     return {
-      collateral: toRows(snapshot?.collateralBalances ?? storeCollateralBalances),
-      borrowed: toRows(snapshot?.borrowedBalances ?? storeBorrowedBalances),
+      collateral: toList(collMap),
+      borrowed: toList(borrowedMap),
     };
   }, [
     snapshot?.collateralBalances,
@@ -1234,6 +1345,16 @@ export function CopilotWorkspace() {
     storeCollateralBalances,
     storeBorrowedBalances,
   ]);
+
+  const positionMeta = useMemo(() => {
+    const s = positionRows.collateral.length;
+    const b = positionRows.borrowed.length;
+    if (s === 0 && b === 0) return "none open";
+    const parts: string[] = [];
+    if (s > 0) parts.push(`${s} supplied`);
+    if (b > 0) parts.push(`${b} borrowed`);
+    return parts.join(" · ");
+  }, [positionRows]);
 
   /** Force-refresh rail stats after a prompt/sign so values match margin page. */
   const refreshRailStats = useCallback(
@@ -1705,6 +1826,11 @@ export function CopilotWorkspace() {
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
+    // Drop the queued legs. cancelledRef already stops the chain, but leaving a
+    // tail behind means a later hop could find it and resume a run the user
+    // explicitly stopped — these legs move funds, so they die with the cancel.
+    // Settled legs stay on screen; only the unsent queue is discarded.
+    strategyTailRef.current = [];
     toast("Request cancelled — completed steps stay in the log.", { duration: 3500 });
   }, []);
 
@@ -1855,12 +1981,13 @@ export function CopilotWorkspace() {
         const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
         try {
           localStorage.setItem(
-            "vanna_copilot_auto_caps",
+            AUTO_CAPS_KEY,
             JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
           );
         } catch {
           /* ignore */
         }
+        setSavedCaps({ tx: txCap, day: dayCap });
 
         // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
         // Sign Service could not stand in for it. Saying so beats a switch that lights up
@@ -1983,7 +2110,22 @@ export function CopilotWorkspace() {
     try {
       const amount = typeof action?.amount === "number" && action.amount > 0 ? action.amount : 0;
       const result: ExecuteResult | SignXdrResult = xdr
-        ? await signAndSubmitMcpXdr(xdr, address)
+        ? await signAndSubmitMcpXdr(xdr, address, (hash) => {
+            // Submitted, not yet confirmed. Stamp the hash on the leg that is
+            // awaiting signature so the card shows something checkable during
+            // the 30–60s ledger wait instead of a bare spinner. Status stays
+            // pre-terminal, so toRunLegStatus keeps rendering it as running —
+            // this must NOT mark the leg ok, the ledger has not answered yet.
+            const { steps: withHash, claimed: stamped } = claimFirstAwaitingLeg(
+              strategyStepsRef.current,
+              (s) => ({ ...s, tx_hash: s.tx_hash ?? hash, message: ledgerWaitCopy(hash) }),
+            );
+            if (stamped) {
+              strategyStepsRef.current = withHash;
+              setStrategySteps(withHash);
+            }
+            toast(ledgerWaitCopy(hash), { duration: 6000 });
+          })
         : await executeAction(action!, {
             amount,
             walletAddress: address,
@@ -2029,12 +2171,19 @@ export function CopilotWorkspace() {
                 label?: string;
               }>)
             : null;
-        const remainingFromData = legsFromData("remaining_legs") ?? legsFromData("resume_legs");
+        // The server only ever plans what we hand it, and we now hand it ONE leg
+        // per hop, so once it stops reporting later legs the client's own queue
+        // is the authority. Without this fallback the strategy would silently
+        // stop after leg 2 instead of continuing.
+        const remainingFromData = pickRemainingLegs(
+          legsFromData("remaining_legs") ?? legsFromData("resume_legs"),
+          strategyTailRef.current,
+        );
         const preferResume =
           (response?.data as any)?.prefer_resume_multi_leg === true ||
           // Auto-approve is a standing instruction to keep going without asking.
           ((response?.data as any)?.can_resume === true && autoApprove) ||
-          (remainingFromData && remainingFromData.length > 0);
+          remainingFromData.length > 0;
 
         // Advance hop legs to ok in the shared accumulator (and current payload).
         const d0 = (response?.data ?? {}) as Record<string, unknown>;
@@ -2049,15 +2198,14 @@ export function CopilotWorkspace() {
         // two transactions existed on-chain. Claiming a transaction that never happened is
         // the worst thing this UI can do, so pending legs are never touched and only the
         // first awaiting leg takes the hash.
-        const awaiting = new Set(["needs_sign", "needs_wallet_sign", "staged"]);
-        let claimed = false;
-        const patched: MultiLegStepUi[] = raw
-          ? raw.map((s) => {
-              if (claimed || !awaiting.has(String(s?.status ?? ""))) return s;
-              claimed = true;
-              return { ...s, status: "ok", tx_hash: result.hash ?? s.tx_hash ?? null };
-            })
-          : [];
+        const patched: MultiLegStepUi[] = claimFirstAwaitingLeg(raw, (s) => ({
+          ...s,
+          status: "ok",
+          tx_hash: result.hash ?? s.tx_hash ?? null,
+          // Drop the "confirming on ledger" line the submit-time stamp left —
+          // the ledger has answered, so it is no longer true.
+          message: undefined,
+        })).steps;
         if (patched.length) {
           absorbStrategySteps(patched);
           strategyMetaRef.current = {
@@ -2070,7 +2218,7 @@ export function CopilotWorkspace() {
         const done =
           patched.length > 0 &&
           patched.every((s) => String(s?.status ?? "") === "ok") &&
-          (!preferResume || !remainingFromData?.length);
+          (!preferResume || !remainingFromData.length);
 
         setResponse((prev) => {
           if (!prev) return prev;
@@ -2094,7 +2242,7 @@ export function CopilotWorkspace() {
           } as ChatResponse;
         });
 
-        if (preferResume && remainingFromData && remainingFromData.length > 0) {
+        if (preferResume && remainingFromData.length > 0) {
           if (cancelledRef.current) return;
           const parentPrompt =
             strategyParentRef.current?.prompt ||
@@ -2105,11 +2253,17 @@ export function CopilotWorkspace() {
               prompt: parentPrompt,
             };
           }
+          // ONE leg per hop: the rest waits here so the card can repaint between
+          // legs. Batching them made borrow and supply execute inside a single
+          // request and appear already-settled, never having shown as running.
+          const { head, tail } = splitResumeBatch(remainingFromData);
+          strategyTailRef.current = tail;
           // Prevent the executed-effect from also firing resume_multi_leg
           const resumeKey = `${response?.request_id ?? "exec"}:resume:${remainingFromData.map((l) => l.op).join(",")}`;
           nextStepFiredRef.current = resumeKey;
           toast.success(
-            `Step confirmed — continuing ${remainingFromData.length} remaining leg(s)…`,
+            `Step confirmed — running ${head[0]?.label || head[0]?.op || "next leg"}` +
+              (tail.length ? ` (${tail.length} more after this)…` : "…"),
             { duration: 3500 },
           );
           // Strip remaining_legs so interim executed response does not re-trigger resume
@@ -2137,7 +2291,7 @@ export function CopilotWorkspace() {
               message: parentPrompt,
               resume_multi_leg: {
                 summary: parentPrompt,
-                legs: remainingFromData,
+                legs: head,
               },
             },
             parentPrompt,
@@ -2358,16 +2512,25 @@ export function CopilotWorkspace() {
             label?: string;
           }>)
         : null;
-    const remaining = legsFrom("remaining_legs") ?? legsFrom("resume_legs");
+    // Same authority rule as the wallet-sign path: the server stops reporting
+    // later legs once it is only handed one, so the client's queue takes over.
+    const remaining = pickRemainingLegs(
+      legsFrom("remaining_legs") ?? legsFrom("resume_legs"),
+      strategyTailRef.current,
+    );
     const canResumeFlag = (response.data as any)?.can_resume === true;
     const preferResume =
       (response.data as any)?.prefer_resume_multi_leg === true ||
       // Auto-approve is a standing instruction to continue without asking. Without it,
       // the button stays and the user drives each leg.
       (canResumeFlag && autoApprove) ||
-      (remaining && remaining.length > 0 && (response.data as any)?.multi_leg);
+      // A non-empty client tail means WE split this batch and still owe legs; that
+      // is not a user decision to re-confirm, it is the rest of a run already
+      // under way.
+      strategyTailRef.current.length > 0 ||
+      (remaining.length > 0 && (response.data as any)?.multi_leg);
 
-    if (preferResume && remaining && remaining.length > 0) {
+    if (preferResume && remaining.length > 0) {
       const key = `${response.request_id ?? "exec"}:resume:${remaining.map((l) => l.op).join(",")}`;
       if (nextStepFiredRef.current === key) return;
       nextStepFiredRef.current = key;
@@ -2380,7 +2543,15 @@ export function CopilotWorkspace() {
           prompt: parentPrompt,
         };
       }
-      toast.success(`Continuing ${remaining.length} remaining step(s)…`, { duration: 3000 });
+      // ONE leg per hop — see splitResumeBatch. The tail is held client-side so
+      // each leg gets its own request and its own running→settled repaint.
+      const { head, tail } = splitResumeBatch(remaining);
+      strategyTailRef.current = tail;
+      toast.success(
+        `Running ${head[0]?.label || head[0]?.op || "next step"}` +
+          (tail.length ? ` (${tail.length} more after this)…` : "…"),
+        { duration: 3000 },
+      );
       void (async () => {
         await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
         if (cancelledRef.current) return;
@@ -2390,7 +2561,7 @@ export function CopilotWorkspace() {
         await postCopilot(
           {
             message: parentPrompt,
-            resume_multi_leg: { summary: parentPrompt, legs: remaining },
+            resume_multi_leg: { summary: parentPrompt, legs: head },
           },
           parentPrompt,
           { chainHop: true },
@@ -2789,6 +2960,8 @@ export function CopilotWorkspace() {
    */
   const [guardianFloor, setGuardianFloor] = useState(1.3);
   useEffect(() => setGuardianFloor(readGuardianFloor()), []);
+  // Same reason: the caps chip reads storage after mount, never during render.
+  useEffect(() => setSavedCaps(readAutoCaps()), []);
 
   const sim = response?.preview?.simulation ?? null;
   const reasons = response?.preview?.risk?.reasons ?? [];
@@ -2855,91 +3028,93 @@ export function CopilotWorkspace() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_372px]">
-        {/* ── Main column ─────────────────────────────────────────── */}
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="rounded-3xl border border-vgray-100 bg-surface p-6 shadow-vanna sm:p-9">
-            <Eyebrow n="01">State intent</Eyebrow>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                run(intentText);
-              }}
-              className="mt-3"
+      {/* Composer — full-width card above the two-column grid (design: "Your intent"). */}
+      <div className="rounded-[20px] border border-vgray-100 bg-surface px-[26px] py-[22px]">
+        <p className="mb-2.5 font-mono text-[10.5px] uppercase tracking-[0.22em] text-violet-500">
+          Your intent
+        </p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            run(intentText);
+          }}
+        >
+          <div className="flex items-center gap-3.5">
+            <ChevronRight size={20} className="shrink-0 text-violet-500" />
+            <input
+              ref={inputRef}
+              value={intentText}
+              onChange={(e) => setIntentText(e.target.value)}
+              placeholder="Ask, or state an action — “deposit 5 XLM as collateral”…"
+              className="min-w-0 flex-1 bg-transparent text-[23px] leading-[34px] text-vgray-900 placeholder:text-vgray-300 focus:outline-none"
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              onClick={() => setPaletteOpen((o) => !o)}
+              className={`hidden shrink-0 items-center gap-1.5 px-3 py-2 text-[12px] sm:flex ${BTN_QUIET}`}
             >
-              <div className="flex items-center gap-3 border-b-2 border-vgray-100 pb-3 transition-colors focus-within:border-violet-500">
-                <ChevronRight size={22} className="shrink-0 text-violet-500" />
-                <input
-                  ref={inputRef}
-                  value={intentText}
-                  onChange={(e) => setIntentText(e.target.value)}
-                  placeholder="Ask, or state an action — “deposit 5 XLM as collateral”…"
-                  className="min-w-0 flex-1 bg-transparent text-h7 text-vgray-900 placeholder:text-vgray-300 focus:outline-none"
-                  spellCheck={false}
-                />
-                <button
-                  type="button"
-                  onClick={() => setPaletteOpen((o) => !o)}
-                  className={`hidden shrink-0 items-center gap-1.5 px-3 py-2 text-[12px] sm:flex ${BTN_QUIET}`}
-                >
-                  <LayoutTemplate size={12} /> Prompts
-                </button>
-                <button
-                  type={loading ? "button" : "submit"}
-                  disabled={!loading && !intentText.trim()}
-                  onClick={loading ? (e) => { e.preventDefault(); cancelInFlight(); } : undefined}
-                  className={
-                    loading
-                      ? `shrink-0 px-[22px] py-2.5 ${BTN_QUIET}`
-                      : `shrink-0 px-[22px] py-2.5 ${BTN_GRADIENT}`
-                  }
-                >
-                  {loading ? "Cancel" : "Run"}
-                </button>
-              </div>
-            </form>
+              <LayoutTemplate size={12} /> Prompts
+            </button>
+            <button
+              type={loading ? "button" : "submit"}
+              disabled={!loading && !intentText.trim()}
+              onClick={loading ? (e) => { e.preventDefault(); cancelInFlight(); } : undefined}
+              className={
+                loading
+                  ? `shrink-0 px-6 py-2.5 ${BTN_QUIET}`
+                  : `shrink-0 px-6 py-2.5 ${BTN_GRADIENT}`
+              }
+            >
+              {loading ? "Cancel" : "Run"}
+            </button>
+          </div>
+        </form>
 
-            {paletteOpen && (
-              <div className="mt-4 max-h-72 overflow-y-auto rounded-2xl border border-vgray-100 bg-vgray-50 p-4">
-                <div className="mb-2.5 flex items-center justify-between">
-                  <Eyebrow>what you can ask</Eyebrow>
-                  <button
-                    type="button"
-                    onClick={() => setPaletteOpen(false)}
-                    className="text-vgray-400 transition-colors hover:text-vgray-700"
-                  >
-                    <X size={14} />
-                  </button>
+        {paletteOpen && (
+          <div className="mt-4 max-h-72 overflow-y-auto rounded-[14px] border border-vgray-100 bg-vgray-50 p-4">
+            <div className="mb-2.5 flex items-center justify-between">
+              <Eyebrow>what you can ask</Eyebrow>
+              <button
+                type="button"
+                onClick={() => setPaletteOpen(false)}
+                className="text-vgray-400 transition-colors hover:text-vgray-700"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="flex flex-col gap-3">
+              {Object.entries(PROMPTS).map(([cat, items]) => (
+                <div key={cat} className="flex flex-col gap-1.5">
+                  <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-violet-500">{cat}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {items.map((q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        onClick={() => run(q)}
+                        className="rounded-r2 border border-vgray-100 bg-surface px-3 py-[7px] text-[12.5px] font-medium text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex flex-col gap-3">
-                  {Object.entries(PROMPTS).map(([cat, items]) => (
-                    <div key={cat} className="flex flex-col gap-1.5">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-violet-500">{cat}</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {items.map((q) => (
-                          <button
-                            key={q}
-                            type="button"
-                            onClick={() => run(q)}
-                            className="rounded-r2 border border-vgray-100 bg-surface px-3 py-[7px] text-[12.5px] font-medium text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
-                          >
-                            {q}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
-            <div className="my-7 h-px bg-vgray-100" />
-
+      <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_372px]">
+        {/* ── Main column: turn card, then independent session log ── */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <div className="min-w-0 rounded-[20px] border border-vgray-100 bg-surface px-7 py-[26px] sm:px-7">
             {/* Idle — what the agent can run */}
             {phase === "idle" && (
               <div>
-                <Eyebrow n="02">What the agent can run</Eyebrow>
-                <div className="mt-[18px] grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Eyebrow>What the agent can run</Eyebrow>
+                <div className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {CAPABILITIES.map((c) => {
                     const color = c.tone === "read" ? EMERALD : c.tone === "multi" ? AMBER : VIOLET;
                     return (
@@ -2947,17 +3122,16 @@ export function CopilotWorkspace() {
                         key={c.label}
                         type="button"
                         onClick={() => run(c.label)}
-                        className="flex flex-col gap-2 rounded-2xl border border-vgray-100 bg-surface px-[18px] py-4 text-left transition-colors hover:border-violet-400"
+                        className="flex flex-col gap-1.5 rounded-xl border border-vgray-100 bg-surface px-3.5 py-3 text-left transition-colors hover:border-violet-400"
                       >
                         <span
-                          className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.15em]"
+                          className="flex items-center gap-[7px] font-mono text-[9.5px] uppercase tracking-[0.16em]"
                           style={{ color }}
                         >
                           <span className="h-[5px] w-[5px] rounded-full" style={{ background: color }} />
                           {c.tag}
                         </span>
-                        <span className="text-h9 font-semibold text-vgray-900">{c.label}</span>
-                        <span className="font-mono text-[11px] text-vgray-400">{c.tool}</span>
+                        <span className="text-[14px] font-semibold leading-5 text-vgray-900">{c.label}</span>
                       </button>
                     );
                   })}
@@ -3457,14 +3631,17 @@ export function CopilotWorkspace() {
             )}
           </div>
 
-          {/* History — persisted per wallet, so it outlives a reload. */}
-          <div className="rounded-3xl border border-vgray-100 bg-surface px-6 py-6 sm:px-7">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Eyebrow>History</Eyebrow>
+          {/* Session log — independent of the turn card, left column only.
+              Design places it inside the card; the annotated layout moves it below. */}
+          <div>
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
+                Session log
+              </p>
               <div className="flex items-center gap-3">
-                <span className="font-mono text-[11px] text-vgray-400">
+                <p className="font-mono text-[10.5px] text-vgray-400">
                   {log.length} {log.length === 1 ? "turn" : "turns"}
-                </span>
+                </p>
                 {log.length > 0 && (
                   <button
                     type="button"
@@ -3476,68 +3653,99 @@ export function CopilotWorkspace() {
                 )}
               </div>
             </div>
+
             {log.length === 0 ? (
-              <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                nothing yet — every intent, tool call and signature lands here, and stays after a
-                reload.
-              </p>
+              <div className="rounded-2xl border border-dashed border-vgray-100 px-[26px] py-[26px] text-center">
+                <p className="text-[13.5px] leading-5 text-vgray-400">
+                  Nothing yet — every intent you run lands here as one card, with its tool call and
+                  outcome.
+                </p>
+              </div>
             ) : (
-              <div className="mt-2">
-                {(showAllHistory ? log : log.slice(0, HISTORY_VISIBLE)).map((e) => (
-                  <div key={e.id} className="border-b border-vgray-100 py-3 last:border-0">
-                    {/* The prompt is the useful part of a past turn: clicking it loads the
-                        wording back into the composer so it can be re-run or edited, rather
-                        than retyped from a truncated line. It does NOT re-run on its own —
-                        replaying a write without being asked would be the wrong call. */}
-                    <div className="flex items-center gap-3.5">
-                      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: e.color }} />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIntentText(e.prompt);
-                          inputRef.current?.focus();
-                          inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-                        }}
-                        title={`${e.prompt}\n\nClick to put this back in the composer`}
-                        className="min-w-0 flex-1 truncate text-left text-body-2 text-vgray-700 transition-colors hover:text-violet-500"
-                      >
-                        {e.prompt}
-                      </button>
-                      <span className="hidden shrink-0 font-mono text-[11px] text-vgray-400 sm:block">
-                        {e.ts ? relTime(e.ts) : e.strategy ? "strategy" : e.tool}
-                      </span>
-                      <span
-                        className="w-[74px] shrink-0 text-right font-mono text-[11px]"
-                        style={{ color: e.color }}
-                      >
-                        {e.status}
-                      </span>
-                    </div>
-                    {e.strategy && e.legs && e.legs.length > 0 && (
-                      <ul className="mt-2 ml-5 space-y-1 border-l border-vgray-100 pl-3">
-                        {e.legs.map((leg, j) => (
-                          <li
-                            key={`${e.id}-leg-${j}`}
-                            className="flex items-center gap-2 font-mono text-[11px] text-vgray-500"
+              <div className="flex flex-col gap-2.5">
+                {(showAllHistory ? log : log.slice(0, HISTORY_VISIBLE)).map((e) => {
+                  const kindLabel =
+                    e.status === "executed"
+                      ? "write"
+                      : e.status === "answered"
+                        ? "read"
+                        : e.status === "staged" || e.status === "needs sign"
+                          ? "staged"
+                          : e.status === "error" || e.status === "blocked"
+                            ? "error"
+                            : e.strategy
+                              ? "strategy"
+                              : "turn";
+                  return (
+                    <div
+                      key={e.id}
+                      className="rounded-2xl border border-vgray-100 bg-surface px-[18px] py-4"
+                    >
+                      <div className="flex items-start gap-3.5">
+                        <span
+                          className="mt-[5px] h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: e.color }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIntentText(e.prompt);
+                              inputRef.current?.focus();
+                              inputRef.current?.scrollIntoView({
+                                block: "center",
+                                behavior: "smooth",
+                              });
+                            }}
+                            title={`${e.prompt}\n\nClick to put this back in the composer`}
+                            className="w-full text-left text-[14.5px] font-semibold leading-[21px] text-vgray-900 text-pretty transition-colors hover:text-violet-500"
                           >
-                            <span className="text-vgray-400">{j + 1}.</span>
-                            <span className="min-w-0 flex-1 truncate text-vgray-600">{leg.label}</span>
-                            <span className="shrink-0 text-vgray-400">{leg.status}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
+                            {e.prompt}
+                          </button>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                            <span
+                              className="rounded-md px-2 py-[3px] font-mono text-[9.5px] font-bold uppercase tracking-[0.16em]"
+                              style={{
+                                color: e.color,
+                                background: `${e.color}18`,
+                              }}
+                            >
+                              {kindLabel}
+                            </span>
+                            <span className="font-mono text-[10.5px] text-vgray-400">
+                              {e.tool}
+                            </span>
+                            {e.ts != null && (
+                              <span className="font-mono text-[10.5px] text-vgray-300">
+                                {relTime(e.ts)}
+                              </span>
+                            )}
+                          </div>
+                          {e.strategy && e.legs && e.legs.length > 0 && (
+                            <p className="mt-2 font-mono text-[11.5px] leading-[19px] text-vgray-500">
+                              {e.legs.map((l) => `${l.label} · ${l.status}`).join(" → ")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p
+                            className="font-mono text-[11px] font-semibold"
+                            style={{ color: e.color }}
+                          >
+                            {e.status}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
                 {log.length > HISTORY_VISIBLE && (
                   <button
                     type="button"
                     onClick={() => setShowAllHistory((s) => !s)}
-                    className="mt-3 font-mono text-[11px] text-violet-500 underline-offset-2 hover:underline"
+                    className="font-mono text-[11px] text-violet-500 underline-offset-2 hover:underline"
                   >
-                    {showAllHistory
-                      ? "show fewer"
-                      : `show all ${log.length} turns`}
+                    {showAllHistory ? "show fewer" : `show all ${log.length} turns`}
                   </button>
                 )}
               </div>
@@ -3576,67 +3784,135 @@ export function CopilotWorkspace() {
                 collateralUsd={collateralValue ?? null}
                 debtUsd={borrowedValue ?? null}
                 noDebt={(borrowedValue ?? 0) < 0.5}
-              />
-              <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-                <div className="flex flex-col">
+              >
+                <div className="mt-4 flex flex-col">
                   <Row k="wallet" v={truncAddr(address)} />
                   <Row k="smart acct" v={truncAddr(effSmartAccount)} />
                   <Row k="collateral" v={usd(collateralValue)} />
                   <Row k="debt" v={usd(borrowedValue)} />
                   <Row k="net value" v={usd(netValue)} />
                 </div>
-              </div>
+              </HealthDial>
 
-              {/* Open positions — what the totals above are made of. */}
-              <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <Eyebrow>Open positions</Eyebrow>
-                  <button
-                    type="button"
-                    onClick={() => run("tell me all my current open positions")}
-                    disabled={loading}
-                    className="font-mono text-[11px] text-violet-500 underline-offset-2 transition-colors hover:underline disabled:text-vgray-300 disabled:no-underline"
-                  >
-                    ask copilot
-                  </button>
+              {/* Open positions — same snapshot / rules as the Margin positions table. */}
+              <div className="rounded-[20px] border border-vgray-100 bg-surface p-[22px]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
+                    Open positions
+                  </p>
+                  <span className="font-mono text-[10.5px] text-vgray-400">{positionMeta}</span>
                 </div>
                 {positionRows.collateral.length === 0 && positionRows.borrowed.length === 0 ? (
                   <p className="mt-3 font-mono text-[11px] text-vgray-400">
                     nothing open — deposited collateral and borrows appear here per token.
                   </p>
                 ) : (
-                  <div className="mt-3 flex flex-col gap-4">
+                  <div>
                     {positionRows.collateral.length > 0 && (
-                      <div>
-                        <p className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: EMERALD }}>
-                          supplied
-                        </p>
-                        <div className="mt-1 flex flex-col">
-                          {positionRows.collateral.map((r) => (
-                            <Row key={`c-${r.symbol}`} k={r.symbol} v={`${r.amount} · ${usd(r.usd)}`} />
-                          ))}
+                      <div className="mt-4">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ background: "var(--z-healthy, #0b8f68)" }}
+                          />
+                          <span
+                            className="font-mono text-[10px] uppercase tracking-[0.16em]"
+                            style={{ color: "var(--z-healthy, #0b8f68)" }}
+                          >
+                            supplied
+                          </span>
+                          <span className="flex-1" />
+                          <span className="font-mono text-[11px] tabular-nums text-vgray-500">
+                            {usd(
+                              positionRows.collateral.reduce((s, r) => s + r.usd, 0),
+                            )}
+                          </span>
                         </div>
+                        {positionRows.collateral.map((r) => (
+                          <div
+                            key={`c-${r.symbol}`}
+                            className="flex items-center gap-3 border-b border-vgray-100 py-[9px] last:border-0"
+                          >
+                            <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
+                              <span
+                                className="shrink-0 rounded-md border px-[7px] py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-[0.14em]"
+                                style={{
+                                  color: "var(--venue-margin-fg)",
+                                  background: "var(--venue-margin-bg)",
+                                  borderColor: "var(--venue-margin-bd)",
+                                }}
+                              >
+                                margin
+                              </span>
+                              <span className="font-mono text-[13px] font-semibold text-vgray-900">
+                                {r.symbol}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-right">
+                              <span className="block font-mono text-[13px] tabular-nums text-vgray-900">
+                                {r.amount}
+                              </span>
+                              <span className="block font-mono text-[10.5px] tabular-nums text-vgray-400">
+                                {usd(r.usd)}
+                              </span>
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     )}
                     {positionRows.borrowed.length > 0 && (
-                      <div>
-                        <p className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: AMBER }}>
-                          borrowed
-                        </p>
-                        <div className="mt-1 flex flex-col">
-                          {positionRows.borrowed.map((r) => (
-                            <Row key={`d-${r.symbol}`} k={r.symbol} v={`${r.amount} · ${usd(r.usd)}`} />
-                          ))}
+                      <div className="mt-4">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="h-1.5 w-1.5 rounded-full"
+                            style={{ background: "var(--z-warn, #c98214)" }}
+                          />
+                          <span
+                            className="font-mono text-[10px] uppercase tracking-[0.16em]"
+                            style={{ color: "var(--z-warn, #c98214)" }}
+                          >
+                            borrowed
+                          </span>
+                          <span className="flex-1" />
+                          <span className="font-mono text-[11px] tabular-nums text-vgray-500">
+                            {usd(positionRows.borrowed.reduce((s, r) => s + r.usd, 0))}
+                          </span>
                         </div>
+                        {positionRows.borrowed.map((r) => (
+                          <div
+                            key={`d-${r.symbol}`}
+                            className="flex items-center gap-3 border-b border-vgray-100 py-[9px] last:border-0"
+                          >
+                            <span className="inline-flex min-w-0 flex-1 items-center gap-[7px]">
+                              <span
+                                className="shrink-0 rounded-md border px-[7px] py-0.5 font-mono text-[8.5px] font-bold uppercase tracking-[0.14em]"
+                                style={{
+                                  color: "var(--venue-margin-fg)",
+                                  background: "var(--venue-margin-bg)",
+                                  borderColor: "var(--venue-margin-bd)",
+                                }}
+                              >
+                                margin
+                              </span>
+                              <span className="font-mono text-[13px] font-semibold text-vgray-900">
+                                {r.symbol}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-right">
+                              <span className="block font-mono text-[13px] tabular-nums text-vgray-900">
+                                {r.amount}
+                              </span>
+                              <span className="block font-mono text-[10.5px] tabular-nums text-vgray-400">
+                                {usd(r.usd)}
+                              </span>
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     )}
-                    {/* Farm and LP holdings are read on demand rather than mirrored here: they
-                        come from a different set of contracts than the margin snapshot, and a
-                        second live feed in the rail would be a second thing that can disagree
-                        with the Farm page. "ask copilot" fetches them into the answer. */}
-                    <p className="text-[11px] leading-[17px] text-vgray-400">
-                      Margin account only. Blend supplies and Aquarius LP shares are in the copilot
-                      answer above, and on the <span className="text-vgray-500">Farm</span> page.
+                    <p className="mt-3 text-[11px] leading-[17px] text-vgray-400">
+                      Margin account only — same balances as the Margin page. Blend supplies and
+                      Aquarius LP shares stay on Farm.
                     </p>
                   </div>
                 )}
@@ -3650,13 +3926,15 @@ export function CopilotWorkspace() {
               <Eyebrow>Autonomy</Eyebrow>
               <span
                 className="flex items-center gap-[7px] font-mono text-[11px] font-semibold"
-                style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }}
+                style={{ color: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)" }}
               >
                 <span
                   className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: sessionSigning ? VIOLET : "var(--color-vgray-400)" }}
+                  style={{
+                    background: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)",
+                  }}
                 />
-                {sessionSigning ? "auto-approve on" : "manual signing"}
+                {sessionSigning ? "auto-approve on" : autoPending ? "choosing budget" : "manual signing"}
               </span>
             </div>
 
@@ -3688,6 +3966,7 @@ export function CopilotWorkspace() {
                 }
                 if (sessionSigning) {
                   // Turning off: local toggle + MCP disable.
+                  setRailBudgetOpen(false);
                   setAutoApprove(address, false);
                   void enableAutoSign("disable");
                   toast.success("Auto-approve off");
@@ -3700,56 +3979,56 @@ export function CopilotWorkspace() {
                   );
                   return;
                 }
-                // Turning on: same as MCP — ask for default caps (from MCP) or custom.
-                setSubmitted("Enable auto-approve");
-                void (async () => {
-                  await postCopilot(
-                    {
-                      message: "enable auto-sign",
-                      auto_sign: { action: "start" },
-                    },
-                    "Enable auto-approve",
-                  );
-                })();
+                // Turning on opens the budget picker below, in this card. Nothing is sent
+                // to MCP until a budget is confirmed there.
+                if (savedCaps) {
+                  setCustomTx(String(savedCaps.tx));
+                  setCustomDay(String(savedCaps.day));
+                }
+                setRailCapsMode("defaults");
+                setRailBudgetOpen(true);
               }}
               className={`mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors hover:border-violet-400 ${
                 sessionSigningAvailable ? "" : "opacity-70"
               }`}
             >
-              <ShieldCheck size={16} className="shrink-0" style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }} />
+              <ShieldCheck
+                size={16}
+                className="shrink-0"
+                style={{ color: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)" }}
+              />
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
+                {/* The caps live in the summary chip below, once and only once. */}
                 <span className="block text-[11px] text-vgray-500">
                   {!sessionSigningAvailable
                     ? "Needs a Vanna embedded wallet — tap for why"
-                    : sessionSigning
-                      ? (() => {
-                          const suffix =
-                            signServiceState.status === "unavailable" ? " (in-app only)" : "";
-                          try {
-                            const raw = localStorage.getItem("vanna_copilot_auto_caps");
-                            if (raw) {
-                              const c = JSON.parse(raw) as {
-                                max_per_tx_usd?: number;
-                                max_per_day_usd?: number;
-                              };
-                              return `Caps $${c.max_per_tx_usd ?? 1000}/tx · $${c.max_per_day_usd ?? 1000}/day${suffix}`;
-                            }
-                          } catch {
-                            /* ignore */
-                          }
-                          return `Defaults (MCP default_cap_usd)${suffix}`;
-                        })()
-                      : "Turn on → choose MCP defaults or custom caps"}
+                    : autoPending
+                      ? "Pick a spend budget below to finish turning this on"
+                      : sessionSigning
+                        ? "On · cleared writes run without a prompt"
+                        : "Turn on → choose MCP defaults or custom caps"}
                 </span>
               </span>
+              {/*
+                A switch that does not move when clicked is the same bug as a `disabled` one:
+                indistinguishable from broken. It cannot claim "on" before MCP answers either,
+                so while the budget picker is open the knob sits mid-travel on a violet track —
+                visibly engaged, not yet asserting a policy that does not exist.
+              */}
               <span
                 className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
-                style={{ background: sessionSigning ? VIOLET : "var(--color-vgray-200)" }}
+                style={{
+                  background: sessionSigning
+                    ? VIOLET
+                    : autoPending
+                      ? "var(--color-violet-100)"
+                      : "var(--color-vgray-200)",
+                }}
               >
                 <span
                   className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-                    sessionSigning ? "translate-x-4" : "translate-x-0"
+                    sessionSigning ? "translate-x-4" : autoPending ? "translate-x-2" : "translate-x-0"
                   }`}
                 />
               </span>
@@ -3763,6 +4042,156 @@ export function CopilotWorkspace() {
                   ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
                   : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Vanna embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
             </p>
+
+            {/* Spend-budget picker — the choice the 03 · AUTO-SIGN gate used to hijack the
+                main column for, asked here beside the switch that raised it. */}
+            {railBudgetOpen && (
+              <div className="mt-4">
+                <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-violet-500">
+                  choose a spend budget
+                </p>
+                <div role="radiogroup" aria-label="Spend budget" className="flex flex-col gap-2">
+                  {CAPS_CHOICES.map((c) => {
+                    const on = railCapsMode === c.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        onClick={() => setRailCapsMode(c.id)}
+                        className={`flex min-w-0 items-center gap-[11px] rounded-xl border-[1.5px] p-[12px_13px] text-left transition-colors ${
+                          on
+                            ? "border-violet-500 bg-violet-50"
+                            : "border-vgray-100 hover:border-violet-400"
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border-2 ${
+                            on ? "border-violet-500" : "border-vgray-200"
+                          }`}
+                        >
+                          <span
+                            className={`h-[7px] w-[7px] rounded-full ${on ? "bg-violet-500" : ""}`}
+                          />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13.5px] font-semibold text-vgray-900">
+                            {c.label}
+                          </span>
+                          <span className="block font-mono text-[11px] text-vgray-500">
+                            {c.hint}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {railCapsMode === "custom" && (
+                  <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+                    {CAPS_FIELDS.map((f) => (
+                      <label key={f.id} className="block min-w-0">
+                        <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-vgray-400">
+                          {f.label}
+                        </span>
+                        <span className="mt-[5px] flex min-w-0 items-center gap-1.5 rounded-[9px] border border-vgray-200 bg-surface px-2.5 focus-within:border-violet-500">
+                          <span className="font-mono text-[13px] text-vgray-400">$</span>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            value={f.id === "tx" ? customTx : customDay}
+                            onChange={(e) =>
+                              (f.id === "tx" ? setCustomTx : setCustomDay)(e.target.value)
+                            }
+                            placeholder={f.placeholder}
+                            aria-label={f.aria}
+                            className="w-full min-w-0 flex-1 border-0 bg-transparent py-2.5 font-mono text-[14px] tabular-nums text-vgray-900 outline-none"
+                          />
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={!address || loading || !capsValid}
+                    onClick={() => {
+                      setRailBudgetOpen(false);
+                      void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults");
+                    }}
+                    className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRailBudgetOpen(false)}
+                    className="rounded-r2 border border-vgray-100 px-4 py-2.5 text-[13px] font-semibold text-vgray-600 transition-colors hover:bg-vgray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {railCapsMode === "custom" && !capsValid && (
+                  <p className="mt-2 font-mono text-[11px]" style={{ color: AMBER }}>
+                    Enter a per-tx cap above 0 to continue.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Confirmed budget. Tinted amber, not violet, when only half of it is true:
+                the app will sign without a prompt but no server-side policy is holding
+                these caps, and a violet check mark would claim one. */}
+            {sessionSigning && !railBudgetOpen && (
+              <div
+                className={`mt-3.5 flex min-w-0 items-center gap-[11px] rounded-xl border p-[12px_14px] ${
+                  capsEnforced ? "border-violet-100 bg-violet-50" : ""
+                }`}
+                style={
+                  capsEnforced ? undefined : { borderColor: `${AMBER}55`, background: `${AMBER}14` }
+                }
+              >
+                <ShieldCheck
+                  size={15}
+                  className={`shrink-0 ${capsEnforced ? "text-violet-500" : ""}`}
+                  style={capsEnforced ? undefined : { color: AMBER }}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-semibold text-vgray-900">
+                    {capsEnforced ? "Budget active" : "Budget set — in-app only"}
+                  </span>
+                  <span
+                    className={`block font-mono text-[11px] ${capsEnforced ? "text-violet-500" : ""}`}
+                    style={capsEnforced ? undefined : { color: AMBER }}
+                  >
+                    {savedCaps
+                      ? `$${savedCaps.tx}/tx · $${savedCaps.day}/day`
+                      : "MCP default caps"}
+                    {capsEnforced ? "" : " · not enforced by the Sign Service"}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (savedCaps) {
+                      setCustomTx(String(savedCaps.tx));
+                      setCustomDay(String(savedCaps.day));
+                      setRailCapsMode("custom");
+                    }
+                    setRailBudgetOpen(true);
+                  }}
+                  className="shrink-0 rounded-lg border border-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-500 transition-colors hover:bg-violet-100"
+                >
+                  Edit
+                </button>
+              </div>
+            )}
+
             <div className="mt-4 flex flex-col">
               <Row
                 k="signing"
@@ -3805,9 +4234,11 @@ export function CopilotWorkspace() {
             </div>
           </div>
 
-          {/* This session's writes */}
-          <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-            <Eyebrow>On-chain writes</Eyebrow>
+          {/* Recent on-chain writes */}
+          <div className="rounded-[20px] border border-vgray-100 bg-surface p-[22px]">
+            <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
+              Recent on-chain
+            </p>
             {activity.length === 0 ? (
               <p className="mt-3 font-mono text-[11px] text-vgray-400">
                 no writes yet — signed transactions appear here with their hash, and stay after a
