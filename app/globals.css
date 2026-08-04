@@ -425,93 +425,218 @@ html.dark * {
 }
 
 /* ── Copilot / Assistant surfaces ──────────────────────────────────────────
-   Tokens from the Claude Design Copilot.dc.html :root / .dark blocks. Scoped to
-   `.cp-root` so they cannot collide app-wide, and applied to both the Copilot
-   page and the Assistant drawer (which portals to <body>, outside the page tree).
+   ONE palette, from the Claude Design `Copilot.dc.html` :root / .dark blocks, scoped to
+   `.cp-root` so it cannot collide app-wide. Applied to both the Copilot page and the
+   Assistant drawer (which portals to <body>, outside the page tree).
 
-   The violet and rose scales are re-declared for dark because the app's own
-   scales are light-only: `bg-violet-50 text-violet-500` renders a near-white
-   lavender chip with dark-violet ink, which on a #111 surface reads as a
-   light-mode button someone forgot to theme. Tailwind resolves these through
-   `var()` at the use site, so redeclaring them here re-themes every
-   `violet-*` / `rose-*` utility inside a copilot surface and nothing outside it. */
+   STRUCTURE, AND WHY IT IS THIS SHAPE
+
+   Canonical names carry the values. The `--cp-*` names below are ALIASES — `var()`
+   indirections onto the canonical set, declared exactly once in the light block and never
+   repeated for dark. Dark mode overrides only the canonical values, so an alias
+   automatically follows. That makes the recurring failure structurally impossible: the way
+   this surface kept breaking was a token defined in one theme block and forgotten in the
+   other, which resolves to nothing and paints a transparent background or inherits a
+   colour from an ancestor. An alias cannot be forgotten in one theme, because it is not
+   declared per theme at all.
+
+   Before this there were two hand-maintained copies of the same palette — the design's and
+   `--cp-*` — which had to be kept in agreement by eye. They were byte-identical on every
+   shared value, which is exactly the sort of duplication that stays correct until it
+   quietly doesn't.
+
+   WHAT IS DELIBERATELY NOT ALIASED
+
+   `--pc-*` (plan approval card) and `--rc-*` (run execution card) keep their own values.
+   They are not stragglers: those two cards came from their own design files with contrast
+   measured against a CARD surface rather than the page, so their venue and status
+   backgrounds are opaque (`#ede6fd`) where the page palette is translucent
+   (`rgba(112,58,230,.10)`), and their surface is a step darker than the page's so a card
+   reads as recessed rather than flush. Aliasing them onto the page palette would flatten
+   that layering and lower measured contrast inside the two components that most need it.
+   They also stay self-contained on purpose — that self-containment is what stopped them
+   losing colours to a missing token in the first place.
+
+   The violet and rose ramps are re-declared for dark because the app's own scales are
+   light-only: `bg-violet-50 text-violet-500` renders a near-white lavender chip with
+   dark-violet ink, which on a #111 surface reads as a light-mode button someone forgot to
+   theme. Tailwind resolves these through `var()` at the use site, so redeclaring them here
+   re-themes every `violet-*` / `rose-*` utility inside a copilot surface and nothing
+   outside it. */
 .cp-root {
-  --cp-violet-soft: #f1ebfd;
-  --cp-violet-soft-border: #d3c2f7;
-  --cp-surface: #ffffff;
-  --cp-g50: #f7f8fa;
-  --cp-g100: #e6e8ee;
-  --cp-g200: #d0d5dd;
-  --cp-g300: #b8c0cc;
-  --cp-g400: #8b95a7;
-  --cp-g500: #667085;
-  --cp-g600: #475467;
-  --cp-g700: #344054;
-  --cp-g900: #111827;
-  --cp-violet-500: #703ae6;
-  --cp-gradient: linear-gradient(135deg, #fc5457 10%, #703ae6 80%);
-  --cp-venue-margin-fg: #5f2fd0;
-  --cp-venue-margin-bg: rgba(112, 58, 230, 0.1);
-  --cp-venue-margin-bd: rgba(112, 58, 230, 0.28);
-  --cp-venue-earn-fg: #0b7a63;
-  --cp-venue-earn-bg: rgba(11, 122, 99, 0.1);
-  --cp-venue-earn-bd: rgba(11, 122, 99, 0.28);
-  --cp-venue-farm-fg: #8a5a06;
-  --cp-venue-farm-bg: rgba(245, 158, 11, 0.14);
-  --cp-venue-farm-bd: rgba(245, 158, 11, 0.32);
-  --cp-venue-wallet-fg: #4b5563;
-  --cp-venue-wallet-bg: rgba(102, 112, 133, 0.12);
-  --cp-venue-wallet-bd: rgba(102, 112, 133, 0.28);
-  --cp-warn-fg: #8a5a06;
-  --cp-warn-bg: rgba(245, 158, 11, 0.1);
-  --cp-warn-bd: rgba(245, 158, 11, 0.3);
-  --cp-danger-fg: #c9333b;
-  --cp-danger-bg: rgba(252, 84, 87, 0.1);
-  --cp-danger-bd: rgba(252, 84, 87, 0.3);
-  --cp-emerald: #10b981;
-  --cp-amber: #f59e0b;
-  --cp-imperial: #fc5457;
-  --cp-skel: #ededf1;
-  --cp-mark: rgba(112, 58, 230, 0.1);
+  /* ── canonical palette (light) ── */
+  --page: #ffffff;
+  --surface: #ffffff;
+  --g50: #f7f8fa;
+  --g100: #e2e2e2;
+  --g200: #cfcfcf;
+  --g300: #9ca3af;
+  --g400: #6b7280;
+  --g500: #4b5563;
+  --g600: #374151;
+  --g700: #1f2937;
+  --g800: #1f1f1f;
+  --g900: #111111;
+  /* Declared here, not inherited from the app's `:root`, so this block is self-sufficient.
+     The values match `:root` exactly — the point is that removing them upstream can no
+     longer silently strip the copilot's accent colour. */
+  --violet-50: #f1ebfd;
+  --violet-100: #d3c2f7;
+  --violet-200: #bda4f4;
+  --violet-300: #9f7bee;
+  --violet-400: #8d61eb;
+  --violet-500: #703ae6;
+  --violet-600: #6635d1;
+  --rose-50: #ffe6f2;
+  --rose-500: #ff007a;
+  --imperial-500: #fc5457;
+  --imperial-600: #e54c4f;
+  --emerald: #10b981;
+  --amber: #f59e0b;
+  --venue-margin-fg: #5f2fd0;
+  --venue-margin-bg: rgba(112, 58, 230, 0.1);
+  --venue-margin-bd: rgba(112, 58, 230, 0.28);
+  --venue-earn-fg: #0b7a63;
+  --venue-earn-bg: rgba(11, 122, 99, 0.1);
+  --venue-earn-bd: rgba(11, 122, 99, 0.28);
+  --venue-farm-fg: #8a5a06;
+  --venue-farm-bg: rgba(245, 158, 11, 0.14);
+  --venue-farm-bd: rgba(245, 158, 11, 0.32);
+  --venue-wallet-fg: #4b5563;
+  --venue-wallet-bg: rgba(102, 112, 133, 0.12);
+  --venue-wallet-bd: rgba(102, 112, 133, 0.28);
+  --warn-fg: #8a5a06;
+  --warn-bg: rgba(245, 158, 11, 0.1);
+  --warn-bd: rgba(245, 158, 11, 0.3);
+  --danger-fg: #c9333b;
+  --danger-bg: rgba(252, 84, 87, 0.1);
+  --danger-bd: rgba(252, 84, 87, 0.3);
+  --skel: #ededf1;
+  --mark: rgba(112, 58, 230, 0.1);
+  --gradient: linear-gradient(135deg, #fc5457 10%, #703ae6 80%);
+
+  /* Health-factor zones and meter tracks. New in this design — the gauge the owner's
+     reference build shows. Kept here rather than inside a component so the margin rail and
+     the run card cannot end up drawing the same band in two different colours. */
+  --z-danger: #e03e42;
+  --z-warn: #c98214;
+  --z-caution: #1c7c83;
+  --z-healthy: #0b8f68;
+  --z-danger-dim: rgba(224, 62, 66, 0.2);
+  --z-warn-dim: rgba(201, 130, 20, 0.2);
+  --z-caution-dim: rgba(28, 124, 131, 0.2);
+  --z-healthy-dim: rgba(11, 143, 104, 0.18);
+  --bar-track: #ececf0;
+  --bar-cool: #1c7c83;
+  --bar-warm: #e54c4f;
+
+  /* Nav, toggle and chip chrome. */
+  --navbg: #ffffff;
+  --navborder: #ebebeb;
+  --navtext: #111111;
+  --togglebg: #f4f4f4;
+  --toggleborder: #e5e7eb;
+  --toggleoff: #a9a9a9;
+  --chipbg: #f7f7f7;
+  --chipborder: #dfdfdf;
+  --chiptext: #1f1f1f;
+
+  /* ── aliases: declared once, never per theme ── */
+  --cp-surface: var(--surface);
+  --cp-g50: var(--g50);
+  --cp-g100: var(--g100);
+  --cp-g200: var(--g200);
+  --cp-g300: var(--g300);
+  --cp-g400: var(--g400);
+  --cp-g500: var(--g500);
+  --cp-g600: var(--g600);
+  --cp-g700: var(--g700);
+  --cp-g900: var(--g900);
+  --cp-violet-500: var(--violet-500);
+  --cp-violet-soft: var(--violet-50);
+  --cp-violet-soft-border: var(--violet-100);
+  --cp-gradient: var(--gradient);
+  --cp-venue-margin-fg: var(--venue-margin-fg);
+  --cp-venue-margin-bg: var(--venue-margin-bg);
+  --cp-venue-margin-bd: var(--venue-margin-bd);
+  --cp-venue-earn-fg: var(--venue-earn-fg);
+  --cp-venue-earn-bg: var(--venue-earn-bg);
+  --cp-venue-earn-bd: var(--venue-earn-bd);
+  --cp-venue-farm-fg: var(--venue-farm-fg);
+  --cp-venue-farm-bg: var(--venue-farm-bg);
+  --cp-venue-farm-bd: var(--venue-farm-bd);
+  --cp-venue-wallet-fg: var(--venue-wallet-fg);
+  --cp-venue-wallet-bg: var(--venue-wallet-bg);
+  --cp-venue-wallet-bd: var(--venue-wallet-bd);
+  --cp-warn-fg: var(--warn-fg);
+  --cp-warn-bg: var(--warn-bg);
+  --cp-warn-bd: var(--warn-bd);
+  --cp-danger-fg: var(--danger-fg);
+  --cp-danger-bg: var(--danger-bg);
+  --cp-danger-bd: var(--danger-bd);
+  --cp-emerald: var(--emerald);
+  --cp-amber: var(--amber);
+  --cp-imperial: var(--imperial-500);
+  --cp-skel: var(--skel);
+  --cp-mark: var(--mark);
 }
 
 html.dark .cp-root {
-  --cp-violet-soft: #2a1a3e;
-  --cp-violet-soft-border: #3b2560;
-  --cp-surface: #1c1c24;
-  --cp-g50: #27272a;
-  --cp-g100: #3f3f46;
-  --cp-g200: #52525b;
-  --cp-g300: #71717a;
-  --cp-g400: #a1a1aa;
-  --cp-g500: #c8c8d0;
-  --cp-g600: #d4d4d8;
-  --cp-g700: #e4e4e7;
-  --cp-g900: #fafafa;
-  --cp-violet-500: #9a72f0;
-  --cp-venue-margin-fg: #a686f2;
-  --cp-venue-margin-bg: rgba(154, 114, 240, 0.14);
-  --cp-venue-margin-bd: rgba(154, 114, 240, 0.34);
-  --cp-venue-earn-fg: #3fc0a3;
-  --cp-venue-earn-bg: rgba(63, 192, 163, 0.12);
-  --cp-venue-earn-bd: rgba(63, 192, 163, 0.3);
-  --cp-venue-farm-fg: #dfa24a;
-  --cp-venue-farm-bg: rgba(223, 162, 74, 0.12);
-  --cp-venue-farm-bd: rgba(223, 162, 74, 0.3);
-  --cp-venue-wallet-fg: #a8b0c0;
-  --cp-venue-wallet-bg: rgba(168, 176, 192, 0.11);
-  --cp-venue-wallet-bd: rgba(168, 176, 192, 0.26);
-  --cp-warn-fg: #e0ac5c;
-  --cp-warn-bg: rgba(223, 162, 74, 0.09);
-  --cp-warn-bd: rgba(223, 162, 74, 0.28);
-  --cp-danger-fg: #f0666e;
-  --cp-danger-bg: rgba(240, 102, 110, 0.1);
-  --cp-danger-bd: rgba(240, 102, 110, 0.3);
-  --cp-emerald: #3fc0a3;
-  --cp-amber: #dfa24a;
-  --cp-imperial: #f0666e;
-  --cp-skel: #2a2a32;
-  --cp-mark: rgba(154, 114, 240, 0.16);
+  /* Canonical values only. Every `--cp-*` alias above follows automatically. */
+  --page: #111111;
+  --surface: #1c1c24;
+  --g50: #27272a;
+  --g100: #333333;
+  --g200: #52525b;
+  --g300: #8b8b96;
+  --g400: #a1a1aa;
+  --g500: #c8c8d0;
+  --g600: #d4d4d8;
+  --g700: #e4e4e7;
+  --g800: #f4f4f5;
+  --g900: #fafafa;
+  --emerald: #3fc0a3;
+  --amber: #dfa24a;
+  --venue-margin-fg: #a686f2;
+  --venue-margin-bg: rgba(154, 114, 240, 0.14);
+  --venue-margin-bd: rgba(154, 114, 240, 0.34);
+  --venue-earn-fg: #3fc0a3;
+  --venue-earn-bg: rgba(63, 192, 163, 0.12);
+  --venue-earn-bd: rgba(63, 192, 163, 0.3);
+  --venue-farm-fg: #dfa24a;
+  --venue-farm-bg: rgba(223, 162, 74, 0.12);
+  --venue-farm-bd: rgba(223, 162, 74, 0.3);
+  --venue-wallet-fg: #a8b0c0;
+  --venue-wallet-bg: rgba(168, 176, 192, 0.11);
+  --venue-wallet-bd: rgba(168, 176, 192, 0.26);
+  --warn-fg: #e0ac5c;
+  --warn-bg: rgba(223, 162, 74, 0.09);
+  --warn-bd: rgba(223, 162, 74, 0.28);
+  --danger-fg: #f0666e;
+  --danger-bg: rgba(240, 102, 110, 0.1);
+  --danger-bd: rgba(240, 102, 110, 0.3);
+  --skel: #2a2a32;
+  --mark: rgba(154, 114, 240, 0.16);
+  --z-danger: #f0666e;
+  --z-warn: #dfa24a;
+  --z-caution: #4fd3dd;
+  --z-healthy: #3fc0a3;
+  --z-danger-dim: rgba(240, 102, 110, 0.22);
+  --z-warn-dim: rgba(223, 162, 74, 0.22);
+  --z-caution-dim: rgba(79, 211, 221, 0.2);
+  --z-healthy-dim: rgba(63, 192, 163, 0.2);
+  --bar-track: #2c2c34;
+  --bar-cool: #4fd3dd;
+  --bar-warm: #f0666e;
+  --navbg: #111111;
+  --navborder: rgba(255, 255, 255, 0.06);
+  --navtext: #ffffff;
+  --togglebg: #1e1e1e;
+  --toggleborder: #2c2c2c;
+  --toggleoff: #595959;
+  --chipbg: #1c1c1c;
+  --chipborder: #2a2a2a;
+  --chiptext: #ffffff;
 
   /* Dark violet / rose ramps — every violet-* utility on a copilot surface. */
   --violet-50: #2a1a3e;
