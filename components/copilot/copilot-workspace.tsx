@@ -2440,6 +2440,7 @@ export function CopilotWorkspace() {
           ? Number(amt).toLocaleString(undefined, { maximumFractionDigits: 7 })
           : null,
         asset: s.asset ?? null,
+        leverage: s.leverage ?? null,
         status: toRunLegStatus(s.status, i === inFlightIdx),
         txHash: s.tx_hash ? truncHash(String(s.tx_hash)) : null,
         // The server's `message` is a humanized reason. Only surface it where it is one:
@@ -2459,20 +2460,33 @@ export function CopilotWorkspace() {
    */
   const submitLegAmount = useCallback(
     (leg: RunLeg, amount: number) => {
-      const rest = runLegs
-        .filter((l) => l.n > leg.n && l.status !== "ok")
-        .map((l) => ({
-          op: l.op,
-          asset: l.asset,
-          amount: l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null,
-          label: l.label,
-        }));
-      const summary =
-        String(strategyMetaRef.current.strategy_summary || submitted || "Continue strategy");
-      void resumeMultiLeg(
-        [{ op: leg.op, asset: leg.asset, amount, label: leg.label }, ...rest],
-        summary,
+      /**
+       * Everything still outstanding, not just the leg being answered.
+       *
+       * A leg the run never reached is marked `skipped` — "skipped because an earlier leg
+       * needs an amount" — so `skipped` means *not yet attempted*, not *abandoned*, and it
+       * has to travel with the resume or it never runs. Only settled legs are excluded;
+       * replaying one of those would deposit or borrow a second time.
+       *
+       * `leverage` rides along on every leg. Without it a levered farm resumed as a plain
+       * supply — the same class of failure as an approved 2× plan replaying unlevered, and
+       * just as invisible, because the amount looks right.
+       */
+      const carry = (l: RunLeg, overrideAmount?: number) => ({
+        op: l.op,
+        asset: l.asset,
+        amount:
+          overrideAmount ??
+          (l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null),
+        leverage: l.leverage ?? null,
+        label: l.label,
+      });
+
+      const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
+      const summary = String(
+        strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
       );
+      void resumeMultiLeg([carry(leg, amount), ...rest], summary);
     },
     [runLegs, resumeMultiLeg, submitted],
   );

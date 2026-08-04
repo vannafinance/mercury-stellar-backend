@@ -55,6 +55,12 @@ export interface RunLeg {
   /** Pre-formatted for display; null when the server has not resolved it yet. */
   amount: string | null;
   asset: string | null;
+  /**
+   * Carried so a resume can replay this leg as planned. Not displayed here — the label
+   * already says "at 2× leverage" — but dropping it meant answering a missing amount
+   * resumed a levered leg unlevered, which is a different transaction from the approved one.
+   */
+  leverage?: number | null;
   status: RunLegStatus;
   txHash?: string | null;
   elapsed?: string | null;
