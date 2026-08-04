@@ -460,9 +460,26 @@ html.dark * {
    The violet and rose ramps are re-declared for dark because the app's own scales are
    light-only: `bg-violet-50 text-violet-500` renders a near-white lavender chip with
    dark-violet ink, which on a #111 surface reads as a light-mode button someone forgot to
-   theme. Tailwind resolves these through `var()` at the use site, so redeclaring them here
-   re-themes every `violet-*` / `rose-*` utility inside a copilot surface and nothing
-   outside it. */
+   theme.
+
+   WHY THE DARK RAMP OVERRIDES `--color-violet-*` AND NOT ONLY `--violet-*`
+
+   It has to override the name Tailwind actually reads. `@theme` emits
+   `--color-violet-50: var(--violet-50)` into `:root`, and a `var()` inside a custom
+   property is substituted at computed-value time ON THE ELEMENT THAT DECLARES IT — here,
+   `<html>`. So `--color-violet-50` computes to the light `#f1ebfd` once, on the root, and
+   descendants inherit that literal. Redeclaring `--violet-50` further down the tree cannot
+   reach back and change it.
+
+   `--color-vgray-*` looks like the same pattern and works, which is what made this easy to
+   miss: its source (`--analytics-vgray-*`) is overridden by `html.dark`, the SAME element
+   that declares the alias, so the substitution picks up the dark value.
+
+   The visible consequence was the auto-sign card: `bg-violet-50` stayed near-white lavender
+   on the dark page while `text-vgray-800` inverted to near-white, so "Custom limits" and the
+   cap inputs were white-on-white. Both names are set below — `--violet-*` for the handful of
+   places that read it directly, `--color-violet-*` for every Tailwind `violet-*` utility —
+   and because they are set on `.cp-root` the override stays scoped to the copilot. */
 .cp-root {
   /* ── canonical palette (light) ── */
   --page: #ffffff;
@@ -579,6 +596,19 @@ html.dark * {
   --cp-imperial: var(--imperial-500);
   --cp-skel: var(--skel);
   --cp-mark: var(--mark);
+
+  /* NOTHING THIS SURFACE RENDERS MAY LEAVE ITS CARD.
+     Every answer here is server text, and a lot of it contains a 56-character Stellar
+     C-address — one unbreakable word wider than the card. A margin-account address in an
+     "already has margin smart account CCX2…" answer ran straight out of the panel and
+     painted over the right rail, so the rail's own copy was unreadable underneath it.
+
+     `anywhere` rather than `break-word`: only `anywhere` counts toward min-content sizing,
+     which is what lets a flex or grid child actually shrink. `break-word` breaks the line
+     but leaves the item's min-content width at the full address, so the box keeps
+     overflowing and the text just wraps outside it. Inherited, so it covers text added
+     later without anyone having to remember this. */
+  overflow-wrap: anywhere;
 }
 
 html.dark .cp-root {
@@ -647,6 +677,18 @@ html.dark .cp-root {
   --violet-500: #9a72f0;
   --violet-600: #ab8af4;
   --rose-50: #3a0f27;
+
+  /* The names Tailwind's `violet-*` / `rose-*` utilities actually resolve. See the note
+     above the light block: the `@theme` aliases were already substituted on <html>, so
+     overriding the canonical values alone left every violet utility light-mode. */
+  --color-violet-50: #2a1a3e;
+  --color-violet-100: #3b2560;
+  --color-violet-200: #4d3080;
+  --color-violet-300: #b69bf5;
+  --color-violet-400: #a686f2;
+  --color-violet-500: #9a72f0;
+  --color-violet-600: #ab8af4;
+  --color-rose-50: #3a0f27;
 }
 
 /* ── Plan approval card ────────────────────────────────────────────────────

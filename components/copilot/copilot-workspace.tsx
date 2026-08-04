@@ -44,7 +44,7 @@ import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-c
 import { HealthDial } from "./health-dial";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
-import { labelHasAmount, legKey, legKeyLoose } from "./leg-key";
+import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 interface BrainHealth {
@@ -299,10 +299,26 @@ interface LogEntry {
   tool: string;
   status: string;
   color: string;
+  /** When the turn was recorded. Absent on rows stored before history was persisted. */
+  ts?: number;
   /** Multi-leg / agent-chain parent — child hops update this instead of new rows. */
   strategy?: boolean;
   legs?: LogLeg[];
 }
+
+/**
+ * How many turns the copilot remembers, and how many it shows before you ask for the rest.
+ *
+ * The log used to hold 8 and live in component state, so it was gone on reload — which is
+ * why history had to be added rather than merely surfaced. 40 is enough to cover a working
+ * session without the stored blob getting large; the visible 8 keeps the card the same size
+ * it was.
+ */
+const HISTORY_MAX = 40;
+const HISTORY_VISIBLE = 8;
+
+/** localStorage key. Per wallet, because the turns are about that wallet's account. */
+const historyKey = (address: string) => `vanna_copilot_history:${address}`;
 interface ActivityEntry {
   label: string;
   hash: string;
@@ -404,6 +420,16 @@ const BTN_QUIET =
   "disabled:cursor-not-allowed disabled:text-vgray-300 disabled:hover:border-vgray-100 disabled:hover:bg-transparent disabled:hover:text-vgray-300";
 const BTN_TINT =
   "rounded-r2 border border-violet-50 bg-violet-50 text-[13px] font-semibold text-violet-500 transition-colors hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50";
+/**
+ * Secondary action sitting ON a violet-tinted panel (the auto-sign gate).
+ *
+ * BTN_QUIET is transparent with a violet-50 hover, which is the panel's own colour — on that
+ * panel it had no edge and no hover, so "Custom limits" read as a label rather than a button.
+ * This one carries the page surface, so it looks raised against the tint in both themes.
+ */
+const BTN_ON_TINT =
+  "rounded-r2 border border-violet-100 bg-surface text-[13px] font-semibold text-vgray-900 transition-colors hover:border-violet-400 hover:text-violet-500 " +
+  "disabled:cursor-not-allowed disabled:text-vgray-300";
 /**
  * Disabled drops the gradient rather than fading it. A translucent gradient over a dark
  * panel is a muddy brown-violet that reads as a rendering fault, not as "not yet" — the
@@ -893,6 +919,8 @@ export function CopilotWorkspace() {
   const storeCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
   const storeNetValue = useMarginAccountInfoStore((s) => s.totalValue);
+  const storeCollateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
+  const storeBorrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
   const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
@@ -935,6 +963,63 @@ export function CopilotWorkspace() {
     },
     [],
   );
+  const [showAllHistory, setShowAllHistory] = useState(false);
+
+  /**
+   * History survives a reload.
+   *
+   * It did not before: the log lived in component state and the card was called "Session
+   * log" because that is genuinely all it was — refresh the page and every turn was gone.
+   * Stored per wallet, because a turn is about that wallet's account and showing another
+   * wallet's history next to this one's balances would be worse than showing none.
+   *
+   * Hydration runs once per address and MERGES rather than replaces: a turn can complete
+   * before the wallet address arrives from the store, and replacing would drop it.
+   */
+  const hydratedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!address || hydratedFor.current === address) return;
+    hydratedFor.current = address;
+    try {
+      const raw = localStorage.getItem(historyKey(address));
+      if (!raw) return;
+      const stored = JSON.parse(raw) as unknown;
+      if (!Array.isArray(stored)) return;
+      const rows = stored.filter(
+        (e): e is LogEntry =>
+          !!e && typeof e === "object" && typeof (e as LogEntry).id === "string",
+      );
+      if (!rows.length) return;
+      setLogRaw((prev) => {
+        const seen = new Set(prev.map((e) => e.id));
+        return [...prev, ...rows.filter((e) => !seen.has(e.id))].slice(0, HISTORY_MAX);
+      });
+    } catch {
+      /* a corrupt blob is not worth failing the page over */
+    }
+  }, [address]);
+
+  useEffect(() => {
+    if (!address) return;
+    try {
+      localStorage.setItem(historyKey(address), JSON.stringify(log.slice(0, HISTORY_MAX)));
+    } catch {
+      /* quota / private mode — history is a convenience, not a requirement */
+    }
+  }, [address, log]);
+
+  const clearHistory = useCallback(() => {
+    setLogRaw([]);
+    setShowAllHistory(false);
+    if (!address) return;
+    try {
+      localStorage.removeItem(historyKey(address));
+      localStorage.removeItem(`${historyKey(address)}:tx`);
+    } catch {
+      /* ignore */
+    }
+  }, [address]);
+
   /** Parent strategy prompt for client next_step hops (session log grouping). */
   const strategyParentRef = useRef<{ id: string; prompt: string } | null>(null);
   /**
@@ -981,13 +1066,30 @@ export function CopilotWorkspace() {
         );
       }
 
+      /**
+       * Third chance: bare USDC clarified to BLUSDC / AQUSDC / SOUSDC.
+       *
+       * "Lend 125 USDC on Earn" → "Lend 125 AQUSDC on Earn" changes the asset part of the
+       * key, so exact and amount-loose both miss. Without this the clarifying row stayed
+       * frozen on needs_input while a duplicate AQUSDC row reported done.
+       */
+      if (at < 0) {
+        at = merged.findIndex((m) =>
+          isUsdcVariantResolution(String(m.label || ""), keyed),
+        );
+      }
+
       if (at >= 0) {
         merged[at] = {
           ...merged[at],
           // The resolved label wins — the row should read "Borrow 15 XLM", not stay on the
-          // amount-less wording it was planned with.
-          label: labelHasAmount(keyed) ? keyed : merged[at].label,
+          // amount-less wording it was planned with. Same for USDC → AQUSDC.
+          label:
+            labelHasAmount(keyed) || isUsdcVariantResolution(String(merged[at].label || ""), keyed)
+              ? keyed
+              : merged[at].label,
           amount: leg.amount != null ? leg.amount : merged[at].amount,
+          asset: leg.asset != null ? leg.asset : merged[at].asset,
           // Position is the original's. A resume is a fresh runPlan whose step counter
           // restarts at 1, so trusting the incoming index renumbered leg 2 as leg 1.
           index: merged[at].index,
@@ -1027,6 +1129,25 @@ export function CopilotWorkspace() {
   // prompts through its extension, so the toggle can't apply there.
   const sessionSigningAvailable = walletKind === "privy" && !!address;
   const sessionSigning = sessionSigningAvailable && autoApprove;
+
+  /**
+   * What the MCP Sign Service said last time we tried to enable auto-sign.
+   *
+   * Separate from `autoApprove` because they are two different mechanisms and only one of
+   * them currently works. `autoApprove` is in-app session signing: the Privy embedded
+   * wallet signs a staged XDR without a prompt, client-side. The Sign Service is a
+   * server-side signer that would also enforce the spend caps as policy — and it rejects
+   * our machine-to-machine token with `invalid_user_assertion` / "Invalid token audience",
+   * so it is not enforcing anything today.
+   *
+   * The UI conflated the two: enabling auto-approve flipped the switch on and printed
+   * "Caps $1000/tx · $1000/day" next to a visible 401, which claims a policy that does not
+   * exist. Holding the Sign Service's answer separately lets the rail say which half is on.
+   */
+  const [signServiceState, setSignServiceState] = useState<{
+    status: "unknown" | "ok" | "unavailable";
+    reason: string | null;
+  }>({ status: "unknown", reason: null });
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -1076,6 +1197,41 @@ export function CopilotWorkspace() {
   const borrowedValue = effBorrowed;
   const netValue = snapshot?.totalValue ?? storeNetValue ?? derivedHealth.totalValue;
   const liveHf = effHasAccount && healthFactor ? healthFactor : null;
+
+  /**
+   * Open positions, per token, for the rail.
+   *
+   * The rail showed three totals — collateral, debt, net value — which answer "how much"
+   * but never "in what". Asked what he was holding, the CTO's only recourse was to leave
+   * for the Portfolio page. These rows come from the SAME `snapshot` the totals above use
+   * (which is `/api/account`, which is `computeMarginSnapshot`, which is what the margin
+   * page renders), so the rail cannot disagree with either the totals beside it or the
+   * copilot's own answer to "what are my positions".
+   *
+   * Store balances are the fallback for the moment before the first snapshot lands, so a
+   * reload does not blank the list it just showed.
+   */
+  const positionRows = useMemo(() => {
+    const toRows = (balances: Record<string, { amount: string; usdValue: string }> | undefined) =>
+      Object.entries(balances ?? {})
+        .map(([symbol, b]) => ({
+          symbol,
+          amount: b.amount,
+          usd: Number.parseFloat(b.usdValue) || 0,
+        }))
+        // Below a cent is dust, not a position.
+        .filter((r) => r.usd > 0.01)
+        .sort((a, b) => b.usd - a.usd);
+    return {
+      collateral: toRows(snapshot?.collateralBalances ?? storeCollateralBalances),
+      borrowed: toRows(snapshot?.borrowedBalances ?? storeBorrowedBalances),
+    };
+  }, [
+    snapshot?.collateralBalances,
+    snapshot?.borrowedBalances,
+    storeCollateralBalances,
+    storeBorrowedBalances,
+  ]);
 
   /** Force-refresh rail stats after a prompt/sign so values match margin page. */
   const refreshRailStats = useCallback(
@@ -1208,11 +1364,22 @@ export function CopilotWorkspace() {
           const merged: LogLeg[] = existing?.legs ? [...existing.legs] : [];
           for (const leg of legs) {
             const k = legKey(leg.label);
-            const at = merged.findIndex((m) => legKey(m.label) === k);
+            let at = merged.findIndex((m) => legKey(m.label) === k);
+            // Same USDC→variant reconcile as absorbStrategySteps — otherwise the session
+            // log kept "Lend 125 USDC" on clarification and appended "Lend 125 AQUSDC" done.
+            if (at < 0) {
+              at = merged.findIndex((m) => isUsdcVariantResolution(m.label, leg.label));
+            }
             if (at >= 0) {
-              // Keep the first label seen so the row does not re-word itself mid-run,
-              // but always take the newer status.
-              merged[at] = { ...merged[at], status: leg.status };
+              // Prefer the resolved label (USDC → AQUSDC) so the row matches the card.
+              const resolved =
+                isUsdcVariantResolution(merged[at].label, leg.label) ||
+                labelHasAmount(leg.label);
+              merged[at] = {
+                ...merged[at],
+                status: leg.status,
+                ...(resolved ? { label: leg.label } : {}),
+              };
             } else {
               merged.push(leg);
             }
@@ -1230,13 +1397,14 @@ export function CopilotWorkspace() {
               id,
               prompt: parentPrompt,
               tool: "multi_leg",
+              ts: existing?.ts ?? Date.now(),
               status: allDone ? "executed" : overall,
               color: allDone || overall === "executed" ? EMERALD : color,
               strategy: true,
               legs: finalLegs,
             },
             ...without,
-          ].slice(0, 8);
+          ].slice(0, HISTORY_MAX);
         });
         return;
       }
@@ -1254,6 +1422,7 @@ export function CopilotWorkspace() {
                 id: parentId,
                 prompt: strategyParentRef.current!.prompt,
                 tool: "multi_leg",
+                ts: Date.now(),
                 status: status === "executed" ? "in progress" : status,
                 color: AMBER,
                 strategy: true,
@@ -1266,7 +1435,7 @@ export function CopilotWorkspace() {
                 ],
               },
               ...prev,
-            ].slice(0, 8);
+            ].slice(0, HISTORY_MAX);
           }
           const copy = [...prev];
           const parent = { ...copy[idx] };
@@ -1277,10 +1446,17 @@ export function CopilotWorkspace() {
           // was appended reporting done. `l.tool === tool` was the worst of it: with two
           // deposit legs it matched whichever came first, regardless of amount or asset.
           const hopKey = legKey(hopLabel);
-          const legIdx = legs.findIndex((l) => legKey(l.label) === hopKey);
+          let legIdx = legs.findIndex((l) => legKey(l.label) === hopKey);
+          if (legIdx < 0) {
+            legIdx = legs.findIndex((l) => isUsdcVariantResolution(l.label, hopLabel));
+          }
           if (legIdx >= 0) {
             legs[legIdx] = {
               ...legs[legIdx],
+              // Prefer the resolved wording when USDC → AQUSDC (etc.).
+              label: isUsdcVariantResolution(legs[legIdx].label, hopLabel)
+                ? hopLabel
+                : legs[legIdx].label,
               status: status === "executed" ? "done" : status,
               tool,
             };
@@ -1318,6 +1494,7 @@ export function CopilotWorkspace() {
               id,
               prompt,
               tool: "multi_leg",
+              ts: Date.now(),
               status: status === "executed" ? "in progress" : status,
               color: status === "executed" ? AMBER : color,
               strategy: true,
@@ -1330,7 +1507,7 @@ export function CopilotWorkspace() {
               ],
             },
             ...prev,
-          ].slice(0, 8),
+          ].slice(0, HISTORY_MAX),
         );
         return;
       }
@@ -1343,11 +1520,12 @@ export function CopilotWorkspace() {
             id: data.request_id || `turn-${Date.now()}`,
             prompt,
             tool,
+            ts: Date.now(),
             status,
             color,
           },
           ...prev,
-        ].slice(0, 8),
+        ].slice(0, HISTORY_MAX),
       );
     },
     [],
@@ -1355,8 +1533,51 @@ export function CopilotWorkspace() {
 
   const pushActivity = useCallback((label: string, hash: string | null | undefined) => {
     if (!hash) return;
-    setActivity((prev) => [{ label, hash, ts: Date.now() }, ...prev].slice(0, 5));
+    setActivity((prev) =>
+      // De-dupe on hash: a chained leg can report the same transaction twice as it settles,
+      // and the same hash listed twice reads as two transfers.
+      [{ label, hash, ts: Date.now() }, ...prev.filter((a) => a.hash !== hash)].slice(0, 10),
+    );
   }, []);
+
+  /**
+   * Signed transactions persist alongside the turn history.
+   *
+   * A transaction hash is the one thing on this page the user may need hours later, and
+   * "On-chain this session" meant it was discarded on refresh. Same key namespace as the
+   * history so `clear` removes both.
+   */
+  const hydratedTxFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!address || hydratedTxFor.current === address) return;
+    hydratedTxFor.current = address;
+    try {
+      const raw = localStorage.getItem(`${historyKey(address)}:tx`);
+      if (!raw) return;
+      const stored = JSON.parse(raw) as unknown;
+      if (!Array.isArray(stored)) return;
+      const rows = stored.filter(
+        (a): a is ActivityEntry =>
+          !!a && typeof a === "object" && typeof (a as ActivityEntry).hash === "string",
+      );
+      if (!rows.length) return;
+      setActivity((prev) => {
+        const seen = new Set(prev.map((a) => a.hash));
+        return [...prev, ...rows.filter((a) => !seen.has(a.hash))].slice(0, 10);
+      });
+    } catch {
+      /* ignore */
+    }
+  }, [address]);
+
+  useEffect(() => {
+    if (!address) return;
+    try {
+      localStorage.setItem(`${historyKey(address)}:tx`, JSON.stringify(activity.slice(0, 10)));
+    } catch {
+      /* ignore */
+    }
+  }, [address, activity]);
 
   const postCopilot = useCallback(
     async (
@@ -1594,44 +1815,118 @@ export function CopilotWorkspace() {
         label,
       );
       // Sync local auto-approve (session auto-submit) with the user's cap choice.
-      // Even if MCP Sign Service fails user-assertion, local session signing still
-      // auto-submits staged XDRs — caps are stored for UI + guardian policy.
+      //
+      // Two outcomes are recorded, not one. `signServiceState` is whether MCP actually
+      // enabled server-side auto-sign; `autoApprove` is whether this app may sign a staged
+      // XDR with the embedded wallet without a prompt. The second does not depend on the
+      // first — which is the only reason auto-approve is usable at all right now, since the
+      // Sign Service currently rejects our M2M token. What it must NOT do is claim the
+      // first succeeded: it used to flip on and print the caps as policy even when the
+      // response was `kind: "error"` carrying a 401.
       if (address && data) {
         if (action === "disable") {
           setAutoApprove(address, false);
-        } else if (action === "use_defaults" || action === "custom") {
-          if (data.kind !== "needs_auto_sign") {
-            setAutoApprove(address, true);
-            const fromMcp = Number(
-              (data.data as { default_cap_usd?: number } | null | undefined)?.default_cap_usd,
-            );
-            const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
-            const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
-            const dayCap =
-              action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
-            try {
-              localStorage.setItem(
-                "vanna_copilot_auto_caps",
-                JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
-              );
-            } catch {
-              /* ignore */
-            }
-            toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
-          }
+          setSignServiceState({ status: "unknown", reason: null });
+          return;
         }
+        if (action !== "use_defaults" && action !== "custom") return;
+        if (data.kind === "needs_auto_sign") return;
+
+        const facts = (data.data ?? {}) as {
+          default_cap_usd?: number;
+          error?: string;
+          detail?: { detail?: string };
+        };
+        const mcpEnabled = data.kind !== "error" && !facts.error;
+        const reason =
+          facts.detail?.detail ||
+          facts.error ||
+          (data.kind === "error" ? data.message : null) ||
+          null;
+        setSignServiceState(
+          mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
+        );
+
+        const fromMcp = Number(facts.default_cap_usd);
+        const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
+        const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
+        const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
+        try {
+          localStorage.setItem(
+            "vanna_copilot_auto_caps",
+            JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
+          );
+        } catch {
+          /* ignore */
+        }
+
+        // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
+        // Sign Service could not stand in for it. Saying so beats a switch that lights up
+        // and changes nothing.
+        if (!sessionSigningAvailable && !mcpEnabled) {
+          toast.error("Auto-approve unavailable for this wallet — every write still needs a signature.");
+          return;
+        }
+        setAutoApprove(address, true);
+        toast.success(
+          mcpEnabled
+            ? `Auto-approve on · $${txCap}/tx · $${dayCap}/day`
+            : `Auto-approve on in-app · caps $${txCap}/tx · $${dayCap}/day not enforced by the Sign Service`,
+        );
       }
     },
-    [postCopilot, customTx, customDay, response, submitted, address],
+    [postCopilot, customTx, customDay, response, submitted, address, sessionSigningAvailable],
   );
 
   /**
    * Resume a write after the user picks a USDC variant (BLUSDC / AQUSDC / SOUSDC).
    * Server stored the pending op+amount; we inject the chosen asset and re-run.
+   *
+   * Mid multi-leg this must resume the paused leg + every still-outstanding leg — the
+   * same pattern as submitLegAmount. A bare pending_write alone ran the op as a new hop
+   * ("lend 125 AQUSDC"), left the clarifying "Lend 125 USDC on Earn" stuck forever, and
+   * orphaned every skipped leg behind it.
    */
   const pickClarifyOption = useCallback(
     async (opt: ClarifyOption) => {
       const pw = response?.pending_write;
+      const steps = strategyStepsRef.current;
+      const clarifyingIdx = steps.findIndex((s) => {
+        const st = String(s.status || "");
+        return st === "clarification" || st === "needs_input";
+      });
+      if (clarifyingIdx >= 0 && steps.length > 0) {
+        const clarifying = steps[clarifyingIdx];
+        const amount =
+          clarifying.amount != null && Number(clarifying.amount) > 0
+            ? Number(clarifying.amount)
+            : pw?.amount != null
+              ? Number(pw.amount)
+              : null;
+        const carry = (s: MultiLegStepUi) => ({
+          op: String(s.op || "step"),
+          asset: s.asset ?? null,
+          amount: s.amount != null && Number(s.amount) > 0 ? Number(s.amount) : null,
+          leverage: s.leverage ?? null,
+          label: s.label,
+        });
+        const first = {
+          op: String(clarifying.op || pw?.op || "lend"),
+          asset: opt.id,
+          amount: amount != null && Number.isFinite(amount) && amount > 0 ? amount : null,
+          leverage: clarifying.leverage ?? pw?.leverage ?? null,
+          label: clarifying.label,
+        };
+        const rest = steps
+          .slice(clarifyingIdx + 1)
+          .filter((s) => !["ok", "done"].includes(String(s.status || "")))
+          .map(carry);
+        const summary = String(
+          strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
+        );
+        void resumeMultiLeg([first, ...rest], summary);
+        return;
+      }
       if (!pw?.op) {
         // Fallback: rephrase as a full message
         await run(`${opt.id}`);
@@ -1653,7 +1948,7 @@ export function CopilotWorkspace() {
         label,
       );
     },
-    [response, postCopilot, run],
+    [response, postCopilot, run, resumeMultiLeg, submitted],
   );
 
   /**
@@ -2738,7 +3033,7 @@ export function CopilotWorkspace() {
                           </div>
                         ) : (
                           <p
-                            className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
+                            className={`min-w-0 flex-1 whitespace-pre-wrap text-[20px] leading-[32px] ${
                               isError ? "text-imperial-600" : "text-vgray-800"
                             }`}
                           >
@@ -3003,7 +3298,8 @@ export function CopilotWorkspace() {
                           type="button"
                           disabled={!address || loading}
                           onClick={() => setShowCustom((s) => !s)}
-                          className={`px-[18px] py-2.5 ${BTN_QUIET}`}
+                          aria-expanded={showCustom}
+                          className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
                         >
                           Custom limits
                         </button>
@@ -3089,7 +3385,7 @@ export function CopilotWorkspace() {
                           >
                             <Check size={26} />
                           </span>
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <p className="text-h6 font-semibold text-vgray-900">
                               {response.preview?.human_summary || "Submitted on-chain"}
                             </p>
@@ -3139,29 +3435,54 @@ export function CopilotWorkspace() {
             )}
           </div>
 
-          {/* Session log */}
+          {/* History — persisted per wallet, so it outlives a reload. */}
           <div className="rounded-3xl border border-vgray-100 bg-surface px-6 py-6 sm:px-7">
-            <div className="flex items-center justify-between">
-              <Eyebrow>Session log</Eyebrow>
-              <span className="font-mono text-[11px] text-vgray-400">
-                {log.length} {log.length === 1 ? "turn" : "turns"}
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <Eyebrow>History</Eyebrow>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-[11px] text-vgray-400">
+                  {log.length} {log.length === 1 ? "turn" : "turns"}
+                </span>
+                {log.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearHistory}
+                    className="font-mono text-[11px] text-vgray-400 underline-offset-2 transition-colors hover:text-imperial-500 hover:underline"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
             </div>
             {log.length === 0 ? (
               <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                nothing yet — every intent, tool call and signature this session lands here.
+                nothing yet — every intent, tool call and signature lands here, and stays after a
+                reload.
               </p>
             ) : (
               <div className="mt-2">
-                {log.map((e) => (
+                {(showAllHistory ? log : log.slice(0, HISTORY_VISIBLE)).map((e) => (
                   <div key={e.id} className="border-b border-vgray-100 py-3 last:border-0">
+                    {/* The prompt is the useful part of a past turn: clicking it loads the
+                        wording back into the composer so it can be re-run or edited, rather
+                        than retyped from a truncated line. It does NOT re-run on its own —
+                        replaying a write without being asked would be the wrong call. */}
                     <div className="flex items-center gap-3.5">
                       <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: e.color }} />
-                      <span className="min-w-0 flex-1 truncate text-body-2 text-vgray-700" title={e.prompt}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIntentText(e.prompt);
+                          inputRef.current?.focus();
+                          inputRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+                        }}
+                        title={`${e.prompt}\n\nClick to put this back in the composer`}
+                        className="min-w-0 flex-1 truncate text-left text-body-2 text-vgray-700 transition-colors hover:text-violet-500"
+                      >
                         {e.prompt}
-                      </span>
+                      </button>
                       <span className="hidden shrink-0 font-mono text-[11px] text-vgray-400 sm:block">
-                        {e.strategy ? "strategy" : e.tool}
+                        {e.ts ? relTime(e.ts) : e.strategy ? "strategy" : e.tool}
                       </span>
                       <span
                         className="w-[74px] shrink-0 text-right font-mono text-[11px]"
@@ -3186,6 +3507,17 @@ export function CopilotWorkspace() {
                     )}
                   </div>
                 ))}
+                {log.length > HISTORY_VISIBLE && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllHistory((s) => !s)}
+                    className="mt-3 font-mono text-[11px] text-violet-500 underline-offset-2 hover:underline"
+                  >
+                    {showAllHistory
+                      ? "show fewer"
+                      : `show all ${log.length} turns`}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -3232,6 +3564,61 @@ export function CopilotWorkspace() {
                   <Row k="net value" v={usd(netValue)} />
                 </div>
               </div>
+
+              {/* Open positions — what the totals above are made of. */}
+              <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <Eyebrow>Open positions</Eyebrow>
+                  <button
+                    type="button"
+                    onClick={() => run("tell me all my current open positions")}
+                    disabled={loading}
+                    className="font-mono text-[11px] text-violet-500 underline-offset-2 transition-colors hover:underline disabled:text-vgray-300 disabled:no-underline"
+                  >
+                    ask copilot
+                  </button>
+                </div>
+                {positionRows.collateral.length === 0 && positionRows.borrowed.length === 0 ? (
+                  <p className="mt-3 font-mono text-[11px] text-vgray-400">
+                    nothing open — deposited collateral and borrows appear here per token.
+                  </p>
+                ) : (
+                  <div className="mt-3 flex flex-col gap-4">
+                    {positionRows.collateral.length > 0 && (
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: EMERALD }}>
+                          supplied
+                        </p>
+                        <div className="mt-1 flex flex-col">
+                          {positionRows.collateral.map((r) => (
+                            <Row key={`c-${r.symbol}`} k={r.symbol} v={`${r.amount} · ${usd(r.usd)}`} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {positionRows.borrowed.length > 0 && (
+                      <div>
+                        <p className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: AMBER }}>
+                          borrowed
+                        </p>
+                        <div className="mt-1 flex flex-col">
+                          {positionRows.borrowed.map((r) => (
+                            <Row key={`d-${r.symbol}`} k={r.symbol} v={`${r.amount} · ${usd(r.usd)}`} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {/* Farm and LP holdings are read on demand rather than mirrored here: they
+                        come from a different set of contracts than the margin snapshot, and a
+                        second live feed in the rail would be a second thing that can disagree
+                        with the Farm page. "ask copilot" fetches them into the answer. */}
+                    <p className="text-[11px] leading-[17px] text-vgray-400">
+                      Margin account only. Blend supplies and Aquarius LP shares are in the copilot
+                      answer above, and on the <span className="text-vgray-500">Farm</span> page.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -3257,18 +3644,38 @@ export function CopilotWorkspace() {
               user can see its state while a write is staged — buried in the wallet menu
               it was invisible at the moment it mattered.
             */}
+            {/*
+              `aria-disabled`, never `disabled`.
+
+              A `disabled` button swallows the click, so on a Freighter wallet this control
+              did nothing at all — no movement, no message, nothing to read except an
+              11px subtitle. It was reported as a broken toggle, and from the outside that
+              is indistinguishable from one. Now the click always lands and the reason is
+              said out loud; only the state change is withheld.
+            */}
             <button
               type="button"
               role="switch"
               aria-checked={sessionSigning}
-              disabled={!sessionSigningAvailable || loading}
+              aria-disabled={!address || loading}
               onClick={() => {
-                if (!address) return;
+                if (loading) return;
+                if (!address) {
+                  toast.error("Connect a wallet first.");
+                  return;
+                }
                 if (sessionSigning) {
                   // Turning off: local toggle + MCP disable.
                   setAutoApprove(address, false);
                   void enableAutoSign("disable");
                   toast.success("Auto-approve off");
+                  return;
+                }
+                if (!sessionSigningAvailable) {
+                  toast.error(
+                    "Auto-approve needs a Vanna embedded wallet. Freighter signs in its own " +
+                      "extension popup, which this app cannot skip.",
+                  );
                   return;
                 }
                 // Turning on: same as MCP — ask for default caps (from MCP) or custom.
@@ -3283,16 +3690,20 @@ export function CopilotWorkspace() {
                   );
                 })();
               }}
-              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors enabled:hover:border-violet-400 disabled:opacity-60"
+              className={`mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors hover:border-violet-400 ${
+                sessionSigningAvailable ? "" : "opacity-70"
+              }`}
             >
               <ShieldCheck size={16} className="shrink-0" style={{ color: sessionSigning ? VIOLET : "var(--color-vgray-400)" }} />
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
                 <span className="block text-[11px] text-vgray-500">
                   {!sessionSigningAvailable
-                    ? "Vanna embedded wallet only"
+                    ? "Needs a Vanna embedded wallet — tap for why"
                     : sessionSigning
                       ? (() => {
+                          const suffix =
+                            signServiceState.status === "unavailable" ? " (in-app only)" : "";
                           try {
                             const raw = localStorage.getItem("vanna_copilot_auto_caps");
                             if (raw) {
@@ -3300,12 +3711,12 @@ export function CopilotWorkspace() {
                                 max_per_tx_usd?: number;
                                 max_per_day_usd?: number;
                               };
-                              return `Caps $${c.max_per_tx_usd ?? 1000}/tx · $${c.max_per_day_usd ?? 1000}/day`;
+                              return `Caps $${c.max_per_tx_usd ?? 1000}/tx · $${c.max_per_day_usd ?? 1000}/day${suffix}`;
                             }
                           } catch {
                             /* ignore */
                           }
-                          return "Defaults (MCP default_cap_usd)";
+                          return `Defaults (MCP default_cap_usd)${suffix}`;
                         })()
                       : "Turn on → choose MCP defaults or custom caps"}
                 </span>
@@ -3323,10 +3734,12 @@ export function CopilotWorkspace() {
             </button>
             <p className="mt-3 text-body-2 text-vgray-500">
               {sessionSigning
-                ? "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
+                ? signServiceState.status === "unavailable"
+                  ? "Writes execute without a signing prompt — this app signs them with your embedded wallet. The caps are this browser's own limit, not Sign Service policy: MCP declined to register a server-side session (see “sign service” below), so nothing is enforcing them on the server. Liquidation guardian is on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
+                  : "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
                 : sessionSigningAvailable
                   ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
-                  : "Every write is signed in your wallet. Session signing (and HF guardian) is available for Vanna embedded wallets."}
+                  : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Vanna embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
             </p>
             <div className="mt-4 flex flex-col">
               <Row
@@ -3334,6 +3747,20 @@ export function CopilotWorkspace() {
                 v={sessionSigning ? "session key" : "wallet prompt"}
                 color={sessionSigning ? VIOLET : undefined}
               />
+              {/* The Sign Service is a separate mechanism from in-app session signing and
+                  can fail on its own. Stating it here is what stops "auto-approve on" from
+                  being read as "the server is enforcing my caps". */}
+              {signServiceState.status !== "unknown" && (
+                <Row
+                  k="sign service"
+                  v={
+                    signServiceState.status === "ok"
+                      ? "session registered"
+                      : `unavailable (${signServiceState.reason ?? "rejected"})`
+                  }
+                  color={signServiceState.status === "ok" ? VIOLET : AMBER}
+                />
+              )}
               <Row
                 k="guardian"
                 v={
@@ -3358,10 +3785,11 @@ export function CopilotWorkspace() {
 
           {/* This session's writes */}
           <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-            <Eyebrow>On-chain this session</Eyebrow>
+            <Eyebrow>On-chain writes</Eyebrow>
             {activity.length === 0 ? (
               <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                no writes yet — signed transactions appear here with their hash.
+                no writes yet — signed transactions appear here with their hash, and stay after a
+                reload.
               </p>
             ) : (
               <div className="mt-2">
