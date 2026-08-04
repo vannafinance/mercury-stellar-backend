@@ -103,3 +103,9 @@ docs/*.docx
 # Local-only docs (do not push)
 /private-docs/
 
+# Session handoff scratch — local working copies and their zip export.
+# Ignored so a handoff bundle can never be swept into a commit by `git add -A`.
+/.handoff-extract/
+/.handoff-prev/
+*-handoff.zip
+

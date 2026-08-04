@@ -8,6 +8,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/copilot";
+import { loadUserFromRequest } from "@/lib/copilot/request-user";
+import { withBoundUser } from "@/lib/copilot/user-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -199,8 +201,15 @@ export async function POST(req: NextRequest) {
       : null,
   };
 
+  // Bind the signed-in user for the whole turn, refreshing the token first if it
+  // is close to expiry. Writes then go to the MCP under that user's own token
+  // (aud = the MCP resource URI, sub = user_…), which is what lets the Sign
+  // Service authorize auto-sign. Signed out, this is a no-op and everything runs
+  // on the M2M credential exactly as before.
+  const loadedUser = await loadUserFromRequest(req);
+
   try {
-    const data = await handleChat(payload);
+    const data = await withBoundUser(loadedUser.bound, () => handleChat(payload));
     const multiLeg = !!(data.data && (data.data as Record<string, unknown>).multi_leg);
     const multiSteps = multiLeg
       ? ((data.data as Record<string, unknown>).multi_leg_steps as unknown[])
@@ -215,11 +224,17 @@ export async function POST(req: NextRequest) {
       multi_leg: multiLeg,
       multi_leg_steps: Array.isArray(multiSteps) ? multiSteps.length : null,
       tx_hash: data.execution?.tx_hash ? String(data.execution.tx_hash).slice(0, 16) : null,
+      signed_in: !!loadedUser.bound,
     });
-    return NextResponse.json(data);
+    // commit() persists a rotated session cookie (or clears a dead one). It must
+    // run on the error path too, or a refresh that happened this request is lost
+    // and the next one refreshes again with an already-rotated token.
+    return loadedUser.commit(NextResponse.json(data));
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Copilot failed";
     logCopilotEvent("turn_error", { error: msg });
-    return NextResponse.json({ kind: "error", message: msg }, { status: 200 });
+    return loadedUser.commit(
+      NextResponse.json({ kind: "error", message: msg }, { status: 200 }),
+    );
   }
 }

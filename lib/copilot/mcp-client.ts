@@ -1,13 +1,17 @@
 /**
  * In-process MCP client for the Vanna Finance MCP server.
  *
- * Auth: WorkOS M2M (client_credentials) → Bearer JWT.
+ * Auth: two credentials, chosen per call (see RoutingMCPClient at the bottom).
+ *   reads  → WorkOS M2M (client_credentials). No user identity, works signed out.
+ *   writes → the signed-in user's Connect OAuth token, when there is one. Only
+ *            that token can prove WHO is spending, which is what auto-sign needs.
  * Transport: Streamable HTTP (POST + SSE `event: message` frames + mcp-session-id).
  *
  * Mock mode returns canned numbers so the copilot works offline.
  */
 
 import { copilotConfig } from "./config";
+import { callNeedsUserToken, currentUser } from "./user-context";
 
 export class MCPError extends Error {
   constructor(message: string) {
@@ -193,20 +197,42 @@ export function toServerCall(
   return { name: mapped.tool, arguments: { action: mapped.action, kwargs: args } };
 }
 
-// ── live ────────────────────────────────────────────────────────────────────
+// ── credentials ─────────────────────────────────────────────────────────────
 
-class LiveMCPClient implements MCPClient {
+/**
+ * Where a bearer token comes from. Two implementations:
+ *
+ *   M2M      — the app's own client_credentials token. Fine for reads; its `sub`
+ *              is the client id, so it cannot prove WHO is asking.
+ *   end user — a Connect OAuth token with `aud` = the MCP resource URI and
+ *              `sub` = user_…, bound to the request (see user-context.ts).
+ *
+ * `key` identifies the credential so each one gets its own cached MCP session —
+ * a Streamable-HTTP session is opened under a specific bearer and must not be
+ * shared across identities.
+ */
+interface TokenSource {
+  key: string;
+  getToken(): Promise<string>;
+  /** Called after a 401 so a cached token is not retried forever. */
+  invalidate(): void;
+}
+
+const TIMEOUT_MS = 90_000;
+const EXPIRY_MARGIN_MS = 60_000;
+
+class M2MTokenSource implements TokenSource {
+  readonly key = "m2m";
   private token: string | null = null;
   private tokenExpiry = 0;
   private tokenPromise: Promise<string> | null = null;
-  /** Cached Streamable-HTTP session — see getSession. */
-  private sessionId: string | null = null;
-  private sessionPromise: Promise<string> | null = null;
-  /** Writes (sign/sim) often exceed 30s on testnet under load. */
-  private static readonly TIMEOUT_MS = 90_000;
-  private static readonly EXPIRY_MARGIN_MS = 60_000;
 
-  private async getToken(): Promise<string> {
+  invalidate(): void {
+    this.token = null;
+    this.tokenExpiry = 0;
+  }
+
+  async getToken(): Promise<string> {
     if (this.token && Date.now() < this.tokenExpiry) return this.token;
     if (this.tokenPromise) return this.tokenPromise;
 
@@ -225,7 +251,7 @@ class LiveMCPClient implements MCPClient {
           client_id: workosClientId,
           client_secret: workosClientSecret,
         }),
-        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
         cache: "no-store",
       });
       if (!res.ok) {
@@ -238,13 +264,51 @@ class LiveMCPClient implements MCPClient {
       }
       const ttlMs = (body.expires_in ?? 300) * 1000;
       this.token = body.access_token;
-      this.tokenExpiry = Date.now() + Math.max(ttlMs - LiveMCPClient.EXPIRY_MARGIN_MS, 0);
+      this.tokenExpiry = Date.now() + Math.max(ttlMs - EXPIRY_MARGIN_MS, 0);
       return this.token;
     })().finally(() => {
       this.tokenPromise = null;
     });
 
     return this.tokenPromise;
+  }
+}
+
+/**
+ * The token the route handler already refreshed and bound for this request.
+ * Refresh is not attempted here: the request holds no response object to write a
+ * rotated cookie back onto, and a token that lapses mid-turn is covered on the
+ * Sign Service side by session-scoped signing.
+ */
+class BoundUserTokenSource implements TokenSource {
+  readonly key: string;
+  constructor(
+    sub: string,
+    private readonly token: string,
+  ) {
+    this.key = `user:${sub}`;
+  }
+  invalidate(): void {
+    /* nothing to drop — the token's lifetime is the request's */
+  }
+  async getToken(): Promise<string> {
+    return this.token;
+  }
+}
+
+// ── live ────────────────────────────────────────────────────────────────────
+
+class LiveMCPClient implements MCPClient {
+  /** Cached Streamable-HTTP session — see getSession. */
+  private sessionId: string | null = null;
+  private sessionPromise: Promise<string> | null = null;
+  /** Writes (sign/sim) often exceed 30s on testnet under load. */
+  private static readonly TIMEOUT_MS = TIMEOUT_MS;
+
+  constructor(private readonly tokens: TokenSource) {}
+
+  private async getToken(): Promise<string> {
+    return this.tokens.getToken();
   }
 
   /**
@@ -372,8 +436,7 @@ class LiveMCPClient implements MCPClient {
       const text = await callRes.text().catch(() => "");
       if (callRes.status === 401 || callRes.status === 403) {
         // Force token refresh next time.
-        this.token = null;
-        this.tokenExpiry = 0;
+        this.tokens.invalidate();
         this.resetSession(); // the session was opened with the rejected token
         throw new MCPAuthError(`MCP rejected the token (${callRes.status}): ${text.slice(0, 300)}`);
       }
@@ -459,11 +522,73 @@ function shapeToolResult(result: any): Record<string, unknown> {
 
 // ── factory ─────────────────────────────────────────────────────────────────
 
+const m2mTokens = new M2MTokenSource();
+
+/**
+ * One live client per credential, so each keeps its own MCP session.
+ *
+ * Bounded: a busy deploy would otherwise accumulate one entry per user who has
+ * ever signed in, each holding a session id. Eviction is oldest-first, and the
+ * only cost of evicting is one extra handshake on that user's next write.
+ */
+const MAX_CLIENTS = 128;
+const liveClients = new Map<string, LiveMCPClient>();
+
+function liveClientFor(tokens: TokenSource): LiveMCPClient {
+  const existing = liveClients.get(tokens.key);
+  if (existing) {
+    // Refresh LRU position.
+    liveClients.delete(tokens.key);
+    liveClients.set(tokens.key, existing);
+    return existing;
+  }
+  const created = new LiveMCPClient(tokens);
+  liveClients.set(tokens.key, created);
+  while (liveClients.size > MAX_CLIENTS) {
+    const oldest = liveClients.keys().next();
+    if (oldest.done) break;
+    // Never evict the shared M2M client — every signed-out read depends on it.
+    if (oldest.value === m2mTokens.key) {
+      const m2m = liveClients.get(m2mTokens.key)!;
+      liveClients.delete(m2mTokens.key);
+      liveClients.set(m2mTokens.key, m2m);
+      continue;
+    }
+    liveClients.delete(oldest.value);
+  }
+  return created;
+}
+
+/**
+ * Routes each call to the right credential.
+ *
+ * Reads → the shared M2M token (no user identity needed; works signed out).
+ * Writes → the end-user token bound to this request, when there is one.
+ *
+ * A write with no signed-in user still goes out on M2M and still WORKS: the MCP
+ * builds and simulates the transaction, auto-sign is refused for want of a user
+ * assertion, and the copilot falls back to wallet-sign — exactly today's
+ * behaviour. Signing in is what upgrades that to auto-sign.
+ */
+class RoutingMCPClient implements MCPClient {
+  async call(
+    tool: string,
+    args: Record<string, unknown>,
+    userId?: string,
+  ): Promise<Record<string, unknown>> {
+    const user = callNeedsUserToken(tool) ? currentUser() : null;
+    const tokens: TokenSource = user
+      ? new BoundUserTokenSource(user.sub, user.accessToken)
+      : m2mTokens;
+    return liveClientFor(tokens).call(tool, args, userId);
+  }
+}
+
 let singleton: MCPClient | null = null;
 
 export function getMcpClient(): MCPClient {
   if (!singleton) {
-    singleton = copilotConfig.mcpMode === "live" ? new LiveMCPClient() : new MockMCPClient();
+    singleton = copilotConfig.mcpMode === "live" ? new RoutingMCPClient() : new MockMCPClient();
   }
   return singleton;
 }
@@ -471,4 +596,6 @@ export function getMcpClient(): MCPClient {
 /** Test helper / hot-reload safety */
 export function resetMcpClient(): void {
   singleton = null;
+  liveClients.clear();
+  m2mTokens.invalidate();
 }

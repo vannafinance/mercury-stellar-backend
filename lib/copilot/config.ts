@@ -37,6 +37,116 @@ export const copilotConfig = {
     );
   },
 
+  // ── End-user login (Connect OAuth + resource indicator) ───────────────────
+  //
+  // Why this exists alongside the M2M block above: an M2M token's `sub` is the
+  // CLIENT id, one value shared by every user of this app. The Sign Service now
+  // refuses it as a user assertion (it must start with `user_`), so auto-sign
+  // needs a token minted by an actual end-user login. Requesting `resource` on
+  // that login is what makes the token's `aud` the MCP's resource URI, which is
+  // the audience both the MCP and the Sign Service already verify against.
+  //
+  // Unset → no login button, reads still work on M2M, and writes fall back to
+  // wallet-sign exactly as they do today. Nothing breaks by not configuring it.
+
+  /** AuthKit issuer, e.g. https://your-project.authkit.app (no trailing slash). */
+  get workosIssuer(): string {
+    const explicit = env("WORKOS_ISSUER").replace(/\/$/, "");
+    if (explicit) return explicit;
+    // Derive from the M2M token URL so a single-tenant deploy needs one less var.
+    return this.workosTokenUrl.replace(/\/oauth2\/token\/?$/, "").replace(/\/$/, "");
+  },
+  get workosAuthorizeUrl(): string {
+    return env("WORKOS_AUTHORIZE_URL") || `${this.workosIssuer}/oauth2/authorize`;
+  },
+  get workosUserTokenUrl(): string {
+    return env("WORKOS_USER_TOKEN_URL") || `${this.workosIssuer}/oauth2/token`;
+  },
+  /** Connect OAuth client id (the end-user app client, NOT the M2M client). */
+  get workosClientIdUser(): string {
+    return env("WORKOS_CLIENT_ID");
+  },
+  /**
+   * WorkOS **environment** client id — Developer → API Keys. Staging is
+   * `client_01KX5H81JH2HWD2DHKYFYFXNS2`.
+   *
+   * This is what actually lands in `aud` on a hand-created Connect OAuth token:
+   * not the Connect app's own client id, but the environment's. Observed live —
+   * the token came back with `aud = client_01KX5H81…` while the Connect app is
+   * `client_01KZ6ZZQK…`.
+   *
+   * ⚠️ It is also the audience the **M2M** token carries (see
+   * AUTOSIGN_AUDIENCE_BLOCKER.md §1). Both credentials in this environment are
+   * minted for the same audience, so `aud` cannot tell them apart — only `sub`
+   * can (`user_…` vs `client_…`). That is exactly what the Sign Service's
+   * subject guard checks, and with this audience accepted, that guard is the
+   * ONLY thing separating an end user from the machine credential. Do not
+   * weaken it.
+   */
+  get workosEnvClientId(): string {
+    return env("WORKOS_ENV_CLIENT_ID");
+  },
+  /** Client secret for the authorization-code exchange (confidential client). */
+  get workosClientSecretUser(): string {
+    return env("WORKOS_CLIENT_SECRET");
+  },
+  /**
+   * RFC 8707 resource indicator. Defaults to mcpBaseUrl so the token's `aud` and
+   * the server being called can never drift apart by forgetting one of two vars.
+   *
+   * Only sent when mcpSendResource is on — see that getter for why it is not.
+   */
+  get mcpResource(): string {
+    return env("MCP_RESOURCE") || this.mcpBaseUrl;
+  },
+  /**
+   * Send `resource` on authorize / token / refresh? **Default off.**
+   *
+   * A hand-created Connect OAuth application — one made in the WorkOS Dashboard,
+   * "Managed by you", confidential — rejects an explicit `resource` on the token
+   * endpoint with RFC 8707 `invalid_target`, **even when that exact URI is
+   * registered as the Default Resource Indicator**. Per WorkOS, the default
+   * applies only to DCR/CIMD clients; hand-created OAuth and M2M Connect apps
+   * never use it, and in practice they 400 when it is sent.
+   *
+   * Observed: authorize succeeded and returned a code; the exchange came back
+   * `400 invalid_target`, so login never completed.
+   *
+   * What a hand-created Connect OAuth client mints instead:
+   *
+   *     aud = <this app's client_id>     (NOT the MCP resource URI)
+   *     sub = user_…                     (a real per-user subject — the part that matters)
+   *
+   * That is still a correct end-user token. The `sub` is what closes the F3 hole
+   * and what bindings key on; the `aud` is just which client it was minted for.
+   * So the fix is to accept that audience on the verifying side rather than to
+   * force a parameter this client type refuses — see .env.example for the
+   * WORKOS_AUDIENCE value the Sign Service needs.
+   *
+   * Turn this ON if the Copilot is ever re-registered as a DCR/CIMD client, which
+   * would then mint aud = the MCP resource URI.
+   */
+  get mcpSendResource(): boolean {
+    const v = env("MCP_SEND_RESOURCE", "false").toLowerCase();
+    return v === "true" || v === "1" || v === "on" || v === "yes";
+  },
+  /**
+   * Fixed redirect URI. Must match a redirect registered in the WorkOS dashboard.
+   * Leave unset to derive it from the incoming request origin (fine for local dev
+   * and single-domain deploys; set it explicitly behind a proxy that rewrites Host).
+   */
+  get authRedirectUri(): string {
+    return env("COPILOT_AUTH_REDIRECT_URI");
+  },
+  /** Secret for the encrypted session cookie. Required for login to be enabled. */
+  get sessionSecret(): string {
+    return env("COPILOT_SESSION_SECRET");
+  },
+  /** True when end-user login is fully configured. */
+  get userLoginEnabled(): boolean {
+    return !!(this.workosClientIdUser && this.workosClientSecretUser && this.sessionSecret);
+  },
+
   /** Always Vertex for now. */
   get llmProvider(): string {
     return "vertex";
