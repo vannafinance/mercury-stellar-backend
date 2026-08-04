@@ -342,6 +342,15 @@ export interface BrainHealth {
   templates: number;
   in_process: true;
   execution_mode?: string;
+  /**
+   * Which Google credential the copilot will route with.
+   *
+   * "service_account" is machine-independent and works in a deploy; "developer_login" means
+   * it is leaning on whoever ran `gcloud auth login` on this machine, which is the state
+   * that made the same prompt answer on one laptop and return the capability blurb on
+   * another. Reported so that difference is visible before someone hits it.
+   */
+  vertex_auth?: "service_account" | "developer_login";
 }
 
 export type RoutedIntent =

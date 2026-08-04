@@ -67,6 +67,7 @@ import type {
   Simulation,
 } from "./types";
 import {
+  hasVertexServiceAccount,
   vertexExplain,
   vertexExplainStructured,
   vertexSelectTool,
@@ -82,6 +83,7 @@ export function getBrainHealth(): BrainHealth {
     templates: TEMPLATE_COUNT,
     in_process: true,
     execution_mode: "mcp+auto-sign",
+    vertex_auth: hasVertexServiceAccount() ? "service_account" : "developer_login",
   };
 }
 

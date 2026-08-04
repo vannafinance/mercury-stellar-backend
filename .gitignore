@@ -35,6 +35,14 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template. `.env*` matched it too, so it was never committed, and every new
+# checkout had to be told the variable list by hand — which is how a developer ends up
+# missing GOOGLE_SERVICE_ACCOUNT_JSON and getting keyword-only routing with no idea why.
+# Every value in it is blank or a placeholder; secrets stay in the ignored .env.local.
+!.env.example
+
+# Stray dev-server log from `npm run dev > dev.log`.
+dev.log
 
 # vercel
 .vercel

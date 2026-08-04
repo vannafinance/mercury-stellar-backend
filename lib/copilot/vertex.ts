@@ -3,8 +3,25 @@
  *
  * Auth strategy (in order):
  *   1. Cached Bearer token
- *   2. ADC via google-auth-library (if valid)
- *   3. `gcloud auth print-access-token` (works when ADC is broken but user login is OK)
+ *   2. Service-account key from GOOGLE_SERVICE_ACCOUNT_JSON  ← the only one that is
+ *      machine-independent; see below
+ *   3. ADC via google-auth-library (if valid)
+ *   4. `gcloud auth print-access-token` (works when ADC is broken but user login is OK)
+ *
+ * WHY A SERVICE ACCOUNT IS FIRST
+ *
+ * Options 3 and 4 both resolve to a credential belonging to whoever is sitting at the
+ * machine. That made the copilot's understanding a per-developer property: on a checkout
+ * whose `gcloud auth login` had lapsed, every routing call threw and the turn fell back to
+ * keyword matching, so the same prompt answered on one laptop and returned the capability
+ * blurb on another. Neither option exists at all on a serverless host — there is no gcloud
+ * binary and no ADC file on Vercel — so a deployment could never route with the model.
+ *
+ * A service-account key in an env var fixes both at once: identical credential locally and
+ * in every deploy, owned by the project rather than by a person, and nothing to re-run when
+ * a login expires. Set GOOGLE_SERVICE_ACCOUNT_JSON to the key JSON (raw or base64) and no
+ * one needs `gcloud auth login` again. The gcloud paths stay as a local fallback so an
+ * existing checkout keeps working without the variable.
  *
  * Model default: gemini-3.6-flash on project vanna-mcp, location=global.
  * Uses the REST generateContent endpoint (no dependency on broken ADC alone).
@@ -71,10 +88,92 @@ function resolveGcloudBin(): string | null {
   return process.platform === "win32" ? "gcloud.cmd" : "gcloud";
 }
 
+/**
+ * The service-account key, if one is configured.
+ *
+ * Accepts raw JSON or base64 — Vercel's env editor and most CI secret stores handle a
+ * single-line base64 blob without mangling it, while a pasted multi-line JSON key often
+ * arrives with its newlines escaped or stripped. Supporting both means whichever form the
+ * key was pasted in, it works.
+ *
+ * A malformed value throws rather than falling through silently: an unusable key that
+ * degrades to keyword routing is the failure this whole path exists to remove, so it has to
+ * be loud.
+ */
+function serviceAccountCredentials(): { client_email: string; private_key: string } | null {
+  const raw = (
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
+    ""
+  ).trim();
+  if (!raw) return null;
+
+  const text = raw.startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
+  let parsed: { client_email?: string; private_key?: string };
+  try {
+    parsed = JSON.parse(text) as typeof parsed;
+  } catch {
+    throw new VertexError(
+      "GOOGLE_SERVICE_ACCOUNT_JSON is set but is neither JSON nor base64-encoded JSON. " +
+        "Paste the whole service-account key file, or its base64.",
+    );
+  }
+  if (!parsed.client_email || !parsed.private_key) {
+    throw new VertexError(
+      "GOOGLE_SERVICE_ACCOUNT_JSON parsed but has no client_email / private_key. " +
+        "That is not a service-account key file.",
+    );
+  }
+  return {
+    client_email: parsed.client_email,
+    // Env vars cannot carry real newlines in most dashboards, so a pasted key usually
+    // arrives with literal "\n" two-character sequences. Left as-is the PEM will not parse.
+    private_key: parsed.private_key.replace(/\\n/g, "\n"),
+  };
+}
+
+/**
+ * Is a service-account key configured? Reported in the brain-health chip so "this machine
+ * is routing on a developer login" is visible before it expires and silently downgrades
+ * understanding to keyword matching.
+ */
+export function hasVertexServiceAccount(): boolean {
+  return Boolean(
+    (
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+      process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
+      ""
+    ).trim(),
+  );
+}
+
 async function getAccessToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiryMs) return tokenCache.token;
 
-  // 1) google-auth-library ADC (works when application-default login is valid)
+  // 1) Service account — machine-independent, and the only option that exists on a
+  //    serverless host. Deliberately ahead of ADC: when both are present the project's
+  //    own credential should win over whatever the developer happens to be logged in as.
+  const sa = serviceAccountCredentials();
+  if (sa) {
+    const { GoogleAuth } = await import("google-auth-library");
+    const auth = new GoogleAuth({
+      credentials: sa,
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+      projectId: copilotConfig.googleCloudProject,
+    });
+    const client = await auth.getClient();
+    const res = await client.getAccessToken();
+    if (!res.token) {
+      throw new VertexError(
+        `Service account ${sa.client_email} produced no access token. Check that it exists ` +
+          `and has roles/aiplatform.user on project ${copilotConfig.googleCloudProject}.`,
+      );
+    }
+    tokenCache = { token: res.token, expiryMs: Date.now() + 45 * 60_000 };
+    return res.token;
+  }
+
+  // 2) google-auth-library ADC (works when application-default login is valid)
   try {
     const { GoogleAuth } = await import("google-auth-library");
     const auth = new GoogleAuth({
@@ -91,7 +190,7 @@ async function getAccessToken(): Promise<string> {
     /* fall through — ADC is often broken with invalid_rapt */
   }
 
-  // 2) gcloud *user* credentials (gcloud auth login) — already works for aditya@vanna.finance
+  // 3) gcloud *user* credentials (gcloud auth login) — a local convenience only.
   // Prefer invoking gcloud.py via python so paths with spaces ("Cloud SDK") don't break.
   const errors: string[] = [];
   const tried = await tryGcloudAccessToken();
@@ -102,10 +201,12 @@ async function getAccessToken(): Promise<string> {
   if (tried.error) errors.push(tried.error);
 
   throw new VertexError(
-    `Could not get a Google access token. Tried ADC + gcloud. ` +
+    `Could not get a Google access token. Tried service account, ADC and gcloud. ` +
       `${errors.join(" | ")}. ` +
-      `Fix: run  gcloud auth login  (account with Vertex on project vanna-mcp). ` +
-      `You do NOT need application-default login if user login works.`,
+      `Permanent fix (works locally and in every deploy, and never expires per-developer): ` +
+      `set GOOGLE_SERVICE_ACCOUNT_JSON to a service-account key with roles/aiplatform.user ` +
+      `on project ${copilotConfig.googleCloudProject}. ` +
+      `Local stopgap: run  gcloud auth login  with an account that has Vertex access.`,
   );
 }
 

@@ -54,6 +54,8 @@ interface BrainHealth {
   templates: number;
   in_process?: boolean;
   execution_mode?: string;
+  /** "developer_login" means routing depends on this machine's `gcloud auth login`. */
+  vertex_auth?: "service_account" | "developer_login";
 }
 
 interface AutoSignPrompt {
@@ -2825,6 +2827,26 @@ export function CopilotWorkspace() {
                 ? "online"
                 : "brain offline"}
           </div>
+          {/* A developer login expires, and when it does the model call throws and routing
+              silently falls back to keyword matching — which is how the same prompt answered
+              on one machine and returned the capability list on another. Say so while it is
+              still working, not after. */}
+          {health?.vertex_auth === "developer_login" && (
+            <div
+              className="flex items-center gap-[7px] rounded-full border px-3.5 py-[7px] font-mono text-[11px]"
+              style={{
+                color: "var(--cp-warn-fg)",
+                background: "var(--cp-warn-bg)",
+                borderColor: "var(--cp-warn-bd)",
+              }}
+              title={
+                "Vertex is authenticating with this machine's `gcloud auth login`, which expires. " +
+                "Set GOOGLE_SERVICE_ACCOUNT_JSON for a credential that works here and in every deploy."
+              }
+            >
+              <CircleAlert size={13} /> gcloud login
+            </div>
+          )}
           {sessionSigning && (
             <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500">
               <ShieldCheck size={13} /> auto-approve on
