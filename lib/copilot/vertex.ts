@@ -26,6 +26,7 @@ import {
   ANSWER_RESPONSE_SCHEMA,
   ANSWER_SYSTEM,
   normalizeAnswer,
+  type AnswerFact,
   type StructuredAnswer,
 } from "./answer-schema";
 import {
@@ -1025,6 +1026,59 @@ Never claim a leg succeeded unless DATA says so. A partial run reported as a suc
  * is the executed legs and their outcomes only — nothing derived — because a receipt that
  * overstates what landed on-chain is worse than no receipt.
  */
+/**
+ * The outcome of a run, counted from what actually happened.
+ *
+ * Deliberately aggregate-only. Per-leg detail is already on screen in the run card, with
+ * each transaction linked, so repeating it here would be noise — and a 64-character hash in
+ * a label/value grid wraps to one word per line. What is NOT on screen anywhere is the
+ * total: how many legs settled, how many transactions that took, and where the position
+ * ended up.
+ */
+function receiptFacts(execution: Record<string, unknown>): AnswerFact[] {
+  const legs = Array.isArray(execution.legs)
+    ? (execution.legs as Array<Record<string, unknown>>)
+    : [];
+  if (!legs.length) return [];
+
+  const settled = legs.filter((l) => ["ok", "done"].includes(String(l.status ?? ""))).length;
+  const onChain = legs.filter((l) => l.tx_hash != null && String(l.tx_hash).length > 0).length;
+  const failed = legs.filter((l) =>
+    ["error", "blocked", "stopped", "stopped_hf", "preflight_blocked"].includes(
+      String(l.status ?? ""),
+    ),
+  ).length;
+
+  const facts: AnswerFact[] = [
+    {
+      label: "steps settled",
+      value: `${settled} of ${legs.length}`,
+      // Amber rather than green on a partial run: "3 of 4" beside a green tick reads as
+      // success at a glance, and a half-built position is not a success.
+      tone: settled === legs.length ? "good" : failed > 0 ? "bad" : "warn",
+    },
+  ];
+  if (onChain > 0) {
+    facts.push({
+      label: "transactions",
+      value: String(onChain),
+      tone: "neutral",
+    });
+  }
+
+  const hf = Number(execution.final_health_factor);
+  if (Number.isFinite(hf) && hf > 0) {
+    const floor = Number(execution.health_factor_floor);
+    facts.push({
+      label: "health factor",
+      value: hf >= 999 ? "∞" : hf.toFixed(2),
+      tone: hf < 1.1 ? "bad" : Number.isFinite(floor) && hf < floor ? "warn" : "good",
+    });
+  }
+
+  return facts;
+}
+
 export async function vertexSummarizeExecution(
   intent: string,
   execution: Record<string, unknown>,
@@ -1065,15 +1119,25 @@ export async function vertexSummarizeExecution(
     if (!out.trim()) return null;
     const answer = normalizeAnswer(JSON.parse(out));
     if (!answer) return null;
-    // Enforce prose-only in code, not just in the prompt. A receipt is read straight
-    // after the step list that already shows each leg and links its transaction, so any
-    // fact here is a duplicate — and a 64-character hash in a label/value grid wraps to
-    // one word per line. Also strip hashes from the prose in case the model inlines one.
-    const noHashes = (s: string) => s.replace(/\b[0-9a-f]{16,}\b/gi, "").replace(/\s{2,}/g, " ").trim();
+    /**
+     * The model writes the sentence; the figures are counted here.
+     *
+     * This used to force `facts: []`, on the reasoning that the step list above already
+     * shows each leg so any fact is a duplicate. Half right: a PER-LEG fact is a duplicate,
+     * but the aggregate outcome is not — how many transactions actually landed and where the
+     * health factor ended up appear nowhere else, and stripping them left the Response
+     * section as one lonely sentence under a heading.
+     *
+     * Computing them instead of letting the model report them also means the count cannot
+     * be wrong. A model summarising four legs has been observed claiming all four settled
+     * when two had; a length check cannot.
+     */
+    const noHashes = (s: string) =>
+      s.replace(/\b[0-9a-f]{16,}\b/gi, "").replace(/\s{2,}/g, " ").trim();
     return {
       ...answer,
       headline: noHashes(answer.headline),
-      facts: [],
+      facts: receiptFacts(execution),
       ...(answer.note ? { note: noHashes(answer.note) } : {}),
     };
   } catch (e) {

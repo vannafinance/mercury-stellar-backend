@@ -3058,12 +3058,19 @@ export function CopilotWorkspace() {
                     <Eyebrow n="04">{multiLeg ? "Response" : "Executed"}</Eyebrow>
                     {/* Closing summary of what actually ran. Server-side when the brain
                         finishes the last leg; client-signed finals POST summarize_execution. */}
+                    {/* A receipt is the last thing the user reads after money moved, so it
+                        gets the emphasis of a result rather than the flat panel a read
+                        answer sits in: a violet left rule marking it as the conclusion of
+                        the run above, and a surface that reads as raised, not as another
+                        row in the list. */}
                     {response.answer && (
                       <div
-                        className="mt-4 rounded-2xl px-5 py-4"
+                        className="mt-4 overflow-hidden rounded-2xl"
                         style={{
                           border: "1px solid var(--cp-g100)",
+                          borderLeft: "3px solid var(--cp-violet-500)",
                           background: "var(--cp-surface)",
+                          padding: "18px 20px 20px",
                         }}
                       >
                         <AnswerView answer={response.answer} />
