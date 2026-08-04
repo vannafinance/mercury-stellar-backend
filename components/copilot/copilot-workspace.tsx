@@ -41,6 +41,7 @@ import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-x
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
+import { HealthDial } from "./health-dial";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
 import { labelHasAmount, legKey, legKeyLoose } from "./leg-key";
@@ -255,12 +256,6 @@ function hfColor(v: number | null | undefined): string {
   if (v >= 1.5) return EMERALD;
   if (v >= 1.3) return AMBER;
   return IMPERIAL;
-}
-function hfLabel(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "no debt";
-  if (v >= 1.5) return "healthy";
-  if (v >= 1.3) return "caution";
-  return "at risk";
 }
 function fmtHf(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "∞";
@@ -3198,64 +3193,47 @@ export function CopilotWorkspace() {
 
         {/* ── Right rail ──────────────────────────────────────────── */}
         <div className="flex flex-col gap-5">
-          {/* Account */}
-          <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-            <Eyebrow>Your account</Eyebrow>
-            {!address ? (
-              <p className="mt-3 text-body-1 text-vgray-500">Connect your wallet for account actions.</p>
-            ) : (
-              <>
-                <div className="mt-4 flex items-end justify-between gap-3">
-                  <div>
-                    <p
-                      className="font-mono text-h5 font-bold leading-none"
-                      style={{ color: effHasAccount ? hfColor(liveHf) : "var(--color-vgray-400)" }}
-                    >
-                      {effHasAccount ? fmtHf(liveHf) : "—"}
-                    </p>
-                    <p className="mt-1.5 font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
-                      health factor
-                    </p>
-                  </div>
-                  <span
-                    className="rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.15em]"
-                    style={
-                      effHasAccount
-                        ? {
-                            color: hfColor(liveHf),
-                            background:
-                              liveHf == null || liveHf >= 1.5
-                                ? "rgba(16,185,129,.12)"
-                                : liveHf >= 1.3
-                                  ? "rgba(245,158,11,.14)"
-                                  : "rgba(252,84,87,.14)",
-                          }
-                        : { color: "var(--color-vgray-400)", background: "var(--color-vgray-50)" }
-                    }
-                  >
-                    {effHasAccount ? hfLabel(liveHf) : "no margin account"}
-                  </span>
-                </div>
-                <div className="relative mt-3.5 h-2 overflow-hidden rounded-full bg-vgray-100">
-                  {effHasAccount && (
-                    <div
-                      className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
-                      style={{ width: liveHf == null ? "100%" : hfPct(liveHf), background: hfColor(liveHf) }}
-                    />
-                  )}
-                  <div className="absolute inset-y-0 left-[33.3%] w-0.5" style={{ background: IMPERIAL }} />
-                  <div className="absolute inset-y-0 left-[43.3%] w-0.5" style={{ background: AMBER }} />
-                </div>
-                <div className="mt-[18px] flex flex-col">
+          {/* Account — the dial replaces the flat ratio + linear bar. A number cannot show
+              proximity: 1.35 and 3.40 read alike in a table, and only one of them is close
+              to being liquidated. The tile carries its own zone tint, so the rail changes
+              colour when the position does. */}
+          {!address ? (
+            <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
+              <Eyebrow>Your account</Eyebrow>
+              <p className="mt-3 text-body-1 text-vgray-500">
+                Connect your wallet for account actions.
+              </p>
+            </div>
+          ) : !effHasAccount ? (
+            <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
+              <Eyebrow>Your account</Eyebrow>
+              <p className="mt-3 text-body-1 text-vgray-500">
+                No margin account yet — open one and the dial appears here.
+              </p>
+              <div className="mt-[18px] flex flex-col">
+                <Row k="wallet" v={truncAddr(address)} />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-5">
+              <HealthDial
+                hf={liveHf}
+                floor={guardianFloor}
+                collateralUsd={collateralValue ?? null}
+                debtUsd={borrowedValue ?? null}
+                noDebt={(borrowedValue ?? 0) < 0.5}
+              />
+              <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
+                <div className="flex flex-col">
                   <Row k="wallet" v={truncAddr(address)} />
                   <Row k="smart acct" v={truncAddr(effSmartAccount)} />
                   <Row k="collateral" v={usd(collateralValue)} />
                   <Row k="debt" v={usd(borrowedValue)} />
                   <Row k="net value" v={usd(netValue)} />
                 </div>
-              </>
-            )}
-          </div>
+              </div>
+            </div>
+          )}
 
           {/* Autonomy */}
           <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
