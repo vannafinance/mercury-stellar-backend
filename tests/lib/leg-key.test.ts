@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { labelHasAmount, legKey, legKeyLoose } from "@/components/copilot/leg-key";
+import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "@/components/copilot/leg-key";
 
 describe("leg identity survives an amount being filled in", () => {
   /**
@@ -43,5 +43,45 @@ describe("leg identity survives an amount being filled in", () => {
     expect(legKeyLoose("Supply XLM into Blend")).not.toBe(
       legKeyLoose("Supply XLM into the Vanna earn pool"),
     );
+  });
+});
+
+describe("leg identity survives a USDC variant being filled in", () => {
+  /**
+   * Observed failure: multi-leg paused on "Lend 125 USDC on Earn" asking which USDC;
+   * user picked AQUSDC; executor returned "Lend 125 AQUSDC on Earn". Exact keys differ
+   * on the asset, amount-loose also differs, so the resolved leg was appended and the
+   * original stayed stuck on clarification forever.
+   */
+  it("exact keys differ once the variant is known", () => {
+    expect(legKey("Lend 125 USDC on Earn")).not.toBe(legKey("Lend 125 AQUSDC on Earn"));
+  });
+
+  it("recognises bare USDC resolving to a concrete variant", () => {
+    expect(isUsdcVariantResolution("Lend 125 USDC on Earn", "Lend 125 AQUSDC on Earn")).toBe(
+      true,
+    );
+    expect(isUsdcVariantResolution("Lend 125 USDC on Earn", "Lend 125 BLUSDC on Earn")).toBe(
+      true,
+    );
+    expect(isUsdcVariantResolution("Lend 125 USDC on Earn", "Lend 125 SOUSDC on Earn")).toBe(
+      true,
+    );
+  });
+
+  it("never collapses two concrete variants into each other", () => {
+    expect(isUsdcVariantResolution("Lend 125 BLUSDC on Earn", "Lend 125 AQUSDC on Earn")).toBe(
+      false,
+    );
+  });
+
+  it("still requires the same verb, amount, and venue", () => {
+    expect(isUsdcVariantResolution("Lend 125 USDC on Earn", "Lend 250 AQUSDC on Earn")).toBe(
+      false,
+    );
+    expect(isUsdcVariantResolution("Lend 125 USDC on Earn", "Borrow 125 AQUSDC")).toBe(false);
+    expect(
+      isUsdcVariantResolution("Supply 125 USDC into Blend", "Supply 125 AQUSDC on Earn"),
+    ).toBe(false);
   });
 });

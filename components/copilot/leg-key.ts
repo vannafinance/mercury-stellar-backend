@@ -60,3 +60,23 @@ export function legKeyLoose(label: string): string {
 export function labelHasAmount(label: string): boolean {
   return parts(label).nums.length > 0;
 }
+
+const USDC_VARIANTS = new Set(["BLUSDC", "AQUSDC", "SOUSDC"]);
+
+/**
+ * True when `resolved` is the same leg as `ambiguous` after the user picked a USDC variant.
+ *
+ * A paused leg is labelled "Lend 125 USDC on Earn"; once the user picks AQUSDC the
+ * executor returns "Lend 125 AQUSDC on Earn". Exact and amount-loose keys both differ
+ * (assets changed), so without this check the resolved leg was appended as a duplicate
+ * while the original stayed frozen on "paused · needs input".
+ *
+ * Only bare USDC → one concrete variant. Two concrete variants never match each other.
+ */
+export function isUsdcVariantResolution(ambiguousLabel: string, resolvedLabel: string): boolean {
+  const a = parts(ambiguousLabel);
+  const r = parts(resolvedLabel);
+  if (a.verb !== r.verb || a.nums !== r.nums || a.venue !== r.venue) return false;
+  if (a.assets !== "USDC") return false;
+  return USDC_VARIANTS.has(r.assets);
+}
