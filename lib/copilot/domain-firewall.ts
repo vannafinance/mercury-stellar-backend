@@ -76,25 +76,103 @@ const SELF_REFERENTIAL: RegExp[] = [
   /\b(who|what)\s+are\s+you\b/i,
   /\b(your|you)\s+(capabilities|features|abilities|commands|tools)\b/i,
   /\b(how\s+do\s+i\s+(use|start)|getting\s+started|what\s+should\s+i\s+ask)\b/i,
+  // "what can I do here" asks the same thing as "what can you do" and was being refused
+  // with "I only help with Vanna Finance…", which is both unhelpful and the answer to the
+  // question it declined to give.
+  /\bwhat\s+can\s+i\s+(do|ask|try)\b/i,
   /\b(help|examples?|options)\b\s*\??$/i,
 ];
+
+/**
+ * The product vocabulary, listed as words people actually type.
+ *
+ * WHY THIS IS A LIST AND NOT A REGEX WITH `\b` ON BOTH ENDS
+ *
+ * It used to be `/\b(…|position|balance|pool|price|…)\b/i`, and a trailing `\b` after a
+ * singular stem does not match the plural: `position\b` fails on "positions" because `s`
+ * is a word character. That one detail refused an entire class of ordinary questions —
+ * "show my positions", "list all pools", "what are my balances", "what are the prices",
+ * "am I close to liquidation", "what is my portfolio worth" all came back with "I only
+ * help with Vanna Finance on Stellar", which is exactly the surface they were asking
+ * about. The singular happened to work, so "…open position" answered and "…open
+ * positions" was refused, which is how it survived: it looks like a phrasing quirk rather
+ * than a systematic hole.
+ *
+ * Every inflection is spelled out rather than generated with `\w*`. `\w*` would also
+ * accept "farmer", "trader", "owner" and "earnest", which widens the firewall past the
+ * product and into the general chat it exists to keep out.
+ */
+const DOMAIN_WORDS = [
+  // Protocol and chain
+  "vanna", "stellar", "soroban", "freighter", "privy",
+  // Venues and tickers
+  "blend", "aquarius", "soroswap", "xlm", "aqua", "usdc", "blusdc", "aqusdc", "sousdc",
+  "btoken", "btokens", "b-token", "vtoken", "vtokens",
+  // Actions
+  "earn", "earns", "earning", "earnings",
+  "farm", "farms", "farmed", "farming",
+  "lend", "lends", "lent", "lending",
+  "borrow", "borrows", "borrowed", "borrowing", "borrowings",
+  "repay", "repays", "repaid", "repaying", "repayment", "repayments",
+  "deposit", "deposits", "deposited", "depositing",
+  "redeem", "redeems", "redeemed", "redeeming",
+  "withdraw", "withdraws", "withdrew", "withdrawing", "withdrawal", "withdrawals",
+  "swap", "swaps", "swapped", "swapping",
+  "park", "parks", "parked", "parking",
+  "stake", "stakes", "staked", "staking",
+  "suppl", "supply", "supplies", "supplied", "supplying",
+  "invest", "invests", "invested", "investing", "investment", "investments",
+  // Positions and risk
+  "position", "positions",
+  "portfolio", "portfolios",
+  "holding", "holdings",
+  "exposure", "exposures",
+  "trade", "trades", "traded", "trading",
+  "collateral", "collaterals",
+  "debt", "debts",
+  "owe", "owes", "owed", "owing",
+  "balance", "balances",
+  "leverage", "leveraged", "leveraging",
+  "liquidate", "liquidated", "liquidation", "liquidations", "liquidatable",
+  "margin", "margins",
+  "hf",
+  // Markets
+  "pool", "pools",
+  "reserve", "reserves",
+  "liquidity",
+  "apy", "apr", "tvl", "yield", "yields", "interest",
+  "oracle", "oracles",
+  "price", "prices", "priced", "pricing",
+  // Wallet and account
+  "wallet", "wallets",
+] as const;
+
+/**
+ * One alternation over DOMAIN_WORDS, longest-first.
+ *
+ * Longest-first matters inside an alternation: regex alternatives are tried in order, so
+ * with "suppl" ahead of "supplies" the engine matches "suppl" and then fails the closing
+ * `\b` against the "i" — the shorter alternative shadows the longer one and the word is
+ * rejected. Sorting by length removes that ordering trap for every entry at once.
+ */
+const DOMAIN_WORD_RE = new RegExp(
+  `\\b(?:${[...DOMAIN_WORDS].sort((a, b) => b.length - a.length).join("|")})\\b`,
+  "i",
+);
 
 /** Strong in-domain signals for Vanna Finance. */
 const ALLOW_PATTERNS: RegExp[] = [
   ...PAGE_REFERENTIAL,
   ...SELF_REFERENTIAL,
-  /\b(vanna|stellar|soroban|freighter|privy)\b/i,
-  /\b(earn|farm|margin|lend|borrow|repay|deposit|redeem|collateral|health\s*factor|\bhf\b)\b/i,
-  /\b(blend|aquarius|soroswap|xlm|blusdc|aqusdc|sousdc|btoken|vtoken)\b/i,
-  /\b(swap|liquidity|pool|apy|tvl|leverage|liquidat|smart\s+account|g-?wallet|c-?address)\b/i,
+  DOMAIN_WORD_RE,
+  /\bhealth\s*factor\b/i,
+  /\bsmart\s+account\b/i,
+  /\bg-?wallet\b/i,
+  /\bc-?address\b/i,
   /\b(auto[- ]?sign|auto[- ]?approve|wallet\s+connect|open\s+(margin\s+)?account)\b/i,
   /\b(create|connect|setup|set\s*up|make|get|link)\b.+\b(wallet|g-?wallet|vanna\s+wallet|freighter|privy)\b/i,
-  /\b(wallet|g-?wallet|freighter|privy)\b/i,
   /\b(what(?:'s| is| are).+\b(on\s+(my\s+)?screen|this\s+page|shown|showing)\b)/i,
   /\b(how\s+(do|does|can|to).+\b(vanna|earn|farm|margin|lend|borrow|deposit|swap)\b)/i,
-  // "owe" is how users actually ask about debt — without it, "how much do I owe?"
-  // fell through to the off-domain question block at step 5 and was refused.
-  /\b(park|supply|withdraw|position|debt|owe|owes|owed|owing|balance|oracle|price)\b/i,
   // Multi-leg strategy language when tied to assets/actions above often co-occurs
   /\b(then|and\s+then).+\b(farm|lend|borrow|deposit|swap|repay)\b/i,
 ];
@@ -159,12 +237,15 @@ export function evaluateDomainFirewall(
     return { allow: false, reason: "block:no_domain_signal", message: BLOCK_MESSAGE };
   }
 
-  // 5) Short ambiguous — still refuse unless it looks like a product noun
-  if (
-    /\b(what|how|why|when|where|explain|show|list|help|can\s+i|do\s+i)\b/i.test(m) &&
-    !ALLOW_PATTERNS.some((re) => re.test(m))
-  ) {
-    // Allow only if mentions screen/page without other domain — already in ALLOW
+  // 5) A question with no product noun anywhere in it. Step 2 has already tried every
+  //    allow pattern and none matched, so re-testing them here decided nothing — the
+  //    second clause was always true. Dropping it changes no outcome and stops the code
+  //    implying there is a further chance to be allowed.
+  //    "who" was missing, so "who won the world cup" slipped past to the lenient
+  //    short-token default below and spent a model call — the exact thing this file is for.
+  //    In-domain "who" questions ("who are you", "who is Vanna") are already allowed at
+  //    step 2 by SELF_REFERENTIAL and the product vocabulary.
+  if (/\b(what|how|why|who|when|where|explain|show|list|help|can\s+i|do\s+i)\b/i.test(m)) {
     return { allow: false, reason: "block:off_domain_question", message: BLOCK_MESSAGE };
   }
 

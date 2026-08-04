@@ -1,6 +1,69 @@
 import { describe, it, expect } from "vitest";
 import { evaluateDomainFirewall } from "@/lib/copilot/domain-firewall";
 
+describe("the firewall reads plurals and inflections, not just dictionary singulars", () => {
+  /**
+   * The allowlist matched product nouns with `\b` on both ends, and a trailing `\b` after
+   * a singular stem does not match its plural — `position\b` fails on "positions" because
+   * `s` is a word character. So "…my current open position" was answered and "…my current
+   * open positions" was refused with "I only help with Vanna Finance on Stellar", about a
+   * Vanna position, on the Vanna copilot page.
+   *
+   * Every entry below was refused before this fix.
+   */
+  const wronglyRefused = [
+    "tell me all my current open positions",
+    "show my positions",
+    "what are my open positions",
+    "list my positions",
+    "what are my current positions",
+    "show my portfolio",
+    "what is my portfolio worth",
+    "show me my holdings",
+    "what is my exposure",
+    "show me the pools",
+    "list all pools",
+    "what is liquidation",
+    "am i close to liquidation",
+    "what are my balances",
+    "show my balances",
+    "what are the prices",
+    "what are my open trades",
+    "what can i do here",
+  ];
+
+  for (const ask of wronglyRefused) {
+    it(`allows "${ask}"`, () => {
+      expect(evaluateDomainFirewall(ask).allow, ask).toBe(true);
+    });
+  }
+
+  it("still allows the singular, which always worked", () => {
+    expect(evaluateDomainFirewall("tell me my all current open position").allow).toBe(true);
+  });
+
+  it("does not let a longer word be shadowed by a shorter stem in the alternation", () => {
+    // "suppl" sits in the vocabulary for "supplies"/"supplied". Tried before the longer
+    // entries it would match "suppl" and then fail `\b` on the following "i".
+    for (const ask of ["my supplies", "what did i supply", "what have i supplied"]) {
+      expect(evaluateDomainFirewall(ask).allow, ask).toBe(true);
+    }
+  });
+
+  it("keeps general chat out — widening the vocabulary must not open the door", () => {
+    for (const ask of [
+      "what is the capital of france",
+      "who won the world cup",
+      "give me a lasagna recipe",
+      "write me a python function to sort a list",
+      "how do i tie a tie",
+      "who is the president",
+    ]) {
+      expect(evaluateDomainFirewall(ask).allow, ask).toBe(false);
+    }
+  });
+});
+
 describe("domain firewall", () => {
   it("blocks coding abuse", () => {
     const r = evaluateDomainFirewall("write me a python function to sort a list");
