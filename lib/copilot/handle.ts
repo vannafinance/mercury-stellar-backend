@@ -304,6 +304,16 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           status: l.status,
           tx_hash: l.tx_hash,
         })),
+        final_health_factor:
+          req.summarize_execution.final_health_factor != null &&
+          Number.isFinite(Number(req.summarize_execution.final_health_factor))
+            ? Number(req.summarize_execution.final_health_factor)
+            : null,
+        health_factor_floor:
+          req.summarize_execution.health_factor_floor != null &&
+          Number.isFinite(Number(req.summarize_execution.health_factor_floor))
+            ? Number(req.summarize_execution.health_factor_floor)
+            : null,
       });
     } catch (e) {
       console.warn(
@@ -2911,7 +2921,8 @@ async function runPlan(
 
   // ── Phase B: expand nested multi-leg writes into atomic legs ────────────
   // e.g. deploy_to_blend@2x → deposit_collateral, borrow, supply_to_blend
-  // Server executes legs in order (no client hop for the happy auto-sign path).
+  // One write per HTTP response so the client can paint each leg; the client
+  // resume_multi_leg chain continues the rest.
   const expanded = expandPlanWrites(plan.steps);
   facts.expanded_legs = expanded.map((w) => ({
     op: w.op,
@@ -3254,6 +3265,57 @@ async function runPlan(
       };
     }
 
+    // ── One write per HTTP hop (progressive UI) ───────────────────────────
+    // With Sign Service auto-sign, every remaining write used to run inside this
+    // loop in a single request. The client only repaints when the response
+    // returns, so legs 1–3 jumped to SETTLED (HF moved in the rail) and leg 4
+    // looked "late". The client already resumes one leg at a time; the server
+    // must stop after each successful write so each leg gets its own paint.
+    if (status === "ok" && writeCursor < totalWriteLegs) {
+      const remaining = expanded.slice(writeCursor);
+      for (const rest of remaining) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          leverage: rest.leverage,
+          status: "pending",
+          message: "Queued — previous step settled",
+        });
+      }
+      const remainingPayload = remaining.map((r) => ({
+        op: r.op,
+        asset: r.asset ?? null,
+        amount: r.amount ?? null,
+        leverage: r.leverage ?? null,
+        label: r.label,
+        token_in: r.token_in ?? null,
+        token_out: r.token_out ?? null,
+      }));
+      return {
+        kind: "executed",
+        message: multiLegHeadline(multiSteps),
+        data: packUi({
+          remaining_legs: remainingPayload,
+          prefer_resume_multi_leg: true,
+        }),
+        intent: {
+          template_id: plan.template_id,
+          slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs, one_leg_hop: true },
+        },
+        next_step: remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
+        execution: {
+          status: "partial",
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
   }
 
   // ── Phase C: final report ───────────────────────────────────────────────
@@ -3272,8 +3334,14 @@ async function runPlan(
   // flow ends on. Built strictly from the legs that ran and their outcomes, with no
   // derived figures, so it cannot overstate what reached the chain. Only worth writing
   // once something actually executed.
+  //
+  // multi_leg_resume hops only carry THIS hop's legs (often one). Summarizing here
+  // made the model say "park 20 XLM did not run" and "1 of 1" while the client card
+  // already showed 4/4 settled. The client posts summarize_execution with the full
+  // accumulator once every leg is ok.
   let receipt: StructuredAnswer | null = null;
-  if (anyOk) {
+  const isResumeHop = plan.template_id === "multi_leg_resume";
+  if (anyOk && !isResumeHop) {
     receipt = await vertexSummarizeExecution(ctx.message || plan.summary || "strategy", {
       asked_for: plan.summary ?? null,
       all_legs_succeeded: allOk,
@@ -3301,7 +3369,11 @@ async function runPlan(
       minHf,
       finalHf,
       smartAccount,
-      extra: { all_legs_ok: allOk },
+      extra: {
+        all_legs_ok: allOk,
+        // Client: after the last resume hop, summarize with the full strategy card.
+        needs_client_summary: isResumeHop && allOk,
+      },
     }),
     intent: { template_id: plan.template_id, slots: { legs: multiSteps.length } },
     execution: {

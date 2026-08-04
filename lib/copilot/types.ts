@@ -140,6 +140,9 @@ export interface ChatRequest {
       status: string;
       tx_hash?: string | null;
     }>;
+    /** Optional real HF reading from the client rail — never invented. */
+    final_health_factor?: number | null;
+    health_factor_floor?: number | null;
   } | null;
 }
 

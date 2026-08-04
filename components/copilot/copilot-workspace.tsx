@@ -42,6 +42,8 @@ import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-x
 import {
   claimFirstAwaitingLeg,
   ledgerWaitCopy,
+  hasMoreLegs,
+  legsFromUnsettledSteps,
   pickRemainingLegs,
   splitResumeBatch,
 } from "./resume-policy";
@@ -2178,6 +2180,7 @@ export function CopilotWorkspace() {
         const remainingFromData = pickRemainingLegs(
           legsFromData("remaining_legs") ?? legsFromData("resume_legs"),
           strategyTailRef.current,
+          legsFromUnsettledSteps(strategyStepsRef.current),
         );
         const preferResume =
           (response?.data as any)?.prefer_resume_multi_leg === true ||
@@ -2253,14 +2256,15 @@ export function CopilotWorkspace() {
               prompt: parentPrompt,
             };
           }
-          // ONE leg per hop: the rest waits here so the card can repaint between
-          // legs. Batching them made borrow and supply execute inside a single
-          // request and appear already-settled, never having shown as running.
+          // ONE leg per hop. Do NOT drop `head` from the queue until the hop
+          // actually returns — advancing early + an aborted fetch lost borrow and
+          // the run summarized after deposit alone.
           const { head, tail } = splitResumeBatch(remainingFromData);
-          strategyTailRef.current = tail;
-          // Prevent the executed-effect from also firing resume_multi_leg
+          if (!head.length) return;
           const resumeKey = `${response?.request_id ?? "exec"}:resume:${remainingFromData.map((l) => l.op).join(",")}`;
           nextStepFiredRef.current = resumeKey;
+          // Keep the full remaining list until postCopilot succeeds.
+          strategyTailRef.current = remainingFromData;
           toast.success(
             `Step confirmed — running ${head[0]?.label || head[0]?.op || "next leg"}` +
               (tail.length ? ` (${tail.length} more after this)…` : "…"),
@@ -2286,7 +2290,7 @@ export function CopilotWorkspace() {
           if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
           setSubmitted(parentPrompt);
-          await postCopilot(
+          const hop = await postCopilot(
             {
               message: parentPrompt,
               resume_multi_leg: {
@@ -2297,6 +2301,13 @@ export function CopilotWorkspace() {
             parentPrompt,
             { chainHop: true },
           );
+          if (!hop || hop.kind === "error") {
+            // Hop never started — put the full queue back and allow retry.
+            strategyTailRef.current = remainingFromData;
+            nextStepFiredRef.current = null;
+            return;
+          }
+          strategyTailRef.current = tail;
           return;
         }
 
@@ -2383,7 +2394,12 @@ export function CopilotWorkspace() {
            * delta-neutral carry was live when only its collateral leg had settled.
            */
           const unfinished = strategyStepsRef.current.filter(
-            (s) => !["ok", "done"].includes(String(s.status ?? "")),
+            (s) => !["ok", "done", "skipped"].includes(String(s.status ?? "")),
+          );
+          const stillQueued = hasMoreLegs(
+            null,
+            strategyTailRef.current,
+            legsFromUnsettledSteps(strategyStepsRef.current),
           );
           setResponse({
             kind: "executed",
@@ -2396,12 +2412,14 @@ export function CopilotWorkspace() {
               ...strategyMetaRef.current,
               multi_leg: true,
               multi_leg_steps: strategyStepsRef.current,
-              headline: unfinished.length
-                ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled — ${unfinished.length} still to run.`
+              headline: unfinished.length || stillQueued
+                ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled — ${unfinished.length || "more"} still to run.`
                 : "All steps completed — strategy is live.",
             },
           });
-          if (!cancelledRef.current) {
+          // Never summarize a half-finished strategy — the model then says "1 of 1
+          // deposited" and the run card is replaced while borrow/supply are still due.
+          if (!cancelledRef.current && !unfinished.length && !stillQueued) {
             await postCopilot(
               {
                 message: intent,
@@ -2514,9 +2532,11 @@ export function CopilotWorkspace() {
         : null;
     // Same authority rule as the wallet-sign path: the server stops reporting
     // later legs once it is only handed one, so the client's queue takes over.
+    // Card unsettled rows are the last resort when the queue was advanced too early.
     const remaining = pickRemainingLegs(
       legsFrom("remaining_legs") ?? legsFrom("resume_legs"),
       strategyTailRef.current,
+      legsFromUnsettledSteps(strategyStepsRef.current),
     );
     const canResumeFlag = (response.data as any)?.can_resume === true;
     const preferResume =
@@ -2528,7 +2548,7 @@ export function CopilotWorkspace() {
       // is not a user decision to re-confirm, it is the rest of a run already
       // under way.
       strategyTailRef.current.length > 0 ||
-      (remaining.length > 0 && (response.data as any)?.multi_leg);
+      remaining.length > 0;
 
     if (preferResume && remaining.length > 0) {
       const key = `${response.request_id ?? "exec"}:resume:${remaining.map((l) => l.op).join(",")}`;
@@ -2543,10 +2563,11 @@ export function CopilotWorkspace() {
           prompt: parentPrompt,
         };
       }
-      // ONE leg per hop — see splitResumeBatch. The tail is held client-side so
-      // each leg gets its own request and its own running→settled repaint.
+      // ONE leg per hop — see splitResumeBatch. Hold the full remaining list until
+      // the hop returns so an aborted fetch cannot drop the head leg.
       const { head, tail } = splitResumeBatch(remaining);
-      strategyTailRef.current = tail;
+      if (!head.length) return;
+      strategyTailRef.current = remaining;
       toast.success(
         `Running ${head[0]?.label || head[0]?.op || "next step"}` +
           (tail.length ? ` (${tail.length} more after this)…` : "…"),
@@ -2558,7 +2579,7 @@ export function CopilotWorkspace() {
         await refreshRailStats({ force: true });
         if (cancelledRef.current) return;
         setSubmitted(parentPrompt);
-        await postCopilot(
+        const hop = await postCopilot(
           {
             message: parentPrompt,
             resume_multi_leg: { summary: parentPrompt, legs: head },
@@ -2566,12 +2587,76 @@ export function CopilotWorkspace() {
           parentPrompt,
           { chainHop: true },
         );
+        if (!hop || hop.kind === "error") {
+          strategyTailRef.current = remaining;
+          nextStepFiredRef.current = null;
+          return;
+        }
+        strategyTailRef.current = tail;
       })();
       return;
     }
 
     const next = response.next_step;
-    if (!next?.op || next.amount == null || !(next.amount > 0)) return;
+    if (!next?.op || next.amount == null || !(next.amount > 0)) {
+      // Last resume hop often returns executed with only that hop's legs. Summarize
+      // here with the FULL strategy card so facts say "4 of 4", not "1 of 1", and the
+      // model does not invent that earlier legs "did not run".
+      const card = strategyStepsRef.current;
+      const allSettled =
+        card.length > 0 &&
+        card.every((s) => ["ok", "done", "skipped"].includes(String(s.status ?? ""))) &&
+        card.some((s) => ["ok", "done"].includes(String(s.status ?? "")));
+      const stillQueued = hasMoreLegs(
+        null,
+        strategyTailRef.current,
+        legsFromUnsettledSteps(card),
+      );
+      const needsClientSummary =
+        (response.data as any)?.needs_client_summary === true || allSettled;
+      if (needsClientSummary && allSettled && !stillQueued) {
+        const sumKey = `${response.request_id ?? "exec"}:summarize:${card.length}`;
+        if (nextStepFiredRef.current === sumKey) return;
+        nextStepFiredRef.current = sumKey;
+        const intent =
+          strategyParentRef.current?.prompt ||
+          String(
+            (response.data as any)?.strategy_summary ||
+              strategyMetaRef.current.strategy_summary ||
+              submitted ||
+              "strategy",
+          );
+        const ranLegs = card.map((s) => ({
+          action: String(s.label || `Step ${s.index ?? ""}`),
+          status: String(s.status || "unknown"),
+          tx_hash: s.tx_hash != null ? String(s.tx_hash) : null,
+        }));
+        const hfRaw = (response.data as any)?.final_hf ?? strategyMetaRef.current.final_hf;
+        const floorRaw =
+          (response.data as any)?.min_hf ?? strategyMetaRef.current.min_hf;
+        const finalHf =
+          hfRaw != null && Number.isFinite(Number(hfRaw)) ? Number(hfRaw) : null;
+        const floorHf =
+          floorRaw != null && Number.isFinite(Number(floorRaw)) ? Number(floorRaw) : null;
+        void (async () => {
+          if (cancelledRef.current) return;
+          await postCopilot(
+            {
+              message: intent,
+              summarize_execution: {
+                intent,
+                legs: ranLegs,
+                final_health_factor: finalHf,
+                health_factor_floor: floorHf,
+              },
+            },
+            intent,
+            { chainHop: true },
+          );
+        })();
+      }
+      return;
+    }
     const key = `${response.request_id ?? "exec"}:${next.op}:${next.amount}:${next.asset ?? ""}`;
     if (nextStepFiredRef.current === key) return;
     nextStepFiredRef.current = key;

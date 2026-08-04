@@ -61,13 +61,20 @@ export function splitResumeBatch<T>(legs: readonly T[] | null | undefined): {
  * executed, including legs it skipped or re-ordered. An empty or absent list is
  * ambiguous — either the strategy is genuinely finished, or we only handed it
  * one leg and it finished THAT — so the client's own tail decides.
+ *
+ * `cardUnsettled` is the last resort: rebuild from the strategy card's pending /
+ * needs_sign rows. Needed when the client queue was advanced before a hop
+ * landed and then that hop aborted — without this, borrow disappears from the
+ * queue and the run summarizes after deposit alone.
  */
 export function pickRemainingLegs<T>(
   serverRemaining: readonly T[] | null | undefined,
   clientTail: readonly T[] | null | undefined,
+  cardUnsettled?: readonly T[] | null | undefined,
 ): T[] {
   if (serverRemaining?.length) return [...serverRemaining];
   if (clientTail?.length) return [...clientTail];
+  if (cardUnsettled?.length) return [...cardUnsettled];
   return [];
 }
 
@@ -78,8 +85,50 @@ export function pickRemainingLegs<T>(
 export function hasMoreLegs<T>(
   serverRemaining: readonly T[] | null | undefined,
   clientTail: readonly T[] | null | undefined,
+  cardUnsettled?: readonly T[] | null | undefined,
 ): boolean {
-  return pickRemainingLegs(serverRemaining, clientTail).length > 0;
+  return pickRemainingLegs(serverRemaining, clientTail, cardUnsettled).length > 0;
+}
+
+/** Statuses that still need a hop (not settled, not permanently skipped). */
+const UNSETTLED_FOR_RESUME: ReadonlySet<string> = new Set([
+  "pending",
+  "needs_sign",
+  "needs_wallet_sign",
+  "staged",
+  "clarification",
+]);
+
+/**
+ * Rebuild a resume queue from the strategy card when the client/server lists are
+ * empty. Only legs that still need to run — never ok/done/skipped.
+ */
+export function legsFromUnsettledSteps(
+  steps: readonly {
+    op?: string | null;
+    status?: unknown;
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+    label?: string;
+    token_in?: string | null;
+    token_out?: string | null;
+  }[] | null | undefined,
+): ResumeLegLike[] {
+  if (!steps?.length) return [];
+  return steps
+    .filter((s) => UNSETTLED_FOR_RESUME.has(String(s?.status ?? "")))
+    .filter((s) => typeof s.op === "string" && s.op.length > 0)
+    .filter((s) => s.amount == null || Number(s.amount) > 0)
+    .map((s) => ({
+      op: String(s.op),
+      asset: s.asset ?? null,
+      amount: s.amount != null ? Number(s.amount) : null,
+      leverage: s.leverage ?? null,
+      label: s.label,
+      token_in: s.token_in ?? null,
+      token_out: s.token_out ?? null,
+    }));
 }
 
 // ── Claiming a leg for one transaction ──────────────────────────────────────

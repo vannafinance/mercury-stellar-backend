@@ -15,6 +15,7 @@ import {
   claimFirstAwaitingLeg,
   hasMoreLegs,
   ledgerWaitCopy,
+  legsFromUnsettledSteps,
   pickRemainingLegs,
   splitResumeBatch,
   type ResumeLegLike,
@@ -99,9 +100,16 @@ describe("pickRemainingLegs — the server stops knowing, the client keeps knowi
     expect(pickRemainingLegs(undefined, tail)).toEqual(tail);
   });
 
-  it("is empty only when both sources are", () => {
+  it("last resort: rebuilds from unsettled card rows when both lists are empty", () => {
+    const fromCard = FOUR_LEGS.slice(2);
+    expect(pickRemainingLegs([], [], fromCard)).toEqual(fromCard);
+    expect(pickRemainingLegs(null, null, fromCard)).toEqual(fromCard);
+  });
+
+  it("is empty only when all sources are", () => {
     expect(pickRemainingLegs(null, [])).toEqual([]);
     expect(pickRemainingLegs(undefined, undefined)).toEqual([]);
+    expect(pickRemainingLegs([], [], [])).toEqual([]);
   });
 
   it("returns a copy, so the caller cannot mutate the queue by accident", () => {
@@ -114,8 +122,24 @@ describe("pickRemainingLegs — the server stops knowing, the client keeps knowi
   it("hasMoreLegs mirrors it — used to hold back 'All steps completed'", () => {
     expect(hasMoreLegs([], FOUR_LEGS.slice(3))).toBe(true);
     expect(hasMoreLegs(FOUR_LEGS.slice(1), [])).toBe(true);
+    expect(hasMoreLegs([], [], FOUR_LEGS.slice(2))).toBe(true);
     expect(hasMoreLegs([], [])).toBe(false);
     expect(hasMoreLegs(null, null)).toBe(false);
+  });
+});
+
+describe("legsFromUnsettledSteps", () => {
+  it("keeps pending / needs_sign legs and drops settled ones", () => {
+    const steps = [
+      { op: "lend", status: "ok", amount: 20, asset: "XLM", label: "Lend 20 XLM" },
+      { op: "deposit_collateral", status: "ok", amount: 10, asset: "BLUSDC", label: "Deposit" },
+      { op: "borrow", status: "pending", amount: 10, asset: "BLUSDC", label: "Borrow" },
+      { op: "supply_to_blend", status: "pending", amount: 10, asset: "BLUSDC", label: "Supply" },
+    ];
+    expect(legsFromUnsettledSteps(steps).map((l) => l.op)).toEqual([
+      "borrow",
+      "supply_to_blend",
+    ]);
   });
 });
 

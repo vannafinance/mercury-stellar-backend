@@ -94,6 +94,8 @@ export async function POST(req: NextRequest) {
             status?: string;
             tx_hash?: string | null;
           }>;
+          final_health_factor?: number | null;
+          health_factor_floor?: number | null;
         })
       : null;
 
@@ -197,6 +199,16 @@ export async function POST(req: NextRequest) {
               status: String(l.status || "unknown"),
               tx_hash: l.tx_hash != null ? String(l.tx_hash) : null,
             })),
+          final_health_factor:
+            summarizeExecution.final_health_factor != null &&
+            Number.isFinite(Number(summarizeExecution.final_health_factor))
+              ? Number(summarizeExecution.final_health_factor)
+              : null,
+          health_factor_floor:
+            summarizeExecution.health_factor_floor != null &&
+            Number.isFinite(Number(summarizeExecution.health_factor_floor))
+              ? Number(summarizeExecution.health_factor_floor)
+              : null,
         }
       : null,
   };
