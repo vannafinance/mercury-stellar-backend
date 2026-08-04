@@ -10,6 +10,7 @@
  * Mock mode returns canned numbers so the copilot works offline.
  */
 
+import crypto from "node:crypto";
 import { copilotConfig } from "./config";
 import { callNeedsUserToken, currentUser } from "./user-context";
 
@@ -216,6 +217,23 @@ interface TokenSource {
   getToken(): Promise<string>;
   /** Called after a 401 so a cached token is not retried forever. */
   invalidate(): void;
+  /**
+   * Identifies the CREDENTIAL MATERIAL, as `key` identifies the identity.
+   *
+   * The two differ for end users and that difference caused a live bug: clients
+   * are cached by `key` (`user:<sub>`), which is stable across a token refresh,
+   * so a cached client happily kept serving the access token it was constructed
+   * with. Half an hour in, every write 401'd with "Token has expired" even
+   * though the request had just refreshed the cookie. liveClientFor now compares
+   * fingerprints and adopts the newer credential.
+   *
+   * Hashed rather than the raw token so it is safe to log or diff.
+   */
+  fingerprint(): string;
+}
+
+function tokenFingerprint(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("base64url").slice(0, 16);
 }
 
 const TIMEOUT_MS = 90_000;
@@ -230,6 +248,15 @@ class M2MTokenSource implements TokenSource {
   invalidate(): void {
     this.token = null;
     this.tokenExpiry = 0;
+  }
+
+  /**
+   * Constant. This source is a long-lived singleton that mints and rotates its
+   * own token in place, so the client holding it never needs replacing — which
+   * is exactly why reads never hit the expiry bug that writes did.
+   */
+  fingerprint(): string {
+    return "m2m";
   }
 
   async getToken(): Promise<string> {
@@ -289,10 +316,15 @@ class BoundUserTokenSource implements TokenSource {
     this.key = `user:${sub}`;
   }
   invalidate(): void {
-    /* nothing to drop — the token's lifetime is the request's */
+    /* Nothing to drop: this source is immutable and lives for one request. The
+     * recovery that matters happens a level up — RoutingMCPClient evicts the
+     * cached client so the retry is built against the current request's token. */
   }
   async getToken(): Promise<string> {
     return this.token;
+  }
+  fingerprint(): string {
+    return tokenFingerprint(this.token);
   }
 }
 
@@ -305,7 +337,24 @@ class LiveMCPClient implements MCPClient {
   /** Writes (sign/sim) often exceed 30s on testnet under load. */
   private static readonly TIMEOUT_MS = TIMEOUT_MS;
 
-  constructor(private readonly tokens: TokenSource) {}
+  constructor(private tokens: TokenSource) {}
+
+  /**
+   * Adopt a refreshed credential for the same identity.
+   *
+   * The MCP session is deliberately KEPT. Sessions are not bound to a specific
+   * bearer — the M2M source has always rotated its token every few minutes
+   * behind a stable session id in production — so re-handshaking on every
+   * refresh would cost three extra round-trips for nothing. If that assumption
+   * ever stops holding, the 401 path in RoutingMCPClient evicts the client and
+   * rebuilds it from scratch, so the failure is self-correcting rather than
+   * sticky.
+   */
+  useTokens(next: TokenSource): void {
+    if (next.key !== this.tokens.key) return; // different identity — not ours to adopt
+    if (next.fingerprint() === this.tokens.fingerprint()) return;
+    this.tokens = next;
+  }
 
   private async getToken(): Promise<string> {
     return this.tokens.getToken();
@@ -540,6 +589,11 @@ function liveClientFor(tokens: TokenSource): LiveMCPClient {
     // Refresh LRU position.
     liveClients.delete(tokens.key);
     liveClients.set(tokens.key, existing);
+    // Hand it the credential from THIS request. Without this the cache key
+    // (`user:<sub>`, stable across refreshes) pins the very first access token
+    // for the life of the process, and every write starts failing "Token has
+    // expired" about half an hour after sign-in.
+    existing.useTokens(tokens);
     return existing;
   }
   const created = new LiveMCPClient(tokens);
@@ -577,10 +631,38 @@ class RoutingMCPClient implements MCPClient {
     userId?: string,
   ): Promise<Record<string, unknown>> {
     const user = callNeedsUserToken(tool) ? currentUser() : null;
-    const tokens: TokenSource = user
-      ? new BoundUserTokenSource(user.sub, user.accessToken)
-      : m2mTokens;
-    return liveClientFor(tokens).call(tool, args, userId);
+    if (!user) {
+      return liveClientFor(m2mTokens).call(tool, args, userId);
+    }
+
+    // Always built from the token bound to THIS request, which the route
+    // handler has already refreshed if it was near expiry.
+    const tokens = new BoundUserTokenSource(user.sub, user.accessToken);
+    try {
+      return await liveClientFor(tokens).call(tool, args, userId);
+    } catch (err) {
+      if (!(err instanceof MCPAuthError)) throw err;
+
+      // The MCP refused this client's credential or the session it opened. The
+      // cached client is unusable and must not be handed to the next request:
+      // BoundUserTokenSource cannot re-mint anything, so without eviction the
+      // 401 is permanent for this sub until the process restarts.
+      //
+      // Retry ONCE against a brand-new client — fresh handshake, current
+      // token. If the token itself is genuinely dead this fails the same way
+      // and the error surfaces, which is correct: recovery from a dead refresh
+      // token is re-login, not retrying here.
+      liveClients.delete(tokens.key);
+      console.warn(
+        `[mcp-client] ${JSON.stringify({
+          event: "user_client_evicted_on_auth_error",
+          key: tokens.key,
+          tool,
+          detail: err.message.slice(0, 160),
+        })}`,
+      );
+      return liveClientFor(tokens).call(tool, args, userId);
+    }
   }
 }
 
