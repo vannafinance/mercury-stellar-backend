@@ -601,12 +601,19 @@ export function RunExecutionCard({
           const later = i > shape.focus && !shape.complete;
           const last = i === total - 1;
           const missing = l.amount == null;
-          // The number field appears only when the paused leg is actually short a number.
-          // A paused leg that already has its amount is being asked about something else
-          // (asset ambiguity, a confirmation) — it gets the question as prose and is
-          // answered in the composer, because a numeric input would not answer it.
-          const showInput = l.status === "needs_input" && missing;
-          const showQuestionOnly = l.status === "needs_input" && !missing;
+          /**
+           * One field at a time, and only on the leg the run is actually waiting on.
+           *
+           * A stopped run can leave several legs `needs_input` at once — the leg that
+           * halted it, plus every later leg whose size was also unknown. Rendering a field
+           * on each put two live inputs on screen sharing a single draft value, so typing
+           * in one filled both and it was ambiguous which leg a number belonged to. Later
+           * paused legs show their question without a field; they get one when the run
+           * reaches them.
+           */
+          const isPausedHere = inputKey != null && l.n === inputKey;
+          const showInput = l.status === "needs_input" && missing && isPausedHere;
+          const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
 
           return (
@@ -987,7 +994,9 @@ export function RunExecutionCard({
                         textWrap: "pretty",
                       }}
                     >
-                      Answer below and the run continues from here.
+                      {isPausedHere
+                        ? "Answer below and the run continues from here."
+                        : "I'll ask for this when the run reaches it — finish the leg above first."}
                       {shape.doneCount > 0
                         ? ` ${shape.doneCount === 1 ? "Leg 1 has" : `Legs 1–${shape.doneCount} have`} already settled on chain.`
                         : ""}

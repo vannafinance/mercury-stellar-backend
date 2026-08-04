@@ -12,7 +12,7 @@
  *
  * Shared by the session log and the strategy card so they can never disagree again.
  */
-export function legKey(label: string): string {
+function parts(label: string) {
   const s = (label || "").toLowerCase();
   const verb = s.match(/^[a-z_]+/)?.[0] ?? "";
   const nums = (s.match(/\d+(?:\.\d+)?/g) ?? []).join(",");
@@ -29,5 +29,34 @@ export function legKey(label: string): string {
         : /earn|pool/.test(s)
           ? "earn"
           : "";
+  return { verb, nums, assets, venue };
+}
+
+export function legKey(label: string): string {
+  const { verb, nums, assets, venue } = parts(label);
   return [verb, nums, assets, venue].join("|");
+}
+
+/**
+ * Identity ignoring the amount, for reconciling a leg with its own resolved self.
+ *
+ * A leg whose amount was unknown is labelled "Borrow XLM"; once the user supplies the
+ * size, the executor relabels it "Borrow 15 XLM". Those are the same leg, but `legKey`
+ * hashes the amount, so the resolved copy was appended as a NEW leg — leaving the original
+ * frozen on "paused · needs input" with its question still open, a duplicate reporting
+ * settled, a leg count inflated from 4 to 5, and a restarted server index that renumbered
+ * step 2 as step 1.
+ *
+ * Only ever used one way: to match an amount-LESS leg to an amount-BEARING one. Two legs
+ * that both carry amounts are never compared loosely, so "Borrow 15 XLM" can still not be
+ * confused with "Borrow 20 XLM".
+ */
+export function legKeyLoose(label: string): string {
+  const { verb, assets, venue } = parts(label);
+  return [verb, assets, venue].join("|");
+}
+
+/** True when the label states a size, i.e. this leg's amount is already resolved. */
+export function labelHasAmount(label: string): boolean {
+  return parts(label).nums.length > 0;
 }

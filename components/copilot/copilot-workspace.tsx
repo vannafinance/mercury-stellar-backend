@@ -43,7 +43,7 @@ import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
-import { legKey } from "./leg-key";
+import { labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 interface BrainHealth {
@@ -964,26 +964,54 @@ export function CopilotWorkspace() {
     for (const leg of incoming) {
       const label = String(leg.label || "").trim();
       if (!label && leg.index == null) continue;
-      const k = legKey(label || `step-${leg.index ?? ""}`);
-      const at = merged.findIndex((m) => legKey(String(m.label || "")) === k);
+      const keyed = label || `step-${leg.index ?? ""}`;
+      const k = legKey(keyed);
+      let at = merged.findIndex((m) => legKey(String(m.label || "")) === k);
+
+      /**
+       * Second chance: the same leg, now that its amount is known.
+       *
+       * A leg planned without a size is labelled "Borrow XLM"; the executor relabels it
+       * "Borrow 15 XLM" once the user supplies one, which changes the exact key. Match the
+       * pending original loosely so it is UPDATED rather than duplicated. Restricted to
+       * pairing an amount-less existing leg with an amount-bearing incoming one, so two
+       * real borrows of different sizes can never collapse into each other.
+       */
+      if (at < 0 && labelHasAmount(keyed)) {
+        const loose = legKeyLoose(keyed);
+        at = merged.findIndex(
+          (m) =>
+            !labelHasAmount(String(m.label || "")) &&
+            legKeyLoose(String(m.label || "")) === loose,
+        );
+      }
+
       if (at >= 0) {
-        // Keep first label + index; newer status / tx / hf wins.
         merged[at] = {
           ...merged[at],
+          // The resolved label wins — the row should read "Borrow 15 XLM", not stay on the
+          // amount-less wording it was planned with.
+          label: labelHasAmount(keyed) ? keyed : merged[at].label,
+          amount: leg.amount != null ? leg.amount : merged[at].amount,
+          // Position is the original's. A resume is a fresh runPlan whose step counter
+          // restarts at 1, so trusting the incoming index renumbered leg 2 as leg 1.
+          index: merged[at].index,
           status: leg.status ?? merged[at].status,
           tx_hash: leg.tx_hash != null ? leg.tx_hash : merged[at].tx_hash,
           hf_after: leg.hf_after != null ? leg.hf_after : merged[at].hf_after,
           message: leg.message != null ? leg.message : merged[at].message,
         };
       } else {
-        const nextIndex =
-          leg.index != null && Number.isFinite(Number(leg.index))
-            ? Number(leg.index)
-            : (merged.reduce((m, s) => Math.max(m, Number(s.index) || 0), 0) || 0) + 1;
+        // A genuinely new leg. Never reuse an index already taken, or two rows sort
+        // arbitrarily and both display the same number.
+        const maxIndex = merged.reduce((m, s) => Math.max(m, Number(s.index) || 0), 0);
+        const wanted = Number(leg.index);
+        const free =
+          Number.isFinite(wanted) && wanted > 0 && !merged.some((s) => Number(s.index) === wanted);
         merged.push({
           ...leg,
           label: label || leg.label,
-          index: nextIndex,
+          index: free ? wanted : maxIndex + 1,
         });
       }
     }
@@ -2400,7 +2428,11 @@ export function CopilotWorkspace() {
       const amt = s.amount;
       const hasAmt = amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0;
       return {
-        n: typeof s.index === "number" && s.index > 0 ? s.index : i + 1,
+        // Position, not the server's index. A resumed run restarts its step counter, so a
+        // returned index can collide with one already on screen — which showed two
+        // different legs both numbered "1". Order is what the accumulator maintains; the
+        // number the user reads is that order.
+        n: i + 1,
         venue: VENUE_BY_OP[op] ?? "other",
         op,
         label: s.label || op.replace(/_/g, " "),
