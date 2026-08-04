@@ -710,6 +710,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           "query_pool_stats",
           "query_wallet_balance",
           "query_farm_overview",
+          // Deliberately confident: "what are my positions" must never need a model
+          // round-trip to be understood. When Vertex is unreachable — an expired
+          // `gcloud auth login` is enough — the fallback used to be the capability blurb.
+          "query_all_positions",
           "query_blend_position",
           "query_collateral_config",
           "query_addresses",
@@ -717,6 +721,16 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         ].includes(kwFast.template_id)));
 
   let routed: RoutedIntent;
+  /**
+   * Whether the model was asked and could not answer.
+   *
+   * The keyword fallback is a good safety net for phrasings it knows, but when it lands on
+   * the generic capability list the two failures are indistinguishable to the user: "I did
+   * not understand you" and "the component that understands never ran" print the same
+   * paragraph. On a machine whose `gcloud auth login` had expired, every unrecognised
+   * phrasing came back as that blurb, which is what got reported as a hardcoded response.
+   */
+  let modelUnreachable = false;
   if (keywordConfident) {
     routed = kwFast;
   } else {
@@ -728,6 +742,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       });
     } catch (e) {
       console.warn("[copilot] vertex route failed, keyword fallback:", e instanceof Error ? e.message : e);
+      modelUnreachable = true;
       routed = kwFast;
     }
   }
@@ -1009,6 +1024,23 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   if (routed.kind === "clarify") {
+    // Only the *generic* fallback is replaced. A router clarification with its own
+    // template_id (unsupported asset, missing amount…) is a real, specific answer and
+    // stands whether or not the model was reachable.
+    if (modelUnreachable && routed.template_id === "clarify_capabilities") {
+      return {
+        kind: "error",
+        message:
+          "I could not reach the language model, so I fell back to keyword matching and that did " +
+          "not recognise this phrasing. Reads like “price of XLM”, “my positions”, “pool stats” " +
+          "and plain actions like “lend 10 XLM” still work. If you are running this locally, " +
+          "`gcloud auth login` with the account that has Vertex access on the vanna-mcp project " +
+          "restores full understanding.",
+        data: { model_unreachable: true, llm_provider: copilotConfig.llmProvider },
+        intent: { template_id: "model_unreachable" },
+        request_id,
+      };
+    }
     return {
       kind: "clarification",
       message: routed.message,
@@ -1333,6 +1365,100 @@ const SNAPSHOT_TRUTH_TOOLS = new Set([
  *
  * Returns null on any failure so the MCP path still runs — a slower answer beats no answer.
  */
+type MarginPositionRow = { symbol: string; amount: string; usd: number };
+
+type MarginPositions = {
+  hf: number;
+  /** "∞ (no debt)" or a 2dp ratio — the same string every caller should print. */
+  hfText: string;
+  collateral: MarginPositionRow[];
+  borrowed: MarginPositionRow[];
+  grossCollateralValue: number;
+  totalBorrowedValue: number;
+  totalValue: number;
+  collateralLeftBeforeLiquidation: number;
+  netAvailableCollateral: number;
+};
+
+const money = (n: number) => `$${n.toFixed(2)}`;
+
+const listPositionRows = (rows: MarginPositionRow[]): string =>
+  rows.map((r) => `${r.amount} ${r.symbol} (${money(r.usd)})`).join(", ");
+
+/**
+ * The margin page's own read of the account, reshaped into per-token rows.
+ *
+ * Shared by every position answer so the health factor, the collateral list and the
+ * whole-account summary can never disagree with each other about the same account.
+ * Returns null on any failure; each caller decides whether that means "fall back to MCP"
+ * or "answer with the venues only".
+ */
+async function readMarginPositions(smartAccount: string): Promise<MarginPositions | null> {
+  try {
+    const [{ computeMarginSnapshot }, { HEALTH_FACTOR_INFINITY_SENTINEL }] = await Promise.all([
+      import("@/lib/account-snapshot"),
+      import("@/lib/margin-health"),
+    ]);
+    const snap = await computeMarginSnapshot(smartAccount);
+    const hf = snap.avgHealthFactor;
+
+    /** Dust is noise in a position list; below a cent is not a holding. */
+    const rows = (balances: typeof snap.collateralBalances): MarginPositionRow[] =>
+      Object.entries(balances)
+        .map(([symbol, bal]) => ({
+          symbol,
+          amount: bal.amount,
+          usd: Number.parseFloat(bal.usdValue) || 0,
+        }))
+        .filter((p) => p.usd > 0.01)
+        .sort((a, b) => b.usd - a.usd);
+
+    return {
+      hf,
+      hfText: hf >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞ (no debt)" : hf.toFixed(2),
+      collateral: rows(snap.collateralBalances),
+      borrowed: rows(snap.borrowedBalances),
+      grossCollateralValue: snap.grossCollateralValue,
+      totalBorrowedValue: snap.totalBorrowedValue,
+      totalValue: snap.totalValue,
+      collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
+      netAvailableCollateral: snap.netAvailableCollateral,
+    };
+  } catch (e) {
+    console.warn(
+      `[copilot] margin snapshot read failed -> ` +
+        `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Append the health-factor guardrails to a position answer.
+ *
+ * Kept separate so the warning is identical whether the answer came from the snapshot or
+ * from MCP — "am I about to be liquidated" must not depend on which source replied.
+ */
+function withHfGuardrails(message: string, hf: number, userMessage: string): string {
+  const userFloor = parseMinHealthFactor(userMessage);
+  const floor = userFloor ?? copilotConfig.minHealthFactor;
+  // 1e9-ish sentinel means no debt; a floor warning on an undebted account is noise.
+  if (!Number.isFinite(hf) || hf > 1e6) return message;
+  if (hf < 1.0) {
+    return (
+      `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is ` +
+      `liquidatable. Repay debt or deposit collateral now.`
+    );
+  }
+  if (hf < floor) {
+    return `${message}\n\nCaution: HF ${hf.toFixed(2)} is below your safety floor (${floor}).`;
+  }
+  if (userFloor != null) {
+    return `${message}\n\nYour floor HF ≥ ${userFloor} is currently satisfied (HF ${hf.toFixed(2)}).`;
+  }
+  return message;
+}
+
 async function snapshotPositionAnswer(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -1344,99 +1470,158 @@ async function snapshotPositionAnswer(
   },
 ): Promise<ChatResponse | null> {
   if (!ctx.smartAccount) return null;
-  try {
-    const [{ computeMarginSnapshot }, { HEALTH_FACTOR_INFINITY_SENTINEL }] = await Promise.all([
-      import("@/lib/account-snapshot"),
-      import("@/lib/margin-health"),
-    ]);
-    const snap = await computeMarginSnapshot(ctx.smartAccount);
-    const hf = snap.avgHealthFactor;
-    const hfText =
-      hf >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞ (no debt)" : hf.toFixed(2);
+  const pos = await readMarginPositions(ctx.smartAccount);
+  if (!pos) return null;
 
-    /** Per-token rows, so "what collateral do I have" lists the same assets the page does. */
-    const positions = Object.entries(snap.collateralBalances)
-      .map(([symbol, bal]) => ({
-        symbol,
-        amount: bal.amount,
-        usd: Number.parseFloat(bal.usdValue) || 0,
-      }))
-      .filter((p) => p.usd > 0.01)
-      .sort((a, b) => b.usd - a.usd);
+  let message: string;
+  if (routed.tool === "vanna_get_collateral") {
+    message = pos.collateral.length
+      ? `Your collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`
+      : "You have no collateral posted on your margin account.";
+  } else if (routed.tool === "vanna_get_debt") {
+    message = pos.borrowed.length
+      ? `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`
+      : "You have no outstanding debt on your margin account.";
+  } else {
+    message =
+      `Health factor ${pos.hfText} · collateral ${money(pos.grossCollateralValue)} · ` +
+      `borrowed ${money(pos.totalBorrowedValue)} · ` +
+      `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
+  }
 
-    const borrowed = Object.entries(snap.borrowedBalances)
-      .map(([symbol, bal]) => ({
-        symbol,
-        amount: bal.amount,
-        usd: Number.parseFloat(bal.usdValue) || 0,
-      }))
-      .filter((p) => p.usd > 0.01)
-      .sort((a, b) => b.usd - a.usd);
+  return {
+    kind: "answer",
+    message: withHfGuardrails(message, pos.hf, ctx.message),
+    data: factsForUi({
+      health_factor: pos.hf,
+      collateral_usd: pos.grossCollateralValue,
+      debt_usd: pos.totalBorrowedValue,
+      net_value_usd: pos.totalValue,
+      collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
+      net_available_collateral: pos.netAvailableCollateral,
+      collateral_positions: pos.collateral,
+      borrowed_positions: pos.borrowed,
+      source: "margin_page_snapshot",
+    }),
+    intent: {
+      template_id: routed.template_id,
+      slots: { source: "computeMarginSnapshot" },
+    },
+    mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
 
-    const money = (n: number) => `$${n.toFixed(2)}`;
-    const list = (rows: Array<{ symbol: string; amount: string; usd: number }>) =>
-      rows.map((r) => `${r.amount} ${r.symbol} (${money(r.usd)})`).join(", ");
+/**
+ * "What are all my open positions?" — margin and the farm venues in one answer.
+ *
+ * Two sources, because no single tool holds the whole picture: `computeMarginSnapshot` has
+ * collateral, debt and health factor (and is the margin page's own read, so the numbers
+ * match what the user is looking at), while MCP's farm overview has the Blend supplies and
+ * the Aquarius LP shares. Answering with either alone is how this question ended up being
+ * half-answered: routed to the farm tool it reported LP shares and said nothing about a
+ * $199 debt.
+ *
+ * Neither side is required. If the farm call fails the margin half still answers, and vice
+ * versa; only both failing is an error, and then MCP's own message is the one worth showing.
+ */
+async function allPositionsAnswer(
+  routed: Extract<RoutedIntent, { kind: "read" }>,
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+): Promise<ChatResponse> {
+  const mcp = getMcpClient();
+  const [pos, farm] = await Promise.all([
+    ctx.smartAccount ? readMarginPositions(ctx.smartAccount) : Promise.resolve(null),
+    ctx.smartAccount
+      ? mcp
+          .call("vanna_get_farm_overview", { smart_account: ctx.smartAccount }, ctx.userId)
+          .catch((e: unknown) => {
+            console.warn(
+              `[copilot] farm overview failed inside query_all_positions -> ` +
+                `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+            );
+            return null;
+          })
+      : Promise.resolve(null),
+  ]);
 
-    let message: string;
-    if (routed.tool === "vanna_get_collateral") {
-      message = positions.length
-        ? `Your collateral: ${list(positions)} — ${money(snap.grossCollateralValue)} in total.`
-        : "You have no collateral posted on your margin account.";
-    } else if (routed.tool === "vanna_get_debt") {
-      message = borrowed.length
-        ? `You owe ${list(borrowed)} — ${money(snap.totalBorrowedValue)} in total.`
-        : "You have no outstanding debt on your margin account.";
-    } else {
-      message =
-        `Health factor ${hfText} · collateral ${money(snap.grossCollateralValue)} · ` +
-        `borrowed ${money(snap.totalBorrowedValue)} · ` +
-        `${money(snap.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
-    }
-
-    // The same HF guardrails the MCP path applies, so the warning does not depend on which
-    // source answered.
-    const userFloor = parseMinHealthFactor(ctx.message);
-    const floor = userFloor ?? copilotConfig.minHealthFactor;
-    if (Number.isFinite(hf) && hf < HEALTH_FACTOR_INFINITY_SENTINEL) {
-      if (hf < 1.0) {
-        message +=
-          `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is liquidatable. ` +
-          `Repay debt or deposit collateral now.`;
-      } else if (hf < floor) {
-        message += `\n\nCaution: HF ${hf.toFixed(2)} is below your safety floor (${floor}).`;
-      } else if (userFloor != null) {
-        message += `\n\nYour floor HF ≥ ${userFloor} is currently satisfied (HF ${hf.toFixed(2)}).`;
-      }
-    }
-
+  if (!pos && !farm) {
     return {
-      kind: "answer",
-      message,
-      data: factsForUi({
-        health_factor: hf,
-        collateral_usd: snap.grossCollateralValue,
-        debt_usd: snap.totalBorrowedValue,
-        net_value_usd: snap.totalValue,
-        collateral_left_before_liquidation: snap.collateralLeftBeforeLiquidation,
-        net_available_collateral: snap.netAvailableCollateral,
-        collateral_positions: positions,
-        borrowed_positions: borrowed,
-        source: "margin_page_snapshot",
-      }),
-      intent: {
-        template_id: routed.template_id,
-        slots: { source: "computeMarginSnapshot" },
-      },
-      mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
+      kind: "unavailable",
+      message: ctx.smartAccount
+        ? "I could not read your positions just now — neither the margin snapshot nor the farm " +
+          "overview responded. Your live figures are on the Portfolio and Margin pages."
+        : "That needs your Vanna smart account (C-address). Open a margin account, or connect the " +
+          "wallet that owns one.",
+      intent: { template_id: "query_all_positions" },
       request_id: ctx.request_id,
     };
-  } catch (e) {
-    console.warn(
-      `[copilot] snapshot truth read failed for ${routed.tool}, falling back to MCP -> ` +
-        `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
-    );
-    return null;
   }
+
+  const lines: string[] = [];
+  if (pos) {
+    lines.push(
+      pos.collateral.length
+        ? `Margin collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`
+        : "Margin collateral: none posted.",
+    );
+    lines.push(
+      pos.borrowed.length
+        ? `Borrowed: ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`
+        : "Borrowed: nothing outstanding.",
+    );
+    lines.push(`Health factor ${pos.hfText} · net value ${money(pos.totalValue)}.`);
+  }
+  // MCP writes its own sentence for the farm side ("…holds 2 Blend supply positions and
+  // 1.7029 Aquarius XLM/USDC LP shares"). Reuse it rather than re-deriving the counts from
+  // the payload, so the two never drift apart.
+  const farmProse =
+    farm && typeof farm === "object"
+      ? String((farm.summary as string) || (farm.message as string) || "").trim()
+      : "";
+  if (farmProse) {
+    lines.push(farmProse);
+  } else if (pos && !farm) {
+    lines.push("Farm venues could not be read just now; the Farm page has the live figures.");
+  }
+
+  const message = pos
+    ? withHfGuardrails(lines.join("\n"), pos.hf, ctx.message)
+    : lines.join("\n");
+
+  return {
+    kind: "answer",
+    message,
+    data: factsForUi({
+      ...(pos
+        ? {
+            health_factor: pos.hf,
+            collateral_usd: pos.grossCollateralValue,
+            debt_usd: pos.totalBorrowedValue,
+            net_value_usd: pos.totalValue,
+            collateral_positions: pos.collateral,
+            borrowed_positions: pos.borrowed,
+          }
+        : {}),
+      ...(farm && typeof farm === "object" ? farm : {}),
+      source: pos && farm ? "margin_snapshot + mcp_farm_overview" : pos ? "margin_snapshot" : "mcp_farm_overview",
+    }),
+    intent: {
+      template_id: "query_all_positions",
+      slots: { margin: Boolean(pos), farm: Boolean(farm) },
+    },
+    mcp: {
+      tool: farm ? "vanna_get_farm_overview" : "computeMarginSnapshot",
+      has_unsigned_xdr: false,
+    },
+    request_id: ctx.request_id,
+  };
 }
 
 async function runRead(
@@ -1449,6 +1634,12 @@ async function runRead(
     message: string;
   },
 ): Promise<ChatResponse> {
+  // "All my positions" spans margin and the farm venues, so it is answered by a fan-out
+  // rather than by one tool. See allPositionsAnswer.
+  if (routed.template_id === "query_all_positions") {
+    return allPositionsAnswer(routed, ctx);
+  }
+
   // Farmable Aquarius pools are Vanna's own pairs, not the full AMM API dump.
   // Counts come from VANNA_AQUARIUS_FARM_PAIRS so the prose can't drift from the
   // list the way a hardcoded "exactly 3" did once XLM/AQUA was removed.

@@ -906,6 +906,51 @@ export function routeMessage(message: string): RoutedIntent {
     ) ||
     /\b(then|and)\s+(also\s+)?(farm|lend|borrow|deposit|supply|swap|invest)\b/i.test(text);
 
+  // "What am I holding?" — the single most common question this surface gets, and the
+  // one that had no deterministic route at all. It reached an answer only through
+  // Vertex, so on any machine whose `gcloud auth login` had lapsed it fell all the way
+  // through to the closing `clarify` and replied with the capability blurb — which is
+  // exactly the "hardcoded response" that got reported.
+  //
+  // Matched with a regex over the whole message rather than a keyword list because the
+  // phrasing is never fixed: "tell me all my current open position" and "tell me my all
+  // current open position" are the same question, and an `any()` phrase list gets one of
+  // them and misses the other. Position/holding words are checked independently of the
+  // possessive so word order cannot matter.
+  const asksAboutHoldings =
+    /\b(position|positions|portfolio|holdings?|exposure)\b/i.test(text) ||
+    /\bwhat\s+(?:am\s+i|do\s+i)\s+(?:hold|have|own|farm(?:ing)?)\b/i.test(text) ||
+    /\bwhat'?s\s+in\s+my\s+(?:account|portfolio|wallet)\b/i.test(text);
+  /**
+   * "Close my position" is an instruction, not a question, and must not be answered with a
+   * summary as though it had been carried out. Every unambiguous write phrasing has already
+   * returned above this point, so this only has to catch the verbs that act on a position
+   * *as a whole* — the ones no earlier branch looks for. Not `hasActionWriteIntent`: that
+   * list contains "farm", which would swallow "what am I farming".
+   */
+  const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance)\b/i.test(
+    text,
+  );
+  /**
+   * "My Blend position" names one venue and already has a route below that answers it with
+   * that venue's own numbers. Only the unqualified question — "what are my positions" — wants
+   * the whole-account fan-out, so a named venue defers to the specific read.
+   */
+  const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken");
+  if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
+    return {
+      kind: "read",
+      // Nominal tool for arg-building and smart-account resolution. `runRead` recognises
+      // the template and fans out to the margin snapshot as well, because "all my
+      // positions" spans margin collateral/debt AND the farm venues — one tool answers
+      // half the question.
+      tool: "vanna_get_farm_overview",
+      args: {},
+      requires_account: true,
+      template_id: "query_all_positions",
+    };
+  }
+
   if (
     any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") &&
     !hasActionWriteIntent
@@ -1134,8 +1179,13 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // Nothing matched. Tagged so `handleChat` can tell this apart from a clarification the
+  // router chose deliberately: when the model was ALSO unreachable, replying with the
+  // capability list is misleading — it reads as "I understood you and this is my answer"
+  // when the truth is that the only component that could have understood never ran.
   return {
     kind: "clarify",
+    template_id: "clarify_capabilities",
     message:
       "I can help with market data (prices, pool stats), your account (health, debt, collateral), " +
       "and actions (lend, deposit, borrow, repay, farm Blend, Aquarius LP, swap). " +
