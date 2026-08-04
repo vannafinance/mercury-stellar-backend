@@ -1,27 +1,35 @@
 /**
  * Vertex AI (Gemini) client for the in-process copilot.
  *
+ * NO END USER EVER AUTHENTICATES WITH GOOGLE HERE. Every call below runs server-side on
+ * behalf of the project; the credential is the app's, not the visitor's. So the only
+ * question this file answers is which credential the SERVER presents.
+ *
  * Auth strategy (in order):
  *   1. Cached Bearer token
- *   2. Service-account key from GOOGLE_SERVICE_ACCOUNT_JSON  ← the only one that is
- *      machine-independent; see below
- *   3. ADC via google-auth-library (if valid)
- *   4. `gcloud auth print-access-token` (works when ADC is broken but user login is OK)
+ *   2. Workload Identity Federation — keyless, nothing to rotate. Production answer.
+ *   3. Service-account key from GOOGLE_SERVICE_ACCOUNT_JSON. One secret, set once.
+ *   4. ADC via google-auth-library (if valid)
+ *   5. `gcloud auth print-access-token`
  *
- * WHY A SERVICE ACCOUNT IS FIRST
+ * WHY 4 AND 5 ARE LAST, AND WHY THEY ARE NOT ENOUGH ON THEIR OWN
  *
- * Options 3 and 4 both resolve to a credential belonging to whoever is sitting at the
- * machine. That made the copilot's understanding a per-developer property: on a checkout
- * whose `gcloud auth login` had lapsed, every routing call threw and the turn fell back to
- * keyword matching, so the same prompt answered on one laptop and returned the capability
- * blurb on another. Neither option exists at all on a serverless host — there is no gcloud
- * binary and no ADC file on Vercel — so a deployment could never route with the model.
+ * Both resolve to a credential belonging to whoever is sitting at the machine. That made
+ * the copilot's understanding a per-developer property: on a checkout whose `gcloud auth
+ * login` had lapsed, every routing call threw and the turn fell back to keyword matching,
+ * so the same prompt answered on one laptop and returned the capability blurb on another.
+ * Neither exists at all on a serverless host — there is no gcloud binary and no ADC file on
+ * Vercel — so a deployment could never route with the model. They stay only so an existing
+ * local checkout keeps working before someone sets a real credential.
  *
- * A service-account key in an env var fixes both at once: identical credential locally and
- * in every deploy, owned by the project rather than by a person, and nothing to re-run when
- * a login expires. Set GOOGLE_SERVICE_ACCOUNT_JSON to the key JSON (raw or base64) and no
- * one needs `gcloud auth login` again. The gcloud paths stay as a local fallback so an
- * existing checkout keeps working without the variable.
+ * WHY 2 IS AHEAD OF 3
+ *
+ * A service-account key is a private key living in an env var: it works everywhere and
+ * never expires, which is exactly what makes it worth stealing, and rotating it means
+ * touching every place it was pasted. Federation removes the key entirely — the host mints
+ * a short OIDC token proving which deployment is running, Google's STS trades it for an
+ * access token, and there is nothing durable to leak. When a deploy has both configured,
+ * the one that cannot leak should win.
  *
  * Model default: gemini-3.6-flash on project vanna-mcp, location=global.
  * Uses the REST generateContent endpoint (no dependency on broken ADC alone).
@@ -133,22 +141,114 @@ function serviceAccountCredentials(): { client_email: string; private_key: strin
 }
 
 /**
- * Is a service-account key configured? Reported in the brain-health chip so "this machine
- * is routing on a developer login" is visible before it expires and silently downgrades
- * understanding to keyword matching.
+ * Workload Identity Federation config, if the deploy is set up for it.
+ *
+ * This is the keyless option, and the one to prefer in production: the host mints a short
+ * OIDC token proving which deployment is running, Google's Security Token Service trades it
+ * for an access token, and no private key exists anywhere to leak, rotate or accidentally
+ * commit. On Vercel the OIDC token arrives per-request as `VERCEL_OIDC_TOKEN`.
+ *
+ * `subjectToken` is read lazily on every exchange rather than captured once, because the
+ * host's OIDC token is short-lived and is refreshed underneath us.
  */
-export function hasVertexServiceAccount(): boolean {
-  return Boolean(
+function workloadIdentityConfig(): {
+  audience: string;
+  serviceAccount: string | null;
+  subjectTokenEnvVar: string;
+} | null {
+  const audience = (process.env.GOOGLE_WORKLOAD_IDENTITY_AUDIENCE || "").trim();
+  if (!audience) return null;
+  return {
+    audience,
+    // Impersonation is optional: a pool can grant roles/aiplatform.user to the federated
+    // identity directly. Setting it is the more common shape, because IAM on a service
+    // account is easier to audit than IAM on a pool principal.
+    serviceAccount: (process.env.GOOGLE_WORKLOAD_IDENTITY_SERVICE_ACCOUNT || "").trim() || null,
+    // Overridable so this is not Vercel-only — Cloud Run, GitHub Actions and Netlify all
+    // expose an OIDC token under their own name.
+    subjectTokenEnvVar: (process.env.GOOGLE_OIDC_TOKEN_ENV || "VERCEL_OIDC_TOKEN").trim(),
+  };
+}
+
+/**
+ * Which credential the copilot will route with, without attempting a token exchange.
+ *
+ * Reported in the brain-health chip. The point is that "this machine is routing on a
+ * developer login" has to be visible BEFORE the login expires — once it does, the Vertex
+ * call throws and understanding silently drops to keyword matching, which is the failure
+ * that made the same prompt answer on one laptop and not another.
+ */
+export function vertexAuthMode(): "workload_identity" | "service_account" | "developer_login" {
+  const wif = workloadIdentityConfig();
+  if (wif && (process.env[wif.subjectTokenEnvVar] || "").trim()) return "workload_identity";
+  if (
     (
       process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
       process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
       ""
-    ).trim(),
-  );
+    ).trim()
+  ) {
+    return "service_account";
+  }
+  return "developer_login";
+}
+
+/** @deprecated Prefer vertexAuthMode() — kept so callers reading a boolean still compile. */
+export function hasVertexServiceAccount(): boolean {
+  return vertexAuthMode() !== "developer_login";
 }
 
 async function getAccessToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiryMs) return tokenCache.token;
+
+  // 0) Workload Identity Federation — keyless, and therefore the best production answer:
+  //    nothing to rotate and no private key in an env var. Ahead of the service-account key
+  //    so a deploy that has both configured uses the credential that cannot leak.
+  //
+  //    Skipped silently when the host did not supply an OIDC token, because that is the
+  //    normal state on a laptop — a local checkout is expected to fall through to the key.
+  const wif = workloadIdentityConfig();
+  const subjectToken = wif ? (process.env[wif.subjectTokenEnvVar] || "").trim() : "";
+  if (wif && subjectToken) {
+    const { ExternalAccountClient } = await import("google-auth-library");
+    const client = ExternalAccountClient.fromJSON({
+      type: "external_account",
+      audience: wif.audience,
+      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      ...(wif.serviceAccount
+        ? {
+            service_account_impersonation_url:
+              `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` +
+              `${wif.serviceAccount}:generateAccessToken`,
+          }
+        : {}),
+      subject_token_supplier: {
+        // Re-read the env var per exchange: the host rotates this token, and a value
+        // captured at module load would be stale by the second cold start.
+        getSubjectToken: async () =>
+          (process.env[wif.subjectTokenEnvVar] || "").trim() || subjectToken,
+      },
+    });
+    if (!client) {
+      throw new VertexError(
+        "GOOGLE_WORKLOAD_IDENTITY_AUDIENCE is set but google-auth-library would not build an " +
+          "external-account client from it. Expected the full provider resource name, e.g. " +
+          "//iam.googleapis.com/projects/<num>/locations/global/workloadIdentityPools/<pool>/providers/<provider>",
+      );
+    }
+    client.scopes = ["https://www.googleapis.com/auth/cloud-platform"];
+    const res = await client.getAccessToken();
+    if (!res.token) {
+      throw new VertexError(
+        `Workload Identity Federation exchange returned no access token for audience ` +
+          `${wif.audience}. Check the pool's attribute mapping and condition accept this ` +
+          `deployment, and that ${wif.serviceAccount ?? "the federated principal"} has ` +
+          `roles/aiplatform.user on ${copilotConfig.googleCloudProject}.`,
+      );
+    }
+    tokenCache = { token: res.token, expiryMs: Date.now() + 45 * 60_000 };
+    return res.token;
+  }
 
   // 1) Service account — machine-independent, and the only option that exists on a
   //    serverless host. Deliberately ahead of ADC: when both are present the project's
@@ -201,12 +301,13 @@ async function getAccessToken(): Promise<string> {
   if (tried.error) errors.push(tried.error);
 
   throw new VertexError(
-    `Could not get a Google access token. Tried service account, ADC and gcloud. ` +
-      `${errors.join(" | ")}. ` +
-      `Permanent fix (works locally and in every deploy, and never expires per-developer): ` +
-      `set GOOGLE_SERVICE_ACCOUNT_JSON to a service-account key with roles/aiplatform.user ` +
-      `on project ${copilotConfig.googleCloudProject}. ` +
-      `Local stopgap: run  gcloud auth login  with an account that has Vertex access.`,
+    `Could not get a Google access token. Tried workload identity, service account, ADC ` +
+      `and gcloud. ${errors.join(" | ")}. ` +
+      `Production fix (keyless, nothing to rotate): set GOOGLE_WORKLOAD_IDENTITY_AUDIENCE ` +
+      `to the provider resource name and let the host supply its OIDC token. ` +
+      `Simpler fix that also works locally: set GOOGLE_SERVICE_ACCOUNT_JSON to a key with ` +
+      `roles/aiplatform.user on project ${copilotConfig.googleCloudProject}. ` +
+      `Local stopgap only: run  gcloud auth login  with an account that has Vertex access.`,
   );
 }
 

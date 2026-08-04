@@ -345,12 +345,14 @@ export interface BrainHealth {
   /**
    * Which Google credential the copilot will route with.
    *
-   * "service_account" is machine-independent and works in a deploy; "developer_login" means
-   * it is leaning on whoever ran `gcloud auth login` on this machine, which is the state
-   * that made the same prompt answer on one laptop and return the capability blurb on
-   * another. Reported so that difference is visible before someone hits it.
+   * "workload_identity" is keyless (host OIDC token exchanged for an access token) and
+   * "service_account" is a key in an env var; both are machine-independent and work in a
+   * deploy. "developer_login" means it is leaning on whoever ran `gcloud auth login` on this
+   * machine — the state that made the same prompt answer on one laptop and return the
+   * capability blurb on another. Reported so that difference is visible before someone
+   * hits it, since the symptom only appears once the login has already expired.
    */
-  vertex_auth?: "service_account" | "developer_login";
+  vertex_auth?: "workload_identity" | "service_account" | "developer_login";
 }
 
 export type RoutedIntent =

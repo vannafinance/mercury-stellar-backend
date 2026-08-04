@@ -55,7 +55,7 @@ interface BrainHealth {
   in_process?: boolean;
   execution_mode?: string;
   /** "developer_login" means routing depends on this machine's `gcloud auth login`. */
-  vertex_auth?: "service_account" | "developer_login";
+  vertex_auth?: "workload_identity" | "service_account" | "developer_login";
 }
 
 interface AutoSignPrompt {
