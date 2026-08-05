@@ -25,11 +25,18 @@ import {
   splitLeverageAmounts,
   formatLeveragePlanLine,
   validateLendParams,
-  needsUsdcVariant,
+  ambiguousUsdcSlot,
   usdcVariantClarifyMessage,
   USDC_VARIANT_OPTIONS,
   defaultCapUsdFromMcp,
 } from "./mcp-write";
+import {
+  describeLeveragePlan,
+  fetchLeveragePrices,
+  leverageLegs,
+  leveragePriceSymbols,
+  planLeverage,
+} from "./leverage-plan";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
@@ -517,6 +524,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       asset: req.pending_write.asset ?? null,
       amount: req.pending_write.amount ?? null,
       leverage: req.pending_write.leverage ?? null,
+      borrow_asset: req.pending_write.borrow_asset ?? null,
+      borrow_amount: req.pending_write.borrow_amount ?? null,
       explain: req.pending_write.explain ?? null,
       requires_amount:
         req.pending_write.op !== "create_account" &&
@@ -1118,6 +1127,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       asset: routed.asset ?? null,
       amount: routed.amount ?? null,
       leverage: routed.leverage ?? null,
+      borrow_asset: routed.borrow_asset ?? null,
+      borrow_amount: routed.borrow_amount ?? null,
       requires_amount: !!routed.requires_amount,
       requires_account: !!routed.requires_account,
       multi_leg: !!routed.multi_leg,
@@ -2244,7 +2255,6 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
-    const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null);
     // Keep the user's pick (BLUSDC/AQUSDC/…) for display + chip logic; mapOp
     // converts to MCP symbols (USDC/AQUSDC/SOUSDC) at the wire.
     // Protocol collateral allowlist: XLM, AQUSDC, SOUSDC, USDC (BLUSDC → MCP USDC).
@@ -2253,12 +2263,57 @@ async function runWrite(
       // Map Blend USDC label → margin USDC collateral (MCP symbol USDC)
       userAsset = "BLUSDC";
     }
+    const borrowUserAsset = action.borrow_asset || userAsset;
+
+    // Size it the way the margin UI does, from the slots the user gave. Asking "how
+    // much do you want to borrow?" when collateral, leverage and borrow asset are all
+    // known is the copilot refusing to do arithmetic the site does on every render.
+    const slots = {
+      collateralAsset: userAsset,
+      collateralAmount: dep,
+      leverage: action.leverage,
+      borrowAsset: borrowUserAsset,
+      borrowAmount: action.borrow_amount,
+    };
+    const prices = await fetchLeveragePrices(
+      getMcpClient(),
+      leveragePriceSymbols(slots),
+      ctx.userId,
+    );
+    const sized = planLeverage(slots, prices);
+    if ("gap" in sized) {
+      // Each gap has its own honest sentence. The one thing none of them may be is
+      // "how much do you want to borrow?" when the answer is computable.
+      const uiC = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
+      const uiB = displayUsdcLabel(marginCollateralSymbol(borrowUserAsset), borrowUserAsset);
+      return {
+        kind: sized.gap === "missing_price" ? "unavailable" : "clarification",
+        message:
+          sized.gap === "missing_price"
+            ? `I can't size a ${uiC}-collateral, ${uiB}-borrow position right now — the oracle ` +
+              `price for ${sized.symbol} didn't come back, and I won't guess a price that sets ` +
+              `your borrow size. Try again in a moment.`
+            : `What leverage do you want on ${amount(dep)} ${uiC}? e.g. “2x” or “3x” — ` +
+              `or tell me the ${uiB} amount to borrow directly.`,
+        intent: {
+          template_id: "deposit_and_borrow",
+          slots: { asset: userAsset, amount: dep, borrow_asset: borrowUserAsset },
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    const plan = sized.plan;
+    const legs = leverageLegs(plan);
+    const deposit = legs.deposit.amount;
+    const borrow = legs.borrow.amount;
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
-    const levLine = formatLeveragePlanLine(deposit, borrow, action.leverage, uiAsset);
+    const uiBorrowAsset = displayUsdcLabel(
+      marginCollateralSymbol(borrowUserAsset),
+      borrowUserAsset,
+    );
+    const levLine = describeLeveragePlan(plan, { collateral: uiAsset, borrow: uiBorrowAsset });
     const step1: CopilotAction = {
-      op: "deposit_collateral",
-      asset: userAsset,
-      amount: deposit,
+      ...legs.deposit,
       requires_amount: true,
       requires_account: true,
       multi_leg: false,
@@ -2274,7 +2329,7 @@ async function runWrite(
       `\n\nPlan (2 steps — not one atomic tx):\n` +
       `  ${levLine}\n` +
       `  Step 1/2 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
-      `  Step 2/2 — Borrow ${amount(borrow)} ${uiAsset} after step 1 confirms\n` +
+      `  Step 2/2 — Borrow ${amount(borrow)} ${uiBorrowAsset} after step 1 confirms\n` +
       `The copilot runs step 2 automatically once step 1 is on-chain.`;
     if (step1Res.kind === "needs_wallet_sign" || step1Res.kind === "needs_auto_sign" || step1Res.kind === "executed") {
       return {
@@ -2287,15 +2342,17 @@ async function runWrite(
             deposit,
             borrow,
             asset: userAsset,
-            leverage: action.leverage ?? 2,
+            borrow_asset: borrowUserAsset,
+            leverage: plan.leverage,
           },
         },
+        // Leg 2 is fully determined here: asset AND size. Leaving either for the
+        // client to re-derive is what reopened an amount prompt and a variant chip
+        // on a leg the user had already fully specified (product rule D).
         next_step: {
-          op: "borrow",
-          asset: userAsset,
-          amount: borrow,
-          leverage: action.leverage ?? 2,
-          label: `Borrow ${borrow} ${uiAsset}`,
+          ...legs.borrow,
+          leverage: plan.leverage,
+          label: `Borrow ${borrow} ${uiBorrowAsset}`,
           step: 2,
           total_steps: 2,
         },
@@ -2476,27 +2533,43 @@ async function runWrite(
 
   // After highest-yield pick, asset is already BLUSDC/AQUSDC/SOUSDC/XLM.
   // For any other write still holding bare "USDC", force a chip selection.
-  if (usdcOps.has(action.op) && needsUsdcVariant(action.asset) && !highestPickFacts) {
+  //
+  // Per SLOT, not per action. A leveraged write has two asset slots and they are
+  // ambiguous independently: "deposit 500 AQUSDC, borrow XLM" has no ambiguity in
+  // either, and asking "which USDC?" there is the copilot ignoring both answers the
+  // user already gave. Only a slot that is genuinely bare USDC may prompt.
+  const ambiguousSlot =
+    !usdcOps.has(action.op) || highestPickFacts ? null : ambiguousUsdcSlot(action);
+  if (ambiguousSlot) {
+    const slotContext =
+      ambiguousSlot === "borrow"
+        ? `the ${action.op.replace(/_/g, " ")} borrow`
+        : action.op.replace(/_/g, " ");
     return {
       kind: "clarification",
-      message: usdcVariantClarifyMessage(action.op.replace(/_/g, " ")),
+      message: usdcVariantClarifyMessage(slotContext),
       clarify_options: USDC_VARIANT_OPTIONS.map((o) => ({
         id: o.id,
         label: o.label,
         description: o.description,
       })),
+      // Null ONLY the slot being asked about. Blanking both would throw away a
+      // collateral choice the user already made and ask for it again on the next turn.
       pending_write: {
         op: action.op,
-        asset: null,
+        asset: ambiguousSlot === "collateral" ? null : (action.asset ?? null),
         amount: action.amount ?? null,
         leverage: action.leverage ?? null,
+        borrow_asset: ambiguousSlot === "borrow" ? null : (action.borrow_asset ?? null),
+        borrow_amount: action.borrow_amount ?? null,
+        clarify_slot: ambiguousSlot,
         // Preserve a pending "…and explain what that does": once the user taps a
         // variant chip, ctx.message is just "BLUSDC" and the original ask is gone.
         explain: action.explain || wantsImpactExplanation(ctx.message) || null,
       },
       intent: {
         template_id: "clarify_usdc_variant",
-        slots: { op: action.op, amount: action.amount, asset: "USDC" },
+        slots: { op: action.op, amount: action.amount, asset: "USDC", slot: ambiguousSlot },
       },
       data: {
         usdc_variants: USDC_VARIANT_OPTIONS.map((o) => o.id),

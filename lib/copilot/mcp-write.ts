@@ -107,6 +107,27 @@ export function needsUsdcVariant(asset?: string | null): boolean {
   return a === "USDC";
 }
 
+/**
+ * Which asset slot — if any — is genuinely ambiguous and may prompt for a variant.
+ *
+ * The gate used to be `needsUsdcVariant(action.asset)`, one slot for an action that has
+ * two. A levered write carries collateral AND loan, and they are ambiguous
+ * independently: "deposit 500 AQUSDC and borrow XLM" names both concretely, yet the
+ * single-slot check saw a borrow leg that had inherited the string "USDC" from a
+ * default and asked which USDC the user meant — about a token the user never mentioned.
+ *
+ * Returns null when nothing is ambiguous, which is the answer for every message that
+ * names a concrete token: AQUSDC, BLUSDC, SOUSDC, XLM, AQUA. Only bare "USDC" prompts.
+ */
+export function ambiguousUsdcSlot(action: {
+  asset?: string | null;
+  borrow_asset?: string | null;
+}): "collateral" | "borrow" | null {
+  if (needsUsdcVariant(action.asset)) return "collateral";
+  if (needsUsdcVariant(action.borrow_asset)) return "borrow";
+  return null;
+}
+
 export function usdcVariantClarifyMessage(context: string): string {
   return (
     `Which USDC do you mean for ${context}? On this testnet there are three separate tokens ` +

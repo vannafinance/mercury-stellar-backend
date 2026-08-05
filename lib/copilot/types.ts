@@ -87,6 +87,11 @@ export interface ChatRequest {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** The loan slot, independent of the collateral slot above. */
+    borrow_asset?: string | null;
+    borrow_amount?: number | null;
+    /** Which slot a variant chip answers — see the ChatResponse copy of this field. */
+    clarify_slot?: "collateral" | "borrow" | null;
     /** Carried through a variant clarification — see CopilotAction.explain. */
     explain?: boolean | null;
     token_a?: string | null;
@@ -162,6 +167,16 @@ export interface CopilotAction {
   smart_account?: string | null;
   trader?: string | null;
   leverage?: number | null;
+  /**
+   * Collateral and borrow are two independent slots.
+   *
+   * `asset`/`amount` are the collateral; these are the loan. Absent `borrow_asset`
+   * means "same asset", which is the common case and the reason one field carried
+   * both for so long — until "deposit AQUSDC, borrow XLM" made the conflation
+   * visible as a borrow leg denominated in the wrong token.
+   */
+  borrow_asset?: string | null;
+  borrow_amount?: number | null;
   /** Aquarius / Soroswap LP pair legs */
   token_a?: string | null;
   token_b?: string | null;
@@ -308,6 +323,14 @@ export interface ChatResponse {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** The loan slot, independent of the collateral slot above. */
+    borrow_asset?: string | null;
+    borrow_amount?: number | null;
+    /**
+     * Which asset slot the clarification is about, so the chip the user taps lands
+     * in that slot and leaves the other one — already answered — alone.
+     */
+    clarify_slot?: "collateral" | "borrow" | null;
     /** Carried through a variant clarification — see CopilotAction.explain. */
     explain?: boolean | null;
   } | null;
@@ -378,6 +401,8 @@ export type RoutedIntent =
       leverage?: number | null;
       deposit_amount?: number | null;
       borrow_amount?: number | null;
+      /** Borrow asset when it differs from the collateral asset (see CopilotAction). */
+      borrow_asset?: string | null;
       token_a?: string | null;
       token_b?: string | null;
       amount_a?: number | null;

@@ -9,6 +9,7 @@
 
 import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
 import { copilotConfig } from "./config";
+import { sameAsset } from "./leverage-plan";
 import { splitLeverageAmounts } from "./mcp-write";
 import type { ChatResponse, CopilotAction, RoutedIntent } from "./types";
 
@@ -44,6 +45,8 @@ export type ExpandedWrite = {
   leverage?: number | null;
   label: string;
   multi_leg?: boolean;
+  /** Loan asset for a levered leg, when it differs from the collateral. */
+  borrow_asset?: string | null;
   /** Swap legs */
   token_in?: string | null;
   token_out?: string | null;
@@ -125,6 +128,11 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
             Number.isFinite(Number((step as { leverage?: number | null }).leverage))
           ? Number((step as { leverage?: number | null }).leverage)
           : null;
+    // The loan's own asset, when the plan named one. Null means "same as collateral".
+    const borrowAsset =
+      (step.args?.borrow_asset as string | undefined) ??
+      (step as { borrow_asset?: string | null }).borrow_asset ??
+      null;
 
     if (op === "swap") {
       const tokenIn =
@@ -190,12 +198,29 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
           asset,
           amount: null,
           leverage: leverage ?? 2,
+          borrow_asset: borrowAsset,
           label: humanWriteLabel("deposit_and_borrow", null, asset, leverage ?? 2) + " — need amount",
           multi_leg: true,
         });
         continue;
       }
       const L = leverage ?? 2;
+      // Sizing needs an oracle price when the two assets differ, and this expansion
+      // is synchronous. So a cross-asset plan keeps its deposit_and_borrow shape and
+      // is sized by the executor, which can price it; only the same-asset case — where
+      // the prices cancel — is split here.
+      if (borrowAsset && asset && !sameAsset(borrowAsset, asset)) {
+        out.push({
+          op: "deposit_and_borrow",
+          asset,
+          amount,
+          leverage: L,
+          borrow_asset: borrowAsset,
+          label: humanWriteLabel("deposit_and_borrow", amount, asset, L),
+          multi_leg: true,
+        });
+        continue;
+      }
       const { deposit, borrow } = splitLeverageAmounts(amount, L, null);
       out.push({
         op: "deposit_collateral",
@@ -205,9 +230,9 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       });
       out.push({
         op: "borrow",
-        asset,
+        asset: borrowAsset || asset,
         amount: borrow,
-        label: humanWriteLabel("borrow", borrow, asset),
+        label: humanWriteLabel("borrow", borrow, borrowAsset || asset),
       });
       continue;
     }
@@ -322,6 +347,7 @@ export function actionFromExpanded(
     asset: w.asset ?? null,
     amount: w.amount ?? null,
     leverage: w.leverage ?? null,
+    borrow_asset: w.borrow_asset ?? null,
     multi_leg: !!w.multi_leg,
     requires_amount: w.amount == null && !["create_account", "open_account"].includes(w.op),
     requires_account: !["lend", "redeem", "create_account"].includes(w.op),

@@ -132,6 +132,11 @@ interface ChatResponse {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** The loan slot, independent of the collateral `asset` above. */
+    borrow_asset?: string | null;
+    borrow_amount?: number | null;
+    /** Which asset slot a variant chip answers — see pickClarifyOption. */
+    clarify_slot?: "collateral" | "borrow" | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
   mcp?: {
@@ -2066,6 +2071,11 @@ export function CopilotWorkspace() {
         await run(`${opt.id}`);
         return;
       }
+      // The chip answers ONE slot. A leveraged write has two, and writing the pick
+      // into `asset` regardless would overwrite a collateral choice the user already
+      // made when the question was about the borrow side. The server says which slot
+      // it asked about; everything not asked about is carried through untouched.
+      const forBorrowSlot = pw.clarify_slot === "borrow";
       const label = `${pw.op.replace(/_/g, " ")} ${pw.amount ?? ""} ${opt.id}`.trim();
       setSubmitted(label);
       setIntentText(label);
@@ -2074,9 +2084,11 @@ export function CopilotWorkspace() {
           message: label,
           pending_write: {
             op: pw.op,
-            asset: opt.id,
+            asset: forBorrowSlot ? (pw.asset ?? null) : opt.id,
             amount: pw.amount ?? null,
             leverage: pw.leverage ?? null,
+            borrow_asset: forBorrowSlot ? opt.id : (pw.borrow_asset ?? null),
+            borrow_amount: pw.borrow_amount ?? null,
           },
         },
         label,

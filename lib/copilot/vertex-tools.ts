@@ -542,6 +542,10 @@ export const ROUTER_TOOLS: ToolEntry[] = [
         leverage: asAmount(a.leverage),
         deposit_amount: asAmount(a.amount),
         borrow_amount: asAmount(a.borrow_amount),
+        // Declared to the model since this tool existed, and dropped here since this
+        // tool existed — so a model that correctly extracted "borrow XLM" had its
+        // answer discarded one line after it arrived.
+        borrow_asset: asStr(a.borrow_asset),
       }),
   },
   {

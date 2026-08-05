@@ -48,6 +48,96 @@ export function findAsset(text: string): string | null {
   return null;
 }
 
+/**
+ * The first asset by POSITION in the sentence, not by table order.
+ *
+ * `findAsset` scans the ASSETS table longest-first, so "deposit 500 AQUSDC … borrow
+ * XLM" returns AQUSDC no matter which side of the sentence it sits on. That is right
+ * when a message names one asset and wrong the moment it names two for two different
+ * slots — the second one is simply never seen. Alternation is still longest-first so
+ * the USDC inside BLUSDC never matches on its own.
+ */
+export function firstAssetByPosition(text: string): string | null {
+  const m = text
+    .toUpperCase()
+    .match(new RegExp(`(?:^|[^A-Z0-9])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
+  return m ? (m[1] as string) : null;
+}
+
+/** Words after which the asset named is what backs the loan, not what is borrowed. */
+const COLLATERAL_PIVOT = /\b(against|using|backed by|collateral(?:ised|ized)?)\b/i;
+const BORROW_VERB = /\bborrow(?:s|ed|ing)?\b/i;
+const COLLATERAL_VERB = /\b(deposit|park|put|post|supply|lever(?:age)?d?|with|using)\b/i;
+
+/**
+ * The asset the user wants to BORROW, when they named one.
+ *
+ * Independent of the collateral slot on purpose (product rule B): "deposit AQUSDC …
+ * borrow XLM" borrows XLM. Collapsing the two — which every producer did, by passing
+ * one `asset` for both legs — is what turned a stated XLM borrow into a "which USDC?"
+ * chip prompt.
+ *
+ * Returns null when the sentence names no borrow asset, which legitimately means "the
+ * same asset" and is resolved downstream, not guessed here.
+ */
+export function findBorrowAsset(text: string): string | null {
+  const cleaned = stripAddresses(text);
+  const verb = cleaned.match(BORROW_VERB);
+  if (!verb || verb.index == null) return null;
+  let after = cleaned.slice(verb.index + verb[0].length);
+  // "borrow against my XLM" names collateral, not a borrow asset. Cut there so the
+  // backing asset is never mistaken for the thing being borrowed.
+  const pivot = after.match(COLLATERAL_PIVOT);
+  if (pivot && pivot.index != null) after = after.slice(0, pivot.index);
+  return firstAssetByPosition(after);
+}
+
+/**
+ * The asset being posted as COLLATERAL, when the sentence separates the two slots.
+ *
+ * Falls back to the plain first-asset scan, so single-asset phrasings behave exactly
+ * as before.
+ */
+export function findCollateralAsset(text: string): string | null {
+  const cleaned = stripAddresses(text);
+  const verb = cleaned.match(COLLATERAL_VERB);
+  if (verb && verb.index != null) {
+    let after = cleaned.slice(verb.index + verb[0].length);
+    // Stop at the borrow clause so "deposit … and borrow XLM" cannot read XLM as
+    // the collateral.
+    const borrow = after.match(BORROW_VERB);
+    if (borrow && borrow.index != null) after = after.slice(0, borrow.index);
+    const found = firstAssetByPosition(after);
+    if (found) return found;
+  }
+  // "borrow 20 XLM against my AQUSDC" — collateral follows the pivot instead.
+  const pivot = cleaned.match(COLLATERAL_PIVOT);
+  if (pivot && pivot.index != null) {
+    const found = firstAssetByPosition(cleaned.slice(pivot.index + pivot[0].length));
+    if (found) return found;
+  }
+  return findAsset(cleaned);
+}
+
+/**
+ * An explicit borrow size, when the user gave one instead of (or beside) a multiple.
+ *
+ * Leverage is stripped first so "3x" never reads as a quantity — the same trap
+ * findAmount guards against for the deposit slot.
+ */
+export function findBorrowAmount(text: string): number | null {
+  const cleaned = stripAddresses(text).replace(LEVERAGE_RE, " ");
+  const verb = cleaned.match(BORROW_VERB);
+  if (!verb || verb.index == null) return null;
+  let after = cleaned.slice(verb.index + verb[0].length);
+  const pivot = after.match(COLLATERAL_PIVOT);
+  if (pivot && pivot.index != null) after = after.slice(0, pivot.index);
+  const m = after.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)?\b/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** First unsupported ticker mentioned, if any. */
 export function findUnsupportedAsset(text: string): string | null {
   const upper = text.toUpperCase();
@@ -339,9 +429,15 @@ function tryMultiGoalPlan(
     steps.push({
       kind: "write",
       op: "deposit_and_borrow",
-      asset: asset ?? "XLM",
+      asset: findCollateralAsset(raw) ?? asset ?? "XLM",
       amount: depAmt,
       leverage: leverage ?? 2,
+      args: {
+        leverage: leverage ?? 2,
+        // Carried in args because a plan step is replayed verbatim after approval —
+        // a borrow asset dropped here cannot be recovered downstream.
+        borrow_asset: findBorrowAsset(raw),
+      },
     });
   }
 
@@ -643,12 +739,17 @@ export function routeMessage(message: string): RoutedIntent {
         !any(text, "blend", "farm", "aquarius", "lp"))) &&
     !any(text, "blend", "farm blend", "aquarius")
   ) {
+    // Two slots, read independently. `asset ?? "USDC"` used to answer both, which
+    // both lost a stated borrow asset AND defaulted it to the one symbol that then
+    // demanded a variant chip.
     return {
       kind: "write",
       op: "deposit_and_borrow",
       template_id: "deposit_and_borrow",
-      asset: asset ?? "USDC",
+      asset: findCollateralAsset(raw) ?? asset ?? "USDC",
       amount,
+      borrow_asset: findBorrowAsset(raw),
+      borrow_amount: leverage != null && leverage > 1 ? null : findBorrowAmount(raw),
       multi_leg: true,
       requires_account: true,
       requires_amount: true,

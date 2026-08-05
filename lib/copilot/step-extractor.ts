@@ -10,7 +10,12 @@
  */
 
 import type { RoutedIntent } from "./types";
-import { isMaxYieldInvestIntent, matchMinHealthFactor } from "./router";
+import {
+  findBorrowAsset,
+  findCollateralAsset,
+  isMaxYieldInvestIntent,
+  matchMinHealthFactor,
+} from "./router";
 import {
   accountCoverage,
   isClaimed,
@@ -272,14 +277,21 @@ function clauseToStepSpanned(
 
   // Deposit + borrow in same clause
   if (SPAN_VERB_DEPOSIT.test(t) && SPAN_VERB_BORROW.test(t)) {
+    // `first` is the collateral — it carries the amount. The loan may name its own
+    // asset ("deposit 500 AQUSDC … borrow XLM"); dropping it here made every levered
+    // cross-asset ask come out denominated in the collateral token.
+    const borrowAsset = findBorrowAsset(clause);
     return {
       step: {
         kind: "write",
         op: "deposit_and_borrow",
-        asset: first?.asset || "XLM",
+        asset: findCollateralAsset(clause) || first?.asset || "XLM",
         amount: first?.amount ?? null,
         leverage: L != null && L > 1 ? L : 2,
-        args: { leverage: L != null && L > 1 ? L : 2 },
+        args: {
+          leverage: L != null && L > 1 ? L : 2,
+          ...(borrowAsset ? { borrow_asset: borrowAsset } : {}),
+        },
       },
       spans: [
         ...kwSpans(clause, SPAN_VERB_DEPOSIT, offset),
