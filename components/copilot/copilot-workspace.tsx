@@ -3648,14 +3648,10 @@ export function CopilotWorkspace() {
                         <AnswerView answer={response.answer} />
                       </div>
                     )}
-                    {multiLeg ? (
-                      /* Once every leg has settled the plan has served its purpose: it
-                         exists to be reviewed BEFORE approving. Repeating it underneath
-                         the summary showed the same four legs twice, the second time with
-                         nothing left to decide. While legs remain it stays — that is the
-                         progress view. */
-                      /* Nothing. "02 Agent run" above already lists every leg with its
-                         live status, and the summary sits directly beneath it. */
+                    {multiLeg || response.answer ? (
+                      /* Multi-leg: "02 Agent run" already lists legs. Structured answer
+                         (e.g. create_account): AnswerView above is the receipt — do not
+                         repeat the same text as a giant H6 + gray duplicate. */
                       null
                     ) : (
                       <>

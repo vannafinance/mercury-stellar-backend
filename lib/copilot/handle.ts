@@ -1589,6 +1589,81 @@ function allPositionsStructured(
   };
 }
 
+/** Truncate G/C addresses for scannable facts — full strkeys belong in explorers, not headlines. */
+function shortAddr(addr: string | null | undefined): string | null {
+  if (!addr || addr.length < 12) return addr ?? null;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+function pickStellarAddr(text: string, kind: "G" | "C"): string | null {
+  const m = text.match(new RegExp(`\\b${kind}[A-Z0-9]{55}\\b`));
+  return m?.[0] ?? null;
+}
+
+/**
+ * Open / create margin account — structured card instead of a wall of full strkeys.
+ * Same MCP facts; layout via AnswerView (mirrors allPositionsStructured).
+ */
+function createAccountStructured(
+  rawMessage: string,
+  build: Record<string, unknown>,
+  opts: { trader: string | null; smartAccount: string | null; txHash: string | null },
+): StructuredAnswer {
+  const blob = [
+    rawMessage,
+    String(build.summary ?? ""),
+    String(build.message ?? ""),
+    String(build.smart_account ?? ""),
+    String(build.account ?? ""),
+    String(build.margin_account ?? ""),
+  ].join(" ");
+
+  const trader =
+    opts.trader ||
+    (typeof build.trader === "string" ? build.trader : null) ||
+    pickStellarAddr(blob, "G");
+  const smart =
+    opts.smartAccount ||
+    (typeof build.smart_account === "string" ? build.smart_account : null) ||
+    (typeof build.account === "string" ? build.account : null) ||
+    (typeof build.margin_account === "string" ? build.margin_account : null) ||
+    pickStellarAddr(blob, "C");
+
+  const alreadyOpen = /already has|NOT submitted|one-account-per-trader/i.test(blob);
+
+  const facts: AnswerFact[] = [];
+  if (trader) facts.push({ label: "trader", value: shortAddr(trader) || trader });
+  if (smart) {
+    facts.push({
+      label: "smart account",
+      value: shortAddr(smart) || smart,
+      tone: "good",
+    });
+  }
+  facts.push({
+    label: "status",
+    value: alreadyOpen ? "already open" : opts.txHash ? "opened on-chain" : "done",
+    tone: alreadyOpen ? "warn" : "good",
+  });
+  if (opts.txHash) {
+    facts.push({
+      label: "tx",
+      value: `${opts.txHash.slice(0, 10)}…`,
+    });
+  }
+
+  return {
+    headline: alreadyOpen
+      ? "You already have a margin account."
+      : "Margin account opened.",
+    facts,
+    note: alreadyOpen
+      ? "One account per trader — nothing new was submitted. Use this C-address for deposit, borrow, and farm."
+      : "Use this C-address for deposit, borrow, and farm.",
+    venue: "margin",
+  };
+}
+
 /**
  * "What are all my open positions?" — margin and the farm venues in one answer.
  *
@@ -2657,9 +2732,19 @@ async function runWrite(
       null;
     // Prefer plain text (no **markdown**) for the chat panel.
     const cleanMsg = String(result.message || "").replace(/\*\*([^*]+)\*\*/g, "$1");
+    const isCreateAccount = action.op === "create_account" || action.op === "open_account";
+    const accountAnswer = isCreateAccount
+      ? createAccountStructured(cleanMsg, { ...result.build, ...(result.submitted || {}) }, {
+          trader: ctx.trader,
+          smartAccount,
+          txHash: tx,
+        })
+      : null;
+    const displayMsg = accountAnswer ? answerToText(accountAnswer) : cleanMsg;
     return {
       kind: "executed",
-      message: withImpact(cleanMsg),
+      message: withImpact(displayMsg),
+      ...(accountAnswer ? { answer: accountAnswer } : {}),
       data: factsForUi({ ...result.build, ...(result.submitted || {}) }),
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       mcp: mcpMeta,
@@ -2670,7 +2755,7 @@ async function runWrite(
       },
       preview: {
         template_id: action.op,
-        human_summary: result.message,
+        human_summary: accountAnswer ? accountAnswer.headline : result.message,
         slots: { asset: action.asset, amount: action.amount },
         risk: { decision: "allow", reasons: reasonsWith(["executed via MCP"]) },
         requires_signature: false,
