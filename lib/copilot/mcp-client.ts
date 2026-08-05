@@ -448,9 +448,27 @@ class LiveMCPClient implements MCPClient {
     // which is the only place that may authorize a signature). Conflating the two
     // is what made the MCP forward its own machine token as a user assertion and
     // earn a 401 on every auto-sign.
-    const user = callNeedsUserToken(tool) ? currentUser() : null;
+    const needsUser = callNeedsUserToken(tool);
+    const user = needsUser ? currentUser() : null;
     if (user) {
       sessionHeaders["X-Vanna-User-Assertion"] = user.accessToken;
+    } else if (needsUser) {
+      // A write leaving without an assertion is the exact condition that made
+      // auto-sign fail live, and it was invisible: the MCP then forwards its own
+      // machine credential, and the Sign Service reports "subject is not an end
+      // user" — an error naming the wrong hop. One greppable line here says which
+      // side actually dropped the identity.
+      //
+      // Not an error: a signed-out visitor doing a write is legitimate and falls
+      // back to wallet-sign. It is only surprising when the user IS signed in,
+      // which `signed_in` on the turn log answers alongside this.
+      console.warn(
+        `[mcp-client] ${JSON.stringify({
+          event: "write_without_user_assertion",
+          tool,
+          consequence: "auto_sign_unavailable_wallet_sign_fallback",
+        })}`,
+      );
     }
 
     let callRes: Response;

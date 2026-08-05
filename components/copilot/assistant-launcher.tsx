@@ -25,7 +25,7 @@ import {
 } from "@/lib/assistant/semantic-page-context";
 import { executeClientTools, scrollToSection } from "@/lib/assistant/client-tools";
 import type { GuideAnswer } from "@/lib/copilot/guide-schema";
-import { copilotRequestHeaders } from "@/lib/copilot/identity-header";
+import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import {
   appendAssistantTurn,
   clearAssistantTurns,

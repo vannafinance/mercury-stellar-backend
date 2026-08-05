@@ -51,7 +51,7 @@ import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { HealthDial } from "./health-dial";
-import { copilotRequestHeaders } from "@/lib/copilot/identity-header";
+import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";

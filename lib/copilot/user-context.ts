@@ -24,6 +24,24 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
+/**
+ * The store is pinned to `globalThis` rather than held in a module-level `const`.
+ *
+ * A bundler may instantiate the same module more than once — different route
+ * bundles, a server chunk plus a shared chunk — and two AsyncLocalStorage objects
+ * mean the route binds the identity into one store while the transport reads an
+ * empty one. Every write then silently falls back to no assertion, which is
+ * indistinguishable from "signed out" and impossible to reproduce in dev, where a
+ * single module graph hides the problem entirely.
+ *
+ * One symbol-keyed global makes duplicate instances share the same store.
+ */
+const STORE_KEY = Symbol.for("vanna.copilot.boundUserStore");
+
+type GlobalWithStore = typeof globalThis & {
+  [STORE_KEY]?: AsyncLocalStorage<BoundUser>;
+};
+
 export interface BoundUser {
   /**
    * The subject the Sign Service will key bindings on: `did:privy:…` for a Privy
@@ -41,7 +59,9 @@ export interface BoundUser {
   kind: "privy" | "workos";
 }
 
-const storage = new AsyncLocalStorage<BoundUser>();
+const globalWithStore = globalThis as GlobalWithStore;
+const storage: AsyncLocalStorage<BoundUser> =
+  globalWithStore[STORE_KEY] ?? (globalWithStore[STORE_KEY] = new AsyncLocalStorage<BoundUser>());
 
 /** Run `fn` with `user` bound as the ambient end-user identity. */
 export function withBoundUser<T>(user: BoundUser | null, fn: () => T): T {
