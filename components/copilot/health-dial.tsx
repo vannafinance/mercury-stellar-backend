@@ -97,6 +97,8 @@ export interface HealthDialProps {
   debtUsd?: number | null;
   /** True when nothing is borrowed: the ratio is infinite, not merely large. */
   noDebt?: boolean;
+  /** Extra content rendered inside the same card, below the bars (e.g. account rows). */
+  children?: React.ReactNode;
 }
 
 const money = (n: number) =>
@@ -109,6 +111,7 @@ export function HealthDial({
   collateralUsd = null,
   debtUsd = null,
   noDebt = false,
+  children,
 }: HealthDialProps) {
   const unknown = hf == null || !Number.isFinite(hf);
   const zone: HealthZone = unknown ? "unknown" : noDebt ? "healthy" : zoneOf(hf);
@@ -339,6 +342,8 @@ export function HealthDial({
           ))}
         </div>
       ) : null}
+
+      {children}
     </div>
   );
 }
