@@ -13,7 +13,11 @@ import {
   withBoundUser,
 } from "@/lib/copilot/user-context";
 
-const USER = { sub: "user_01KX5T71JJ7PY4RVV06K9SW04E", accessToken: "tok" };
+const USER = {
+  sub: "did:privy:cmrx9k2p400abcd0lm12efgh",
+  accessToken: "tok",
+  kind: "privy" as const,
+};
 
 describe("read/write credential split", () => {
   it("reads stay on M2M", () => {
@@ -81,8 +85,8 @@ describe("ambient binding", () => {
   });
 
   it("does not leak between concurrent requests", async () => {
-    const a = { sub: "user_a", accessToken: "ta" };
-    const b = { sub: "user_b", accessToken: "tb" };
+    const a = { sub: "user_a", accessToken: "ta", kind: "workos" as const };
+    const b = { sub: "user_b", accessToken: "tb", kind: "workos" as const };
     const seen: string[] = [];
     await Promise.all([
       withBoundUser(a, async () => {

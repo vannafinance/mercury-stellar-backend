@@ -18,10 +18,52 @@ export async function GET(req: NextRequest) {
   const loaded = await loadUserFromRequest(req);
   const session = loaded.session;
 
+  // A Privy session authenticates without a WorkOS cookie, so `session` is null
+  // while `bound` is not. Reporting signedIn:false there would be wrong, and this
+  // endpoint is exactly where someone looks to find out why auto-sign is refused.
+  if (!session && loaded.bound?.kind === "privy") {
+    return loaded.commit(
+      NextResponse.json({
+        signedIn: true,
+        anchor: "privy",
+        sub: loaded.bound.sub,
+        subjectIsEndUser: loaded.bound.sub.startsWith("did:privy:"),
+        privyAppId: copilotConfig.privyAppId || null,
+        privyJwksUri: copilotConfig.privyJwksUri,
+        /**
+         * The Sign Service must have this app's Privy id as an accepted audience
+         * (it does by default — same app whose wallets it signs) and must not be
+         * running PRIVY_USER_ASSERTION=off.
+         */
+        note:
+          "Writes carry this Privy token to the MCP as X-Vanna-User-Assertion. " +
+          "No WorkOS login is needed.",
+        /** The optional second anchor, for direct MCP clients. */
+        workosLoginEnabled: copilotConfig.userLoginEnabled,
+      }),
+    );
+  }
+
   if (!session) {
     return loaded.commit(
       NextResponse.json({
         signedIn: false,
+        /**
+         * Why a signed-out answer is not necessarily a problem: a visitor with no
+         * Privy session reads everything on the shared M2M credential, and a write
+         * still builds — it just falls back to signing in the wallet.
+         */
+        privyIdentityEnabled: copilotConfig.privyIdentityEnabled,
+        /**
+         * Two very different problems, told apart:
+         *   tokenPresent false → the browser sent nothing (client wiring, or the
+         *                        user genuinely has no Privy session)
+         *   tokenPresent true + privyError → it arrived and was refused, and the
+         *                        error says why (expired, wrong app, rotated key)
+         */
+        privyTokenSeen: loaded.privy.tokenPresent,
+        privyTokenSource: loaded.privy.source ?? null,
+        privyError: loaded.privy.error ?? null,
         loginEnabled: copilotConfig.userLoginEnabled,
         loginUrl: copilotConfig.userLoginEnabled ? "/api/auth/login" : null,
       }),
@@ -48,6 +90,7 @@ export async function GET(req: NextRequest) {
   return loaded.commit(
     NextResponse.json({
       signedIn: true,
+      anchor: "workos",
       loginEnabled: true,
       sub: session.sub,
       email: session.email ?? null,

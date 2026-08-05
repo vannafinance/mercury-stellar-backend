@@ -51,6 +51,7 @@ import { executeClientTools } from "@/lib/assistant/client-tools";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { HealthDial } from "./health-dial";
+import { copilotRequestHeaders } from "@/lib/copilot/identity-header";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
@@ -1728,7 +1729,9 @@ export function CopilotWorkspace() {
       try {
         const res = await fetch("/api/copilot", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          // Carries the Privy session as the end-user assertion, which is what
+          // lets a risk-cleared write auto-sign instead of asking for a signature.
+          headers: await copilotRequestHeaders(),
           body: JSON.stringify({
             user_id: address ?? "guest",
             tier: "paid",

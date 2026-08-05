@@ -1,16 +1,20 @@
 /**
  * In-process MCP client for the Vanna Finance MCP server.
  *
- * Auth: two credentials, chosen per call (see RoutingMCPClient at the bottom).
- *   reads  → WorkOS M2M (client_credentials). No user identity, works signed out.
- *   writes → the signed-in user's Connect OAuth token, when there is one. Only
- *            that token can prove WHO is spending, which is what auto-sign needs.
+ * Auth: two credentials that answer two different questions, sent together — not
+ * one credential doing both jobs (see RoutingMCPClient at the bottom).
+ *   Authorization: Bearer …      WorkOS M2M. Which application is calling.
+ *                                Every call, signed in or not.
+ *   X-Vanna-User-Assertion: …    the end user's own token — Privy by default, a
+ *                                WorkOS Connect OAuth login if they have one.
+ *                                Writes only, and only when someone is signed in.
+ *                                The Sign Service verifies this and it is the only
+ *                                thing that can authorize a signature.
  * Transport: Streamable HTTP (POST + SSE `event: message` frames + mcp-session-id).
  *
  * Mock mode returns canned numbers so the copilot works offline.
  */
 
-import crypto from "node:crypto";
 import { copilotConfig } from "./config";
 import { callNeedsUserToken, currentUser } from "./user-context";
 
@@ -232,10 +236,6 @@ interface TokenSource {
   fingerprint(): string;
 }
 
-function tokenFingerprint(token: string): string {
-  return crypto.createHash("sha256").update(token).digest("base64url").slice(0, 16);
-}
-
 const TIMEOUT_MS = 90_000;
 const EXPIRY_MARGIN_MS = 60_000;
 
@@ -301,32 +301,11 @@ class M2MTokenSource implements TokenSource {
   }
 }
 
-/**
- * The token the route handler already refreshed and bound for this request.
- * Refresh is not attempted here: the request holds no response object to write a
- * rotated cookie back onto, and a token that lapses mid-turn is covered on the
- * Sign Service side by session-scoped signing.
- */
-class BoundUserTokenSource implements TokenSource {
-  readonly key: string;
-  constructor(
-    sub: string,
-    private readonly token: string,
-  ) {
-    this.key = `user:${sub}`;
-  }
-  invalidate(): void {
-    /* Nothing to drop: this source is immutable and lives for one request. The
-     * recovery that matters happens a level up — RoutingMCPClient evicts the
-     * cached client so the retry is built against the current request's token. */
-  }
-  async getToken(): Promise<string> {
-    return this.token;
-  }
-  fingerprint(): string {
-    return tokenFingerprint(this.token);
-  }
-}
+// There was a second TokenSource here — one built per request from the signed-in
+// user's own token, which became the bearer. It is gone on purpose: an end-user
+// token is now sent as X-Vanna-User-Assertion beside the M2M bearer (see
+// RoutingMCPClient), so there is exactly one credential minting tokens for the
+// transport and nothing to cache per user.
 
 // ── live ────────────────────────────────────────────────────────────────────
 
@@ -453,8 +432,26 @@ class LiveMCPClient implements MCPClient {
       Accept: "application/json, text/event-stream",
     };
 
+    // The handshake is deliberately assertion-free: the MCP session belongs to
+    // this app's credential and is shared by every caller, so attaching one
+    // user's token to it would be misleading in MCP's logs and would tie a
+    // per-request identity to a process-lifetime object.
     const sessionId = await this.getSession(baseHeaders);
-    const sessionHeaders = { ...baseHeaders, "mcp-session-id": sessionId };
+    const sessionHeaders: Record<string, string> = {
+      ...baseHeaders,
+      "mcp-session-id": sessionId,
+    };
+
+    // Who is asking, when anyone is. Sent ALONGSIDE the bearer, never instead of
+    // it: the bearer says which application is calling (M2M, verified by the MCP)
+    // and this says which person it is calling for (verified by the Sign Service,
+    // which is the only place that may authorize a signature). Conflating the two
+    // is what made the MCP forward its own machine token as a user assertion and
+    // earn a 401 on every auto-sign.
+    const user = callNeedsUserToken(tool) ? currentUser() : null;
+    if (user) {
+      sessionHeaders["X-Vanna-User-Assertion"] = user.accessToken;
+    }
 
     let callRes: Response;
     try {
@@ -614,15 +611,24 @@ function liveClientFor(tokens: TokenSource): LiveMCPClient {
 }
 
 /**
- * Routes each call to the right credential.
+ * Every call goes out on this app's M2M credential. Who it is FOR travels beside
+ * it, as the `X-Vanna-User-Assertion` header that LiveMCPClient.call attaches
+ * from the ambient identity (see user-context.ts).
  *
- * Reads → the shared M2M token (no user identity needed; works signed out).
- * Writes → the end-user token bound to this request, when there is one.
+ * A write with no signed-in user still goes out and still WORKS: the MCP builds
+ * and simulates the transaction, auto-sign is refused for want of an assertion,
+ * and the copilot falls back to wallet-sign. Being signed in is what upgrades
+ * that to auto-sign.
  *
- * A write with no signed-in user still goes out on M2M and still WORKS: the MCP
- * builds and simulates the transaction, auto-sign is refused for want of a user
- * assertion, and the copilot falls back to wallet-sign — exactly today's
- * behaviour. Signing in is what upgrades that to auto-sign.
+ * ## Why there is no longer a client per user
+ *
+ * This used to swap the BEARER for the end user's token, which forced one
+ * LiveMCPClient (and one MCP session) per user, an LRU to bound them, and a
+ * retry-with-eviction path because a bound token cannot be re-minted. All of
+ * that existed to work around using one credential for two jobs. With identity
+ * in a header the bearer is constant, so a single cached session serves everyone
+ * and a token that expires mid-flight is the browser's problem to refresh, not a
+ * cache-coherency problem here.
  */
 class RoutingMCPClient implements MCPClient {
   async call(
@@ -630,39 +636,7 @@ class RoutingMCPClient implements MCPClient {
     args: Record<string, unknown>,
     userId?: string,
   ): Promise<Record<string, unknown>> {
-    const user = callNeedsUserToken(tool) ? currentUser() : null;
-    if (!user) {
-      return liveClientFor(m2mTokens).call(tool, args, userId);
-    }
-
-    // Always built from the token bound to THIS request, which the route
-    // handler has already refreshed if it was near expiry.
-    const tokens = new BoundUserTokenSource(user.sub, user.accessToken);
-    try {
-      return await liveClientFor(tokens).call(tool, args, userId);
-    } catch (err) {
-      if (!(err instanceof MCPAuthError)) throw err;
-
-      // The MCP refused this client's credential or the session it opened. The
-      // cached client is unusable and must not be handed to the next request:
-      // BoundUserTokenSource cannot re-mint anything, so without eviction the
-      // 401 is permanent for this sub until the process restarts.
-      //
-      // Retry ONCE against a brand-new client — fresh handshake, current
-      // token. If the token itself is genuinely dead this fails the same way
-      // and the error surfaces, which is correct: recovery from a dead refresh
-      // token is re-login, not retrying here.
-      liveClients.delete(tokens.key);
-      console.warn(
-        `[mcp-client] ${JSON.stringify({
-          event: "user_client_evicted_on_auth_error",
-          key: tokens.key,
-          tool,
-          detail: err.message.slice(0, 160),
-        })}`,
-      );
-      return liveClientFor(tokens).call(tool, args, userId);
-    }
+    return liveClientFor(m2mTokens).call(tool, args, userId);
   }
 }
 

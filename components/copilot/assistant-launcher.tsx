@@ -25,6 +25,7 @@ import {
 } from "@/lib/assistant/semantic-page-context";
 import { executeClientTools, scrollToSection } from "@/lib/assistant/client-tools";
 import type { GuideAnswer } from "@/lib/copilot/guide-schema";
+import { copilotRequestHeaders } from "@/lib/copilot/identity-header";
 import {
   appendAssistantTurn,
   clearAssistantTurns,
@@ -116,7 +117,7 @@ function AssistantLauncherInner() {
         // just sits there. Give up at 90s and say so instead.
         const res = await fetch("/api/copilot", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: await copilotRequestHeaders(),
           signal: AbortSignal.timeout(90_000),
           body: JSON.stringify({
             message,

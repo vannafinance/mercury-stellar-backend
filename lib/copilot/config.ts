@@ -147,6 +147,38 @@ export const copilotConfig = {
     return !!(this.workosClientIdUser && this.workosClientSecretUser && this.sessionSecret);
   },
 
+  // ── End-user identity from Privy (the default path) ───────────────────────
+  //
+  // The user signs in with Privy to get a wallet; that same session is what
+  // proves who they are on the money path. Its access token carries
+  // iss=privy.io / sub=did:privy:… / aud=<app id>, which is everything the Sign
+  // Service's assertion verifier needs — so there is no second login.
+  //
+  // The WorkOS block above still works and is still accepted as an assertion;
+  // it is simply no longer the only way to be a user. Reads and the MCP
+  // transport keep using the M2M credential either way: WorkOS remains the
+  // machine identity, Privy is the human one.
+
+  /** Privy app id. Public by design — it is the token audience, not a secret. */
+  get privyAppId(): string {
+    return env("NEXT_PUBLIC_PRIVY_APP_ID");
+  },
+  /**
+   * Where to fetch Privy's signing keys. Derived from the app id so a deploy
+   * cannot end up verifying tokens against a different app's keys by forgetting
+   * to update one of two vars.
+   */
+  get privyJwksUri(): string {
+    return (
+      env("PRIVY_JWKS_URI") ||
+      `https://auth.privy.io/api/v1/apps/${this.privyAppId}/jwks.json`
+    );
+  },
+  /** True when a Privy session can be used as the end-user assertion. */
+  get privyIdentityEnabled(): boolean {
+    return !!this.privyAppId;
+  },
+
   /** Always Vertex for now. */
   get llmProvider(): string {
     return "vertex";

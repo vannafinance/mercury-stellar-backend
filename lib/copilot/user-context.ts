@@ -25,11 +25,20 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface BoundUser {
-  /** WorkOS `sub` — always `user_…`. */
+  /**
+   * The subject the Sign Service will key bindings on: `did:privy:…` for a Privy
+   * session (the default path), `user_…` for a WorkOS Connect OAuth login.
+   */
   sub: string;
   email?: string;
-  /** Access token with `aud` = the MCP resource URI. */
+  /**
+   * The end-user's own token. Forwarded to the MCP as `X-Vanna-User-Assertion`,
+   * NEVER as the bearer — the bearer stays the app's M2M credential, because the
+   * two answer different questions ("which app is calling" vs "who is asking").
+   */
   accessToken: string;
+  /** Which identity system minted `accessToken`. Diagnostics only. */
+  kind: "privy" | "workos";
 }
 
 const storage = new AsyncLocalStorage<BoundUser>();

@@ -32,7 +32,7 @@ function findStellarWallet(user: ReturnType<typeof usePrivy>["user"]): WalletWit
 }
 
 export const PrivyWalletBridge = () => {
-  const { ready, authenticated, user, login, logout } = usePrivy();
+  const { ready, authenticated, user, login, logout, getAccessToken } = usePrivy();
   const { createWallet } = useCreateWallet();
   const { signRawHash } = useSignRawHash();
   const creatingRef = useRef(false);
@@ -59,10 +59,18 @@ export const PrivyWalletBridge = () => {
   }, [user, signRawHash]);
 
   // Expose login/logout to non-Privy UI (the navbar) via the adapter module.
+  // getAccessToken rides along so server calls can carry the session's identity
+  // as an end-user assertion without any component importing Privy's hooks.
   useEffect(() => {
-    registerPrivyAuthControls({ login, logout, authenticated, resync: syncStellarWallet });
+    registerPrivyAuthControls({
+      login,
+      logout,
+      authenticated,
+      resync: syncStellarWallet,
+      getAccessToken,
+    });
     return () => registerPrivyAuthControls(null);
-  }, [login, logout, authenticated, syncStellarWallet]);
+  }, [login, logout, authenticated, syncStellarWallet, getAccessToken]);
 
   useEffect(() => {
     if (!ready || !authenticated || !user) return;

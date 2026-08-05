@@ -42,6 +42,14 @@ interface PrivyAuthControls {
    * @returns true if an embedded Stellar wallet was found and synced.
    */
   resync: () => boolean;
+  /**
+   * The session's current Privy access token, refreshed by Privy as needed.
+   *
+   * Sent to our own API as the end-user assertion, which is how a copilot write
+   * proves who is asking without a second login. Privy's SDK owns the refresh, so
+   * always call this at request time rather than caching the string.
+   */
+  getAccessToken: () => Promise<string | null>;
 }
 
 let activeWalletKind: WalletKind | null = null;
@@ -116,6 +124,25 @@ export function registerPrivyAuthControls(controls: PrivyAuthControls | null): v
 
 export function getPrivyAuthControls(): PrivyAuthControls | null {
   return privyAuthControls;
+}
+
+/**
+ * The Privy access token for the current session, or null when there isn't one.
+ *
+ * The one place non-Privy code should get it: callers stay free of Privy hooks
+ * (this module is imported from plain `lib/*.ts` too), and a missing bridge is a
+ * null rather than a throw — a signed-out visitor's reads must not break.
+ */
+export async function getPrivyIdentityToken(): Promise<string | null> {
+  const controls = privyAuthControls;
+  if (!controls?.authenticated) return null;
+  try {
+    return await controls.getAccessToken();
+  } catch {
+    // Privy refuses when the session has lapsed. Treated as signed out: the write
+    // falls back to wallet-sign, which is the behaviour without this entirely.
+    return null;
+  }
 }
 
 /** In-flight `requestAccess()` prompt, so concurrent callers can't stack popups. */
