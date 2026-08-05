@@ -4,6 +4,7 @@
  * Risk / HF / caps are enforced by MCP + Sign Service — not by this layer.
  */
 
+import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 
@@ -844,6 +845,16 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
   const code = String(build.error ?? build.reason ?? "").toLowerCase();
   const raw = humanizeWadAmounts(String(build.message || build.error || build.reason || "MCP write failed"));
 
+  // Checked before everything else: an unfunded wallet fails inside the RPC's
+  // account lookup, so MCP reports it as `contract_error` / `simulation_failed`
+  // and it would otherwise be swallowed by the simulation branch below and
+  // printed as a raw diagnostic dump.
+  if (isUnfundedWalletError(raw)) {
+    return unfundedWalletMessage(
+      tool === "vanna_open_account" ? "open your margin account" : undefined,
+    );
+  }
+
   if (code === "collateral_not_allowed" || /not accepted as collateral/i.test(raw)) {
     const allowed = Array.isArray(build.allowed_collateral)
       ? (build.allowed_collateral as string[]).join(", ")
@@ -1002,12 +1013,20 @@ export async function executeMcpWrite(
   try {
     build = await mcp.call(step.tool, step.args, ctx.userId);
   } catch (e) {
+    // MCP can report the same failure either as a structured error field (handled
+    // by humanizeMcpWriteError below) or as an isError result that mcp-client
+    // rethrows — so the unfunded-wallet check has to sit on both paths.
+    const thrown = e instanceof Error ? e.message : String(e);
     return {
       tool: step.tool,
       label: step.label,
       build: {},
       status: "error",
-      message: e instanceof Error ? e.message : String(e),
+      message: isUnfundedWalletError(thrown)
+        ? unfundedWalletMessage(
+            step.tool === "vanna_open_account" ? "open your margin account" : undefined,
+          )
+        : thrown,
       mcp_trace: {
         tool: step.tool,
         has_unsigned_xdr: false,

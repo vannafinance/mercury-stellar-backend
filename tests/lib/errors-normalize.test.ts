@@ -6,7 +6,11 @@ import {
   normalizeDepositCollateralError,
   normalizeTransferCollateralError,
   normalizeCreateAccountError,
+  isUnfundedWalletError,
+  unfundedWalletMessage,
 } from '@/lib/errors/normalize';
+import { humanizeMcpWriteError } from '@/lib/copilot/mcp-write';
+import { humanizeLegError } from '@/lib/copilot/multi-leg-agent';
 
 // The Freighter "Reject" button makes the SDK throw this while parsing the
 // (empty) signed response. Every normalizer must read it as a user cancel,
@@ -68,5 +72,63 @@ describe('non-cancel errors still pass through their domain message', () => {
   });
   it('create-account: no funds stays the faucet hint', () => {
     expect(normalizeCreateAccountError('account not found on network')).toMatch(/Faucet/i);
+  });
+});
+
+describe('unfunded wallet is detected however the RPC phrases it', () => {
+  const raws = [
+    // MCP `vanna_open_account`, verbatim from the copilot NOTE card
+    "Failed to load account 'GAHZRNY32C3ME2SFSAQXUS7SL2AQ44SZBJTWW6MZ2R56JXRZ43E7YEPS': Account not found, account_id: GAHZRNY32C3ME2SFSAQXUS7SL2AQ44SZBJTWW6MZ2R56JXRZ43E7YEPS",
+    // stellar-sdk getAccount on the margin page
+    'Account not found: GAHZRNY32C3ME2SFSAQXUS7SL2AQ44SZBJTWW6MZ2R56JXRZ43E7YEPS',
+    'account not found on network',
+    'Request failed: op_underfunded',
+    'tx_INSUFFICIENT_BALANCE',
+  ];
+  for (const raw of raws) {
+    it(`detects "${raw.slice(0, 34)}…"`, () => {
+      expect(isUnfundedWalletError(raw)).toBe(true);
+    });
+  }
+
+  it('does not fire on unrelated failures', () => {
+    for (const raw of [
+      'Error(Contract, #10)',
+      'trustline entry is missing for account GDPM…',
+      'rejected by risk engine pre-flight',
+      'fetch failed',
+      '',
+      undefined,
+    ]) {
+      expect(isUnfundedWalletError(raw)).toBe(false);
+    }
+  });
+
+  it('names the fee, the reserve and the Faucet, and tails the caller action', () => {
+    const msg = unfundedWalletMessage('open your margin account');
+    expect(msg).toMatch(/transaction fee/i);
+    expect(msg).toMatch(/1 XLM/);
+    expect(msg).toMatch(/Faucet/);
+    expect(msg).toMatch(/open your margin account\.$/);
+  });
+
+  it('falls back to a neutral action when the caller has no context', () => {
+    expect(unfundedWalletMessage()).toMatch(/try again\.$/);
+  });
+
+  it('routes the copilot single-write path to the same message', () => {
+    const msg = humanizeMcpWriteError(
+      {
+        error: 'contract_error',
+        message:
+          "Failed to load account 'GAHZRNY32C3ME2SFSAQXUS7SL2AQ44SZBJTWW6MZ2R56JXRZ43E7YEPS': Account not found",
+      },
+      'vanna_open_account',
+    );
+    expect(msg).toBe(unfundedWalletMessage('open your margin account'));
+  });
+
+  it('routes a strategy leg to the same message', () => {
+    expect(humanizeLegError('Account not found, account_id: GAHZ…')).toBe(unfundedWalletMessage());
   });
 });

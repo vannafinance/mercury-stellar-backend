@@ -7,6 +7,7 @@
  * @see docs/multi-leg-agent-plan.md
  */
 
+import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
 import { copilotConfig } from "./config";
 import { splitLeverageAmounts } from "./mcp-write";
 import type { ChatResponse, CopilotAction, RoutedIntent } from "./types";
@@ -404,6 +405,9 @@ export function toExecutionStep(s: MultiLegStep): {
 export function humanizeLegError(raw: string | null | undefined): string {
   const m = (raw || "").trim();
   if (!m) return "Something went wrong on this step.";
+  // Same wallet-has-no-XLM case as the single-write path — a strategy leg must not
+  // report it as a bare RPC dump when the single-write path explains it.
+  if (isUnfundedWalletError(m)) return unfundedWalletMessage();
   if (/fetch failed|failed to fetch|networkerror|econnrefused|enotfound|etimedout|abort(ed)?|timeout/i.test(m)) {
     return "Could not reach the Vanna MCP server (network). Check you’re online, MCP URL is up, then retry.";
   }

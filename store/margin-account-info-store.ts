@@ -9,6 +9,7 @@ import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { normalizeCreateAccountError } from "@/lib/errors/normalize";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -469,11 +470,15 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
       setMarginAccount(marginAccount);
       return true;
     } else {
-      setAccountCreationError(result.error || 'Failed to create margin account');
+      // Normalized here rather than in the component: `accountCreationError` is
+      // rendered verbatim by create-margin-account.tsx, and the most common cause
+      // — a wallet with no XLM, so Soroban RPC cannot even load the source account
+      // — arrived as a raw "Account not found" dump or the bare fallback string.
+      setAccountCreationError(normalizeCreateAccountError(result.error || ''));
       return false;
     }
   } catch (error: any) {
-    setAccountCreationError(error?.message || 'Failed to create margin account');
+    setAccountCreationError(normalizeCreateAccountError(error?.message || ''));
     return false;
   }
 };
