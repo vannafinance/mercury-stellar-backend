@@ -237,6 +237,23 @@ export async function POST(req: NextRequest) {
       multi_leg_steps: Array.isArray(multiSteps) ? multiSteps.length : null,
       tx_hash: data.execution?.tx_hash ? String(data.execution.tx_hash).slice(0, 16) : null,
       signed_in: !!loadedUser.bound,
+      /**
+       * The first two hops of the identity trace, on the line that already exists
+       * per turn. Read with `write_assertion` from mcp-client, they say which hop
+       * dropped the end-user identity without guessing from a symptom three
+       * services away:
+       *
+       *   token_present false            → the browser sent nothing
+       *   token_present true + an error  → it arrived and was refused, and why
+       *   bound true + attached false    → this app dropped it after verifying
+       *   attached true, still no user   → the MCP or Sign Service dropped it
+       *
+       * Never the token itself, only whether there was one.
+       */
+      privy_token_present: loadedUser.privy.tokenPresent,
+      privy_token_source: loadedUser.privy.source ?? null,
+      privy_error: loadedUser.privy.error ?? null,
+      bound_kind: loadedUser.bound?.kind ?? null,
     });
     // commit() persists a rotated session cookie (or clears a dead one). It must
     // run on the error path too, or a refresh that happened this request is lost

@@ -452,6 +452,22 @@ class LiveMCPClient implements MCPClient {
     const user = needsUser ? currentUser() : null;
     if (user) {
       sessionHeaders["X-Vanna-User-Assertion"] = user.accessToken;
+      // The last hop this app controls, stated positively.
+      //
+      // Without it, "the app never sent the assertion" and "the app sent it and
+      // something downstream lost it" look identical from outside — and they did,
+      // for a deploy cycle: the header was on the wire the whole time while the MCP
+      // read the identity of the request that OPENED the session rather than the one
+      // making the call. Writes are rare enough that one line each is cheap, and it
+      // is the line that ends that argument. Never the token, only that there is one.
+      console.info(
+        `[mcp-client] ${JSON.stringify({
+          event: "write_assertion",
+          tool,
+          attached: true,
+          kind: user.kind,
+        })}`,
+      );
     } else if (needsUser) {
       // A write leaving without an assertion is the exact condition that made
       // auto-sign fail live, and it was invisible: the MCP then forwards its own
