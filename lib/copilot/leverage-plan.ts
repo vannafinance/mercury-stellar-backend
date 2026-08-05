@@ -36,6 +36,7 @@
  */
 
 import { marginCollateralSymbol } from "./mcp-write";
+import { resolveAssetDef } from "./registry/assets";
 import type { MCPClient } from "./mcp-client";
 
 /**
@@ -45,11 +46,11 @@ import type { MCPClient } from "./mcp-client";
  * borrow BLUSDC" price correctly without pretending the two tokens are the same.
  */
 export function oraclePriceSymbol(asset?: string | null): string {
-  const a = (asset || "").toUpperCase().replace(/\s+/g, "");
-  if (!a) return "USDC";
-  if (a === "XLM" || a === "XLM_SAC") return "XLM";
-  if (a === "AQUA") return "AQUA";
-  if (a === "EURC") return "EURC";
+  const def = resolveAssetDef(asset);
+  if (def) return def.oracleSymbol;
+  // Unknown or ambiguous input falls back to the dollar feed, as it always has. This
+  // is wrong for an unsupported ticker — it prices DOGE at $1 — but changing it here
+  // would be a behaviour change inside a refactor. Tracked separately.
   return "USDC";
 }
 

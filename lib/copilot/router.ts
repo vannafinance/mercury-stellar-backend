@@ -7,9 +7,16 @@
  */
 
 import type { RoutedIntent } from "./types";
+import { ASSET_SCAN_ORDER } from "./registry/assets";
 
-/** Longest-first so BLUSDC wins over nested USDC. */
-const ASSETS = ["BLUSDC", "AQUSDC", "SOUSDC", "USDC", "XLM", "AQUA", "EURC"] as const;
+/**
+ * Scan order comes from the asset registry — one membership list, guarded by a test,
+ * instead of the six that used to disagree. Still longest-first so BLUSDC wins over
+ * the USDC nested inside it.
+ */
+const ASSETS = ASSET_SCAN_ORDER;
+/** The same list as a regex alternation, so the patterns below cannot drift from it. */
+const ASSET_ALT = ASSET_SCAN_ORDER.join("|");
 
 /** Known junk / unsupported tickers we should reject, not map to USDC. */
 const UNSUPPORTED_ASSETS = [
@@ -27,7 +34,7 @@ const UNSUPPORTED_ASSETS = [
 ] as const;
 
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
-const AMOUNT_ASSET_RE = /(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)\b/i;
+const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
 const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*x\b/i;
 
@@ -132,7 +139,7 @@ export function findBorrowAmount(text: string): number | null {
   let after = cleaned.slice(verb.index + verb[0].length);
   const pivot = after.match(COLLATERAL_PIVOT);
   if (pivot && pivot.index != null) after = after.slice(0, pivot.index);
-  const m = after.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)?\b/i);
+  const m = after.match(new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})?\b`, "i"));
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -152,7 +159,9 @@ function findAmount(text: string): number | null {
   const cleaned = stripAddresses(text);
   // Explicit negative amounts (Sanujit EW8) — return the signed value so
   // validateLendParams can reject them instead of dropping the sign.
-  const negWithAsset = cleaned.match(/(-\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)\b/i);
+  const negWithAsset = cleaned.match(
+    new RegExp(String.raw`(-\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i"),
+  );
   if (negWithAsset) {
     const n = Number(negWithAsset[1]);
     return Number.isFinite(n) ? n : null;

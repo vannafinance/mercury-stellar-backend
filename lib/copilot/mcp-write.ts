@@ -7,9 +7,17 @@
 import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
+import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
 
-/** Earn pools that exist on testnet Registry (Sanujit PDF + MCP docs). */
-export const EARN_POOL_SYMBOLS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC", "AQUARIUS_USDC", "SOROSWAP_USDC"] as const;
+/**
+ * Earn pool symbols, from the registry rather than from a doc.
+ *
+ * The previous list was transcribed from a spec PDF and carried alias spellings
+ * (AQUARIUS_USDC, SOROSWAP_USDC) that `earnPoolSymbol` had already normalised away, so
+ * half of it was unreachable. The registry's claim is checked against a recorded
+ * `pool_stats` probe per symbol — see tests/lib/asset-registry.test.ts.
+ */
+export const EARN_POOL_SYMBOLS: readonly string[] = earnPoolSymbols();
 
 /** Minimum human amount we'll attempt to lend (reject dust / zero / negative). */
 const MIN_LEND_AMOUNT = 1e-6;
@@ -85,25 +93,18 @@ export const USDC_VARIANT_OPTIONS = [
 
 export type UsdcVariantId = (typeof USDC_VARIANT_OPTIONS)[number]["id"];
 
-/** True when the user said bare USDC without naming BLUSDC / AQUSDC / SOUSDC. */
+/**
+ * True when the user said bare USDC without naming BLUSDC / AQUSDC / SOUSDC.
+ *
+ * Deliberately an EXACT match on the normalised string rather than a substring scan:
+ * "USDC pool" and "USDCX" are not the ambiguous form, and treating them as such would
+ * pop a variant prompt on text that names no token at all.
+ */
 export function needsUsdcVariant(asset?: string | null): boolean {
   if (asset == null || String(asset).trim() === "") return false;
   const a = String(asset).toUpperCase().replace(/\s+/g, "");
-  // Explicit variants are fine
-  if (
-    a === "BLUSDC" ||
-    a === "BLEND_USDC" ||
-    a === "BLENDUSDC" ||
-    a === "AQUSDC" ||
-    a === "AQUARIUS_USDC" ||
-    a === "AQUARIUSUSDC" ||
-    a === "SOUSDC" ||
-    a === "SOROSWAP_USDC" ||
-    a === "SOROSWAPUSDC"
-  ) {
-    return false;
-  }
-  // Bare USDC (or "USDC pool" resolved to USDC)
+  // A concrete asset — including every variant spelling — is never ambiguous.
+  if (resolveAssetDef(a)) return false;
   return a === "USDC";
 }
 
@@ -140,19 +141,17 @@ export function usdcVariantClarifyMessage(context: string): string {
 }
 
 /**
- * Margin collateral symbols for the live MCP allowlist
- * (XLM, USDC, AQUSDC, SOUSDC — verified via deposit invalid_input).
- * UI still says BLUSDC for Blend USDC; MCP wants "USDC" for that SAC.
+ * The symbol the margin contract wants for this asset.
+ *
+ * Not cosmetic: the contract REJECTS the string "BLUSDC" and accepts "USDC" for the
+ * same token (verified in chain-facts.json, allowed=false / true). An unknown symbol
+ * passes through unchanged so the protocol — not this function — gets to refuse it.
  * Call needsUsdcVariant() first when the user only said "USDC".
  */
 export function marginCollateralSymbol(asset?: string | null): string {
   const a = (asset || "").toUpperCase();
   if (!a) return "USDC";
-  // Blend USDC family → MCP symbol USDC (not BLUSDC on this deploy)
-  if (a === "USDC" || a === "BLEND_USDC" || a === "BLUSDC") return "USDC";
-  if (a === "AQUARIUS_USDC" || a === "AQUSDC") return "AQUSDC";
-  if (a === "SOROSWAP_USDC" || a === "SOUSDC") return "SOUSDC";
-  return a;
+  return resolveAssetDef(a)?.marginSymbol ?? a;
 }
 
 /** Human label for UI (keep BLUSDC when user picked Blend USDC). */
@@ -214,21 +213,18 @@ export function formatLeveragePlanLine(
 }
 
 /**
- * Normalize earn-pool symbols for MCP.
- * Blend earn pool accepts "USDC" (alias); AQUSDC/SOUSDC are explicit.
+ * The symbol the earn pool wants for this asset.
+ *
+ * BLUSDC and USDC are one pool — a live pool_stats read returns identical rates for
+ * both, which is what makes the alias a fact rather than an assumption.
  */
 export function earnPoolSymbol(asset?: string | null): string {
   const a = (asset || "USDC").toUpperCase();
-  if (a === "AQUARIUS_USDC") return "AQUSDC";
-  if (a === "SOROSWAP_USDC") return "SOUSDC";
-  // Earn MCP: Blend pool is symbol USDC (or BLUSDC alias → USDC)
-  if (a === "BLEND_USDC" || a === "BLUSDC" || a === "USDC") return "USDC";
-  return a;
+  return resolveAssetDef(a)?.earnSymbol ?? a;
 }
 
 function isSupportedEarnSymbol(symbol: string): boolean {
-  const s = earnPoolSymbol(symbol);
-  return (EARN_POOL_SYMBOLS as readonly string[]).includes(s) || s === "USDC" || s === "BLUSDC";
+  return !!resolveAssetDef(symbol)?.earnSymbol || needsUsdcVariant(symbol);
 }
 
 /**

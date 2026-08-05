@@ -27,22 +27,27 @@
  */
 
 import type { RoutedIntent } from "./types";
+import { WRITE_ASSET_ENUM, allAssets, blendReserveSymbols } from "./registry/assets";
 
 // ── vocabularies: single source of truth for enums AND guards ──────────────
 
 /** Vanna Earn lending pools. USDC is the deliberate "ambiguous" sentinel. */
-export const EARN_POOLS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
-/** Blend reserves that exist on the registered testnet pool. */
-export const BLEND_RESERVES = ["XLM", "USDC"] as const;
+export const EARN_POOLS = allAssets()
+  .filter((a) => a.earnSymbol)
+  .map((a) => a.id);
+/** Blend reserves on the registered pool — checked against a live list_reserves read. */
+export const BLEND_RESERVES = blendReserveSymbols();
 /** Aquarius/Soroswap pairs Vanna can farm. There is no XLM/AQUA pool. */
 export const AQUARIUS_PAIRS = ["XLM/USDC", "XLM/USDT"] as const;
 /** Assets a write may name. "USDC" means "user did not pick a variant". */
-export const WRITE_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC", "USDC", "AQUA", "EURC"] as const;
+export const WRITE_ASSETS = WRITE_ASSET_ENUM;
 /** Sentinel that fans out to every Earn pool (comparisons / rankings). */
 export const ALL_EARN = "__ALL_EARN__";
 
 const EARN_POOL_ENUM = [...EARN_POOLS, "USDC", ALL_EARN];
-const PRICE_SYMBOLS = ["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC", "AQUA", "EURC"];
+// Same set as WRITE_ASSETS today: anything nameable is priceable, including the
+// ambiguous form (all three variants share one feed, so a price needs no variant).
+const PRICE_SYMBOLS: readonly string[] = WRITE_ASSET_ENUM;
 
 const USDC_NOTE =
   "There are three distinct USDC tokens (BLUSDC, AQUSDC, SOUSDC) and they are not " +
