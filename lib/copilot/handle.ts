@@ -34,7 +34,7 @@ import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
-import { answerToText, type StructuredAnswer } from "./answer-schema";
+import { answerToText, type AnswerFact, type StructuredAnswer } from "./answer-schema";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -1524,6 +1524,71 @@ async function snapshotPositionAnswer(
   };
 }
 
+/** Short amount for a fact value — long wad strings are unreadable in a list. */
+function fmtPosAmount(amount: string): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return amount;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+/**
+ * Structured "all open positions" card — headline + scannable facts.
+ *
+ * The old path jammed every holding into one comma-separated paragraph, which
+ * rendered as an unreadable wall of text. Same numbers; layout via AnswerView.
+ */
+function allPositionsStructured(
+  pos: MarginPositions | null,
+  farmProse: string,
+): StructuredAnswer {
+  const facts: AnswerFact[] = [];
+
+  if (pos) {
+    facts.push({
+      label: "health factor",
+      value: pos.hfText,
+      tone: pos.hf < 1.1 ? "bad" : pos.hf < 1.4 ? "warn" : "good",
+    });
+    facts.push({ label: "collateral", value: money(pos.grossCollateralValue) });
+    facts.push({ label: "borrowed", value: money(pos.totalBorrowedValue) });
+    facts.push({ label: "net value", value: money(pos.totalValue) });
+
+    for (const r of pos.collateral) {
+      facts.push({
+        label: `collateral · ${r.symbol}`,
+        value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+      });
+    }
+    for (const r of pos.borrowed) {
+      facts.push({
+        label: `borrowed · ${r.symbol}`,
+        value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+        tone: "warn",
+      });
+    }
+  }
+
+  const headline = pos
+    ? `Open positions — HF ${pos.hfText}, net ${money(pos.totalValue)}.`
+    : "Open positions on your farm venues.";
+
+  const noteParts: string[] = [];
+  if (farmProse) noteParts.push(farmProse);
+  if (pos && !farmProse) {
+    noteParts.push("Farm venues could not be read just now; the Farm page has the live figures.");
+  }
+  if (!pos && farmProse) {
+    noteParts.push("Margin collateral and debt were unavailable for this turn.");
+  }
+
+  return {
+    headline,
+    facts,
+    ...(noteParts.length ? { note: noteParts.join(" ") } : {}),
+    venue: "margin",
+  };
+}
+
 /**
  * "What are all my open positions?" — margin and the farm venues in one answer.
  *
@@ -1576,40 +1641,23 @@ async function allPositionsAnswer(
     };
   }
 
-  const lines: string[] = [];
-  if (pos) {
-    lines.push(
-      pos.collateral.length
-        ? `Margin collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`
-        : "Margin collateral: none posted.",
-    );
-    lines.push(
-      pos.borrowed.length
-        ? `Borrowed: ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`
-        : "Borrowed: nothing outstanding.",
-    );
-    lines.push(`Health factor ${pos.hfText} · net value ${money(pos.totalValue)}.`);
-  }
-  // MCP writes its own sentence for the farm side ("…holds 2 Blend supply positions and
-  // 1.7029 Aquarius XLM/USDC LP shares"). Reuse it rather than re-deriving the counts from
-  // the payload, so the two never drift apart.
+  // MCP writes its own sentence for the farm side. Reuse it rather than re-deriving
+  // the counts from the payload, so the two never drift apart.
   const farmProse =
     farm && typeof farm === "object"
       ? String((farm.summary as string) || (farm.message as string) || "").trim()
       : "";
-  if (farmProse) {
-    lines.push(farmProse);
-  } else if (pos && !farm) {
-    lines.push("Farm venues could not be read just now; the Farm page has the live figures.");
-  }
 
-  const message = pos
-    ? withHfGuardrails(lines.join("\n"), pos.hf, ctx.message)
-    : lines.join("\n");
+  const structured = allPositionsStructured(pos, farmProse);
+  let message = answerToText(structured);
+  if (pos) {
+    message = withHfGuardrails(message, pos.hf, ctx.message);
+  }
 
   return {
     kind: "answer",
     message,
+    answer: structured,
     data: factsForUi({
       ...(pos
         ? {
