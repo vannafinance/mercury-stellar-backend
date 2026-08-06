@@ -45,7 +45,9 @@ import {
   hasMoreLegs,
   legsFromUnsettledSteps,
   pickRemainingLegs,
+  shouldAutoResume,
   splitResumeBatch,
+  strategyIsComplete,
 } from "./resume-policy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { getPrivyAuthControls } from "@/lib/wallet-adapter";
@@ -138,7 +140,9 @@ interface ChatResponse {
     borrow_asset?: string | null;
     borrow_amount?: number | null;
     /** Which asset slot a variant chip answers — see pickClarifyOption. */
-    clarify_slot?: "collateral" | "borrow" | null;
+    clarify_slot?: "collateral" | "borrow" | "fraction" | null;
+    /** Repay share when clarify_slot is fraction (0.1 … 1). */
+    fraction?: number | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
   /**
@@ -1126,6 +1130,12 @@ export function CopilotWorkspace() {
    * the queue. See resume-policy.ts.
    */
   const strategyTailRef = useRef<ResumeLeg[]>([]);
+  /**
+   * Once the active strategy card is fully terminal, lock auto-resume so idle
+   * re-renders / summarize hops cannot toast "Running Borrow… (N more)" again.
+   * Cleared when a new user turn starts (resetStrategyAccumulator).
+   */
+  const strategyCompleteRef = useRef(false);
   /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
   const strategyMetaRef = useRef<Record<string, unknown>>({});
   const abortRef = useRef<AbortController | null>(null);
@@ -1219,6 +1229,7 @@ export function CopilotWorkspace() {
   const resetStrategyAccumulator = useCallback(() => {
     strategyStepsRef.current = [];
     strategyTailRef.current = [];
+    strategyCompleteRef.current = false;
     setStrategySteps([]);
     strategyMetaRef.current = {};
   }, []);
@@ -1815,13 +1826,25 @@ export function CopilotWorkspace() {
         }
 
         // Summarize round-trip has answer only — keep strategy meta for the card.
+        // Strip resume queue fields so the receipt cannot re-arm auto-chain.
         if (body.summarize_execution && strategyStepsRef.current.length) {
+          strategyCompleteRef.current = true;
+          strategyTailRef.current = [];
           data.data = {
             ...strategyMetaRef.current,
             multi_leg: true,
             multi_leg_steps: strategyStepsRef.current,
             ...(data.data && typeof data.data === "object" ? data.data : {}),
+            remaining_legs: null,
+            resume_legs: null,
+            prefer_resume_multi_leg: false,
+            can_resume: false,
+            strategy_complete: true,
           };
+          data.next_step = null;
+          if (data.execution) {
+            data.execution = { ...data.execution, status: data.execution.status || "completed" };
+          }
         }
 
         setResponse(data);
@@ -2315,6 +2338,36 @@ export function CopilotWorkspace() {
         await run(`${opt.id}`);
         return;
       }
+      // Margin-style repay share chip (10% / 25% / 50% / 100%).
+      if (pw.clarify_slot === "fraction") {
+        const frac = Number(opt.id);
+        if (!Number.isFinite(frac) || !(frac > 0)) {
+          await run(opt.label || opt.id);
+          return;
+        }
+        const label =
+          frac >= 1
+            ? `Repay all my ${pw.asset || "debt"}`
+            : `Repay ${Math.round(frac * 100)}% of my ${pw.asset || ""} debt`.trim();
+        setSubmitted(label);
+        setIntentText(label);
+        await postCopilot(
+          {
+            message: label,
+            pending_write: {
+              op: pw.op,
+              asset: pw.asset ?? null,
+              amount: null,
+              fraction: frac,
+              leverage: pw.leverage ?? null,
+              borrow_asset: pw.borrow_asset ?? null,
+              borrow_amount: pw.borrow_amount ?? null,
+            },
+          },
+          label,
+        );
+        return;
+      }
       // The chip answers ONE slot. A leveraged write has two, and writing the pick
       // into `asset` regardless would overwrite a collateral choice the user already
       // made when the question was about the borrow side. The server says which slot
@@ -2333,6 +2386,7 @@ export function CopilotWorkspace() {
             leverage: pw.leverage ?? null,
             borrow_asset: forBorrowSlot ? opt.id : (pw.borrow_asset ?? null),
             borrow_amount: pw.borrow_amount ?? null,
+            fraction: pw.fraction ?? null,
           },
         },
         label,
@@ -2432,22 +2486,13 @@ export function CopilotWorkspace() {
                 label?: string;
               }>)
             : null;
-        // The server only ever plans what we hand it, and we now hand it ONE leg
-        // per hop, so once it stops reporting later legs the client's own queue
-        // is the authority. Without this fallback the strategy would silently
-        // stop after leg 2 instead of continuing.
-        const remainingFromData = pickRemainingLegs(
-          legsFromData("remaining_legs") ?? legsFromData("resume_legs"),
-          strategyTailRef.current,
-          legsFromUnsettledSteps(strategyStepsRef.current),
-        );
-        const preferResume =
-          (response?.data as any)?.prefer_resume_multi_leg === true ||
-          // Auto-approve is a standing instruction to keep going without asking.
-          ((response?.data as any)?.can_resume === true && autoApprove) ||
-          remainingFromData.length > 0;
 
-        // Advance hop legs to ok in the shared accumulator (and current payload).
+        // Settle the signed leg BEFORE deciding what still remains.
+        //
+        // Computing `remainingFromData` while this leg still read `needs_sign` made
+        // `legsFromUnsettledSteps` re-queue the same borrow. Live: one "50 AQUSDC at 2x
+        // borrow XLM" plan called vanna_borrow ~15 times (~309 XLM each) until debt
+        // piled up. Claim first, then pick remaining from the updated card.
         const d0 = (response?.data ?? {}) as Record<string, unknown>;
         const raw = Array.isArray(d0.multi_leg_steps)
           ? (d0.multi_leg_steps as MultiLegStepUi[])
@@ -2476,11 +2521,46 @@ export function CopilotWorkspace() {
             multi_leg_steps: strategyStepsRef.current,
           };
         }
+
+        // The server only ever plans what we hand it, and we now hand it ONE leg
+        // per hop, so once it stops reporting later legs the client's own queue
+        // is the authority. Without this fallback the strategy would silently
+        // stop after leg 2 instead of continuing.
+        const serverRemaining =
+          legsFromData("remaining_legs") ?? legsFromData("resume_legs");
+        const cardUnsettled = legsFromUnsettledSteps(strategyStepsRef.current);
+        const remainingFromData = pickRemainingLegs(
+          serverRemaining,
+          strategyTailRef.current,
+          // Card unsettled only while the strategy is NOT complete — orphans from
+          // a prior STAGED plan must not rebuild the queue after 4/4 settled.
+          strategyIsComplete(strategyStepsRef.current) ? [] : cardUnsettled,
+        );
+        const complete =
+          strategyCompleteRef.current ||
+          strategyIsComplete(strategyStepsRef.current) ||
+          (patched.length > 0 &&
+            patched.every((s) =>
+              ["ok", "done", "skipped", "error", "blocked", "stopped_hf"].includes(
+                String(s?.status ?? ""),
+              ),
+            ) &&
+            patched.some((s) => ["ok", "done"].includes(String(s?.status ?? ""))));
+        const preferResume = shouldAutoResume({
+          complete,
+          serverRemaining,
+          clientTail: strategyTailRef.current,
+          preferFlag: (response?.data as any)?.prefer_resume_multi_leg === true,
+          canResumeWithAutoApprove:
+            (response?.data as any)?.can_resume === true && autoApprove,
+        });
+
         // "Done" requires every leg to actually be ok, not merely that nothing is queued.
-        const done =
-          patched.length > 0 &&
-          patched.every((s) => String(s?.status ?? "") === "ok") &&
-          (!preferResume || !remainingFromData.length);
+        const done = complete && (!preferResume || !remainingFromData.length);
+        if (done) {
+          strategyTailRef.current = [];
+          strategyCompleteRef.current = true;
+        }
 
         setResponse((prev) => {
           if (!prev) return prev;
@@ -2488,6 +2568,7 @@ export function CopilotWorkspace() {
           return {
             ...prev,
             kind: "executed",
+            next_step: done ? null : prev.next_step,
             data: {
               ...d,
               multi_leg_steps: strategyStepsRef.current.length
@@ -2495,6 +2576,10 @@ export function CopilotWorkspace() {
                 : patched,
               headline: done ? "All steps completed — strategy is live." : undefined,
               can_resume: done ? false : d.can_resume,
+              prefer_resume_multi_leg: done ? false : d.prefer_resume_multi_leg,
+              remaining_legs: done ? null : d.remaining_legs,
+              resume_legs: done ? null : d.resume_legs,
+              strategy_complete: done ? true : d.strategy_complete,
             },
             execution: {
               status: done ? "completed" : "partial",
@@ -2570,8 +2655,8 @@ export function CopilotWorkspace() {
           return;
         }
 
-        // Legacy 2-hop next_step chain (deposit→borrow only)
-        if (nextStep?.op && nextStep.amount != null && nextStep.amount > 0) {
+        // Legacy 2-hop next_step chain (deposit→borrow only) — never after hard-stop.
+        if (!done && nextStep?.op && nextStep.amount != null && nextStep.amount > 0) {
           if (cancelledRef.current) return;
           const label =
             nextStep.label ||
@@ -2655,18 +2740,29 @@ export function CopilotWorkspace() {
           const unfinished = strategyStepsRef.current.filter(
             (s) => !["ok", "done", "skipped"].includes(String(s.status ?? "")),
           );
-          const stillQueued = hasMoreLegs(
-            null,
-            strategyTailRef.current,
-            legsFromUnsettledSteps(strategyStepsRef.current),
-          );
+          const settled = strategyIsComplete(strategyStepsRef.current);
+          const stillQueued =
+            !settled &&
+            hasMoreLegs(
+              null,
+              strategyTailRef.current,
+              legsFromUnsettledSteps(strategyStepsRef.current),
+            );
+          if (settled && !stillQueued) {
+            strategyCompleteRef.current = true;
+            strategyTailRef.current = [];
+          }
           setResponse({
             kind: "executed",
             message: `Submitted with your wallet${result.hash ? ` · ${result.hash}` : ""}.`,
             mcp: response?.mcp ?? null,
             preview: response?.preview ?? null,
-            execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
+            execution: {
+              status: settled && !stillQueued ? "completed" : "signed_and_submitted",
+              tx_hash: result.hash ?? null,
+            },
             request_id: response?.request_id,
+            next_step: settled && !stillQueued ? null : response?.next_step,
             data: {
               ...strategyMetaRef.current,
               multi_leg: true,
@@ -2674,19 +2770,33 @@ export function CopilotWorkspace() {
               headline: unfinished.length || stillQueued
                 ? `${strategyStepsRef.current.length - unfinished.length} of ${strategyStepsRef.current.length} steps settled — ${unfinished.length || "more"} still to run.`
                 : "All steps completed — strategy is live.",
+              ...(settled && !stillQueued
+                ? {
+                    strategy_complete: true,
+                    remaining_legs: null,
+                    resume_legs: null,
+                    prefer_resume_multi_leg: false,
+                    can_resume: false,
+                  }
+                : {}),
             },
           });
           // Never summarize a half-finished strategy — the model then says "1 of 1
           // deposited" and the run card is replaced while borrow/supply are still due.
-          if (!cancelledRef.current && !unfinished.length && !stillQueued) {
-            await postCopilot(
-              {
-                message: intent,
-                summarize_execution: { intent, legs: ranLegs },
-              },
-              intent,
-              { chainHop: true },
-            );
+          if (!cancelledRef.current && settled && !stillQueued) {
+            const stratId = strategyParentRef.current?.id || response?.request_id || "exec";
+            const sumKey = `${stratId}:summarize:${finalLegs.length}`;
+            if (nextStepFiredRef.current !== sumKey) {
+              nextStepFiredRef.current = sumKey;
+              await postCopilot(
+                {
+                  message: intent,
+                  summarize_execution: { intent, legs: ranLegs },
+                },
+                intent,
+                { chainHop: true },
+              );
+            }
           }
           return;
         }
@@ -2791,23 +2901,62 @@ export function CopilotWorkspace() {
         : null;
     // Same authority rule as the wallet-sign path: the server stops reporting
     // later legs once it is only handed one, so the client's queue takes over.
-    // Card unsettled rows are the last resort when the queue was advanced too early.
+    // Card unsettled rows are only a fallback while the strategy is incomplete —
+    // never after 4/4 terminal (orphans from a prior STAGED plan must not rebuild).
+    const serverRemaining = legsFrom("remaining_legs") ?? legsFrom("resume_legs");
+    const cardComplete =
+      strategyCompleteRef.current ||
+      strategyIsComplete(strategyStepsRef.current) ||
+      (response.data as any)?.strategy_complete === true ||
+      response.execution?.status === "completed";
     const remaining = pickRemainingLegs(
-      legsFrom("remaining_legs") ?? legsFrom("resume_legs"),
+      serverRemaining,
       strategyTailRef.current,
-      legsFromUnsettledSteps(strategyStepsRef.current),
+      cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
     );
-    const canResumeFlag = (response.data as any)?.can_resume === true;
-    const preferResume =
-      (response.data as any)?.prefer_resume_multi_leg === true ||
-      // Auto-approve is a standing instruction to continue without asking. Without it,
-      // the button stays and the user drives each leg.
-      (canResumeFlag && autoApprove) ||
-      // A non-empty client tail means WE split this batch and still owe legs; that
-      // is not a user decision to re-confirm, it is the rest of a run already
-      // under way.
-      strategyTailRef.current.length > 0 ||
-      remaining.length > 0;
+    const preferResume = shouldAutoResume({
+      complete: cardComplete,
+      serverRemaining,
+      clientTail: strategyTailRef.current,
+      preferFlag: (response.data as any)?.prefer_resume_multi_leg === true,
+      canResumeWithAutoApprove:
+        (response.data as any)?.can_resume === true && autoApprove,
+    });
+
+    if (cardComplete) {
+      strategyTailRef.current = [];
+      strategyCompleteRef.current = true;
+      // Strip resume fields so a re-render cannot rebuild the queue.
+      if (
+        response.next_step ||
+        (response.data as any)?.remaining_legs ||
+        (response.data as any)?.resume_legs ||
+        (response.data as any)?.prefer_resume_multi_leg ||
+        (response.data as any)?.can_resume
+      ) {
+        setResponse((prev) => {
+          if (!prev || prev.kind !== "executed") return prev;
+          const d = (prev.data ?? {}) as Record<string, unknown>;
+          return {
+            ...prev,
+            next_step: null,
+            data: {
+              ...d,
+              remaining_legs: null,
+              resume_legs: null,
+              prefer_resume_multi_leg: false,
+              can_resume: false,
+              strategy_complete: true,
+            },
+            execution: {
+              ...(prev.execution ?? {}),
+              status: "completed",
+              tx_hash: prev.execution?.tx_hash ?? null,
+            },
+          } as ChatResponse;
+        });
+      }
+    }
 
     if (preferResume && remaining.length > 0) {
       const key = `${response.request_id ?? "exec"}:resume:${remaining.map((l) => l.op).join(",")}`;
@@ -2857,24 +3006,22 @@ export function CopilotWorkspace() {
     }
 
     const next = response.next_step;
-    if (!next?.op || next.amount == null || !(next.amount > 0)) {
+    if (cardComplete || !next?.op || next.amount == null || !(next.amount > 0)) {
       // Last resume hop often returns executed with only that hop's legs. Summarize
       // here with the FULL strategy card so facts say "4 of 4", not "1 of 1", and the
       // model does not invent that earlier legs "did not run".
       const card = strategyStepsRef.current;
-      const allSettled =
-        card.length > 0 &&
-        card.every((s) => ["ok", "done", "skipped"].includes(String(s.status ?? ""))) &&
-        card.some((s) => ["ok", "done"].includes(String(s.status ?? "")));
-      const stillQueued = hasMoreLegs(
-        null,
-        strategyTailRef.current,
-        legsFromUnsettledSteps(card),
-      );
+      const allSettled = strategyIsComplete(card);
+      const stillQueued =
+        !allSettled &&
+        hasMoreLegs(null, strategyTailRef.current, legsFromUnsettledSteps(card));
       const needsClientSummary =
         (response.data as any)?.needs_client_summary === true || allSettled;
       if (needsClientSummary && allSettled && !stillQueued) {
-        const sumKey = `${response.request_id ?? "exec"}:summarize:${card.length}`;
+        strategyCompleteRef.current = true;
+        strategyTailRef.current = [];
+        const stratId = strategyParentRef.current?.id || response.request_id || "exec";
+        const sumKey = `${stratId}:summarize:${card.length}`;
         if (nextStepFiredRef.current === sumKey) return;
         nextStepFiredRef.current = sumKey;
         const intent =
@@ -3602,7 +3749,12 @@ export function CopilotWorkspace() {
                       response.clarify_options.length > 0 && (
                         <div className="mt-5 flex flex-col gap-2.5">
                           <p className="font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
-                            choose usdc type
+                            {response.pending_write?.clarify_slot === "fraction"
+                              ? "how much to repay"
+                              : response.pending_write?.clarify_slot === "borrow" ||
+                                  response.pending_write?.clarify_slot === "collateral"
+                                ? "choose usdc type"
+                                : "choose an option"}
                           </p>
                           <div className="flex flex-wrap gap-2.5">
                             {response.clarify_options.map((opt) => (

@@ -9,8 +9,15 @@
 
 import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
 import { copilotConfig } from "./config";
-import { sameAsset } from "./leverage-plan";
+import {
+  leverageLegs,
+  leveragePriceSymbols,
+  planLeverage,
+  sameAsset,
+  type LeverageGap,
+} from "./leverage-plan";
 import { splitLeverageAmounts } from "./mcp-write";
+import { netOfOriginationFee } from "@/lib/borrow-fee";
 import { actionFrom, toSlots, type IntentSlots } from "./registry/intent";
 import type { ChatResponse, CopilotAction, RoutedIntent } from "./types";
 
@@ -207,7 +214,9 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
         continue;
       }
       const { deposit, borrow } = splitLeverageAmounts(amount, leverage, null);
-      const supplyAmt = borrow > 0 ? borrow : deposit;
+      // Borrow credits are net of origination fee — supplying the gross borrow
+      // amount traps with HostError #10 (insufficient free balance).
+      const supplyAmt = borrow > 0 ? netOfOriginationFee(borrow) : deposit;
       out.push({
         ...otherSlots(step),
         op: "deposit_collateral",
@@ -300,6 +309,111 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
 
   const cap = copilotConfig.multiLegMaxLegs;
   return out.slice(0, Math.min(12, Math.max(1, cap)));
+}
+
+/**
+ * Turn any remaining `deposit_and_borrow` expanded writes into atomic deposit + borrow.
+ *
+ * Sync `expandPlanWrites` keeps cross-asset levered positions whole (no oracle there).
+ * The multi-leg runner then marked that single write "done" after deposit and **dropped**
+ * `runWrite`'s `next_step` borrow — live: AQUSDC@2× "borrow XLM" settled 1 tx, debt $0,
+ * UI still claimed XLM was borrowed. Size here with prices, then the one-leg-per-hop
+ * loop runs deposit then borrow like same-asset already does.
+ */
+export function materializeLeverageWrites(
+  writes: ExpandedWrite[],
+  prices: Record<string, number> = {},
+):
+  | { ok: true; writes: ExpandedWrite[] }
+  | {
+      ok: false;
+      gap: LeverageGap;
+      symbol?: string;
+      write: ExpandedWrite;
+    } {
+  const out: ExpandedWrite[] = [];
+  for (const w of writes) {
+    if (w.op !== "deposit_and_borrow") {
+      out.push(w);
+      continue;
+    }
+    const collateralAsset = w.asset || "XLM";
+    const borrowAsset = w.borrow_asset || collateralAsset;
+    const sized = planLeverage(
+      {
+        collateralAsset,
+        collateralAmount: w.amount,
+        leverage: w.leverage,
+        borrowAsset,
+        borrowAmount:
+          w.borrow_amount != null && Number.isFinite(Number(w.borrow_amount))
+            ? Number(w.borrow_amount)
+            : null,
+      },
+      prices,
+    );
+    if ("gap" in sized) {
+      return { ok: false, gap: sized.gap, symbol: sized.symbol, write: w };
+    }
+    const legs = leverageLegs(sized.plan);
+    out.push({
+      ...otherSlotsFromExpanded(w),
+      op: "deposit_collateral",
+      asset: legs.deposit.asset,
+      amount: legs.deposit.amount,
+      leverage: null,
+      borrow_asset: null,
+      label: humanWriteLabel("deposit_collateral", legs.deposit.amount, legs.deposit.asset),
+      multi_leg: false,
+    });
+    out.push({
+      ...otherSlotsFromExpanded(w),
+      op: "borrow",
+      asset: legs.borrow.asset,
+      amount: legs.borrow.amount,
+      leverage: sized.plan.leverage,
+      borrow_asset: null,
+      label: humanWriteLabel("borrow", legs.borrow.amount, legs.borrow.asset),
+      multi_leg: false,
+    });
+  }
+  const cap = copilotConfig.multiLegMaxLegs;
+  return { ok: true, writes: out.slice(0, Math.min(12, Math.max(1, cap))) };
+}
+
+/** Symbols the oracle must supply before {@link materializeLeverageWrites} can finish. */
+export function materializeLeveragePriceSymbols(writes: ExpandedWrite[]): string[] {
+  const needed = new Set<string>();
+  for (const w of writes) {
+    if (w.op !== "deposit_and_borrow") continue;
+    for (const s of leveragePriceSymbols({
+      collateralAsset: w.asset || "XLM",
+      collateralAmount: w.amount,
+      leverage: w.leverage,
+      borrowAsset: w.borrow_asset || w.asset || "XLM",
+    })) {
+      needed.add(s);
+    }
+  }
+  return [...needed];
+}
+
+function otherSlotsFromExpanded(
+  w: ExpandedWrite,
+): Omit<IntentSlots, "asset" | "amount" | "leverage" | "borrow_asset"> {
+  const {
+    op: _op,
+    label: _label,
+    multi_leg: _ml,
+    token_in: _ti,
+    token_out: _to,
+    asset: _a,
+    amount: _am,
+    leverage: _l,
+    borrow_asset: _b,
+    ...rest
+  } = w;
+  return rest as Omit<IntentSlots, "asset" | "amount" | "leverage" | "borrow_asset">;
 }
 
 export function formatMultiLegReport(opts: {

@@ -29,6 +29,7 @@ import {
   usdcVariantClarifyMessage,
   USDC_VARIANT_OPTIONS,
   defaultCapUsdFromMcp,
+  walletBalanceForEarn,
 } from "./mcp-write";
 import {
   describeLeveragePlan,
@@ -36,7 +37,9 @@ import {
   leverageLegs,
   leveragePriceSymbols,
   planLeverage,
+  sameAsset,
 } from "./leverage-plan";
+import { findAmountFraction, REPAY_FRACTION_OPTIONS } from "./amount-intent";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
@@ -49,6 +52,9 @@ import {
   expandPlanWrites,
   extractTxHash,
   humanizeLegError,
+  humanWriteLabel,
+  materializeLeveragePriceSymbols,
+  materializeLeverageWrites,
   multiLegHeadline,
   multiLegUiData,
   remainingNextStep,
@@ -57,6 +63,11 @@ import {
   type MultiLegStep,
 } from "./multi-leg-agent";
 import { preflightExpandedLegs } from "./multi-leg-preflight";
+import {
+  preflightAssetReadiness,
+  readinessDisplayAsset,
+} from "./asset-readiness";
+import { capToFreeBalance, netOfOriginationFee } from "@/lib/borrow-fee";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
 import { extractPlanIR, preferExtractedPlan } from "./step-extractor";
 import { classifyCoverage, residueIsMaterial } from "./residue";
@@ -2594,6 +2605,323 @@ async function projectImpact(
   }
 }
 
+/**
+ * Size a repay the way the Margin "Repay Loan" tab does.
+ *
+ * Explicit amount → use it (still capped at spendable).
+ * Fraction (all / 100% / 25% / …) → outstanding debt × fraction.
+ * Neither → offer the same 10/25/50/100% chips.
+ *
+ * Critical: repay spends FROM the smart account free balance, not the G-wallet.
+ * Accrued interest means debt can exceed what the C-account holds — the website
+ * caps at spendable (and can top up from the wallet). MCP repay has no top-up, so
+ * we cap the same way and always show: owed / wallet available / C-account spendable.
+ */
+async function resolveRepayAmount(
+  action: CopilotAction,
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+): Promise<
+  | {
+      kind: "ok";
+      amount: number;
+      asset: string;
+      debt: number;
+      walletAvailable: number | null;
+      spendable: number | null;
+      capped: boolean;
+      note: string;
+    }
+  | ChatResponse
+> {
+  const fraction =
+    action.fraction != null && Number.isFinite(Number(action.fraction)) && Number(action.fraction) > 0
+      ? Math.min(1, Number(action.fraction))
+      : findAmountFraction(ctx.message);
+
+  if (!ctx.smartAccount) {
+    return {
+      kind: "clarification",
+      message: "Connect a wallet with a margin account to repay debt.",
+      request_id: ctx.request_id,
+    };
+  }
+
+  const pos = await readMarginPositions(ctx.smartAccount);
+  if (!pos || !pos.borrowed.length) {
+    return {
+      kind: "blocked",
+      message: "You have no outstanding margin debt to repay.",
+      request_id: ctx.request_id,
+    };
+  }
+
+  let asset = action.asset;
+  let row = asset
+    ? pos.borrowed.find((r) => sameAsset(r.symbol, asset!))
+    : null;
+
+  if (!row && !asset && pos.borrowed.length === 1) {
+    row = pos.borrowed[0];
+    asset = row.symbol;
+  }
+
+  if (!row && !asset && pos.borrowed.length > 1) {
+    return {
+      kind: "clarification",
+      message:
+        `You have debt in ${pos.borrowed.map((r) => r.symbol).join(", ")}. ` +
+        `Which asset do you want to repay?`,
+      clarify_options: pos.borrowed.map((r) => ({
+        id: r.symbol,
+        label: r.symbol,
+        description: `${r.amount} owed (~$${r.usd.toFixed(2)})`,
+      })),
+      pending_write: {
+        op: "repay",
+        asset: null,
+        amount: action.amount ?? null,
+        fraction: fraction ?? null,
+        clarify_slot: "collateral",
+      },
+      request_id: ctx.request_id,
+    };
+  }
+
+  if (!row || !asset) {
+    const named = action.asset || "that asset";
+    return {
+      kind: "blocked",
+      message: `No ${named} debt on this margin account. Outstanding: ${pos.borrowed
+        .map((r) => `${r.amount} ${r.symbol}`)
+        .join(", ") || "none"}.`,
+      request_id: ctx.request_id,
+    };
+  }
+
+  const debtUnits = Number.parseFloat(String(row.amount).replace(/,/g, ""));
+  if (!Number.isFinite(debtUnits) || debtUnits <= 0) {
+    return {
+      kind: "blocked",
+      message: `Could not read a repayable ${asset} debt balance.`,
+      request_id: ctx.request_id,
+    };
+  }
+
+  const ui = displayUsdcLabel(marginCollateralSymbol(asset), asset);
+
+  // Wallet (G) balance — what Margin shows as "Available Balance".
+  let walletAvailable: number | null = null;
+  if (ctx.trader) {
+    try {
+      const wallet = await getMcpClient().call(
+        "vanna_get_wallet_balance",
+        { g_address: ctx.trader },
+        ctx.userId,
+      );
+      walletAvailable = walletBalanceForEarn(wallet as Record<string, unknown>, asset).balance;
+    } catch {
+      walletAvailable = null;
+    }
+  }
+
+  // Smart-account free balance — what repay actually spends (website caps here).
+  let spendable: number | null = null;
+  try {
+    const { MarginAccountService } = await import("@/lib/margin-utils");
+    const wad = await MarginAccountService.getMarginAccountTokenBalanceWad(
+      ctx.smartAccount,
+      marginCollateralSymbol(asset),
+    );
+    if (wad != null) {
+      const n = Number(BigInt(wad)) / 1e18;
+      if (Number.isFinite(n) && n >= 0) spendable = n;
+    }
+  } catch {
+    spendable = null;
+  }
+
+  const balLine =
+    `You owe ${debtUnits.toFixed(4)} ${ui} (~$${row.usd.toFixed(2)}).` +
+    (walletAvailable != null
+      ? ` Wallet has ${walletAvailable.toFixed(4)} ${ui} available.`
+      : "") +
+    (spendable != null
+      ? ` Margin account can spend ${spendable.toFixed(4)} ${ui} on repay.`
+      : "");
+
+  // No size yet — chips like Margin 10/25/50/100%, with live balances in the copy.
+  if (
+    (action.amount == null || !(action.amount > 0)) &&
+    fraction == null
+  ) {
+    return {
+      kind: "clarification",
+      message:
+        `${balLine} How much do you want to repay? Pick a share like the Margin page, ` +
+        `or say a number e.g. “repay 100 ${ui}”.`,
+      clarify_options: REPAY_FRACTION_OPTIONS.map((o) => ({
+        id: o.id,
+        label: o.label,
+        description: `${o.description} → ~${(debtUnits * o.fraction).toFixed(4)} ${ui}`,
+      })),
+      pending_write: {
+        op: "repay",
+        asset,
+        amount: null,
+        fraction: null,
+        clarify_slot: "fraction",
+      },
+      data: {
+        debt: debtUnits,
+        wallet_available: walletAvailable,
+        spendable,
+        asset: ui,
+      },
+      intent: {
+        template_id: "clarify_repay_fraction",
+        slots: { asset, debt: debtUnits },
+      },
+      request_id: ctx.request_id,
+    };
+  }
+
+  let wanted =
+    action.amount != null && action.amount > 0
+      ? action.amount
+      : debtUnits * (fraction ?? 1);
+  wanted = Math.min(wanted, debtUnits);
+  wanted = Math.round(wanted * 1e7) / 1e7;
+
+  if (spendable != null && spendable <= 1e-7) {
+    return {
+      kind: "blocked",
+      message:
+        `${balLine}\n\n` +
+        `Repay pulls ${ui} from the **margin account** free balance, not only the wallet. ` +
+        `That free balance is ~0 right now, so on-chain repay cannot run ` +
+        `(same #10 “balance not sufficient” the Margin page avoids by capping / topping up).\n\n` +
+        (walletAvailable != null && walletAvailable > 0
+          ? `Your wallet still has ${walletAvailable.toFixed(4)} ${ui} — use Margin → Repay Loan → Pay Now ` +
+            `(it can top up the account from the wallet), or deposit/borrow so the C-account holds free ${ui} first.`
+          : `Fund free ${ui} in the margin account (or use the Margin page repay flow), then retry.`),
+      data: {
+        debt: debtUnits,
+        wallet_available: walletAvailable,
+        spendable: 0,
+        asset: ui,
+      },
+      request_id: ctx.request_id,
+    };
+  }
+
+  let capped = false;
+  let amount = wanted;
+  if (spendable != null && amount > spendable) {
+    amount = Math.round(spendable * 1e7) / 1e7;
+    capped = true;
+  }
+
+  if (!(amount > 0)) {
+    return {
+      kind: "blocked",
+      message: `Repay size rounded to zero for ${ui}. ${balLine}`,
+      request_id: ctx.request_id,
+    };
+  }
+
+  const note =
+    balLine +
+    (capped
+      ? ` Repaying ${amount.toFixed(4)} ${ui} (capped to what the margin account can spend — ` +
+        `full debt clear may need Margin Pay Now to top up interest from the wallet).`
+      : ` Repaying ${amount.toFixed(4)} ${ui}.`);
+
+  return {
+    kind: "ok",
+    amount,
+    asset,
+    debt: debtUnits,
+    walletAvailable,
+    spendable,
+    capped,
+    note,
+  };
+}
+
+/** Wallet-sign response for trustline/faucet setup before the real write. */
+function assetSetupSignResponse(
+  readiness: Extract<Awaited<ReturnType<typeof preflightAssetReadiness>>, { status: "needs_setup" }>,
+  action: CopilotAction,
+  ctx: { request_id: string; trader: string | null; smartAccount: string | null },
+  resumeLabel: string,
+): ChatResponse {
+  return {
+    kind: "needs_wallet_sign",
+    message:
+      readiness.message +
+      `\n\nWallet sign required for setup — full unsigned_xdr is attached (${readiness.unsigned_xdr.length} chars). ` +
+      `After this confirms, Copilot continues: ${resumeLabel}.`,
+    data: factsForUi({
+      asset_setup: true,
+      setup_kind: readiness.kind,
+      setup_asset: readiness.asset,
+      setup_label: readiness.label,
+      action_label: resumeLabel,
+      has_unsigned_xdr: true,
+      unsigned_xdr_chars: readiness.unsigned_xdr.length,
+    }),
+    unsigned_xdr: readiness.unsigned_xdr,
+    mcp: {
+      tool: "asset_setup",
+      has_unsigned_xdr: true,
+    },
+    intent: {
+      template_id: "asset_setup",
+      slots: {
+        setup_kind: readiness.kind,
+        setup_asset: readiness.asset,
+        resume_op: action.op,
+        amount: action.amount,
+      },
+    },
+    next_step: {
+      op: action.op,
+      asset: action.asset ?? null,
+      amount: action.amount ?? null,
+      leverage: action.leverage ?? null,
+      label: resumeLabel,
+      step: 2,
+      total_steps: 2,
+    },
+    preview: {
+      template_id: "asset_setup",
+      human_summary: readiness.label,
+      slots: { asset: readiness.asset, resume_op: action.op },
+      risk: {
+        decision: "needs_confirmation",
+        reasons: [`Setup required before ${resumeLabel}`, `kind: ${readiness.kind}`],
+      },
+      requires_signature: true,
+      action: {
+        ...action,
+        op: "ensure_asset_setup",
+        asset: readiness.asset,
+        smart_account: ctx.smartAccount,
+        trader: ctx.trader,
+      },
+      simulation: null,
+      mcp: { tool: "asset_setup", status: "needs_wallet_sign", needs_auto_sign: false },
+    },
+    request_id: ctx.request_id,
+  };
+}
+
 async function runWrite(
   action: CopilotAction,
   ctx: {
@@ -2658,6 +2986,32 @@ async function runWrite(
   let smartAccount = ctx.smartAccount;
   if (action.requires_account && !smartAccount && ctx.trader) {
     smartAccount = await resolveSmartAccount(getMcpClient(), ctx.trader, ctx.userId);
+  }
+
+  // ── Repay size: Margin 10/25/50/100% chips as language ───────────────────
+  // "Repay all my XLM" must never ask "how much?" — size it off live debt the
+  // same way the Margin page fills the input when you tap 100%. Cap at C-account
+  // spendable (website does too) and always surface wallet vs spendable balances.
+  let repayNote: string | null = null;
+  let repayFacts: Record<string, unknown> | null = null;
+  if (action.op === "repay") {
+    const sized = await resolveRepayAmount(action, {
+      ...ctx,
+      smartAccount,
+    });
+    if (sized.kind !== "ok") return sized;
+    action.amount = sized.amount;
+    action.asset = sized.asset;
+    action.fraction = null;
+    repayNote = sized.note;
+    repayFacts = {
+      debt: sized.debt,
+      wallet_available: sized.walletAvailable,
+      spendable: sized.spendable,
+      repay_amount: sized.amount,
+      capped_to_spendable: sized.capped,
+      asset: sized.asset,
+    };
   }
 
   // Bare "USDC" is ambiguous (three SACs). Always ask — except highest-yield
@@ -2822,9 +3176,9 @@ async function runWrite(
     const { deposit, borrow } = splitLeverageAmounts(dep, action.leverage, null);
     const userAsset = action.asset || "BLUSDC";
     const uiAsset = displayUsdcLabel(marginCollateralSymbol(userAsset), userAsset);
-    // After deposit+borrow, free balance ≈ borrowed amount (collateral is locked).
-    // Supply the free/borrowed leg to Blend (matches what SA can spend).
-    const supplyAmt = borrow > 0 ? borrow : deposit;
+    // After deposit+borrow, free balance ≈ net borrow (gross − origination fee).
+    // Collateral is locked; never supply the gross borrow or HostError #10 fires.
+    const supplyAmt = borrow > 0 ? netOfOriginationFee(borrow) : deposit;
     const levLine = formatLeveragePlanLine(deposit, borrow, action.leverage, uiAsset);
     const step1: CopilotAction = {
       op: "deposit_collateral",
@@ -3055,6 +3409,43 @@ async function runWrite(
       };
     }
     if (ctx.trader) {
+      // Trustline/faucet setup before balance preflight — otherwise zero BLUSDC
+      // looks like "insufficient balance" and HostError #13 never gets a chance
+      // to be prevented via auto-setup.
+      try {
+        const readiness = await preflightAssetReadiness({
+          op: action.op,
+          asset: action.asset,
+          amount: action.amount,
+          trader: ctx.trader,
+        });
+        if (readiness.status === "needs_setup") {
+          const sym = earnPoolSymbol(action.asset);
+          return assetSetupSignResponse(
+            readiness,
+            action,
+            { request_id: ctx.request_id, trader: ctx.trader, smartAccount },
+            `Lend ${action.amount} ${sym}`,
+          );
+        }
+        if (readiness.status === "blocked") {
+          return {
+            kind: "blocked",
+            message: readiness.message,
+            data: factsForUi({
+              ...(readiness.facts || {}),
+              readiness_reason: readiness.reason,
+            }),
+            intent: {
+              template_id: "lend",
+              slots: { asset: action.asset, amount: action.amount, readiness: readiness.reason },
+            },
+            request_id: ctx.request_id,
+          };
+        }
+      } catch {
+        /* fall through to balance preflight */
+      }
       const pf = await preflightLend(
         getMcpClient(),
         { asset: action.asset, amount: action.amount, trader: ctx.trader },
@@ -3133,6 +3524,7 @@ async function runWrite(
 
   // Blend farm supply — resolve Registry blend pool C-address for MCP deploy tool.
   let blendPoolAddress: string | null = null;
+  let blendSupplyNote: string | null = null;
   if (action.op === "deploy_to_blend" || action.op === "supply_to_blend") {
     if (action.amount == null || !(action.amount > 0)) {
       return {
@@ -3150,6 +3542,67 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
+
+    // Cap to live C-account free balance BEFORE MCP sim. After a borrow, free
+    // balance is gross − origination fee; supplying the gross amount is the
+    // HostError #10 path the user just hit on "farm BLUSDC at 2x".
+    if (action.op === "supply_to_blend" || (action.leverage == null || !(action.leverage > 1))) {
+      try {
+        const { MarginAccountService } = await import("@/lib/margin-utils");
+        const wad = await MarginAccountService.getMarginAccountTokenBalanceWad(
+          smartAccount,
+          marginCollateralSymbol(action.asset),
+        );
+        let free: number | null = null;
+        if (wad != null) {
+          const n = Number(BigInt(wad)) / 1e18;
+          if (Number.isFinite(n) && n >= 0) free = n;
+        }
+        const requested = Number(action.amount);
+        // If free read failed, still haircut as if this amount came from a borrow.
+        const planned =
+          free == null ? netOfOriginationFee(requested) : requested;
+        const capped = capToFreeBalance(planned, free ?? netOfOriginationFee(requested));
+        if (capped.amount <= 1e-7) {
+          const ui = displayUsdcLabel(marginCollateralSymbol(action.asset), action.asset);
+          return {
+            kind: "blocked",
+            message:
+              `Blend supply needs free ${ui} inside the margin account (C-address). ` +
+              `Right now spendable is ~0 — deposit/borrow first, then supply the ` +
+              `net borrow (after the ~0.3% origination fee). No transaction was built.`,
+            data: factsForUi({
+              free_balance: free,
+              requested: requested,
+              asset: ui,
+              readiness_reason: "insufficient_free_balance",
+            }),
+            intent: {
+              template_id: "supply_to_blend",
+              slots: { asset: action.asset, amount: requested, free },
+            },
+            request_id: ctx.request_id,
+          };
+        }
+        if (capped.capped || capped.amount < requested - 1e-9) {
+          const ui = displayUsdcLabel(marginCollateralSymbol(action.asset), action.asset);
+          blendSupplyNote =
+            `Supply sized to ${capped.amount} ${ui} spendable free balance` +
+            (free != null ? ` (C-account free ~${free.toFixed(7)})` : " (net of borrow origination fee)") +
+            ` — not the gross ${requested} ${ui}, which would fail on-chain.`;
+          action.amount = capped.amount;
+        }
+      } catch {
+        // Soft: haircut anyway so a failed balance read still avoids gross overshoot.
+        const haircut = netOfOriginationFee(Number(action.amount));
+        if (haircut > 0 && haircut < Number(action.amount)) {
+          action.amount = haircut;
+          blendSupplyNote =
+            `Supply shaved to ${haircut} for borrow origination fee (live free-balance read unavailable).`;
+        }
+      }
+    }
+
     try {
       const addrs = await getMcpClient().call("vanna_list_protocol_addresses", {}, ctx.userId);
       const optional = (addrs.optional as Record<string, unknown>) || {};
@@ -3198,6 +3651,46 @@ async function runWrite(
     };
   }
 
+  // ── Asset readiness / auto trustline setup ─────────────────────────────
+  // HostError #13 must not reach MCP simulation. If the wallet lacks a
+  // classic trustline or Blend/Aquarius faucet funding, return a setup XDR
+  // first; after it confirms the client resumes the original write.
+  try {
+    const readiness = await preflightAssetReadiness({
+      op: action.op,
+      asset: action.asset,
+      amount: action.amount,
+      token_out: action.token_b ?? null,
+      trader: ctx.trader,
+    });
+    if (readiness.status === "blocked") {
+      return {
+        kind: "blocked",
+        message: readiness.message,
+        data: factsForUi({
+          ...(readiness.facts || {}),
+          readiness_reason: readiness.reason,
+          asset: readinessDisplayAsset(action.asset),
+        }),
+        intent: {
+          template_id: action.op,
+          slots: { asset: action.asset, amount: action.amount, readiness: readiness.reason },
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    if (readiness.status === "needs_setup") {
+      return assetSetupSignResponse(
+        readiness,
+        action,
+        { request_id: ctx.request_id, trader: ctx.trader, smartAccount },
+        mapped.step.label,
+      );
+    }
+  } catch {
+    /* readiness is best-effort; MCP sim + humanize remain as safety net */
+  }
+
   // IMPORTANT: do NOT run projectImpact in parallel with executeMcpWrite.
   // Both use the shared MCP Streamable-HTTP session; concurrent tools/call
   // responses get interleaved and we were attaching get_price payloads to
@@ -3221,8 +3714,15 @@ async function runWrite(
   // choice and the original wording is long gone.
   const explainImpact =
     action.explain || wantsImpactExplanation(ctx.message) ? impactExplanation(simulation) : null;
-  const withImpact = (msg: string) =>
-    explainImpact ? `${String(msg).replace(/\*\*([^*]+)\*\*/g, "$1")}\n\n${explainImpact}` : msg;
+  const withImpact = (msg: string) => {
+    const base = explainImpact
+      ? `${String(msg).replace(/\*\*([^*]+)\*\*/g, "$1")}\n\n${explainImpact}`
+      : String(msg).replace(/\*\*([^*]+)\*\*/g, "$1");
+    const withRepay = repayNote ? `${repayNote}\n\n${base}` : base;
+    return blendSupplyNote ? `${blendSupplyNote}\n\n${withRepay}` : withRepay;
+  };
+  const withRepayData = (extra?: Record<string, unknown>) =>
+    factsForUi({ ...(repayFacts || {}), ...(extra || {}) });
 
   const mcpMeta = {
     tool: result.mcp_trace.tool,
@@ -3252,7 +3752,7 @@ async function runWrite(
       kind: "executed",
       message: withImpact(displayMsg),
       ...(accountAnswer ? { answer: accountAnswer } : {}),
-      data: factsForUi({ ...result.build, ...(result.submitted || {}) }),
+      data: withRepayData({ ...result.build, ...(result.submitted || {}) }),
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       mcp: mcpMeta,
       execution: {
@@ -3384,8 +3884,8 @@ async function runWrite(
   if (result.status === "rejected") {
     return {
       kind: "blocked",
-      message: result.message,
-      data: factsForUi({ ...result.build, ...(result.submitted || {}) }),
+      message: withImpact(result.message),
+      data: withRepayData({ ...result.build, ...(result.submitted || {}) }),
       mcp: mcpMeta,
       intent: { template_id: action.op },
       preview: {
@@ -3403,8 +3903,8 @@ async function runWrite(
 
   return {
     kind: "error",
-    message: result.message,
-    data: factsForUi(result.build),
+    message: withImpact(result.message),
+    data: withRepayData(result.build as Record<string, unknown>),
     mcp: mcpMeta,
     intent: { template_id: action.op },
     request_id: ctx.request_id,
@@ -3563,7 +4063,47 @@ async function runPlan(
   // e.g. deploy_to_blend@2x → deposit_collateral, borrow, supply_to_blend
   // One write per HTTP response so the client can paint each leg; the client
   // resume_multi_leg chain continues the rest.
-  const expanded = expandPlanWrites(plan.steps);
+  //
+  // Cross-asset deposit_and_borrow stays whole in expandPlanWrites (needs oracle).
+  // materializeLeverageWrites sizes it into deposit + borrow BEFORE this loop —
+  // otherwise the loop treats one combined write as "all legs done" after deposit
+  // and never runs the XLM borrow (debt $0, false "borrowed XLM" receipt).
+  const rawExpanded = expandPlanWrites(plan.steps);
+  const priceSymbols = materializeLeveragePriceSymbols(rawExpanded);
+  const leveragePrices =
+    priceSymbols.length > 0
+      ? await fetchLeveragePrices(mcp, priceSymbols, ctx.userId)
+      : {};
+  const materialized = materializeLeverageWrites(rawExpanded, leveragePrices);
+  if (!materialized.ok) {
+    const w = materialized.write;
+    const uiC = displayUsdcLabel(
+      marginCollateralSymbol(w.asset || "XLM"),
+      w.asset || "XLM",
+    );
+    const borrowSym = w.borrow_asset || w.asset || "XLM";
+    const uiB = displayUsdcLabel(marginCollateralSymbol(borrowSym), borrowSym);
+    if (materialized.gap === "missing_price") {
+      return {
+        kind: "unavailable",
+        message:
+          `I can't size a ${uiC}-collateral, ${uiB}-borrow position right now — the oracle ` +
+          `price for ${materialized.symbol ?? "an asset"} didn't come back, and I won't guess ` +
+          `a price that sets your borrow size. Try again in a moment.`,
+        request_id: ctx.request_id,
+      };
+    }
+    return {
+      kind: "clarification",
+      message:
+        materialized.gap === "missing_leverage"
+          ? `What leverage do you want on ${w.amount != null ? String(w.amount) : ""} ${uiC}? e.g. “2x” or “3x” — ` +
+            `or tell me the ${uiB} amount to borrow directly.`
+          : `How much ${uiC} to deposit for the leveraged position?`,
+      request_id: ctx.request_id,
+    };
+  }
+  const expanded = materialized.writes;
   facts.expanded_legs = expanded.map((w) => ({
     op: w.op,
     asset: w.asset,
@@ -3776,7 +4316,31 @@ async function runPlan(
 
     // ── Stop: needs signature ─────────────────────────────────────────────
     if (status === "needs_sign") {
-      const remaining = expanded.slice(writeCursor);
+      const setupMeta =
+        writeRes.data && typeof writeRes.data === "object"
+          ? (writeRes.data as Record<string, unknown>)
+          : {};
+      const isAssetSetup = setupMeta.asset_setup === true;
+
+      // Trustline/faucet setup is NOT the deposit/lend itself. Record a setup
+      // row as the signed leg and keep the current write in remaining so it
+      // runs after setup confirms (otherwise claim would mark deposit done).
+      if (isAssetSetup) {
+        multiSteps[multiSteps.length - 1] = {
+          ...multiSteps[multiSteps.length - 1],
+          op: "ensure_asset_setup",
+          label: String(setupMeta.setup_label || `Setup ${w.asset || "asset"} trustline`),
+          asset: String(setupMeta.setup_asset || w.asset || ""),
+          amount: null,
+          status: "needs_sign",
+          message: humanizeLegError((writeRes.message || "").slice(0, 400)),
+          tx_hash: txHash,
+        };
+      }
+
+      const remaining = isAssetSetup
+        ? [w, ...expanded.slice(writeCursor)]
+        : expanded.slice(writeCursor);
       for (const rest of remaining) {
         stepIndex += 1;
         multiSteps.push({
@@ -3786,7 +4350,9 @@ async function runPlan(
           asset: rest.asset,
           amount: rest.amount,
           status: "pending",
-          message: "Waiting for signature on the previous step",
+          message: isAssetSetup
+            ? "Waiting for trustline/faucet setup to confirm"
+            : "Waiting for signature on the previous step",
         });
       }
       // remaining_legs = full rest of plan after this leg (client should resume_multi_leg
@@ -3808,10 +4374,18 @@ async function runPlan(
           remaining_legs: remainingPayload,
           // Prefer full resume over shallow next_step.follow_up chains
           prefer_resume_multi_leg: remainingPayload.length > 0,
+          ...(isAssetSetup
+            ? {
+                asset_setup: true,
+                setup_kind: setupMeta.setup_kind,
+                setup_asset: setupMeta.setup_asset,
+                setup_label: setupMeta.setup_label,
+              }
+            : {}),
         }),
         intent: {
           template_id: plan.template_id,
-          slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs },
+          slots: { stopped_at: isAssetSetup ? "ensure_asset_setup" : w.op, step: writeCursor, total: totalWriteLegs },
         },
         // Still attach next_step for first remaining hop (compat), but UI should prefer resume
         next_step:
@@ -3961,6 +4535,60 @@ async function runPlan(
           slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs, one_leg_hop: true },
         },
         next_step: remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
+        execution: {
+          status: "partial",
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
+    // Belt: runWrite still returned a follow-up (e.g. unsplit deposit_and_borrow)
+    // even though expand counted one leg. Never declare the plan complete — that
+    // is how "borrow XLM" disappeared after a successful deposit.
+    if (status === "ok" && writeRes.next_step) {
+      const ns = writeRes.next_step;
+      stepIndex += 1;
+      multiSteps.push({
+        index: stepIndex,
+        op: ns.op,
+        label: ns.label || humanWriteLabel(ns.op, ns.amount, ns.asset, ns.leverage),
+        asset: ns.asset,
+        amount: ns.amount,
+        leverage: ns.leverage,
+        status: "pending",
+        message: "Queued — previous step settled",
+      });
+      const remainingPayload = [
+        {
+          op: ns.op,
+          asset: ns.asset ?? null,
+          amount: ns.amount ?? null,
+          leverage: ns.leverage ?? null,
+          label: ns.label || humanWriteLabel(ns.op, ns.amount, ns.asset, ns.leverage),
+          token_in: null,
+          token_out: null,
+        },
+      ];
+      return {
+        kind: "executed",
+        message: multiLegHeadline(multiSteps),
+        data: packUi({
+          remaining_legs: remainingPayload,
+          prefer_resume_multi_leg: true,
+        }),
+        intent: {
+          template_id: plan.template_id,
+          slots: {
+            stopped_at: w.op,
+            step: writeCursor,
+            total: writeCursor + 1,
+            one_leg_hop: true,
+            follow_up_from_write: true,
+          },
+        },
+        next_step: ns,
         execution: {
           status: "partial",
           tx_hash: txHash,

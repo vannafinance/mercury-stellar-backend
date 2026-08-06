@@ -117,7 +117,7 @@ export interface ChatRequest {
     borrow_asset?: string | null;
     borrow_amount?: number | null;
     /** Which slot a variant chip answers — see the ChatResponse copy of this field. */
-    clarify_slot?: "collateral" | "borrow" | null;
+    clarify_slot?: "collateral" | "borrow" | "fraction" | null;
     /** Carried through a variant clarification — see CopilotAction.explain. */
     explain?: boolean | null;
     token_a?: string | null;
@@ -428,12 +428,14 @@ export interface ChatResponse {
     borrow_asset?: string | null;
     borrow_amount?: number | null;
     /**
-     * Which asset slot the clarification is about, so the chip the user taps lands
+     * Which slot the clarification is about, so the chip the user taps lands
      * in that slot and leaves the other one — already answered — alone.
+     * `fraction` = Margin-style repay share (10% / 25% / 50% / 100%).
      */
-    clarify_slot?: "collateral" | "borrow" | null;
+    clarify_slot?: "collateral" | "borrow" | "fraction" | null;
     /** Carried through a variant clarification — see CopilotAction.explain. */
     explain?: boolean | null;
+    fraction?: number | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
   /** Present on `needs_wallet_bind` — the missing additional-signer consent. */

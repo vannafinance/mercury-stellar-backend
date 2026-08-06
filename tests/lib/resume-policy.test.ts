@@ -17,7 +17,9 @@ import {
   ledgerWaitCopy,
   legsFromUnsettledSteps,
   pickRemainingLegs,
+  shouldAutoResume,
   splitResumeBatch,
+  strategyIsComplete,
   type ResumeLegLike,
 } from "@/components/copilot/resume-policy";
 
@@ -215,6 +217,49 @@ describe("claimFirstAwaitingLeg — one signature settles one leg", () => {
     expect(claimed).toBe(false);
   });
 
+  it("THE LIVE BUG: claim BEFORE pickRemainingLegs so the signed borrow is not re-queued", () => {
+    // Wallet-sign success used to call pickRemainingLegs while borrow still read
+    // needs_sign, so legsFromUnsettledSteps re-queued it and auto-approve borrowed
+    // ~309 XLM over and over on the same 50 AQUSDC @ 2× plan.
+    const card = [
+      {
+        op: "deposit_collateral",
+        status: "ok",
+        amount: 50,
+        asset: "AQUSDC",
+        label: "Deposit 50 AQUSDC as collateral",
+      },
+      {
+        op: "borrow",
+        status: "needs_sign",
+        amount: 309.1208496,
+        asset: "XLM",
+        label: "Borrow 309.1208496 XLM",
+      },
+    ];
+    // Wrong order (what the client used to do):
+    const beforeClaim = pickRemainingLegs(
+      null,
+      [],
+      legsFromUnsettledSteps(card),
+    );
+    expect(beforeClaim.map((l) => l.op)).toEqual(["borrow"]);
+
+    // Right order: settle the signed leg first, then ask what remains.
+    const { steps: settled } = claimFirstAwaitingLeg(card, (s) => ({
+      ...s,
+      status: "ok",
+      tx_hash: "abc",
+    }));
+    const afterClaim = pickRemainingLegs(
+      null,
+      [],
+      legsFromUnsettledSteps(settled),
+    );
+    expect(afterClaim).toEqual([]);
+    expect(hasMoreLegs(null, [], legsFromUnsettledSteps(settled))).toBe(false);
+  });
+
   it("the submit-time stamp adds a hash WITHOUT settling the leg", () => {
     // Submitted ≠ confirmed. Marking it ok here would claim an outcome the
     // ledger has not given yet.
@@ -252,5 +297,81 @@ describe("ledger wait copy", () => {
   it("names a duration, so a normal wait does not read as a hang", () => {
     expect(LEDGER_CONFIRM_HINT).toMatch(/30/);
     expect(LEDGER_CONFIRM_HINT).toMatch(/60/);
+  });
+});
+
+describe("strategyIsComplete + shouldAutoResume — hard stop after final", () => {
+  const fourOk = [
+    { status: "ok" },
+    { status: "ok" },
+    { status: "done" },
+    { status: "ok" },
+  ];
+
+  it("4/4 terminal with success → complete", () => {
+    expect(strategyIsComplete(fourOk)).toBe(true);
+  });
+
+  it("skipped-only is not complete (no success)", () => {
+    expect(
+      strategyIsComplete([{ status: "skipped" }, { status: "skipped" }]),
+    ).toBe(false);
+  });
+
+  it("any pending / needs_sign → not complete", () => {
+    expect(
+      strategyIsComplete([
+        { status: "ok" },
+        { status: "ok" },
+        { status: "needs_sign" },
+        { status: "pending" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("THE LIVE BUG: complete → never auto-resume even with tail / unsettled garbage", () => {
+    // After RUN COMPLETE, leftover client tail + orphan staged rows used to
+    // toast "Running Borrow 10 BLUSDC (1 more after this)…" and re-submit.
+    expect(
+      shouldAutoResume({
+        complete: true,
+        serverRemaining: FOUR_LEGS.slice(2),
+        clientTail: FOUR_LEGS.slice(2),
+        preferFlag: true,
+        canResumeWithAutoApprove: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("incomplete + client tail → resume", () => {
+    expect(
+      shouldAutoResume({
+        complete: false,
+        clientTail: [{ op: "supply_to_blend", amount: 9.965 }],
+      }),
+    ).toBe(true);
+  });
+
+  it("incomplete + only orphan unsettled card (no server/tail flags) → do NOT resume", () => {
+    // Card fallback alone must not restart a finished-looking hop; orphans from
+    // a prior STAGED plan were the other half of the idle re-run bug.
+    expect(
+      shouldAutoResume({
+        complete: false,
+        serverRemaining: [],
+        clientTail: [],
+        preferFlag: false,
+        canResumeWithAutoApprove: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("incomplete + can_resume with auto-approve → resume", () => {
+    expect(
+      shouldAutoResume({
+        complete: false,
+        canResumeWithAutoApprove: true,
+      }),
+    ).toBe(true);
   });
 });

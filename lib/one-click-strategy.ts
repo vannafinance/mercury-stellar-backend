@@ -230,18 +230,11 @@ export interface OneClickStrategyResult {
   error?: string;
 }
 
+import { netOfOriginationFee } from './borrow-fee';
+
 function toWad(amount: number): string {
   return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
 }
-
-// SmartAccountContract deducts a 0.3% origination fee from every borrow — the
-// margin account is only ever credited `borrowAmount × (1 - fee)`, not the
-// full requested amount (see ORIGINATION_FEE_WAD in smart_account.rs). Using
-// the gross borrow amount for the AddLiquidity call overshoots the real
-// credited balance and traps with "balance is not sufficient to spend". A
-// slightly larger shave (0.35%) leaves a small buffer for WAD rounding.
-const BORROW_ORIGINATION_FEE_BUFFER = 0.9965;
-const netOfOriginationFee = (grossAmount: number): number => grossAmount * BORROW_ORIGINATION_FEE_BUFFER;
 
 /**
  * Open a leveraged-yield position in one user-facing action, branching on

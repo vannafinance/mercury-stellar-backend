@@ -36,7 +36,7 @@ import {
   findCollateralAsset,
   routeMessage,
 } from "@/lib/copilot/router";
-import { actionFromExpanded, expandPlanWrites } from "@/lib/copilot/multi-leg-agent";
+import { actionFromExpanded, expandPlanWrites, materializeLeverageWrites } from "@/lib/copilot/multi-leg-agent";
 
 /** The oracle's answer, not a guess. One feed for all three dollar stables. */
 const PRICES = { XLM: 0.11, AQUA: 0.004 };
@@ -260,5 +260,31 @@ describe("leg 2 needs nothing more from the user", () => {
     expect(actionFromExpanded(only, { smartAccount: null, trader: null, minHf: null }).borrow_asset).toBe(
       "XLM",
     );
+  });
+
+  it("materialize turns cross-asset deposit_and_borrow into deposit + XLM borrow", () => {
+    // THE LIVE BUG: expand left one deposit_and_borrow; the multi-leg loop ran deposit
+    // only, dropped next_step, and declared the plan complete with debt $0.
+    const raw = expandPlanWrites([
+      {
+        kind: "write",
+        op: "deposit_and_borrow",
+        asset: "AQUSDC",
+        amount: 50,
+        args: { leverage: 2, borrow_asset: "XLM" },
+      },
+    ]);
+    expect(raw).toHaveLength(1);
+    const mat = materializeLeverageWrites(raw, PRICES);
+    expect(mat.ok).toBe(true);
+    if (!mat.ok) return;
+    expect(mat.writes).toHaveLength(2);
+    expect(mat.writes[0].op).toBe("deposit_collateral");
+    expect(mat.writes[0].asset).toBe("AQUSDC");
+    expect(mat.writes[0].amount).toBe(50);
+    expect(mat.writes[1].op).toBe("borrow");
+    expect(mat.writes[1].asset).toBe("XLM");
+    // $50 × (2−1) = $50 debt → XLM at 0.11
+    expect(mat.writes[1].amount).toBeCloseTo(50 / 0.11, 4);
   });
 });

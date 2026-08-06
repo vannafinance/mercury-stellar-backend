@@ -385,7 +385,11 @@ export function slotsToAction(op: string, slots: IntentSlots, ctx: ActionCtx): C
     prefer_max_yield: bool(s.prefer_max_yield),
     // Derived, never carried — see EXECUTABLE_SLOTS.
     requires_amount:
-      !AMOUNT_OPTIONAL.has(op) && amount == null && !(op === "remove_liquidity" && fraction != null),
+      !AMOUNT_OPTIONAL.has(op) &&
+      amount == null &&
+      !(op === "remove_liquidity" && fraction != null) &&
+      // Repay "all" / "25%" is fraction against live debt — same as Margin 100% chip.
+      !(op === "repay" && fraction != null),
     requires_account: !NO_ACCOUNT_NEEDED.has(op),
     multi_leg: !!ctx.multiLeg,
     smart_account: ctx.smartAccount,

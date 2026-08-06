@@ -36,7 +36,7 @@ import { sanitizePlan } from "@/lib/copilot/plan-sanitize";
 import { freezePlan, planFingerprint, verifyApprovedPlan } from "@/lib/copilot/plan-approval";
 import { routeMessage } from "@/lib/copilot/router";
 import { planLeverage } from "@/lib/copilot/leverage-plan";
-import { actionFromExpanded, expandPlanWrites } from "@/lib/copilot/multi-leg-agent";
+import { actionFromExpanded, expandPlanWrites, materializeLeverageWrites } from "@/lib/copilot/multi-leg-agent";
 import { ambiguousUsdcSlot } from "@/lib/copilot/mcp-write";
 import type { RoutedIntent } from "@/lib/copilot/types";
 
@@ -324,20 +324,28 @@ describe("the approve round-trip preserves the borrow asset", () => {
     if (!check.ok) return;
 
     const expanded = expandPlanWrites(check.plan.steps);
-    // Cross-asset stays whole so the executor prices it off the oracle. Live this split
-    // here into deposit 500 + "borrow 1000 AQUSDC".
+    // Cross-asset stays whole in sync expand so we don't invent borrow units without
+    // an oracle. materialize (what runPlan does) then splits into deposit + XLM borrow.
     expect(expanded).toHaveLength(1);
     expect(expanded[0].op).toBe("deposit_and_borrow");
     expect(expanded[0].borrow_asset).toBe("XLM");
+    const mat = materializeLeverageWrites(expanded, PRICES);
+    expect(mat.ok).toBe(true);
+    if (!mat.ok) return;
+    expect(mat.writes).toHaveLength(2);
+    expect(mat.writes[0].op).toBe("deposit_collateral");
+    expect(mat.writes[1].op).toBe("borrow");
+    expect(mat.writes[1].asset).toBe("XLM");
+    expect(mat.writes[1].amount).toBeCloseTo(expectedBorrowXlm(500, 3), 4);
+    // The number that actually reached the chain must not be "1000 AQUSDC".
+    expect(JSON.stringify(mat.writes)).not.toMatch(/"amount":1000,"asset":"AQUSDC"/);
+
     const action = actionFromExpanded(expanded[0], {
       smartAccount: null,
       trader: null,
       minHf: null,
     });
     expect(action.borrow_asset).toBe("XLM");
-    // The number that actually reached the chain, and what it should be.
-    expect(JSON.stringify(expanded)).not.toMatch(/"amount":1000,"asset":"AQUSDC"/);
-
     const sized = planLeverage(
       {
         collateralAsset: action.asset!,

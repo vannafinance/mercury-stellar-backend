@@ -90,6 +90,63 @@ export function hasMoreLegs<T>(
   return pickRemainingLegs(serverRemaining, clientTail, cardUnsettled).length > 0;
 }
 
+/** Terminal statuses — the leg will not run again. */
+const TERMINAL_STEP: ReadonlySet<string> = new Set([
+  "ok",
+  "done",
+  "skipped",
+  "error",
+  "blocked",
+  "stopped_hf",
+]);
+
+const SUCCESS_STEP: ReadonlySet<string> = new Set(["ok", "done"]);
+
+/**
+ * True when every step on the active strategy card is terminal and at least one
+ * succeeded. Used as the hard-stop gate so idle re-renders cannot rebuild a
+ * resume queue from stale pending rows / orphan staged plans.
+ */
+export function strategyIsComplete(
+  steps: readonly { status?: unknown }[] | null | undefined,
+): boolean {
+  if (!steps?.length) return false;
+  let anySuccess = false;
+  for (const s of steps) {
+    const st = String(s?.status ?? "");
+    if (!TERMINAL_STEP.has(st)) return false;
+    if (SUCCESS_STEP.has(st)) anySuccess = true;
+  }
+  return anySuccess;
+}
+
+/**
+ * Whether the client may auto-continue after an `executed` hop.
+ *
+ * **If the strategy card is complete → always false.** That is the live bug:
+ * after 4/4 settled, `legsFromUnsettledSteps` / a leftover tail still made
+ * `preferResume` true and toasted "Running Borrow… (N more after this)".
+ *
+ * When incomplete, only server remaining or the client's own split tail may
+ * drive resume — not orphan unsettled card rows alone (those can be a previous
+ * STAGED plan merged into the accumulator).
+ */
+export function shouldAutoResume(opts: {
+  complete: boolean;
+  serverRemaining?: readonly unknown[] | null;
+  clientTail?: readonly unknown[] | null;
+  /** Prefer / can_resume flags from the server for this hop. */
+  preferFlag?: boolean;
+  canResumeWithAutoApprove?: boolean;
+}): boolean {
+  if (opts.complete) return false;
+  if (opts.preferFlag) return true;
+  if (opts.canResumeWithAutoApprove) return true;
+  if (opts.serverRemaining?.length) return true;
+  if (opts.clientTail?.length) return true;
+  return false;
+}
+
 /** Statuses that still need a hop (not settled, not permanently skipped). */
 const UNSETTLED_FOR_RESUME: ReadonlySet<string> = new Set([
   "pending",

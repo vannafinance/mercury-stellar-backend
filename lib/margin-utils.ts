@@ -2141,11 +2141,14 @@ export class MarginAccountService {
       const tokenId = tokenIdBySymbol[norm];
       if (!tokenId) return null;
 
-      const userAddress = await getAddress();
-      if (userAddress.error || !userAddress.address) return null;
-
+      const sourceAddr = await getReadSourceAddress();
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      let sourceAccount: StellarSdk.Account;
+      try {
+        sourceAccount = await server.getAccount(sourceAddr);
+      } catch {
+        sourceAccount = new StellarSdk.Account(sourceAddr, "0");
+      }
       const token = new StellarSdk.Contract(tokenId);
       const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,

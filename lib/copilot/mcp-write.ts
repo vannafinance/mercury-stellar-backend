@@ -5,6 +5,10 @@
  */
 
 import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/normalize";
+import {
+  classifyTrustlineFailure,
+  isTrustlineMissingError,
+} from "./asset-readiness";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
@@ -872,6 +876,11 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
     );
   }
 
+  // Fallback only — preflightAssetReadiness should prevent these. Never dump HostError #13.
+  if (isTrustlineMissingError(raw)) {
+    return classifyTrustlineFailure(raw, { tool }).message;
+  }
+
   if (code === "collateral_not_allowed" || /not accepted as collateral/i.test(raw)) {
     const allowed = Array.isArray(build.allowed_collateral)
       ? (build.allowed_collateral as string[]).join(", ")
@@ -915,6 +924,15 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
           `Safer path for wallet XLM/USDC: lend to the Vanna earn pool instead ` +
           `(“lend 20 XLM” or “invest 20 XLM where yield is highest” without forcing farm). ` +
           `For levered farm: “farm Blend at 2x with 20 BLUSDC”.\n\nDetail: ${firstLine}`
+        );
+      }
+      if (/balance is not sufficient|#10|insufficient/i.test(raw)) {
+        return (
+          `Blend supply needs free balance inside the margin account (C-address).\n` +
+          `After a borrow, only the net amount is spendable (~0.3% origination fee is deducted) — ` +
+          `supplying the gross borrow size fails on-chain.\n` +
+          `Copilot sizes the supply to free balance automatically — retry the supply leg.\n\n` +
+          `Detail: ${firstLine}`
         );
       }
       return (
@@ -969,6 +987,17 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
         `(or the token needs trustline/approval).${balanceHint}\n\n` +
         `No transaction was submitted. Check your wallet balance and try a smaller amount ` +
         `(earn uses XLM or BLUSDC/USDC-family SACs — not plain circle USDC on this testnet).`
+      );
+    }
+    if (tool === "vanna_repay") {
+      const firstLine = raw.split(/\n/)[0]?.slice(0, 220) || raw.slice(0, 220);
+      return (
+        `Margin repay simulation failed. Repay spends free balance **inside the margin account** ` +
+        `(C-address), not only what your G-wallet shows as Available.\n\n` +
+        `Debt can be larger than free balance because of accrued interest — the Margin page ` +
+        `caps repay at spendable and can top up from the wallet; Copilot caps the same way. ` +
+        `If free balance is ~0, use Margin → Repay Loan → Pay Now, or free up that token in the account first.\n\n` +
+        `Detail: ${firstLine}`
       );
     }
     // Truncate huge event logs for other tools

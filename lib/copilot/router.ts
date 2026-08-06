@@ -7,6 +7,7 @@
  */
 
 import type { RoutedIntent } from "./types";
+import { findAmountFraction } from "./amount-intent";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 
 /**
@@ -171,8 +172,9 @@ function findAmount(text: string): number | null {
     const n = Number(withAsset[1]);
     return Number.isFinite(n) && n > 0 ? n : null;
   }
-  // Avoid treating leverage "5x" as an amount.
-  const noLev = cleaned.replace(LEVERAGE_RE, " ");
+  // Avoid treating leverage "5x" or share "25%" as an absolute size — those are
+  // leverage / fraction slots. "repay 25% of my XLM" must not become amount=25.
+  const noLev = cleaned.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
   const m = noLev.match(BARE_AMOUNT_RE);
   if (!m) return null;
   const n = Number(m[1]);
@@ -767,14 +769,21 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   if (any(text, "repay", "pay back", "payback", "clear my loan", "pay off")) {
+    // "all" / "100%" / "half" are sizes, not missing amounts — same rungs as Margin's
+    // 10/25/50/100% chips. A bare "repay my XLM" keeps amount null so the executor
+    // can offer those chips instead of a blank "how much?".
+    const fraction = amount == null ? findAmountFraction(raw) : null;
     return {
       kind: "write",
       op: "repay",
       template_id: "repay",
-      asset: asset ?? "USDC",
+      // Prefer the named debt asset (XLM). Do not default to USDC when they named one —
+      // that is what turned "repay all my XLM" into a confused USDC path.
+      asset: asset ?? null,
       amount,
+      fraction,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 

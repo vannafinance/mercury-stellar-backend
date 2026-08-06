@@ -19,12 +19,33 @@
  */
 
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
+import { HORIZON_URL, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 import { getAddress, signTransaction } from "@/lib/wallet-adapter";
 
 export type SignXdrResult =
   | { ok: true; hash: string }
   | { ok: false; error: string; hash?: string };
+
+/**
+ * Whether `address` must sign this envelope.
+ *
+ * Normal MCP writes set `tx.source` to the trader. Blend/Aquarius faucet setup
+ * envelopes are different: the faucet account is often `tx.source` (already
+ * partially signed), and the user's G-address appears only as an *operation*
+ * source (e.g. changeTrust). Rejecting those as "wrong wallet" was a false
+ * positive — the connected wallet was correct.
+ */
+export function envelopeRequiresSigner(
+  tx: { source: string; operations: ReadonlyArray<{ source?: string | null }> },
+  address: string,
+): boolean {
+  if (tx.source === address) return true;
+  return tx.operations.some((op) => op.source === address);
+}
+
+function isSorobanEnvelope(tx: StellarSdk.Transaction): boolean {
+  return tx.operations.some((op) => op.type === "invokeHostFunction");
+}
 
 /**
  * Whether a string is an envelope we can actually sign.
@@ -143,12 +164,20 @@ export async function signAndSubmitMcpXdr(
     };
   }
 
-  // The envelope must be signed by its source account — Soroban requires that
-  // regardless of any auth entries — so compare against the address that will
-  // ACTUALLY sign (`acct.address`), not the one the copilot remembered. Those
-  // differ when the user switches accounts inside Freighter mid-session, which
-  // would otherwise sail past the guard and fail on-chain with `txBadAuth`.
-  if (tx.source !== acct.address) {
+  // Guard against a real wallet switch — but allow faucet-style envelopes where
+  // the distribution account is tx.source and the trader only appears on an op
+  // (Blend getAssets / Aquarius changeTrust+payment). Comparing only tx.source
+  // falsely rejected those as "wrong wallet" while the rail showed the right G.
+  //
+  // Fallback: classic (non-Soroban) envelopes when the connected wallet still
+  // matches what Copilot sent as expectedSigner — Blend faucet XDRs are partially
+  // signed by the distributor and Freighter only adds the trader's signature.
+  const classicCosignOk =
+    !!expectedSigner &&
+    expectedSigner === acct.address &&
+    !isSorobanEnvelope(tx);
+
+  if (!envelopeRequiresSigner(tx, acct.address) && !classicCosignOk) {
     const built = `${tx.source.slice(0, 6)}…${tx.source.slice(-4)}`;
     const active = `${acct.address.slice(0, 6)}…${acct.address.slice(-4)}`;
     return {
@@ -173,14 +202,45 @@ export async function signAndSubmitMcpXdr(
   }
 
   // 4. Submit + poll. MCP already simulated, so we do NOT re-prepare (that would
-  //    invalidate the signature by mutating the envelope).
+  //    invalidate the signature by mutating the envelope). Classic faucet setup
+  //    (changeTrust + payment) must go through Horizon — Soroban RPC rejects it.
   try {
-    const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
     const envelope = StellarSdk.TransactionBuilder.fromXDR(
       signed.signedTxXdr,
       NETWORK_PASSPHRASE,
     ) as StellarSdk.Transaction;
 
+    if (!isSorobanEnvelope(envelope)) {
+      const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
+      try {
+        const result = await horizon.submitTransaction(envelope);
+        try {
+          onSubmitted?.(result.hash);
+        } catch {
+          /* UI callback must never take down submit */
+        }
+        return { ok: true, hash: result.hash };
+      } catch (e: unknown) {
+        const err = e as {
+          response?: { data?: { extras?: { result_codes?: unknown }; title?: string } };
+          message?: string;
+        };
+        const codes = err?.response?.data?.extras?.result_codes;
+        const detail = codes
+          ? JSON.stringify(codes).slice(0, 180)
+          : err?.response?.data?.title || err?.message || "Horizon rejected the transaction";
+        // Blend already topped this account — treat as success so setup can resume.
+        if (
+          detail.includes("tx_missing_operation") ||
+          detail.includes("op_already_exists")
+        ) {
+          return { ok: true, hash: "already-funded" };
+        }
+        return { ok: false, error: `Setup submit failed: ${detail}` };
+      }
+    }
+
+    const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
     const sent = await server.sendTransaction(envelope);
 
     if (sent.status === "ERROR") {

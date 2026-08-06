@@ -29,7 +29,8 @@ describe("multi-leg-agent expand", () => {
     expect(expanded[0].amount).toBe(20);
     expect(expanded[1].amount).toBe(10);
     expect(expanded[2].amount).toBe(10);
-    expect(expanded[3].amount).toBe(10);
+    // Supply is net of borrow origination fee — gross 10 would HostError #10.
+    expect(expanded[3].amount).toBe(9.965);
     for (const e of expanded) {
       expect(e.label).not.toMatch(/leg\s*\d|2×\s*leg/i);
     }
