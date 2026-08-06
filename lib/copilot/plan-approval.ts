@@ -22,6 +22,12 @@
  */
 
 import { createHash } from "crypto";
+import {
+  compactSlots,
+  slotsFingerprint,
+  toSlots,
+  type IntentSlots,
+} from "./registry/intent";
 import type { RoutedIntent } from "./types";
 
 /** A plan is built on live prices and account health; both move. */
@@ -45,6 +51,17 @@ export interface PlanStepView {
    * that was approved, which is precisely what this module exists to prevent.
    */
   borrow_asset: string | null;
+  /**
+   * EVERY executable slot for this step, as one record.
+   *
+   * This is the field that closes the bug class rather than patching one instance of it.
+   * The named fields above are a display view derived from it; this is what is hashed
+   * and what is replayed, so a slot added to EXECUTABLE_SLOTS survives approval without
+   * this file being touched. `leverage` needed a manual fix here once, `borrow_asset` a
+   * second time, and `token_out` was still broken — all three were the same omission in
+   * three different fields.
+   */
+  slots: IntentSlots;
   /** Human label, e.g. "Deposit 10 XLM as margin collateral". */
   label: string;
   /** Which product this leg touches, so venue mistakes are visible. */
@@ -166,20 +183,27 @@ function legCount(op: string, leverage: number | null): number {
  * are presentation, and including them would break approval on a harmless copy edit.
  */
 export function planFingerprint(
-  steps: Array<
-    Pick<PlanStepView, "op" | "asset" | "amount" | "leverage"> & {
-      borrow_asset?: string | null;
-    }
-  >,
+  steps: Array<{
+    op: string;
+    slots?: IntentSlots;
+    // Legacy top-level spellings, still accepted: `toSlots` reads either, so a caller
+    // that predates `slots` hashes to the same value as one that does not.
+    asset?: string | null;
+    amount?: number | null;
+    leverage?: number | null;
+    borrow_asset?: string | null;
+  }>,
 ): string {
   const canonical = steps
-    .map(
-      (s) =>
-        // borrow_asset is hashed because it changes what happens on-chain — an
-        // unhashed executable slot is one a client could alter after approval, which
-        // is the hole this fingerprint exists to close.
-        `${s.op}|${s.asset ?? ""}|${s.amount ?? ""}|${s.leverage ?? ""}|${s.borrow_asset ?? ""}`,
-    )
+    .map((s) => {
+      // Derived from EXECUTABLE_SLOTS by iteration, so every slot that changes what
+      // happens on-chain is hashed automatically. Hand-listing the fields here is what
+      // left `leverage`, then `borrow_asset`, then `token_out` outside the hash — and an
+      // unhashed executable slot is one a client can alter after approval, which is the
+      // exact hole this fingerprint exists to close.
+      const slots = s.slots ? compactSlots(s.slots) : toSlots(s);
+      return `${s.op}|${slotsFingerprint(slots)}`;
+    })
     .join(";");
   return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
@@ -193,26 +217,23 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       const venue = VENUE_BY_OP[op] ?? "other";
       const asset = s.asset ?? null;
       const amount = typeof s.amount === "number" && Number.isFinite(s.amount) ? s.amount : null;
-      const leverage =
-        typeof (s as { leverage?: unknown }).leverage === "number"
-          ? ((s as { leverage?: number }).leverage as number)
-          : null;
-      // Producers spell this either way: the clause extractor and the coalesce pass put
-      // it in `args.borrow_asset`, the router puts it on the step. Read both, or the
-      // slot is dropped depending on which path built the plan.
-      const fromArgs = (s.args as { borrow_asset?: unknown } | undefined)?.borrow_asset;
-      const fromStep = (s as { borrow_asset?: unknown }).borrow_asset;
-      const rawBorrow = typeof fromArgs === "string" ? fromArgs : fromStep;
+      // One read of every slot, handling both spellings (args.x and x) for all of them —
+      // rather than a per-field rescue for whichever slot was noticed to be missing.
+      const slots = toSlots(s);
+      const leverage = typeof slots.leverage === "number" ? slots.leverage : null;
       const borrow_asset =
-        typeof rawBorrow === "string" && rawBorrow.trim() ? rawBorrow.trim() : null;
+        typeof slots.borrow_asset === "string" && slots.borrow_asset ? slots.borrow_asset : null;
       return {
         n: i + 1,
         op,
-        asset,
-        amount,
+        // Display fields are DERIVED from slots, so the card and the hash can never
+        // describe two different trades.
+        asset: (slots.asset as string) ?? asset,
+        amount: typeof slots.amount === "number" ? slots.amount : amount,
         leverage,
         borrow_asset,
-        label: labelFor(op, asset, amount, venue, leverage, borrow_asset),
+        slots,
+        label: labelFor(op, (slots.asset as string) ?? asset, amount, venue, leverage, borrow_asset),
         venue,
       };
     });
@@ -285,10 +306,15 @@ export interface ApprovedPlan {
   created_at: number;
   steps: Array<{
     op: string;
+    /**
+     * The whole executable record, echoed back verbatim. This is the field approval
+     * actually runs from; the named ones below are accepted so an older client (or a
+     * hand-written payload) still validates, and are merged in when `slots` is absent.
+     */
+    slots?: IntentSlots;
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
-    /** The loan slot. Must round-trip — see PlanStepView.borrow_asset. */
     borrow_asset?: string | null;
   }>;
 }
@@ -319,16 +345,33 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
     };
   }
 
-  const recomputed = planFingerprint(
-    approved.steps.map((s) => ({
-      op: s.op,
-      asset: s.asset ?? null,
-      amount: s.amount ?? null,
-      leverage: s.leverage ?? null,
-      borrow_asset: s.borrow_asset ?? null,
-    })),
-  );
+  // One canonical read per step, whichever shape the client sent.
+  const replay = approved.steps.map((s) => ({
+    op: s.op,
+    slots: s.slots ? compactSlots({ ...toSlots(s), ...compactSlots(s.slots) }) : toSlots(s),
+  }));
+
+  const recomputed = planFingerprint(replay);
   if (recomputed !== approved.plan_id) {
+    /**
+     * A slot present at freeze and absent at approval now lands HERE, which is the whole
+     * gain: it used to be outside the hash, so the fingerprint matched and a different
+     * trade executed silently.
+     *
+     * The message stays generic on purpose. Only the hash of the original plan is held,
+     * not the plan, so this cannot know WHICH slot went missing — and an earlier draft
+     * that claimed to name it was reading the already-stripped payload against itself,
+     * which would have reported "nothing missing" on every real drop. A log line carries
+     * the two hashes for whoever debugs it; the user gets the one fact that matters.
+     */
+    console.warn(
+      `[copilot] ${JSON.stringify({
+        event: "approved_plan_fingerprint_mismatch",
+        presented: approved.plan_id,
+        recomputed,
+        steps: replay.map((s) => ({ op: s.op, slots: slotsFingerprint(s.slots) })),
+      })}`,
+    );
     return {
       ok: false,
       reason: "fingerprint_mismatch",
@@ -344,29 +387,22 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       kind: "plan",
       template_id: "approved_plan",
       summary: "Approved plan",
-      steps: approved.steps.map((s) => ({
+      /**
+       * Replayed from the slot record, in both spellings.
+       *
+       * `args` carries the whole record because `expandPlanWrites` reads slots from
+       * either place, and the top-level fields are set for the consumers that read them
+       * directly. Neither is a hand-picked subset any more, which is what let an
+       * approved trade differ from the executed one — twice, in two different fields.
+       */
+      steps: replay.map((s) => ({
         kind: "write" as const,
         op: s.op,
-        // Leverage must survive the replay. expandPlanWrites() reads it from either
-        // step.args.leverage or step.leverage, and dropping it turned an approved
-        // "deploy_to_blend 10 BLUSDC at 2x" into a plain 1x supply — a silently
-        // different trade from the one the user approved. Both spellings are set so a
-        // change to which one the expander prefers cannot reintroduce this.
-        //
-        // borrow_asset is exactly the same hazard and was exactly the same bug: an
-        // approved "deposit 500 AQUSDC, borrow XLM at 3×" replayed without it, so
-        // expandPlanWrites saw a same-asset position and emitted `borrow 1000 AQUSDC`
-        // — the USD size of the debt as collateral tokens. It failed on chain, which
-        // is the lucky outcome; the unlucky one is a wrong borrow that succeeds. Set in
-        // both spellings for the same reason as leverage.
-        args: {
-          ...(s.leverage != null ? { leverage: s.leverage } : {}),
-          ...(s.borrow_asset ? { borrow_asset: s.borrow_asset } : {}),
-        },
-        leverage: s.leverage ?? null,
-        asset: s.asset ?? null,
-        amount: s.amount ?? null,
-        borrow_asset: s.borrow_asset ?? null,
+        args: s.slots,
+        leverage: typeof s.slots.leverage === "number" ? s.slots.leverage : null,
+        asset: (s.slots.asset as string) ?? null,
+        amount: typeof s.slots.amount === "number" ? s.slots.amount : null,
+        borrow_asset: (s.slots.borrow_asset as string) ?? null,
       })),
     },
   };

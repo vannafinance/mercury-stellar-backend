@@ -1917,12 +1917,15 @@ export function CopilotWorkspace() {
           approved_plan: {
             plan_id: plan.plan_id,
             created_at: plan.created_at,
-            // Echoed back VERBATIM — every executable slot, not a subset. Anything
-            // omitted here is silently dropped from the trade that runs and from the
-            // fingerprint that is supposed to prove it is the approved one. That is how
-            // an approved "borrow XLM at 3×" executed as "borrow 1000 AQUSDC".
+            // Echoed back VERBATIM — the whole slot record, unread. The client does not
+            // decide which parts of an approved trade matter: picking fields here is
+            // what dropped `leverage`, then `borrow_asset`, then `token_out`, each
+            // silently changing the trade AND passing the fingerprint that was supposed
+            // to prove it had not changed.
             steps: plan.steps.map((s) => ({
               op: s.op,
+              slots: s.slots,
+              // Legacy spellings, kept so a server that predates `slots` still validates.
               asset: s.asset,
               amount: s.amount,
               leverage: s.leverage,

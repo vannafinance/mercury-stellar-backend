@@ -55,6 +55,15 @@ export interface PlanStepView {
    * both replays the wrong trade and fails the hash. The label already renders it.
    */
   borrow_asset?: string | null;
+  /**
+   * Every executable slot for this step, opaque to the card.
+   *
+   * The card renders the label; this exists so `approvePlan` can echo the whole record
+   * back unread. Echoing a hand-picked subset is what dropped `leverage`, then
+   * `borrow_asset`, then `token_out` — the client should not be deciding which parts of
+   * an approved trade matter.
+   */
+  slots?: Record<string, string | number | boolean | null>;
   label: string;
   venue: PlanVenue;
 }

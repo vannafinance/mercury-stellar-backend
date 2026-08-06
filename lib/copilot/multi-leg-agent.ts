@@ -11,6 +11,7 @@ import { isUnfundedWalletError, unfundedWalletMessage } from "@/lib/errors/norma
 import { copilotConfig } from "./config";
 import { sameAsset } from "./leverage-plan";
 import { splitLeverageAmounts } from "./mcp-write";
+import { actionFrom, toSlots, type IntentSlots } from "./registry/intent";
 import type { ChatResponse, CopilotAction, RoutedIntent } from "./types";
 
 export type PlanStep = Extract<RoutedIntent, { kind: "plan" }>["steps"][number];
@@ -38,19 +39,58 @@ export type MultiLegStep = {
   hf_after?: number | null;
 };
 
-export type ExpandedWrite = {
+/**
+ * One on-chain leg, ready to execute.
+ *
+ * Extends `IntentSlots` rather than re-listing fields: this type was a hand-picked
+ * subset (op/asset/amount/leverage/borrow_asset/token_in/token_out), so every other
+ * executable slot — `fraction`, `amount_a/b`, `venue`, `min_hf` — was dropped in the
+ * expansion regardless of what the plan said. An approved "remove half my liquidity"
+ * reached the executor with no fraction to act on. Carrying the slot record means a new
+ * slot survives expansion without this file being edited.
+ */
+export type ExpandedWrite = Omit<
+  IntentSlots,
+  "asset" | "amount" | "leverage" | "borrow_asset"
+> & {
   op: string;
+  label: string;
+  multi_leg?: boolean;
+  /** Swap spelling of token_a / token_b — the same two slots downstream. */
+  token_in?: string | null;
+  token_out?: string | null;
+  /**
+   * Narrowed re-declarations of the slots consumers read directly.
+   *
+   * `IntentSlots` types every slot as `string | number | boolean | null` because it is
+   * the generic wire form. These four are read as strings/numbers all over the executor,
+   * so they are pinned here — the record still carries every other slot untyped, which
+   * is what makes a NEW slot survive without touching this file.
+   */
   asset?: string | null;
   amount?: number | null;
   leverage?: number | null;
-  label: string;
-  multi_leg?: boolean;
-  /** Loan asset for a levered leg, when it differs from the collateral. */
   borrow_asset?: string | null;
-  /** Swap legs */
-  token_in?: string | null;
-  token_out?: string | null;
 };
+
+/**
+ * Every slot EXCEPT the four the leg re-derives, so a spread cannot widen their types.
+ *
+ * The point is the rest: `fraction`, `amount_a/b`, `venue`, `min_hf`,
+ * `prefer_max_yield` and anything added to EXECUTABLE_SLOTS later ride along without
+ * this file naming them.
+ */
+function otherSlots(step: PlanStep): Omit<
+  IntentSlots,
+  "asset" | "amount" | "leverage" | "borrow_asset"
+> {
+  const { asset, amount, leverage, borrow_asset, ...rest } = toSlots(step);
+  void asset;
+  void amount;
+  void leverage;
+  void borrow_asset;
+  return rest;
+}
 
 /** Clean product labels for agent runs / step table (no "2× leg 2/3" clutter). */
 export function humanWriteLabel(
@@ -135,16 +175,14 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       null;
 
     if (op === "swap") {
-      const tokenIn =
-        (step.args?.token_in as string) ||
-        (step.args?.token_a as string) ||
-        asset ||
-        "XLM";
-      const tokenOut =
-        (step.args?.token_out as string) ||
-        (step.args?.token_b as string) ||
-        null;
+      // Read through the slot record so token_in/token_out and token_a/token_b are one
+      // pair, whichever spelling the producer used — and so `venue` and the rest ride
+      // along instead of being dropped by a hand-picked push.
+      const slots = toSlots(step);
+      const tokenIn = (slots.token_a as string) || asset || "XLM";
+      const tokenOut = (slots.token_b as string) || null;
       out.push({
+        ...otherSlots(step),
         op: "swap",
         asset: tokenIn,
         amount,
@@ -158,6 +196,7 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
     if ((op === "deploy_to_blend" || op === "supply_to_blend") && leverage != null && leverage > 1) {
       if (amount == null || !(amount > 0)) {
         out.push({
+          ...otherSlots(step),
           op: "deploy_to_blend",
           asset,
           amount: null,
@@ -170,18 +209,21 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       const { deposit, borrow } = splitLeverageAmounts(amount, leverage, null);
       const supplyAmt = borrow > 0 ? borrow : deposit;
       out.push({
+        ...otherSlots(step),
         op: "deposit_collateral",
         asset,
         amount: deposit,
         label: humanWriteLabel("deposit_collateral", deposit, asset),
       });
       out.push({
+        ...otherSlots(step),
         op: "borrow",
         asset,
         amount: borrow,
         label: humanWriteLabel("borrow", borrow, asset),
       });
       out.push({
+        ...otherSlots(step),
         op: "supply_to_blend",
         asset,
         amount: supplyAmt,
@@ -194,6 +236,7 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
     if (op === "deposit_and_borrow" && (leverage == null || leverage > 1)) {
       if (amount == null || !(amount > 0)) {
         out.push({
+          ...otherSlots(step),
           op: "deposit_and_borrow",
           asset,
           amount: null,
@@ -211,6 +254,7 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       // the prices cancel — is split here.
       if (borrowAsset && asset && !sameAsset(borrowAsset, asset)) {
         out.push({
+          ...otherSlots(step),
           op: "deposit_and_borrow",
           asset,
           amount,
@@ -223,12 +267,14 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       }
       const { deposit, borrow } = splitLeverageAmounts(amount, L, null);
       out.push({
+        ...otherSlots(step),
         op: "deposit_collateral",
         asset,
         amount: deposit,
         label: humanWriteLabel("deposit_collateral", deposit, asset),
       });
       out.push({
+        ...otherSlots(step),
         op: "borrow",
         asset: borrowAsset || asset,
         amount: borrow,
@@ -237,11 +283,16 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       continue;
     }
 
+    // The pass-through leg: carry EVERY slot the step had, not the four this used to
+    // name. The four narrowed ones are re-applied explicitly on top, because the
+    // branches above may have derived them (a split leg's size is not the step's size).
     out.push({
+      ...otherSlots(step),
       op,
       asset,
       amount,
       leverage,
+      borrow_asset: borrowAsset,
       label: humanWriteLabel(op, amount, asset, leverage),
       multi_leg: false,
     });
@@ -338,26 +389,30 @@ export function extractTxHash(res: ChatResponse): string | null {
   return typeof h === "string" && h.length > 8 ? h : null;
 }
 
+/**
+ * One leg of an expanded plan → the action that executes it.
+ *
+ * Was one of five hand-written conversions, each with its own subset of the slots —
+ * this one silently dropped `fraction`, `amount_a/b` and `venue`, so an approved
+ * "remove half my liquidity" arrived with nothing to act on. Now it reads every slot in
+ * EXECUTABLE_SLOTS by iteration (see registry/intent.ts), so a new slot cannot be
+ * missing from this site while present in another.
+ *
+ * `token_in`/`token_out` are the swap spelling of `token_a`/`token_b` — the same two
+ * slots `mapOpToMcpStep` reads — so they are mapped in before the read.
+ */
 export function actionFromExpanded(
   w: ExpandedWrite,
   ctx: { smartAccount: string | null; trader: string | null; minHf: number | null },
 ): CopilotAction {
-  return {
-    op: w.op,
-    asset: w.asset ?? null,
-    amount: w.amount ?? null,
-    leverage: w.leverage ?? null,
-    borrow_asset: w.borrow_asset ?? null,
-    multi_leg: !!w.multi_leg,
-    requires_amount: w.amount == null && !["create_account", "open_account"].includes(w.op),
-    requires_account: !["lend", "redeem", "create_account"].includes(w.op),
-    smart_account: ctx.smartAccount,
-    trader: ctx.trader,
-    min_hf: ctx.minHf,
-    // Swap: token_a / token_b map to mapOpToMcpStep swap params
-    token_a: w.token_in ?? null,
-    token_b: w.token_out ?? null,
-  };
+  return actionFrom(
+    {
+      ...w,
+      token_a: w.token_a ?? w.token_in ?? null,
+      token_b: w.token_b ?? w.token_out ?? null,
+    },
+    { smartAccount: ctx.smartAccount, trader: ctx.trader, minHf: ctx.minHf, multiLeg: !!w.multi_leg },
+  );
 }
 
 /** Map ChatResponse kind to multi-leg step status. */

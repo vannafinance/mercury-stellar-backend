@@ -66,6 +66,12 @@ import { evaluateDomainFirewall } from "./domain-firewall";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import {
+  actionFrom,
+  parseIntent,
+  toSlots,
+  type IntentInvalid,
+} from "./registry/intent";
+import {
   registerWalletBind,
   rememberConnectOrigin,
   resolveConnectOrigin,
@@ -110,6 +116,40 @@ function newRequestId(): string {
 
 function looksLikeWallet(id: string): boolean {
   return /^G[A-Z0-9]{55}$/.test(id);
+}
+
+/**
+ * Turn a boundary rejection into an answer, or null to let the turn continue.
+ *
+ * Null for `ambiguous_asset` on purpose. A bare "USDC" is not a malformed request — the
+ * product already has the right response, which is the variant chips raised further
+ * down. Failing here instead would replace a working question with an error, so the
+ * validator reports the ambiguity and this decides it is not fatal.
+ */
+function rejectionResponse(
+  invalid: IntentInvalid,
+  raw: { op?: string } | null | undefined,
+  request_id: string,
+): ChatResponse | null {
+  if (invalid.reason === "ambiguous_asset") return null;
+  const what = raw?.op ? `“${raw.op}”` : "that step";
+  const message =
+    invalid.reason === "missing_op"
+      ? "I lost track of which action to run. Tell me again what you'd like to do."
+      : invalid.reason === "unknown_asset"
+        ? `I don't recognise “${invalid.value}” as an asset I can trade on Vanna, so I've ` +
+          `stopped rather than guess. Supported: XLM, BLUSDC, AQUSDC, SOUSDC, AQUA, EURC.`
+        : invalid.reason === "bad_leverage"
+          ? `“${invalid.value}” isn't a usable leverage. Give me something above 1× — ` +
+            `“2x” or “3x” — or tell me the borrow amount directly.`
+          : `The ${invalid.slot.replace(/_/g, " ")} on ${what} (“${invalid.value}”) isn't a ` +
+            `number I can size a transaction from, so nothing was sent.`;
+  return {
+    kind: "clarification",
+    message,
+    data: { intent_rejected: invalid.reason, slot: "slot" in invalid ? invalid.slot : null },
+    request_id,
+  };
 }
 
 /**
@@ -506,14 +546,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           summary:
             req.resume_multi_leg?.summary ||
             `Continue strategy (${legs.length} steps)`,
-          steps: legs.map((l) => ({
-            kind: "write" as const,
-            op: l.op,
-            asset: l.asset ?? null,
-            amount: l.amount != null ? Number(l.amount) : null,
-            args: l.leverage != null ? { leverage: l.leverage } : undefined,
-            leverage: l.leverage ?? null,
-          })),
+          // Carry every executable slot the leg had, not the three named here before.
+          // A resumed levered leg that lost `borrow_asset` is the same failure as an
+          // approved one that lost it.
+          steps: legs.map((l) => {
+            const slots = toSlots(l);
+            return {
+              kind: "write" as const,
+              op: l.op,
+              asset: (slots.asset as string) ?? null,
+              amount: typeof slots.amount === "number" ? slots.amount : null,
+              args: slots,
+              leverage: typeof slots.leverage === "number" ? slots.leverage : null,
+            };
+          }),
         },
         {
           userId,
@@ -525,27 +571,21 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       );
     }
 
-    const action: CopilotAction = {
-      op: req.pending_write.op,
-      asset: req.pending_write.asset ?? null,
-      amount: req.pending_write.amount ?? null,
-      leverage: req.pending_write.leverage ?? null,
-      borrow_asset: req.pending_write.borrow_asset ?? null,
-      borrow_amount: req.pending_write.borrow_amount ?? null,
-      explain: req.pending_write.explain ?? null,
-      requires_amount:
-        req.pending_write.op !== "create_account" &&
-        !(req.pending_write.op === "remove_liquidity" && req.pending_write.fraction != null),
-      requires_account: !["create_account", "lend", "redeem"].includes(req.pending_write.op),
-      smart_account: smartAccount,
+    // Conversion site 2 of 3 (resume / clarify), now the same one call as the others.
+    // A resume payload is a BOUNDARY — it arrives from the browser — so it is parsed,
+    // not merely normalized: an asset that no longer resolves is refused here rather
+    // than becoming a confusing question two hops later.
+    const parsed = parseIntent(req.pending_write);
+    if ("invalid" in parsed) {
+      const rejection = rejectionResponse(parsed.invalid, req.pending_write, request_id);
+      if (rejection) return rejection;
+    }
+    const action = actionFrom(req.pending_write, {
+      smartAccount,
       trader,
-      token_a: req.pending_write.token_a ?? null,
-      token_b: req.pending_write.token_b ?? null,
-      amount_a: req.pending_write.amount_a ?? null,
-      amount_b: req.pending_write.amount_b ?? null,
-      fraction: req.pending_write.fraction ?? null,
-      min_hf: parseMinHealthFactor(message) ?? null,
-    };
+      minHf: parseMinHealthFactor(message) ?? null,
+      explain: req.pending_write.explain ?? null,
+    });
     const writeRes = await runWrite(action, {
       userId,
       trader,
@@ -1128,26 +1168,21 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
   if (routed.kind === "write") {
     const minHf = routed.min_hf ?? parseMinHealthFactor(message);
-    const action: CopilotAction = {
-      op: routed.op,
-      asset: routed.asset ?? null,
-      amount: routed.amount ?? null,
-      leverage: routed.leverage ?? null,
-      borrow_asset: routed.borrow_asset ?? null,
-      borrow_amount: routed.borrow_amount ?? null,
+    // Conversion site 1 of 3 (router / LLM output → action).
+    //
+    // `requires_amount` / `requires_account` are the one thing NOT taken from the
+    // shared conversion: the router computes them per template, and it knows things the
+    // op alone does not (a `remove_liquidity` with a fraction needs no amount). So the
+    // derived defaults are overridden with the router's answer where it gave one.
+    const action = {
+      ...actionFrom(routed, {
+        smartAccount,
+        trader,
+        minHf,
+        multiLeg: !!routed.multi_leg,
+      }),
       requires_amount: !!routed.requires_amount,
       requires_account: !!routed.requires_account,
-      multi_leg: !!routed.multi_leg,
-      smart_account: smartAccount,
-      trader,
-      token_a: routed.token_a ?? null,
-      token_b: routed.token_b ?? null,
-      amount_a: routed.amount_a ?? null,
-      amount_b: routed.amount_b ?? null,
-      fraction: routed.fraction ?? null,
-      min_hf: minHf,
-      prefer_max_yield: routed.prefer_max_yield ?? null,
-      venue: routed.venue ?? null,
     };
     return runWrite(action, { userId, trader, smartAccount, request_id, message });
   }

@@ -141,13 +141,18 @@ export interface ChatRequest {
     created_at: number;
     steps: Array<{
       op: string;
+      /**
+       * Every executable slot, echoed back verbatim from the plan preview.
+       *
+       * This is what approval runs from and what the fingerprint covers. Named fields
+       * below are legacy spellings, still accepted so an older client validates.
+       * Echoing a hand-picked subset is what let an approved trade differ from the
+       * executed one — `leverage`, then `borrow_asset`, then `token_out`.
+       */
+      slots?: Record<string, string | number | boolean | null>;
       asset?: string | null;
       amount?: number | null;
       leverage?: number | null;
-      /**
-       * The loan slot. Part of the approved content and part of the fingerprint —
-       * dropping it here replayed a cross-asset borrow as a same-asset one.
-       */
       borrow_asset?: string | null;
     }>;
   } | null;
@@ -392,8 +397,9 @@ export interface ChatResponse {
       asset: string | null;
       amount: number | null;
       leverage: number | null;
-      /** The loan slot — must be echoed back in approved_plan. */
       borrow_asset?: string | null;
+      /** Every executable slot — echo this back verbatim in approved_plan. */
+      slots?: Record<string, string | number | boolean | null>;
       label: string;
       venue: "earn" | "margin" | "farm" | "wallet" | "other";
     }>;
