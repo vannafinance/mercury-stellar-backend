@@ -33,6 +33,7 @@ import {
   preferExtractedPlan,
 } from "@/lib/copilot/step-extractor";
 import { sanitizePlan } from "@/lib/copilot/plan-sanitize";
+import { freezePlan, planFingerprint, verifyApprovedPlan } from "@/lib/copilot/plan-approval";
 import { routeMessage } from "@/lib/copilot/router";
 import { planLeverage } from "@/lib/copilot/leverage-plan";
 import { actionFromExpanded, expandPlanWrites } from "@/lib/copilot/multi-leg-agent";
@@ -252,6 +253,196 @@ describe("the merge is narrow on purpose", () => {
       { leverage: 2, message: "deposit 100 BLUSDC, lend 5 XLM, borrow XLM at 2x" },
     );
     expect(steps.map((s) => s.op)).toEqual(["deposit_collateral", "lend", "borrow"]);
+  });
+});
+
+/**
+ * The approve round-trip is a second, separate place the borrow asset was lost.
+ *
+ * The plan CARD was correct — "Deposit 500 AQUSDC as collateral and borrow XLM at 3×
+ * leverage" — and execution still ran `Borrow 1000 AQUSDC`, failing on chain with
+ * HostError #13. Both facts are consistent: `freezePlan` never carried `borrow_asset`
+ * into `PlanStepView`, so the client had nothing to echo back, `verifyApprovedPlan`
+ * rebuilt the step without it, and `expandPlanWrites` read the position as same-asset —
+ * borrowing collateral-amount × (L−1) = 1000 in AQUSDC units, which is the DOLLAR size
+ * of the debt spent as the wrong token.
+ *
+ * This module's stated safety property is "what executes is what was approved". A slot
+ * that is displayed but neither fingerprinted nor replayed breaks it in both directions.
+ */
+describe("the approve round-trip preserves the borrow asset", () => {
+  const message = "Deposit 500 AqUSDC and take 3x leverage and borrow XLM in borrowed capital";
+  const NOW = 1_770_000_000_000;
+
+  const frozen = () => {
+    const step = extractPlanIR(message).steps[0];
+    return freezePlan(
+      {
+        kind: "plan",
+        template_id: "extracted_multi_goal",
+        summary: "Deposit 500 AQUSDC as collateral and borrow XLM at 3× leverage",
+        steps: [
+          {
+            kind: "write",
+            op: step.op!,
+            asset: step.asset ?? null,
+            amount: step.amount ?? null,
+            leverage: step.leverage ?? null,
+            args: step.args,
+          },
+        ],
+      },
+      NOW,
+    );
+  };
+
+  /** Exactly what components/copilot/copilot-workspace.tsx sends on Approve & run. */
+  const approvalPayload = (p: ReturnType<typeof freezePlan>) => ({
+    plan_id: p.plan_id,
+    created_at: p.created_at,
+    steps: p.steps.map((s) => ({
+      op: s.op,
+      asset: s.asset,
+      amount: s.amount,
+      leverage: s.leverage,
+      borrow_asset: s.borrow_asset ?? null,
+    })),
+  });
+
+  it("freezePlan carries the loan slot into the view the client echoes back", () => {
+    const [step] = frozen().steps;
+    expect(step.op).toBe("deposit_and_borrow");
+    expect(step.asset).toBe("AQUSDC");
+    expect(step.borrow_asset).toBe("XLM");
+    // And it is visible on the card, so a wrong loan asset can be caught by reading it.
+    expect(step.label).toMatch(/XLM/);
+  });
+
+  it("THE LIVE BUG: replay expands to an XLM borrow, not 1000 AQUSDC", () => {
+    const check = verifyApprovedPlan(approvalPayload(frozen()), NOW + 1_000);
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+
+    const expanded = expandPlanWrites(check.plan.steps);
+    // Cross-asset stays whole so the executor prices it off the oracle. Live this split
+    // here into deposit 500 + "borrow 1000 AQUSDC".
+    expect(expanded).toHaveLength(1);
+    expect(expanded[0].op).toBe("deposit_and_borrow");
+    expect(expanded[0].borrow_asset).toBe("XLM");
+    const action = actionFromExpanded(expanded[0], {
+      smartAccount: null,
+      trader: null,
+      minHf: null,
+    });
+    expect(action.borrow_asset).toBe("XLM");
+    // The number that actually reached the chain, and what it should be.
+    expect(JSON.stringify(expanded)).not.toMatch(/"amount":1000,"asset":"AQUSDC"/);
+
+    const sized = planLeverage(
+      {
+        collateralAsset: action.asset!,
+        collateralAmount: action.amount!,
+        leverage: action.leverage,
+        borrowAsset: action.borrow_asset!,
+        borrowAmount: action.borrow_amount,
+      },
+      PRICES,
+    );
+    expect("gap" in sized).toBe(false);
+    if ("gap" in sized) return;
+    expect(sized.plan.borrowAsset).toBe("XLM");
+    expect(sized.plan.borrowAmount).toBeCloseTo(expectedBorrowXlm(500, 3), 4);
+  });
+
+  it("replay sets both spellings, so either expander reading works", () => {
+    const check = verifyApprovedPlan(approvalPayload(frozen()), NOW + 1_000);
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    const [s] = check.plan.steps;
+    expect(s.args?.borrow_asset).toBe("XLM");
+    expect((s as { borrow_asset?: string | null }).borrow_asset).toBe("XLM");
+  });
+
+  it("the loan slot is part of the fingerprint, not just the display", () => {
+    // An unhashed executable slot is one a client could change after approval. Stripping
+    // it must be REJECTED, not silently executed as a same-asset borrow.
+    const p = frozen();
+    const stripped = {
+      ...approvalPayload(p),
+      steps: approvalPayload(p).steps.map((s) => ({ ...s, borrow_asset: null })),
+    };
+    const check = verifyApprovedPlan(stripped, NOW + 1_000);
+    expect(check.ok).toBe(false);
+    if (check.ok) return;
+    expect(check.reason).toBe("fingerprint_mismatch");
+  });
+
+  it("two plans differing only in borrow asset do not share a fingerprint", () => {
+    const base = { op: "deposit_and_borrow", asset: "AQUSDC", amount: 500, leverage: 3 };
+    expect(planFingerprint([{ ...base, borrow_asset: "XLM" }])).not.toBe(
+      planFingerprint([{ ...base, borrow_asset: "AQUSDC" }]),
+    );
+  });
+
+  it("warns about a bare-USDC loan, not only bare-USDC collateral", () => {
+    const p = freezePlan(
+      {
+        kind: "plan",
+        template_id: "t",
+        summary: "s",
+        steps: [
+          {
+            kind: "write",
+            op: "deposit_and_borrow",
+            asset: "AQUSDC",
+            amount: 500,
+            args: { leverage: 3, borrow_asset: "USDC" },
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(p.warnings.join(" ")).toMatch(/USDC is ambiguous/);
+  });
+
+  it("describes a 2-leg margin position as two legs, with no phantom supply", () => {
+    const p = frozen();
+    const levered = p.warnings.find((w) => /leverage, so it runs as/.test(w));
+    expect(levered).toBeTruthy();
+    expect(levered).toMatch(/2 transactions/);
+    // It used to promise a third leg — "then supply" — that a margin deposit_and_borrow
+    // never runs, on the card whose job is to say what will run.
+    expect(levered).not.toMatch(/then supply/);
+    expect(levered).toMatch(/borrow XLM against it/);
+  });
+
+  it("an unlevered plan is unaffected", () => {
+    const p = freezePlan(
+      {
+        kind: "plan",
+        template_id: "t",
+        summary: "s",
+        steps: [{ kind: "write", op: "lend", asset: "BLUSDC", amount: 20, args: {} }],
+      },
+      NOW,
+    );
+    expect(p.steps[0].borrow_asset).toBeNull();
+    expect(p.steps[0].label).not.toMatch(/borrowing/);
+    const check = verifyApprovedPlan(
+      {
+        plan_id: p.plan_id,
+        created_at: p.created_at,
+        steps: p.steps.map((s) => ({
+          op: s.op,
+          asset: s.asset,
+          amount: s.amount,
+          leverage: s.leverage,
+          borrow_asset: s.borrow_asset ?? null,
+        })),
+      },
+      NOW + 1_000,
+    );
+    expect(check.ok).toBe(true);
   });
 });
 

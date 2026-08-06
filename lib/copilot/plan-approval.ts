@@ -33,6 +33,18 @@ export interface PlanStepView {
   asset: string | null;
   amount: number | null;
   leverage: number | null;
+  /**
+   * The loan asset, when it differs from the collateral — a first-class slot, not a
+   * detail of `asset`.
+   *
+   * It has to survive the approve round-trip for the same reason `leverage` does, and
+   * it did not: a plan approved as "deposit 500 AQUSDC, borrow XLM at 3×" replayed with
+   * this slot empty, `expandPlanWrites` then read the position as same-asset, and the
+   * user got `borrow 1000 AQUSDC` — the dollar value of the debt spent as collateral
+   * tokens, which failed on chain with a contract error. A different trade from the one
+   * that was approved, which is precisely what this module exists to prevent.
+   */
+  borrow_asset: string | null;
   /** Human label, e.g. "Deposit 10 XLM as margin collateral". */
   label: string;
   /** Which product this leg touches, so venue mistakes are visible. */
@@ -110,6 +122,7 @@ function labelFor(
   amount: number | null,
   venue: PlanStepView["venue"],
   leverage: number | null,
+  borrowAsset: string | null = null,
 ): string {
   const verb = OP_VERB[op] ?? op.replace(/_/g, " ");
   if (op === "create_account") return "Open your margin account";
@@ -120,7 +133,15 @@ function labelFor(
   // 2x" was rendering as "Supply 10 BLUSDC into Blend", which reads as an unlevered
   // supply and hides the borrow the leverage implies.
   const lev = leverage != null && leverage > 1 ? `at ${leverage}× leverage` : "";
-  return [verb, `${qty}${sym}`.trim(), tail, lev].filter(Boolean).join(" ");
+  // Which token the debt is in, when it is not the collateral. The step read "Deposit
+  // and borrow against 500 AQUSDC … at 3× leverage" — true, but silent about the one
+  // slot the user stated explicitly, so a wrong borrow asset was invisible on the very
+  // card meant to catch it.
+  const loan =
+    borrowAsset && asset && borrowAsset.toUpperCase() !== asset.toUpperCase()
+      ? `borrowing ${borrowAsset}`
+      : "";
+  return [verb, `${qty}${sym}`.trim(), tail, loan, lev].filter(Boolean).join(" ");
 }
 
 /**
@@ -144,9 +165,21 @@ function legCount(op: string, leverage: number | null): number {
  * Only the fields that change what happens on-chain are hashed — labels and summaries
  * are presentation, and including them would break approval on a harmless copy edit.
  */
-export function planFingerprint(steps: Array<Pick<PlanStepView, "op" | "asset" | "amount" | "leverage">>): string {
+export function planFingerprint(
+  steps: Array<
+    Pick<PlanStepView, "op" | "asset" | "amount" | "leverage"> & {
+      borrow_asset?: string | null;
+    }
+  >,
+): string {
   const canonical = steps
-    .map((s) => `${s.op}|${s.asset ?? ""}|${s.amount ?? ""}|${s.leverage ?? ""}`)
+    .map(
+      (s) =>
+        // borrow_asset is hashed because it changes what happens on-chain — an
+        // unhashed executable slot is one a client could alter after approval, which
+        // is the hole this fingerprint exists to close.
+        `${s.op}|${s.asset ?? ""}|${s.amount ?? ""}|${s.leverage ?? ""}|${s.borrow_asset ?? ""}`,
+    )
     .join(";");
   return createHash("sha256").update(canonical).digest("hex").slice(0, 16);
 }
@@ -164,13 +197,22 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         typeof (s as { leverage?: unknown }).leverage === "number"
           ? ((s as { leverage?: number }).leverage as number)
           : null;
+      // Producers spell this either way: the clause extractor and the coalesce pass put
+      // it in `args.borrow_asset`, the router puts it on the step. Read both, or the
+      // slot is dropped depending on which path built the plan.
+      const fromArgs = (s.args as { borrow_asset?: unknown } | undefined)?.borrow_asset;
+      const fromStep = (s as { borrow_asset?: unknown }).borrow_asset;
+      const rawBorrow = typeof fromArgs === "string" ? fromArgs : fromStep;
+      const borrow_asset =
+        typeof rawBorrow === "string" && rawBorrow.trim() ? rawBorrow.trim() : null;
       return {
         n: i + 1,
         op,
         asset,
         amount,
         leverage,
-        label: labelFor(op, asset, amount, venue, leverage),
+        borrow_asset,
+        label: labelFor(op, asset, amount, venue, leverage, borrow_asset),
         venue,
       };
     });
@@ -188,7 +230,9 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   }
 
   // "USDC" is three different tokens here, and picking the wrong one is unrecoverable.
-  if (steps.some((s) => s.asset === "USDC")) {
+  // Checked on BOTH slots: a bare-USDC loan against a specific collateral is just as
+  // ambiguous, and only the collateral was being looked at.
+  if (steps.some((s) => s.asset === "USDC" || s.borrow_asset === "USDC")) {
     warnings.push(
       "USDC is ambiguous on this network (BLUSDC, AQUSDC, SOUSDC) — I'll ask which one before that leg runs.",
     );
@@ -202,12 +246,19 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // letting "2 steps" imply two signatures.
   const levered = steps.filter((s) => legCount(s.op, s.leverage) > 1);
   for (const s of levered) {
+    const n = legCount(s.op, s.leverage);
+    // Say what the legs ACTUALLY are. This read "…borrow against it, then supply" for
+    // every levered step, but a margin deposit_and_borrow is two legs and supplies
+    // nothing — describing a third leg that never runs on the card whose job is to
+    // show what will run.
+    const loan = s.borrow_asset && s.borrow_asset !== s.asset ? ` ${s.borrow_asset}` : "";
+    const legs =
+      n === 2
+        ? `deposit ${s.asset ?? ""} as collateral, then borrow${loan} against it`
+        : `deposit ${s.asset ?? ""} as collateral, borrow${loan} against it, then supply`;
     warnings.push(
-      `Step ${s.n} is ${s.leverage}× leverage, so it runs as ${legCount(s.op, s.leverage)} transactions: ` +
-        `deposit ${s.asset ?? ""} as collateral, borrow against it, then supply. The borrow is what creates the leverage.`.replace(
-          /\s+/g,
-          " ",
-        ),
+      `Step ${s.n} is ${s.leverage}× leverage, so it runs as ${n} transactions: ` +
+        `${legs}. The borrow is what creates the leverage.`.replace(/\s+/g, " "),
     );
   }
 
@@ -237,6 +288,8 @@ export interface ApprovedPlan {
     asset?: string | null;
     amount?: number | null;
     leverage?: number | null;
+    /** The loan slot. Must round-trip — see PlanStepView.borrow_asset. */
+    borrow_asset?: string | null;
   }>;
 }
 
@@ -272,6 +325,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       asset: s.asset ?? null,
       amount: s.amount ?? null,
       leverage: s.leverage ?? null,
+      borrow_asset: s.borrow_asset ?? null,
     })),
   );
   if (recomputed !== approved.plan_id) {
@@ -298,10 +352,21 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
         // "deploy_to_blend 10 BLUSDC at 2x" into a plain 1x supply — a silently
         // different trade from the one the user approved. Both spellings are set so a
         // change to which one the expander prefers cannot reintroduce this.
-        args: s.leverage != null ? { leverage: s.leverage } : {},
+        //
+        // borrow_asset is exactly the same hazard and was exactly the same bug: an
+        // approved "deposit 500 AQUSDC, borrow XLM at 3×" replayed without it, so
+        // expandPlanWrites saw a same-asset position and emitted `borrow 1000 AQUSDC`
+        // — the USD size of the debt as collateral tokens. It failed on chain, which
+        // is the lucky outcome; the unlucky one is a wrong borrow that succeeds. Set in
+        // both spellings for the same reason as leverage.
+        args: {
+          ...(s.leverage != null ? { leverage: s.leverage } : {}),
+          ...(s.borrow_asset ? { borrow_asset: s.borrow_asset } : {}),
+        },
         leverage: s.leverage ?? null,
         asset: s.asset ?? null,
         amount: s.amount ?? null,
+        borrow_asset: s.borrow_asset ?? null,
       })),
     },
   };

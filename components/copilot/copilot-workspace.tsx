@@ -1917,11 +1917,16 @@ export function CopilotWorkspace() {
           approved_plan: {
             plan_id: plan.plan_id,
             created_at: plan.created_at,
+            // Echoed back VERBATIM — every executable slot, not a subset. Anything
+            // omitted here is silently dropped from the trade that runs and from the
+            // fingerprint that is supposed to prove it is the approved one. That is how
+            // an approved "borrow XLM at 3×" executed as "borrow 1000 AQUSDC".
             steps: plan.steps.map((s) => ({
               op: s.op,
               asset: s.asset,
               amount: s.amount,
               leverage: s.leverage,
+              borrow_asset: s.borrow_asset ?? null,
             })),
           },
         },

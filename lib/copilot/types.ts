@@ -144,6 +144,11 @@ export interface ChatRequest {
       asset?: string | null;
       amount?: number | null;
       leverage?: number | null;
+      /**
+       * The loan slot. Part of the approved content and part of the fingerprint —
+       * dropping it here replayed a cross-asset borrow as a same-asset one.
+       */
+      borrow_asset?: string | null;
     }>;
   } | null;
   /**
@@ -387,6 +392,8 @@ export interface ChatResponse {
       asset: string | null;
       amount: number | null;
       leverage: number | null;
+      /** The loan slot — must be echoed back in approved_plan. */
+      borrow_asset?: string | null;
       label: string;
       venue: "earn" | "margin" | "farm" | "wallet" | "other";
     }>;

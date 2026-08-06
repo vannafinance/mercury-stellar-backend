@@ -47,6 +47,14 @@ export interface PlanStepView {
   asset: string | null;
   amount: number | null;
   leverage: number | null;
+  /**
+   * The loan asset when it differs from the collateral.
+   *
+   * Carried through the card purely so `approvePlan` can echo it back: it is part of
+   * the approved content AND part of the plan fingerprint, so an approval that omits it
+   * both replays the wrong trade and fails the hash. The label already renders it.
+   */
+  borrow_asset?: string | null;
   label: string;
   venue: PlanVenue;
 }
