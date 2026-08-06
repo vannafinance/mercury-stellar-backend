@@ -120,10 +120,24 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_get_inactive_accounts",
   "vanna_get_wallet_balance",
   "vanna_get_token_balance",
-  "vanna_list_my_wallet_bindings",
   "vanna_list_smart_accounts",
   "vanna_resolve_account",
 ]);
+
+/**
+ * `vanna_list_my_wallet_bindings` is deliberately NOT in the set above.
+ *
+ * It reads nothing from the chain: it answers "which wallets has THIS PERSON bound
+ * as signable", and the Sign Service keys that answer solely on the verified
+ * `X-Vanna-User-Assertion` sub — a body wallet or userId is ignored by design. On
+ * the shared M2M credential there is no sub, so the call does not fail loudly; it
+ * returns `hasAssertion: false` and an empty list, which reads as "this user has no
+ * bindings" when the truth is "we never said who was asking".
+ *
+ * That is the worst possible failure for the one tool whose job is to diagnose a
+ * `wallet_not_bound` 403 — it would confirm the false diagnosis. A read that is
+ * scoped to an identity needs the identity.
+ */
 
 /**
  * Should this call carry the end-user token?

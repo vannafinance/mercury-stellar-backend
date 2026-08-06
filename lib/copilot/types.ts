@@ -77,9 +77,21 @@ export interface ChatRequest {
   history?: Array<{ role: "user" | "assistant"; text: string }> | null;
   /** Client may send auto-sign confirmation choices */
   auto_sign?: {
-    action?: "start" | "use_defaults" | "custom" | "disable";
+    /**
+     * `bind_start` / `bind_status` drive the additional-signer consent that
+     * `wallet_not_bound` requires — see WalletBindPrompt for why it is a separate
+     * step from connecting the wallet.
+     */
+    action?: "start" | "use_defaults" | "custom" | "disable" | "bind_start" | "bind_status";
     max_per_tx_usd?: number | string;
     max_per_day_usd?: number | string;
+    /** `bind_status` only — the connect request to poll. */
+    request_id?: string;
+    /**
+     * `bind_status` only — replay this action the moment the binding lands, so
+     * the user gets what they originally asked for rather than a "now try again".
+     */
+    retry_action?: "use_defaults" | "custom" | "disable";
   } | null;
   /** Re-run a pending write after enabling auto-sign / agent chain hop */
   pending_write?: {
@@ -240,6 +252,55 @@ export interface AutoSignPrompt {
   raw?: Record<string, unknown> | null;
 }
 
+/**
+ * The wallet is connected in the browser but not bound to this identity at the
+ * Sign Service, so no server-side signing authority exists for it.
+ *
+ * ## Why this is its own gate and not an auto-sign error
+ *
+ * "Privy connected" and "Vanna may sign for this wallet" are two different facts
+ * that live in two different systems, and only the first one a wallet-connect
+ * modal can establish. The binding is a row in the Sign Service's
+ * `identity_wallet_bindings`, written at `/wallets/connect/start` from the
+ * forwarded user assertion and completed when the user authorizes the Vanna
+ * quorum as an ADDITIONAL signer on their own wallet (`addSigners`).
+ *
+ * Nothing in the browser wallet session can produce that row. Disconnecting and
+ * reconnecting through Privy — even while signed in — refreshes the browser's
+ * wallet session and writes no binding, which is exactly why the 403 survived a
+ * reconnect and read as a bug in sign-in rather than a missing consent step.
+ *
+ * So the honest response to `wallet_not_bound` is not "auto-sign failed, retry"
+ * but "one consent you have never given is missing, here is the link". The gate
+ * carries `connect_url`; the user grants the signer; `retry_action` is what we
+ * re-run for them once the binding lands, so the request they originally made
+ * completes instead of having to be typed again.
+ */
+export interface WalletBindPrompt {
+  /**
+   * `needs_consent` — a fresh connect request exists, the user has not finished.
+   * `pending` — polled, still not finished. `bound` — binding written.
+   * `expired` — the link timed out; a new one must be minted.
+   * `unavailable` — connect_start itself failed (reason in the message).
+   */
+  status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
+  /** Single-use connect request id. Poll it with `auto_sign.action = "bind_status"`. */
+  request_id?: string | null;
+  /** The page the user opens to authorize the Vanna quorum as an additional signer. */
+  connect_url?: string | null;
+  /** Seconds until `request_id` expires. */
+  expires_in?: number | null;
+  /** MCP's suggested poll backoff. The client walks this list, it does not invent one. */
+  poll_schedule_seconds?: number[] | null;
+  /** Wallet this binding is for — shown so the user can check it is the one they expect. */
+  wallet_address?: string | null;
+  /** Re-run this auto-sign action once the binding exists (the user's original ask). */
+  retry_action?: "use_defaults" | "custom" | "disable" | null;
+  /** Caps to replay with `retry_action = "custom"`. */
+  max_per_tx_usd?: number | string | null;
+  max_per_day_usd?: number | string | null;
+}
+
 export interface ClarifyOption {
   id: string;
   label: string;
@@ -269,6 +330,8 @@ export interface ChatResponse {
     | "executed"
     | "needs_auto_sign"
     | "needs_wallet_sign"
+    /** Wallet connected in-browser but not bound as a signer — see WalletBindPrompt. */
+    | "needs_wallet_bind"
     /** A multi-leg plan awaiting the user's approval. Nothing has executed. */
     | "plan_preview";
   message: string;
@@ -335,6 +398,8 @@ export interface ChatResponse {
     explain?: boolean | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
+  /** Present on `needs_wallet_bind` — the missing additional-signer consent. */
+  wallet_bind?: WalletBindPrompt | null;
   /** Proof the live MCP server was used */
   mcp?: {
     tool?: string | null;

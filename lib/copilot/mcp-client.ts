@@ -186,6 +186,10 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_list_my_wallet_bindings: { tool: "vanna_wallet", action: "list_bindings" },
   vanna_list_smart_accounts: { tool: "vanna_wallet", action: "list_smart_accounts" },
   vanna_resolve_account: { tool: "vanna_wallet", action: "resolve" },
+  // Additional-signer consent. Not a wallet-connect modal: this is what writes the
+  // Sign Service binding a `wallet_not_bound` 403 is asking for (see WalletBindPrompt).
+  vanna_connect_wallet_start: { tool: "vanna_wallet", action: "connect_start" },
+  vanna_connect_wallet_status: { tool: "vanna_wallet", action: "connect_status" },
   // signing
   vanna_enable_auto_sign: { tool: "vanna_sign", action: "enable_auto_sign" },
   vanna_disable_auto_sign: { tool: "vanna_sign", action: "disable_auto_sign" },

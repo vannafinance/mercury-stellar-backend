@@ -1216,14 +1216,22 @@ export async function executeMcpWrite(
       };
     }
     if (/no_active_session|disabled|not.?enabled|wallet_not_bound/i.test(asErr + as)) {
+      // Two different causes reach this branch and only one is "you never turned it
+      // on". `wallet_not_bound` means Vanna has no authority to sign for this wallet
+      // at all, so "enable auto-sign" understates what is being asked for — the
+      // enable flow will then ask for the additional-signer consent (see
+      // WalletBindPrompt). Naming it here keeps the two rails telling one story.
+      const unbound = /wallet_not_bound/i.test(asErr + as);
       return {
         tool: step.tool,
         label: step.label,
         build,
         unsigned_xdr: xdr,
         status: "needs_auto_sign",
-        message:
-          "MCP prepared the transaction. Auto-sign is not enabled for this wallet — enable it to submit without a wallet popup.",
+        message: unbound
+          ? "MCP prepared the transaction. Vanna is not authorized to sign for this wallet yet — " +
+            "enabling auto-sign will ask you to approve it as an additional signer first."
+          : "MCP prepared the transaction. Auto-sign is not enabled for this wallet — enable it to submit without a wallet popup.",
         mcp_trace: baseTrace,
       };
     }

@@ -13,7 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
-import { getMcpClient, MCPAuthError, MCPCallError, MCPError } from "./mcp-client";
+import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
   executeMcpWrite,
@@ -1151,6 +1151,235 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
 // ── Auto-sign ─────────────────────────────────────────────────────────────
 
+/**
+ * Did the Sign Service refuse because this wallet is not bound to the caller?
+ *
+ * Matched on the error CODE first, because that is the contract MCP passes through
+ * verbatim (`sign_tools._sign_service_request` forwards `wallet_not_bound` with its
+ * http_status). The message sweep is a second net for the paths that flatten the
+ * error into prose before it reaches here.
+ */
+function isWalletNotBound(r: Record<string, unknown> | null | undefined): boolean {
+  if (!r) return false;
+  if (String(r.error ?? "") === "wallet_not_bound") return true;
+  const detail = r.detail as { error?: unknown } | undefined;
+  if (detail && String(detail.error ?? "") === "wallet_not_bound") return true;
+  return /wallet_not_bound/i.test(String(r.message ?? ""));
+}
+
+/**
+ * Mint the additional-signer consent link and hand it to the user.
+ *
+ * `vanna_connect_wallet_start` carries the end-user assertion (it is not in
+ * READ_ONLY_TOOLS), which is the entire point: the Sign Service stamps the
+ * assertion's `sub` onto the pending connect request at /wallets/connect/start, and
+ * that stored sub is what becomes the `identity_wallet_bindings` row when the user
+ * finishes. Called without the assertion the flow still returns a working link and
+ * still connects the wallet — and still writes no binding, so auto-sign keeps
+ * failing with the same 403. A connect that cannot bind is the trap this replaces.
+ *
+ * `retry` is the user's original request, carried through the detour so it can be
+ * replayed the moment the binding exists.
+ */
+async function startWalletBind(
+  mcp: MCPClient,
+  trader: string,
+  userId: string,
+  request_id: string,
+  retry: {
+    action?: "use_defaults" | "custom" | "disable" | null;
+    max_per_tx_usd?: number | string | null;
+    max_per_day_usd?: number | string | null;
+  },
+  /** Why we are here, in the user's terms — prepended to the instruction. May be "". */
+  because: string,
+): Promise<ChatResponse> {
+  /** Join the optional preamble without leaving a leading space when there is none. */
+  const lead = (rest: string) => (because ? `${because} ${rest}` : rest);
+  let started: Record<string, unknown>;
+  try {
+    started = await mcp.call("vanna_connect_wallet_start", {}, userId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      kind: "needs_wallet_bind",
+      message: lead(
+        `Vanna needs your permission to sign for this wallet, but the consent link ` +
+          `could not be created (${msg}). Nothing changed — every write still asks ` +
+          `for your signature.`,
+      ),
+      wallet_bind: { status: "unavailable", wallet_address: trader },
+      request_id,
+    };
+  }
+
+  const connectUrl = typeof started.connect_url === "string" ? started.connect_url : null;
+  if (!connectUrl || started.error) {
+    // No link means no consent is possible right now. Say which hop refused rather
+    // than implying the user can fix it by reconnecting their wallet again.
+    const why = String(started.message || started.error || "no connect_url returned");
+    return {
+      kind: "needs_wallet_bind",
+      message: lead(
+        `Vanna needs your permission to sign for this wallet, but the signing service ` +
+          `could not issue a consent link (${why}). Writes still work — they will ask ` +
+          `for your signature each time.`,
+      ),
+      wallet_bind: { status: "unavailable", wallet_address: trader },
+      data: factsForUi(started),
+      request_id,
+    };
+  }
+
+  const schedule = Array.isArray(started.poll_schedule_seconds)
+    ? (started.poll_schedule_seconds as unknown[]).map(Number).filter((n) => Number.isFinite(n))
+    : null;
+
+  return {
+    kind: "needs_wallet_bind",
+    message: lead(
+      `Your wallet is connected, but Vanna is not yet authorized to sign for it — ` +
+        `those are two separate permissions, which is why reconnecting your wallet ` +
+        `does not fix it. Open the link below and approve Vanna as an additional ` +
+        `signer on your own wallet. You keep custody; Vanna is only added alongside ` +
+        `your own key, and you can revoke it in Privy at any time. As soon as you ` +
+        `finish, ${retry.action === "disable" ? "the change" : "auto-sign"} is ` +
+        `applied automatically.`,
+    ),
+    wallet_bind: {
+      status: "needs_consent",
+      request_id: typeof started.request_id === "string" ? started.request_id : null,
+      connect_url: connectUrl,
+      expires_in: Number.isFinite(Number(started.expires_in))
+        ? Number(started.expires_in)
+        : null,
+      poll_schedule_seconds: schedule?.length ? schedule : null,
+      wallet_address: trader,
+      retry_action: retry.action ?? null,
+      max_per_tx_usd: retry.max_per_tx_usd ?? null,
+      max_per_day_usd: retry.max_per_day_usd ?? null,
+    },
+    data: factsForUi(started),
+    request_id,
+  };
+}
+
+/**
+ * Poll a pending consent, and finish the user's original request when it lands.
+ *
+ * The retry is done here rather than left to the client on purpose. `connected` from
+ * the connect flow means the quorum is now a signer on the wallet AND the binding row
+ * was written — it does NOT mean auto-sign is on; that still needs a policy session,
+ * which is the call that 403'd in the first place. Reporting "connected" and stopping
+ * would leave the user exactly one unexplained step short of what they asked for,
+ * looking at a success message and a still-broken toggle.
+ *
+ * A retry that fails is reported as itself: if `enable_auto_sign` still says
+ * `wallet_not_bound` after a completed consent, that is a real bug and the message
+ * says so instead of silently offering another link to click forever.
+ */
+async function handleBindStatus(
+  mcp: MCPClient,
+  req: ChatRequest,
+  request_id: string,
+  trader: string,
+  userId: string,
+): Promise<ChatResponse> {
+  const pollId = req.auto_sign?.request_id;
+  const retryAction = req.auto_sign?.retry_action ?? null;
+  if (!pollId) {
+    return {
+      kind: "error",
+      message: "Cannot check the signing-authority request without its request_id.",
+      request_id,
+    };
+  }
+
+  const st = await mcp.call("vanna_connect_wallet_status", { request_id: pollId }, userId);
+  const status = String(st.status || "");
+
+  if (status === "expired") {
+    return {
+      kind: "needs_wallet_bind",
+      message:
+        "That authorization link expired before it was completed. Start it again and " +
+        "approve Vanna as an additional signer to finish enabling auto-sign.",
+      wallet_bind: {
+        status: "expired",
+        wallet_address: trader,
+        retry_action: retryAction,
+        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
+        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+      },
+      data: factsForUi(st),
+      request_id,
+    };
+  }
+
+  if (status !== "connected") {
+    return {
+      kind: "needs_wallet_bind",
+      message:
+        "Still waiting for you to approve Vanna as an additional signer in the " +
+        "authorization window.",
+      wallet_bind: {
+        status: "pending",
+        request_id: pollId,
+        wallet_address: trader,
+        retry_action: retryAction,
+        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
+        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+      },
+      data: factsForUi(st),
+      request_id,
+    };
+  }
+
+  // Bound. Finish what the user actually asked for.
+  if (!retryAction) {
+    return {
+      kind: "answer",
+      message:
+        "Vanna is now authorized to sign for this wallet. Auto-sign is not on yet — " +
+        "enable it with your spend limits when you want hands-free writes.",
+      data: factsForUi(st),
+      request_id,
+    };
+  }
+
+  const retried = await handleAutoSignAction(
+    {
+      ...req,
+      auto_sign: {
+        action: retryAction,
+        ...(req.auto_sign?.max_per_tx_usd != null
+          ? { max_per_tx_usd: req.auto_sign.max_per_tx_usd }
+          : {}),
+        ...(req.auto_sign?.max_per_day_usd != null
+          ? { max_per_day_usd: req.auto_sign.max_per_day_usd }
+          : {}),
+      },
+    },
+    request_id,
+    trader,
+    userId,
+  );
+
+  // A second wallet_not_bound after a completed consent is not a UX problem to loop
+  // on — it means the binding did not land for the subject the assertion carries.
+  if (retried.kind === "needs_wallet_bind") {
+    return {
+      ...retried,
+      message:
+        "You completed the authorization, but the signing service still reports this " +
+        "wallet as unbound. That is a server-side fault, not something you can fix by " +
+        "reconnecting — please report it. Writes still work with a signature each time.",
+      wallet_bind: { ...(retried.wallet_bind ?? {}), status: "unavailable", wallet_address: trader },
+    };
+  }
+  return retried;
+}
+
 async function handleAutoSignAction(
   req: ChatRequest,
   request_id: string,
@@ -1168,8 +1397,39 @@ async function handleAutoSignAction(
   const action = req.auto_sign?.action || "start";
 
   try {
+    // The user asked to bind, or is polling a bind they started. Both are the same
+    // consent flow, entered explicitly rather than as a reaction to a 403.
+    if (action === "bind_start") {
+      return startWalletBind(
+        mcp,
+        trader,
+        userId,
+        request_id,
+        { action: req.auto_sign?.retry_action ?? null },
+        "",
+      );
+    }
+
+    if (action === "bind_status") {
+      return handleBindStatus(mcp, req, request_id, trader, userId);
+    }
+
     if (action === "disable") {
       const r = await mcp.call("vanna_disable_auto_sign", { wallet_address: trader }, userId);
+      // Revoking a server-side session is gated on the same binding as creating one,
+      // so "turn this off" can 403 for a wallet that was never bound. The user's
+      // in-app auto-approve toggle is client-side and the UI has already turned it
+      // off; what needs the binding is reaching any session held at the Sign Service.
+      if (isWalletNotBound(r)) {
+        return startWalletBind(
+          mcp,
+          trader,
+          userId,
+          request_id,
+          { action: "disable" },
+          "Auto-approve is off in this browser.",
+        );
+      }
       return {
         kind: "answer",
         message: (r.summary as string) || (r.message as string) || "Auto-sign disabled.",
@@ -1183,6 +1443,13 @@ async function handleAutoSignAction(
       const r = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
       const st = String(r.status || "");
       const defCap = defaultCapUsdFromMcp(r);
+      // Ask for the missing consent BEFORE asking for spend caps. Caps chosen now
+      // cannot be applied — the 403 lands before any session is created — so showing
+      // the cap picker first collects an answer only to throw it away, and the user
+      // reads the failure that follows as "my limits were rejected".
+      if (isWalletNotBound(r)) {
+        return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
+      }
       if (st === "needs_confirmation" || !r.enabled) {
         return {
           kind: "needs_auto_sign",
@@ -1236,6 +1503,9 @@ async function handleAutoSignAction(
         userId: userId || trader,
         useDefaultCaps: true,
       });
+      if (isWalletNotBound(r)) {
+        return startWalletBind(mcp, trader, userId, request_id, { action: "use_defaults" }, "");
+      }
       const defCap = defaultCapUsdFromMcp(r);
       const msg =
         (r.summary as string) ||
@@ -1285,6 +1555,11 @@ async function handleAutoSignAction(
         let defCap = 1000;
         try {
           const probe = await enableAutoSign(mcp, { wallet: trader, userId: userId || trader });
+          // Same reason as the `start` branch: consent before caps, so the numbers the
+          // user types are numbers we can actually apply.
+          if (isWalletNotBound(probe)) {
+            return startWalletBind(mcp, trader, userId, request_id, { action: "custom" }, "");
+          }
           defCap = defaultCapUsdFromMcp(probe);
         } catch {
           /* keep fallback */
@@ -1324,6 +1599,18 @@ async function handleAutoSignAction(
         maxPerTxUsd: tx,
         ...(dayRaw != null && dayRaw !== "" ? { maxPerDayUsd: dayRaw } : {}),
       });
+      if (isWalletNotBound(r)) {
+        // Carry the caps through the consent detour so they are applied on the retry
+        // and the user never re-enters them.
+        return startWalletBind(
+          mcp,
+          trader,
+          userId,
+          request_id,
+          { action: "custom", max_per_tx_usd: tx, max_per_day_usd: dayRaw ?? tx },
+          "",
+        );
+      }
       const dayShown = dayRaw != null && dayRaw !== "" ? dayRaw : tx;
       return {
         kind: r.error ? "error" : "answer",

@@ -108,6 +108,7 @@ interface ChatResponse {
     | "executed"
     | "needs_auto_sign"
     | "needs_wallet_sign"
+    | "needs_wallet_bind"
     | "plan_preview";
   message: string;
   /** Present on plan_preview — posted back verbatim as approved_plan. */
@@ -139,6 +140,21 @@ interface ChatResponse {
     clarify_slot?: "collateral" | "borrow" | null;
   } | null;
   auto_sign?: AutoSignPrompt | null;
+  /**
+   * Present on `needs_wallet_bind`: the wallet is connected here but Vanna holds no
+   * authority to sign for it server-side. Mirrors WalletBindPrompt in lib/copilot/types.
+   */
+  wallet_bind?: {
+    status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
+    request_id?: string | null;
+    connect_url?: string | null;
+    expires_in?: number | null;
+    poll_schedule_seconds?: number[] | null;
+    wallet_address?: string | null;
+    retry_action?: "use_defaults" | "custom" | "disable" | null;
+    max_per_tx_usd?: number | string | null;
+    max_per_day_usd?: number | string | null;
+  } | null;
   mcp?: {
     tool?: string | null;
     simulation_success?: boolean;
@@ -1221,9 +1237,16 @@ export function CopilotWorkspace() {
    * The UI conflated the two: enabling auto-approve flipped the switch on and printed
    * "Caps $1000/tx · $1000/day" next to a visible 401, which claims a policy that does not
    * exist. Holding the Sign Service's answer separately lets the rail say which half is on.
+   *
+   * `unbound` is a third answer, not a flavour of `unavailable`. "The Sign Service
+   * refused our credential" is our fault and the user can do nothing about it;
+   * "this wallet is not authorized for Vanna to sign" is a consent they have never
+   * been asked for, and it has a button. Collapsing the two is what made a
+   * `wallet_not_bound` 403 look like an outage and sent the operator round the
+   * reconnect loop — a wallet-connect modal cannot produce a signing binding.
    */
   const [signServiceState, setSignServiceState] = useState<{
-    status: "unknown" | "ok" | "unavailable";
+    status: "unknown" | "ok" | "unavailable" | "unbound";
     reason: string | null;
   }>({ status: "unknown", reason: null });
 
@@ -1423,6 +1446,7 @@ export function CopilotWorkspace() {
     if (kind === "executed") return "executed";
     if (kind === "needs_wallet_sign") return "staged";
     if (kind === "needs_auto_sign") return "needs sign";
+    if (kind === "needs_wallet_bind") return "needs authorization";
     if (kind === "blocked") return "blocked";
     if (kind === "error") return "error";
     if (kind === "answer") return "answered";
@@ -1915,6 +1939,79 @@ export function CopilotWorkspace() {
     [loading, postCopilot],
   );
 
+  /**
+   * Record what an auto-sign attempt actually achieved.
+   *
+   * Shared by the enable buttons and by the retry that runs once a signing-authority
+   * consent completes, so both write the same rail state. When they diverged, a bind
+   * that ended in a working session still left the rail reading "unavailable".
+   */
+  const applyAutoSignOutcome = useCallback(
+    (action: "use_defaults" | "custom" | "disable", data: ChatResponse) => {
+      if (!address) return;
+
+      // The wallet is connected here but Vanna holds no signing authority for it.
+      // Distinct from "the Sign Service rejected our token" (a fault on our side the
+      // user cannot act on) and from success — this one has a specific user action.
+      if (data.kind === "needs_wallet_bind") {
+        if (action === "disable") setAutoApprove(address, false);
+        setSignServiceState({ status: "unbound", reason: null });
+        return;
+      }
+
+      if (action === "disable") {
+        setAutoApprove(address, false);
+        setSignServiceState({ status: "unknown", reason: null });
+        return;
+      }
+      if (data.kind === "needs_auto_sign") return;
+
+      const facts = (data.data ?? {}) as {
+        default_cap_usd?: number;
+        error?: string;
+        detail?: { detail?: string };
+      };
+      const mcpEnabled = data.kind !== "error" && !facts.error;
+      const reason =
+        facts.detail?.detail ||
+        facts.error ||
+        (data.kind === "error" ? data.message : null) ||
+        null;
+      setSignServiceState(
+        mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
+      );
+
+      const fromMcp = Number(facts.default_cap_usd);
+      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
+      const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
+      const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
+      try {
+        localStorage.setItem(
+          AUTO_CAPS_KEY,
+          JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
+        );
+      } catch {
+        /* ignore */
+      }
+      setSavedCaps({ tx: txCap, day: dayCap });
+
+      // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
+      // Sign Service could not stand in for it. Saying so beats a switch that lights up
+      // and changes nothing.
+      if (!sessionSigningAvailable && !mcpEnabled) {
+        toast.error("Auto-approve unavailable for this wallet — every write still needs a signature.");
+        return;
+      }
+      setAutoApprove(address, true);
+      toast.success(
+        mcpEnabled
+          ? `Auto-approve on · $${txCap}/tx · $${dayCap}/day`
+          : `Auto-approve on in-app · caps $${txCap}/tx · $${dayCap}/day not enforced by the Sign Service`,
+      );
+    },
+    [address, customTx, customDay, sessionSigningAvailable],
+  );
+
   const enableAutoSign = useCallback(
     async (action: "start" | "use_defaults" | "custom" | "disable") => {
       const label =
@@ -1961,60 +2058,90 @@ export function CopilotWorkspace() {
       // Sign Service currently rejects our M2M token. What it must NOT do is claim the
       // first succeeded: it used to flip on and print the caps as policy even when the
       // response was `kind: "error"` carrying a 401.
-      if (address && data) {
-        if (action === "disable") {
-          setAutoApprove(address, false);
-          setSignServiceState({ status: "unknown", reason: null });
-          return;
-        }
-        if (action !== "use_defaults" && action !== "custom") return;
-        if (data.kind === "needs_auto_sign") return;
-
-        const facts = (data.data ?? {}) as {
-          default_cap_usd?: number;
-          error?: string;
-          detail?: { detail?: string };
-        };
-        const mcpEnabled = data.kind !== "error" && !facts.error;
-        const reason =
-          facts.detail?.detail ||
-          facts.error ||
-          (data.kind === "error" ? data.message : null) ||
-          null;
-        setSignServiceState(
-          mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
-        );
-
-        const fromMcp = Number(facts.default_cap_usd);
-        const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
-        const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
-        const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
-        try {
-          localStorage.setItem(
-            AUTO_CAPS_KEY,
-            JSON.stringify({ max_per_tx_usd: txCap, max_per_day_usd: dayCap }),
-          );
-        } catch {
-          /* ignore */
-        }
-        setSavedCaps({ tx: txCap, day: dayCap });
-
-        // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
-        // Sign Service could not stand in for it. Saying so beats a switch that lights up
-        // and changes nothing.
-        if (!sessionSigningAvailable && !mcpEnabled) {
-          toast.error("Auto-approve unavailable for this wallet — every write still needs a signature.");
-          return;
-        }
-        setAutoApprove(address, true);
-        toast.success(
-          mcpEnabled
-            ? `Auto-approve on · $${txCap}/tx · $${dayCap}/day`
-            : `Auto-approve on in-app · caps $${txCap}/tx · $${dayCap}/day not enforced by the Sign Service`,
-        );
+      if (address && data && action !== "start") {
+        applyAutoSignOutcome(action, data);
       }
     },
-    [postCopilot, customTx, customDay, response, submitted, address, sessionSigningAvailable],
+    [postCopilot, customTx, customDay, response, submitted, address, applyAutoSignOutcome],
+  );
+
+  /**
+   * Poll the pending additional-signer consent, and let the server finish the job.
+   *
+   * `retry_action` travels with the poll so the enable the user originally asked for is
+   * re-run server-side the instant the binding lands. Without it the happy path ends at
+   * "authorized" — true, but one silent step short of the toggle they were trying to
+   * flip, which reads as the same failure they started with.
+   */
+  const checkWalletBind = useCallback(
+    async (wb: NonNullable<ChatResponse["wallet_bind"]>) => {
+      if (!wb.request_id) return;
+      const data = await postCopilot(
+        {
+          message: "check signing authority",
+          auto_sign: {
+            action: "bind_status",
+            request_id: wb.request_id,
+            ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
+            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
+            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+          },
+        },
+        "Check signing authority",
+        { chainHop: true },
+      );
+      if (data && wb.retry_action && data.kind !== "needs_wallet_bind") {
+        applyAutoSignOutcome(wb.retry_action, data);
+      }
+    },
+    [postCopilot, applyAutoSignOutcome],
+  );
+
+  /**
+   * Auto-poll a consent the user is in the middle of granting.
+   *
+   * Bounded by MCP's own backoff schedule rather than a loop of our own: when it is
+   * exhausted the panel falls back to an explicit "I've approved it" button. Polling
+   * forever would keep a request in flight behind a window the user may have closed.
+   */
+  const bindPollRef = useRef<{ id: string; attempt: number } | null>(null);
+  useEffect(() => {
+    const wb = response?.kind === "needs_wallet_bind" ? response.wallet_bind : null;
+    if (!wb?.request_id || (wb.status !== "needs_consent" && wb.status !== "pending")) {
+      bindPollRef.current = null;
+      return;
+    }
+    if (loading) return;
+    const schedule =
+      wb.poll_schedule_seconds?.length ? wb.poll_schedule_seconds : [2, 4, 8, 16, 32];
+    const cur = bindPollRef.current;
+    const attempt = cur && cur.id === wb.request_id ? cur.attempt : 0;
+    if (attempt >= schedule.length) return;
+    bindPollRef.current = { id: wb.request_id, attempt: attempt + 1 };
+    const t = setTimeout(
+      () => {
+        void checkWalletBind(wb);
+      },
+      Math.max(1, Number(schedule[attempt]) || 2) * 1000,
+    );
+    return () => clearTimeout(t);
+  }, [response, loading, checkWalletBind]);
+
+  /** Mint a fresh consent link (first time, or after one expired). */
+  const startWalletBind = useCallback(
+    async (retryAction?: "use_defaults" | "custom" | "disable") => {
+      await postCopilot(
+        {
+          message: "authorize vanna to sign for my wallet",
+          auto_sign: {
+            action: "bind_start",
+            ...(retryAction ? { retry_action: retryAction } : {}),
+          },
+        },
+        "Authorize Vanna as an additional signer",
+      );
+    },
+    [postCopilot],
   );
 
   /**
@@ -2850,19 +2977,30 @@ export function CopilotWorkspace() {
   // Multi-leg uses a structured card — don't paint the whole turn imperial red.
   const isError =
     !multiLeg && (response?.kind === "error" || response?.kind === "blocked");
-  const phase = loading
-    ? "running"
-    : response?.kind === "plan_preview"
-      ? "plan"
-      : response?.kind === "needs_auto_sign"
-        ? "autosign"
-        : response?.kind === "needs_wallet_sign"
-          ? "staged"
-          : response?.kind === "executed"
-            ? "done"
-            : response
-              ? "answer"
-              : "idle";
+  /**
+   * The open signing-authority consent, if one is in progress.
+   *
+   * Held separately from `phase` below because it must OUTRANK `loading`: the consent
+   * poll runs as a chain hop every few seconds, and if a poll's loading state hid the
+   * panel, the link the user is supposed to click would blink out from under them.
+   */
+  const bindGate =
+    response?.kind === "needs_wallet_bind" ? (response.wallet_bind ?? null) : null;
+  const phase = bindGate
+    ? "bind"
+    : loading
+      ? "running"
+      : response?.kind === "plan_preview"
+        ? "plan"
+        : response?.kind === "needs_auto_sign"
+          ? "autosign"
+          : response?.kind === "needs_wallet_sign"
+            ? "staged"
+            : response?.kind === "executed"
+              ? "done"
+              : response
+                ? "answer"
+                : "idle";
 
   /** Agent-run trace, built from the turn that actually happened. */
   const steps = useMemo<Step[]>(() => {
@@ -3552,6 +3690,102 @@ export function CopilotWorkspace() {
                         </button>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Signing-authority consent gate.
+                    Separate from the auto-sign gate on purpose: this one is not about
+                    spend limits, it is the permission that has to exist before any
+                    limit can be enforced. Wording never says "connect your wallet" —
+                    the wallet IS connected, and telling the user to reconnect is the
+                    dead end this panel exists to end. */}
+                {phase === "bind" && response && bindGate && (
+                  <div className="mt-[26px] space-y-5" style={{ animation: "cp-in 300ms ease-out forwards" }}>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <Eyebrow n="03">Signing authority</Eyebrow>
+                    </div>
+                    <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
+
+                    {/* State of the two permissions, side by side. The whole diagnosis
+                        of this bug is that these are different rows. */}
+                    <div className="rounded-r4 border border-vgray-100 p-4">
+                      <div className="flex flex-col gap-1.5">
+                        <Row k="wallet connected" v="yes" color={VIOLET} />
+                        <Row
+                          k="vanna may sign"
+                          v={
+                            bindGate.status === "bound"
+                              ? "authorized"
+                              : bindGate.status === "pending"
+                                ? "awaiting your approval"
+                                : "not authorized"
+                          }
+                          color={bindGate.status === "bound" ? VIOLET : AMBER}
+                        />
+                        {bindGate.wallet_address && (
+                          <Row k="wallet" v={`${bindGate.wallet_address.slice(0, 6)}…${bindGate.wallet_address.slice(-4)}`} />
+                        )}
+                      </div>
+                    </div>
+
+                    {bindGate.connect_url ? (
+                      <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
+                        <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
+                          <ShieldCheck size={14} /> authorize additional signer
+                        </p>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                          {/* A real link, not a popup call: popup opening is blocked in
+                              plenty of contexts and a dead button is worse than a click. */}
+                          <a
+                            href={bindGate.connect_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={`inline-block px-[18px] py-2.5 text-center ${BTN_GRADIENT}`}
+                          >
+                            Open authorization page
+                          </a>
+                          <button
+                            type="button"
+                            disabled={loading || !bindGate.request_id}
+                            onClick={() => void checkWalletBind(bindGate)}
+                            className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
+                          >
+                            {loading ? "Checking…" : "I've approved it"}
+                          </button>
+                        </div>
+                        <p className="mt-3 text-body-2 text-vgray-500">
+                          Vanna is added <em>alongside</em> your own key — it never replaces it,
+                          and you can revoke it in Privy whenever you want.
+                          {bindGate.expires_in
+                            ? ` This link is valid for ${Math.round(bindGate.expires_in / 60)} minutes.`
+                            : ""}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="rounded-r4 border p-4" style={{ borderColor: `${AMBER}55`, background: `${AMBER}14` }}>
+                        <p className="text-body-2" style={{ color: AMBER }}>
+                          {bindGate.status === "expired"
+                            ? "The authorization link expired before it was completed."
+                            : "No authorization link is available right now."}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => void startWalletBind(bindGate.retry_action ?? undefined)}
+                          className={`mt-3 px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                        >
+                          {loading ? "Working…" : "Get a new link"}
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={reset}
+                      className="rounded-r2 px-[18px] py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                    >
+                      Cancel
+                    </button>
                   </div>
                 )}
 
@@ -4303,9 +4537,35 @@ export function CopilotWorkspace() {
                   v={
                     signServiceState.status === "ok"
                       ? "session registered"
-                      : `unavailable (${signServiceState.reason ?? "rejected"})`
+                      : signServiceState.status === "unbound"
+                        ? "not authorized for this wallet"
+                        : `unavailable (${signServiceState.reason ?? "rejected"})`
                   }
                   color={signServiceState.status === "ok" ? VIOLET : AMBER}
+                />
+              )}
+              {/* Two permissions, two rows — never one.
+                  "Privy connected" is a browser wallet session; "signing authority" is
+                  a binding at the Sign Service that only the additional-signer consent
+                  can create. One row for both is what made reconnecting the wallet look
+                  like a fix for a 403 it can never fix. */}
+              {address && (
+                <Row
+                  k="signing authority"
+                  v={
+                    signServiceState.status === "ok"
+                      ? "bound to your identity"
+                      : signServiceState.status === "unbound"
+                        ? "not bound — needs your approval"
+                        : "unknown"
+                  }
+                  color={
+                    signServiceState.status === "ok"
+                      ? VIOLET
+                      : signServiceState.status === "unbound"
+                        ? AMBER
+                        : undefined
+                  }
                 />
               )}
               <Row
