@@ -13,6 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
+import { cleanExecutionCopy } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
@@ -3747,7 +3748,15 @@ async function runWrite(
           txHash: tx,
         })
       : null;
-    const displayMsg = accountAnswer ? answerToText(accountAnswer) : cleanMsg;
+    // Short headline + body — never dump Sign Service hash/URL prose into both
+    // human_summary and message (UI already has tx row + Expert link).
+    const copy = cleanExecutionCopy({
+      label: mapped.step.label,
+      status: result.status,
+      rawMessage: cleanMsg,
+      txHash: tx,
+    });
+    const displayMsg = accountAnswer ? answerToText(accountAnswer) : copy.body;
     return {
       kind: "executed",
       message: withImpact(displayMsg),
@@ -3758,11 +3767,11 @@ async function runWrite(
       execution: {
         status: result.status,
         tx_hash: tx,
-        steps: [{ tool: result.tool, label: result.label, status: result.status, message: result.message }],
+        steps: [{ tool: result.tool, label: result.label, status: result.status, message: copy.body }],
       },
       preview: {
         template_id: action.op,
-        human_summary: accountAnswer ? accountAnswer.headline : result.message,
+        human_summary: accountAnswer ? accountAnswer.headline : copy.headline,
         slots: { asset: action.asset, amount: action.amount },
         risk: { decision: "allow", reasons: reasonsWith(["executed via MCP"]) },
         requires_signature: false,

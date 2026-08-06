@@ -9,6 +9,7 @@ import {
   classifyTrustlineFailure,
   isTrustlineMissingError,
 } from "./asset-readiness";
+import { cleanExecutionCopy } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
@@ -1095,18 +1096,21 @@ export async function executeMcpWrite(
     build.auto_sign === "signed_and_submitted"
   ) {
     const hash = (build.tx_hash as string) || null;
+    // Prefer short chat copy — MCP often returns a Sign Service paragraph with
+    // full hash + explorer URL; the UI already shows those in dedicated rows.
+    const { body } = cleanExecutionCopy({
+      label: step.label,
+      status: "signed_and_submitted",
+      rawMessage: (build.summary as string) || (build.message as string) || null,
+      txHash: hash,
+    });
     return {
       tool: step.tool,
       label: step.label,
       build,
       submitted: build,
       status: "signed_and_submitted",
-      message:
-        (build.summary as string) ||
-        (build.message as string) ||
-        (hash
-          ? `${step.label} completed on-chain · ${hash.slice(0, 12)}…`
-          : `${step.label} completed on-chain.`),
+      message: body,
       mcp_trace: baseTrace,
     };
   }
@@ -1218,7 +1222,11 @@ export async function executeMcpWrite(
       label: step.label,
       build,
       status: "done",
-      message: (build.summary as string) || (build.message as string) || `${step.label} done.`,
+      message: cleanExecutionCopy({
+        label: step.label,
+        status: "done",
+        rawMessage: (build.summary as string) || (build.message as string) || null,
+      }).body,
       mcp_trace: baseTrace,
     };
   }
@@ -1293,6 +1301,8 @@ export async function executeMcpWrite(
 
     const st = String(submitted.status || "");
     if (st === "signed_and_submitted" || submitted.tx_hash) {
+      const hash =
+        typeof submitted.tx_hash === "string" ? submitted.tx_hash : null;
       return {
         tool: step.tool,
         label: step.label,
@@ -1300,9 +1310,12 @@ export async function executeMcpWrite(
         unsigned_xdr: xdr,
         submitted,
         status: "signed_and_submitted",
-        message:
-          (submitted.summary as string) ||
-          `Signed & submitted${submitted.tx_hash ? ` · ${String(submitted.tx_hash).slice(0, 12)}…` : ""}`,
+        message: cleanExecutionCopy({
+          label: step.label,
+          status: "signed_and_submitted",
+          rawMessage: (submitted.summary as string) || (submitted.message as string) || null,
+          txHash: hash,
+        }).body,
         mcp_trace: { ...baseTrace, auto_sign: "signed_and_submitted" },
       };
     }
