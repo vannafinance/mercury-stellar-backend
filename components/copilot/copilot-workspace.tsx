@@ -48,6 +48,7 @@ import {
   splitResumeBatch,
 } from "./resume-policy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
+import { getPrivyAuthControls } from "@/lib/wallet-adapter";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { HealthDial } from "./health-dial";
@@ -147,7 +148,10 @@ interface ChatResponse {
   wallet_bind?: {
     status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
     request_id?: string | null;
+    /** Fallback only — the in-app consent below is the normal route. */
     connect_url?: string | null;
+    /** Privy signer quorum to authorize in-app. Absent → link fallback only. */
+    signer_id?: string | null;
     expires_in?: number | null;
     poll_schedule_seconds?: number[] | null;
     wallet_address?: string | null;
@@ -1250,6 +1254,15 @@ export function CopilotWorkspace() {
     reason: string | null;
   }>({ status: "unknown", reason: null });
 
+  /**
+   * The in-app consent is running (Privy may be showing its own sheet).
+   *
+   * Rendered as a working state rather than the fallback panel's buttons, so the user
+   * never sees "open the authorization page" flash up during the path that is about
+   * to make that page unnecessary.
+   */
+  const [bindingInApp, setBindingInApp] = useState(false);
+
   /** Switch clicked on, budget not yet confirmed — engaged but not asserting a policy. */
   const autoPending = railBudgetOpen && !sessionSigning;
   /** Only the per-tx cap is required; a blank daily cap falls back to it in enableAutoSign. */
@@ -2012,6 +2025,84 @@ export function CopilotWorkspace() {
     [address, customTx, customDay, sessionSigningAvailable],
   );
 
+  /**
+   * Finish the signing-authority binding here, in the gesture that started it.
+   *
+   * ## Why this is the primary path
+   *
+   * Turning auto-sign on IS the user's consent to the thing being asked for. Bouncing
+   * them to an external page to click "authorize", then back to click "I've approved
+   * it", is a second quest for a decision they already made — and it reads as broken
+   * next to a switch they just flipped. Everything needed is already in this tab: they
+   * are authenticated with Privy, and Privy's own SDK is the only thing that CAN grant
+   * the consent. So the only step this page cannot do is the register callback, which
+   * is cross-origin — and the server does that (see lib/copilot/wallet-bind.ts).
+   *
+   * Nothing here is trusted. `addSigners` succeeding is not what makes the binding
+   * real: register makes the Sign Service re-verify quorum-is-signer against Privy,
+   * and the enable that follows is the same gated call it always was.
+   *
+   * Returns false when the silent path cannot run or did not complete, and the caller
+   * then leaves the fallback panel on screen. Any `false` here is a real fallback, not
+   * a swallowed failure — the reason is surfaced as a toast.
+   */
+  const completeWalletBindInApp = useCallback(
+    async (wb: NonNullable<ChatResponse["wallet_bind"]>): Promise<boolean> => {
+      // Only a fresh consent can be completed silently; expired/unavailable need the panel.
+      if (wb.status !== "needs_consent" || !wb.request_id) return false;
+      // No signer id → the gateway never published one and we must not guess which
+      // quorum to authorize. Fallback page carries its own copy.
+      if (!wb.signer_id) return false;
+
+      const controls = getPrivyAuthControls();
+      if (!controls?.authenticated || typeof controls.authorizeVannaSigner !== "function") {
+        return false;
+      }
+
+      let authorized: { address: string; delegated: boolean };
+      setBindingInApp(true);
+      try {
+        authorized = await controls.authorizeVannaSigner(wb.signer_id);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Includes the user dismissing Privy's own sheet — a legitimate "no", so this
+        // is not an error state, just the end of the silent path.
+        toast.error(`Could not authorize Vanna as a signer (${msg}).`);
+        return false;
+      } finally {
+        setBindingInApp(false);
+      }
+
+      if (!authorized.delegated) {
+        toast.error("Privy did not confirm Vanna as a signer on your wallet.");
+        return false;
+      }
+
+      const data = await postCopilot(
+        {
+          message: "finish signing authorization",
+          auto_sign: {
+            action: "bind_register",
+            request_id: wb.request_id,
+            wallet_address: authorized.address,
+            ...(wb.retry_action ? { retry_action: wb.retry_action } : {}),
+            ...(wb.max_per_tx_usd != null ? { max_per_tx_usd: wb.max_per_tx_usd } : {}),
+            ...(wb.max_per_day_usd != null ? { max_per_day_usd: wb.max_per_day_usd } : {}),
+          },
+        },
+        "Authorize Vanna as an additional signer",
+        { chainHop: true },
+      );
+
+      // Still unbound → the server left a bind gate on screen with its own reason.
+      if (!data || data.kind === "needs_wallet_bind") return false;
+
+      if (wb.retry_action) applyAutoSignOutcome(wb.retry_action, data);
+      return true;
+    },
+    [postCopilot, applyAutoSignOutcome],
+  );
+
   const enableAutoSign = useCallback(
     async (action: "start" | "use_defaults" | "custom" | "disable") => {
       const label =
@@ -2058,11 +2149,27 @@ export function CopilotWorkspace() {
       // Sign Service currently rejects our M2M token. What it must NOT do is claim the
       // first succeeded: it used to flip on and print the caps as policy even when the
       // response was `kind: "error"` carrying a 401.
+      // Unbound wallet: finish the binding in THIS gesture rather than handing the
+      // user a second quest. See completeWalletBindInApp.
+      if (data?.kind === "needs_wallet_bind" && data.wallet_bind) {
+        const finished = await completeWalletBindInApp(data.wallet_bind);
+        if (finished) return;
+      }
+
       if (address && data && action !== "start") {
         applyAutoSignOutcome(action, data);
       }
     },
-    [postCopilot, customTx, customDay, response, submitted, address, applyAutoSignOutcome],
+    [
+      postCopilot,
+      customTx,
+      customDay,
+      response,
+      submitted,
+      address,
+      applyAutoSignOutcome,
+      completeWalletBindInApp,
+    ],
   );
 
   /**
@@ -2111,7 +2218,9 @@ export function CopilotWorkspace() {
       bindPollRef.current = null;
       return;
     }
-    if (loading) return;
+    // The in-app consent owns the flow while it runs; polling underneath it would
+    // race its own register call for the same single-use request.
+    if (loading || bindingInApp) return;
     const schedule =
       wb.poll_schedule_seconds?.length ? wb.poll_schedule_seconds : [2, 4, 8, 16, 32];
     const cur = bindPollRef.current;
@@ -2125,7 +2234,7 @@ export function CopilotWorkspace() {
       Math.max(1, Number(schedule[attempt]) || 2) * 1000,
     );
     return () => clearTimeout(t);
-  }, [response, loading, checkWalletBind]);
+  }, [response, loading, bindingInApp, checkWalletBind]);
 
   /** Mint a fresh consent link (first time, or after one expired). */
   const startWalletBind = useCallback(
@@ -3728,36 +3837,62 @@ export function CopilotWorkspace() {
                       </div>
                     </div>
 
-                    {bindGate.connect_url ? (
+                    {/* In-app consent in flight — Privy may be showing its own sheet.
+                        Deliberately renders INSTEAD of the fallback buttons so the
+                        external link never flashes up during the path that replaces it. */}
+                    {bindingInApp ? (
+                      <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
+                        <p className="flex items-center gap-2 text-body-2 text-violet-600">
+                          <Loader2 size={14} className="animate-spin" />
+                          Authorizing Vanna as an additional signer on your wallet…
+                        </p>
+                      </div>
+                    ) : bindGate.connect_url ? (
                       <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                         <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                           <ShieldCheck size={14} /> authorize additional signer
                         </p>
                         <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-                          {/* A real link, not a popup call: popup opening is blocked in
-                              plenty of contexts and a dead button is worse than a click. */}
-                          <a
-                            href={bindGate.connect_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={`inline-block px-[18px] py-2.5 text-center ${BTN_GRADIENT}`}
-                          >
-                            Open authorization page
-                          </a>
+                          {/* Retrying in-app is the primary action whenever a signer id
+                              exists — the same one gesture, not a trip to another tab. */}
+                          {bindGate.signer_id && (
+                            <button
+                              type="button"
+                              disabled={loading}
+                              onClick={() => void completeWalletBindInApp(bindGate)}
+                              className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
+                            >
+                              {loading ? "Working…" : "Authorize in app"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={loading || !bindGate.request_id}
                             onClick={() => void checkWalletBind(bindGate)}
                             className={`px-[18px] py-2.5 ${BTN_ON_TINT}`}
                           >
-                            {loading ? "Checking…" : "I've approved it"}
+                            {loading ? "Checking…" : "Check again"}
                           </button>
                         </div>
                         <p className="mt-3 text-body-2 text-vgray-500">
                           Vanna is added <em>alongside</em> your own key — it never replaces it,
                           and you can revoke it in Privy whenever you want.
+                        </p>
+                        {/* Last resort, and framed as one. Reaching for this means the
+                            in-app SDK path could not run at all. */}
+                        <p className="mt-2 text-body-2 text-vgray-400">
+                          Not working here?{" "}
+                          <a
+                            href={bindGate.connect_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 underline hover:text-violet-500"
+                          >
+                            Authorize on Vanna&apos;s page
+                            <ExternalLink size={11} />
+                          </a>
                           {bindGate.expires_in
-                            ? ` This link is valid for ${Math.round(bindGate.expires_in / 60)} minutes.`
+                            ? ` · link valid ${Math.round(bindGate.expires_in / 60)} min`
                             : ""}
                         </p>
                       </div>

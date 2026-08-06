@@ -24,6 +24,23 @@ export const copilotConfig = {
   get mcpBaseUrl(): string {
     return env("MCP_BASE_URL", "https://mcp.vanna.finance/mcp");
   },
+  /**
+   * This app's own public origin, when it is known.
+   *
+   * Only consumer today is the wallet-bind register forward: the Connect Gateway
+   * rejects a missing `Origin` header if it has an allowlist configured, and a
+   * server-to-server fetch has no Origin unless we set one. Empty is fine — the
+   * gateway allows absent Origin when its allowlist is empty (its dev posture).
+   */
+  get publicOrigin(): string {
+    const raw = env("COPILOT_PUBLIC_ORIGIN") || env("NEXT_PUBLIC_APP_URL");
+    if (!raw) return "";
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return "";
+    }
+  },
   get workosClientId(): string {
     return env("WORKOS_M2M_CLIENT_ID");
   },

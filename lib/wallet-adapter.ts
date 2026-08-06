@@ -50,6 +50,24 @@ interface PrivyAuthControls {
    * always call this at request time rather than caching the string.
    */
   getAccessToken: () => Promise<string | null>;
+  /**
+   * Authorize a Vanna signer quorum on the session's embedded Stellar wallet.
+   *
+   * This is the consent that lets the Sign Service sign for the user, and it is the
+   * ONLY step of the binding flow that must happen in the browser — Privy's SDK
+   * holds the user's session, so nothing server-side can grant it on their behalf.
+   *
+   * `addSigners` ADDS the quorum alongside the user's own key (`ownerModel: "user"`);
+   * ownership never transfers and the user can revoke it in Privy. Privy may show its
+   * own confirmation sheet, which is acceptable — what is not acceptable is sending
+   * the user to a different page to do this, since they are already authenticated
+   * here.
+   *
+   * Idempotent: a wallet already showing `delegated` returns without re-prompting.
+   */
+  authorizeVannaSigner: (
+    signerId: string,
+  ) => Promise<{ address: string; delegated: boolean }>;
 }
 
 let activeWalletKind: WalletKind | null = null;

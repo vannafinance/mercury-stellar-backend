@@ -65,6 +65,12 @@ import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { evaluateDomainFirewall } from "./domain-firewall";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
+import {
+  registerWalletBind,
+  rememberConnectOrigin,
+  resolveConnectOrigin,
+  resolvePrivySignerId,
+} from "./wallet-bind";
 import type {
   BrainHealth,
   ChatRequest,
@@ -1234,22 +1240,34 @@ async function startWalletBind(
   const schedule = Array.isArray(started.poll_schedule_seconds)
     ? (started.poll_schedule_seconds as unknown[]).map(Number).filter((n) => Number.isFinite(n))
     : null;
+  const startedRequestId =
+    typeof started.request_id === "string" ? started.request_id : null;
+
+  // Remember where this request was minted so `bind_register` can complete it
+  // without ever being told a forward target by the browser.
+  if (startedRequestId) rememberConnectOrigin(startedRequestId, connectUrl);
+
+  // The signer the page must authorize. Its presence is what makes the consent
+  // possible in-app; without it the client can only fall back to the link.
+  const origin = startedRequestId ? resolveConnectOrigin(startedRequestId) : null;
+  const signerId = origin ? await resolvePrivySignerId(origin) : null;
 
   return {
     kind: "needs_wallet_bind",
     message: lead(
       `Your wallet is connected, but Vanna is not yet authorized to sign for it — ` +
         `those are two separate permissions, which is why reconnecting your wallet ` +
-        `does not fix it. Open the link below and approve Vanna as an additional ` +
-        `signer on your own wallet. You keep custody; Vanna is only added alongside ` +
-        `your own key, and you can revoke it in Privy at any time. As soon as you ` +
-        `finish, ${retry.action === "disable" ? "the change" : "auto-sign"} is ` +
-        `applied automatically.`,
+        `does not fix it. Approving Vanna as an additional signer on your own wallet ` +
+        `finishes it. You keep custody; Vanna is only added alongside your own key, ` +
+        `and you can revoke it in Privy at any time. As soon as it is approved, ` +
+        `${retry.action === "disable" ? "the change" : "auto-sign"} is applied ` +
+        `automatically.`,
     ),
     wallet_bind: {
       status: "needs_consent",
-      request_id: typeof started.request_id === "string" ? started.request_id : null,
+      request_id: startedRequestId,
       connect_url: connectUrl,
+      signer_id: signerId,
       expires_in: Number.isFinite(Number(started.expires_in))
         ? Number(started.expires_in)
         : null,
@@ -1262,6 +1280,96 @@ async function startWalletBind(
     data: factsForUi(started),
     request_id,
   };
+}
+
+/**
+ * Complete a consent the page has already obtained from Privy, then apply the enable.
+ *
+ * This is the normal path. By the time it runs, the browser has called `addSigners`
+ * in the same gesture that turned auto-sign on, so all that remains is the register
+ * hop it cannot make cross-origin (see lib/copilot/wallet-bind.ts) and the enable the
+ * 403 originally blocked.
+ *
+ * It does NOT trust the browser's word that the consent happened. Register makes the
+ * main Sign Service re-verify quorum-is-signer against Privy and write the binding,
+ * and the enable that follows is the same gated call as ever — so a page that lied
+ * about `addSigners` gets a `quorum_not_signer` refusal here, not a session.
+ */
+async function handleBindRegister(
+  mcp: MCPClient,
+  req: ChatRequest,
+  request_id: string,
+  trader: string,
+  userId: string,
+): Promise<ChatResponse> {
+  const requestId = req.auto_sign?.request_id;
+  const walletAddress = (req.auto_sign?.wallet_address || trader).trim();
+  const retryAction = req.auto_sign?.retry_action ?? null;
+
+  if (!requestId) {
+    return {
+      kind: "error",
+      message: "Cannot complete the signing authorization without its request_id.",
+      request_id,
+    };
+  }
+
+  const origin = resolveConnectOrigin(requestId);
+  if (!origin) {
+    // The start hop's origin is gone (different instance, or expired). The link
+    // fallback still completes the same consent, so offer that rather than fail.
+    return {
+      kind: "needs_wallet_bind",
+      message:
+        "The authorization could not be completed automatically. Finish it with the " +
+        "link below and auto-sign will be applied as soon as you do.",
+      wallet_bind: {
+        status: "expired",
+        wallet_address: walletAddress,
+        retry_action: retryAction,
+        max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
+        max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+      },
+      request_id,
+    };
+  }
+
+  const registered = await registerWalletBind({ requestId, walletAddress, origin });
+  if (!registered.ok) {
+    // `already_used` means a concurrent poll or a second click already consumed the
+    // request — the binding may well exist, so fall through to the status check
+    // rather than reporting a failure the user would not recognise.
+    if (registered.code !== "already_used") {
+      // `origin_not_allowed` is the one failure here that is pure deployment config:
+      // the Connect Gateway's CONNECT_ORIGIN_ALLOWLIST is set and does not include
+      // this app. Naming it saves the next person the trace, because from the browser
+      // it is indistinguishable from the consent itself having failed.
+      const hint =
+        registered.code === "origin_not_allowed"
+          ? " (the wallet-authorization service is not configured to accept requests " +
+            "from this app — CONNECT_ORIGIN_ALLOWLIST)"
+          : "";
+      return {
+        kind: "needs_wallet_bind",
+        message:
+          `Vanna could not finish authorizing this wallet (${registered.message})${hint}. ` +
+          `Nothing changed — writes still ask for your signature each time.` +
+          (registered.expired ? " The authorization request expired; start it again." : ""),
+        wallet_bind: {
+          status: registered.expired ? "expired" : "unavailable",
+          wallet_address: walletAddress,
+          retry_action: retryAction,
+          max_per_tx_usd: req.auto_sign?.max_per_tx_usd ?? null,
+          max_per_day_usd: req.auto_sign?.max_per_day_usd ?? null,
+        },
+        request_id,
+      };
+    }
+  }
+
+  // Confirm with the Sign Service and apply the enable. Deliberately the SAME path a
+  // fallback-link consent takes, so both routes converge on one verified outcome.
+  return handleBindStatus(mcp, req, request_id, trader, userId);
 }
 
 /**
@@ -1412,6 +1520,10 @@ async function handleAutoSignAction(
 
     if (action === "bind_status") {
       return handleBindStatus(mcp, req, request_id, trader, userId);
+    }
+
+    if (action === "bind_register") {
+      return handleBindRegister(mcp, req, request_id, trader, userId);
     }
 
     if (action === "disable") {

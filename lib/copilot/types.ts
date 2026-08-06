@@ -82,11 +82,25 @@ export interface ChatRequest {
      * `wallet_not_bound` requires — see WalletBindPrompt for why it is a separate
      * step from connecting the wallet.
      */
-    action?: "start" | "use_defaults" | "custom" | "disable" | "bind_start" | "bind_status";
+    action?:
+      | "start"
+      | "use_defaults"
+      | "custom"
+      | "disable"
+      | "bind_start"
+      | "bind_status"
+      /**
+       * The silent path. The page has already run Privy's `addSigners` in the
+       * gesture that turned auto-sign on; this completes the binding server-side
+       * and then applies the enable. No user-visible detour.
+       */
+      | "bind_register";
     max_per_tx_usd?: number | string;
     max_per_day_usd?: number | string;
-    /** `bind_status` only — the connect request to poll. */
+    /** `bind_status` / `bind_register` — the connect request to complete or poll. */
     request_id?: string;
+    /** `bind_register` only — the G-address the browser authorized the quorum on. */
+    wallet_address?: string;
     /**
      * `bind_status` only — replay this action the moment the binding lands, so
      * the user gets what they originally asked for rather than a "now try again".
@@ -286,8 +300,19 @@ export interface WalletBindPrompt {
   status: "needs_consent" | "pending" | "bound" | "expired" | "unavailable";
   /** Single-use connect request id. Poll it with `auto_sign.action = "bind_status"`. */
   request_id?: string | null;
-  /** The page the user opens to authorize the Vanna quorum as an additional signer. */
+  /**
+   * FALLBACK ONLY. The externally hosted page that performs the same consent.
+   *
+   * Used when the in-app path cannot run (no `signer_id`, the Privy SDK refused, or
+   * the register forward failed). It is not the normal route: sending someone to a
+   * second tab to finish "I just turned auto-sign on" reads as a broken product.
+   */
   connect_url?: string | null;
+  /**
+   * The Privy signer-quorum the page must authorize, so the consent can happen
+   * in-app with at most Privy's own sheet. Absent → only the link fallback works.
+   */
+  signer_id?: string | null;
   /** Seconds until `request_id` expires. */
   expires_in?: number | null;
   /** MCP's suggested poll backoff. The client walks this list, it does not invent one. */
