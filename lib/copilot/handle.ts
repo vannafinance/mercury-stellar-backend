@@ -3606,10 +3606,24 @@ async function runPlan(
       w.op,
     );
     if (!amountOptional && (w.amount == null || !(w.amount > 0))) {
+      /**
+       * When the asset is already settled, ask for a NUMBER — nothing else.
+       *
+       * The field this text labels is a bare numeric input (`type="number"`,
+       * placeholder "0.00"), so "include a size like 10 BLUSDC" asked for a format the
+       * box cannot accept, and named two tokens on a leg whose token was never in
+       * question. On a BLUSDC-collateral / XLM-borrow position that reads as a third
+       * asset choice appearing out of nowhere.
+       */
+      const uiAsset = w.asset
+        ? displayUsdcLabel(marginCollateralSymbol(w.asset), w.asset)
+        : null;
       const msg =
         w.op === "lend" || w.op === "supply"
           ? `How much do you want to ${w.op === "lend" ? "lend / park" : "supply"}? e.g. “park 20 XLM for yield”.`
-          : `Amount missing for “${w.label}”. Include a size like “10 BLUSDC” or “20 XLM”.`;
+          : uiAsset
+            ? `How much ${uiAsset} to ${w.op.replace(/_/g, " ")}? Enter an amount in ${uiAsset}.`
+            : `Amount missing for “${w.label}”. Include a size like “10 BLUSDC” or “20 XLM”.`;
       multiSteps.push({
         index: stepIndex,
         op: w.op,

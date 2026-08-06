@@ -315,14 +315,33 @@ function clauseToStepSpanned(
   }
 
   if (SPAN_VERB_BORROW.test(t) && !/\bcan\s+i\s+borrow\b/i.test(t)) {
+    /**
+     * A named asset with no number still names the asset.
+     *
+     * `first` is an amount+asset PAIR, so "borrow XLM" — no figure, because the size
+     * comes from the leverage — left it null and fell straight through to the "USDC"
+     * default. That is how a stated XLM borrow arrived as `borrow USDC / amount null`,
+     * which then asked "which USDC?" about a token the user never mentioned.
+     *
+     * The pair still wins when there is one ("borrow 50 XLM"): it is the most specific
+     * reading of the clause. `findBorrowAsset` only fills the gap, and it already knows
+     * not to read "borrow against my XLM" as borrowing XLM.
+     */
+    const named = first?.asset || findBorrowAsset(clause);
     return {
       step: {
         kind: "write",
         op: "borrow",
-        asset: first?.asset || "USDC",
+        asset: named || "USDC",
         amount: first?.amount ?? null,
       },
-      spans: [...kwSpans(clause, SPAN_VERB_BORROW, offset), ...pairSpan(first)],
+      spans: [
+        ...kwSpans(clause, SPAN_VERB_BORROW, offset),
+        ...pairSpan(first),
+        // Claim the bare asset word too, or coverage reports the token the step was
+        // built from as unread text.
+        ...(!first && named ? kwSpans(clause, new RegExp(`\\b${named}\\b`, "i"), offset) : []),
+      ],
     };
   }
 
@@ -625,13 +644,20 @@ export function extractPlanIR(message: string): PlanIR {
   positioned.sort((a, b) => a.at - b.at);
 
   // Deduplicate consecutive identical ops
-  const steps = positioned
+  const deduped = positioned
     .flatMap((p) => p.steps)
     .filter((s, i, arr) => {
       if (i === 0) return true;
       const p = arr[i - 1];
       return !(s.op === p.op && s.asset === p.asset && s.amount === p.amount);
     });
+
+  // Put a split levered deposit+borrow back together before anything downstream can
+  // treat the halves as two independent legs. See coalesceLeveragedDepositBorrow.
+  const steps = coalesceLeveragedDepositBorrow(deduped, {
+    leverage: constraints.leverage,
+    message,
+  });
 
   return {
     steps,
@@ -640,6 +666,111 @@ export function extractPlanIR(message: string): PlanIR {
     source: !overlay ? "deterministic" : clauseSteps > 0 ? "merged" : "named_strategy",
     strategyId: overlay?.id ?? null,
   };
+}
+
+/** The minimum shape the coalesce pass needs — satisfied by both IR and plan steps. */
+interface CoalescibleStep {
+  kind?: string;
+  op?: string | null;
+  asset?: string | null;
+  amount?: number | null;
+  leverage?: number | null;
+  args?: Record<string, unknown>;
+}
+
+/**
+ * Put a levered `deposit … borrow` back together as one `deposit_and_borrow`.
+ *
+ * ## The bug this exists to close
+ *
+ * "Deposit 100 BLUSDC at 2x and borrow XLM" is one levered position, and the router
+ * reads it as exactly that — `deposit_and_borrow`, collateral BLUSDC 100, leverage 2,
+ * borrow_asset XLM. But the message has two verbs and an "and", so `looksLikeMultiGoal`
+ * sends it down the plan path, and the clause splitter only keeps "deposit and borrow"
+ * whole when the two verbs are ADJACENT. Here they are not — "…BLUSDC at 2x / and /
+ * borrow XLM" — so it split, and the halves lost what only the whole had:
+ *
+ *   deposit_collateral 100 BLUSDC   ← fine
+ *   borrow ??? USDC                 ← no size (it was never written down; leverage
+ *                                     implies it) and, before this, no asset either
+ *
+ * A borrow leg with a null amount cannot execute, so the user got "amount to be
+ * confirmed", a "which USDC?" chip for a token they never named, and — after the
+ * deposit settled — a prompt asking them to type a size the backend already knew how
+ * to compute. Meanwhile `runWrite`'s `deposit_and_borrow` branch does compute it, via
+ * `planLeverage` and the oracle. The information and the arithmetic were both present;
+ * the split is what kept them apart.
+ *
+ * So rather than teach the plan path to size legs — a second implementation of the
+ * same sizing, which is how these two drift apart again — this restores the shape that
+ * already routes to the one that works. Merging back to a single write step also drops
+ * the extracted plan below the two-step bar in `preferExtractedPlan`, so the router's
+ * correct `deposit_and_borrow` survives instead of being replaced.
+ *
+ * ## When it deliberately does nothing
+ *
+ * Only the under-determined shape is merged. If the user sized the borrow themselves
+ * ("deposit 100 BLUSDC and borrow 50 XLM") both legs are already fully determined and
+ * execute correctly as two steps — merging those would rewrite a plan that works, and
+ * would let a leverage figure elsewhere in the sentence override a figure the user
+ * actually typed. Same for a missing or ≤1 leverage: with no multiplier there is
+ * nothing to size from, and the honest outcome is still to ask.
+ */
+export function coalesceLeveragedDepositBorrow<T extends CoalescibleStep>(
+  steps: T[],
+  opts: { leverage?: number | null; message?: string },
+): T[] {
+  if (steps.length < 2) return steps;
+
+  const out: T[] = [];
+  for (let i = 0; i < steps.length; i += 1) {
+    const dep = steps[i];
+    const bor = steps[i + 1];
+    const depLev = Number(dep?.leverage ?? dep?.args?.leverage ?? NaN);
+    const borLev = Number(bor?.leverage ?? bor?.args?.leverage ?? NaN);
+    const L = [depLev, borLev, Number(opts.leverage ?? NaN)].find((n) => Number.isFinite(n) && n > 1);
+
+    const mergeable =
+      bor != null &&
+      dep?.op === "deposit_collateral" &&
+      bor.op === "borrow" &&
+      dep.amount != null &&
+      dep.amount > 0 &&
+      !!dep.asset &&
+      // An explicit borrow size is the user's own answer — never overwrite it.
+      (bor.amount == null || !(bor.amount > 0)) &&
+      L != null;
+
+    if (!mergeable) {
+      out.push(dep);
+      continue;
+    }
+
+    /**
+     * The user's own words outrank a step field here. The borrow leg's asset may be a
+     * default that a producer (the LLM, or this extractor before the fix above) filled
+     * in when it could not see the token — and "USDC" is exactly that default. When the
+     * message names a borrow asset, that is the answer (product rule B).
+     */
+    const fromMessage = opts.message ? findBorrowAsset(opts.message) : null;
+    const borrowAsset = fromMessage || bor.asset || dep.asset || null;
+
+    out.push({
+      ...dep,
+      op: "deposit_and_borrow",
+      asset: dep.asset,
+      amount: dep.amount,
+      leverage: L,
+      args: {
+        ...(dep.args || {}),
+        ...(bor.args || {}),
+        leverage: L,
+        ...(borrowAsset ? { borrow_asset: borrowAsset } : {}),
+      },
+    } as T);
+    i += 1; // the borrow leg is now part of the merged step
+  }
+  return out;
 }
 
 /**

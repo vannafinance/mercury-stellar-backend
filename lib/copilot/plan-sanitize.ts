@@ -4,6 +4,7 @@
  */
 
 import { parseMinHealthFactor } from "./router";
+import { coalesceLeveragedDepositBorrow } from "./step-extractor";
 import type { RoutedIntent } from "./types";
 
 export type PlanStep = Extract<RoutedIntent, { kind: "plan" }>["steps"][number];
@@ -60,7 +61,7 @@ export function sanitizePlan(
   const leverage =
     leverageM && Number.isFinite(Number(leverageM[1])) ? Number(leverageM[1]) : null;
 
-  const steps = plan.steps.map((step) => {
+  const rawSteps = plan.steps.map((step) => {
     if (step.kind !== "write") return step;
     let amount = step.amount ?? null;
     if (isLikelyHfFloorAmount(amount, message)) amount = null;
@@ -88,6 +89,15 @@ export function sanitizePlan(
       args: Object.keys(args).length ? args : step.args,
     };
   });
+
+  /**
+   * Any producer can hand us a split levered deposit+borrow, not just the clause
+   * extractor — the LLM planner emits the two legs too, and its plan does not pass
+   * through the extractor. Every plan reaches this function, so putting the merge here
+   * as well means one sizing path regardless of who wrote the plan (product rule: no
+   * silent drop). A plan that has nothing to merge is returned unchanged.
+   */
+  const steps = coalesceLeveragedDepositBorrow(rawSteps, { leverage, message });
 
   // Prefer a short product summary when missing
   let summary = plan.summary;
