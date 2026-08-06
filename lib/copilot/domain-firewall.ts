@@ -105,6 +105,8 @@ const SELF_REFERENTIAL: RegExp[] = [
 const DOMAIN_WORDS = [
   // Protocol and chain
   "vanna", "stellar", "soroban", "freighter", "privy",
+  "protocol", "protocols",
+  "registry", "registries",
   // Venues and tickers
   "blend", "aquarius", "soroswap", "xlm", "aqua", "usdc", "blusdc", "aqusdc", "sousdc",
   "btoken", "btokens", "b-token", "vtoken", "vtokens",
@@ -175,6 +177,18 @@ const ALLOW_PATTERNS: RegExp[] = [
   /\b(how\s+(do|does|can|to).+\b(vanna|earn|farm|margin|lend|borrow|deposit|swap)\b)/i,
   // Multi-leg strategy language when tied to assets/actions above often co-occurs
   /\b(then|and\s+then).+\b(farm|lend|borrow|deposit|swap|repay)\b/i,
+  /**
+   * Protocol / contract / registry addresses.
+   *
+   * These are first-class product reads (`vanna_list_protocol_addresses`) and appear in
+   * the Copilot prompt palette ("List protocol addresses"). Without this, "list"/"show"/
+   * "what" hit the off-domain question rule while "protocol addresses" never matched the
+   * vocabulary — so a built-in Vanna prompt was refused as unrelated chat.
+   *
+   * Compound forms only: bare "address" alone stays out (home address, etc.).
+   */
+  /\b(protocol|contract|registry)\s+addresses?\b/i,
+  /\blist\s+(the\s+)?(protocol\s+|contract\s+|registry\s+)?addresses?\b/i,
 ];
 
 /**

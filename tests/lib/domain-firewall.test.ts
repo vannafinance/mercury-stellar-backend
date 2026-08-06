@@ -136,4 +136,29 @@ describe("domain firewall", () => {
     );
     expect(r.allow).toBe(false);
   });
+
+  it("allows protocol / contract address product reads", () => {
+    /**
+     * Observed failure: the palette prompt "List protocol addresses" (and close variants
+     * the router already maps to `vanna_list_protocol_addresses`) was refused because
+     * "list"/"show"/"what" tripped the off-domain question rule while protocol/address
+     * vocabulary was missing from the allowlist.
+     */
+    for (const ask of [
+      "List protocol addresses",
+      "list addresses",
+      "show protocol addresses",
+      "what are the contract addresses",
+      "list contract addresses",
+      "what is the registry",
+      "protocol addresses",
+    ]) {
+      expect(evaluateDomainFirewall(ask).allow, ask).toBe(true);
+    }
+  });
+
+  it("still refuses bare address / unrelated address questions", () => {
+    expect(evaluateDomainFirewall("what is your home address").allow).toBe(false);
+    expect(evaluateDomainFirewall("what's the address of the white house").allow).toBe(false);
+  });
 });
