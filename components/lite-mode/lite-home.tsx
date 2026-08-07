@@ -79,6 +79,14 @@ export const LiteHome = () => {
       const borrowPrice = tokenPrices[r.borrowAsset] ?? 0;
       const collateralUsd = collateralPrice > 0 ? r.collateralAmount * collateralPrice : r.collateralUsdAtOpen;
       const borrowUsd = borrowPrice > 0 ? r.borrowAmount * borrowPrice : r.borrowUsdAtOpen;
+      // Second debt leg for leveraged LP positions (same asset as collateral) —
+      // repriced the same way, defaults to 0 for Blend/legacy records.
+      const collateralBorrowAmount = r.collateralBorrowAmount ?? 0;
+      const collateralBorrowUsd =
+        collateralBorrowAmount > 0
+          ? (collateralPrice > 0 ? collateralBorrowAmount * collateralPrice : r.collateralBorrowUsdAtOpen ?? 0)
+          : 0;
+      const totalDebtUsd = borrowUsd + collateralBorrowUsd;
 
       // Earnings since opening — simple-APR estimate. The protocol doesn't
       // surface a per-position interest accrual, so we approximate with
@@ -92,8 +100,9 @@ export const LiteHome = () => {
       const earningsUsd = calcEarningsUsd(collateralUsd, netApr, elapsedYears);
 
       // Per-position health factor — independent of any other Pro-mode debt
-      // on the same margin account.
-      const hf = borrowUsd > 0 ? (collateralUsd + borrowUsd) / borrowUsd : 999;
+      // on the same margin account. Both debt legs count (paired-asset borrow
+      // + any same-asset top-up from leveraged LP pairing).
+      const hf = totalDebtUsd > 0 ? (collateralUsd + totalDebtUsd) / totalDebtUsd : 999;
       const status: LitePositionStatus =
         hf >= 1.5 ? "active" : hf >= 1.1 ? "risky" : "liquidation";
 
@@ -121,6 +130,8 @@ export const LiteHome = () => {
         borrowAsset: r.borrowAsset,
         borrowAmount: r.borrowAmount,
         borrowUsd,
+        collateralBorrowAmount,
+        collateralBorrowUsd,
         isSameAsset: r.isSameAsset,
         leverage: r.leverage,
         supplyApr: r.supplyApr,

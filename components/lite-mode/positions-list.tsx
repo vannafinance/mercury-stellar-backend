@@ -162,7 +162,7 @@ export const PositionsList = ({ positions, onSelect }: PositionsListProps) => {
               {/* Borrowed */}
               <div className="flex flex-col">
                 <span className={`text-[13px] font-semibold ${headingText}`}>
-                  ${p.borrowUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  ${(p.borrowUsd + p.collateralBorrowUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
                 <span className={`text-[11px] ${subMuted}`}>
                   {p.leverage.toFixed(1)}× leverage

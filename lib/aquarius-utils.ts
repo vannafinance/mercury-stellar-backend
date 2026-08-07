@@ -163,7 +163,6 @@ export interface AquariusTransactionResult {
 }
 
 const WAD = 1e18;
-const LP_SHARE_SCALE = 1e7;
 const AQUARIUS_AMM_API_BASE = 'https://amm-api-testnet.aqua.network';
 const AQUARIUS_API_CACHE_TTL_MS = 60_000;
 /** Bump when reserve→config mapping changes so stale cache is not reused. */
@@ -192,11 +191,6 @@ interface AquariusApiPoolItem {
 const toWad = (amount: number): bigint => {
   if (!Number.isFinite(amount) || amount <= 0) return BigInt(0);
   return BigInt(Math.floor(amount * WAD));
-};
-
-const toLpShareUnits = (amount: number): bigint => {
-  if (!Number.isFinite(amount) || amount <= 0) return BigInt(0);
-  return BigInt(Math.floor(amount * LP_SHARE_SCALE));
 };
 
 const makeKey = (name: string) => StellarSdk.xdr.ScVal.scvSymbol(name);
@@ -521,9 +515,10 @@ export class AquariusService {
   }
 
   /**
-   * Aquarius router address from Registry (checks `has_…` first, then `get_…`),
-   * or null if not configured/unreadable. Prefer {@link getEffectiveRouterAddress},
-   * which falls back to the hardcoded address.
+   * Aquarius router address from Registry (calls `get_aquarius_router_address`
+   * directly — the getter itself fails simulation when unset), or null if not
+   * configured/unreadable. Prefer {@link getEffectiveRouterAddress}, which
+   * falls back to the hardcoded address.
    */
   static async getAquariusRouterAddressFromRegistry(): Promise<string | null> {
     try {
@@ -531,26 +526,6 @@ export class AquariusService {
       const tempKeypair = StellarSdk.Keypair.random();
       const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
-
-      const hasTx = new StellarSdk.TransactionBuilder(tempAccount, {
-        fee: StellarSdk.BASE_FEE,
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(contract.call('has_aquarius_router_address'))
-        .setTimeout(30)
-        .build();
-
-      const hasSim = await server.simulateTransaction(hasTx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(hasSim) || !hasSim.result?.retval) {
-        console.warn('[AquariusService] has_aquarius_router_address simulation failed');
-        return null;
-      }
-
-      const hasRouter = StellarSdk.scValToNative(hasSim.result.retval);
-      if (!hasRouter) {
-        console.warn('[AquariusService] Aquarius router is not configured in Registry');
-        return null;
-      }
 
       const getTx = new StellarSdk.TransactionBuilder(tempAccount, {
         fee: StellarSdk.BASE_FEE,
@@ -1101,7 +1076,8 @@ export class AquariusService {
   /**
    * Remove liquidity from an Aquarius pool from the margin account via
    * AccountManager.execute(). `lpAmount` is in LP share units (7 decimals, not
-   * WAD). Returns once the tx is accepted (PENDING); does not poll to SUCCESS.
+   * WAD). Polls to SUCCESS before resolving, so callers can safely refetch the
+   * LP balance right after.
    */
   static async removeLiquidity(
     walletAddress: string,
@@ -1124,8 +1100,12 @@ export class AquariusService {
         routerAddress,
         'RemoveLiquidity',
         [tokenA, tokenB],
-        // RemoveLiquidity expects Aquarius LP share units (7 decimals), not WAD.
-        [toLpShareUnits(lpAmount)],
+        // amount_out is always WAD on the wire — AquariusControllerContract's
+        // RemoveLiquidity arm rescales it to native LP-share units itself via
+        // scale_to_native(). Sending pre-scaled 7-decimal units here (as this
+        // used to) makes the contract divide by ~1e11, truncating to 0 and
+        // silently no-op'ing the withdrawal.
+        [toWad(lpAmount)],
         marginAccountAddress,
         feeFraction,
         true
@@ -1161,6 +1141,7 @@ export class AquariusService {
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status === 'PENDING') {
+        await AquariusService.pollTransactionStatus(server, result.hash);
         return { success: true, hash: result.hash };
       }
       return { success: false, error: 'Transaction rejected by network' };

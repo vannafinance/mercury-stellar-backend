@@ -31,6 +31,7 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -208,10 +209,10 @@ export const LeverageAssetsTab = () => {
   // Blend tracking receipts (BLEND_*, AQ_*, SS_*, *_LP) — those are enriched into
   // collateralBalances for HF math but are farm positions, not borrowable margin
   // collateral (and have no token icon). Mirrors the positions table's filter.
-  // Dust is shown via adaptive formatting, not hidden.
+  // Balances under USD_DUST_EPSILON are hidden — not worth offering as collateral.
   const mbCollateralItems = useMemo((): Collaterals[] => {
     return (Object.entries(effectiveCollateral) as [string, BorrowedBalance][])
-      .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
+      .filter(([token, bal]) => parseFloat(bal.usdValue) > USD_DUST_EPSILON && !isTrackingSymbol(token))
       .map(([token, bal]): Collaterals => ({
         asset: token,
         amount: parseFloat(parseFloat(bal.amount).toFixed(7)),

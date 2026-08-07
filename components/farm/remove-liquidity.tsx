@@ -306,8 +306,17 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
         console.warn("Post-remove balance refresh failed; ledger tick will reconcile.", err);
       }
       const refreshLpBalance = isSoroswapPool
-        ? SoroswapService.getLpBalance(marginAccountAddress!)
-        : AquariusService.getUserLpBalance(marginAccountAddress!, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL);
+        ? SoroswapService.getLpBalance(
+            marginAccountAddress!,
+            matchedSoroswapPoolConfig?.trackingSymbol,
+            matchedSoroswapPoolConfig?.pairAddress,
+          )
+        : AquariusService.getUserLpBalance(
+            marginAccountAddress!,
+            matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
+            tokenA,
+            tokenB,
+          );
       refreshLpBalance.then(setLpBalance).catch(() => {});
     },
     onError: (error) => {

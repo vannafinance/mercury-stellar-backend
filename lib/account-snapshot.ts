@@ -24,7 +24,7 @@ import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
 // (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
 // as its own priced symbol since Reflector exposes it as a real feed.
 const PRICEABLE_TOKENS = ["USDC", ...ACTIVE_ASSETS] as const;
-const USD_DUST_EPSILON = 0.01;
+export const USD_DUST_EPSILON = 0.01;
 
 const tokenPrice = (token: string): number => getCachedTokenPrice(token);
 

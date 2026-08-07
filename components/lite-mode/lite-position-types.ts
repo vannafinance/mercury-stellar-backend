@@ -20,6 +20,10 @@ export interface LitePosition {
   borrowAsset: string;
   borrowAmount: number;
   borrowUsd: number;
+  /** Extra same-asset-as-collateral debt (LP leverage > 1 only) — a SECOND
+   *  debt leg alongside `borrowAmount`, both owed against this position. */
+  collateralBorrowAmount: number;
+  collateralBorrowUsd: number;
   /** true when collateralAsset === borrowAsset (both tokens live in the pool) */
   isSameAsset: boolean;
   leverage: number;
@@ -112,6 +116,8 @@ export function buildRealPositions(
       borrowAsset: token,
       borrowAmount,
       borrowUsd,
+      collateralBorrowAmount: 0,
+      collateralBorrowUsd: 0,
       isSameAsset: true,
       leverage,
       supplyApr: info.supplyApr,

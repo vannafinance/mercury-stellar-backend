@@ -21,6 +21,9 @@ import {
 } from "@/components/lite-mode/lite-position-math";
 import { usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { AquariusService } from "@/lib/aquarius-utils";
+import { SoroswapService } from "@/lib/soroswap-utils";
+import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -176,6 +179,46 @@ export const OneClickStrategy = () => {
   const [collateralAmount, setCollateralAmount] = useState("");
   const [leverage, setLeverage] = useState(1);
   const [scenario, setScenario] = useState<StrategyScenario>("same-asset");
+
+  // Live XLM/USDC reserves for the selected LP pool — the paired/borrowed leg
+  // of an Aquarius/Soroswap LP position must match the pool's CURRENT reserve
+  // ratio, not an oracle-price split. Aquarius/Soroswap's classic-pool deposit
+  // pulls the full amounts requested but mints LP shares only for the
+  // proportionally smaller side, so an oracle-priced pair silently donates
+  // the mismatched excess to the pool. This is a preview only — the actual
+  // execution (lib/one-click-strategy.ts) re-fetches fresh reserves right
+  // before borrowing, so a few seconds of staleness here can't cause a loss.
+  const [lpReserves, setLpReserves] = useState<{ xlm: number; usdc: number } | null>(null);
+  const [lpReservesLoading, setLpReservesLoading] = useState(false);
+  useEffect(() => {
+    if (selectedPool.type !== "lp") {
+      setLpReserves(null);
+      return;
+    }
+    let cancelled = false;
+    setLpReservesLoading(true);
+    const fetchReserves =
+      selectedPool.protocol === "Aquarius"
+        ? AquariusService.getAquariusPoolStats(CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL).then((s) =>
+            s ? { xlm: parseFloat(s.reserveA), usdc: parseFloat(s.reserveB) } : null
+          )
+        : SoroswapService.getPoolStats().then((s) =>
+            s ? { xlm: parseFloat(s.reserveXLM), usdc: parseFloat(s.reserveUSDC) } : null
+          );
+    fetchReserves
+      .then((r) => {
+        if (!cancelled) setLpReserves(r);
+      })
+      .catch(() => {
+        if (!cancelled) setLpReserves(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLpReservesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPool.type, selectedPool.protocol]);
   const oraclePrices = useTokenPrices(["XLM", "USDC"]);
   const prices: Record<string, number> = {
     XLM: oraclePrices.XLM ?? 1.0,
@@ -292,13 +335,37 @@ export const OneClickStrategy = () => {
 
   const borrowPrice = prices[borrowAsset] || 1;
 
+  // How much of `borrowAsset` the pool's live reserves want per 1 unit of
+  // `collateralAsset` — 0 while reserves haven't loaded yet (LP pools only).
+  const lpPoolRatio = useMemo(() => {
+    if (selectedPool.type !== "lp" || !lpReserves) return 0;
+    const collateralReserve = collateralAsset === "XLM" ? lpReserves.xlm : lpReserves.usdc;
+    const otherReserve = collateralAsset === "XLM" ? lpReserves.usdc : lpReserves.xlm;
+    return collateralReserve > 0 ? otherReserve / collateralReserve : 0;
+  }, [selectedPool.type, lpReserves, collateralAsset]);
+
+  // For LP pools, leverage scales BOTH legs together to keep the pair on the
+  // pool's ratio: borrow (leverage-1)x more of the collateral asset itself,
+  // then pair the resulting total against the ratio for the borrowed leg.
+  // For single-asset (Blend) pools there's no ratio constraint, so the
+  // borrowed leg is a plain oracle-priced leverage split as before.
+  const collateralBorrowAmount = useMemo(() => {
+    if (selectedPool.type !== "lp" || leverage <= 1 || collateralNum <= 0) return 0;
+    return collateralNum * (leverage - 1);
+  }, [selectedPool.type, leverage, collateralNum]);
+
   const borrowedAmount = useMemo(() => {
     if (leverage <= 1 || collateralNum <= 0) return 0;
+    if (selectedPool.type === "lp") {
+      if (lpPoolRatio <= 0) return 0;
+      return (collateralNum + collateralBorrowAmount) * lpPoolRatio;
+    }
     const borrowUsdNeeded = collateralUsd * (leverage - 1);
     return borrowUsdNeeded / borrowPrice;
-  }, [leverage, collateralNum, collateralUsd, borrowPrice]);
+  }, [leverage, collateralNum, collateralUsd, borrowPrice, selectedPool.type, lpPoolRatio, collateralBorrowAmount]);
 
-  const borrowUsd = borrowedAmount * borrowPrice;
+  const collateralBorrowUsd = collateralBorrowAmount * collateralPrice;
+  const borrowUsd = borrowedAmount * borrowPrice + collateralBorrowUsd;
   const totalPositionUsd = collateralUsd + borrowUsd;
 
   // APR calculations
@@ -479,7 +546,9 @@ export const OneClickStrategy = () => {
         collateralUsdAtOpen: collateralUsd,
         borrowAsset,
         borrowAmount: borrowedAmount,
-        borrowUsdAtOpen: borrowUsd,
+        borrowUsdAtOpen: borrowedAmount * borrowPrice,
+        collateralBorrowAmount,
+        collateralBorrowUsdAtOpen: collateralBorrowUsd,
         leverage,
         supplyApr: selectedPoolLive.supplyApr,
         vannaFeeApr: selectedPoolLive.borrowApr,
@@ -509,9 +578,18 @@ export const OneClickStrategy = () => {
     }
   };
 
+  // A leveraged LP position needs live reserves to size its paired/borrowed
+  // leg on-ratio (see lpPoolRatio above). Without this guard, clicking
+  // "Deploy" while reserves are still loading would send `borrowedAmount: 0`
+  // to executeOneClickStrategy, which reads that as "deposit-only" and
+  // silently opens a 1x position instead of the leverage the slider shows.
+  const lpReservesNotReady =
+    selectedPool.type === "lp" && leverage > 1 && (lpReservesLoading || !lpReserves || lpPoolRatio <= 0);
+
   const isValid =
     collateralNum > 0 &&
     collateralNum <= maxDeposit &&
+    !lpReservesNotReady &&
     (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > 1.2)) &&
     !!userAddress &&
     !!marginAccountAddress;
@@ -524,6 +602,7 @@ export const OneClickStrategy = () => {
       return collateralAsset === "XLM" && collateralNum <= balanceNum
         ? "Keep XLM for fees & reserve"
         : "Insufficient Balance";
+    if (lpReservesNotReady) return "Loading Pool Data...";
     if (borrowedAmount > 0 && borrowUsd > maxBorrowUsd) return "Exceeds Borrow Limit";
     if (borrowedAmount > 0 && newHF > 0 && newHF <= 1.2) return "Position Too Risky";
     if (loading) return "Processing...";
@@ -941,11 +1020,21 @@ export const OneClickStrategy = () => {
                         <div className={`rounded-[10px] border p-[12px] flex flex-col gap-[8px] ${subtleCard}`}>
                           <div className="flex items-center justify-between">
                             <span className={`text-[11px] font-medium ${labelText}`}>Borrowing</span>
-                            <div className="flex items-center gap-[6px]">
-                              <PoolTokenBadge symbol={borrowAsset} size={14} />
-                              <span className={`text-[13px] font-bold ${headingText}`}>
-                                {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAsset}
-                              </span>
+                            <div className="flex flex-col items-end gap-[4px]">
+                              {collateralBorrowAmount > 0 && (
+                                <div className="flex items-center gap-[6px]">
+                                  <PoolTokenBadge symbol={collateralAsset} size={14} />
+                                  <span className={`text-[13px] font-bold ${headingText}`}>
+                                    {collateralBorrowAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {collateralAsset}
+                                  </span>
+                                </div>
+                              )}
+                              <div className="flex items-center gap-[6px]">
+                                <PoolTokenBadge symbol={borrowAsset} size={14} />
+                                <span className={`text-[13px] font-bold ${headingText}`}>
+                                  {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAsset}
+                                </span>
+                              </div>
                             </div>
                           </div>
                           <div className="flex items-center justify-between">
@@ -992,9 +1081,12 @@ export const OneClickStrategy = () => {
                                   <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 </div>
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} + {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {selectedPool.tokens.join("/")} LP</strong>
+                                  {(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAsset} + {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {selectedPool.tokens.join("/")} LP</strong>
                                 </span>
                               </div>
+                              <span className={`text-[10px] ${mutedText}`}>
+                                ({collateralNum.toFixed(2)} deposited + {collateralBorrowAmount.toFixed(2)} borrowed {collateralAsset}, paired at the pool&apos;s live ratio)
+                              </span>
                             </div>
                           )}
                           {scenario === "cross-asset-keep" && selectedPool.type === "single" && (
@@ -1260,7 +1352,8 @@ export const OneClickStrategy = () => {
                             <li className="flex gap-[10px]">
                               <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                               <span>
-                                <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" + "}
+                                <span className={`font-semibold ${headingText}`}>{(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAsset}</span>{" "}
+                                (deposited + borrowed) paired with{" "}
                                 <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
                                 added as liquidity to the{" "}
                                 <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPool.tokens.join("/")} pool</span>{" "}

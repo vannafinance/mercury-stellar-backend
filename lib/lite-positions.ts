@@ -34,6 +34,10 @@ export interface LitePositionRecord {
   borrowAsset: string;
   borrowAmount: number;         // initial borrow, asset units
   borrowUsdAtOpen: number;
+  /** Extra same-asset-as-collateral borrow (LP leverage > 1 only) — scales
+   *  the collateral leg to stay on the pool's ratio; see one-click-strategy.ts. */
+  collateralBorrowAmount?: number;
+  collateralBorrowUsdAtOpen?: number;
   leverage: number;
   supplyApr: number;
   vannaFeeApr: number;
@@ -131,6 +135,8 @@ export const applyLiteExit = (id: string, exitPct: number): void => {
       collateralUsdAtOpen: r.collateralUsdAtOpen * remaining,
       borrowAmount: r.borrowAmount * remaining,
       borrowUsdAtOpen: r.borrowUsdAtOpen * remaining,
+      collateralBorrowAmount: r.collateralBorrowAmount ? r.collateralBorrowAmount * remaining : r.collateralBorrowAmount,
+      collateralBorrowUsdAtOpen: r.collateralBorrowUsdAtOpen ? r.collateralBorrowUsdAtOpen * remaining : r.collateralBorrowUsdAtOpen,
     };
   }
   writeAll(all);
