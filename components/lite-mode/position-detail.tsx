@@ -286,7 +286,11 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       qc.invalidateQueries({ queryKey: ['earn'] });
       if (marginAccountAddress) {
         try {
-          await refreshBorrowedBalances(marginAccountAddress);
+          // forceRefresh: this exit just repaid real debt — an unforced call
+          // silently no-ops inside the 5s cache TTL, leaving the NEXT Lite
+          // preview (e.g. reopening a position) combining against the
+          // pre-repay debt instead of the real, now-lower figure.
+          await refreshBorrowedBalances(marginAccountAddress, true);
         } catch (err) {
           console.warn("Post-exit balance refresh failed; ledger tick will reconcile.", err);
         }
@@ -414,13 +418,25 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
                 </span>
               </div>
             </div>
-            <span
-              className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
-                isDark ? "bg-[#222222] text-[#919191]" : "bg-[#F4F4F4] text-[#6B7280]"
-              }`}
-            >
-              {position.leverage.toFixed(1)}× leverage
-            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              {position.recovered && (
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
+                    isDark ? "bg-[#3D2A00] text-[#F59E0B]" : "bg-[#FEF3C7] text-[#92400E]"
+                  }`}
+                  title="No cached record was found for this position — rebuilt from live LP balance and current debt. Leverage/breakdown below are estimates, not the original values."
+                >
+                  Recovered from chain
+                </span>
+              )}
+              <span
+                className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
+                  isDark ? "bg-[#222222] text-[#919191]" : "bg-[#F4F4F4] text-[#6B7280]"
+                }`}
+              >
+                {position.leverage.toFixed(1)}× leverage
+              </span>
+            </div>
           </div>
 
           {/* LP Value — total pooled across both legs, matching how the Farm

@@ -9,6 +9,7 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 import { Dropdown } from "../ui/dropdown";
 import { Popup } from "@/components/ui/popup";
+import { InfoIcon } from "@/components/icons";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
@@ -89,6 +90,15 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     netOutstandingAmountToPay: 0,
     availableBalance: 0,
   });
+  // How much of the outstanding debt is actually spendable FROM the margin
+  // account right now (as opposed to the full on-chain debt figure above, or
+  // the connected wallet's own balance in "Available Balance"). The gap
+  // between this and netOutstandingAmountToPay is money the margin account
+  // borrowed but no longer holds raw — usually because it's deployed into an
+  // Aquarius/Soroswap LP position, not (only) accrued interest. Surfaced via
+  // a tooltip on the "Net Outstanding" tile so a partial repay isn't a surprise.
+  const [spendableInMargin, setSpendableInMargin] = useState<number | null>(null);
+  const [showOutstandingTooltip, setShowOutstandingTooltip] = useState(false);
   const [selectedRepayCurrency, setSelectedRepayCurrency] =
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
@@ -120,6 +130,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
+      setSpendableInMargin(null);
       setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
@@ -208,6 +219,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
             // Get borrowed balances
             await refreshSelectedTokenDebt(account.address);
+            await refreshSpendableInMargin(account.address);
 
             // Get selected token wallet balance
             await refreshSelectedWalletBalance(address.address, selectedRepayCurrency);
@@ -250,10 +262,26 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   };
 
+  // The margin account's real, live, spendable balance of the selected
+  // currency — the actual repay cap, distinct from the full debt figure above.
+  const refreshSpendableInMargin = async (marginAccountAddress: string) => {
+    try {
+      const wad = await MarginAccountService.getMarginAccountTokenBalanceWad(
+        marginAccountAddress,
+        normalizeContractTokenSymbol(selectedRepayCurrency),
+      );
+      setSpendableInMargin(wad != null ? parseFloat(wad) / 1e18 : 0);
+    } catch (error) {
+      console.error("Error refreshing spendable margin balance:", error);
+      setSpendableInMargin(null);
+    }
+  };
+
   // Refresh when currency changes
   useEffect(() => {
     if (marginAccount) {
       refreshSelectedTokenDebt(marginAccount);
+      refreshSpendableInMargin(marginAccount);
     }
   }, [selectedRepayCurrency, marginAccount]);
 
@@ -367,8 +395,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         });
       }
       if (cappedToBalance) {
-        // Repaid everything the account held; the accrued-interest sliver remains.
-        toast(`Repaid the max your account holds. A small accrued-interest amount remains — deposit a little more ${selectedRepayCurrency} to fully clear it.`);
+        // Repaid everything the account held right now. The tooltip on "Net
+        // Outstanding Amount to Repay" explains why (usually LP-locked value,
+        // not just interest) — keep this toast itself short and factual.
+        toast(`Repaid the max amount you could: ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`);
       }
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
@@ -381,6 +411,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
       try {
         await refreshSelectedTokenDebt(marginAccount);
+        await refreshSpendableInMargin(marginAccount);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
         await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
       } catch (error) {
@@ -443,13 +474,46 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               transition={{ duration: 0.3, delay: 0.1 + index * 0.1 }}
             >
               <span
-                className={`text-[12px] font-medium ${
+                className={`flex items-center gap-1 text-[12px] font-medium ${
                   isDark ? "text-[#777777]" : "text-[#A7A7A7]"
                 }`}
               >
                 {key === "netOutstandingAmountToPay"
                   ? "Net Outstanding Amount to Repay"
                   : "Available Balance"}
+                {key === "netOutstandingAmountToPay" && (
+                  <span
+                    className="relative flex items-center"
+                    onMouseEnter={() => setShowOutstandingTooltip(true)}
+                    onMouseLeave={() => setShowOutstandingTooltip(false)}
+                  >
+                    <InfoIcon stroke={isDark ? "#A0A0A0" : "#777777"} />
+                    {showOutstandingTooltip && (
+                      <div
+                        className={`absolute bottom-[20px] left-0 w-[240px] px-3 py-2 rounded-[8px] text-[12px] leading-[1.5] font-medium shadow-md border z-50 pointer-events-none flex flex-col gap-1 ${
+                          isDark ? "bg-[#2a2a2a] border-[#3a3a3a] text-[#ccc]" : "bg-white border-[#E8E8E8] text-[#374151]"
+                        }`}
+                      >
+                        <span>This is the full on-chain debt. What you can actually repay right now is capped by what&apos;s spendable in the margin account:</span>
+                        <span className="flex justify-between gap-2">
+                          <span>Spendable in margin account</span>
+                          <span className="font-semibold">
+                            {spendableInMargin != null ? formatTokenAmount(spendableInMargin) : "…"} {selectedRepayCurrency}
+                          </span>
+                        </span>
+                        {spendableInMargin != null && spendableInMargin < repayStats.netOutstandingAmountToPay && (
+                          <span className="flex justify-between gap-2">
+                            <span>Locked in LP/Farm + fees</span>
+                            <span className="font-semibold">
+                              {formatTokenAmount(Math.max(0, repayStats.netOutstandingAmountToPay - spendableInMargin))} {selectedRepayCurrency}
+                            </span>
+                          </span>
+                        )}
+                        <span className="opacity-80">Remove liquidity from that position first to free it up for repay.</span>
+                      </div>
+                    )}
+                  </span>
+                )}
               </span>
               {(() => {
                 const { token, usd } = formatStatValue(value, key);
@@ -581,6 +645,19 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               ≈ {formatUsdValue(repayAmountInUsd)}
             </span>
           </div>
+
+          {/* Spendable-cap hint — only when there's a real shortfall, so a
+              100%/"Pay Now" click doesn't silently repay less than shown above
+              without warning first. */}
+          {spendableInMargin != null &&
+            repayStats.netOutstandingAmountToPay > 0 &&
+            spendableInMargin < repayStats.netOutstandingAmountToPay && (
+              <div
+                className={`text-[12px] font-medium ${isDark ? "text-[#F59E0B]" : "text-[#B45309]"}`}
+              >
+                Max amount you can repay right now: {formatTokenAmount(spendableInMargin)} {selectedRepayCurrency}
+              </div>
+            )}
         </motion.article>
 
         {/* Repay preview — before → after values (same style as Leverage/Transfer tabs) */}

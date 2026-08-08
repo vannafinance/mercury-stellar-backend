@@ -229,18 +229,44 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
     // ── Step 2: Repay Vanna loan(s) ─────────────────────────────────────────
     // Leveraged LP positions carry TWO debt legs (paired-asset + same-asset
     // top-up) — both must be repaid, or the top-up leg is left orphaned.
+    // Both legs go through poolTokenSymbol() — for an LP position, the real
+    // on-chain USDC-side debt is denominated in AQUSDC/SOUSDC (whichever the
+    // borrow itself used), not generic USDC/Blend-USDC. Repaying the plain
+    // "USDC" symbol here would target the wrong debt entirely.
+    const collateralRepaySymbol = poolTokenSymbol(collateralAsset, poolProtocol, poolType);
+    const borrowRepaySymbol = poolTokenSymbol(borrowAsset, poolProtocol, poolType);
+
+    // Cap each leg at what's actually spendable in the margin account right
+    // now — same reasoning as the Pro-mode Repay tab: the stored debt amount
+    // can exceed what's really there (interest, or — for a position whose
+    // amounts came from a stale/recovered source — an imprecise estimate).
+    // Repaying the raw amount blind risks Error(Contract,#10) "balance is not
+    // sufficient to spend" instead of a partial, successful repay.
+    const capToSpendable = async (symbol: string, amount: number): Promise<number> => {
+      if (amount <= 0) return 0;
+      const spendableWad = await MarginAccountService.getMarginAccountTokenBalanceWad(marginAccountAddress, symbol);
+      if (spendableWad == null) return amount;
+      const spendable = Number(BigInt(spendableWad)) / 1e18;
+      return Math.min(amount, spendable);
+    };
+
     if (collateralRepayAmt > 0) {
-      step(`Repaying ${collateralRepayAmt.toFixed(4)} ${collateralAsset} to Vanna...`);
-      const r = await MarginAccountService.repayLoan(marginAccountAddress, collateralAsset, toWad(collateralRepayAmt));
-      if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
+      const cappedAmt = await capToSpendable(collateralRepaySymbol, collateralRepayAmt);
+      if (cappedAmt > 0) {
+        step(`Repaying ${cappedAmt.toFixed(4)} ${collateralAsset} to Vanna...`);
+        const r = await MarginAccountService.repayLoan(marginAccountAddress, collateralRepaySymbol, toWad(cappedAmt));
+        if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
+      }
     }
 
     if (repayAmt > 0) {
-      step(`Step 2/2: Repaying ${repayAmt.toFixed(4)} ${borrowAsset} to Vanna...`);
-      const repayWad = toWad(repayAmt);
-      const r = await MarginAccountService.repayLoan(marginAccountAddress, borrowAsset, repayWad);
-      if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
-      return { success: true, hash: r.hash };
+      const cappedAmt = await capToSpendable(borrowRepaySymbol, repayAmt);
+      if (cappedAmt > 0) {
+        step(`Step 2/2: Repaying ${cappedAmt.toFixed(4)} ${borrowAsset} to Vanna...`);
+        const r = await MarginAccountService.repayLoan(marginAccountAddress, borrowRepaySymbol, toWad(cappedAmt));
+        if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
+        return { success: true, hash: r.hash };
+      }
     }
 
     return { success: true };
@@ -289,17 +315,17 @@ function toWad(amount: number): string {
   return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
 }
 
-// The lending pool actually crediting the borrow — not SmartAccountContract's
-// own ORIGINATION_FEE_WAD constant (0.3%, used only for its own HF estimate) —
-// deducts the REAL origination fee: every pool is deployed with
-// origination_fee_u128 = 1e16 WAD = 1% (see deploy/testnet.env). The margin
-// account is only ever credited `borrowAmount × (1 - fee)`, not the full
-// requested amount. Using the gross borrow amount for the AddLiquidity call
-// overshoots the real credited balance and traps with "balance is not
-// sufficient to spend" — confirmed live: a 0.35%-buffer shave left a ~0.65%
-// shortfall on a real testnet borrow. Shave 1.05% so the small extra margin
-// absorbs WAD rounding on top of the real 1% fee.
-const BORROW_ORIGINATION_FEE_BUFFER = 0.9895;
+// The lending pool actually crediting the borrow deducts the REAL origination
+// fee, which every pool is now deployed/configured with at 0.3% (matching
+// SmartAccountContract's own ORIGINATION_FEE_WAD assumption — see
+// deploy/testnet.env's ORIGINATION_FEE_U128 and the live
+// `update_origination_fee` calls made on 2026-08-08; it was briefly 1% on
+// testnet, which is what previously made a naive 0.35% buffer trap with
+// "balance is not sufficient to spend"). The margin account is only ever
+// credited `borrowAmount × (1 - fee)`, not the full requested amount, so
+// AddLiquidity must use the net amount. Shave slightly more than the real
+// 0.3% to absorb WAD rounding.
+const BORROW_ORIGINATION_FEE_BUFFER = 0.9965;
 const netOfOriginationFee = (grossAmount: number): number => grossAmount * BORROW_ORIGINATION_FEE_BUFFER;
 
 /**

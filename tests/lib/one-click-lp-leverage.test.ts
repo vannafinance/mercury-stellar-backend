@@ -112,8 +112,8 @@ describe("executeOneClickStrategy — leveraged Aquarius LP pairs at the live po
     // AddLiquidity gets the net (post-origination-fee) amounts for both legs,
     // in the pool's ratio — not the raw 10 XLM + 1.62 USDC mismatch.
     const [, , , , xlmAmt, usdcAmt] = mocks.aquariusAddLiquidity.mock.calls[0];
-    expect(xlmAmt).toBeCloseTo(19.895, 3);
-    expect(usdcAmt).toBeCloseTo(0.26057, 4);
+    expect(xlmAmt).toBeCloseTo(19.965, 3);
+    expect(usdcAmt).toBeCloseTo(0.26241, 4);
   });
 
   it("1x LP deposit never fetches pool reserves or borrows (swap-half path, unchanged)", async () => {

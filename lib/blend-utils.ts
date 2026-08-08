@@ -466,17 +466,25 @@ export class BlendService {
   }
 
   /**
-   * Get the actual token balance held by a margin account for Blend-supported assets.
-   * Uses token.balance(marginAccountAddress) on Blend asset contracts directly.
+   * Get the actual token balance held by a margin account, reading
+   * `token.balance(marginAccountAddress)` directly on the asset's own SAC —
+   * the live raw balance, not the (possibly stale) on-chain collateral
+   * ledger. Despite the Blend-specific name, this reads any of the four
+   * margin-supported assets; used for XLM/USDC by the Blend raw-SAC
+   * reconcile and for AQUSDC/SOUSDC by the same reconcile in
+   * farmTrackingCollateral.ts, since none of their collateral-ledger
+   * entries update when the balance moves into an Aquarius/Soroswap LP.
    */
   static async getMarginAccountTokenBalance(
     marginAccountAddress: string,
-    token: 'XLM' | 'USDC'
+    token: 'XLM' | 'USDC' | 'AQUSDC' | 'SOUSDC'
   ): Promise<string> {
     try {
-      const tokenContractId = token === 'XLM'
-        ? CONTRACT_ADDRESSES.BLEND_XLM
-        : CONTRACT_ADDRESSES.BLEND_USDC;
+      const tokenContractId =
+        token === 'XLM' ? CONTRACT_ADDRESSES.BLEND_XLM
+        : token === 'USDC' ? CONTRACT_ADDRESSES.BLEND_USDC
+        : token === 'AQUSDC' ? CONTRACT_ADDRESSES.AQUARIUS_USDC
+        : CONTRACT_ADDRESSES.SOROSWAP_USDC;
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const tempKeypair = StellarSdk.Keypair.random();

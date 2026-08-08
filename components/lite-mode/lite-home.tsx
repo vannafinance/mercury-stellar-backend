@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { OneClickStrategy } from "./one-click-strategy";
 import { OnboardingTutorial } from "./onboarding-tutorial";
 import { PositionsList } from "./positions-list";
@@ -13,6 +13,7 @@ import { calcNetApr, calcEarningsUsd, aggregateByPool } from "./lite-position-ma
 import {
   getLitePositions,
   subscribeLitePositions,
+  reconcileLiteLpPositionsWithChain,
   type LitePositionRecord,
 } from "@/lib/lite-positions";
 import { useTokenPrices } from "@/hooks/use-token-prices";
@@ -52,6 +53,19 @@ export const LiteHome = () => {
 
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
+  // Lite mode reads totalCollateralValue/totalBorrowedValue straight off this
+  // store (see one-click-strategy.tsx's `newHF` and position-detail.tsx's exit
+  // preview) but never triggered its own refresh — so a user landing here
+  // could see a stale existing-debt figure, making the projected/combined
+  // Health Factor preview wrong (e.g. showing 2.50 for a trade that barely
+  // moves a real 1.50). Must be a FORCED refresh — the unforced call still
+  // silently no-ops inside refreshBorrowedBalances' 5s cache TTL, which is
+  // exactly the case right after opening/closing a Lite position (both
+  // mutate real debt and land well within that window).
+  useEffect(() => {
+    if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
+  }, [marginAccountAddress]);
+
   // Subscribe to the Lite-only registry. We deliberately don't read from the
   // margin store's borrowedBalances anymore — that would surface Pro-mode
   // borrows in the Lite Position tab, which is what the user pushed back on:
@@ -65,6 +79,17 @@ export const LiteHome = () => {
     return subscribeLitePositions(() => {
       setLiteRecords(getLitePositions(marginAccountAddress));
     });
+  }, [marginAccountAddress]);
+
+  // The local cache above is a HINT, not a source of truth, for the two LP
+  // pools (Aquarius/Soroswap XLM-USDC) — validate it against live chain state
+  // every time this loads: drop any cached position whose real LP balance is
+  // now ~0 (closed some other way), and reconstruct a best-effort position
+  // for a real, nonzero LP balance that has nothing cached (cleared cache, or
+  // a different browser/device). Mutates the cache via appendLitePosition/
+  // removeLitePosition, which the subscription above already re-renders on.
+  useEffect(() => {
+    if (marginAccountAddress) reconcileLiteLpPositionsWithChain(marginAccountAddress);
   }, [marginAccountAddress]);
 
   const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
@@ -142,6 +167,7 @@ export const LiteHome = () => {
         liquidationLtv: r.liquidationLtv,
         status,
         openedAt,
+        recovered: r.recovered,
       };
     });
     return aggregateByPool(built);

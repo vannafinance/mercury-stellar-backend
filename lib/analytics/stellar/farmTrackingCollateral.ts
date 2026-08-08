@@ -16,10 +16,19 @@ import { fetchTokenPrice } from "@/lib/oracle-price";
 
 const DUST = 1e-8;
 
-/** Raw Stellar assets held by the margin smart account (not tracking tokens). */
+/** Raw Stellar assets held by the margin smart account (not tracking tokens).
+ *  AQUSDC/SOUSDC are included alongside XLM/USDC because their on-chain
+ *  collateral ledger has the exact same staleness problem: depositing AQUSDC
+ *  then deploying it into an Aquarius LP (e.g. via the Lite one-click flow)
+ *  never updates CollateralBalanceWAD, so without this raw-balance overlay
+ *  the ledger keeps reporting the original deposit as still-free collateral
+ *  long after it's actually sitting in the LP — surfacing as phantom
+ *  "Collateral Deposited: AQUSDC" once same-token debt drops below it. */
 const MARGIN_SAC_TOKENS = [
   { sac: "XLM" as const, balanceKey: "XLM" },
   { sac: "USDC" as const, balanceKey: "BLUSDC" },
+  { sac: "AQUSDC" as const, balanceKey: "AQUSDC" },
+  { sac: "SOUSDC" as const, balanceKey: "SOUSDC" },
 ];
 
 /**

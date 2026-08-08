@@ -5,7 +5,7 @@ import { motion, AnimatePresence, type Variants } from "framer-motion";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
-import { useMarginAccountInfoStore, createMarginAccount } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, createMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
@@ -565,6 +565,10 @@ export const OneClickStrategy = () => {
       });
       setCollateralAmount("");
       setLeverage(1);
+      // This trade just changed real on-chain debt/collateral — force past the
+      // 5s cache TTL so the NEXT preview (another Lite trade, or navigating to
+      // Margin) reflects it immediately instead of the pre-trade snapshot.
+      if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
     } catch (err: any) {
       const message = normalizeContractError(err?.message, "Operation failed");
       const rejected = message === "Transaction cancelled by user.";

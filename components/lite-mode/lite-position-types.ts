@@ -35,6 +35,10 @@ export interface LitePosition {
   liquidationLtv: number;
   status: LitePositionStatus;
   openedAt: string;
+  /** True when reconstructed live from chain state (no local record was
+   *  cached for it) — leverage/collateralBorrowAmount are best-effort
+   *  defaults, not the real values from when it was opened. */
+  recovered?: boolean;
 }
 
 /* ═══ Real position builder ══════════════════════════════════════════════
