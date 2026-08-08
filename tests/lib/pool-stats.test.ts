@@ -1,18 +1,24 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import {
   calculateSupplyAPY,
-  calculateBorrowAPY,
   calculateExchangeRateFromPool,
 } from "@/lib/pool-stats";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
+import { ContractService } from "@/lib/stellar-utils";
 
 /**
  * Verifies the lending-pool stat math behind /api/pools (the Earn page source).
  *
- * Two of the three values are chain-derived and checked exactly. The third —
- * supply APY — is a HARDCODED PLACEHOLDER, and these tests pin + flag that so it
- * shows up in the pre-main verification pass.
+ * Regression guard: Supply APY and Borrow APY used to come from two
+ * independent, uncoupled formulas (a linear "2% + util×10" placeholder for
+ * supply vs. a synthetic kinked curve for borrow) — mathematically capable of
+ * showing supply HIGHER than borrow, which is impossible under a real lending
+ * model (supplier yield is funded by a fraction of borrower interest).
+ * calculateBorrowAPY now reads the REAL per-second rate straight from the
+ * deployed RateModelContract (the same curve the lending-pool contract itself
+ * accrues interest with); calculateSupplyAPY derives from THAT real borrow
+ * rate scaled by utilization, guaranteeing supply <= borrow by construction.
  */
 
 describe("calculateExchangeRateFromPool (chain-derived: totalAssets / vTokenSupply)", () => {
@@ -32,46 +38,62 @@ describe("calculateExchangeRateFromPool (chain-derived: totalAssets / vTokenSupp
   });
 });
 
-describe("calculateBorrowAPY (delegates to the on-chain rate model)", () => {
-  it("matches computeBorrowApr for the given utilization", () => {
-    for (const util of ["0", "25.00", "50.00", "82.97", "97.00"]) {
-      expect(calculateBorrowAPY(util)).toBe(computeBorrowApr(parseFloat(util)).toFixed(2));
-    }
+describe("calculateBorrowAPY (reads the real on-chain RateModelContract curve)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("annualizes the contract's per-second WAD rate correctly", async () => {
+    const { calculateBorrowAPY } = await import("@/lib/pool-stats");
+    // 2.61% APR ⇒ per-second rate = 0.0261e18 / 31_556_952 (matches the
+    // contract's own SECS_PER_YEAR constant), rounded to a whole bigint.
+    const ratePerSecWad = BigInt(Math.floor((0.0261 * 1e18) / 31_556_952));
+    vi.spyOn(ContractService, "getBorrowRatePerSecWad").mockResolvedValue(ratePerSecWad);
+
+    const apy = await calculateBorrowAPY("87.9", "12.1", "12.10");
+    expect(parseFloat(apy)).toBeCloseTo(2.61, 1);
   });
 
-  it("is monotonic in utilization (higher util ⇒ higher borrow APY)", () => {
-    expect(parseFloat(calculateBorrowAPY("80"))).toBeGreaterThan(
-      parseFloat(calculateBorrowAPY("20")),
-    );
+  it("falls back to the synthetic curve when the on-chain read fails", async () => {
+    const { calculateBorrowAPY } = await import("@/lib/pool-stats");
+    vi.spyOn(ContractService, "getBorrowRatePerSecWad").mockResolvedValue(null);
+
+    const apy = await calculateBorrowAPY("50", "50", "50.00");
+    expect(apy).toBe(computeBorrowApr(50).toFixed(2));
+  });
+
+  it("is monotonic in the contract-reported rate", async () => {
+    const { calculateBorrowAPY } = await import("@/lib/pool-stats");
+    const spy = vi.spyOn(ContractService, "getBorrowRatePerSecWad");
+
+    spy.mockResolvedValueOnce(BigInt(Math.floor((0.05 * 1e18) / 31_556_952)));
+    const low = await calculateBorrowAPY("80", "20", "20.00");
+    spy.mockResolvedValueOnce(BigInt(Math.floor((0.40 * 1e18) / 31_556_952)));
+    const high = await calculateBorrowAPY("20", "80", "80.00");
+
+    expect(parseFloat(high)).toBeGreaterThan(parseFloat(low));
   });
 });
 
-describe("⚠️ calculateSupplyAPY — PLACEHOLDER, NOT on-chain (flagged for pre-main)", () => {
-  // Earn supply APY is `2.0 + utilization × 10`, a hardcoded linear stand-in —
-  // it is NOT derived from the Blend reserve / rate model. This is the root of
-  // the Earn-vs-Farm APY mismatch: Earn shows ~6.70% at 47% util while the Farm
-  // page shows the real IR-curve APY (triple digits at high util). These tests
-  // document the placeholder; resolving it = route Earn through the same
-  // reserve math as Farm (or compute supply APY = borrow APR × util × (1 −
-  // backstop), compounded), then update these expectations.
-  it("is the linear placeholder 2.0 + util×10, not the rate model", () => {
-    expect(calculateSupplyAPY("0")).toBe("2.00");
-    expect(calculateSupplyAPY("50.00")).toBe("7.00");
-    expect(calculateSupplyAPY("100.00")).toBe("12.00");
+describe("calculateSupplyAPY (utilization-scaled fraction of the real borrow APY — never exceeds it)", () => {
+  it("is borrowApy × utilization", () => {
+    expect(calculateSupplyAPY(10, "50.00")).toBe("5.00");
+    expect(calculateSupplyAPY(8, "0")).toBe("0.00");
+    expect(calculateSupplyAPY(8, "100.00")).toBe("8.00");
   });
 
-  it("reproduces the exact Earn screen value at ~47% utilization", () => {
-    // 2.0 + 0.4696 × 10 = 6.696 → "6.70"
-    expect(calculateSupplyAPY("46.96")).toBe("6.70");
+  it("never exceeds the borrow APY it's derived from, at any utilization", () => {
+    for (const util of ["0", "12.10", "40.30", "68.20", "97.00", "100.00"]) {
+      const borrowApy = 25; // arbitrary fixed borrow rate
+      const supplyApy = parseFloat(calculateSupplyAPY(borrowApy, util));
+      expect(supplyApy).toBeLessThanOrEqual(borrowApy);
+    }
   });
 
-  it("DIVERGES from the rate model (placeholder ≠ chain-derived borrow-based APY)", () => {
-    // At high utilization the real borrow APR is large; the placeholder supply
-    // APY stays ~12%. This inequality is the bug, asserted so it can't silently
-    // pass once supply APY is correctly wired to the reserve math.
-    const util = "97.00";
-    const placeholder = parseFloat(calculateSupplyAPY(util)); // ~11.7%
-    const realBorrowApr = computeBorrowApr(parseFloat(util)); // large
-    expect(realBorrowApr).toBeGreaterThan(placeholder);
+  it("reproduces the reported live mismatch case correctly once fixed: XLM at ~12.1% utilization", () => {
+    // Previously the independent placeholder formulas produced supply
+    // (3.21%) > borrow (2.61%) at this utilization. With supply correctly
+    // derived from borrow, it must now be the smaller number.
+    const borrowApy = 2.61;
+    const supplyApy = parseFloat(calculateSupplyAPY(borrowApy, "12.10"));
+    expect(supplyApy).toBeLessThan(borrowApy);
   });
 });

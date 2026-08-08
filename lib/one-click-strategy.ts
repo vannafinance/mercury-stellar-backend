@@ -504,10 +504,30 @@ export async function executeOneClickStrategy(
           return { success: false, error: `${poolProtocol} pool has no liquidity to price the pair against.` };
         }
         const ratio = otherReserve / collateralReserve;
-        // Scale BOTH legs by leverage together — borrowing only the paired
-        // asset (the old behavior) can't grow position size while staying
-        // on-ratio, since the collateral leg alone would be stuck at 1x.
-        collateralLegBorrowAmount = collateralAmount * (leverage - 1);
+
+        // Solve for the collateral-leg borrow that makes BOTH true at once:
+        //  1. total borrowed USD == depositUsd × (leverage − 1), so the
+        //     position lands at exactly the selected leverage instead of
+        //     overshooting it — pairedBorrowAmount used to be tacked on TOP
+        //     of a full (leverage−1)× collateral-leg borrow, silently adding
+        //     extra exposure beyond the chosen multiplier.
+        //  2. (collateralAmount + collateralLegBorrowAmount) : pairedBorrowAmount
+        //     still matches the pool's live reserve ratio, so nothing is
+        //     donated to the pool for free (see fetchLpReserves' doc comment) —
+        //     a flat 50/50 USD split would do exactly that on an imbalanced
+        //     pool like this one.
+        //
+        // pairedBorrowAmount = (collateralAmount + x) × ratio, and
+        // x·Pc + pairedBorrowAmount·Po = depositUsd·(leverage−1) together give:
+        //   x = [depositUsd·(leverage−1) − collateralAmount·ratio·Po] / (Pc + ratio·Po)
+        const collateralPrice = prices[collateralAsset] ?? 1;
+        const otherPrice = prices[otherAsset] ?? 1;
+        const depositUsd = collateralAmount * collateralPrice;
+        const totalBorrowUsdTarget = depositUsd * (leverage - 1);
+        const denom = collateralPrice + ratio * otherPrice;
+        collateralLegBorrowAmount = denom > 0
+          ? Math.max(0, (totalBorrowUsdTarget - collateralAmount * ratio * otherPrice) / denom)
+          : 0;
         pairedBorrowAmount = (collateralAmount + collateralLegBorrowAmount) * ratio;
 
         if (collateralLegBorrowAmount > 0) {

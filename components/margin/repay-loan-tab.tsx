@@ -24,6 +24,7 @@ import { useMutationToast } from "@/hooks/use-mutation-toast";
 import toast from "react-hot-toast";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+import { TxStatusModal, INITIAL_TX_MODAL_STATE, type TxModalState } from "@/components/ui/tx-status-modal";
 
 /** Format a numeric amount for the editable input: clean string, no trailing
  *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
@@ -99,6 +100,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // a tooltip on the "Net Outstanding" tile so a partial repay isn't a surprise.
   const [spendableInMargin, setSpendableInMargin] = useState<number | null>(null);
   const [showOutstandingTooltip, setShowOutstandingTooltip] = useState(false);
+  // Live progress modal — same pattern as the Lite one-click flow and the
+  // Leverage tab, so a repay's pending/success/error state is visible beyond
+  // just a toast and a "Processing..." button label.
+  const [txModal, setTxModal] = useState<TxModalState>(INITIAL_TX_MODAL_STATE);
   const [selectedRepayCurrency, setSelectedRepayCurrency] =
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
@@ -329,6 +334,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     // dropped it below the positions-table dust filter, removing the row before
     // anything confirmed. The position must reflect ONLY confirmed on-chain state:
     // onSuccess refreshes from chain, and a cancel now leaves the UI untouched.
+    onMutate: () => {
+      setTxModal({
+        open: true,
+        status: "pending",
+        title: "Repaying Loan",
+        message: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}...`,
+      });
+    },
     mutationFn: async () => {
       if (!marginAccount || repayAmount <= 0) {
         throw new Error('Please enter a valid repay amount');
@@ -400,6 +413,15 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         // not just interest) — keep this toast itself short and factual.
         toast(`Repaid the max amount you could: ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`);
       }
+      setTxModal({
+        open: true,
+        status: "success",
+        title: "Repayment Successful",
+        message: cappedToBalance
+          ? `Repaid the max amount available: ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`
+          : `Repaid ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`,
+        txHash: hash || undefined,
+      });
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
       // can transiently throw when Freighter's getAddress returns undefined
@@ -417,6 +439,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       } catch (error) {
         console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
+    },
+    onError: (error: Error) => {
+      setTxModal({
+        open: true,
+        status: "error",
+        title: "Repayment Failed",
+        message: normalizeContractError(error.message),
+      });
     },
     onSettled: () => {
       setIsPayNowPopupOpen(false);
@@ -442,6 +472,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const isInputEmpty = repayAmount === 0 || repayAmount === null || repayAmount === undefined;
 
   return (
+    <>
+    <TxStatusModal state={txModal} onClose={() => setTxModal((p) => ({ ...p, open: false }))} />
     <motion.section
       className="w-full flex flex-col gap-6 pt-8"
       initial={{ opacity: 0 }}
@@ -729,6 +761,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       </AnimatePresence>
 
     </motion.section>
+    </>
   );
 };
 

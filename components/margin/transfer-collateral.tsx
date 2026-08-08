@@ -22,6 +22,7 @@ import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-pric
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
+import { TxStatusModal, INITIAL_TX_MODAL_STATE, type TxModalState } from "@/components/ui/tx-status-modal";
 
 const XLM_WALLET_RESERVE = 1;
 const XLM_TRANSFER_EPSILON = 1e-7;
@@ -63,6 +64,7 @@ export const TransferCollateral = () => {
   const [selectedTransferType, setSelectedTransferType] = useState<"MB" | "WB">("MB");
   const [valueInput, setValueInput] = useState<string>("");
   const [percentage, setPercentage] = useState<number>(0);
+  const [txModal, setTxModal] = useState<TxModalState>(INITIAL_TX_MODAL_STATE);
 
   // Wallet and margin account state
   const [userAddress, setUserAddress] = useState<string>("");
@@ -321,6 +323,14 @@ export const TransferCollateral = () => {
   };
 
   const transferMutation = useMutation({
+    onMutate: () => {
+      setTxModal({
+        open: true,
+        status: "pending",
+        title: selectedTransferType === "MB" ? "Depositing Collateral" : "Withdrawing Collateral",
+        message: `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`,
+      });
+    },
     mutationFn: async () => {
       const amountWad = (BigInt(Math.floor(Number(valueInput) * 1000000)) * BigInt(1000000000000)).toString();
 
@@ -353,6 +363,13 @@ export const TransferCollateral = () => {
       toast.success(
         `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
       );
+      setTxModal({
+        open: true,
+        status: "success",
+        title: selectedTransferType === "MB" ? "Deposit Successful" : "Withdrawal Successful",
+        message: `${selectedTransferType === "MB" ? "Transferred" : "Withdrew"} ${Number(valueInput).toFixed(7)} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}.`,
+        txHash: result.hash || undefined,
+      });
 
       // Reset the form and invalidate RQ caches first so the UI updates even
       // if the imperative Zustand refresh below throws (Freighter's getAddress
@@ -387,7 +404,14 @@ export const TransferCollateral = () => {
       ) {
         setValueInput(floorAmountToInput(safeMaxAfterFailure));
       }
-      toast.error(getFriendlyTransferError(message, safeMaxAfterFailure));
+      const friendlyMessage = getFriendlyTransferError(message, safeMaxAfterFailure);
+      toast.error(friendlyMessage);
+      setTxModal({
+        open: true,
+        status: "error",
+        title: selectedTransferType === "MB" ? "Deposit Failed" : "Withdrawal Failed",
+        message: friendlyMessage,
+      });
     },
   });
 
@@ -436,6 +460,8 @@ export const TransferCollateral = () => {
   };
 
   return (
+    <>
+    <TxStatusModal state={txModal} onClose={() => setTxModal((p) => ({ ...p, open: false }))} />
     <motion.section
       className="flex flex-col justify-between gap-6 pt-8"
       initial={{ opacity: 0, y: 20 }}
@@ -651,6 +677,7 @@ export const TransferCollateral = () => {
         />
       </motion.section>
     </motion.section>
+    </>
   );
 };
 

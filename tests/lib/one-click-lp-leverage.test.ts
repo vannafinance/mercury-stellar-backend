@@ -4,12 +4,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * Regression guard for leveraged Aquarius/Soroswap LP positions.
  *
  * AddLiquidity pulls the FULL amounts requested for both legs but mints LP
- * shares only for the proportionally smaller side — so pairing at an
- * oracle-price split (the old behavior) donates the mismatched excess to the
- * pool for free instead of failing loudly. The paired leg must instead be
- * sized off the pool's live reserve ratio, and leverage must scale BOTH legs
- * together (extra same-asset borrow + ratio-correct paired borrow) so the
- * pair stays on-ratio at any leverage, not just 1x.
+ * shares only for the proportionally smaller side — so pairing at a flat
+ * 50/50 USD split (or an oracle-price split) donates the mismatched excess to
+ * the pool for free instead of failing loudly. The paired leg must instead be
+ * sized off the pool's live reserve ratio.
+ *
+ * Separately, the two legs' borrow amounts must SUM to exactly
+ * depositUsd × (leverage − 1) — an earlier version borrowed a full
+ * (leverage−1)× top-up in the collateral asset AND THEN added the
+ * ratio-correct paired leg on top, silently overshooting the selected
+ * leverage (e.g. a chosen 2x landed closer to ~2.2x). Both legs must now
+ * split that fixed borrow budget while staying on the pool's live ratio.
  */
 const mocks = vi.hoisted(() => ({
   depositCollateralTokens: vi.fn(),
@@ -80,13 +85,19 @@ describe("executeOneClickStrategy — leveraged Aquarius LP pairs at the live po
     });
   });
 
-  it("borrows a same-asset top-up plus a ratio-correct paired amount, ignoring the oracle-priced UI estimate", async () => {
+  it("splits the borrow budget across both legs so total leverage lands exactly on target, while staying on the pool's live ratio", async () => {
+    const collateralAmount = 10;
+    const leverage = 2;
+    const xlmPrice = baseParams.prices.XLM;
+    const usdcPrice = baseParams.prices.USDC;
+    const poolRatio = parseFloat(RESERVES.reserveB) / parseFloat(RESERVES.reserveA); // USDC per XLM
+
     const res = await executeOneClickStrategy({
       ...baseParams,
-      collateralAmount: 10,
+      collateralAmount,
       // Old oracle-price formula would have asked for ~1.62 USDC — must be ignored.
       borrowAmount: 1.62,
-      leverage: 2,
+      leverage,
     });
 
     expect(res.success).toBe(true);
@@ -99,21 +110,31 @@ describe("executeOneClickStrategy — leveraged Aquarius LP pairs at the live po
     expect(xlmCall).toBeTruthy();
     expect(usdcCall).toBeTruthy();
 
-    // Same-asset top-up: 10 * (2 - 1) = 10 XLM.
-    const xlmBorrowedWad = BigInt(xlmCall![2]);
-    expect(Number(xlmBorrowedWad) / 1e18).toBeCloseTo(10, 4);
+    const xlmBorrowed = Number(BigInt(xlmCall![2])) / 1e18;
+    const usdcBorrowed = Number(BigInt(usdcCall![2])) / 1e18;
 
-    // Paired leg: (10 + 10) * (1413.34 / 107341.13) ≈ 0.2633 USDC — not 1.62.
-    const usdcBorrowedWad = BigInt(usdcCall![2]);
-    const usdcBorrowed = Number(usdcBorrowedWad) / 1e18;
-    expect(usdcBorrowed).toBeCloseTo(0.2633, 3);
+    // Old oracle-priced estimate (1.62) would have been way off-ratio and way
+    // over budget — must not appear anywhere near the actual borrow.
     expect(usdcBorrowed).toBeLessThan(1.62);
 
+    // Invariant 1: total borrow lands exactly at depositUsd × (leverage − 1),
+    // not more — this is the overshoot bug itself (previously ~2.2x for a
+    // chosen 2x).
+    const depositUsd = collateralAmount * xlmPrice;
+    const totalBorrowUsd = xlmBorrowed * xlmPrice + usdcBorrowed * usdcPrice;
+    expect(totalBorrowUsd).toBeCloseTo(depositUsd * (leverage - 1), 3);
+
+    // Invariant 2: the combined collateral-side vs. paired-side amounts stay
+    // on the pool's live reserve ratio — nothing donated to the pool.
+    const impliedRatio = usdcBorrowed / (collateralAmount + xlmBorrowed);
+    expect(impliedRatio).toBeCloseTo(poolRatio, 5);
+
     // AddLiquidity gets the net (post-origination-fee) amounts for both legs,
-    // in the pool's ratio — not the raw 10 XLM + 1.62 USDC mismatch.
+    // still on-ratio — not the raw 10 XLM + 1.62 USDC mismatch.
     const [, , , , xlmAmt, usdcAmt] = mocks.aquariusAddLiquidity.mock.calls[0];
-    expect(xlmAmt).toBeCloseTo(19.965, 3);
-    expect(usdcAmt).toBeCloseTo(0.26241, 4);
+    expect(xlmAmt).toBeCloseTo(collateralAmount + xlmBorrowed * 0.9965, 3);
+    expect(usdcAmt).toBeCloseTo(usdcBorrowed * 0.9965, 4);
+    expect(usdcAmt).toBeLessThan(1.62);
   });
 
   it("1x LP deposit never fetches pool reserves or borrows (swap-half path, unchanged)", async () => {

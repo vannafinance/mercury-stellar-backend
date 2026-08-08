@@ -63,6 +63,21 @@ const POOL_OPTIONS: PoolOption[] = [
   },
 ];
 
+/**
+ * Display-only symbol for a pool's generic "USDC" entry — AqUSDC/SoUSDC/
+ * BLUSDC are genuinely distinct SAC tokens, but `PoolOption.tokens`/
+ * `collateralAsset`/`borrowAsset` stay the generic "XLM"|"USDC" everywhere
+ * else in this file (state, TokenAsset typing, the actual borrow/swap/
+ * addLiquidity calls in lib/one-click-strategy.ts resolve the real on-chain
+ * symbol themselves). Only ever use this when rendering text/icons.
+ */
+const poolAssetLabel = (pool: Pick<PoolOption, "protocol">, asset: string): string => {
+  if (asset !== "USDC") return asset;
+  if (pool.protocol === "Aquarius") return "AqUSDC";
+  if (pool.protocol === "Soroswap") return "SoUSDC";
+  return "BLUSDC";
+};
+
 /* ─── token helpers ─── */
 type TokenAsset = "XLM" | "USDC";
 
@@ -160,6 +175,16 @@ export const OneClickStrategy = () => {
     () => POOL_OPTIONS.find((p) => p.id === selectedPoolId) || POOL_OPTIONS[0],
     [selectedPoolId]
   );
+  // Display-only token labels for `selectedPool` — every functional usage
+  // elsewhere in this file (collateralAsset/borrowAsset comparisons, the
+  // actual borrow/swap/addLiquidity calls) keeps using selectedPool.tokens
+  // directly; these two are ONLY for rendered text/icons.
+  const selectedPoolTokenLabels = useMemo(
+    () => selectedPool.tokens.map((t) => poolAssetLabel(selectedPool, t)),
+    [selectedPool]
+  );
+  const selectedPoolLabelStr = selectedPoolTokenLabels.join("/");
+  const selectedPoolFirstTokenLabel = selectedPoolTokenLabels[0] ?? selectedPool.tokens[0];
 
   // ─── Form state ───
   const [collateralAsset, setCollateralAsset] = useState<TokenAsset>("XLM");
@@ -334,6 +359,11 @@ export const OneClickStrategy = () => {
   }, [selectedPool, collateralAsset, isSameAsset]);
 
   const borrowPrice = prices[borrowAsset] || 1;
+  // Display-only labels — collateralAsset/borrowAsset themselves stay the
+  // functional "XLM"|"USDC" used for balance lookups, deposit/borrow calls,
+  // and every comparison in this file. Only ever render these two in JSX text.
+  const collateralAssetLabel = poolAssetLabel(selectedPool, collateralAsset);
+  const borrowAssetLabel = poolAssetLabel(selectedPool, borrowAsset);
 
   // How much of `borrowAsset` the pool's live reserves want per 1 unit of
   // `collateralAsset` — 0 while reserves haven't loaded yet (LP pools only).
@@ -345,14 +375,22 @@ export const OneClickStrategy = () => {
   }, [selectedPool.type, lpReserves, collateralAsset]);
 
   // For LP pools, leverage scales BOTH legs together to keep the pair on the
-  // pool's ratio: borrow (leverage-1)x more of the collateral asset itself,
-  // then pair the resulting total against the ratio for the borrowed leg.
-  // For single-asset (Blend) pools there's no ratio constraint, so the
-  // borrowed leg is a plain oracle-priced leverage split as before.
+  // pool's ratio, while the two legs' borrow amounts still sum to exactly
+  // collateralUsd × (leverage − 1) — so the position lands at exactly the
+  // chosen leverage instead of overshooting it. (A flat top-up of
+  // collateralNum × (leverage − 1) in the collateral asset ALONE, with the
+  // paired leg added on top, silently added extra exposure beyond the chosen
+  // multiplier — a chosen 2x landed closer to ~2.2x on this pool's live
+  // ratio.) Solving `x·Pc + (collateralNum+x)·ratio·Po = collateralUsd·(L−1)`
+  // for x gives the top-up below. For single-asset (Blend) pools there's no
+  // ratio constraint, so the borrowed leg stays a plain oracle-priced split.
   const collateralBorrowAmount = useMemo(() => {
-    if (selectedPool.type !== "lp" || leverage <= 1 || collateralNum <= 0) return 0;
-    return collateralNum * (leverage - 1);
-  }, [selectedPool.type, leverage, collateralNum]);
+    if (selectedPool.type !== "lp" || leverage <= 1 || collateralNum <= 0 || lpPoolRatio <= 0) return 0;
+    const totalBorrowUsdTarget = collateralUsd * (leverage - 1);
+    const denom = collateralPrice + lpPoolRatio * borrowPrice;
+    if (denom <= 0) return 0;
+    return Math.max(0, (totalBorrowUsdTarget - collateralNum * lpPoolRatio * borrowPrice) / denom);
+  }, [selectedPool.type, leverage, collateralNum, collateralUsd, collateralPrice, lpPoolRatio, borrowPrice]);
 
   const borrowedAmount = useMemo(() => {
     if (leverage <= 1 || collateralNum <= 0) return 0;
@@ -387,7 +425,7 @@ export const OneClickStrategy = () => {
       const netApr = supplyEarnings - borrowCost;
       return {
         netApr, supplyEarnings, borrowCost,
-        legs: [{ label: `${selectedPool.protocol} ${selectedPool.tokens.join("/")} LP`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+        legs: [{ label: `${selectedPool.protocol} ${selectedPoolLabelStr} LP`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
       };
     }
 
@@ -399,7 +437,7 @@ export const OneClickStrategy = () => {
       const netApr = supplyEarnings - borrowCost;
       return {
         netApr, supplyEarnings, borrowCost,
-        legs: [{ label: `${selectedPool.tokens.join("/")} Supply`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+        legs: [{ label: `${selectedPoolLabelStr} Supply`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
       };
     }
 
@@ -415,8 +453,8 @@ export const OneClickStrategy = () => {
       return {
         netApr, supplyEarnings: collateralEarning + targetEarning, borrowCost,
         legs: [
-          { label: `${selectedPool.protocol} ${collateralAsset} pool`, apr: collateralSupplyApr, multiplier: 1, earning: collateralEarning },
-          { label: `${selectedPool.protocol} ${selectedPool.tokens[0]} pool`, apr: supplyApr, multiplier: borrowMultiplier, earning: targetEarning },
+          { label: `${selectedPool.protocol} ${collateralAssetLabel} pool`, apr: collateralSupplyApr, multiplier: 1, earning: collateralEarning },
+          { label: `${selectedPool.protocol} ${selectedPoolFirstTokenLabel} pool`, apr: supplyApr, multiplier: borrowMultiplier, earning: targetEarning },
         ],
       };
     }
@@ -430,7 +468,7 @@ export const OneClickStrategy = () => {
     const netApr = supplyEarnings - borrowCost;
     return {
       netApr, supplyEarnings, borrowCost,
-      legs: [{ label: `${selectedPool.tokens.join("/")} (all-in)`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+      legs: [{ label: `${selectedPoolLabelStr} (all-in)`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
     };
   }, [scenario, selectedPool, selectedPoolLive, livePools, collateralNum, borrowedAmount, leverage, collateralUsd, borrowUsd, borrowPrice, collateralAsset]);
 
@@ -536,7 +574,7 @@ export const OneClickStrategy = () => {
         // LP positions hold both tokens paired together, so the label should
         // read "XLM/USDC" — not just the collateral leg — matching how the
         // Farm page titles the same pool.
-        poolLabel: selectedPool.type === "lp" ? selectedPool.tokens.join("/") : collateralAsset,
+        poolLabel: selectedPool.type === "lp" ? selectedPoolLabelStr : collateralAsset,
         protocol: selectedPool.protocol,
         poolVersion: selectedPool.poolVersion,
         poolType: selectedPool.type,
@@ -560,7 +598,7 @@ export const OneClickStrategy = () => {
       setTxModal({
         open: true, status: "success",
         title: "Strategy Deployed!",
-        message: `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPool.tokens.join("/")} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
+        message: `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPoolLabelStr} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
         txHash: result.hash,
       });
       setCollateralAmount("");
@@ -701,7 +739,7 @@ export const OneClickStrategy = () => {
                   </div>
                   <div className="flex flex-col gap-[2px]">
                     <span className={`text-[15px] sm:text-[16px] font-bold leading-[22px] ${headingText}`}>
-                      {selectedPool.tokens.join(" / ")}
+                      {selectedPoolTokenLabels.join(" / ")}
                     </span>
                     <span className={`text-[11px] leading-[14px] ${mutedText}`}>
                       {selectedPool.protocol} {selectedPool.poolVersion} {selectedPool.feeTier !== "-" && `· ${selectedPool.feeTier}`}
@@ -753,7 +791,7 @@ export const OneClickStrategy = () => {
                             ))}
                           </div>
                           <div className="flex flex-col items-start gap-[1px]">
-                            <span className={`text-[13px] font-semibold ${headingText}`}>{pool.tokens.join("/")}</span>
+                            <span className={`text-[13px] font-semibold ${headingText}`}>{pool.tokens.map((t) => poolAssetLabel(pool, t)).join("/")}</span>
                             <span className={`text-[10px] ${mutedText}`}>{pool.protocol} {pool.poolVersion}</span>
                           </div>
                         </div>
@@ -827,7 +865,7 @@ export const OneClickStrategy = () => {
                     aria-expanded={tokenDropdownOpen}
                   >
                     <PoolTokenBadge symbol={collateralAsset} size={20} />
-                    <span>{collateralAsset}</span>
+                    <span>{collateralAssetLabel}</span>
                     <svg
                       className={`shrink-0 transition-transform duration-200 ${tokenDropdownOpen ? "rotate-180" : ""}`}
                       width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -869,7 +907,7 @@ export const OneClickStrategy = () => {
                             aria-selected={t.asset === collateralAsset}
                           >
                             <PoolTokenBadge symbol={t.asset} size={16} />
-                            {t.label}
+                            {poolAssetLabel(selectedPool, t.asset)}
                           </button>
                         ))}
                       </motion.div>
@@ -904,7 +942,7 @@ export const OneClickStrategy = () => {
                     <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
                     <span className={`text-[13px] font-semibold ${headingText}`}>Deploy Strategy</span>
                     <span className={`text-[10px] px-2 py-0.5 rounded-[6px] font-semibold ${isDark ? "bg-[#2C2C2C] text-[#919191]" : "bg-[#F4F4F4] text-[#76737B]"}`}>
-                      {collateralAsset} → {selectedPool.tokens[0]}
+                      {collateralAssetLabel} → {selectedPoolFirstTokenLabel}
                     </span>
                   </div>
                   <div className="flex gap-3">
@@ -919,14 +957,14 @@ export const OneClickStrategy = () => {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`text-[12px] font-semibold ${scenario === "cross-asset-keep" ? (isDark ? "text-[#B794F6]" : "text-[#703AE6]") : headingText}`}>
-                          Keep {collateralAsset} Exposure
+                          Keep {collateralAssetLabel} Exposure
                         </span>
                         <span className="text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-[2px] rounded-[5px] bg-gradient text-white leading-none">
                           2 Pools
                         </span>
                       </div>
                       <span className={`text-[10px] leading-[15px] block ${mutedText}`}>
-                        Supply {collateralAsset} to {selectedPool.protocol} {collateralAsset} pool + supply borrowed {borrowAsset} to {selectedPool.protocol} {borrowAsset} pool
+                        Supply {collateralAssetLabel} to {selectedPool.protocol} {collateralAssetLabel} pool + supply borrowed {borrowAssetLabel} to {selectedPool.protocol} {borrowAssetLabel} pool
                       </span>
                     </button>
                     <button
@@ -940,14 +978,14 @@ export const OneClickStrategy = () => {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`text-[12px] font-semibold ${scenario === "cross-asset-swap" ? (isDark ? "text-[#B794F6]" : "text-[#703AE6]") : headingText}`}>
-                          Full {selectedPool.tokens[0]} Exposure
+                          Full {selectedPoolFirstTokenLabel} Exposure
                         </span>
                         <span className={`text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-[2px] rounded-[5px] leading-none ${isDark ? "bg-[#2C2C2C] text-[#919191]" : "bg-[#EEF2FF] text-[#6B7280]"}`}>
                           1 Pool
                         </span>
                       </div>
                       <span className={`text-[10px] leading-[15px] block ${mutedText}`}>
-                        Swap via Soroswap {collateralAsset} → {selectedPool.tokens[0]}, supply all to {selectedPool.protocol} {selectedPool.tokens[0]} pool
+                        Swap via Soroswap {collateralAssetLabel} → {selectedPoolFirstTokenLabel}, supply all to {selectedPool.protocol} {selectedPoolFirstTokenLabel} pool
                       </span>
                     </button>
                   </div>
@@ -996,7 +1034,7 @@ export const OneClickStrategy = () => {
                     <div className="flex flex-col">
                       <h3 className={`text-[14px] font-semibold leading-5 ${headingText}`}>Set Leverage</h3>
                       <span className={`text-[11px] leading-4 ${mutedText}`}>
-                        Borrow {borrowAsset} from Vanna at {selectedPoolLive.borrowApr.toFixed(2)}% APR
+                        Borrow {borrowAssetLabel} from Vanna at {selectedPoolLive.borrowApr.toFixed(2)}% APR
                       </span>
                     </div>
                   </div>
@@ -1029,14 +1067,14 @@ export const OneClickStrategy = () => {
                                 <div className="flex items-center gap-[6px]">
                                   <PoolTokenBadge symbol={collateralAsset} size={14} />
                                   <span className={`text-[13px] font-bold ${headingText}`}>
-                                    {collateralBorrowAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {collateralAsset}
+                                    {collateralBorrowAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {collateralAssetLabel}
                                   </span>
                                 </div>
                               )}
                               <div className="flex items-center gap-[6px]">
                                 <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 <span className={`text-[13px] font-bold ${headingText}`}>
-                                  {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAsset}
+                                  {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAssetLabel}
                                 </span>
                               </div>
                             </div>
@@ -1067,8 +1105,8 @@ export const OneClickStrategy = () => {
                             <div className="flex items-center gap-[8px]">
                               <PoolTokenBadge symbol={collateralAsset} size={14} />
                               <span className={`text-[12px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                <strong>{collateralNum.toFixed(2)} + {borrowedAmount.toFixed(2)} = {(collateralNum + borrowedAmount).toFixed(2)} {collateralAsset}</strong>
-                                {" "}→ <strong>{selectedPool.protocol} {collateralAsset} pool</strong>
+                                <strong>{collateralNum.toFixed(2)} + {borrowedAmount.toFixed(2)} = {(collateralNum + borrowedAmount).toFixed(2)} {collateralAssetLabel}</strong>
+                                {" "}→ <strong>{selectedPool.protocol} {collateralAssetLabel} pool</strong>
                               </span>
                             </div>
                           )}
@@ -1076,7 +1114,7 @@ export const OneClickStrategy = () => {
                             <div className="flex flex-col gap-[6px]">
                               <div className="flex items-center gap-[6px] mb-[2px]">
                                 <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  Add Liquidity — {selectedPool.protocol} {selectedPool.tokens.join("/")} pool
+                                  Add Liquidity — {selectedPool.protocol} {selectedPoolLabelStr} pool
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
@@ -1085,11 +1123,11 @@ export const OneClickStrategy = () => {
                                   <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 </div>
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAsset} + {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {selectedPool.tokens.join("/")} LP</strong>
+                                  {(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAssetLabel} + {borrowedAmount.toFixed(2)} {borrowAssetLabel} → <strong>{selectedPool.protocol} {selectedPoolLabelStr} LP</strong>
                                 </span>
                               </div>
                               <span className={`text-[10px] ${mutedText}`}>
-                                ({collateralNum.toFixed(2)} deposited + {collateralBorrowAmount.toFixed(2)} borrowed {collateralAsset}, paired at the pool&apos;s live ratio)
+                                ({collateralNum.toFixed(2)} deposited + {collateralBorrowAmount.toFixed(2)} borrowed {collateralAssetLabel}, paired at the pool&apos;s live ratio)
                               </span>
                             </div>
                           )}
@@ -1103,13 +1141,13 @@ export const OneClickStrategy = () => {
                               <div className="flex items-center gap-[8px]">
                                 <PoolTokenBadge symbol={collateralAsset} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} → <strong>{selectedPool.protocol} {collateralAsset} pool</strong>
+                                  {collateralNum.toFixed(2)} {collateralAssetLabel} → <strong>{selectedPool.protocol} {collateralAssetLabel} pool</strong>
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
                                 <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {borrowAsset} pool</strong>
+                                  {borrowedAmount.toFixed(2)} {borrowAssetLabel} → <strong>{selectedPool.protocol} {borrowAssetLabel} pool</strong>
                                 </span>
                               </div>
                             </div>
@@ -1121,13 +1159,13 @@ export const OneClickStrategy = () => {
                                   <polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" />
                                 </svg>
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} swapped via Soroswap → {selectedPool.tokens[0]}
+                                  {collateralNum.toFixed(2)} {collateralAssetLabel} swapped via Soroswap → {selectedPoolFirstTokenLabel}
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
-                                <PoolTokenBadge symbol={selectedPool.tokens[0]} size={14} />
+                                <PoolTokenBadge symbol={selectedPoolFirstTokenLabel} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  <strong>${totalPositionUsd.toFixed(2)}</strong> total → <strong>{selectedPool.protocol} {selectedPool.tokens[0]} pool</strong>
+                                  <strong>${totalPositionUsd.toFixed(2)}</strong> total → <strong>{selectedPool.protocol} {selectedPoolFirstTokenLabel} pool</strong>
                                 </span>
                               </div>
                             </div>
@@ -1270,7 +1308,7 @@ export const OneClickStrategy = () => {
                                   : "Implied oracle price of this asset at HF = 1.1 (cross-asset preview)."
                               }
                             >
-                              Liq. Price ({collateralAsset})
+                              Liq. Price ({collateralAssetLabel})
                             </span>
                             {liquidationPriceUsd != null ? (
                               <span className={`text-[20px] font-bold ${headingText}`}>
@@ -1329,7 +1367,7 @@ export const OneClickStrategy = () => {
                             <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>1.</span>
                             <span>
                               You deposit{" "}
-                              <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" "}
+                              <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAssetLabel}</span>{" "}
                               (~${collateralUsd.toFixed(2)}) as collateral to your Vanna margin account on Stellar.
                             </span>
                           </li>
@@ -1337,7 +1375,7 @@ export const OneClickStrategy = () => {
                             <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>2.</span>
                             <span>
                               Vanna lenders fund{" "}
-                              <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
+                              <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
                               (~${borrowUsd.toFixed(2)}) at {selectedPoolLive.borrowApr.toFixed(2)}% APR.
                             </span>
                           </li>
@@ -1345,9 +1383,9 @@ export const OneClickStrategy = () => {
                             <li className="flex gap-[10px]">
                               <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                               <span>
-                                <span className={`font-semibold ${headingText}`}>{(collateralNum + borrowedAmount).toFixed(2)} {collateralAsset}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{(collateralNum + borrowedAmount).toFixed(2)} {collateralAssetLabel}</span>{" "}
                                 deployed to{" "}
-                                <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{selectedPoolLabelStr}</span>{" "}
                                 on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
                               </span>
                             </li>
@@ -1356,11 +1394,11 @@ export const OneClickStrategy = () => {
                             <li className="flex gap-[10px]">
                               <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                               <span>
-                                <span className={`font-semibold ${headingText}`}>{(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAsset}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAssetLabel}</span>{" "}
                                 (deposited + borrowed) paired with{" "}
-                                <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
                                 added as liquidity to the{" "}
-                                <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPool.tokens.join("/")} pool</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPoolLabelStr} pool</span>{" "}
                                 at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
                               </span>
                             </li>
@@ -1370,15 +1408,15 @@ export const OneClickStrategy = () => {
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                                 <span>
-                                  Your <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAsset} pool</span> at {(livePools[POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}% APR.
+                                  Your <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAssetLabel}</span>{" "}
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAssetLabel} pool</span> at {(livePools[POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}% APR.
                                 </span>
                               </li>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>4.</span>
                                 <span>
-                                  <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAsset} pool</span> at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
+                                  <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAssetLabel} pool</span> at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
                             </>
@@ -1388,14 +1426,14 @@ export const OneClickStrategy = () => {
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                                 <span>
-                                  Your {collateralAsset} is <span className={`font-semibold ${headingText}`}>swapped via Soroswap to {selectedPool.tokens[0]}</span> — no more {collateralAsset} exposure.
+                                  Your {collateralAssetLabel} is <span className={`font-semibold ${headingText}`}>swapped via Soroswap to {selectedPoolFirstTokenLabel}</span> — no more {collateralAssetLabel} exposure.
                                 </span>
                               </li>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>4.</span>
                                 <span>
                                   <span className={`font-semibold ${headingText}`}>${totalPositionUsd.toFixed(2)}</span>{" "}
-                                  total deployed to <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
+                                  total deployed to <span className={`font-semibold ${headingText}`}>{selectedPoolLabelStr}</span>{" "}
                                   on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
@@ -1475,7 +1513,7 @@ export const OneClickStrategy = () => {
           <div className={`rounded-[14px] border p-4 flex flex-col gap-3 ${isDark ? "bg-[#1A1A1A] border-[#2C2C2C]" : "bg-white border-[#E5E7EB]"}`}>
             <div className="flex items-center gap-2">
               <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
-              <span className={`text-[12px] font-semibold ${headingText}`}>{selectedPool.protocol} · {selectedPool.tokens.join("/")} Pool</span>
+              <span className={`text-[12px] font-semibold ${headingText}`}>{selectedPool.protocol} · {selectedPoolLabelStr} Pool</span>
             </div>
             {[
               { label: "Supply APY", value: `${selectedPoolLive.supplyApr.toFixed(2)}%`, color: "text-[#10B981]" },

@@ -7,22 +7,52 @@
 import { ContractService, ASSET_TYPES } from "@/lib/stellar-utils";
 import { computeBorrowApr } from "@/lib/utils/borrow-rate";
 
+// Matches RateModelContract's own SECS_PER_YEAR_U128 constant exactly, so the
+// annualization here lines up with what the contract itself divides by when
+// computing get_borrow_rate_per_sec.
+const SECS_PER_YEAR = 31_556_952;
+
+const toWad = (amount: number): bigint => BigInt(Math.floor(amount * 1e18));
+
 /**
- * Supply APY (%) for a lending pool, as a function of its utilization. Linear
- * model: 2% floor + up to 10% at full utilization, mirroring the lender's share
- * of borrow interest. `utilizationRate` is a percentage string (e.g. "73.50").
+ * Borrow APY (%), read LIVE from the deployed RateModelContract's
+ * `get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` — the exact same
+ * curve `lending-pool`'s own `get_rate_factor()` calls on-chain to accrue
+ * interest. Falls back to the old synthetic kinked-utilization curve
+ * (`computeBorrowApr`) if the on-chain read fails (RPC hiccup), so the page
+ * degrades gracefully instead of showing "N/A".
  */
-export const calculateSupplyAPY = (utilizationRate: string): string => {
-  const utilization = parseFloat(utilizationRate) / 100;
-  return (2.0 + utilization * 10).toFixed(2);
+export const calculateBorrowAPY = async (
+  liquidity: string,
+  borrows: string,
+  utilizationRate: string,
+): Promise<string> => {
+  const liquidityWad = toWad(parseFloat(liquidity) || 0);
+  const borrowsWad = toWad(parseFloat(borrows) || 0);
+  const ratePerSecWad = await ContractService.getBorrowRatePerSecWad(liquidityWad, borrowsWad);
+  if (ratePerSecWad == null) {
+    return computeBorrowApr(parseFloat(utilizationRate) || 0).toFixed(2);
+  }
+  // The contract divides by SECS_PER_YEAR to get a per-second rate; multiply
+  // back (in bigint space, before any float conversion) to recover the
+  // annual WAD-scaled rate, then convert WAD (1e18 == 100%) to a percentage.
+  const annualRateWad = ratePerSecWad * BigInt(SECS_PER_YEAR);
+  return (Number(annualRateWad) / 1e16).toFixed(2);
 };
 
 /**
- * Borrow APY (%) for a lending pool from its utilization percentage string,
- * delegating to the shared kinked-curve {@link computeBorrowApr}.
+ * Supply APY (%) — always a utilization-scaled fraction of the real borrow
+ * APY. Vanna's lending pools take no ongoing reserve-factor cut on interest
+ * (protocol revenue is the one-time origination fee at borrow time, not an
+ * interest-rate spread — see lending-pool's `get_origination_fee`), so 100%
+ * of borrower interest flows to suppliers: `supply = borrow × utilization`.
+ * This makes supply <= borrow by construction, fixing the previous
+ * independent/uncoupled formulas that let supply show HIGHER than borrow.
  */
-export const calculateBorrowAPY = (utilizationRate: string): string =>
-  computeBorrowApr(parseFloat(utilizationRate) || 0).toFixed(2);
+export const calculateSupplyAPY = (borrowApyPct: number, utilizationRate: string): string => {
+  const utilization = (parseFloat(utilizationRate) || 0) / 100;
+  return (borrowApyPct * utilization).toFixed(2);
+};
 
 /**
  * vToken→underlying exchange rate = `totalAssets / vTokenSupply`, formatted to
@@ -57,12 +87,15 @@ export type AllPoolStats = {
   SOROSWAP_USDC: PoolStats;
 };
 
-const enrich = (s: RawPoolStats): PoolStats => ({
-  ...s,
-  supplyAPY: calculateSupplyAPY(s.utilizationRate),
-  borrowAPY: calculateBorrowAPY(s.utilizationRate),
-  exchangeRate: calculateExchangeRateFromPool(s.totalSupply, s.vTokenSupply),
-});
+const enrich = async (s: RawPoolStats): Promise<PoolStats> => {
+  const borrowAPY = await calculateBorrowAPY(s.availableLiquidity, s.totalBorrowed, s.utilizationRate);
+  return {
+    ...s,
+    supplyAPY: calculateSupplyAPY(parseFloat(borrowAPY), s.utilizationRate),
+    borrowAPY,
+    exchangeRate: calculateExchangeRateFromPool(s.totalSupply, s.vTokenSupply),
+  };
+};
 
 /** Read all lending pools concurrently and enrich with APY/exchange-rate. */
 export async function computeAllPoolStats(): Promise<AllPoolStats> {
@@ -72,11 +105,17 @@ export async function computeAllPoolStats(): Promise<AllPoolStats> {
     ContractService.getPoolStats(ASSET_TYPES.AQUARIUS_USDC),
     ContractService.getPoolStats(ASSET_TYPES.SOROSWAP_USDC),
   ]);
+  const [xlmE, usdcE, aquariusE, soroswapE] = await Promise.all([
+    enrich(xlm),
+    enrich(usdc),
+    enrich(aquarius),
+    enrich(soroswap),
+  ]);
   return {
-    XLM: enrich(xlm),
-    USDC: enrich(usdc),
-    AQUARIUS_USDC: enrich(aquarius),
-    SOROSWAP_USDC: enrich(soroswap),
+    XLM: xlmE,
+    USDC: usdcE,
+    AQUARIUS_USDC: aquariusE,
+    SOROSWAP_USDC: soroswapE,
   };
 }
 

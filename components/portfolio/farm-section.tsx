@@ -86,13 +86,18 @@ export const FarmSection = () => {
       .forEach((sym) => {
         const pos = blendPositions[sym];
         const amount = parseFloat(pos.underlyingValue || "0");
+        // Display-only — cell[0].title stays the raw "XLM"/"USDC" (read
+        // functionally by remove-liquidity.tsx's getInitialToken() when the
+        // user clicks through from this row); symLabel is only used in the
+        // amount string below.
+        const symLabel = sym === "USDC" ? "BLUSDC" : sym;
         out.push({
           id: sym.toLowerCase(),
           cell: [
             { chain: sym, title: sym, tags: ["Blend", "Supply"] },
             { title: "Blend" },
             {
-              title: `${pos.underlyingValue} ${sym}`,
+              title: `${pos.underlyingValue} ${symLabel}`,
               description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
             },
             { title: blendPoolStats[sym]?.supplyAPY ? `${blendPoolStats[sym]!.supplyAPY}%` : "0%" },
@@ -109,9 +114,11 @@ export const FarmSection = () => {
       out.push({
         id: "soroswap-xlm-usdc",
         cell: [
+          // titles stays the raw functional pair — read by add/remove-liquidity's
+          // poolTokens detection when the user clicks through from this row.
           { chain: "XLM", titles: ["XLM", "USDC"], tags: ["Soroswap", "LP"] },
           { title: "Soroswap" },
-          { title: `${mySSLpBalance.toFixed(2)} LP`, description: `${xlmShare.toFixed(2)} XLM + ${usdcShare.toFixed(2)} USDC` },
+          { title: `${mySSLpBalance.toFixed(2)} LP`, description: `${xlmShare.toFixed(2)} XLM + ${usdcShare.toFixed(2)} SoUSDC` },
           { title: "0%" },
         ],
         usd: xlmShare * priceFor("XLM") + usdcShare * priceFor("USDC"),
@@ -123,6 +130,7 @@ export const FarmSection = () => {
       if (lpBal <= POSITION_DUST) return;
       const aqPoolStats = aquariusPools.find((p) => p.pool.id === pool.id)?.stats ?? null;
       const [tokenA, tokenB] = pool.tokens;
+      const tokenBLabel = tokenB === "USDC" ? "AqUSDC" : tokenB;
       const { amountA: shareA, amountB: shareB } = aquariusLpUnderlyingAmounts(
         lpBal,
         aqPoolStats ?? { reserveA: "0", reserveB: "0", totalShares: "0", feeFraction: "0.30%", feeRaw: 30 },
@@ -132,9 +140,10 @@ export const FarmSection = () => {
       out.push({
         id: pool.id,
         cell: [
+          // titles stays the raw functional pair — see the Soroswap row note above.
           { chain: tokenA, titles: [tokenA, tokenB], tags: ["Aquarius", "LP"] },
           { title: "Aquarius" },
-          { title: `${lpBal.toFixed(2)} LP`, description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}` },
+          { title: `${lpBal.toFixed(2)} LP`, description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenBLabel}` },
           { title: formatApyPct(aqPoolStats?.totalApy ?? aqPoolStats?.apy) },
         ],
         usd: shareA * priceFor(tokenA) + shareB * priceFor(tokenB),

@@ -104,24 +104,30 @@ export default function FarmPage() {
       const price = priceForSymbol(symbol);
       const totalSupplyNum = s ? parseFloat(s.totalSupply) : 0;
       const totalBorrowNum = s ? parseFloat(s.totalBorrow) : 0;
+      // Blend's canonical USDC label — matches the DropdownOptions/margin-page
+      // convention instead of the generic "USDC" used as the underlying map key.
+      const symbolLabel = symbol === 'USDC' ? 'BLUSDC' : symbol;
 
       return {
         cell: [
+          // cell[0].title is read functionally by remove-liquidity.tsx's
+          // getInitialToken() (matched against raw "XLM"/"USDC") — keep it
+          // raw; symbolLabel is only safe in cell[2]/[3]/[6]'s amount strings.
           { chain: symbol, title: symbol, tags: ['Blend', 'Supply'] },
           { title: 'Blend' },
           {
-            title: s ? `${fmtNum(totalSupplyNum)} ${symbol}` : (loading ? '...' : '0'),
+            title: s ? `${fmtNum(totalSupplyNum)} ${symbolLabel}` : (loading ? '...' : '0'),
             tag: s ? fmtUsd(totalSupplyNum * price) : undefined,
           },
           {
-            title: s ? `${fmtNum(totalBorrowNum)} ${symbol}` : (loading ? '...' : '0'),
+            title: s ? `${fmtNum(totalBorrowNum)} ${symbolLabel}` : (loading ? '...' : '0'),
             tag: s ? fmtUsd(totalBorrowNum * price) : undefined,
           },
           { title: s ? fmt(s.supplyAPY, '%') : '0' },
           { title: s ? fmt(s.borrowAPY, '%') : '0' },
           { title: s ? fmt(s.utilizationRate, '%') : '0' },
           {
-            title: `${fmtNum(holdingAmount)} ${symbol}`,
+            title: `${fmtNum(holdingAmount)} ${symbolLabel}`,
             tag: fmtUsd(holdingAmount * price),
           },
         ],
@@ -141,13 +147,19 @@ export default function FarmPage() {
       .filter((sym) => parseFloat(userPositions[sym]?.underlyingValue ?? '0') > POSITION_DUST)
       .forEach((sym) => {
         const pos = userPositions[sym];
+        const symLabel = sym === 'USDC' ? 'BLUSDC' : sym;
         rows.push({
           id: sym.toLowerCase(),
           cell: [
+            // cell[0].title is read functionally by remove-liquidity.tsx's
+            // getInitialToken() — keep raw, matching the singleAssetTableBody note above.
             { chain: sym, title: sym, tags: ['Blend', 'Supply'] },
             { title: 'Blend' },
             {
-              title: pos.underlyingValue ? `${pos.underlyingValue} ${sym}` : '0',
+              title: pos.underlyingValue ? `${pos.underlyingValue} ${symLabel}` : '0',
+              // "b{sym}" is Blend's own internal receipt-token naming
+              // (bXLM/bUSDC), unrelated to our AqUSDC/SoUSDC/BLUSDC
+              // distinction — kept as the real underlying symbol.
               description: pos.bTokenBalance ? `${pos.bTokenBalance} b${sym}` : undefined,
             },
             { title: poolStats[sym]?.supplyAPY ? `${poolStats[sym]!.supplyAPY}%` : '0' },
@@ -164,11 +176,16 @@ export default function FarmPage() {
       rows.push({
         id: 'soroswap-xlm-usdc',
         cell: [
+          // NOTE: `titles` feeds the real Add/Remove Liquidity forms via
+          // useFarmStore.selectedRow (components/farm/add-liquidity.tsx reads
+          // cell[0].titles as the literal on-chain token symbols for balance
+          // fetches and the actual addLiquidity/removeLiquidity calls) — keep
+          // this the raw functional symbol, not the display label.
           { chain: 'XLM', titles: ['XLM', 'USDC'], tags: ['Soroswap', 'LP'] },
           { title: 'Soroswap' },
           {
             title: `${mySSLpBalance.toFixed(2)} LP`,
-            description: `${xlmShare} XLM + ${usdcShare} USDC`,
+            description: `${xlmShare} XLM + ${usdcShare} SoUSDC`,
           },
           { title: ssStats?.feeFraction ?? '0.30%' },
         ],
@@ -182,6 +199,7 @@ export default function FarmPage() {
       const aqPoolStats = aquariusPools.find((p) => p.pool.id === pool.id)?.stats ?? null;
       const totalShares = parseFloat(aqPoolStats?.totalShares ?? '0');
       const [tokenA, tokenB] = pool.tokens;
+      const tokenBLabel = tokenB === 'USDC' ? 'AqUSDC' : tokenB;
       const { amountA: shareA, amountB: shareB } = aquariusLpUnderlyingAmounts(
         lpBal,
         aqPoolStats ?? { reserveA: '0', reserveB: '0', totalShares: '0', feeFraction: '0.30%', feeRaw: 30 },
@@ -195,7 +213,7 @@ export default function FarmPage() {
           { title: 'Aquarius' },
           {
             title: `${lpBal.toFixed(2)} LP`,
-            description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenB}`,
+            description: `${shareA.toFixed(2)} ${tokenA} + ${shareB.toFixed(2)} ${tokenBLabel}`,
           },
           { title: aqPoolStats?.feeFraction ?? '0.30%' },
         ],
@@ -212,13 +230,14 @@ export default function FarmPage() {
   const lpTableBody = useMemo(() => {
     const aqRows = aquariusPools.map(({ pool, stats, isLoading }) => {
       const [tokenA, tokenB] = pool.tokens;
+      const tokenBLabel = tokenB === 'USDC' ? 'AqUSDC' : tokenB;
       const loading = isLoading;
       const reserveANum = stats ? parseFloat(stats.reserveA) : 0;
       const reserveBNum = stats ? parseFloat(stats.reserveB) : 0;
       const priceA = priceForSymbol(tokenA);
       const priceB = priceForSymbol(tokenB);
       const tvlTokenA = stats ? `${fmtNum(reserveANum)} ${tokenA}` : (loading ? '...' : '0');
-      const tvlTokenB = stats ? `${fmtNum(reserveBNum)} ${tokenB}` : (loading ? '...' : '0');
+      const tvlTokenB = stats ? `${fmtNum(reserveBNum)} ${tokenBLabel}` : (loading ? '...' : '0');
       const fee = stats ? stats.feeFraction : (loading ? '...' : '0%');
       const shares = stats ? `${fmtNum(parseFloat(stats.totalShares))} LP` : (loading ? '...' : '0');
       // Pool APR uses the API's base trading APY (annualised from fees).
@@ -261,13 +280,14 @@ export default function FarmPage() {
 
     const ssRows = soroswapPools.map(({ pool, stats, isLoading }) => {
       const [tokenA, tokenB] = pool.tokens;
+      const tokenBLabel = tokenB === 'USDC' ? 'SoUSDC' : tokenB;
       const loading = isLoading;
       const reserveANum = stats ? parseFloat(stats.reserveXLM) : 0;
       const reserveBNum = stats ? parseFloat(stats.reserveUSDC) : 0;
       const priceA = priceForSymbol(tokenA);
       const priceB = priceForSymbol(tokenB);
       const tvlTokenA = stats ? `${fmtNum(reserveANum)} ${tokenA}` : (loading ? '...' : '0');
-      const tvlTokenB = stats ? `${fmtNum(reserveBNum)} ${tokenB}` : (loading ? '...' : '0');
+      const tvlTokenB = stats ? `${fmtNum(reserveBNum)} ${tokenBLabel}` : (loading ? '...' : '0');
       const shares = stats ? `${fmtNum(parseFloat(stats.totalShares))} LP` : (loading ? '...' : '0');
       const fee = stats ? stats.feeFraction : (loading ? '...' : `${(pool.feeFraction / 100).toFixed(2)}%`);
       // Soroswap's public testnet API doesn't expose APY/volume yet, so

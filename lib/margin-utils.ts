@@ -1507,6 +1507,41 @@ export class MarginAccountService {
     );
   }
 
+  /**
+   * Decodes a failed `getTransaction` result's diagnostic events into a
+   * human-readable string (e.g. `scecExceededLimit: operation byte-write
+   * resources exceeds amount specified (1920, 1880)`). The resource
+   * footprint `prepareTransaction` computes from simulation can go stale by
+   * the time the signed tx actually executes — e.g. a same-asset repay whose
+   * amount exactly clears the debt can tip into a bigger "remove the ledger
+   * entry" write path if a little more interest accrues in the gap while the
+   * wallet popup is open — and the host then rejects the tx with
+   * scecExceededLimit instead of a business-logic error. Callers need this
+   * decoded text (not just `status: 'FAILED'`) to detect that case via
+   * {@link isFootprintRaceError} and retry with a fresh simulation.
+   */
+  private static describeFailedTx(finalResult: any): string {
+    try {
+      const events: any[] = finalResult?.diagnosticEventsXdr ?? [];
+      const reasons: string[] = [];
+      for (const ev of events) {
+        try {
+          const body = ev.event().body().v0();
+          const topics = body.topics().map((t: any) => StellarSdk.scValToNative(t));
+          if (!topics.includes('error')) continue;
+          const data = StellarSdk.scValToNative(body.data());
+          const errorCode = topics.find((t: any) => typeof t === 'object' && t?.value)?.value;
+          reasons.push([errorCode, ...(Array.isArray(data) ? data : [data])].filter(Boolean).join(': '));
+        } catch {
+          // Skip events that don't decode as a v0 diagnostic event.
+        }
+      }
+      return reasons.join('; ');
+    } catch {
+      return '';
+    }
+  }
+
   static async borrowTokens(
     marginAccountAddress: string,
     tokenSymbol: string,
@@ -2263,8 +2298,36 @@ export class MarginAccountService {
    *          (incl. tx hash) and surface 'repay'-context messages — an
    *          ArithDomain/u256_sub error typically means the amount edged just
    *          above the live debt.
+   *
+   * A repay amount that exactly clears an on-chain debt (a "repay 100%") is
+   * exposed to a real timing race: `prepareTransaction`'s resource footprint
+   * is sized against a simulation taken BEFORE the wallet-signing popup opens,
+   * but by the time the signed tx actually executes, a little more interest
+   * may have accrued — tipping the repay from "clears the debt" (a bigger
+   * remove-the-ledger-entry write) or vice versa, into a DIFFERENT storage
+   * write path than what was simulated. The host then rejects with
+   * `scecExceededLimit` ("operation byte-write resources exceeds amount
+   * specified") — confirmed live on a 2000 XLM same-asset full repay — even
+   * though the account plainly had enough spendable balance. Retrying with a
+   * fresh simulation (not resubmitting the same prepared tx) reliably fixes
+   * it, same as {@link borrowTokens}'s existing footprint-race retry.
    */
   static async repayLoan(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    repayAmountWad: string
+  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    const first = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
+    if (first.success || !this.isFootprintRaceError(first.error)) {
+      return first;
+    }
+
+    console.warn('⚠️ Repay hit a footprint/ledger-lag race; retrying once after a short delay.');
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    return this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
+  }
+
+  private static async repayLoanAttempt(
     marginAccountAddress: string,
     tokenSymbol: string,
     repayAmountWad: string
@@ -2416,14 +2479,19 @@ export class MarginAccountService {
         } else {
           // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
           // real on-chain reason is inspectable instead of a generic "failed".
+          const reason = this.describeFailedTx(finalResult);
           console.error('❌ Repay tx did not succeed:', {
             hash: result.hash,
             status: finalResult.status,
+            reason,
             result: JSON.stringify(finalResult, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)),
           });
           return {
             success: false,
-            error: `Repay failed on-chain (${finalResult.status}). Tx: ${result.hash}`
+            // `reason` (when decodable) carries the real diagnostic text —
+            // e.g. "scecExceededLimit: ..." — which isFootprintRaceError
+            // checks for in the retry wrapper above.
+            error: `Repay failed on-chain (${finalResult.status})${reason ? `: ${reason}` : ''}. Tx: ${result.hash}`
           };
         }
       } else if (result.status === 'ERROR') {

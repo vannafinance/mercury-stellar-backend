@@ -148,7 +148,11 @@ const FarmHeaderStats = memo(function FarmHeaderStats({
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';
-  const ssTokenB = matchedSoroswapPool?.tokens[1] ?? 'USDC';
+  // This component only ever renders these as labels (no functional/key
+  // usage here) — "USDC" always means the Soroswap-specific SoUSDC SAC, so
+  // show that instead of the generic symbol the pool config carries.
+  const ssTokenBRaw = matchedSoroswapPool?.tokens[1] ?? 'USDC';
+  const ssTokenB = ssTokenBRaw === 'USDC' ? 'SoUSDC' : ssTokenBRaw;
 
   const items = useMemo(() => {
     if (isSoroswapEarly) {
@@ -241,7 +245,11 @@ export default function FarmDetailPage() {
   const mySSLpBalance = parseFloat(ssLpBalanceRaw ?? '0');
   const { events: ssEvents } = useSoroswapEvents(ssStats?.pairAddress, marginAccountAddress);
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';
+  // Raw pool-config symbol — keep using this (not the display label below)
+  // for buildFarmPoolKey so cached local-history keys stay stable.
   const ssTokenB = matchedSoroswapPool?.tokens[1] ?? 'USDC';
+  // Soroswap-specific display label for everywhere this renders as text.
+  const ssTokenBLabel = ssTokenB === 'USDC' ? 'SoUSDC' : ssTokenB;
 
   // Local farm tx log, read through a real query (not a plain useMemo) so a
   // completed add/remove-liquidity actually shows up without a page reload.
@@ -384,7 +392,11 @@ export default function FarmDetailPage() {
   const myLpBalance = parseFloat(lpBalance ?? '0');
 
   const poolTokenA = matchedPool?.tokens[0] ?? 'TokenA';
-  const poolTokenB = matchedPool?.tokens[1] ?? 'TokenB';
+  // No functional/key usage of poolTokenB in this file (aquariusPoolKey above
+  // reads matchedPool?.tokens[1] independently) — safe to show the
+  // Aquarius-specific display label directly.
+  const poolTokenBRaw = matchedPool?.tokens[1] ?? 'TokenB';
+  const poolTokenB = poolTokenBRaw === 'USDC' ? 'AqUSDC' : poolTokenBRaw;
 
   // Aquarius stats strip
   const aquariusStatsItems = useMemo(() => [
@@ -518,8 +530,8 @@ export default function FarmDetailPage() {
     },
     {
       id: "reserveUSDC",
-      name: `${ssTokenB} Reserve`,
-      amount: ssStatsLoading ? "..." : ssStats ? `${parseFloat(ssStats.reserveUSDC).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ssTokenB}` : "N/A",
+      name: `${ssTokenBLabel} Reserve`,
+      amount: ssStatsLoading ? "..." : ssStats ? `${parseFloat(ssStats.reserveUSDC).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ssTokenBLabel}` : "N/A",
     },
     {
       id: "fee",
@@ -531,7 +543,7 @@ export default function FarmDetailPage() {
       name: "Total LP Shares",
       amount: ssStatsLoading ? "..." : ssStats ? parseFloat(ssStats.totalShares).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "N/A",
     },
-  ], [ssStats, ssStatsLoading, ssTokenA, ssTokenB]);
+  ], [ssStats, ssStatsLoading, ssTokenA, ssTokenBLabel]);
 
   // Soroswap position history table
   const mergedSoroswapHistory = useMemo(() => {
@@ -590,9 +602,9 @@ export default function FarmDetailPage() {
     { label: "Pool", id: "pool" },
     { label: "LP Shares", id: "lp-shares" },
     { label: `${ssTokenA} Deposited`, id: "token-a" },
-    { label: `${ssTokenB} Deposited`, id: "token-b" },
+    { label: `${ssTokenBLabel} Deposited`, id: "token-b" },
     { label: "Fee Rate", id: "fee-rate" },
-  ], [ssTokenA, ssTokenB]);
+  ], [ssTokenA, ssTokenBLabel]);
 
   // Soroswap current position
   const soroswapCurrentPositionBody = useMemo(() => {
@@ -604,15 +616,15 @@ export default function FarmDetailPage() {
     return {
       rows: [{
         cell: [
-          { chain: ssTokenA, title: `${ssTokenA} / ${ssTokenB}`, tags: ['Soroswap', 'LP'] },
+          { chain: ssTokenA, title: `${ssTokenA} / ${ssTokenBLabel}`, tags: ['Soroswap', 'LP'] },
           { title: `${mySSLpBalance.toFixed(2)} LP` },
           { title: `${xlmShare} ${ssTokenA}` },
-          { title: `${usdcShare} ${ssTokenB}` },
+          { title: `${usdcShare} ${ssTokenBLabel}` },
           { title: ssStats?.feeFraction ?? '—' },
         ],
       }],
     };
-  }, [mySSLpBalance, ssStats, ssTokenA, ssTokenB]);
+  }, [mySSLpBalance, ssStats, ssTokenA, ssTokenBLabel]);
 
   const blendChartData = useMemo(() => {
     const history = mergedBlendHistory.map((ev) => ({
@@ -706,11 +718,11 @@ export default function FarmDetailPage() {
   // Soroswap analytics cards
   const soroswapAnalyticsItems = useMemo(() => [
     { heading: `${ssTokenA} Reserve`, mainInfo: `${parseFloat(ssStats?.reserveXLM ?? '0').toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ssTokenA}`, subInfo: `Current ${ssTokenA} reserve in pool`, tooltip: `Total ${ssTokenA} held by the Soroswap pool` },
-    { heading: `${ssTokenB} Reserve`, mainInfo: `${parseFloat(ssStats?.reserveUSDC ?? '0').toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ssTokenB}`, subInfo: `Current ${ssTokenB} reserve in pool`, tooltip: `Total ${ssTokenB} held by the Soroswap pool` },
+    { heading: `${ssTokenBLabel} Reserve`, mainInfo: `${parseFloat(ssStats?.reserveUSDC ?? '0').toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ssTokenBLabel}`, subInfo: `Current ${ssTokenBLabel} reserve in pool`, tooltip: `Total ${ssTokenBLabel} held by the Soroswap pool` },
     { heading: 'Fee Rate', mainInfo: ssStats?.feeFraction ?? '—', subInfo: 'Swap fee per trade', tooltip: 'Fee split between LPs' },
     { heading: 'Total LP Shares', mainInfo: parseFloat(ssStats?.totalShares ?? '0').toLocaleString(undefined, { maximumFractionDigits: 2 }), subInfo: 'Total outstanding LP tokens', tooltip: 'Sum of all LP shares minted' },
     { heading: 'Your LP Balance', mainInfo: mySSLpBalance.toFixed(2), subInfo: 'Your margin account LP shares', tooltip: 'LP tokens held by your margin account' },
-  ], [ssStats, mySSLpBalance, ssTokenA, ssTokenB]);
+  ], [ssStats, mySSLpBalance, ssTokenA, ssTokenBLabel]);
 
   const findRowFromId = useCallback((searchId: string) => {
     for (const row of singleAssetTableBody.rows) {
@@ -725,7 +737,7 @@ export default function FarmDetailPage() {
       if (pool.id === searchId.toLowerCase()) {
         const row = {
           cell: [
-            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Soroswap', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
+            { chain: pool.tokens[0], titles: pool.tokens.map((t) => t === 'USDC' ? 'SoUSDC' : t), tags: ['Soroswap', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
             { title: 'Soroswap' },
           ],
         };
@@ -738,7 +750,7 @@ export default function FarmDetailPage() {
       if (pool.id === searchId.toLowerCase() || poolId === searchId.toLowerCase()) {
         const row = {
           cell: [
-            { chain: pool.tokens[0], titles: pool.tokens, tags: ['Aquarius', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
+            { chain: pool.tokens[0], titles: pool.tokens.map((t) => t === 'USDC' ? 'AqUSDC' : t), tags: ['Aquarius', (pool.feeFraction / 100).toFixed(2) + '%', 'Testnet'] },
             { title: 'Aquarius' },
           ],
         };

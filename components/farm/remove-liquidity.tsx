@@ -85,6 +85,9 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
     : (urlMatchedSoroswapPool?.tokens ?? urlMatchedAquariusPool?.tokens ?? ["XLM", "USDC"]);
   const tokenA = poolTokens[0] ?? "XLM";
   const tokenB = poolTokens[1] ?? "USDC";
+  // Display-only — every balance fetch, reserve lookup, and the actual
+  // removeLiquidity() call below MUST keep using the raw tokenB, not this.
+  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "AqUSDC" : "SoUSDC") : tokenB;
 
   // Resolve which actual on-chain pool this row is (order-insensitive on
   // tokens) — LP-balance reads and the removeLiquidity call MUST use this
@@ -406,7 +409,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       if (txStatus === "loading") return "Removing Liquidity...";
       if (!isInputValid) return "Enter Amount";
       if (isOverBalance) return "Insufficient LP Balance";
-      return `Remove ${tokenA}/${tokenB} (${dexName})`;
+      return `Remove ${tokenA}/${tokenBLabel} (${dexName})`;
     };
 
     return (
@@ -421,7 +424,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
           </span>
           <div className="flex items-center gap-[6px]">
             <Image src={iconPaths[tokenA] ?? "/icons/stellar.svg"} alt={tokenA} width={16} height={16} />
-            <Image src={iconPaths[tokenB] ?? "/icons/stellar.svg"} alt={tokenB} width={16} height={16} />
+            <Image src={iconPaths[tokenB] ?? "/icons/stellar.svg"} alt={tokenBLabel} width={16} height={16} />
             <span className={`text-[13px] font-semibold ${
               isDark ? "text-white" : "text-[#111111]"
             }`}>
@@ -512,6 +515,9 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
   }
 
   const token = selectedToken;
+  // Display-only — selectedToken itself stays the raw "XLM"/"USDC" used by
+  // every BlendService call above.
+  const tokenLabel = token === "USDC" ? "BLUSDC" : token;
   const totalLiquidity = parseFloat(blendBalance);
 
   const getButtonText = () => {
@@ -548,8 +554,8 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
               onClick={() => setTokenDropdownOpen(!tokenDropdownOpen)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full cursor-pointer transition-all ${isDark ? "bg-[#1A1A1A] border border-[#2A2A2A] hover:bg-[#222]" : "bg-[#F7F7F7] border border-[#E8E8E8] hover:bg-[#F0F0F0]"}`}
             >
-              <Image src={iconPath} alt={token} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
-              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{token}</span>
+              <Image src={iconPath} alt={tokenLabel} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
+              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{tokenLabel}</span>
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${isDark ? "text-[#AAA]" : "text-[#555]"} ${tokenDropdownOpen ? "rotate-180" : ""}`}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
               </svg>
@@ -560,15 +566,18 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
                   initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}
                   className={`absolute right-0 top-full mt-1 z-50 rounded-xl border shadow-lg overflow-hidden min-w-[120px] ${isDark ? "bg-[#222222] border-[#333333]" : "bg-white border-[#E8E8E8]"}`}
                 >
-                  {SUPPORTED_TOKENS.map((t) => (
+                  {SUPPORTED_TOKENS.map((t) => {
+                    const tLabel = t === "USDC" ? "BLUSDC" : t;
+                    return (
                     <button key={t} type="button"
                       onClick={() => { handleTokenSelect(t); setTokenDropdownOpen(false); }}
                       className={`flex items-center gap-2 w-full px-4 py-2.5 text-[13px] font-medium transition-colors ${selectedToken === t ? "text-[#703AE6]" : isDark ? "text-white hover:bg-[#333]" : "text-[#111] hover:bg-[#F5F5F5]"}`}
                     >
-                      <Image src={iconPaths[t] ?? "/coins/xlmbg.png"} alt={t} width={16} height={16} className="rounded-full" />
-                      {t}
+                      <Image src={iconPaths[t] ?? "/coins/xlmbg.png"} alt={tLabel} width={16} height={16} className="rounded-full" />
+                      {tLabel}
                     </button>
-                  ))}
+                    );
+                  })}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -598,7 +607,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
             ))}
           </div>
           <span className={`text-[11px] font-medium shrink-0 ${isDark ? "text-[#555555]" : "text-[#AAAAAA]"}`}>
-            Available: {loadingBalance ? "..." : totalLiquidity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {token}
+            Available: {loadingBalance ? "..." : totalLiquidity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {tokenLabel}
           </span>
         </div>
       </div>

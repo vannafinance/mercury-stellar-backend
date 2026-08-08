@@ -477,6 +477,57 @@ export class ContractService {
   }
 
   /**
+   * Read the REAL per-second borrow interest rate straight from the deployed
+   * `RateModelContract.get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` —
+   * the exact same curve `lending-pool`'s own `get_rate_factor` calls to
+   * accrue interest on-chain. This replaced a frontend-only synthetic curve
+   * (`lib/utils/borrow-rate.ts`'s `computeBorrowApr`) that had no relationship
+   * to the real contract math and could show Supply APY above Borrow APY —
+   * mathematically impossible under the real curve, since supply is always a
+   * fraction (utilization-scaled) of borrow.
+   *
+   * @param liquidityWad - Pool's available liquidity, WAD-scaled (1e18).
+   * @param borrowsWad - Pool's outstanding borrows, WAD-scaled (1e18).
+   * @returns The per-second rate, WAD-scaled, as a bigint; `null` on error.
+   */
+  static async getBorrowRatePerSecWad(liquidityWad: bigint, borrowsWad: bigint): Promise<bigint | null> {
+    try {
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.RATE_MODEL);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'get_borrow_rate_per_sec',
+            StellarSdk.nativeToScVal(liquidityWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(borrowsWad, { type: 'u256' }),
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const ratePerSecWad = StellarSdk.scValToNative(result.retval);
+          return BigInt(ratePerSecWad);
+        }
+      }
+      return null;
+    } catch (error: any) {
+      console.error('Error fetching borrow rate per sec:', error);
+      return null;
+    }
+  }
+
+  /**
    * Read a pool's available (un-borrowed) liquidity via
    * `get_total_liquidity_in_pool`, converting the returned WAD to a decimal.
    * Simulated from a throwaway random source account (no signer needed).

@@ -46,6 +46,7 @@ const STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.AQUARIUS_USDC,
     symbol: "USDC",
+    displaySymbol: "AqUSDC",
     name: "USD Coin (Aquarius)",
     logo: "/coins/usdc.svg",
     decimals: 7,
@@ -70,6 +71,7 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
   {
     id: CONTRACT_ADDRESSES.SOROSWAP_USDC,
     symbol: "USDC",
+    displaySymbol: "SoUSDC",
     name: "USD Coin",
     logo: "/icons/usdc-icon.svg",
     decimals: 7,
@@ -77,6 +79,18 @@ const SOROSWAP_STELLAR_TOKENS: Token[] = [
     isVerified: true,
   },
 ];
+
+// Presentational-only view of a token with `symbol` swapped for its
+// `displaySymbol` (e.g. "AqUSDC"/"SoUSDC" instead of the functional "USDC"
+// every AquariusService/SoroswapService call, price lookup, and partner map
+// in this file keys off). Only ever pass the result to display components —
+// state (tokenIn/tokenOut) and service calls must keep using the real token.
+function toDisplayToken(t: Token | null): Token | null {
+  return t ? { ...t, symbol: t.displaySymbol ?? t.symbol } : null;
+}
+function displaySymbolOf(t: Token | null | undefined): string {
+  return t ? t.displaySymbol ?? t.symbol : "";
+}
 
 // Format a swap amount with adaptive precision (up to 7 decimals, trim trailing zeros).
 // Matches how Aquarius/Soroswap display amounts (e.g. 0.6960407 instead of 0.70).
@@ -239,8 +253,8 @@ export const SwapCard = ({
     const rate = rateInverted
       ? tokenOutPrice / tokenInPrice
       : tokenInPrice / tokenOutPrice;
-    const fromSymbol = rateInverted ? tokenOut.symbol : tokenIn.symbol;
-    const toSymbol = rateInverted ? tokenIn.symbol : tokenOut.symbol;
+    const fromSymbol = rateInverted ? displaySymbolOf(tokenOut) : displaySymbolOf(tokenIn);
+    const toSymbol = rateInverted ? displaySymbolOf(tokenIn) : displaySymbolOf(tokenOut);
     return `1 ${fromSymbol} = ${formatRate(rate)} ${toSymbol}`;
   }, [tokenIn, tokenOut, tokenInPrice, tokenOutPrice, rateInverted]);
 
@@ -489,7 +503,7 @@ export const SwapCard = ({
         const outNum = parseFloat(quote);
         setAmountOut(outNum.toFixed(2));
         setExchangeRate(
-          `1 ${tokenIn.symbol} = ${(outNum / parseFloat(amountIn)).toFixed(2)} ${tokenOut?.symbol ?? ""}`,
+          `1 ${displaySymbolOf(tokenIn)} = ${(outNum / parseFloat(amountIn)).toFixed(2)} ${displaySymbolOf(tokenOut)}`,
         );
       } else {
         setAmountOut("");
@@ -520,7 +534,7 @@ export const SwapCard = ({
           const outNum = parseFloat(quote);
           setAmountOut(outNum.toFixed(2));
           setExchangeRate(
-            `1 ${tokenIn.symbol} = ${(outNum / parseFloat(amountIn)).toFixed(2)} ${tokenOut?.symbol ?? ""}`,
+            `1 ${displaySymbolOf(tokenIn)} = ${(outNum / parseFloat(amountIn)).toFixed(2)} ${displaySymbolOf(tokenOut)}`,
           );
         } else {
           setAmountOut("");
@@ -555,7 +569,12 @@ export const SwapCard = ({
     setAmountOut(amountIn);
   }, [tokenIn, tokenOut, amountIn, amountOut]);
 
-  const handleTokenSelect = useCallback((token: Token) => {
+  const handleTokenSelect = useCallback((displayToken: Token) => {
+    // The modal renders display-only tokens (symbol swapped to "AqUSDC"/
+    // "SoUSDC"), so recover the real functional token by id before touching
+    // state — everything downstream (service calls, partner maps) keys off
+    // the real "XLM"/"USDC" symbol.
+    const token = tokenList.find((t) => t.id === displayToken.id) ?? displayToken;
     // Snap the OTHER side to a real on-chain partner for the newly-picked
     // token, rather than blindly swapping the two prior selections — both
     // DEXes currently support a single pair (XLM<->USDC).
@@ -636,8 +655,10 @@ export const SwapCard = ({
       return {
         ...result,
         dexProtocol: (isAquarius ? "aquarius" : "soroswap") as "aquarius" | "soroswap",
-        tokenInSymbol: tokenIn!.symbol,
-        tokenOutSymbol: tokenOut!.symbol,
+        // Display-only symbol (AqUSDC/SoUSDC) — this feeds spot-history, a
+        // purely presentational record, not any further on-chain call.
+        tokenInSymbol: displaySymbolOf(tokenIn),
+        tokenOutSymbol: displaySymbolOf(tokenOut),
         amountInUsed: amountInToUse,
         amountOutAtSubmit: amountOut,
       };
@@ -695,7 +716,7 @@ export const SwapCard = ({
   }, [buttonState, isAquarius, isSoroswap, swapMode, userAddress, marginAccountAddress, tokenIn, swapMutation]);
 
   const minReceived = amountOut && slippage
-    ? `${(parseFloat(amountOut) * (1 - parseFloat(slippageMode === "auto" ? "0.5" : slippage) / 100)).toFixed(2)} ${tokenOut?.symbol ?? ""}`
+    ? `${(parseFloat(amountOut) * (1 - parseFloat(slippageMode === "auto" ? "0.5" : slippage) / 100)).toFixed(2)} ${displaySymbolOf(tokenOut)}`
     : null;
 
   return (
@@ -832,7 +853,7 @@ export const SwapCard = ({
           {/* From Token Input */}
           <SwapInput
             label="You Pay"
-            token={tokenIn}
+            token={toDisplayToken(tokenIn)}
             amount={amountIn}
             amountUsd={amountInUsd}
             balance={tokenInBalance}
@@ -857,7 +878,7 @@ export const SwapCard = ({
           {/* To Token Input */}
           <SwapInput
             label="You Receive"
-            token={tokenOut}
+            token={toDisplayToken(tokenOut)}
             amount={amountOut}
             amountUsd={amountOutUsd}
             balance={tokenOutBalance}
@@ -920,7 +941,7 @@ export const SwapCard = ({
             <SwapButton
               state={buttonState}
               onClick={handleButtonClick}
-              tokenSymbol={tokenIn?.symbol}
+              tokenSymbol={displaySymbolOf(tokenIn)}
               isLoading={isActionLoading}
             />
           </div>
@@ -944,8 +965,8 @@ export const SwapCard = ({
         isOpen={tokenModalTarget !== null}
         onClose={() => setTokenModalTarget(null)}
         onSelect={handleTokenSelect}
-        tokens={modalTokens}
-        popularTokens={modalTokens.slice(0, 5)}
+        tokens={modalTokens.map(toDisplayToken).filter((t): t is Token => t !== null)}
+        popularTokens={modalTokens.slice(0, 5).map(toDisplayToken).filter((t): t is Token => t !== null)}
         balances={tokenListBalances}
       />
     </>
