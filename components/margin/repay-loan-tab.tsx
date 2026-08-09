@@ -296,13 +296,23 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
       const fullAmount = parseFloat(currentDebtWad) / 1e18;
       const safeFullAmount = Number.isFinite(fullAmount) ? fullAmount : 0;
+      // 100% should fill in what's ACTUALLY repayable right now, not the raw
+      // on-chain debt — the account can only repay what it holds spendable
+      // (the rest is LP/Farm-locked, see the "Max amount you can repay right
+      // now" hint below). Without this cap, 100% showed 162.57 while the hint
+      // said only 112.57 was possible — the mutation silently capped it at
+      // submit time anyway, so the displayed amount should match up front.
+      const maxRepayable =
+        spendableInMargin != null && spendableInMargin < safeFullAmount
+          ? spendableInMargin
+          : safeFullAmount;
       // Sub-cent accrued-interest residue (e.g. 0.0000024 BLUSDC left after an
       // earlier repay capped to the account's spendable balance) is dust the
       // user can't meaningfully act on — same $0.01 threshold the "Net
       // Outstanding Amount to Repay" stat tile already uses to show "0", so
       // 100% doesn't fill in a confusing non-zero amount the stat disagrees with.
-      const usdEquiv = selectedTokenPrice > 0 ? safeFullAmount * selectedTokenPrice : safeFullAmount;
-      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(safeFullAmount);
+      const usdEquiv = selectedTokenPrice > 0 ? maxRepayable * selectedTokenPrice : maxRepayable;
+      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(maxRepayable);
       setRepayInput(amountToInputString(clamped));
       return;
     }
