@@ -32,7 +32,16 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
-import { TxStatusModal, INITIAL_TX_MODAL_STATE, type TxModalState } from "@/components/ui/tx-status-modal";
+// Live step-by-step progress for the WB deposit(+borrow) flow — a multi-leg
+// operation (deposit, then borrow, then a second borrow for Dual Borrow)
+// shows which step is running (and which one failed) via a single
+// bottom-left toast that updates in place, instead of a static
+// "Processing..." button with no visibility into a silently-dropped leg.
+const LEVERAGE_TOAST_ID = "leverage-assets-tx";
+const showStep = (message: string) => toast.loading(message, { id: LEVERAGE_TOAST_ID });
+const showStepSuccess = (message: string, txHash?: string) =>
+  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: LEVERAGE_TOAST_ID });
+const showStepError = (message: string) => toast.error(message, { id: LEVERAGE_TOAST_ID });
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -96,12 +105,6 @@ export const LeverageAssetsTab = () => {
   
   // Loading states
   const [isProcessing, setIsProcessing] = useState(false);
-  // Live step-by-step progress for the WB deposit(+borrow) flow — same pattern
-  // as the Lite one-click strategy's modal, so a multi-leg operation (deposit,
-  // then borrow, then a second borrow for Dual Borrow) shows which step is
-  // running and which one failed, instead of a static "Processing..." button
-  // that gave no visibility into a silently-dropped second leg.
-  const [txModal, setTxModal] = useState<TxModalState>(INITIAL_TX_MODAL_STATE);
 
   // Borrow token selected in BorrowBox (exposed via callback)
   const [borrowToken, setBorrowToken] = useState<string>(DropdownOptions[0]);
@@ -473,10 +476,7 @@ export const LeverageAssetsTab = () => {
     },
     onMutate: (params) => {
       setIsProcessing(true);
-      setTxModal({
-        open: true, status: "pending", title: "Borrowing",
-        message: `Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}...`,
-      });
+      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}...`);
     },
     onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
       if (hash && marginAccountAddress) {
@@ -488,12 +488,7 @@ export const LeverageAssetsTab = () => {
           hash,
         });
       }
-      toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
-      setTxModal({
-        open: true, status: "success", title: "Borrow Successful",
-        message: `Borrowed ${borrowAmountTokens.toFixed(2)} ${normalizedBorrowToken} against your margin collateral.`,
-        txHash: hash,
-      });
+      showStepSuccess(`Borrowed ${borrowAmountTokens.toFixed(2)} ${normalizedBorrowToken} against your margin collateral.`, hash);
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
       // Force past the 3s throttle so the new debt shows immediately — the tx is
@@ -511,8 +506,7 @@ export const LeverageAssetsTab = () => {
     },
     onError: (error) => {
       const msg = normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.');
-      toast.error(msg);
-      setTxModal({ open: true, status: "error", title: "Borrow Failed", message: msg });
+      showStepError(msg);
     },
     onSettled: () => {
       setIsProcessing(false);
@@ -618,14 +612,12 @@ export const LeverageAssetsTab = () => {
             }))
             .filter((b) => b.amount > 0);
 
-          setTxModal({
-            open: true, status: "pending", title: "Borrowing",
-            message: `Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}...`,
-          });
+          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}...`);
 
           let lastHash = "";
-          for (const item of items) {
-            setTxModal((p) => ({ ...p, message: `Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}...` }));
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}...`);
             const result = await borrowTokens(userAddress, item.token, item.amount);
             if (!result.success) {
               // Build the "first leg already landed" context BEFORE normalizing —
@@ -637,11 +629,7 @@ export const LeverageAssetsTab = () => {
                 ? `First asset borrowed. Second borrow (${item.displayAsset}) failed: ${result.error ?? "Unknown error"}`
                 : `Borrow (${item.displayAsset}) failed: ${result.error ?? "Unknown error"}`;
               const errorMsg = normalizeContractError(rawWithContext, 'Borrow failed. Please try again.');
-              toast.error(errorMsg);
-              setTxModal({
-                open: true, status: "error", title: "Borrow Failed",
-                message: errorMsg, txHash: lastHash || undefined,
-              });
+              showStepError(errorMsg);
               try {
                 await refreshBalances(userAddress);
               } catch (refreshErr) {
@@ -663,12 +651,10 @@ export const LeverageAssetsTab = () => {
             });
           }
 
-          toast.success('Dual borrow successful! Tx: ' + (lastHash ? lastHash.slice(0, 16) + '…' : ''));
-          setTxModal({
-            open: true, status: "success", title: "Borrow Successful",
-            message: `Borrowed ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")} against your margin collateral.`,
-            txHash: lastHash || undefined,
-          });
+          showStepSuccess(
+            `Borrowed ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")} against your margin collateral.`,
+            lastHash || undefined
+          );
           resetForm();
           setIsProcessing(false);
           qc.invalidateQueries({ queryKey: ['margin'] });
@@ -832,14 +818,11 @@ export const LeverageAssetsTab = () => {
         const depositHashes: string[] = [];
         let borrowHash = "";
 
-        setTxModal({
-          open: true,
-          status: "pending",
-          title: multiplier > 1 ? "Depositing & Borrowing" : "Depositing Collateral",
-          message: canUseAtomic
-            ? `Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing..." : "..."}`
-            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}...`,
-        });
+        showStep(
+          canUseAtomic
+            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing..." : "..."}`
+            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}...`
+        );
 
         if (canUseAtomic) {
           const item = wbDeposits[0];
@@ -901,7 +884,7 @@ export const LeverageAssetsTab = () => {
               const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
               const amt1 = parseFloat(b1.assetData.amount) || 0;
               if (amt1 > 0) {
-                setTxModal((p) => ({ ...p, message: `Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset} (second asset)...` }));
+                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}...`);
                 const borrow2Result = await borrowTokens(userAddress, sym1, amt1);
                 if (borrow2Result.success) {
                   borrowHash = borrow2Result.hash ?? borrowHash;
@@ -923,11 +906,7 @@ export const LeverageAssetsTab = () => {
                   const secondLegErrorMsg = normalizeDepositCollateralError(
                     `First asset borrowed. Second borrow (${b1.assetData.asset}) failed: ${borrow2Result.error ?? "Unknown error"}`
                   );
-                  toast.error(secondLegErrorMsg);
-                  setTxModal({
-                    open: true, status: "error", title: "Second Borrow Failed",
-                    message: secondLegErrorMsg, txHash: borrowHash || undefined,
-                  });
+                  showStepError(secondLegErrorMsg);
                   try {
                     await refreshBalances(userAddress);
                   } catch (refreshErr) {
@@ -953,14 +932,12 @@ export const LeverageAssetsTab = () => {
               useSplitFlow = true;
             } else if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
               const msg = `Contract configuration error: ${atomicResult.error}`;
-              toast.error(msg);
-              setTxModal({ open: true, status: "error", title: "Deposit Failed", message: msg });
+              showStepError(msg);
               setIsProcessing(false);
               return;
             } else {
               const msg = normalizeDepositCollateralError(atomicResult.error);
-              toast.error(msg);
-              setTxModal({ open: true, status: "error", title: "Deposit Failed", message: msg });
+              showStepError(msg);
               setIsProcessing(false);
               return;
             }
@@ -970,8 +947,26 @@ export const LeverageAssetsTab = () => {
         if (useSplitFlow) {
           // Per-token deposit, then a separate borrow. Used for multi-collateral and
           // as the fallback when the atomic deposit+borrow exceeds the Soroban budget.
+          const borrowsToExecute = multiplier > 1
+            ? (isDualBorrow
+                ? borrowState!.items
+                    .map((b) => ({
+                      token: normalizeContractTokenSymbol(b.assetData.asset),
+                      amount: parseFloat(b.assetData.amount) || 0,
+                    }))
+                    .filter((b) => b.amount > 0)
+                : (() => {
+                    const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                    const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
+                    return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
+                  })())
+            : [];
+          const totalSteps = wbDeposits.length + borrowsToExecute.length;
+          let stepNum = 0;
+
           for (const item of wbDeposits) {
-            setTxModal((p) => ({ ...p, message: `Depositing ${item.amount.toFixed(2)} ${item.asset}...` }));
+            stepNum += 1;
+            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}...`);
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
               marginAccountAddress!,
@@ -982,7 +977,7 @@ export const LeverageAssetsTab = () => {
               let depositErrorMsg: string;
               if (depositResult.error?.includes('not allowed as collateral') || depositResult.error?.includes('Max asset cap')) {
                 depositErrorMsg = `Contract configuration error: ${depositResult.error}`;
-                toast.error(depositErrorMsg);
+                showStepError(depositErrorMsg);
                 try {
                   const configResult = await setupContractConfiguration();
                   if (configResult.success) {
@@ -995,12 +990,8 @@ export const LeverageAssetsTab = () => {
                 }
               } else {
                 depositErrorMsg = normalizeDepositCollateralError(depositResult.error);
-                toast.error(depositErrorMsg);
+                showStepError(depositErrorMsg);
               }
-              setTxModal({
-                open: true, status: "error", title: `Deposit Failed (${item.asset})`,
-                message: depositErrorMsg, txHash: depositHashes[depositHashes.length - 1] || undefined,
-              });
               setIsProcessing(false);
               return;
             }
@@ -1016,33 +1007,16 @@ export const LeverageAssetsTab = () => {
           }
 
           if (multiplier > 1) {
-            // Dual borrow: execute each item separately. Single borrow: compute from leverage.
-            const borrowsToExecute = isDualBorrow
-              ? borrowState!.items
-                  .map((b) => ({
-                    token: normalizeContractTokenSymbol(b.assetData.asset),
-                    amount: parseFloat(b.assetData.amount) || 0,
-                  }))
-                  .filter((b) => b.amount > 0)
-              : (() => {
-                  const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-                  const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
-                  return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
-                })();
-
             for (const bItem of borrowsToExecute) {
-              setTxModal((p) => ({ ...p, message: `Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}...` }));
+              stepNum += 1;
+              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}...`);
               const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
               if (!borrowResult.success) {
                 console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
                 const borrowErrorMsg = normalizeDepositCollateralError(
                   `Deposits were successful. Borrow ${bItem.token} failed: ${borrowResult.error || "Unknown borrow error"}`
                 );
-                toast.error(borrowErrorMsg);
-                setTxModal({
-                  open: true, status: "error", title: `Borrow Failed (${bItem.token})`,
-                  message: borrowErrorMsg, txHash: borrowHash || depositHashes[depositHashes.length - 1] || undefined,
-                });
+                showStepError(borrowErrorMsg);
                 try {
                   await refreshBalances(userAddress);
                 } catch (refreshErr) {
@@ -1074,19 +1048,14 @@ export const LeverageAssetsTab = () => {
         // progressive set() updates the position/collateral within ~1-2s; any
         // refresh failure reconciles on the next ledger tick.
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
-        toast.success(
-          `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
-        );
-        setTxModal({
-          open: true, status: "success",
-          title: multiplier > 1 ? "Deposit & Borrow Successful" : "Deposit Successful",
-          message: isDualBorrow
+        showStepSuccess(
+          isDualBorrow
             ? "Deposited collateral and borrowed both assets successfully."
             : multiplier > 1
               ? "Deposited collateral and borrowed successfully."
               : "Collateral deposited successfully.",
-          txHash: txPreview || undefined,
-        });
+          txPreview || undefined
+        );
         resetForm();
         setIsProcessing(false);
 
@@ -1128,8 +1097,7 @@ export const LeverageAssetsTab = () => {
         console.error('❌ Error in deposit and borrow:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const friendlyMsg = normalizeDepositCollateralError(errorMessage);
-        toast.error(friendlyMsg);
-        setTxModal({ open: true, status: "error", title: "Transaction Failed", message: friendlyMsg });
+        showStepError(friendlyMsg);
       } finally {
         setIsProcessing(false);
       }
@@ -1164,7 +1132,6 @@ export const LeverageAssetsTab = () => {
 
   return (
     <>
-      <TxStatusModal state={txModal} onClose={() => setTxModal((p) => ({ ...p, open: false }))} />
       <motion.section
         className="w-full min-w-0 flex flex-col gap-2 pt-0"
         initial={{ opacity: 0 }}

@@ -36,6 +36,13 @@ export function AppToaster() {
         error: {
           iconTheme: { primary: "#FC5457", secondary: isDark ? "#1A1A1A" : "#ffffff" },
         },
+        // Loading toasts mark an in-flight step (e.g. "Step 1/2: ...") — they must
+        // stay up until the code explicitly transitions them to success/error via
+        // the same id, not auto-dismiss after the default 4s while the on-chain tx
+        // is still pending.
+        loading: {
+          duration: Infinity,
+        },
       }}
     />
   );

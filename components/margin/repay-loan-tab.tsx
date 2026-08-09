@@ -9,7 +9,6 @@ import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
 import { Dropdown } from "../ui/dropdown";
 import { Popup } from "@/components/ui/popup";
-import { InfoIcon } from "@/components/icons";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
@@ -24,7 +23,6 @@ import { useMutationToast } from "@/hooks/use-mutation-toast";
 import toast from "react-hot-toast";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
-import { TxStatusModal, INITIAL_TX_MODAL_STATE, type TxModalState } from "@/components/ui/tx-status-modal";
 
 /** Format a numeric amount for the editable input: clean string, no trailing
  *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
@@ -96,14 +94,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // the connected wallet's own balance in "Available Balance"). The gap
   // between this and netOutstandingAmountToPay is money the margin account
   // borrowed but no longer holds raw — usually because it's deployed into an
-  // Aquarius/Soroswap LP position, not (only) accrued interest. Surfaced via
-  // a tooltip on the "Net Outstanding" tile so a partial repay isn't a surprise.
+  // Aquarius/Soroswap LP position, not (only) accrued interest. Surfaces as
+  // the "Max amount you can repay right now" note under the repay input.
   const [spendableInMargin, setSpendableInMargin] = useState<number | null>(null);
-  const [showOutstandingTooltip, setShowOutstandingTooltip] = useState(false);
-  // Live progress modal — same pattern as the Lite one-click flow and the
-  // Leverage tab, so a repay's pending/success/error state is visible beyond
-  // just a toast and a "Processing..." button label.
-  const [txModal, setTxModal] = useState<TxModalState>(INITIAL_TX_MODAL_STATE);
   const [selectedRepayCurrency, setSelectedRepayCurrency] =
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
@@ -334,14 +327,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     // dropped it below the positions-table dust filter, removing the row before
     // anything confirmed. The position must reflect ONLY confirmed on-chain state:
     // onSuccess refreshes from chain, and a cancel now leaves the UI untouched.
-    onMutate: () => {
-      setTxModal({
-        open: true,
-        status: "pending",
-        title: "Repaying Loan",
-        message: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}...`,
-      });
-    },
     mutationFn: async () => {
       if (!marginAccount || repayAmount <= 0) {
         throw new Error('Please enter a valid repay amount');
@@ -397,7 +382,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
       return { hash: result.hash, finalRepayWad, cappedToBalance };
     },
-    onSuccess: async ({ hash, finalRepayWad, cappedToBalance }) => {
+    onSuccess: async ({ hash, finalRepayWad }) => {
       if (hash) {
         appendMarginHistory({
           marginAccountAddress: marginAccount,
@@ -407,21 +392,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           hash,
         });
       }
-      if (cappedToBalance) {
-        // Repaid everything the account held right now. The tooltip on "Net
-        // Outstanding Amount to Repay" explains why (usually LP-locked value,
-        // not just interest) — keep this toast itself short and factual.
-        toast(`Repaid the max amount you could: ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`);
-      }
-      setTxModal({
-        open: true,
-        status: "success",
-        title: "Repayment Successful",
-        message: cappedToBalance
-          ? `Repaid the max amount available: ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`
-          : `Repaid ${formatTokenAmount(parseFloat(wadToFixed7(finalRepayWad)))} ${selectedRepayCurrency}.`,
-        txHash: hash || undefined,
-      });
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
       // can transiently throw when Freighter's getAddress returns undefined
@@ -440,20 +410,13 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
     },
-    onError: (error: Error) => {
-      setTxModal({
-        open: true,
-        status: "error",
-        title: "Repayment Failed",
-        message: normalizeContractError(error.message),
-      });
-    },
     onSettled: () => {
       setIsPayNowPopupOpen(false);
     },
   });
 
   useMutationToast(repayMutation, {
+    loading: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}...`,
     success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
     error: (e) => normalizeContractError(e.message),
   });
@@ -472,8 +435,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const isInputEmpty = repayAmount === 0 || repayAmount === null || repayAmount === undefined;
 
   return (
-    <>
-    <TxStatusModal state={txModal} onClose={() => setTxModal((p) => ({ ...p, open: false }))} />
     <motion.section
       className="w-full flex flex-col gap-6 pt-8"
       initial={{ opacity: 0 }}
@@ -513,39 +474,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                 {key === "netOutstandingAmountToPay"
                   ? "Net Outstanding Amount to Repay"
                   : "Available Balance"}
-                {key === "netOutstandingAmountToPay" && (
-                  <span
-                    className="relative flex items-center"
-                    onMouseEnter={() => setShowOutstandingTooltip(true)}
-                    onMouseLeave={() => setShowOutstandingTooltip(false)}
-                  >
-                    <InfoIcon stroke={isDark ? "#A0A0A0" : "#777777"} />
-                    {showOutstandingTooltip && (
-                      <div
-                        className={`absolute bottom-[20px] left-0 w-[240px] px-3 py-2 rounded-[8px] text-[12px] leading-[1.5] font-medium shadow-md border z-50 pointer-events-none flex flex-col gap-1 ${
-                          isDark ? "bg-[#2a2a2a] border-[#3a3a3a] text-[#ccc]" : "bg-white border-[#E8E8E8] text-[#374151]"
-                        }`}
-                      >
-                        <span>This is the full on-chain debt. What you can actually repay right now is capped by what&apos;s spendable in the margin account:</span>
-                        <span className="flex justify-between gap-2">
-                          <span>Spendable in margin account</span>
-                          <span className="font-semibold">
-                            {spendableInMargin != null ? formatTokenAmount(spendableInMargin) : "…"} {selectedRepayCurrency}
-                          </span>
-                        </span>
-                        {spendableInMargin != null && spendableInMargin < repayStats.netOutstandingAmountToPay && (
-                          <span className="flex justify-between gap-2">
-                            <span>Locked in LP/Farm + fees</span>
-                            <span className="font-semibold">
-                              {formatTokenAmount(Math.max(0, repayStats.netOutstandingAmountToPay - spendableInMargin))} {selectedRepayCurrency}
-                            </span>
-                          </span>
-                        )}
-                        <span className="opacity-80">Remove liquidity from that position first to free it up for repay.</span>
-                      </div>
-                    )}
-                  </span>
-                )}
               </span>
               {(() => {
                 const { token, usd } = formatStatValue(value, key);
@@ -761,7 +689,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       </AnimatePresence>
 
     </motion.section>
-    </>
   );
 };
 

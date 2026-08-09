@@ -129,11 +129,12 @@ describe("executeOneClickStrategy — leveraged Aquarius LP pairs at the live po
     const impliedRatio = usdcBorrowed / (collateralAmount + xlmBorrowed);
     expect(impliedRatio).toBeCloseTo(poolRatio, 5);
 
-    // AddLiquidity gets the net (post-origination-fee) amounts for both legs,
-    // still on-ratio — not the raw 10 XLM + 1.62 USDC mismatch.
+    // AddLiquidity gets the (WAD-rounding-buffered, no-fee) amounts for both
+    // legs, still on-ratio — not the raw 10 XLM + 1.62 USDC mismatch. Origination
+    // fee is 0% now, so this buffer is just under 1.0 (rounding only).
     const [, , , , xlmAmt, usdcAmt] = mocks.aquariusAddLiquidity.mock.calls[0];
-    expect(xlmAmt).toBeCloseTo(collateralAmount + xlmBorrowed * 0.9965, 3);
-    expect(usdcAmt).toBeCloseTo(usdcBorrowed * 0.9965, 4);
+    expect(xlmAmt).toBeCloseTo(collateralAmount + xlmBorrowed * 0.9999, 3);
+    expect(usdcAmt).toBeCloseTo(usdcBorrowed * 0.9999, 4);
     expect(usdcAmt).toBeLessThan(1.62);
   });
 

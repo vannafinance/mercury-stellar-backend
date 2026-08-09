@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Image from "next/image";
 import { motion } from "framer-motion";
+import toast from "react-hot-toast";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
-import { Modal } from "@/components/ui/modal";
 import { iconPaths } from "@/lib/constants";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
@@ -17,6 +17,12 @@ import { applyLiteExit } from "@/lib/lite-positions";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+
+const CLOSE_POSITION_TOAST_ID = "close-position-tx";
+const showStep = (message: string) => toast.loading(message, { id: CLOSE_POSITION_TOAST_ID });
+const showStepSuccess = (message: string, txHash?: string) =>
+  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: CLOSE_POSITION_TOAST_ID });
+const showStepError = (message: string) => toast.error(message, { id: CLOSE_POSITION_TOAST_ID });
 
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";
@@ -129,13 +135,6 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
   const [exitPct, setExitPct] = useState<number>(100);
-  const [txModal, setTxModal] = useState<{
-    open: boolean;
-    status: "pending" | "success" | "error";
-    title: string;
-    message: string;
-    txHash?: string;
-  }>({ open: false, status: "pending", title: "", message: "" });
 
   // Real on-chain LP balance — the actual unit RemoveLiquidity operates on,
   // and NOT derivable from any borrowed-token amount (a different bug the
@@ -261,7 +260,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         poolTokens: position.poolTokens,
         isSameAsset: position.isSameAsset,
         exitPct,
-        onStep: (msg) => setTxModal((p) => ({ ...p, message: msg })),
+        onStep: (msg) => showStep(msg),
       });
       if (!result.success) {
         throw new Error(result.error ?? "Close position failed.");
@@ -269,19 +268,17 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       return result;
     },
     onMutate: () => {
-      setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
+      showStep("Preparing transaction...");
     },
     onSuccess: async (result) => {
       // Drop / scale the Lite registry record to match the on-chain state.
       // Without this the Position tab keeps showing the original numbers
       // even after a 100% close, which looks like the close failed.
       applyLiteExit(position.id, exitPct);
-      setTxModal({
-        open: true, status: "success",
-        title: exitPct === 100 ? "Position Closed" : `${exitPct}% Exit Complete`,
-        message: `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
-        txHash: result.hash,
-      });
+      showStepSuccess(
+        `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
+        result.hash
+      );
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
       if (marginAccountAddress) {
@@ -299,12 +296,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
     },
     onError: (error: Error) => {
       const parsed = parseContractError(error?.message || "Close position failed.");
-      const cancelled = parsed === "Transaction cancelled by user.";
-      setTxModal({
-        open: true, status: "error",
-        title: cancelled ? "Cancelled" : "Transaction Failed",
-        message: parsed,
-      });
+      showStepError(parsed);
     },
   });
 
@@ -316,51 +308,6 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const loading = exitMutation.isPending;
 
   return (
-    <>
-      {/* ── Tx Modal ── */}
-      <Modal open={txModal.open} onClose={() => !loading && setTxModal((p) => ({ ...p, open: false }))}>
-        <div className={`w-[340px] sm:w-[400px] rounded-[20px] p-6 flex flex-col gap-5 ${isDark ? "bg-[#1A1A1A] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}>
-          <div className="flex items-center justify-center pt-2">
-            {txModal.status === "pending" && (
-              <div className="w-14 h-14 rounded-full border-4 border-[#703AE6]/30 border-t-[#703AE6] animate-spin" />
-            )}
-            {txModal.status === "success" && (
-              <div className="w-14 h-14 rounded-full bg-[#10B981]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-            )}
-            {txModal.status === "error" && (
-              <div className="w-14 h-14 rounded-full bg-[#FC5457]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FC5457" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-            )}
-          </div>
-          <div className="text-center">
-            <h3 className={`text-[16px] font-bold mb-1.5 ${isDark ? "text-white" : "text-[#111111]"}`}>{txModal.title}</h3>
-            <p className={`text-[13px] leading-[20px] ${isDark ? "text-[#919191]" : "text-[#6B7280]"}`}>{txModal.message}</p>
-            {txModal.txHash && (
-              <p className={`text-[11px] mt-2 font-mono ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>
-                {txModal.txHash.slice(0, 8)}...{txModal.txHash.slice(-8)}
-              </p>
-            )}
-          </div>
-          {txModal.status !== "pending" && (
-            <button
-              type="button"
-              onClick={() => setTxModal((p) => ({ ...p, open: false }))}
-              className="w-full text-white text-[14px] font-semibold py-3 rounded-[12px] hover:opacity-90 transition-opacity"
-              style={{ background: "linear-gradient(135deg, #703AE6 0%, #FF007A 100%)" }}
-            >
-              {txModal.status === "success" ? "Done" : "Close"}
-            </button>
-          )}
-        </div>
-      </Modal>
-
     <div className="w-full flex flex-col lg:flex-row gap-5">
       {/* ═══════ LEFT: Position management ═══════ */}
       <motion.div
@@ -973,6 +920,5 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         </div>
       </motion.aside>
     </div>
-    </>
   );
 };

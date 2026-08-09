@@ -315,17 +315,13 @@ function toWad(amount: number): string {
   return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
 }
 
-// The lending pool actually crediting the borrow deducts the REAL origination
-// fee, which every pool is now deployed/configured with at 0.3% (matching
-// SmartAccountContract's own ORIGINATION_FEE_WAD assumption — see
-// deploy/testnet.env's ORIGINATION_FEE_U128 and the live
-// `update_origination_fee` calls made on 2026-08-08; it was briefly 1% on
-// testnet, which is what previously made a naive 0.35% buffer trap with
-// "balance is not sufficient to spend"). The margin account is only ever
-// credited `borrowAmount × (1 - fee)`, not the full requested amount, so
-// AddLiquidity must use the net amount. Shave slightly more than the real
-// 0.3% to absorb WAD rounding.
-const BORROW_ORIGINATION_FEE_BUFFER = 0.9965;
+// The origination fee was set to 0% on all 4 lending pools live on 2026-08-09
+// (see deploy/testnet.env's ORIGINATION_FEE_U128 and the `update_origination_fee`
+// calls made that day) — the margin account is now credited the FULL requested
+// borrow amount, no haircut. This buffer is just a hair under 1.0 to absorb WAD
+// rounding drift (mul/div truncation across a few hops), not a fee — it used to
+// be 0.9965 to shave the real 0.3%/1% fee that existed before.
+const BORROW_ORIGINATION_FEE_BUFFER = 0.9999;
 const netOfOriginationFee = (grossAmount: number): number => grossAmount * BORROW_ORIGINATION_FEE_BUFFER;
 
 /**

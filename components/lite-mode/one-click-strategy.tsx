@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
+import toast from "react-hot-toast";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
@@ -13,7 +14,6 @@ import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { LeverageSlider } from "@/components/ui/leverage-slider";
-import { Modal } from "@/components/ui/modal";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import {
   distanceToLiquidationPct,
@@ -24,6 +24,12 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+
+const ONE_CLICK_TOAST_ID = "one-click-strategy-tx";
+const showStep = (message: string) => toast.loading(message, { id: ONE_CLICK_TOAST_ID });
+const showStepSuccess = (message: string, txHash?: string) =>
+  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: ONE_CLICK_TOAST_ID });
+const showStepError = (message: string) => toast.error(message, { id: ONE_CLICK_TOAST_ID });
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -251,13 +257,6 @@ export const OneClickStrategy = () => {
   };
   const [loading, setLoading] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
-  const [txModal, setTxModal] = useState<{
-    open: boolean;
-    status: "pending" | "success" | "error";
-    title: string;
-    message: string;
-    txHash?: string;
-  }>({ open: false, status: "pending", title: "", message: "" });
 
   const formatTvl = (tokens: string, priceUsd: number): string => {
     const usd = (parseFloat(tokens) || 0) * priceUsd;
@@ -519,16 +518,16 @@ export const OneClickStrategy = () => {
   const handleCreateAccount = async () => {
     if (!userAddress) return;
     setLoading(true);
-    setTxModal({ open: true, status: "pending", title: "Creating Margin Account", message: "Creating your Vanna margin account on Stellar..." });
+    showStep("Creating your Vanna margin account on Stellar...");
     try {
       const success = await createMarginAccount(userAddress);
       if (success) {
-        setTxModal({ open: true, status: "success", title: "Account Created", message: "Your Vanna margin account is ready!" });
+        showStepSuccess("Your Vanna margin account is ready!");
       } else {
         throw new Error("Failed to create margin account");
       }
     } catch (err: any) {
-      setTxModal({ open: true, status: "error", title: "Failed", message: normalizeCreateAccountError(err?.message) });
+      showStepError(normalizeCreateAccountError(err?.message));
     } finally {
       setLoading(false);
     }
@@ -539,10 +538,7 @@ export const OneClickStrategy = () => {
     if (!userAddress || !marginAccountAddress || collateralNum <= 0) return;
     setLoading(true);
 
-    setTxModal({
-      open: true, status: "pending", title: "Opening Leveraged Position",
-      message: `Preparing transaction...`,
-    });
+    showStep("Preparing transaction...");
 
     try {
       const result = await executeOneClickStrategy({
@@ -559,7 +555,7 @@ export const OneClickStrategy = () => {
         scenario,
         prices,
         onStep: (msg) => {
-          setTxModal((p) => ({ ...p, message: msg }));
+          showStep(msg);
         },
       });
 
@@ -595,12 +591,10 @@ export const OneClickStrategy = () => {
         txHash: result.hash,
       });
 
-      setTxModal({
-        open: true, status: "success",
-        title: "Strategy Deployed!",
-        message: `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPoolLabelStr} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
-        txHash: result.hash,
-      });
+      showStepSuccess(
+        `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPoolLabelStr} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
+        result.hash
+      );
       setCollateralAmount("");
       setLeverage(1);
       // This trade just changed real on-chain debt/collateral — force past the
@@ -609,12 +603,7 @@ export const OneClickStrategy = () => {
       if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
     } catch (err: any) {
       const message = normalizeContractError(err?.message, "Operation failed");
-      const rejected = message === "Transaction cancelled by user.";
-      setTxModal({
-        open: true, status: "error",
-        title: rejected ? "Cancelled" : "Failed",
-        message,
-      });
+      showStepError(message);
     } finally {
       setLoading(false);
     }
@@ -661,51 +650,6 @@ export const OneClickStrategy = () => {
   const hfColor = newHF >= 1.5 ? "#703AE6" : newHF >= 1.2 ? "#F59E0B" : "#FC5457";
 
   return (
-    <>
-      {/* ─── Transaction Status Modal ─── */}
-      <Modal open={txModal.open} onClose={() => !loading && setTxModal((p) => ({ ...p, open: false }))}>
-        <div className={`w-[340px] sm:w-[400px] rounded-[20px] p-6 flex flex-col gap-5 ${isDark ? "bg-[#1A1A1A] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}>
-          <div className="flex items-center justify-center pt-2">
-            {txModal.status === "pending" && (
-              <div className="w-14 h-14 rounded-full border-4 border-[#703AE6]/30 border-t-[#703AE6] animate-spin" />
-            )}
-            {txModal.status === "success" && (
-              <div className="w-14 h-14 rounded-full bg-[#10B981]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-            )}
-            {txModal.status === "error" && (
-              <div className="w-14 h-14 rounded-full bg-[#FC5457]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FC5457" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-            )}
-          </div>
-          <div className="text-center">
-            <h3 className={`text-[16px] font-bold mb-1.5 ${headingText}`}>{txModal.title}</h3>
-            <p className={`text-[13px] leading-[20px] ${labelText}`}>{txModal.message}</p>
-            {txModal.txHash && (
-              <p className={`text-[11px] mt-2 font-mono ${mutedText}`}>
-                {txModal.txHash.slice(0, 8)}...{txModal.txHash.slice(-8)}
-              </p>
-            )}
-          </div>
-          {txModal.status !== "pending" && (
-            <button
-              type="button"
-              onClick={() => setTxModal((p) => ({ ...p, open: false }))}
-              className="w-full text-white text-[14px] font-semibold py-3 rounded-[12px] hover:opacity-90 transition-opacity"
-              style={{ background: "linear-gradient(135deg, #703AE6 0%, #FF007A 100%)" }}
-            >
-              Close
-            </button>
-          )}
-        </div>
-      </Modal>
-
       <div className="w-full h-fit flex flex-col lg:flex-row gap-5">
         {/* ═══════ LEFT: Strategy Form ═══════ */}
         <motion.div
@@ -1566,6 +1510,5 @@ export const OneClickStrategy = () => {
           </div>
         </motion.div>
       </div>
-    </>
   );
 };
