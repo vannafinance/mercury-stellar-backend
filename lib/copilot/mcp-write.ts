@@ -585,6 +585,48 @@ export function mapOpToMcpStep(
             "How much LP to remove? e.g. “remove half my liquidity from XLM/USDC” or “remove 10 LP from XLM/USDC”.",
         };
       }
+      /**
+       * MCP takes `liquidity` (a human string) or `remove_all` — it has never taken a
+       * fraction.
+       *
+       * `fraction` / `share_fraction` were sent anyway, so "remove half my liquidity"
+       * came back `invalid_input` and the copilot pasted MCP's own DEVELOPER guidance to
+       * the user: "liquidity is required for a partial remove (human string, e.g.
+       * liquidity="50")… Never pass raw share integers." That is API documentation, not an
+       * answer.
+       *
+       * A full exit maps exactly onto `remove_all`. A PARTIAL share cannot be sized here —
+       * it needs the live LP balance, which this pure mapping function has no way to read —
+       * so it asks for a figure in the user's own terms instead of sending an argument the
+       * server will reject.
+       */
+      if (frac != null && frac >= 1) {
+        return {
+          step: {
+            tool: "vanna_remove_liquidity",
+            args: {
+              smart_account: smart,
+              token_a: "XLM",
+              token_b: usdSym,
+              remove_all: true,
+              min_a: "0",
+              min_b: "0",
+              trader,
+              venue: isSouswap ? "soroswap" : "aquarius",
+            },
+            label: `Remove all XLM/${usdSym} LP`,
+          },
+        };
+      }
+      if (frac != null && !lpAmt) {
+        return {
+          blocker:
+            `I can't take a ${Math.round(frac * 100)}% slice of an LP position directly — the ` +
+            `protocol removes either a specific number of LP tokens or the whole position. ` +
+            `Tell me the LP amount (e.g. “remove 10 LP from XLM/${usdSym}”), or say “remove all ` +
+            `my XLM/${usdSym} liquidity”.`,
+        };
+      }
       return {
         step: {
           tool: "vanna_remove_liquidity",
@@ -592,16 +634,15 @@ export function mapOpToMcpStep(
             smart_account: smart,
             token_a: "XLM",
             token_b: usdSym,
-            ...(lpAmt ? { amount: lpAmt, liquidity_amount: lpAmt } : {}),
-            ...(frac != null ? { fraction: frac, share_fraction: frac } : {}),
+            amount: lpAmt,
+            liquidity: lpAmt,
+            liquidity_amount: lpAmt,
             min_a: "0",
             min_b: "0",
             trader,
             venue: isSouswap ? "soroswap" : "aquarius",
           },
-          label: frac
-            ? `Remove ${Math.round(frac * 100)}% XLM/${usdSym} LP`
-            : `Remove ${lpAmt} XLM/${usdSym} LP`,
+          label: `Remove ${lpAmt} XLM/${usdSym} LP`,
         },
       };
     }
@@ -611,8 +652,56 @@ export function mapOpToMcpStep(
       }
       const tokenIn = (params.token_a || params.asset || "XLM").toUpperCase();
       const tokenOut = (params.token_b || "USDC").toUpperCase();
-      const venueRaw = String(params.venue || "aquarius").toLowerCase();
-      const venue = venueRaw.includes("soro") ? "soroswap" : "aquarius";
+      // Read the RAW slot, not a defaulted one — defaulting first made "did the user name
+      // a venue?" always true, so a named variant could never pick its own venue.
+      const venueRaw = String(params.venue ?? "").toLowerCase();
+      const venueStated = /soro|aqua/.test(venueRaw);
+      let venue = venueRaw.includes("soro") ? "soroswap" : "aquarius";
+
+      /**
+       * A named USDC variant picks the venue — it must never be silently swapped for a
+       * different token.
+       *
+       * `mapUsdForVenue` below rewrites ANY variant to the venue's own USDC, and the label
+       * deliberately kept the USER's word. Live result of "swap 10 XLM to BLUSDC": a card
+       * headed "Swap 10 XLM → BLUSDC (aquarius)" over a transaction that actually bought
+       * **AQUSDC** — a different, non-interchangeable token, named correctly only in the
+       * small print of the summary. That is the exact failure the USDC-variant work exists
+       * to prevent, and it is worse here than a wrong prompt: the user gets the wrong asset
+       * and the card tells them they got the right one.
+       *
+       * So: AQUSDC → Aquarius, SOUSDC → Soroswap, unless the user named a venue themselves.
+       * Bare "USDC" still takes the venue's own variant, which is what the Trade page does.
+       */
+      const namesVariant = (t: string) => t === "AQUSDC" || t === "SOUSDC" || t === "BLUSDC";
+      const stated = [tokenIn, tokenOut].find(namesVariant) ?? null;
+      if (stated && !venueStated) {
+        if (stated === "AQUSDC") venue = "aquarius";
+        else if (stated === "SOUSDC") venue = "soroswap";
+      }
+      /**
+       * Blend USDC is not a DEX token. Neither venue trades it, so any "swap … to BLUSDC"
+       * could only ever be filled with a different token — refuse and name the two that
+       * are real, rather than quietly substituting one.
+       */
+      if (stated === "BLUSDC") {
+        return {
+          blocker:
+            "BLUSDC is Blend USDC — it isn't traded on Aquarius or Soroswap, so I can't swap " +
+            "into or out of it. Swap to AQUSDC (Aquarius) or SOUSDC (Soroswap) instead, or " +
+            "say “USDC” and I'll use the venue's own USDC.",
+        };
+      }
+      if (stated && venueStated) {
+        const venueSym = venue === "soroswap" ? "SOUSDC" : "AQUSDC";
+        if (stated !== venueSym) {
+          return {
+            blocker:
+              `${stated} isn't traded on ${venue} — that venue uses ${venueSym}. ` +
+              `Ask for ${venueSym} on ${venue}, or name the venue that matches ${stated}.`,
+          };
+        }
+      }
       if (!amount || !(Number(amount) > 0)) {
         return {
           blocker:
@@ -637,9 +726,16 @@ export function mapOpToMcpStep(
       if (inSym === outSym) {
         return { blocker: `Cannot swap ${tokenIn} to itself on ${venue} — pick XLM ↔ USDC.` };
       }
-      // Keep the user's symbol in the label (BLUSDC stays BLUSDC; wire map is inSym/outSym).
-      const uiIn = tokenIn;
-      const uiOut = tokenOut;
+      /**
+       * The label names the token that will actually be traded.
+       *
+       * It used to echo the user's own word while the wire carried a different symbol, so
+       * a swap into AQUSDC could be presented as a swap into BLUSDC. A label is the last
+       * thing the user reads before signing — when it disagrees with the transaction, the
+       * transaction wins and the label is simply a false statement.
+       */
+      const uiIn = inSym;
+      const uiOut = outSym;
       // Prefer expected_out from copilot pre-quote; if omitted, MCP auto-quotes
       // from oracle (after MCP redeploy of swap auto-quote).
       const expectedOut =
@@ -1076,6 +1172,22 @@ function traceOf(tool: string, build: Record<string, unknown>, xdr?: string | nu
  * Only call vanna_sign_and_submit if XDR exists and MCP has not already reported
  * auto_sign outcome.
  */
+/**
+ * One sentence for every "MCP built it, the Sign Service did not sign it" outcome.
+ *
+ * Manual signing is the DEFAULT, so why auto-sign did not happen is not news — it is the
+ * setting the user is on. Six call sites each narrated their own version of it ("Vanna is
+ * not authorized as a Sign Service signer for this wallet…", "Sign Service has no active
+ * session…", and a couple that interpolated the raw reason code), which put signing
+ * internals in front of someone who only wanted to approve a deposit.
+ *
+ * The reason is not lost — it stays on `mcp_trace.auto_sign_error` and in the server log.
+ */
+function readyToSignMessage(_label: string): string {
+  // The card's own headline is the label, so repeating it here says it twice in a row.
+  return "Built and ready — approve to sign it with your wallet.";
+}
+
 export async function executeMcpWrite(
   mcp: MCPClient,
   step: WriteStep,
@@ -1175,6 +1287,44 @@ export async function executeMcpWrite(
     errCode === "invalid_input" ||
     errCode === "collateral_not_allowed" ||
     /simulation failed|simulation rejected|not accepted as collateral|invalid_input/i.test(errMsg + errCode);
+
+  /**
+   * The Sign Service declining to auto-sign is NOT a failed transaction.
+   *
+   * These refusals arrive as a top-level `build.error` with `auto_sign` and
+   * `auto_sign_error` both null, so they never reached the auto-sign branches further
+   * down — they fell into `softFail` above and were reported as `error`, throwing away
+   * the XDR MCP had already built and simulated in the same response.
+   *
+   * Live effect (owner-reported, reproduced 2026-08-10 on a fresh wallet): "create a
+   * margin account for me" worked with auto-approve ON and failed with it OFF — which is
+   * the default for every new user. The card showed `wallet_not_bound` and MCP's internal
+   * plumbing prose, with no Approve & sign button, while a perfectly signable transaction
+   * sat unused in the same payload.
+   *
+   * Manual signing is the DEFAULT path, not a fallback. So whenever an XDR exists, the
+   * refusal to AUTO-sign it is not an error to report — it is the ordinary way through.
+   *
+   * Matched on the error CODE only. The prose is MCP's and varies; the code is the
+   * contract, and matching prose would misread a genuine simulation failure that happens
+   * to mention signing.
+   */
+  const autoSignRefused =
+    !!xdr &&
+    /wallet_not_bound|no_active_session|auto_sign|not_enabled|missing_user_assertion|invalid_user_assertion|function_not_allowlisted/i.test(
+      errCode,
+    );
+  if (autoSignRefused) {
+    return {
+      tool: step.tool,
+      label: step.label,
+      build,
+      unsigned_xdr: xdr,
+      status: "needs_wallet_sign",
+      message: readyToSignMessage(step.label),
+      mcp_trace: { ...baseTrace, auto_sign_error: errCode },
+    };
+  }
 
   if (softFail) {
     const risk = isRiskRejection(build);
@@ -1288,20 +1438,14 @@ export async function executeMcpWrite(
       // App auto-approve is client session signing of that XDR; forcing the Sign
       // Service enable gate on hop 2+ made multi-leg ask for "auto-approve" again
       // even when the toggle was already on.
-      const unbound = /wallet_not_bound/i.test(asErr + as);
       return {
         tool: step.tool,
         label: step.label,
         build,
         unsigned_xdr: xdr,
         status: "needs_wallet_sign",
-        message: unbound
-          ? "MCP prepared the transaction. Vanna is not authorized as a Sign Service signer " +
-            "for this wallet — your connected wallet can still sign this XDR (app auto-approve " +
-            "uses session signing)."
-          : "MCP prepared the transaction. Sign Service auto-sign is not enabled — " +
-            "your connected wallet (or app auto-approve session signing) can submit this XDR.",
-        mcp_trace: baseTrace,
+        message: readyToSignMessage(step.label),
+        mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
       };
     }
     // Other auto-sign failures: still have XDR → wallet sign
@@ -1311,10 +1455,8 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
-      message:
-        (build.summary as string) ||
-        `MCP prepared the transaction. Auto-sign unavailable (${asErr || as}). Sign with your wallet to submit.`,
-      mcp_trace: baseTrace,
+      message: readyToSignMessage(step.label),
+      mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
     };
   }
 
@@ -1377,10 +1519,8 @@ export async function executeMcpWrite(
         unsigned_xdr: xdr,
         submitted,
         status: "needs_wallet_sign",
-        message:
-          "MCP prepared the transaction. Sign Service has no active session — " +
-          "sign with your connected wallet (app auto-approve uses session signing).",
-        mcp_trace: baseTrace,
+        message: readyToSignMessage(step.label),
+        mcp_trace: { ...baseTrace, auto_sign_error: reason },
       };
     }
 
@@ -1391,8 +1531,8 @@ export async function executeMcpWrite(
       unsigned_xdr: xdr,
       submitted,
       status: "needs_wallet_sign",
-      message: `MCP prepared the transaction. Sign Service: ${reason}. You can sign with your wallet.`,
-      mcp_trace: baseTrace,
+      message: readyToSignMessage(step.label),
+      mcp_trace: { ...baseTrace, auto_sign_error: reason },
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1402,7 +1542,7 @@ export async function executeMcpWrite(
       build,
       unsigned_xdr: xdr,
       status: "needs_wallet_sign",
-      message: `MCP prepared the transaction. Auto-sign call failed (${msg}). Sign with your wallet to submit.`,
+      message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: msg },
     };
   }

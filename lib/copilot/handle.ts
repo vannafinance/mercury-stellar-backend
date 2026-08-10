@@ -40,7 +40,12 @@ import {
   planLeverage,
   sameAsset,
 } from "./leverage-plan";
-import { findAmountFraction, REPAY_FRACTION_OPTIONS } from "./amount-intent";
+import {
+  applyFraction,
+  findAmountFraction,
+  findBalanceFraction,
+  REPAY_FRACTION_OPTIONS,
+} from "./amount-intent";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
@@ -75,12 +80,16 @@ import {
 } from "./asset-readiness";
 import { capToFreeBalance, netOfOriginationFee } from "@/lib/borrow-fee";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
-import { extractPlanIR, preferExtractedPlan } from "./step-extractor";
+import {
+  coalesceLeveragedDepositBorrow,
+  extractPlanIR,
+  preferExtractedPlan,
+} from "./step-extractor";
 import { classifyCoverage, residueIsMaterial } from "./residue";
 import { logCopilotEvent } from "./log";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { evaluateDomainFirewall } from "./domain-firewall";
-import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
+import { findLeverage, findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { resolveAsset, resolveAssetDef, USDC_VARIANTS } from "./registry/assets";
 import { isTrackingSymbol } from "@/lib/account-snapshot";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
@@ -245,6 +254,13 @@ function impactExplanation(sim: Simulation | null): string | null {
     (Number.isFinite(sim.collateral_before) && sim.collateral_before > 0) ||
     (sim.hf_before != null && Number.isFinite(sim.hf_before) && sim.hf_before > 0);
   if (!hasBaseline) {
+    // Same two causes as the card's PROJECTED IMPACT block — see Simulation.margin_applicable.
+    if (sim.margin_applicable === false) {
+      return (
+        "This moves tokens in your wallet and doesn't touch your margin account, so your " +
+        "collateral, debt and health factor are unchanged."
+      );
+    }
     return (
       "I can't project the impact right now — reading your current position failed, and " +
       "I won't estimate a liquidation figure from an incomplete baseline. Your live " +
@@ -1135,6 +1151,51 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // executes once the user sends it back as approved_plan (handled near the top of
   // this function, before routing, so approval never re-infers anything).
   if (routed.kind === "plan") {
+    /**
+     * Carry a stated share onto the leg it belongs to, whoever built the plan.
+     *
+     * `step-extractor` attaches this per clause, but a plan can also come from the LLM
+     * planner, whose steps carry only op/asset/amount — so "deposit 50% of XLM in my
+     * wallet as collateral and borrow BLUSDC at 2x" reached the approval card reading
+     * "amount to be confirmed" on both legs and warning that it would stop to ask, for a
+     * prompt that had already said how much. Applied here because it is the one point
+     * every plan passes through on its way to being frozen.
+     *
+     * Only onto ops that HAVE a balance to take a share of — a borrow is sized by its
+     * leverage, and stamping "50%" on it would describe a different trade.
+     */
+    const share = findBalanceFraction(message);
+    if (share != null) {
+      routed = {
+        ...routed,
+        steps: routed.steps.map((s) =>
+          s.kind === "write" &&
+          s.amount == null &&
+          (s as { fraction?: number | null }).fraction == null &&
+          FRACTION_SIZED_PLAN_OPS.has(String(s.op))
+            ? { ...s, fraction: share, args: { ...(s.args || {}), fraction: share } }
+            : s,
+        ),
+      };
+    }
+    /**
+     * "Deposit X as collateral AND borrow Y at N×" is ONE leveraged position, not two
+     * independent legs — which is exactly how the Margin page models it (collateral box +
+     * borrow box + leverage slider produce a single position).
+     *
+     * Split apart, the borrow leg carries no amount and, from the LLM planner, no leverage
+     * either: the card read "Borrow BLUSDC on your margin account / amount to be confirmed"
+     * with no mention of the 2× the user had just stated, and nothing downstream could size
+     * it, because `leverage-plan` sizes a borrow against the deposit in the SAME step.
+     * Merging restores the shape it already knows how to size — `deposit_value × (L−1)`.
+     */
+    routed = {
+      ...routed,
+      steps: coalesceLeveragedDepositBorrow(routed.steps, {
+        leverage: findLeverage(message),
+        message,
+      }),
+    };
     const frozen = freezePlan(routed, Date.now());
     if (frozen.steps.length) {
       console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval`);
@@ -1265,6 +1326,21 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 }
 
 // ── Auto-sign ─────────────────────────────────────────────────────────────
+
+/**
+ * Plan ops that can be sized as a share of a live balance.
+ *
+ * Mirrors `FRACTION_SIZED_OPS` in registry/intent, minus the ops a plan never produces
+ * as a bare leg. Deliberately excludes `borrow` and `deposit_and_borrow`: their size
+ * comes from the leverage multiple, so a share would contradict it.
+ */
+const FRACTION_SIZED_PLAN_OPS = new Set([
+  "lend",
+  "supply",
+  "deposit_collateral",
+  "withdraw_collateral",
+  "repay",
+]);
 
 /**
  * Did the Sign Service refuse because this wallet is not bound to the caller?
@@ -1975,8 +2051,24 @@ const LOCAL_FALLBACK_OPS = new Set([
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
+/**
+ * Name a farm TRACKING position for a human, not by its internal key.
+ *
+ * `BLEND_USDC` is USDC supplied into Blend, and `AQ_XLM_USDC` an Aquarius LP receipt —
+ * both are legitimate collateral (see `isTrackingSymbol`), but printing the raw key put
+ * "372.92 BLUSDC … 10.00 BLEND_USDC" in one sentence, which reads as the same token
+ * listed twice, or a typo. The row is right; only its name was internal.
+ */
+const positionRowLabel = (symbol: string): string => {
+  const u = String(symbol).toUpperCase();
+  if (u.startsWith("BLEND_")) return `${u.slice(6)} in Blend`;
+  if (u.startsWith("AQ_")) return `${u.slice(3).replace(/_/g, "/")} LP on Aquarius`;
+  if (u.startsWith("SS_")) return `${u.slice(3).replace(/_/g, "/")} LP on Soroswap`;
+  return u;
+};
+
 const listPositionRows = (rows: MarginPositionRow[]): string =>
-  rows.map((r) => `${r.amount} ${r.symbol} (${money(r.usd)})`).join(", ");
+  rows.map((r) => `${r.amount} ${positionRowLabel(r.symbol)} (${money(r.usd)})`).join(", ");
 
 /**
  * Which asset a position question is ABOUT, when it is about one.
@@ -2162,6 +2254,149 @@ function withHfGuardrails(message: string, hf: number, userMessage: string): str
   return message;
 }
 
+/**
+ * A hypothetical move stated inside a question — "simulate borrowing 10 BLUSDC",
+ * "what if I deposit 500 XLM", "what happens to my HF if I repay 20 SOUSDC".
+ *
+ * Requires BOTH a hypothetical marker and a sized verb. "borrow 10 BLUSDC" on its own is
+ * an instruction to borrow, not a question about borrowing, and must keep routing to the
+ * write path — this only ever augments a READ.
+ */
+/**
+ * The XLM price at which this position gets liquidated, as one sentence.
+ *
+ * Exported for tests: the arithmetic is the number that tells someone whether they are
+ * about to lose their collateral, so it is worth pinning down independently of a live
+ * account.
+ */
+export function liquidationPriceLine(pos: {
+  hf: number;
+  grossCollateralValue: number;
+  totalBorrowedValue: number;
+  collateral: Array<{ symbol: string; amount: string; usd: number }>;
+}): string {
+  const debt = pos.totalBorrowedValue;
+  if (!(debt > 0)) {
+    return "You have no debt, so there is no liquidation price — nothing can be liquidated.";
+  }
+  const collateral = pos.grossCollateralValue;
+  if (!(collateral > 0)) return "No collateral is posted, so a liquidation price cannot be derived.";
+
+  const xlmRow = pos.collateral.find((r) => sameAsset(r.symbol, "XLM"));
+  const xlmQty = xlmRow ? Number.parseFloat(String(xlmRow.amount).replace(/,/g, "")) : 0;
+  if (!Number.isFinite(xlmQty) || xlmQty <= 0) {
+    return "Your collateral is all dollar stables, so there is no XLM price that liquidates this position.";
+  }
+  const stableUsd = pos.collateral
+    .filter((r) => !sameAsset(r.symbol, "XLM"))
+    .reduce((s, r) => s + r.usd, 0);
+
+  // Derived from the live pair, so it cannot disagree with the health factor shown above.
+  const lt = (pos.hf * debt) / collateral;
+  if (!(lt > 0)) return "I couldn't derive your liquidation threshold from the current position.";
+
+  const p = (debt / lt - stableUsd) / xlmQty;
+  if (!(p > 0)) {
+    return (
+      `Your stable collateral (${money(stableUsd)}) already covers the debt on its own, so no ` +
+      `XLM price liquidates this position.`
+    );
+  }
+  const current = xlmRow ? xlmRow.usd / xlmQty : 0;
+  const drop = current > 0 ? ((current - p) / current) * 100 : null;
+  return (
+    `Liquidation price: XLM at about $${p.toFixed(4)}` +
+    (drop != null && drop > 0
+      ? ` — roughly ${drop.toFixed(0)}% below the current $${current.toFixed(4)}.`
+      : ".")
+  );
+}
+
+export function parseHypotheticalMove(
+  text: string,
+): { op: "borrow" | "repay" | "deposit" | "withdraw"; asset: string; amount: number } | null {
+  const t = String(text || "");
+  if (!/\b(simulate|hypothetical|what\s+if|if\s+i|would\s+happen|what\s+happens)\b/i.test(t)) {
+    return null;
+  }
+  const m = t.match(
+    /\b(borrow|repay|deposit|withdraw)(?:ing|ed)?\s+(?:another\s+)?(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
+  );
+  if (!m) return null;
+  const amount = Number(m[2]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return {
+    op: m[1].toLowerCase() as "borrow" | "repay" | "deposit" | "withdraw",
+    asset: m[3].toUpperCase(),
+    amount,
+  };
+}
+
+/** One sentence projecting the health factor after a hypothetical move. */
+async function projectHealthFactor(
+  hypo: { op: "borrow" | "repay" | "deposit" | "withdraw"; asset: string; amount: number },
+  pos: MarginPositions,
+  userId: string,
+): Promise<string> {
+  const collateral = pos.grossCollateralValue;
+  const debt = pos.totalBorrowedValue;
+  const ui = displayUsdcLabel(marginCollateralSymbol(hypo.asset), hypo.asset);
+
+  // Price the move. Stables are $1; XLM needs the oracle and is never guessed.
+  let price: number | null = /^(BLUSDC|AQUSDC|SOUSDC|USDC)$/i.test(hypo.asset) ? 1 : null;
+  if (price == null) {
+    try {
+      const batch = await getMcpClient().call(
+        "vanna_get_prices_batch",
+        { symbols: [hypo.asset.toUpperCase()] },
+        userId,
+      );
+      const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
+      const p = Number(
+        prices[hypo.asset.toUpperCase()]?.price_usd ?? prices[hypo.asset.toLowerCase()]?.price_usd,
+      );
+      if (Number.isFinite(p) && p > 0) price = p;
+    } catch {
+      /* leave null */
+    }
+  }
+  if (price == null) {
+    return `I can't project that — the oracle price for ${ui} didn't come back, and I won't put a health factor on a guessed price.`;
+  }
+
+  const usdDelta = hypo.amount * price;
+  const nextCollateral =
+    hypo.op === "deposit" ? collateral + usdDelta : hypo.op === "withdraw" ? collateral - usdDelta : collateral;
+  const nextDebt =
+    hypo.op === "borrow" ? debt + usdDelta : hypo.op === "repay" ? Math.max(0, debt - usdDelta) : debt;
+
+  if (nextDebt <= 0) {
+    return `After repaying ${hypo.amount} ${ui} you'd have no debt left, so the health factor becomes ∞ — nothing to liquidate.`;
+  }
+  // Derived, not assumed: whatever threshold the snapshot used stays used.
+  if (!(debt > 0) || !(collateral > 0)) {
+    return `You have no debt yet, so there's no live ratio to derive your liquidation threshold from — I'd be guessing the projected figure. Ask again once the position has debt, or state the borrow and I'll size it against the risk gate.`;
+  }
+  const lt = (pos.hf * debt) / collateral;
+  const nextHf = (nextCollateral * lt) / nextDebt;
+  const verb =
+    hypo.op === "borrow"
+      ? `borrowing ${hypo.amount} ${ui}`
+      : hypo.op === "repay"
+        ? `repaying ${hypo.amount} ${ui}`
+        : hypo.op === "deposit"
+          ? `depositing ${hypo.amount} ${ui}`
+          : `withdrawing ${hypo.amount} ${ui}`;
+  return (
+    `After ${verb} (${money(usdDelta)}), your health factor would be about ` +
+    `${nextHf.toFixed(2)} — down from ${pos.hf.toFixed(2)}.`.replace(
+      "down from",
+      nextHf >= pos.hf ? "up from" : "down from",
+    ) +
+    (nextHf < 1.3 ? ` That is close to the ${nextHf < 1.1 ? "liquidation" : "caution"} band.` : "")
+  );
+}
+
 async function snapshotPositionAnswer(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -2201,6 +2436,40 @@ async function snapshotPositionAnswer(
       `Health factor ${pos.hfText} · collateral ${money(pos.grossCollateralValue)} · ` +
       `borrowed ${money(pos.totalBorrowedValue)} · ` +
       `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
+
+    /**
+     * "Simulate borrowing 10 BLUSDC — what happens to my health factor?" asks what the
+     * number WOULD BE, and was answered with what it currently is. The question contains
+     * a hypothetical and an amount; answering with today's figure looks like an answer and
+     * is not one.
+     *
+     * The liquidation threshold is DERIVED from the live pair rather than assumed, so this
+     * projection can never disagree with the snapshot it is based on. With no debt there is
+     * nothing to derive it from, so the projection is declined rather than guessed — an
+     * invented threshold on the number that decides liquidation is the worst thing to be
+     * confidently wrong about.
+     */
+    const hypo = parseHypotheticalMove(ctx.message);
+    if (hypo) {
+      const projected = await projectHealthFactor(hypo, pos, ctx.userId);
+      message += `\n\n${projected}`;
+    }
+
+    /**
+     * "What's my liquidation price?" — the XLM price at which this position is liquidated.
+     *
+     * Only XLM moves; the USDC variants are dollar stables, so the question reduces to:
+     * at what P does `(stables + xlmQty × P) × lt / debt` reach 1?
+     *
+     *     P* = (debt / lt − stables) / xlmQty
+     *
+     * A negative or zero P* means the stable collateral alone already covers the debt —
+     * no XLM price can liquidate this position, and saying so is the honest answer rather
+     * than printing a meaningless negative number.
+     */
+    if (/\bliquidat\w*\s+price\b|\bprice\b[^.]*\bliquidat/i.test(ctx.message)) {
+      message += `\n\n${liquidationPriceLine(pos)}`;
+    }
   }
 
   return {
@@ -2533,6 +2802,29 @@ async function runRead(
       { query: "AQUSDC", display: "AQUSDC" },
       { query: "SOUSDC", display: "SOUSDC" },
     ] as const;
+    /**
+     * An upstream failure can arrive as an HTML error PAGE, not a sentence.
+     *
+     * A WorkOS token-endpoint 520 put `<!DOCTYPE html><!--[if lt IE 7]>…` straight into
+     * the answer text, where a pool's APY should have been. Tags are stripped, the known
+     * infra faults get a plain sentence, and anything else is capped — an error message is
+     * still an answer, and it has to read like one.
+     */
+    const shortError = (e: unknown): string => {
+      const s = String(e ?? "")
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (/token endpoint returned 5\d\d|workos/i.test(s)) {
+        return "upstream auth error — try again in a moment";
+      }
+      if (/\b5\d\d\b|timeout|ECONNRESET|fetch failed/i.test(s)) {
+        return "upstream error — try again in a moment";
+      }
+      if (!s) return "unavailable";
+      return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+    };
+
     const rows: Array<Record<string, unknown>> = [];
     for (const p of pools) {
       try {
@@ -2547,7 +2839,7 @@ async function runRead(
           error: data.error,
         });
       } catch (e) {
-        rows.push({ symbol: p.display, error: e instanceof Error ? e.message : String(e) });
+        rows.push({ symbol: p.display, error: shortError(e instanceof Error ? e.message : e) });
       }
     }
     const ranked = [...rows]
@@ -2558,15 +2850,141 @@ async function runRead(
     // and round here rather than echoing MCP's 18-decimal strings. No markdown: the
     // UI renders this as plain text, so "**" would show as literal asterisks.
     const width = Math.max(...rows.map((r) => String(r.symbol).length));
-    const lines = rows.map((r) => {
+    const fmtRow = (r: Record<string, unknown>) => {
       const name = String(r.symbol).padEnd(width);
-      if (r.error) return `• ${name}  unavailable (${r.error})`;
+      if (r.error) return `• ${name}  unavailable (${shortError(r.error)})`;
       return (
         `• ${name}  supply ${pct(r.supply_apy_pct)}  ·  borrow ${pct(r.borrow_apr_pct)}` +
         `  ·  used ${pct(r.utilization_pct)}  ·  liquidity ${amount(r.total_liquidity_human)}`
       );
-    });
+    };
+    const lines = rows.map(fmtRow);
+
+    /**
+     * "Compare the XLM and BLUSDC pools" names TWO pools and asks which is better.
+     *
+     * It was answered with all four pools and the highest-yield winner — which is neither
+     * a comparison nor restricted to what was asked. Naming pools narrows the set; asking
+     * to compare means the answer must lead with a verdict and the size of the gap, not
+     * leave the user to subtract two percentages themselves.
+     *
+     * Bare "USDC" expands to all three variants rather than picking one, because they are
+     * different tokens with different rates and guessing which was meant is the mistake
+     * the variant work exists to prevent.
+     */
+    const named = new Set<string>();
+    if (/\bxlm\b/i.test(ctx.message)) named.add("XLM");
+    if (/\bblusdc\b|\bblend[\s_-]?usdc\b/i.test(ctx.message)) named.add("BLUSDC");
+    if (/\baqusdc\b|\baquarius[\s_-]?usdc\b/i.test(ctx.message)) named.add("AQUSDC");
+    if (/\bsousdc\b|\bsoroswap[\s_-]?usdc\b/i.test(ctx.message)) named.add("SOUSDC");
+    const bareUsdc =
+      /\busdc\b/i.test(ctx.message) &&
+      !/\b(blusdc|aqusdc|sousdc)\b/i.test(ctx.message);
+    if (bareUsdc) {
+      named.add("BLUSDC");
+      named.add("AQUSDC");
+      named.add("SOUSDC");
+    }
+    const asksCompare = /\bcompare\b|\bvs\.?\b|\bversus\b|\bbetter\b|\bdifference between\b/i.test(
+      ctx.message,
+    );
+    if (asksCompare && named.size >= 2) {
+      const sel = rows.filter((r) => named.has(String(r.symbol)));
+      const ok = sel
+        .filter((r) => !r.error && r.supply_apy_pct != null)
+        .sort((a, b) => Number(b.supply_apy_pct) - Number(a.supply_apy_pct));
+      const top = ok[0];
+      const next = ok[1];
+      const head =
+        top && next
+          ? `${top.symbol} pays more for supplying: ${pct(top.supply_apy_pct)} vs ` +
+            `${pct(next.supply_apy_pct)} on ${next.symbol} — ` +
+            `${(Number(top.supply_apy_pct) - Number(next.supply_apy_pct)).toFixed(2)} points apart.` +
+            (Number(top.utilization_pct) > 80
+              ? ` Note ${top.symbol} is ${pct(top.utilization_pct)} utilised, so withdrawal liquidity is thin.`
+              : "")
+          : `Only one of those pools returned live stats, so there is nothing to compare it against.`;
+      return {
+        kind: "answer",
+        message:
+          `${head}\n\n${sel.map(fmtRow).join("\n")}` +
+          (bareUsdc
+            ? `\n\n“USDC” is three different tokens here, so all three are shown.`
+            : ""),
+        data: factsForUi({ compared: [...named], pools: sel, winner: top ?? null }),
+        intent: { template_id: "query_all_earn_pools", slots: { compared: [...named] } },
+        mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
+        request_id: ctx.request_id,
+      };
+    }
+    /**
+     * "Total value locked across all earn pools" asks for ONE number.
+     *
+     * The fan-out below lists four pools and names the best-paying one — a good answer to
+     * a question nobody asked. Worse, the per-pool figures are in TOKENS, so a reader
+     * adding them up by eye would sum XLM to USDC and get a number that means nothing.
+     *
+     * TVL is total ASSETS supplied (not the liquidity still available to borrow), valued
+     * in USD. Stables are $1; XLM needs the oracle, and if that read fails the total is
+     * omitted rather than guessed — a TVL quoted at an invented XLM price would be wrong
+     * by an order of magnitude and look authoritative.
+     */
+    const wantTotal =
+      /\btvl\b|\btotal value\b|\btotal\b[^.]*\block/i.test(ctx.message) ||
+      /\b(combined|altogether|in total|across all)\b/i.test(ctx.message);
+
+    let tvlUsd: number | null = null;
+    let tvlPartial = false;
+    if (wantTotal) {
+      let xlmPrice: number | null = null;
+      try {
+        const batch = await getMcpClient().call(
+          "vanna_get_prices_batch",
+          { symbols: ["XLM"] },
+          ctx.userId,
+        );
+        const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
+        const p = Number(prices.XLM?.price_usd ?? prices.xlm?.price_usd);
+        if (Number.isFinite(p) && p > 0) xlmPrice = p;
+      } catch {
+        /* leave null — the total is then omitted, never guessed */
+      }
+      let sum = 0;
+      for (const r of rows) {
+        const raw = r.total_assets_human ?? r.total_liquidity_human;
+        const units = Number.parseFloat(String(raw ?? "").replace(/,/g, ""));
+        if (!Number.isFinite(units)) {
+          tvlPartial = true;
+          continue;
+        }
+        const price = String(r.symbol) === "XLM" ? xlmPrice : 1;
+        if (price == null) {
+          tvlPartial = true;
+          continue;
+        }
+        sum += units * price;
+      }
+      if (!tvlPartial || sum > 0) tvlUsd = sum;
+      if (tvlPartial && sum === 0) tvlUsd = null;
+    }
+
     const wantHighest = /highest|best|top/i.test(ctx.message);
+    if (wantTotal) {
+      const head =
+        tvlUsd != null
+          ? `Total value locked across all ${rows.length} Vanna earn pools is ${usd(tvlUsd)}` +
+            (tvlPartial ? " (some pools could not be valued — see below)." : ".")
+          : `I couldn't total the pools — the XLM oracle price didn't come back, and I won't ` +
+            `quote a TVL built on a guessed price.`;
+      return {
+        kind: "answer",
+        message: `${head}\n\nBy pool:\n${lines.join("\n")}`,
+        data: factsForUi({ tvl_usd: tvlUsd, pools: rows }),
+        intent: { template_id: "query_all_earn_pools", slots: { pools: [...pools] } },
+        mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
+        request_id: ctx.request_id,
+      };
+    }
     const prose = wantHighest
       ? `${winner?.symbol ?? "n/a"} pays the most right now at ${pct(winner?.supply_apy_pct)} supply APY.\n\n` +
         `All ${rows.length} Vanna earn pools:\n${lines.join("\n")}`
@@ -2866,6 +3284,177 @@ async function projectImpact(
  * caps at spendable (and can top up from the wallet). MCP repay has no top-up, so
  * we cap the same way and always show: owed / wallet available / C-account spendable.
  */
+/**
+ * Size "50% of the XLM in my wallet" — a share of a live BALANCE, for the ops whose
+ * pot is a balance rather than a debt.
+ *
+ * The bug this closes: `deposit XLM 50% of XLM in my wallet into the XLM pool` was
+ * answered with "How much XLM do you want to supply?" — a question answered with a
+ * question. The user gave a size; it was just not an absolute number.
+ *
+ * Maths deliberately copied from the site rather than invented, so the copilot and the
+ * page cannot disagree about what "50%" means:
+ *   - the pot is the wallet balance (Earn supply, Margin deposit) or the posted
+ *     collateral (Margin withdraw);
+ *   - native XLM leaving the wallet is capped at `maxSpendableXlm`, i.e. balance minus
+ *     the account's REAL reserve `(2 + subentries) × 0.5` minus a fee buffer. A flat
+ *     reserve is what let a "100%" click compute an amount that passed the form's own
+ *     check and still trapped on-chain once the wallet held a few trustlines;
+ *   - the result is FLOORED to 7dp, never rounded up past the balance.
+ *
+ * Returns null when there is no fraction to resolve, so every caller keeps its existing
+ * behaviour untouched for an ordinary numeric amount.
+ */
+async function resolveBalanceFractionAmount(
+  action: CopilotAction,
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+): Promise<
+  { kind: "ok"; amount: number; note: string; facts: Record<string, unknown> } | ChatResponse | null
+> {
+  if (action.amount != null && action.amount > 0) return null;
+
+  const stated =
+    action.fraction != null && Number.isFinite(Number(action.fraction)) && Number(action.fraction) > 0
+      ? Math.min(1, Number(action.fraction))
+      : findBalanceFraction(ctx.message);
+  if (stated == null) return null;
+
+  const asset = action.asset;
+  if (!asset) return null;
+  const ui = displayUsdcLabel(marginCollateralSymbol(asset), asset);
+  const pct = `${Number((stated * 100).toFixed(2))}%`;
+
+  let balance: number | null = null;
+  let sourceLabel: string;
+
+  if (action.op === "withdraw_collateral") {
+    if (!ctx.smartAccount) return null;
+    const pos = await readMarginPositions(ctx.smartAccount);
+    const row = pos?.collateral.find((r) => sameAsset(r.symbol, asset));
+    if (!row) {
+      return {
+        kind: "blocked",
+        message: `You have no ${ui} posted as collateral to withdraw.`,
+        request_id: ctx.request_id,
+      };
+    }
+    balance = Number.parseFloat(String(row.amount).replace(/,/g, ""));
+    sourceLabel = "posted as collateral";
+  } else if (action.op === "swap") {
+    /**
+     * A swap spends the SMART ACCOUNT's free balance, not the wallet's.
+     *
+     * The Trade/Spot page proves it: its "Balance:" for XLM tracks the C-account, not the
+     * G-wallet (8,966 vs 3,376 on this account). Sizing "swap 50% of my XLM" off the
+     * wallet would compute a figure the swap cannot actually spend — right-looking and
+     * unexecutable. Same balance the page's own 25/50/75/Max buttons read.
+     */
+    if (!ctx.smartAccount) return null;
+    try {
+      const { MarginAccountService } = await import("@/lib/margin-utils");
+      const wad = await MarginAccountService.getMarginAccountTokenBalanceWad(
+        ctx.smartAccount,
+        marginCollateralSymbol(asset),
+      );
+      if (wad == null) return null;
+      const n = Number(BigInt(wad)) / 1e18;
+      if (!Number.isFinite(n)) return null;
+      balance = n;
+    } catch {
+      return null;
+    }
+    sourceLabel = "in your margin account";
+  } else {
+    if (!ctx.trader) return null;
+    try {
+      const wallet = await getMcpClient().call(
+        "vanna_get_wallet_balance",
+        { g_address: ctx.trader },
+        ctx.userId,
+      );
+      balance = walletBalanceForEarn(wallet as Record<string, unknown>, asset).balance;
+    } catch {
+      // A balance read that failed is not a size of zero. Fall through to the normal
+      // "how much?" ask rather than inventing a number from a failed read.
+      return null;
+    }
+    sourceLabel = "in your wallet";
+  }
+
+  if (balance == null || !Number.isFinite(balance) || balance <= 0) {
+    return {
+      kind: "blocked",
+      message: `Your ${ui} balance ${sourceLabel} is 0, so there is nothing to take ${pct} of.`,
+      request_id: ctx.request_id,
+    };
+  }
+
+  /**
+   * The XLM reserve is a property of the WALLET, not of every XLM balance.
+   *
+   * `(2 + subentries) × 0.5` is what a Stellar G-account must keep on-chain; the margin
+   * account's XLM is a contract token balance with no such floor. Applying it to a swap
+   * made the copilot offer 2240.7178423 XLM where Trade/Spot's own 25% button gives
+   * 2241.7178423 — exactly one XLM short, because a wallet rule was charged against a
+   * contract balance. Keyed on the balance SOURCE so the rule cannot drift onto another
+   * op again.
+   */
+  let spendable = balance;
+  let reserved: number | null = null;
+  if (sourceLabel === "in your wallet" && sameAsset(asset, "XLM") && ctx.trader) {
+    try {
+      const { getXlmMinReserve, maxSpendableXlm } = await import("@/lib/xlm-reserve");
+      const minReserve = await getXlmMinReserve(ctx.trader);
+      spendable = maxSpendableXlm(balance, minReserve);
+      reserved = balance - spendable;
+    } catch {
+      /* keep the raw balance; preflight still catches an over-spend */
+    }
+  }
+
+  const amount = applyFraction(spendable, stated);
+  if (!(amount > 0)) {
+    return {
+      kind: "blocked",
+      message:
+        `${pct} of your spendable ${ui} rounds to zero. You hold ${balance.toFixed(7)} ${ui} ` +
+        `${sourceLabel}` +
+        (reserved != null
+          ? `, of which ${reserved.toFixed(4)} must stay to cover the account reserve and fees`
+          : "") +
+        `.`,
+      request_id: ctx.request_id,
+    };
+  }
+
+  const note =
+    `${pct} of your ${ui} ${sourceLabel} is ${amount} ${ui}` +
+    (reserved != null && reserved > 0
+      ? ` (${balance.toFixed(4)} held, ${reserved.toFixed(4)} kept back for the account reserve and fees).`
+      : ` (${balance.toFixed(4)} held).`);
+
+  return {
+    kind: "ok",
+    amount,
+    note,
+    facts: {
+      fraction: stated,
+      balance,
+      spendable,
+      reserved_for_fees: reserved,
+      sized_amount: amount,
+      asset: ui,
+      balance_source: sourceLabel,
+    },
+  };
+}
+
 async function resolveRepayAmount(
   action: CopilotAction,
   ctx: {
@@ -3241,8 +3830,8 @@ async function runWrite(
   // "Repay all my XLM" must never ask "how much?" — size it off live debt the
   // same way the Margin page fills the input when you tap 100%. Cap at C-account
   // spendable (website does too) and always surface wallet vs spendable balances.
-  let repayNote: string | null = null;
-  let repayFacts: Record<string, unknown> | null = null;
+  let sizingNote: string | null = null;
+  let sizingFacts: Record<string, unknown> | null = null;
   if (action.op === "repay") {
     const sized = await resolveRepayAmount(action, {
       ...ctx,
@@ -3252,8 +3841,8 @@ async function runWrite(
     action.amount = sized.amount;
     action.asset = sized.asset;
     action.fraction = null;
-    repayNote = sized.note;
-    repayFacts = {
+    sizingNote = sized.note;
+    sizingFacts = {
       debt: sized.debt,
       wallet_available: sized.walletAvailable,
       spendable: sized.spendable,
@@ -3261,6 +3850,29 @@ async function runWrite(
       capped_to_spendable: sized.capped,
       asset: sized.asset,
     };
+  }
+
+  // ── Supply / deposit / withdraw size: the same chips, against a live balance ──
+  // A stated share is a size, so it must be resolved BEFORE the "how much?" asks
+  // below — otherwise the user is asked for something they already gave.
+  if (
+    action.op === "lend" ||
+    action.op === "supply" ||
+    action.op === "deposit_collateral" ||
+    action.op === "withdraw_collateral" ||
+    // Sizes the collateral half only — `planLeverage` still sizes the borrow from it.
+    action.op === "deposit_and_borrow" ||
+    // The Trade/Spot page's own 25 / 50 / 75 / Max meter, in language.
+    action.op === "swap"
+  ) {
+    const sized = await resolveBalanceFractionAmount(action, { ...ctx, smartAccount });
+    if (sized && sized.kind !== "ok") return sized;
+    if (sized && sized.kind === "ok") {
+      action.amount = sized.amount;
+      action.fraction = null;
+      sizingNote = sized.note;
+      sizingFacts = sized.facts;
+    }
   }
 
   // Bare "USDC" is ambiguous (three SACs). Always ask — except highest-yield
@@ -3739,9 +4351,21 @@ async function runWrite(
         request_id: ctx.request_id,
       };
     }
-    const venue = (action.venue || "aquarius").toLowerCase().includes("soro")
-      ? "soroswap"
-      : "aquarius";
+    /**
+     * Leave the venue UNSET when the user did not name one.
+     *
+     * Defaulting to "aquarius" here overwrote the router's null and made the slot
+     * indistinguishable from a venue the user actually asked for — so `mapOpToMcpStep`
+     * read "swap 10 XLM to SOUSDC" as a request for SOUSDC *on Aquarius* and refused it
+     * as contradictory, when the named token should simply have selected Soroswap.
+     * The executor picks the venue from the named token and falls back to Aquarius only
+     * when nothing constrains it.
+     */
+    const venue = action.venue
+      ? String(action.venue).toLowerCase().includes("soro")
+        ? "soroswap"
+        : "aquarius"
+      : null;
     action = { ...action, venue };
     // Best-effort pre-quote (one batch call). If it fails, mapOp still sends the
     // swap and MCP may auto-quote after redeploy.
@@ -3967,11 +4591,33 @@ async function runWrite(
     const base = explainImpact
       ? `${String(msg).replace(/\*\*([^*]+)\*\*/g, "$1")}\n\n${explainImpact}`
       : String(msg).replace(/\*\*([^*]+)\*\*/g, "$1");
-    const withRepay = repayNote ? `${repayNote}\n\n${base}` : base;
-    return blendSupplyNote ? `${blendSupplyNote}\n\n${withRepay}` : withRepay;
+    const withSizing = sizingNote ? `${sizingNote}\n\n${base}` : base;
+    return blendSupplyNote ? `${blendSupplyNote}\n\n${withSizing}` : withSizing;
   };
-  const withRepayData = (extra?: Record<string, unknown>) =>
-    factsForUi({ ...(repayFacts || {}), ...(extra || {}) });
+  const withSizingData = (extra?: Record<string, unknown>) =>
+    factsForUi({ ...(sizingFacts || {}), ...(extra || {}) });
+
+  /**
+   * Drop a diagnostic the outcome has already superseded.
+   *
+   * `result.build` still carries MCP's `error` / `message` from the auto-sign attempt.
+   * On a card headed EXECUTED — or one showing an Approve & sign button — that stale
+   * refusal rendered as `ERROR wallet_not_bound` above MCP's full plumbing paragraph,
+   * describing a transaction that had just succeeded. It reads as a failure of the very
+   * thing the card is reporting.
+   *
+   * Only applied on the staged and settled paths; a genuine error card still shows both.
+   */
+  const withoutSupersededDiagnostic = (b: Record<string, unknown>) => {
+    const { error: _error, message: _message, summary, ...rest } = b;
+    return {
+      ...rest,
+      // MCP appends its own "| unsigned_xdr present (4316 chars)" trailer to the summary.
+      ...(typeof summary === "string"
+        ? { summary: summary.replace(/\s*\|\s*unsigned_xdr present[^|]*$/i, "").trim() }
+        : {}),
+    };
+  };
 
   const mcpMeta = {
     tool: result.mcp_trace.tool,
@@ -4009,7 +4655,9 @@ async function runWrite(
       kind: "executed",
       message: withImpact(displayMsg),
       ...(accountAnswer ? { answer: accountAnswer } : {}),
-      data: withRepayData({ ...result.build, ...(result.submitted || {}) }),
+      data: withSizingData(
+        withoutSupersededDiagnostic({ ...result.build, ...(result.submitted || {}) }),
+      ),
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       mcp: mcpMeta,
       execution: {
@@ -4054,10 +4702,23 @@ async function runWrite(
       ? `${pickSummary} → ${mapped.step.label}`
       : mapped.step.label;
     const xdr = xdrForSign;
+    /**
+     * Say nothing when the transaction is ready — the Approve & sign button IS the
+     * message.
+     *
+     * This used to append "full unsigned_xdr is attached (4316 chars). Use Approve & sign
+     * / Freighter; do not invent a hash." That sentence is addressed to a MODEL, not a
+     * person: an envelope length in characters, a second wallet the user is not using,
+     * and an instruction not to fabricate data. It rendered on every staged write, under
+     * a button already labelled "Approve & sign".
+     *
+     * The failure case still speaks up, because "nothing to sign" is something the user
+     * needs to know.
+     */
     const xdrNote =
       xdr && xdr.length > 20
-        ? `\n\nWallet sign required — full unsigned_xdr is attached (${xdr.length} chars). Use Approve & sign / Freighter; do not invent a hash.`
-        : "\n\nWallet sign required but MCP returned no unsigned_xdr — rebuild the transaction.";
+        ? ""
+        : "\n\nMCP returned no transaction to sign, so there is nothing staged — ask again and I'll rebuild it.";
     const reasons = reasonsWith(
       pickSummary
         ? [
@@ -4078,9 +4739,8 @@ async function runWrite(
       kind: "needs_wallet_sign",
       message: withImpact((highestPickNote || "") + signBody + xdrNote),
       data: factsForUi({
-        ...result.build,
+        ...withoutSupersededDiagnostic(result.build),
         ...(highestPickFacts || {}),
-        action_label: mapped.step.label,
         has_unsigned_xdr: Boolean(xdr && xdr.length > 20),
         unsigned_xdr_chars: xdr?.length ?? 0,
         // Preserve that Sign Service wanted enable — client may still session-sign.
@@ -4165,7 +4825,7 @@ async function runWrite(
     return {
       kind: "blocked",
       message: withImpact(result.message),
-      data: withRepayData({ ...result.build, ...(result.submitted || {}) }),
+      data: withSizingData({ ...result.build, ...(result.submitted || {}) }),
       mcp: mcpMeta,
       intent: { template_id: action.op },
       preview: {
@@ -4219,7 +4879,7 @@ async function runWrite(
           `block it, and the Margin page submits these anyway because they go through.\n\n` +
           `I've built it the same way the Margin page does. Approve and sign to submit it.`,
       ),
-      data: withRepayData({
+      data: withSizingData({
         ...(result.build as Record<string, unknown>),
         local_executor_fallback: true,
         reason: "soroban_budget_exceeded_in_simulation",
@@ -4249,7 +4909,7 @@ async function runWrite(
   return {
     kind: "error",
     message: withImpact(result.message),
-    data: withRepayData(result.build as Record<string, unknown>),
+    data: withSizingData(result.build as Record<string, unknown>),
     mcp: mcpMeta,
     intent: { template_id: action.op },
     request_id: ctx.request_id,
@@ -4435,6 +5095,35 @@ async function runPlan(
   // otherwise the loop treats one combined write as "all legs done" after deposit
   // and never runs the XLM borrow (debt $0, false "borrowed XLM" receipt).
   const rawExpanded = expandPlanWrites(plan.steps);
+
+  /**
+   * Resolve a share of a balance into a figure BEFORE leverage is materialized.
+   *
+   * `materializeLeverageWrites` needs a collateral number to multiply by `(L−1)`, and a
+   * share is a size it cannot read — so an approved "deposit 25% of XLM … borrow BLUSDC
+   * at 2x" came back asking "How much XLM to deposit for the leveraged position?", for a
+   * plan whose own card had just said 25%. Approving a plan and then being asked for
+   * something the card displayed is the worst version of this bug, because the user has
+   * already agreed to the number.
+   *
+   * Deliberately here rather than at freeze time: balances move, and the figure the user
+   * gets must be the one true when the leg runs — the same rule the site's own percentage
+   * chips follow.
+   */
+  for (const w of rawExpanded) {
+    if (w.amount != null && Number(w.amount) > 0) continue;
+    const frac = Number(w.fraction ?? NaN);
+    if (!Number.isFinite(frac) || frac <= 0) continue;
+    const sized = await resolveBalanceFractionAmount(
+      { op: w.op, asset: w.asset ?? null, amount: null, fraction: frac } as CopilotAction,
+      { ...ctx, smartAccount },
+    );
+    if (sized && sized.kind === "ok") {
+      w.amount = sized.amount;
+      w.fraction = null;
+    }
+  }
+
   const priceSymbols = materializeLeveragePriceSymbols(rawExpanded);
   const leveragePrices =
     priceSymbols.length > 0
@@ -5011,7 +5700,24 @@ async function runPlan(
   }
 
   // ── Phase C: final report ───────────────────────────────────────────────
-  if (finalHf == null && smartAccount && multiSteps.some((s) => s.status === "ok" && affectsHealth(s.op))) {
+  /**
+   * ASKING for the health factor is reason enough to read it.
+   *
+   * This only sampled when a leg had MOVED health, so "lend 15 SOUSDC, then tell me my
+   * health factor" — where the lend is an earn op and moves nothing on margin — left
+   * `finalHf` null. The receipt then said "the deposit was confirmed on-chain, but no
+   * health factor was returned", directly under a card showing 3.29 from the account rail.
+   * Both were honest; they just read different sources, and the user is told their own
+   * question could not be answered when it plainly could.
+   */
+  const askedForHealth = plan.steps.some(
+    (s) => s.kind === "read" && /health|hf\b/i.test(String((s as { tool?: string }).tool ?? "")),
+  );
+  if (
+    finalHf == null &&
+    smartAccount &&
+    (askedForHealth || multiSteps.some((s) => s.status === "ok" && affectsHealth(s.op)))
+  ) {
     finalHf = await sampleApproxHf(ctx.userId, smartAccount, ctx.trader);
   }
 

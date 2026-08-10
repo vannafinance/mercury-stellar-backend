@@ -30,6 +30,7 @@ import {
 import { sameAsset } from "./leverage-plan";
 import { netOfOriginationFee } from "@/lib/borrow-fee";
 import { toSlots } from "./registry/intent";
+import { findBalanceFraction } from "./amount-intent";
 
 /**
  * A leg of an extracted plan.
@@ -52,6 +53,12 @@ export type ExtractedStep = {
   tool?: string;
   asset?: string | null;
   amount?: number | null;
+  /**
+   * A share of a live balance, when the size was stated as one ("50% of the XLM in my
+   * wallet"). Sized against the balance at execution time, exactly as the single-write
+   * path does — the plan cannot resolve it here because balances move.
+   */
+  fraction?: number | null;
   leverage?: number | null;
   args?: Record<string, unknown>;
 };
@@ -244,7 +251,31 @@ const SPAN_VERB_SUPPLY = /\b(?:supply|blend)\b/i;
  * and the amount pair it used — not the whole clause — so leftover qualifiers show up in
  * the intra-clause diagnostic rather than being quietly counted as understood.
  */
+/**
+ * A stated SHARE of a balance is a size, and has to survive into the plan.
+ *
+ * Every amount rule below reads an amount+asset PAIR, so "deposit 50% of XLM in my wallet
+ * as collateral and borrow BLUSDC at 2x" produced two steps carrying no amount at all:
+ * the approval card read "amount to be confirmed" twice and warned it would stop to ask,
+ * for a prompt that had already said how much. The single-write path resolves these off
+ * the live balance; the plan path simply never carried the number that far.
+ *
+ * Only ever fills a GAP — a clause stating an explicit amount keeps it — and only per
+ * clause, so the share attaches to the leg the user actually said it about.
+ */
 function clauseToStepSpanned(
+  clause: string,
+  global: { leverage: number | null; minHf: number | null },
+  offset = 0,
+): { step: ExtractedStep; spans: Span[] } | null {
+  const hit = clauseToStepSpannedRaw(clause, global, offset);
+  if (!hit || hit.step.kind !== "write") return hit;
+  if (hit.step.amount != null || hit.step.fraction != null) return hit;
+  const fraction = findBalanceFraction(clause);
+  return fraction == null ? hit : { ...hit, step: { ...hit.step, fraction } };
+}
+
+function clauseToStepSpannedRaw(
   clause: string,
   global: { leverage: number | null; minHf: number | null },
   offset = 0,
@@ -830,6 +861,8 @@ interface CoalescibleStep {
   op?: string | null;
   asset?: string | null;
   amount?: number | null;
+  /** A share of a live balance — a size, just not an absolute one. */
+  fraction?: number | null;
   leverage?: number | null;
   args?: Record<string, unknown>;
 }
@@ -886,12 +919,22 @@ export function coalesceLeveragedDepositBorrow<T extends CoalescibleStep>(
     const borLev = Number(bor?.leverage ?? bor?.args?.leverage ?? NaN);
     const L = [depLev, borLev, Number(opts.leverage ?? NaN)].find((n) => Number.isFinite(n) && n > 1);
 
+    /**
+     * A deposit sized as a SHARE is just as determined as one sized as a number — the
+     * figure arrives when the leg runs and the live balance is read. Requiring an
+     * absolute amount here is what left "deposit 50% of XLM in my wallet as collateral
+     * and borrow BLUSDC at 2x" as two legs, with the borrow showing "amount to be
+     * confirmed" and no mention of the 2× at all.
+     */
+    const depFraction = Number(dep?.fraction ?? dep?.args?.fraction ?? NaN);
+    const depSized =
+      (dep?.amount != null && dep.amount > 0) || (Number.isFinite(depFraction) && depFraction > 0);
+
     const mergeable =
       bor != null &&
       dep?.op === "deposit_collateral" &&
       bor.op === "borrow" &&
-      dep.amount != null &&
-      dep.amount > 0 &&
+      depSized &&
       !!dep.asset &&
       // An explicit borrow size is the user's own answer — never overwrite it.
       (bor.amount == null || !(bor.amount > 0)) &&
@@ -948,6 +991,9 @@ export function coalesceLeveragedDepositBorrow<T extends CoalescibleStep>(
         ...(dep.args || {}),
         ...(bor.args || {}),
         leverage: L,
+        // The collateral's share survives the merge; it sizes the deposit half, and the
+        // leverage sizes the loan half against it.
+        ...(Number.isFinite(depFraction) && depFraction > 0 ? { fraction: depFraction } : {}),
         ...(borrowAsset ? { borrow_asset: borrowAsset } : {}),
         // Explicit token size only — never the leverage multiple itself.
         ...(borrowAmount != null ? { borrow_amount: borrowAmount } : { borrow_amount: null }),

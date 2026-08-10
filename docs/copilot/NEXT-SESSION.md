@@ -1,5 +1,88 @@
 # Copilot — next session brief
 
+---
+
+## Session 2 (2026-08-10, later) — 11 bugs fixed, 13 transactions executed
+
+Everything below in "Work queue" is superseded where it conflicts with this block.
+
+Test wallet for all of it: **`GDW3B2BVO3MUBPIYWZQA6ZGIOHD73CNZITY5YKVD5KOOHMZ72REVVJ52`**,
+smart account **`CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ`** (created this
+session by the copilot itself, with auto-approve OFF). Suite **694 → 770**, `tsc` clean.
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | **Account creation failed with auto-approve OFF** — `wallet_not_bound` arrives as a top-level `build.error` with `auto_sign`/`auto_sign_error` both null, so it never reached the auto-sign branches, fell into `softFail`, and **discarded the XDR MCP had already built** (`has_unsigned_xdr: true` while reporting failure). | `mcp-write.ts` — an auto-sign refusal carrying a usable XDR returns `needs_wallet_sign`. Keyed on the error CODE, never prose. |
+| 2 | **Percentage sizes dropped**, in 3 separate places: router had no `fraction` slot for lend/deposit/withdraw; `step-extractor` only read amount+asset pairs; the **LLM planner** carried no fraction at all. | `findBalanceFraction` + `applyFraction` (`amount-intent.ts`), `FRACTION_SIZED_OPS`, `resolveBalanceFractionAmount` (`handle.ts`). |
+| 3 | **Approved plan lost the share** — card said 25%, replay asked "How much XLM to deposit?" because `materializeLeverageWrites` needs a number. | Fractions resolve in `runPlan` **before** leverage is materialized. |
+| 4 | **Levered deposit+borrow stayed split** — `coalesceLeveragedDepositBorrow` required an absolute `dep.amount > 0`, so a share-sized deposit never merged and the borrow lost its leverage entirely. | Guard accepts a fraction; merged step carries it. |
+| 5 | **A swap bought a different token than the card showed** — `mapUsdForVenue` rewrote any USDC variant to the venue's own, and the label was built from the user's word. "swap 10 XLM to BLUSDC" → card said BLUSDC, transaction bought **AQUSDC**. | Named variant selects its venue; BLUSDC refused (not a DEX token); label always names the wire symbol. |
+| 6 | **Venue defaulted in two places** (`router.ts`, `handle.ts`), making "user named a venue" indistinguishable from a guess. | Both preserve null. |
+| 7 | **Card clutter** — 9 plumbing rows (FUNCTION, CONTRACT, SIMULATION SUCCESS, AUTO SIGN ERROR, raw stroop fees…), model-facing `"do not invent a hash"`, and a stale `ERROR wallet_not_bound` row on **successful** cards. | `PLUMBING_FACT_KEY` (`explain.ts`), `withoutSupersededDiagnostic`, `readyToSignMessage`. |
+| 8 | **Raw HTML error page in an answer** — a WorkOS 520 put `<!DOCTYPE html>…` where the XLM APY should have been. | `shortError` strips tags, maps known infra faults, caps length. |
+| 9 | **TVL never totalled** — listed four pools, named a winner, answered no question. | Sums total **assets** in USD; declines rather than guessing if the XLM oracle fails. |
+| 10 | **Comparison never compared** — "compare the XLM and BLUSDC pools" dumped all four. | Narrows to named pools, leads with the verdict and the gap. Bare USDC expands to all three variants. |
+| 11 | **HF projection returned the present**; **liquidation price routed to the spot oracle** and claimed "no position data". | `parseHypotheticalMove` + `projectHealthFactor`; liquidation-price route + `liquidationPriceLine`. Threshold **derived** from the live pair, never assumed. |
+
+| 12 | **`remove_liquidity` sent arguments MCP rejects** — `fraction`/`share_fraction`, which it has never taken. Returned `invalid_input`, and the copilot pasted MCP's *developer* guidance to the user ("Never pass raw share integers"). | Full exit → `remove_all`; explicit size → `liquidity`; a partial share asks for a figure in the user's terms. |
+| 13 | **`PROJECTED IMPACT: reading your current position failed` on every Earn op** — NOT flakiness (I guessed that twice and was wrong). `risk.ts:105` deliberately returns an empty baseline for every `requires_account: false` op, because an Earn supply doesn't touch margin; the card could not tell that apart from a failed read. | `Simulation.margin_applicable` — card and prose now say "None — this moves tokens in your wallet and doesn't touch your margin account…". |
+| 15 | **Swap had no percentage support** — Trade/Spot offers 25 / 50 / 75 / Max, but both swap entry conditions in the router required a numeric amount, so "swap half my XLM to USDC" fell through to a generic clarify. | `swapShare` + `swapPair` open the branch on a share; `swap` added to `FRACTION_SIZED_OPS`. |
+| 16 | **The XLM reserve was charged against the wrong balance** — a swap spends the SMART ACCOUNT's XLM (a contract token balance), but `resolveBalanceFractionAmount` deducted the `(2+subentries)×0.5` **wallet** reserve, giving 2240.7178423 where Trade/Spot's own 25% gives **2241.7178423** — exactly 1 XLM short. | The reserve is now keyed on the balance SOURCE (`"in your wallet"`), so it cannot drift onto a contract balance again. |
+| 18 | **Receipt denied a health factor it had** — "lend 15 SOUSDC, then tell me my health factor" ended with "no health factor was returned", directly under a card showing 3.29. `runPlan` only sampled HF when a leg had MOVED health, and `lend` does not, so the summariser was honestly handed null. | Asking for HF is now itself reason to read it (`askedForHealth` in `runPlan`). Verified: "…establishing a account health factor of 3.29". |
+| 19 | **Session log "stuck on staged"** (owner-reported) — an abandoned run never reports a terminal status, so its row said `staged` forever. | `settleAbandonedRow`, on hydration only. See the note below. |
+| 17 | **`PROJECTED IMPACT: reading your current position failed` on MARGIN ops** — I mis-diagnosed this twice as flaky RPC. It is not. `vanna_margin_status/health` returns **HTTP 200 carrying an error field** (`HostError: Error(Budget, ExceededLimit)`) on accounts holding several collateral tokens, so `fetchHealth`'s catch was unreachable, no key parsed, and the baseline silently zeroed. `runRead` documents this exact trap at `handle.ts:~2678`; `risk.ts` had never learned it. | `healthFromSnapshot` fallback in `risk.ts`, triggered on ANY unparseable payload (not just the budget string), plus a `console.warn` so a future silent zero is visible. Verified: HF 3.29 → 2.96 now renders where the card previously reported a failure. |
+| 14 | **`copilot-workspace.tsx` kept its OWN `Simulation` type** — the same "two definitions of one type" trap as `CopilotAction`, so a field added server-side did not exist in the UI. | Imports the server type from `lib/copilot/types`. Do not re-fork it. |
+
+Plus: internal tracking keys (`BLEND_USDC`) now render as "USDC in Blend" in prose — **label
+only, totals untouched**. Whether a Blend supply should count toward margin collateral is a
+protocol-semantics call for the contracts owner; `account-snapshot.ts:50-58` warns against a
+second copy of that rule.
+
+**Non-bugs, don't re-chase:** `/trade` 404s because there is no `app/trade/page.tsx` — it is
+a dropdown over `/trade/spot|perps|options`. The "Approve & sign does nothing" I reported
+mid-session was me reading a mid-flight panel before it repainted; the clicks worked.
+
+**Exercised end to end (17 transactions, auto-approve OFF, all `successful: true`):** account
+creation · deposit · borrow · repay (incl. `repay 25% of my BLUSDC debt`) · withdraw
+collateral · swap · earn lend · earn redeem · Blend supply · Aquarius LP add/remove · plan
+approval · TVL / comparison / HF projection / liquidation-price reads · Portfolio ·
+Analytics.
+
+**Trade/Spot ground truth (driven, not assumed):** You Pay **XLM only**; You Receive **USDC
+only** — the token picker has exactly one entry. A venue dropdown (Soroswap | Aquarius)
+decides which USDC SAC you actually receive, which is why the page can label it plainly
+"USDC". Rungs are **25 / 50 / 75 / Max** (NOT the 10/25/50/100 used by Earn and Margin), and
+the balance shown is the **smart account's**, not the wallet's. The copilot names the real
+token (SOUSDC / AQUSDC) because it has no venue dropdown visible beside the number.
+
+**Needs the OWNER, not the next session:**
+1. The **swap venue change** — `swap X to SOUSDC` now routes to Soroswap rather than
+   Aquarius. Correct, but it changes which token a swap buys; review before shipping.
+2. Whether a **Blend supply should count toward margin collateral**. Label fixed, totals
+   deliberately untouched.
+3. ~~session-log "stuck on staged"~~ — **EXPLAINED AND FIXED.** It is not a status-mapping
+   fault: a row leaves a pre-terminal state only when something reports a terminal one, and
+   an ABANDONED run (staged, never signed, user walks away) never reports anything. Proved
+   it — a `lend` staged at 08:xx still read `staged` seven hours later, and only cleared
+   because re-running the same prompt produced the same deterministic plan id and updated
+   the original row. Fix: `settleAbandonedRow` relabels a pre-terminal row older than 30
+   min as "not completed" / "not signed" on hydration only, so a live run is never
+   relabelled underneath the user. A plan quote is valid for 5 min, so a staged row that
+   survives a reload is definitively finished.
+
+**Latency, measured warm (2026-08-10):** read **6.7s**, 2-step plan **7.4s**, 4-step plan
+**6.5s**. An earlier claim in this session that plan preview takes 40–60s was WRONG — every
+one of those samples was the first request after a source edit, i.e. Turbopack recompiling.
+This file already warns about that trap and I fell into it anyway. Measure on a warm server,
+over several samples, or don't quote a number.
+
+**The trap worth remembering:** MCP reports a Soroban budget overrun as a **200 with an error
+field**, never a rejection. Any `try/catch` around an MCP read is therefore the WRONG guard on
+its own — the catch never fires, and the failure becomes a plausible-looking zero. This bit
+`runRead` once and `risk.ts` again months later. Check the payload, not just the promise.
+
+---
+
 Self-contained. Start here, in this order. Written 2026-08-10 at the end of a long session;
 everything below is either verified live or explicitly marked unverified.
 
@@ -69,7 +152,38 @@ on it; take medians over 4+ samples.
 
 ## 2. Work queue, highest value first
 
-### Task 1 — Manual margin-account creation (owner's top complaint, PARTIALLY DONE)
+### Task 1 — Manual margin-account creation — **FIXED AND VERIFIED ON-CHAIN 2026-08-10**
+
+The functional path really was broken, exactly as the owner said; the wording fix last
+session was treating a symptom.
+
+**Root cause** (`mcp-write.ts`, `executeMcpWrite`): `wallet_not_bound` arrives as a
+top-level `build.error` with `auto_sign` and `auto_sign_error` **both null**, so it never
+reached the auto-sign branches that stage a wallet signature. It fell into the generic
+`softFail` test (`!!build.error`), which returned `status: "error"` and **discarded the
+XDR MCP had already built** — the response carried `has_unsigned_xdr: true` while the
+copilot reported a failure and rendered no Approve & sign button. With auto-approve ON the
+Sign Service signed before any of this ran, which is precisely why it "worked when ON".
+
+**Fix:** an auto-sign refusal that still carries a usable XDR now returns
+`needs_wallet_sign` with that XDR. Keyed on the error CODE, never the prose, so a genuine
+`simulation_failed` is still reported and never offered for signature. 6 regression tests
+in `tests/lib/auto-sign-refusal-stages.test.ts` replay the live payload.
+
+**Verified end to end** with auto-approve OFF on the fresh wallet: Approve & sign →
+signed by Privy → tx `d04b076a86b40bf4dd838453123cb703081df176db325be6a81b6b18c3c12e07`
+(`successful: true`, ledger 4069209) → smart account
+`CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ`, resolved from AccountManager
+on-chain storage.
+
+**Two copy defects still open, both cosmetic:**
+1. The success card still renders an `ERROR wallet_not_bound` row with MCP's full plumbing
+   paragraph — under a heading that says EXECUTED. It is stale auto-sign detail on a card
+   describing a completed transaction, and it reads as a failure.
+2. `"Use Approve & sign / Freighter; do not invent a hash."` is model-facing instruction
+   text leaking into the user-visible message (appended as `xdrNote` in `handle.ts`).
+
+### Historical note — what was known before the fix
 
 Owner: *"when I try to open a margin account through a new wallet it works if auto-approve is
 ON but doesn't work if it's OFF, which is the default for every user."*
@@ -106,10 +220,27 @@ rows are driven off `strategyStepsRef` / `setStrategySteps` and a per-turn statu
 - A resume/chain hop finishing while the parent row is never updated.
 Reproduce with a multi-leg approve, then compare the row against `execution.status`.
 
-### Task 3 — C7: percentage-of-balance amounts
+### Task 3 — C7: percentage-of-balance amounts (CODE DONE, live run not yet done)
 
 `deposit XLM 50% of XLM in my wallet into the XLM pool` → *"How much XLM do you want to
 supply?"* A question answered with a question: the user gave a size.
+
+**Done 2026-08-10.** `findBalanceFraction` + `applyFraction` +
+`BALANCE_FRACTION_OPTIONS` in `amount-intent.ts`; the router carries a `fraction` on
+`lend` / `deposit_collateral` / `withdraw_collateral`; `FRACTION_SIZED_OPS` in
+`registry/intent.ts` makes a stated share satisfy `requires_amount`; and
+`resolveBalanceFractionAmount` in `handle.ts` sizes it off the live balance next to
+`resolveRepayAmount`. Site maths copied, not invented: wallet balance (or posted
+collateral for withdraw), `maxSpendableXlm` for native XLM out of the wallet, floored to
+7dp — the same rules as `collateral-box.tsx`'s percentage chips. 20 new tests in
+`tests/lib/balance-fraction.test.ts`; suite 694 → **714**, `tsc` clean.
+
+`findBalanceFraction` is deliberately stricter than `findAmountFraction`: "all"/"max" only
+counts as a size when the sentence names the balance it is a share of, so
+`invest for max yield` can never mean "100% of my wallet".
+
+**Still to do:** run it in the browser against the live wallet and confirm the sized
+figure matches what the Earn form shows for the same chip.
 
 `findAmountFraction` (`lib/copilot/amount-intent.ts`) already parses these and is wired for
 **repay only** (`resolveRepayAmount` in `handle.ts` sizes off live debt and caps to spendable —

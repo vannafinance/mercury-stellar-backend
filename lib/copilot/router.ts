@@ -7,7 +7,7 @@
  */
 
 import type { RoutedIntent } from "./types";
-import { findAmountFraction } from "./amount-intent";
+import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 
 /**
@@ -749,18 +749,47 @@ export function routeMessage(message: string): RoutedIntent {
   const swapMatch = raw.match(
     /\bswap\s+(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b(?:\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA))?/i,
   );
-  if (swapMatch || (any(text, "swap") && !any(text, "liquidity") && asset && amount != null)) {
+  /**
+   * A SHARE is a size, so it must open the swap branch too.
+   *
+   * Both entry conditions required a number — the regex wants digits right after "swap",
+   * and the fallback wants `amount != null` — so "swap half my XLM to USDC" matched
+   * neither and fell through to the generic clarify, even though Trade/Spot offers exactly
+   * that as its 25 / 50 / 75 / Max meter.
+   */
+  const swapShare = findBalanceFraction(raw);
+  /** "X to Y" when no amount preceded it — the sized regex above cannot see this pair. */
+  const swapPair = raw.match(
+    /\b(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b/i,
+  );
+  if (
+    swapMatch ||
+    (any(text, "swap") &&
+      !any(text, "liquidity") &&
+      (asset || swapPair) &&
+      (amount != null || swapShare != null))
+  ) {
     const amountIn = swapMatch ? Number(swapMatch[1]) : amount;
-    const tokenIn = (swapMatch?.[2] || asset || "XLM").toUpperCase();
+    const tokenIn = (swapMatch?.[2] || swapPair?.[1] || asset || "XLM").toUpperCase();
     const tokenOut = (
       swapMatch?.[3] ||
+      swapPair?.[2] ||
       (tokenIn === "XLM" ? "USDC" : "XLM")
     ).toUpperCase();
+    /**
+     * Null when the user named no venue — do NOT default it here.
+     *
+     * Defaulting to "aquarius" at the router made the venue indistinguishable from one the
+     * user actually asked for, so "swap 10 XLM to SOUSDC" looked like an explicit request
+     * for SOUSDC *on Aquarius* and was refused as contradictory. The executor picks the
+     * venue that matches a named token, and falls back to Aquarius only when nothing
+     * constrains it.
+     */
     const venue = any(text, "soroswap", "soro swap", "on soroswap", "via soroswap")
       ? "soroswap"
       : any(text, "aquarius", "on aquarius", "via aquarius")
         ? "aquarius"
-        : "aquarius";
+        : null;
     return {
       kind: "write",
       op: "swap",
@@ -770,9 +799,12 @@ export function routeMessage(message: string): RoutedIntent {
       token_a: tokenIn,
       token_b: tokenOut,
       amount_a: amountIn != null && Number.isFinite(amountIn) ? amountIn : null,
+      // "swap half my XLM to USDC" — the Trade/Spot page's 25/50/75/Max meter as language.
+      // Sized against the smart account's free balance, which is what that page reads.
+      fraction: amountIn == null ? swapShare : null,
       venue,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amountIn == null && swapShare == null,
     };
   }
 
@@ -970,14 +1002,16 @@ export function routeMessage(message: string): RoutedIntent {
     ((any(text, "deposit") && any(text, "collateral")) ||
       any(text, "add collateral", "post collateral", "as collateral"))
   ) {
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
       asset: asset ?? "USDC",
       amount,
+      fraction,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 
@@ -985,14 +1019,16 @@ export function routeMessage(message: string): RoutedIntent {
     (any(text, "withdraw") && any(text, "collateral")) ||
     any(text, "take out collateral", "pull collateral")
   ) {
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "withdraw_collateral",
       template_id: "withdraw_collateral",
       asset: asset ?? "USDC",
       amount,
+      fraction,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 
@@ -1078,14 +1114,18 @@ export function routeMessage(message: string): RoutedIntent {
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
     const minHf = parseMinHealthFactor(raw);
+    // "supply 50% of the XLM in my wallet" states a size. Carried as a fraction and
+    // sized off the live wallet balance in handle.ts — same rungs as the Earn form.
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "lend",
       template_id: wantsHighestPool || isMaxYieldInvestIntent(text) ? "lend_highest" : "lend",
       asset: asset ?? "USDC",
       amount,
+      fraction,
       requires_account: false,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
       prefer_max_yield: wantsHighestPool || isMaxYieldInvestIntent(text) || null,
       min_hf: minHf,
     };
@@ -1094,14 +1134,16 @@ export function routeMessage(message: string): RoutedIntent {
   // Bare "deposit 5 XLM" (no "collateral" word) still means deposit_collateral in the
   // production brain router — same as zip direct.py `_ROUTES`.
   if (any(text, "deposit")) {
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
       asset: asset ?? "XLM",
       amount,
+      fraction,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
     };
   }
 
@@ -1392,6 +1434,30 @@ export function routeMessage(message: string): RoutedIntent {
       tool: "vanna_get_prices_batch",
       args: { symbols: symbols.length ? symbols : ["XLM", "USDC", "AQUA"] },
       template_id: "query_prices_batch",
+    };
+  }
+
+  /**
+   * "What's my liquidation price?" is a question about a POSITION, not the oracle.
+   *
+   * The word "price" sent it to `vanna_get_price`, which answered with the XLM spot rate
+   * and then said a liquidation price was unavailable "as no position data was provided"
+   * — to a user whose account holds collateral and debt. The position was never fetched
+   * because the route had already decided this was an oracle question.
+   *
+   * Checked before the price branch, and requires a possessive ("my"/"our") or an explicit
+   * liquidation-price phrase, so "what is the price of XLM" still reaches the oracle.
+   */
+  if (
+    /\bliquidat\w*/i.test(text) &&
+    (/\b(my|our|i)\b/i.test(text) || /\bliquidation\s+price\b/i.test(text))
+  ) {
+    return {
+      kind: "read",
+      tool: "vanna_get_account_health",
+      args: {},
+      requires_account: true,
+      template_id: "query_account_health",
     };
   }
 

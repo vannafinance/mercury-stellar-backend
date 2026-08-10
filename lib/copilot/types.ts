@@ -253,6 +253,19 @@ export interface Simulation {
   liquidation_threshold: number;
   amount_usd: number;
   asset?: string | null;
+  /**
+   * False when the op does not touch the margin account at all, so there is nothing to
+   * project — an Earn supply or redeem moves wallet tokens and leaves collateral and debt
+   * exactly where they were.
+   *
+   * Without this flag a deliberately empty baseline (`collateral_before: 0`,
+   * `hf_before: null`, set by `evaluateWriteRisk` for every `requires_account: false` op)
+   * was indistinguishable from an account read that FAILED, and the card told the user
+   * "reading your current position failed" on a healthy account whose margin figures had
+   * rendered correctly seconds earlier. Reporting a failure that did not happen teaches
+   * people to distrust the panel that matters.
+   */
+  margin_applicable?: boolean;
 }
 
 export interface Preview {

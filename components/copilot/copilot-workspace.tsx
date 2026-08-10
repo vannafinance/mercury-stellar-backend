@@ -38,6 +38,7 @@ import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
+import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -92,19 +93,15 @@ interface AutoSignPrompt {
   raw?: Record<string, unknown> | null;
 }
 
-interface Simulation {
-  hf_before: number | null;
-  hf_after: number | null;
-  collateral_before: number;
-  collateral_after: number;
-  debt_before: number;
-  debt_after: number;
-  ltv_before: number;
-  ltv_after: number;
-  liquidation_threshold: number;
-  amount_usd: number;
-  asset?: string | null;
-}
+/**
+ * Re-exported from the server's own definition rather than re-declared.
+ *
+ * This was a second, hand-maintained copy of `Simulation`, which is the same trap
+ * `CopilotAction` fell into: a field added on the server (`margin_applicable`) simply did
+ * not exist here, so the card could not read what the risk engine had sent. One
+ * definition means a new field reaches the UI without this file being edited.
+ */
+type Simulation = ServerSimulation;
 
 interface ClarifyOption {
   id: string;
@@ -955,14 +952,25 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
     !(Number.isFinite(sim.collateral_before) && sim.collateral_before > 0) &&
     !(sim.hf_before != null && Number.isFinite(sim.hf_before) && sim.hf_before > 0);
   if (noBaseline) {
+    /**
+     * An empty baseline has TWO causes and they need different sentences.
+     *
+     * `margin_applicable: false` means the op never touches margin — an Earn supply or
+     * redeem moves wallet tokens and leaves collateral and debt untouched. Saying "reading
+     * your current position failed" there reports a failure that did not occur, on a card
+     * whose margin numbers were correct moments before. Only a genuinely absent baseline
+     * keeps the original wording.
+     */
+    const notApplicable = sim.margin_applicable === false;
     return (
       <div className="mt-[18px] rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4">
         <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-violet-500">
           projected impact
         </p>
         <p className="text-[13px] leading-[19px] text-vgray-500">
-          Not available — reading your current position failed, so there is no baseline to
-          project from. Your live figures are on the margin page.
+          {notApplicable
+            ? "None — this moves tokens in your wallet and doesn't touch your margin account, so your collateral, debt and health factor are unchanged."
+            : "Not available — reading your current position failed, so there is no baseline to project from. Your live figures are on the margin page."}
         </p>
       </div>
     );
@@ -1109,6 +1117,36 @@ export function CopilotWorkspace() {
    * Hydration runs once per address and MERGES rather than replaces: a turn can complete
    * before the wallet address arrives from the store, and replacing would drop it.
    */
+  /**
+   * A run the user walked away from must not read as one still in progress.
+   *
+   * Owner-reported: "sometimes in session log it still showed in progress when completed."
+   * Reproduced 2026-08-10 — a `lend` staged at 08:xx, never signed, still said `staged`
+   * SEVEN HOURS later, and only cleared when the same prompt was run again (plan ids are a
+   * deterministic fingerprint, so the second run updated the first run's row).
+   *
+   * Nothing was broken in the status mapping: a row only leaves a pre-terminal state when
+   * something reports a terminal one, and an abandoned run never reports anything. Since a
+   * plan's quote is only valid for `PLAN_TTL_MS` (5 min), a staged row that survives a
+   * reload is definitively finished — it just never said so. Applied ONLY on hydration, so
+   * a live run in this tab is never relabelled underneath the user.
+   */
+  const settleAbandonedRow = (e: LogEntry): LogEntry => {
+    const PRE_TERMINAL = new Set(["staged", "needs sign", "in progress", "needs authorization"]);
+    if (!PRE_TERMINAL.has(String(e.status))) return e;
+    // Generous margin over the 5-minute plan TTL, so a genuine slow settle is never
+    // mislabelled — this only catches rows that outlived any possible in-flight run.
+    if (Date.now() - Number(e.ts || 0) < 30 * 60_000) return e;
+    return {
+      ...e,
+      status: "not completed",
+      color: AMBER,
+      legs: e.legs?.map((l) =>
+        l.status === "needs_sign" || l.status === "pending" ? { ...l, status: "not signed" } : l,
+      ),
+    };
+  };
+
   const hydratedFor = useRef<string | null>(null);
   useEffect(() => {
     if (!address || hydratedFor.current === address) return;
@@ -1125,7 +1163,10 @@ export function CopilotWorkspace() {
       if (!rows.length) return;
       setLogRaw((prev) => {
         const seen = new Set(prev.map((e) => e.id));
-        return [...prev, ...rows.filter((e) => !seen.has(e.id))].slice(0, HISTORY_MAX);
+        return [...prev, ...rows.filter((e) => !seen.has(e.id)).map(settleAbandonedRow)].slice(
+          0,
+          HISTORY_MAX,
+        );
       });
     } catch {
       /* a corrupt blob is not worth failing the page over */

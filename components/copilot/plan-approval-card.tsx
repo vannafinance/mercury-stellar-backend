@@ -53,6 +53,8 @@ export interface PlanStepView {
   op: string;
   asset: string | null;
   amount: number | null;
+  /** A share of a live balance ("50%"), when the size was stated that way. */
+  fraction?: number | null;
   leverage: number | null;
   /**
    * The loan asset when it differs from the collateral.
@@ -365,6 +367,24 @@ export function PlanApprovalCard({
                       }}
                     >
                       {amount}
+                    </p>
+                  ) : s.fraction != null ? (
+                    /* A share IS a size. Shown in the amount slot, in the heading colour
+                       rather than the warning colour, because nothing is outstanding —
+                       the figure is resolved against the live balance when the leg runs,
+                       the same way the site's own 10/25/50/100% chips work. */
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 21,
+                        lineHeight: "26px",
+                        fontWeight: 600,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--pc-heading)",
+                      }}
+                    >
+                      {`${Number((s.fraction * 100).toFixed(2))}%`}
                     </p>
                   ) : (
                     <p

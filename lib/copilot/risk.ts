@@ -28,6 +28,30 @@ async function fetchPriceUsd(mcp: MCPClient, asset: string): Promise<number> {
   }
 }
 
+/**
+ * The margin page's own read, used whenever the health tool cannot answer.
+ *
+ * Same source `runRead` falls back to, deliberately: the copilot and the margin page must
+ * not disagree about the number that decides liquidation.
+ */
+async function healthFromSnapshot(
+  smartAccount: string,
+): Promise<{ hf: number | null; collateral: number; debt: number } | null> {
+  try {
+    const { computeMarginSnapshot } = await import("@/lib/account-snapshot");
+    const snap = await computeMarginSnapshot(smartAccount);
+    if (!(snap.grossCollateralValue > 0) && !(snap.totalBorrowedValue > 0)) return null;
+    return {
+      // `hfFrom` treats no-debt as ∞ by returning null; match that convention.
+      hf: snap.totalBorrowedValue > 0 ? snap.avgHealthFactor : null,
+      collateral: snap.grossCollateralValue,
+      debt: snap.totalBorrowedValue,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchHealth(
   mcp: MCPClient,
   smartAccount: string | null | undefined,
@@ -53,8 +77,51 @@ async function fetchHealth(
     let hf = n(r.health_factor) ?? n(r.hf) ?? n(r.avg_health_factor);
     // Live MCP often omits health_factor and only returns collateral/debt/ltv.
     if (hf == null && debt > 0 && collateral > 0) hf = (collateral * lt) / debt;
+
+    /**
+     * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field —
+     * it never rejects. `runRead` documents exactly this and re-raises so its fallback can
+     * run; here the catch below was simply unreachable, so the payload
+     *
+     *     { error: "contract_error",
+     *       message: "…get_current_total_balance: HostError: Error(Budget, ExceededLimit)" }
+     *
+     * parsed to collateral 0 / debt 0 / hf null and became a zeroed baseline. The card then
+     * said "reading your current position failed" — true, but only because nothing here
+     * noticed. It fires on accounts holding several collateral tokens, which is why it
+     * looked like intermittent RPC flakiness rather than a shape the code never handled.
+     *
+     * Falling back on ANY unparseable payload, not just the budget string, so a future
+     * error shape cannot reintroduce a silent zero.
+     */
+    const nothingParsed = collateral === 0 && debt === 0 && hf == null;
+    if (nothingParsed && smartAccount) {
+      const viaSnapshot = await healthFromSnapshot(smartAccount);
+      if (viaSnapshot) return viaSnapshot;
+    }
     return { hf, collateral, debt };
-  } catch {
+  } catch (e) {
+    /**
+     * `vanna_get_account_health` blows the Soroban CPU budget on accounts holding several
+     * collateral tokens — `runRead` documents this and already falls back to
+     * `computeMarginSnapshot`, the same read the margin page renders from.
+     *
+     * This function had no such fallback and swallowed the error SILENTLY, returning a
+     * zeroed baseline. Downstream that is indistinguishable from an empty account, so the
+     * card reported "reading your current position failed" on a funded, healthy one — and
+     * because nothing was logged, it looked like intermittent RPC flakiness for hours.
+     * It is neither intermittent nor RPC: it tracks how many collateral tokens the account
+     * holds, which is why it appeared only as this test account accumulated them.
+     */
+    if (smartAccount) {
+      const viaSnapshot = await healthFromSnapshot(smartAccount);
+      if (viaSnapshot) return viaSnapshot;
+    }
+    console.warn(
+      `[copilot] risk baseline read failed, no snapshot fallback: ${
+        e instanceof Error ? e.message.slice(0, 160) : String(e)
+      }`,
+    );
     return { hf: null, collateral: 0, debt: 0 };
   }
 }
@@ -119,6 +186,8 @@ export async function evaluateWriteRisk(
             liquidation_threshold: LIQ_THRESHOLD,
             amount_usd: 0,
             asset,
+            // Nothing failed here — this op simply does not move margin collateral or debt.
+            margin_applicable: false,
           }
         : null,
     };

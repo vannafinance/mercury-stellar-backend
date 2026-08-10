@@ -51,6 +51,12 @@ export interface PlanStepView {
   op: string;
   asset: string | null;
   amount: number | null;
+  /**
+   * A share of a live balance, when the size was given as one. Rendered as "50% of your
+   * XLM" instead of "amount to be confirmed" — the user stated a size, and a card that
+   * says the amount is missing is telling them they did not.
+   */
+  fraction: number | null;
   leverage: number | null;
   /**
    * The loan asset, when it differs from the collateral — a first-class slot, not a
@@ -237,6 +243,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
           op: tool,
           asset: null,
           amount: null,
+          fraction: null,
           leverage: null,
           borrow_asset: null,
           slots: {} as IntentSlots,
@@ -262,6 +269,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         // describe two different trades.
         asset: (slots.asset as string) ?? asset,
         amount: typeof slots.amount === "number" ? slots.amount : amount,
+        fraction: typeof slots.fraction === "number" ? slots.fraction : null,
         leverage,
         borrow_asset,
         slots,
@@ -283,7 +291,12 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // A missing amount becomes a prompt mid-execution, after earlier legs have already
   // settled on-chain. Better to say so while the whole thing can still be cancelled.
   // Reads are exempt: a report has no size to be missing.
-  const noAmount = writeSteps.filter((s) => s.amount == null && s.op !== "create_account");
+  // A step sized as a share of a balance is NOT missing its amount — it has one, stated
+  // as "50%" and resolved against the live balance when the leg runs. Warning about it
+  // told the user their own instruction had not been understood.
+  const noAmount = writeSteps.filter(
+    (s) => s.amount == null && s.fraction == null && s.op !== "create_account",
+  );
   if (noAmount.length) {
     warnings.push(
       `Step ${noAmount.map((s) => s.n).join(" and ")} has no amount yet — I'll have to ask once it gets there.`,

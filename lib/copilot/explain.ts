@@ -234,6 +234,24 @@ function summarizeList(label: string, data: Record<string, unknown>, keys: strin
   return facts.length ? `Your ${label}: ${facts.join(", ")}.` : `No ${label} data available.`;
 }
 
+/**
+ * MCP / Sign Service internals that must never reach the facts panel.
+ *
+ * Every one of these is either an implementation detail (which contract, which host
+ * function), a restatement of something the card already shows as its own field
+ * (signing status, simulation success), or a diagnostic for us rather than the user
+ * (auto-sign refusal codes). Matched on the exact key so a real user-facing field is
+ * never swallowed by a loose pattern.
+ *
+ * `code` / `contract_diagnostic` / `host_error` are here for the same reason. A failed
+ * Aquarius LP add already explains itself in prose — what is missing, and a numbered
+ * recipe to fix it — and then repeated "CODE 10", "CONTRACT DIAGNOSTIC zero balance is
+ * not sufficient to spend" underneath. The humanised message carries that detail
+ * already; the raw rows only make a handled failure look unhandled.
+ */
+const PLUMBING_FACT_KEY =
+  /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error)$/i;
+
 /** Flatten nested objects for the UI facts panel; drop huge wads. */
 export function factsForUi(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -281,6 +299,18 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
     if (v == null) continue;
     if (/_wad$|_raw$|address$|unsigned_xdr|auth_entries|balance_source/i.test(k)) continue;
     if (hasHumanTwin.has(k) || isRawWad(v)) continue;
+    /**
+     * Signing plumbing is not a fact about the user's money.
+     *
+     * A staged deposit was rendering nine rows the user cannot act on — FUNCTION
+     * `deposit_collateral_tokens`, CONTRACT `CAZLR6EH…`, SIMULATION SUCCESS, SIGNING
+     * STATUS, AUTO SIGN, AUTO SIGN ERROR, a raw stroop FEE ESTIMATE — around the two that
+     * matter: how much, and of what. The card is what the user reads before approving a
+     * transaction, so every row that is not a reason to approve or refuse is noise.
+     *
+     * These live on in `mcp` / the server log for debugging; they are simply not facts.
+     */
+    if (PLUMBING_FACT_KEY.test(k)) continue;
     /**
      * MCP's own receipt paragraph is not a fact.
      *

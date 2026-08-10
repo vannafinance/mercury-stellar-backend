@@ -341,6 +341,27 @@ export function intentToSlots(intent: Intent): IntentSlots {
 
 // ── the one conversion ──────────────────────────────────────────────────────
 
+/**
+ * Ops whose size can arrive as a share of a balance instead of an absolute number.
+ *
+ * Each one has exactly one pot the share is taken from, which is what makes the
+ * fraction resolvable: repay → live debt, lend / deposit_collateral → wallet balance,
+ * withdraw_collateral → posted collateral, remove_liquidity → the LP position.
+ * An op with no single obvious pot is deliberately absent — it would have to guess.
+ */
+const FRACTION_SIZED_OPS = new Set([
+  "repay",
+  "remove_liquidity",
+  "lend",
+  "supply",
+  "deposit_collateral",
+  "withdraw_collateral",
+  // The share sizes the COLLATERAL half; the leverage multiple sizes the loan against it.
+  "deposit_and_borrow",
+  // Trade/Spot offers 25 / 50 / 75 / Max against the smart account's free balance.
+  "swap",
+]);
+
 /** Ops that do not need an amount to be executable. */
 const AMOUNT_OPTIONAL = new Set([
   "create_account",
@@ -387,9 +408,9 @@ export function slotsToAction(op: string, slots: IntentSlots, ctx: ActionCtx): C
     requires_amount:
       !AMOUNT_OPTIONAL.has(op) &&
       amount == null &&
-      !(op === "remove_liquidity" && fraction != null) &&
-      // Repay "all" / "25%" is fraction against live debt — same as Margin 100% chip.
-      !(op === "repay" && fraction != null),
+      // A stated share IS a size. "50% of the XLM in my wallet" is an answer to
+      // "how much?", so asking it back is a question answered with a question.
+      !(FRACTION_SIZED_OPS.has(op) && fraction != null),
     requires_account: !NO_ACCOUNT_NEEDED.has(op),
     multi_leg: !!ctx.multiLeg,
     smart_account: ctx.smartAccount,
