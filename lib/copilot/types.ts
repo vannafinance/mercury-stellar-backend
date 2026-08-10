@@ -141,6 +141,10 @@ export interface ChatRequest {
     created_at: number;
     steps: Array<{
       op: string;
+      /** "read" legs report a number and are not signed. Absent means write. */
+      kind?: "write" | "read";
+      /** Read legs only — the MCP tool that answers the question. */
+      tool?: string | null;
       /**
        * Every executable slot, echoed back verbatim from the plan preview.
        *
@@ -393,6 +397,9 @@ export interface ChatResponse {
     warnings: string[];
     steps: Array<{
       n: number;
+      /** "read" legs report a number and need no signature. */
+      kind?: "write" | "read";
+      tool?: string | null;
       op: string;
       asset: string | null;
       amount: number | null;

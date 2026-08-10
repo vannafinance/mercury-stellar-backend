@@ -329,6 +329,83 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
     ).toBe(false);
   });
 
+  it("hop patch of 1 settled leg is NOT a complete run (borrow stuck bug)", () => {
+    // Deposit hop returns multi_leg_steps:[deposit ok]. Full card still has
+    // borrow+supply pending — must NOT treat the hop as RUN COMPLETE.
+    const fullCard = [
+      { status: "ok" },
+      { status: "ok" },
+      { status: "pending" },
+      { status: "pending" },
+    ];
+    const hopPatch = [{ status: "ok" }];
+    expect(strategyIsComplete(hopPatch)).toBe(true); // alone looks done
+    expect(strategyIsComplete(fullCard)).toBe(false); // authority
+    expect(
+      shouldAutoResume({
+        complete: strategyIsComplete(fullCard),
+        clientTail: [{ op: "borrow", amount: 10 }],
+      }),
+    ).toBe(true);
+  });
+
+  it("auto-sign path: hop execution.status=completed must not clear the tail", () => {
+    // multi_leg_resume returns execution.status:"completed" when the ONE leg it
+    // was handed succeeds (allOk for that hop). The executed useEffect used to
+    // treat that as cardComplete → strategyTailRef=[] + strategyCompleteRef=true
+    // while the full card still had borrow/supply PENDING.
+    const fullCard = [
+      { status: "ok" }, // lend
+      { status: "ok" }, // deposit
+      { status: "pending" }, // borrow
+      { status: "pending" }, // supply
+    ];
+    const hopExecutionCompleted = true; // response.execution.status === "completed"
+    const hopStrategyCompleteFlag = false; // usually unset on resume hops
+    // Correct client gate: full card only (never hop status flags alone).
+    const complete =
+      strategyIsComplete(fullCard) ||
+      (hopExecutionCompleted && strategyIsComplete(fullCard)) ||
+      hopStrategyCompleteFlag;
+    expect(complete).toBe(false);
+    const clientTail = FOUR_LEGS.slice(2);
+    expect(
+      shouldAutoResume({
+        complete,
+        clientTail,
+        preferFlag: false,
+        canResumeWithAutoApprove: true,
+      }),
+    ).toBe(true);
+    // Done only when complete AND nothing remains — not !preferResume.
+    const remaining = pickRemainingLegs([], clientTail, legsFromUnsettledSteps(fullCard));
+    expect(remaining.map((l) => l.op)).toEqual(["borrow", "supply_to_blend"]);
+    expect(complete && remaining.length === 0).toBe(false);
+  });
+
+  it("cross-asset deposit+borrow: unsettled rebuild keeps assets", () => {
+    const steps = [
+      { op: "deposit_collateral", status: "ok", amount: 10, asset: "BLUSDC", label: "Deposit 10 BLUSDC" },
+      { op: "borrow", status: "needs_wallet_sign", amount: 50, asset: "XLM", label: "Borrow 50 XLM" },
+      { op: "supply_to_blend", status: "pending", amount: 20, asset: "BLUSDC", label: "Supply" },
+    ];
+    // Claim settle the signed borrow BEFORE pickRemaining — do not re-queue it.
+    const { steps: settled } = claimFirstAwaitingLeg(steps, (s) => ({
+      ...s,
+      status: "ok",
+      tx_hash: "x",
+    }));
+    const remaining = pickRemainingLegs(
+      null,
+      [],
+      legsFromUnsettledSteps(settled),
+    );
+    expect(remaining).toEqual([
+      expect.objectContaining({ op: "supply_to_blend", asset: "BLUSDC", amount: 20 }),
+    ]);
+    expect(strategyIsComplete(settled)).toBe(false);
+  });
+
   it("THE LIVE BUG: complete → never auto-resume even with tail / unsettled garbage", () => {
     // After RUN COMPLETE, leftover client tail + orphan staged rows used to
     // toast "Running Borrow 10 BLUSDC (1 more after this)…" and re-submit.

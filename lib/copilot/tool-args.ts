@@ -128,8 +128,20 @@ export function buildToolArgs(
     }
 
     case "vanna_get_vtoken_balance": {
-      // schema: holder (G or C) + symbol
-      const holder = smart || trader;
+      /**
+       * Earn positions are held by the G-WALLET, not the margin account.
+       *
+       * `vanna_lend` deposits from the trader's wallet and the pool mints vTokens back to
+       * that same address. This preferred the C-address whenever one was known, so the
+       * read looked up a holder that never receives vTokens and confidently answered
+       * "0 VSOUSDC" — verified wrong: a live lend of 5 SOUSDC settled on chain while this
+       * still reported zero, and probing the pool by G-address showed 19.885 vSOUSDC.
+       *
+       * "You have no deposits earning yield" is the kind of wrong answer a user acts on,
+       * so the wallet comes first and the smart account is only a fallback for the case
+       * where no G-address is known at all.
+       */
+      const holder = trader || smart;
       if (!holder) {
         return { args: {}, blocker: "Connect your wallet to read vToken balance." };
       }

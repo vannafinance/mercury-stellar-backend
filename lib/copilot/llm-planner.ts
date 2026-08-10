@@ -160,12 +160,64 @@ function normalizeLlmPlan(data: Record<string, unknown>, message: string): Route
 }
 
 /**
+ * One planner call per message, however many times it is asked for.
+ *
+ * `handleChat` asks twice on purpose — once when the routed intent is already a plan, and
+ * again as a late catch when a single write might still be promoted. Both branches can be
+ * reached in one turn: if the first call returns null (or a plan that loses the length
+ * comparison) `routed` is still a write, so the second fires with the SAME message and the
+ * same context, and Vertex is billed twice for an identical prompt. The planner is the most
+ * expensive call in the turn — measured at ~950 prompt plus 400–1800 THINKING tokens, and
+ * thinking bills at output rates — so a duplicate is the single easiest thing to stop
+ * paying for.
+ *
+ * Keyed by message + context, capped, and cleared on a timer rather than held for the life
+ * of the process: this is a within-turn memo, not a cache of answers across users. A stale
+ * plan replayed for a later turn would be a correctness bug, so the window is deliberately
+ * short — long enough for one request, far too short to serve a second visit.
+ */
+const PLAN_MEMO_TTL_MS = 30_000;
+const PLAN_MEMO_MAX = 64;
+const planMemo = new Map<string, { at: number; plan: RoutedIntent | null }>();
+
+function memoKey(message: string, ctx?: { trader?: string | null; smartAccount?: string | null }) {
+  return `${ctx?.trader ?? "-"}|${ctx?.smartAccount ?? "-"}|${message.trim()}`;
+}
+
+/** Test/debug hook: how many planner calls were actually spent vs served from memo. */
+export const plannerStats = { calls: 0, memoHits: 0 };
+
+export function resetPlannerMemo(): void {
+  planMemo.clear();
+  plannerStats.calls = 0;
+  plannerStats.memoHits = 0;
+}
+
+/**
  * Ask Vertex for a structured strategy plan. Returns null if model fails or invalid.
  */
 export async function llmPlanStrategy(
   message: string,
   ctx?: { trader?: string | null; smartAccount?: string | null },
 ): Promise<RoutedIntent | null> {
+  const key = memoKey(message, ctx);
+  const now = Date.now();
+  const hit = planMemo.get(key);
+  if (hit && now - hit.at < PLAN_MEMO_TTL_MS) {
+    plannerStats.memoHits += 1;
+    return hit.plan;
+  }
+  const remember = (plan: RoutedIntent | null): RoutedIntent | null => {
+    planMemo.set(key, { at: now, plan });
+    // Cheap bound: drop the oldest insertion when over cap.
+    if (planMemo.size > PLAN_MEMO_MAX) {
+      const oldest = planMemo.keys().next();
+      if (!oldest.done) planMemo.delete(oldest.value);
+    }
+    return plan;
+  };
+
+  plannerStats.calls += 1;
   try {
     const user = [
       `USER MESSAGE: ${message}`,
@@ -173,13 +225,15 @@ export async function llmPlanStrategy(
       "Output the plan JSON only.",
     ].join("\n");
     const data = await planJson(PLANNER_SYSTEM, user);
-    return normalizeLlmPlan(data, message);
+    return remember(normalizeLlmPlan(data, message));
   } catch (e) {
     console.warn(
       "[copilot:llm-planner]",
       e instanceof VertexError ? e.message : e instanceof Error ? e.message : e,
     );
-    return null;
+    // A failure is memoised too. Retrying the same prompt inside one turn produced the
+    // same failure and a second bill; the caller already treats null as "keep what I had".
+    return remember(null);
   }
 }
 

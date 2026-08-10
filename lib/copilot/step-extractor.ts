@@ -13,8 +13,10 @@ import type { RoutedIntent } from "./types";
 import {
   findBorrowAsset,
   findCollateralAsset,
+  findLeverage,
   isMaxYieldInvestIntent,
   matchMinHealthFactor,
+  routeMessage,
 } from "./router";
 import {
   accountCoverage,
@@ -25,10 +27,29 @@ import {
   type Span,
   type SpanClaim,
 } from "./plan-ir";
+import { sameAsset } from "./leverage-plan";
+import { netOfOriginationFee } from "@/lib/borrow-fee";
+import { toSlots } from "./registry/intent";
 
+/**
+ * A leg of an extracted plan.
+ *
+ * `kind: "read"` exists because a strategy sentence often ends in a question — "…then
+ * tell me my health factor". Only write clauses used to become steps, so that clause
+ * matched nothing, was dropped, and the plan card showed one step for a two-part
+ * instruction. Worse, `preferExtractedPlan` requires two or more steps before it will use
+ * an extraction at all, so a "one write + one read" prompt threw the whole decomposition
+ * away and fell back to the single write — silently answering half of what was asked.
+ *
+ * runPlan already executes read legs (Phase A) and has since before this; the extractor
+ * was simply never able to produce one.
+ */
 export type ExtractedStep = {
-  kind: "write";
-  op: string;
+  kind: "write" | "read";
+  /** Write legs only. */
+  op?: string;
+  /** Read legs only — an MCP tool name. */
+  tool?: string;
   asset?: string | null;
   amount?: number | null;
   leverage?: number | null;
@@ -49,11 +70,35 @@ const ASSET = "BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC";
  */
 const NUM = "\\d[\\d,]*(?:\\.\\d+)?";
 const AMT_ASSET = new RegExp(`(${NUM})\\s*(${ASSET})\\b`, "i");
+/**
+ * The same pair written the other way round: "deposit XLM 500", "borrow BLUSDC 250".
+ *
+ * Only amount-then-asset was matched, so a plan built from "deposit XLM 500 into margin
+ * account and borrow BLUSDC at 3X" came out with **no amounts at all** — the card said
+ * "Step 1 and 2 has no amount yet" for a prompt that plainly states 500. The single-op path
+ * happened to survive on `findAmount`'s bare-number fallback, so this only broke MULTI-leg
+ * prompts, which is why it hid: "deposit XLM 500 into the XLM pool" worked and the
+ * two-clause version silently lost the figure.
+ *
+ * Asset-first is how people write when the asset is the topic ("XLM 500 into the pool"), and
+ * it is how the reported prompts were written.
+ */
+const ASSET_AMT = new RegExp(`(${ASSET})\\s+(${NUM})(?!\\s*x\\b)`, "i");
 const LEVERAGE = /(\d+(?:\.\d+)?)\s*x\b/i;
 
 /** Parse a matched amount, dropping thousands separators. */
 function toNum(raw: string): number {
   return Number(raw.replace(/,/g, ""));
+}
+
+/** Leverage from a clause or the whole message — includes bare "borrow 3" shorthand. */
+function leverageFromText(text: string, globalLev: number | null = null): number | null {
+  const local = findLeverage(text);
+  if (local != null && local > 1) return local;
+  if (globalLev != null && globalLev > 1) return globalLev;
+  const m = text.match(LEVERAGE);
+  if (m && Number.isFinite(Number(m[1])) && Number(m[1]) > 1) return Number(m[1]);
+  return null;
 }
 
 /**
@@ -62,26 +107,35 @@ function toNum(raw: string): number {
  */
 function allAmtAssets(text: string, offset = 0): AmtAsset[] {
   const out: AmtAsset[] = [];
+  const push = (amount: number, asset: string, start: number, len: number) => {
+    if (!Number.isFinite(amount) || !(amount > 0)) return;
+    // Same span already claimed by the other ordering — keep one.
+    if (out.some((p) => p.start === offset + start)) return;
+    out.push({ amount, asset: asset.toUpperCase(), start: offset + start, end: offset + start + len });
+  };
+
   const re = new RegExp(AMT_ASSET.source, "gi");
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const amount = toNum(m[1]);
-    if (Number.isFinite(amount) && amount > 0) {
-      out.push({
-        amount,
-        asset: m[2].toUpperCase(),
-        start: offset + m.index,
-        end: offset + m.index + m[0].length,
-      });
-    }
+    push(toNum(m[1]), m[2], m.index, m[0].length);
   }
-  return out;
+
+  // Asset-first ("XLM 500"). Runs second so amount-first keeps precedence where both could
+  // read the same characters, and skips any span the first pass already consumed — without
+  // that, "borrow 50 XLM 500" style overlaps would double-count.
+  const re2 = new RegExp(ASSET_AMT.source, "gi");
+  while ((m = re2.exec(text)) !== null) {
+    const overlaps = out.some(
+      (p) => offset + m!.index < p.end && offset + m!.index + m![0].length > p.start,
+    );
+    if (!overlaps) push(toNum(m[2]), m[1], m.index, m[0].length);
+  }
+
+  return out.sort((a, b) => a.start - b.start);
 }
 
 function lev(clause: string, globalLev: number | null): number | null {
-  const m = clause.match(LEVERAGE);
-  if (m && Number.isFinite(Number(m[1]))) return Number(m[1]);
-  return globalLev;
+  return leverageFromText(clause, globalLev);
 }
 
 /** Write verbs, used to protect the "deposit and borrow" idiom from the "and" split. */
@@ -248,14 +302,24 @@ function clauseToStepSpanned(
   // Farm / Blend / levered deploy
   if (SPAN_VERB_FARM.test(t) && !/\b(stats|apy|position)\b/i.test(t)) {
     const farmPair = pairs.find((p) => p.asset !== "XLM") || pairs[0] || first;
+    /**
+     * Leverage is only what the user asked for — never a default.
+     *
+     * This was `L > 1 ? L : 2`, so a clause that mentions no multiple at all ("…then
+     * farm it on Blend") planned a 2× position: deposit as collateral, borrow against
+     * it, supply the loan. That turns a one-signature supply into three signatures and
+     * an open debt the prompt never mentioned. Unlevered is the honest reading; the
+     * user who wants leverage writes a multiple, and `lev()` above already finds it.
+     */
+    const farmLev = L != null && L > 1 ? L : null;
     return {
       step: {
         kind: "write",
         op: "deploy_to_blend",
         asset: farmPair?.asset || "BLUSDC",
         amount: farmPair?.amount ?? null,
-        leverage: L != null && L > 1 ? L : 2,
-        args: { leverage: L != null && L > 1 ? L : 2 },
+        leverage: farmLev,
+        ...(farmLev != null ? { args: { leverage: farmLev } } : {}),
       },
       spans: [...kwSpans(clause, SPAN_VERB_FARM, offset), ...pairSpan(farmPair), ...levSpans],
     };
@@ -570,11 +634,13 @@ export function extractConstraints(message: string): PlanConstraints {
   const hf = matchMinHealthFactor(message);
   if (hf) spans.push({ start: hf.start, end: hf.end });
 
-  const levM = message.match(LEVERAGE);
+  // findLeverage understands "3x" AND bare "borrow 3" next to a deposit — the
+  // letter-x-only regex left leverage null and the plan path asked for a size.
+  const leverage = findLeverage(message);
 
   return {
     minHf: hf?.value ?? null,
-    leverage: levM && Number.isFinite(Number(levM[1])) ? Number(levM[1]) : null,
+    leverage: leverage != null && leverage > 1 ? leverage : null,
     preferMaxYield: isMaxYieldInvestIntent(message),
     spans,
   };
@@ -593,6 +659,83 @@ export function extractConstraints(message: string): PlanConstraints {
  * "deposit … then farm …" in the user's order without inferring a dependency order the
  * user did not ask for.
  */
+/**
+ * "…then supply THAT to Blend" — size the last leg from the borrow before it.
+ *
+ * "Deposit 10 BLUSDC as collateral, borrow 5 BLUSDC, then supply that to Blend" decomposed
+ * correctly into three legs, but leg 3 came out with no amount, so the plan card read
+ * "amount to be confirmed" and warned it would stop and ask. The user had already said how
+ * much: "that" is the 5 BLUSDC from leg 2. Being asked to re-state it is the copilot
+ * failing to follow a pronoun across a clause it had just parsed — and it interrupts a
+ * plan the user thought was fully specified.
+ *
+ * Sized net of the origination fee, which is the same rule the levered-farm path uses
+ * (`netOfOriginationFee`): the borrow credits free balance minus the fee, so supplying the
+ * gross figure fails on chain. That is exactly the arithmetic the user cannot be expected
+ * to do, and the reason "just default to the borrow amount" would be wrong.
+ *
+ * Deliberately narrow. It fires only when:
+ *   - the deploy/lend/supply leg has NO amount of its own (never overrides a stated size),
+ *   - an earlier leg in the same plan is a borrow WITH an amount,
+ *   - the assets match — "borrow XLM then supply that" must not fund a BLUSDC leg,
+ *   - and the message actually contains a back-reference. Without that last check this
+ *     would invent a size for "borrow 5, and separately supply to Blend", which is a
+ *     different instruction.
+ */
+/**
+ * A clause with no write verb that is nonetheless a request for a number.
+ *
+ * Routed through the deterministic router rather than pattern-matched here, so "tell me my
+ * health factor", "what's my debt" and "how is the XLM pool doing" all resolve to the same
+ * tools the standalone questions would — one definition of what a read is, not two.
+ *
+ * Requires a first-person or imperative framing. Without it, a fragment left over from
+ * clause splitting ("at 2x") could route to some unrelated read and add a leg the user
+ * never asked for; better to leave those to the coverage check, which reports unclaimed
+ * text instead of acting on it.
+ */
+function clauseToReadStep(clause: string): ExtractedStep | null {
+  const t = clause.trim();
+  if (t.length < 6) return null;
+  if (
+    !/\b(tell me|show me|what(?:'s| is| are)|how much|how is|check|report|give me|and my|then my)\b/i.test(
+      t,
+    )
+  ) {
+    return null;
+  }
+  const routed = routeMessage(t);
+  if (routed.kind !== "read" || !routed.tool) return null;
+  return { kind: "read", tool: routed.tool, args: routed.args ?? {} };
+}
+
+const PROCEEDS_ANAPHORA =
+  /\b(?:supply|deploy|farm|put|park|lend|move|send)\s+(?:that|it|this|those|them|the\s+(?:proceeds|loan|borrowed|borrowings?|funds?|balance)|all\s+of\s+(?:it|that))\b/i;
+
+function resolveProceedsAnaphora(steps: ExtractedStep[], message: string): ExtractedStep[] {
+  if (!PROCEEDS_ANAPHORA.test(message)) return steps;
+
+  const SINKS = new Set(["deploy_to_blend", "supply_to_blend", "lend", "supply", "add_liquidity"]);
+  let lastBorrow: { asset: string | null; amount: number } | null = null;
+
+  return steps.map((s) => {
+    if (s.kind !== "write") return s;
+    const op = String(s.op ?? "");
+    if (op === "borrow" && typeof s.amount === "number" && s.amount > 0) {
+      lastBorrow = { asset: s.asset ?? null, amount: s.amount };
+      return s;
+    }
+    if (!SINKS.has(op) || s.amount != null || !lastBorrow) return s;
+    // Cross-asset would need an oracle to convert; leave it to be asked.
+    if (s.asset && lastBorrow.asset && !sameAsset(s.asset, lastBorrow.asset)) return s;
+    return {
+      ...s,
+      asset: s.asset ?? lastBorrow.asset,
+      amount: netOfOriginationFee(lastBorrow.amount),
+    };
+  });
+}
+
 export function extractPlanIR(message: string): PlanIR {
   const constraints = extractConstraints(message);
   const overlay = deltaNeutralCarryOverlay(message);
@@ -624,7 +767,18 @@ export function extractPlanIR(message: string): PlanIR {
     }
 
     const hit = clauseToStepSpanned(clause.text, constraints, clause.start);
-    if (!hit) continue;
+    if (!hit) {
+      // No write verb here — but "then tell me my health factor" is still an instruction,
+      // and dropping it answers half the prompt. Route the clause on its own; a read is
+      // kept as a read leg, anything else is left to the coverage check to report.
+      const readStep = clauseToReadStep(clause.text);
+      if (readStep) {
+        claims.push({ span: { start: clause.start, end: clause.end }, by: "step" });
+        positioned.push({ at: clause.start, steps: [readStep] });
+        clauseSteps++;
+      }
+      continue;
+    }
 
     // Drop HF-floor-as-amount: "keep HF above 1.4" must not become "borrow 1.4".
     if (
@@ -654,10 +808,12 @@ export function extractPlanIR(message: string): PlanIR {
 
   // Put a split levered deposit+borrow back together before anything downstream can
   // treat the halves as two independent legs. See coalesceLeveragedDepositBorrow.
-  const steps = coalesceLeveragedDepositBorrow(deduped, {
+  const coalesced = coalesceLeveragedDepositBorrow(deduped, {
     leverage: constraints.leverage,
     message,
   });
+
+  const steps = resolveProceedsAnaphora(coalesced, message);
 
   return {
     steps,
@@ -751,9 +907,36 @@ export function coalesceLeveragedDepositBorrow<T extends CoalescibleStep>(
      * default that a producer (the LLM, or this extractor before the fix above) filled
      * in when it could not see the token — and "USDC" is exactly that default. When the
      * message names a borrow asset, that is the answer (product rule B).
+     *
+     * When the user already picked SOUSDC/AQUSDC/BLUSDC as collateral and never named a
+     * different loan token, inherit the collateral — re-asking "which USDC?" after they
+     * said SOUSDC is the half-built-position bug.
      */
     const fromMessage = opts.message ? findBorrowAsset(opts.message) : null;
-    const borrowAsset = fromMessage || bor.asset || dep.asset || null;
+    const borRaw = bor.asset ? String(bor.asset).toUpperCase() : "";
+    const borIsBareUsdcDefault = !borRaw || borRaw === "USDC";
+    const borrowAsset =
+      fromMessage ||
+      (!borIsBareUsdcDefault ? bor.asset : null) ||
+      dep.asset ||
+      null;
+
+    // "borrow 3" sometimes lands as amount=3 when leverage detection ran late —
+    // if that figure equals L and the user never wrote "N ASSET" after borrow, drop it.
+    let borrowAmount =
+      bor.amount != null && Number(bor.amount) > 0 ? Number(bor.amount) : null;
+    if (
+      borrowAmount != null &&
+      L != null &&
+      Math.abs(borrowAmount - L) < 1e-9 &&
+      opts.message &&
+      !new RegExp(
+        String.raw`\bborrow(?:s|ed|ing)?\s+${borrowAmount}\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC)\b`,
+        "i",
+      ).test(opts.message)
+    ) {
+      borrowAmount = null;
+    }
 
     out.push({
       ...dep,
@@ -766,6 +949,8 @@ export function coalesceLeveragedDepositBorrow<T extends CoalescibleStep>(
         ...(bor.args || {}),
         leverage: L,
         ...(borrowAsset ? { borrow_asset: borrowAsset } : {}),
+        // Explicit token size only — never the leverage multiple itself.
+        ...(borrowAmount != null ? { borrow_amount: borrowAmount } : { borrow_amount: null }),
       },
     } as T);
     i += 1; // the borrow leg is now part of the merged step
@@ -784,6 +969,11 @@ export function extractOrderedPlan(message: string): Extract<RoutedIntent, { kin
   if (deduped.length < 2) return null;
 
   const parts = deduped.map((s, i) => {
+    if (s.kind === "read") {
+      // Named by what it reports, not by the tool id — this string is shown to the user.
+      const label = String(s.tool ?? "read").replace(/^vanna_(get_)?/, "").replace(/_/g, " ");
+      return `${i + 1}) report ${label}`;
+    }
     const a = s.amount != null ? `${s.amount} ` : "";
     const L = s.leverage != null && s.leverage > 1 ? ` at ${s.leverage}×` : "";
     const to =
@@ -810,14 +1000,25 @@ export function extractOrderedPlan(message: string): Extract<RoutedIntent, { kin
     // "same step count, different content" swap is exactly how this broke before.
     template_id: ir.strategyId ?? "extracted_multi_goal",
     summary,
-    steps: deduped.map((s) => ({
-      kind: "write" as const,
-      op: s.op,
-      asset: s.asset ?? null,
-      amount: s.amount ?? null,
-      args: s.args,
-      leverage: s.leverage ?? null,
-    })),
+    // The step's own kind is carried through. This used to hardcode `kind: "write"`, which
+    // turned a read leg into a write with no `op` — a step the executor cannot run and the
+    // plan card renders as a blank row.
+    steps: deduped.map((s) =>
+      s.kind === "read"
+        ? {
+            kind: "read" as const,
+            tool: s.tool!,
+            args: s.args ?? {},
+          }
+        : {
+            kind: "write" as const,
+            op: s.op,
+            asset: s.asset ?? null,
+            amount: s.amount ?? null,
+            args: s.args,
+            leverage: s.leverage ?? null,
+          },
+    ),
     constraints: ir.constraints,
   };
 }
@@ -826,15 +1027,112 @@ export function extractOrderedPlan(message: string): Extract<RoutedIntent, { kin
  * Merge extracted ordered steps into a routed plan (fill missing amounts/ops).
  * Prefer extracted order when both are multi-step (clause order = user order).
  */
+/**
+ * Attach a trailing "…then tell me X" read to a single write the router produced.
+ *
+ * The write in "put 15 SOUSDC into it, then tell me my health factor" comes from the
+ * ROUTER (the max-yield branch), not from the clause extractor — "put … into it" is not a
+ * verb the extractor knows. So the extraction held one leg, the read; `extractOrderedPlan`
+ * requires two and returned null; and `preferExtractedPlan` then returned the routed write
+ * unchanged, dropping the question entirely. One step for a two-part instruction, with
+ * nothing to tell the user the second half had gone.
+ *
+ * Combining them here rather than teaching the extractor every write phrasing keeps the two
+ * responsibilities separate: whoever found the write keeps it, and the read is appended.
+ * Slots go through `toSlots` so nothing the router filled in is lost on the way into a step.
+ */
+function appendTrailingReads(
+  routed: RoutedIntent,
+  message: string,
+): RoutedIntent | null {
+  if (routed.kind !== "write" && routed.kind !== "plan") return null;
+  const reads = extractPlanIR(message).steps.filter((s) => s.kind === "read" && s.tool);
+  if (!reads.length) return null;
+
+  /**
+   * A plan that already ends in these reads needs nothing; one that lost them gets them
+   * back. The LLM planner is the reason this has to handle plans too: its output replaces
+   * `routed` whenever it has at least as many WRITE legs, so a one-write model plan
+   * displaced a write+read plan and the question disappeared a second time, after the
+   * extractor had already recovered it.
+   */
+  if (routed.kind === "plan") {
+    const have = new Set(
+      routed.steps.filter((s) => s.kind === "read").map((s) => String(s.tool ?? "")),
+    );
+    const missing = reads.filter((r) => !have.has(String(r.tool)));
+    if (!missing.length) return null;
+    return {
+      ...routed,
+      steps: [
+        ...routed.steps,
+        ...missing.map((r) => ({ kind: "read" as const, tool: r.tool!, args: r.args ?? {} })),
+      ],
+    };
+  }
+
+  const slots = toSlots(routed as Parameters<typeof toSlots>[0]);
+  const writeStep = {
+    kind: "write" as const,
+    op: routed.op,
+    asset: (typeof slots.asset === "string" ? slots.asset : routed.asset) ?? null,
+    amount: typeof slots.amount === "number" ? slots.amount : (routed.amount ?? null),
+    args: slots,
+    leverage: typeof slots.leverage === "number" ? slots.leverage : (routed.leverage ?? null),
+  };
+  return {
+    kind: "plan",
+    template_id: "write_then_report",
+    summary: `${routed.op.replace(/_/g, " ")}${
+      writeStep.amount != null ? ` ${writeStep.amount}` : ""
+    }${writeStep.asset ? ` ${writeStep.asset}` : ""}, then report ${reads
+      .map((r) => String(r.tool).replace(/^vanna_(get_)?/, "").replace(/_/g, " "))
+      .join(" and ")}`,
+    steps: [
+      writeStep,
+      ...reads.map((r) => ({ kind: "read" as const, tool: r.tool!, args: r.args ?? {} })),
+    ],
+  };
+}
+
 export function preferExtractedPlan(
   routed: RoutedIntent,
   message: string,
 ): RoutedIntent {
   const extracted = extractOrderedPlan(message);
-  if (!extracted || extracted.steps.length < 2) return routed;
+  if (!extracted || extracted.steps.length < 2) {
+    // The extractor found no multi-leg WRITE plan, but the message may still pair an
+    // action with a closing question. That is a two-step plan and must not collapse.
+    return appendTrailingReads(routed, message) ?? routed;
+  }
+  // Whatever plan wins below, a trailing question the user asked stays part of it.
+  const withReads = (p: RoutedIntent): RoutedIntent => appendTrailingReads(p, message) ?? p;
+
+  // Router already built a complete levered deposit_and_borrow write (site math
+  // path). A 2-step extract with an unsized bare-USDC borrow is strictly worse —
+  // that is the "amount to be confirmed / which USDC?" plan card after SOUSDC was
+  // already chosen. Keep the write so runWrite → planLeverage sizes the loan.
+  if (
+    routed.kind === "write" &&
+    routed.op === "deposit_and_borrow" &&
+    routed.amount != null &&
+    routed.amount > 0
+  ) {
+    const L =
+      (typeof routed.leverage === "number" && routed.leverage > 1
+        ? routed.leverage
+        : null) ?? findLeverage(message);
+    const extractBorrow = extracted.steps.find((s) => s.op === "borrow");
+    const extractUnsized =
+      extractBorrow &&
+      (extractBorrow.amount == null || !(Number(extractBorrow.amount) > 0));
+    if (L != null && L > 1 && extractUnsized) {
+      return withReads(routed);
+    }
+  }
 
   if (routed.kind !== "plan") {
-    return extracted;
+    return withReads(extracted);
   }
 
   const rWrites = routed.steps.filter((s) => s.kind === "write");
@@ -847,7 +1145,7 @@ export function preferExtractedPlan(
     !rWrites.some((s) => s.op === "swap" && s.args?.token_out);
 
   if (extracted.steps.length >= rWrites.length || (hasSwapOut && routedSwapBare)) {
-    return extracted;
+    return withReads(extracted);
   }
 
   // Fill gaps: for each routed write missing amount, take from extracted same op
@@ -867,5 +1165,5 @@ export function preferExtractedPlan(
     };
   });
 
-  return { ...routed, steps };
+  return withReads({ ...routed, steps });
 }

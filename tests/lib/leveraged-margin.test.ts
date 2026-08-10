@@ -34,9 +34,13 @@ import {
   findBorrowAmount,
   findBorrowAsset,
   findCollateralAsset,
+  findLeverage,
   routeMessage,
 } from "@/lib/copilot/router";
 import { actionFromExpanded, expandPlanWrites, materializeLeverageWrites } from "@/lib/copilot/multi-leg-agent";
+import { extractOrderedPlan, preferExtractedPlan } from "@/lib/copilot/step-extractor";
+import { sanitizePlan } from "@/lib/copilot/plan-sanitize";
+import { freezePlan } from "@/lib/copilot/plan-approval";
 
 /** The oracle's answer, not a guess. One feed for all three dollar stables. */
 const PRICES = { XLM: 0.11, AQUA: 0.004 };
@@ -286,5 +290,84 @@ describe("leg 2 needs nothing more from the user", () => {
     expect(mat.writes[1].asset).toBe("XLM");
     // $50 × (2−1) = $50 debt → XLM at 0.11
     expect(mat.writes[1].amount).toBeCloseTo(50 / 0.11, 4);
+  });
+});
+
+// ── E. "borrow 3" = 3× leverage (site UX), not "borrow 3 tokens" ───────────
+
+describe("bare 'borrow N' next to a deposit is Nx leverage, site math", () => {
+  /**
+   * Live bug: "Deposit 20 SOUSDC and borrow 3" became plan
+   *   deposit 20 SOUSDC → borrow USDC (amount null)
+   * then after deposit: "How much USDC to borrow?" + variant chips —
+   * even though SOUSDC and 3× were already known. Margin UI: borrow = 20*(3-1)=40.
+   */
+  const bare = [
+    "Deposit 20 SOUSDC and borrow 3",
+    "Deposit 20 USDC and borrow 3",
+    "deposit 20 SOUSDC and borrow 3x",
+  ];
+
+  for (const message of bare) {
+    it(`findLeverage("${message}") → 3`, () => {
+      expect(findLeverage(message)).toBe(3);
+      expect(findBorrowAmount(message)).toBeNull();
+    });
+  }
+
+  it("router: SOUSDC + borrow 3 → deposit_and_borrow @ 3×, no borrow_amount", () => {
+    const routed = routeMessage("Deposit 20 SOUSDC and borrow 3");
+    expect(routed.kind).toBe("write");
+    if (routed.kind !== "write") return;
+    expect(routed.op).toBe("deposit_and_borrow");
+    expect(routed.asset).toBe("SOUSDC");
+    expect(routed.amount).toBe(20);
+    expect(routed.leverage).toBe(3);
+    expect(routed.borrow_amount).toBeNull();
+    expect(ambiguousUsdcSlot(routed)).toBeNull();
+  });
+
+  it("does not invent a 2-step plan that asks for size after deposit", () => {
+    const msg = "Deposit 20 SOUSDC and borrow 3";
+    // Coalesce collapses the split extract → fewer than 2 steps → null plan.
+    expect(extractOrderedPlan(msg)).toBeNull();
+    const routed = routeMessage(msg);
+    const preferred = preferExtractedPlan(routed, msg);
+    expect(preferred.kind).toBe("write");
+    if (preferred.kind !== "write") return;
+    expect(preferred.leverage).toBe(3);
+  });
+
+  it("site math: 20 SOUSDC at 3× borrows 40 SOUSDC (not 3)", () => {
+    const p = plan({ collateralAsset: "SOUSDC", collateralAmount: 20, leverage: 3 });
+    expect(p.borrowAmount).toBe(40);
+    expect(p.borrowAsset).toBe("SOUSDC");
+  });
+
+  it("explicit 'borrow 3 SOUSDC' stays a 3-token size, not 3×", () => {
+    expect(findLeverage("deposit 20 SOUSDC and borrow 3 SOUSDC")).toBeNull();
+    expect(findBorrowAmount("deposit 20 SOUSDC and borrow 3 SOUSDC")).toBe(3);
+  });
+
+  it("LLM-style split plan sanitizes back to deposit_and_borrow @ 3×", () => {
+    const msg = "Deposit 20 SOUSDC and borrow 3";
+    const llmish = {
+      kind: "plan" as const,
+      template_id: "vertex_plan",
+      summary: "deposit then borrow",
+      steps: [
+        { kind: "write" as const, op: "deposit_collateral", asset: "SOUSDC", amount: 20 },
+        { kind: "write" as const, op: "borrow", asset: "USDC", amount: null },
+      ],
+    };
+    const san = sanitizePlan(llmish, msg);
+    expect(san.steps).toHaveLength(1);
+    expect(san.steps[0].op).toBe("deposit_and_borrow");
+    expect(san.steps[0].asset).toBe("SOUSDC");
+    expect(san.steps[0].amount).toBe(20);
+    expect(Number(san.steps[0].args?.leverage ?? san.steps[0].leverage)).toBe(3);
+    const frozen = freezePlan(san, Date.now());
+    expect(frozen.warnings.some((w) => /no amount yet/i.test(w))).toBe(false);
+    expect(frozen.warnings.some((w) => /USDC is ambiguous/i.test(w))).toBe(false);
   });
 });

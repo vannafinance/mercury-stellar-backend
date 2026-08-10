@@ -46,7 +46,17 @@ const debtSymbolToAssetType = (symbol: string): AssetType | null => {
   }
 };
 
-const isTrackingSymbol = (sym: string): boolean => {
+/**
+ * Is this balance key a farm TRACKING position rather than a plain token holding?
+ *
+ * `BLEND_XLM` is XLM supplied into Blend; `AQ_XLM_USDC` is an Aquarius LP receipt.
+ * Both are denominated in an underlying the user can name, and neither is that
+ * underlying sitting as collateral. Exported because the copilot answers "how much XLM
+ * collateral do I have" off these same balances and must draw the line in the same
+ * place the margin page does — a second copy of this rule is how the two surfaces come
+ * to disagree about one account.
+ */
+export const isTrackingSymbol = (sym: string): boolean => {
   const u = sym.toUpperCase();
   return (
     u.startsWith("BLEND_") || u.startsWith("AQ_") || u.startsWith("SS_") ||

@@ -13,16 +13,22 @@
 import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
 import { MarginAccountService } from "@/lib/margin-utils";
 
-export interface CopilotAction {
-  op: string;
-  asset?: string | null;
-  amount?: number | null;
-  requires_amount?: boolean;
-  requires_account?: boolean;
-  multi_leg?: boolean;
-  smart_account?: string | null;
-  trader?: string | null;
-}
+/**
+ * The action shape is the one the brain produces — not a second copy of it.
+ *
+ * This file used to declare its own `CopilotAction` with eight of the canonical type's
+ * twenty-odd fields, and `copilot-workspace.tsx` imports the type from HERE. So the
+ * workspace was type-checking every `preview.action` against a subset that had already
+ * fallen behind: `leverage`, `borrow_asset`, `borrow_amount`, `min_hf`, `fraction`,
+ * `token_a`/`token_b`, `venue` and `explain` were all invisible to it, even though the
+ * server sends them and the runtime object carries them. Reading `action.leverage` in the
+ * bad-sequence rebuild path was a type error for that reason alone — the value is there.
+ *
+ * Re-exported rather than re-declared so this can never drift again. `Preview.action` is
+ * already typed as this, which is what makes the two agree by construction.
+ */
+export type { CopilotAction } from "@/lib/copilot/types";
+import type { CopilotAction } from "@/lib/copilot/types";
 
 export interface ExecuteContext {
   amount: number; // user-entered / confirmed amount

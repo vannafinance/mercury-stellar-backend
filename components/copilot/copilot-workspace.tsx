@@ -38,7 +38,19 @@ import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
-import { isSignableXdr, signAndSubmitMcpXdr, type SignXdrResult } from "./sign-xdr";
+import {
+  isBadSequenceError,
+  isSignableXdr,
+  readEnvelopeSourceSequence,
+  signAndSubmitMcpXdr,
+  waitForAccountSequenceApplied,
+  type SignXdrResult,
+} from "./sign-xdr";
+import {
+  hopAutoSubmitKey,
+  promoteSignableAutoSignResponse,
+  shouldSessionAutoSubmit,
+} from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
   ledgerWaitCopy,
@@ -478,14 +490,10 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
 }
 
 /**
- * Pause between chained legs.
- *
- * The gap exists so the previous transaction is visible on-chain before the next leg
- * reads state — not for the user's benefit. 2.2s was tuned when every leg needed a
- * manual signature, where the delay was hidden by the click. With auto-approve on there
- * is no click, so it became dead waiting between four legs.
+ * Short pause after the previous leg is confirmed and its sequence is visible.
+ * Sequence wait does the real work; this is just a small buffer for MCP/Horizon.
  */
-const CHAIN_DELAY_MS = 900;
+const CHAIN_DELAY_MS = 1200;
 
 /**
  * Button surfaces from the design: 8px for inline actions, 12px for the commit row.
@@ -845,6 +853,26 @@ function isMultiLegResponse(data?: Record<string, unknown> | null): boolean {
   return !!(data && (data.multi_leg === true || Array.isArray(data.multi_leg_steps)));
 }
 
+/**
+ * Whether a resume hop response means "this leg was accepted by the server and
+ * we may advance the client queue to the next leg".
+ *
+ * Only advance after a real hop lands: staged for signature, already executed,
+ * auto-sign gate, or wallet-bind. error / blocked / plain answer mean the leg
+ * did not run — keep the full remaining queue for retry.
+ */
+function isChainableHopResponse(
+  hop: Pick<ChatResponse, "kind"> | null | undefined,
+): boolean {
+  if (!hop) return false;
+  return (
+    hop.kind === "executed" ||
+    hop.kind === "needs_wallet_sign" ||
+    hop.kind === "needs_auto_sign" ||
+    hop.kind === "needs_wallet_bind"
+  );
+}
+
 function FactsGrid({ data }: { data: Record<string, unknown> }) {
   const skipKeys = new Set([
     "unsigned_xdr",
@@ -1010,7 +1038,21 @@ export function CopilotWorkspace() {
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [signing, setSigning] = useState(false);
+  /**
+   * After a failed auto-sign for a hop key, stop the spinner for THAT hop only.
+   * Storing the key (not a boolean) so hop 2 never inherits hop 1's blocked flag —
+   * a boolean stayed true across the first paint of the next leg and looked like
+   * "auto-approve on but needs your click" while session signing was still enabled.
+   */
+  const [autoSubmitBlockedKey, setAutoSubmitBlockedKey] = useState<string | null>(null);
   const [response, setResponse] = useState<ChatResponse | null>(null);
+  /** Always read latest response in signWithWallet — avoids stale XDR after hop advance. */
+  const responseRef = useRef<ChatResponse | null>(null);
+  responseRef.current = response;
+  /** One rebuild attempt per txBadSeq (do not loop forever). Cleared on hop success. */
+  const badSeqRebuildRef = useRef(false);
+  /** Hop keys that already started auto-submit (declared early — used inside signWithWallet). */
+  const autoSubmittedRef = useRef<string | null>(null);
   const [health, setHealth] = useState<BrainHealth | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [customTx, setCustomTx] = useState("500");
@@ -1796,12 +1838,15 @@ export function CopilotWorkspace() {
         if (cancelledRef.current) {
           return null;
         }
-        const data = (await res.json()) as ChatResponse;
+        let data = (await res.json()) as ChatResponse;
         // Strip markdown stars so the UI never shows **BLUSDC**
         if (data.message) data.message = stripMarkdownLite(data.message);
         if (data.preview?.human_summary) {
           data.preview.human_summary = stripMarkdownLite(data.preview.human_summary);
         }
+        // needs_auto_sign + XDR → treat as staged wallet-sign so app auto-approve
+        // can silent-sign every hop (Sign Service enable gate must not interrupt).
+        data = promoteSignableAutoSignResponse(data, isSignableXdr(data.unsigned_xdr));
         // G-wallet create/connect and page tools run in the browser only.
         if (Array.isArray(data.client_tools) && data.client_tools.length) {
           executeClientTools(data.client_tools);
@@ -1946,6 +1991,11 @@ export function CopilotWorkspace() {
             // silently changing the trade AND passing the fingerprint that was supposed
             // to prove it had not changed.
             steps: plan.steps.map((s) => ({
+              // Carried so a read leg survives the round-trip. Without it the server sees
+              // a step with no slots and treats it as a write with nothing to do — the
+              // reporting step the user approved would be dropped on the way back.
+              kind: s.kind,
+              tool: s.tool ?? null,
               op: s.op,
               slots: s.slots,
               // Legacy spellings, kept so a server that predates `slots` still validates.
@@ -2408,6 +2458,22 @@ export function CopilotWorkspace() {
    * fallback for turns where no XDR came back.
    */
   const signWithWallet = useCallback(async () => {
+    // Prefer live response — after multi-leg hop advance a closed-over `response`
+    // can still be the previous leg (no borrow XDR), which auto-blocked the spinner.
+    const response = responseRef.current;
+    const hopKey = response
+      ? hopAutoSubmitKey({
+          requestId: response.request_id,
+          op: response.preview?.action?.op,
+          amount: response.preview?.action?.amount,
+          asset: response.preview?.action?.asset,
+          summary: response.preview?.human_summary,
+        })
+      : null;
+    const markHopAutoFailed = () => {
+      if (hopKey) setAutoSubmitBlockedKey(hopKey);
+    };
+
     const action = response?.preview?.action;
     const nextStep = response?.next_step ?? null;
     // A mock-mode or garbled envelope falls back to the local rebuild rather than
@@ -2415,10 +2481,12 @@ export function CopilotWorkspace() {
     const xdr = isSignableXdr(response?.unsigned_xdr) ? response!.unsigned_xdr! : null;
     if (!xdr && (!action || !isExecutable(action))) {
       toast.error("Nothing to sign — re-run the request.");
+      markHopAutoFailed();
       return;
     }
     if (!address) {
       toast.error("Connect your wallet first.");
+      markHopAutoFailed();
       return;
     }
     setSigning(true);
@@ -2447,6 +2515,11 @@ export function CopilotWorkspace() {
             smartAccount,
           });
       if (result.ok) {
+        // This hop signed — only THIS key was blocked, if any.
+        badSeqRebuildRef.current = false;
+        if (hopKey) {
+          setAutoSubmitBlockedKey((k) => (k === hopKey ? null : k));
+        }
         toast.success(result.hash ? `Submitted · ${result.hash.slice(0, 10)}…` : "Submitted");
         const summary = response?.preview?.human_summary || submitted || "Write submitted";
         // Fold wallet-sign success into strategy parent log when chaining; else one row.
@@ -2466,6 +2539,16 @@ export function CopilotWorkspace() {
         );
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true });
+
+        // Wait until Horizon shows this tx's sequence as applied before asking MCP
+        // to build the next leg. Otherwise hop 2 is simulated against a stale seq and
+        // submit fails with txBadSeq (classic multi-leg race after deposit→borrow).
+        if (xdr) {
+          const seqInfo = readEnvelopeSourceSequence(xdr);
+          if (seqInfo) {
+            await waitForAccountSequenceApplied(seqInfo.source, seqInfo.sequence);
+          }
+        }
 
         // Multi-leg: resume full remaining plan (not 2-deep follow_up only).
         //
@@ -2529,34 +2612,35 @@ export function CopilotWorkspace() {
         const serverRemaining =
           legsFromData("remaining_legs") ?? legsFromData("resume_legs");
         const cardUnsettled = legsFromUnsettledSteps(strategyStepsRef.current);
+        // Complete = the FULL strategy card, never the hop's 1-row patch.
+        // Live bug: deposit hop returned multi_leg_steps:[deposit]; claiming it
+        // made patched.every(ok) true → complete → cleared the borrow/supply
+        // tail and locked strategyCompleteRef while the card still showed
+        // "Borrow PENDING" forever ("Leg 2 settled · advancing to leg 3").
+        const complete =
+          strategyCompleteRef.current ||
+          strategyIsComplete(strategyStepsRef.current);
         const remainingFromData = pickRemainingLegs(
           serverRemaining,
           strategyTailRef.current,
-          // Card unsettled only while the strategy is NOT complete — orphans from
-          // a prior STAGED plan must not rebuild the queue after 4/4 settled.
-          strategyIsComplete(strategyStepsRef.current) ? [] : cardUnsettled,
+          complete ? [] : cardUnsettled,
         );
-        const complete =
-          strategyCompleteRef.current ||
-          strategyIsComplete(strategyStepsRef.current) ||
-          (patched.length > 0 &&
-            patched.every((s) =>
-              ["ok", "done", "skipped", "error", "blocked", "stopped_hf"].includes(
-                String(s?.status ?? ""),
-              ),
-            ) &&
-            patched.some((s) => ["ok", "done"].includes(String(s?.status ?? ""))));
-        const preferResume = shouldAutoResume({
-          complete,
-          serverRemaining,
-          clientTail: strategyTailRef.current,
-          preferFlag: (response?.data as any)?.prefer_resume_multi_leg === true,
-          canResumeWithAutoApprove:
-            (response?.data as any)?.can_resume === true && autoApprove,
-        });
+        const preferResume =
+          !complete &&
+          (shouldAutoResume({
+            complete: false,
+            serverRemaining,
+            clientTail: strategyTailRef.current,
+            preferFlag: (response?.data as any)?.prefer_resume_multi_leg === true,
+            canResumeWithAutoApprove:
+              (response?.data as any)?.can_resume === true && autoApprove,
+          }) ||
+            remainingFromData.length > 0);
 
-        // "Done" requires every leg to actually be ok, not merely that nothing is queued.
-        const done = complete && (!preferResume || !remainingFromData.length);
+        // Done only when the full card is terminal AND nothing is queued.
+        // Do not use `!preferResume` here — with a false complete that would
+        // clear the tail while borrow/supply were still pending.
+        const done = complete && remainingFromData.length === 0;
         if (done) {
           strategyTailRef.current = [];
           strategyCompleteRef.current = true;
@@ -2645,8 +2729,11 @@ export function CopilotWorkspace() {
             parentPrompt,
             { chainHop: true },
           );
-          if (!hop || hop.kind === "error") {
-            // Hop never started — put the full queue back and allow retry.
+          // Only drop the head from the client queue after the hop returns a
+          // usable next response (staged / executed / auto-sign / bind). error,
+          // blocked, or null means this leg never advanced — keep the full tail
+          // so the user can retry without losing supply after a failed borrow POST.
+          if (!hop || !isChainableHopResponse(hop)) {
             strategyTailRef.current = remainingFromData;
             nextStepFiredRef.current = null;
             return;
@@ -2818,7 +2905,79 @@ export function CopilotWorkspace() {
             : null,
         });
       } else {
-        toast.error(result.error);
+        const errText = result.error || "Sign failed";
+        const badSeq =
+          ("code" in result && result.code === "BAD_SEQ") ||
+          ("code" in result && result.code === "ALREADY_SUBMITTED") ||
+          isBadSequenceError(errText);
+
+        // Stale sequence: never re-sign the same XDR — rebuild one hop and try once.
+        // One rebuild only (flag stays true until a hop succeeds). Re-signing the
+        // same XDR after txBadSeq always fails — sequence is already past it.
+        if (badSeq && action?.op && !badSeqRebuildRef.current) {
+          badSeqRebuildRef.current = true;
+          toast("Sequence outdated — rebuilding a fresh transaction…", { duration: 4000 });
+          try {
+            const parentPrompt =
+              strategyParentRef.current?.prompt ||
+              String((response?.data as any)?.strategy_summary || submitted || action.op);
+            const leg = {
+              op: action.op,
+              asset: action.asset ?? null,
+              amount:
+                typeof action.amount === "number" && action.amount > 0 ? action.amount : null,
+              leverage: action.leverage ?? null,
+              label: response?.preview?.human_summary || undefined,
+            };
+            // Clear so the rebuilt hop can auto-submit again.
+            if (hopKey) {
+              if (autoSubmittedRef.current === hopKey) autoSubmittedRef.current = null;
+              setAutoSubmitBlockedKey((k) => (k === hopKey ? null : k));
+            }
+            setSigning(false);
+            const rebuilt = await postCopilot(
+              {
+                message: parentPrompt,
+                resume_multi_leg: {
+                  summary: parentPrompt,
+                  legs: [leg],
+                },
+              },
+              parentPrompt,
+              { chainHop: true },
+            );
+            if (
+              rebuilt &&
+              (rebuilt.kind === "needs_wallet_sign" ||
+                (rebuilt.kind === "needs_auto_sign" && isSignableXdr(rebuilt.unsigned_xdr)))
+            ) {
+              toast.success("Transaction rebuilt — signing…", { duration: 2500 });
+              // Direct re-sign (flag still true → no second rebuild loop if this fails).
+              if (sessionSigning) {
+                await new Promise((r) => setTimeout(r, 50));
+                void signWithWallet();
+              }
+              return;
+            }
+            toast.error(
+              rebuilt?.kind === "error"
+                ? rebuilt.message || errText
+                : `${errText} Rebuild did not return a new envelope — try the step again.`,
+            );
+            markHopAutoFailed();
+            return;
+          } catch {
+            toast.error(errText);
+            markHopAutoFailed();
+            return;
+          }
+        }
+
+        toast.error(errText);
+        // Sign/submit failed: stay on needs_wallet_sign (same staged panel) but stop
+        // the auto-submit spinner for THIS hop so Approve & sign is available.
+        // Do not advance multi-leg queue on a failed signature.
+        markHopAutoFailed();
         // A failed-but-submitted turn (confirmation timeout) still has a hash worth
         // keeping, so the user gets an explorer link instead of a dead end.
         if ("hash" in result && result.hash) {
@@ -2827,11 +2986,11 @@ export function CopilotWorkspace() {
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Sign failed");
+      markHopAutoFailed();
     } finally {
       setSigning(false);
     }
   }, [
-    response,
     address,
     smartAccount,
     submitted,
@@ -2839,6 +2998,7 @@ export function CopilotWorkspace() {
     postCopilot,
     refreshRailStats,
     absorbStrategySteps,
+    sessionSigning,
     // Read inside `preferResume`. Omitting it would capture the toggle's value from the
     // render this callback was created in, so turning auto-approve on mid-strategy would
     // not take effect until something else re-created the callback.
@@ -2848,31 +3008,78 @@ export function CopilotWorkspace() {
   /**
    * Session signing: submit a staged write without the manual approve click.
    *
-   * This is what the per-wallet auto-approve toggle has always promised (see
-   * store/copilot-settings) and it was never wired, so the button asked for a click
-   * even with the toggle on. It runs client-side on purpose: the Sign Service's
-   * server-side auto-sign needs a user-scoped WorkOS assertion that the copilot
-   * can't mint (it holds an M2M token), whereas a Privy embedded wallet signs
-   * programmatically with no popup — so the opt-in can be honoured here.
+   * Client Privy silent-sign of MCP XDR — every hop, including multi-leg borrow after
+   * deposit. risk "needs_confirmation" is normal staged policy copy, NOT a click gate.
+   * Only risk "block" skips auto-submit.
    *
-   * Deliberately narrow. Multi-leg strategies and anything the risk gate didn't
-   * clear always wait for an explicit click, and each response is submitted at most
-   * once (keyed by request_id) so a re-render can't double-spend.
+   * Scheduling via setTimeout(0) + cleanup: React Strict Mode double-mount used to
+   * set autoSubmittedRef on the first invoke and skip the second, so hop 2 never
+   * signed while the UI said "needs your click".
    */
-  const autoSubmittedRef = useRef<string | null>(null);
   const nextStepFiredRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (response?.kind !== "needs_wallet_sign") return;
-    if (!sessionSigning || signing) return;
-    // Allow sequential agent steps (deposit→borrow) even if labeled multi-leg.
-    // Only skip true risk-blocked turns.
-    if (response.preview?.risk?.decision === "block") return;
 
-    const key = response.request_id ?? response.preview?.human_summary ?? "pending";
-    if (autoSubmittedRef.current === key) return;
-    autoSubmittedRef.current = key;
-    void signWithWallet();
-  }, [response, sessionSigning, signing, signWithWallet]);
+  const sessionAutoSignKey = useMemo(() => {
+    if (!response) return null;
+    if (
+      response.kind !== "needs_wallet_sign" &&
+      !(response.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr))
+    ) {
+      return null;
+    }
+    const action = response.preview?.action;
+    return hopAutoSubmitKey({
+      requestId: response.request_id,
+      op: action?.op,
+      amount: action?.amount,
+      asset: action?.asset,
+      summary: response.preview?.human_summary,
+    });
+  }, [response]);
+
+  // Blocked only when THIS hop's key failed — not a sticky boolean across legs.
+  const autoSubmitBlocked =
+    !!sessionAutoSignKey && autoSubmitBlockedKey === sessionAutoSignKey;
+
+  useEffect(() => {
+    if (!response || !sessionAutoSignKey) return;
+    if (signing) return;
+    if (
+      !shouldSessionAutoSubmit({
+        kind: response.kind,
+        sessionSigning,
+        riskDecision: response.preview?.risk?.decision,
+        autoSubmitBlocked,
+        hasSignableXdr: isSignableXdr(response.unsigned_xdr),
+      })
+    ) {
+      return;
+    }
+    if (autoSubmittedRef.current === sessionAutoSignKey) return;
+
+    const key = sessionAutoSignKey;
+    let cancelled = false;
+    // setTimeout(0)+cancel: Strict Mode runs effect→cleanup→effect; clearing the
+    // timer on cleanup means only the second mount's timer fires. Setting
+    // autoSubmittedRef synchronously (old code) made the remount skip forever.
+    const t = window.setTimeout(() => {
+      if (cancelled) return;
+      if (autoSubmittedRef.current === key) return;
+      autoSubmittedRef.current = key;
+      void signWithWallet();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [
+    response,
+    sessionAutoSignKey,
+    sessionSigning,
+    signing,
+    signWithWallet,
+    autoSubmitBlocked,
+  ]);
 
   /**
    * Agent chain when step 1 already landed as `executed` (server auto-sign or
@@ -2903,59 +3110,74 @@ export function CopilotWorkspace() {
     // later legs once it is only handed one, so the client's queue takes over.
     // Card unsettled rows are only a fallback while the strategy is incomplete —
     // never after 4/4 terminal (orphans from a prior STAGED plan must not rebuild).
+    //
+    // Do NOT trust hop `execution.status === "completed"` or hop `strategy_complete`.
+    // A resume hop hands the server one leg; when that leg settles the server reports
+    // allOk/completed for THAT hop only. Using that flag here cleared the client tail
+    // after deposit and locked strategyCompleteRef while borrow/supply stayed PENDING
+    // (same trap as patched.every on the wallet-sign path).
     const serverRemaining = legsFrom("remaining_legs") ?? legsFrom("resume_legs");
     const cardComplete =
       strategyCompleteRef.current ||
-      strategyIsComplete(strategyStepsRef.current) ||
-      (response.data as any)?.strategy_complete === true ||
-      response.execution?.status === "completed";
+      strategyIsComplete(strategyStepsRef.current);
     const remaining = pickRemainingLegs(
       serverRemaining,
       strategyTailRef.current,
       cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
     );
-    const preferResume = shouldAutoResume({
-      complete: cardComplete,
-      serverRemaining,
-      clientTail: strategyTailRef.current,
-      preferFlag: (response.data as any)?.prefer_resume_multi_leg === true,
-      canResumeWithAutoApprove:
-        (response.data as any)?.can_resume === true && autoApprove,
-    });
+    // Hard-stop only when the full card is terminal AND nothing is still queued.
+    // Prefer-resume alone must not decide completion (false complete + empty
+    // remaining was the old shortcut that killed the queue mid-run).
+    const done = cardComplete && remaining.length === 0;
+    const preferResume =
+      !cardComplete &&
+      (shouldAutoResume({
+        complete: false,
+        serverRemaining,
+        clientTail: strategyTailRef.current,
+        preferFlag: (response.data as any)?.prefer_resume_multi_leg === true,
+        canResumeWithAutoApprove:
+          (response.data as any)?.can_resume === true && autoApprove,
+      }) ||
+        remaining.length > 0);
 
-    if (cardComplete) {
+    if (done) {
       strategyTailRef.current = [];
       strategyCompleteRef.current = true;
-      // Strip resume fields so a re-render cannot rebuild the queue.
-      if (
-        response.next_step ||
-        (response.data as any)?.remaining_legs ||
-        (response.data as any)?.resume_legs ||
-        (response.data as any)?.prefer_resume_multi_leg ||
-        (response.data as any)?.can_resume
-      ) {
-        setResponse((prev) => {
-          if (!prev || prev.kind !== "executed") return prev;
-          const d = (prev.data ?? {}) as Record<string, unknown>;
-          return {
-            ...prev,
-            next_step: null,
-            data: {
-              ...d,
-              remaining_legs: null,
-              resume_legs: null,
-              prefer_resume_multi_leg: false,
-              can_resume: false,
-              strategy_complete: true,
-            },
-            execution: {
-              ...(prev.execution ?? {}),
-              status: "completed",
-              tx_hash: prev.execution?.tx_hash ?? null,
-            },
-          } as ChatResponse;
-        });
-      }
+      // Strip resume fields so a re-render cannot rebuild the queue from a hop
+      // that still carried remaining_legs / can_resume for a partial plan.
+      setResponse((prev) => {
+        if (!prev || prev.kind !== "executed") return prev;
+        const d = (prev.data ?? {}) as Record<string, unknown>;
+        if (
+          !prev.next_step &&
+          !d.remaining_legs &&
+          !d.resume_legs &&
+          d.prefer_resume_multi_leg !== true &&
+          d.can_resume !== true &&
+          d.strategy_complete === true &&
+          prev.execution?.status === "completed"
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          next_step: null,
+          data: {
+            ...d,
+            remaining_legs: null,
+            resume_legs: null,
+            prefer_resume_multi_leg: false,
+            can_resume: false,
+            strategy_complete: true,
+          },
+          execution: {
+            ...(prev.execution ?? {}),
+            status: "completed",
+            tx_hash: prev.execution?.tx_hash ?? null,
+          },
+        } as ChatResponse;
+      });
     }
 
     if (preferResume && remaining.length > 0) {
@@ -2995,7 +3217,9 @@ export function CopilotWorkspace() {
           parentPrompt,
           { chainHop: true },
         );
-        if (!hop || hop.kind === "error") {
+        // Wait for the hop response before advancing the queue — never drop
+        // borrow/supply because a POST failed or returned blocked mid-chain.
+        if (!hop || !isChainableHopResponse(hop)) {
           strategyTailRef.current = remaining;
           nextStepFiredRef.current = null;
           return;
@@ -3006,7 +3230,10 @@ export function CopilotWorkspace() {
     }
 
     const next = response.next_step;
-    if (cardComplete || !next?.op || next.amount == null || !(next.amount > 0)) {
+    // Legacy next_step chain only when the full strategy is not already terminal.
+    // Hop `execution.status === "completed"` must not block next_step while the
+    // accumulated card still has pending legs (or a client tail).
+    if (done || !next?.op || next.amount == null || !(next.amount > 0)) {
       // Last resume hop often returns executed with only that hop's legs. Summarize
       // here with the FULL strategy card so facts say "4 of 4", not "1 of 1", and the
       // model does not invent that earlier legs "did not run".
@@ -3017,6 +3244,7 @@ export function CopilotWorkspace() {
         hasMoreLegs(null, strategyTailRef.current, legsFromUnsettledSteps(card));
       const needsClientSummary =
         (response.data as any)?.needs_client_summary === true || allSettled;
+      // Never summarize on hop-only "allOk" while later legs remain.
       if (needsClientSummary && allSettled && !stillQueued) {
         strategyCompleteRef.current = true;
         strategyTailRef.current = [];
@@ -3216,6 +3444,8 @@ export function CopilotWorkspace() {
     abortRef.current = null;
     setLoading(false);
     setSigning(false);
+    setAutoSubmitBlockedKey(null);
+    badSeqRebuildRef.current = false;
     setSubmitted(null);
     setResponse(null);
     setIntentText("");
@@ -3250,15 +3480,19 @@ export function CopilotWorkspace() {
    */
   const bindGate =
     response?.kind === "needs_wallet_bind" ? (response.wallet_bind ?? null) : null;
+  // needs_auto_sign + XDR is staged (session auto-sign), not the enable-caps gate.
+  const stagedForSessionSign =
+    response?.kind === "needs_wallet_sign" ||
+    (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr));
   const phase = bindGate
     ? "bind"
     : loading
       ? "running"
       : response?.kind === "plan_preview"
         ? "plan"
-        : response?.kind === "needs_auto_sign"
+        : response?.kind === "needs_auto_sign" && !stagedForSessionSign
           ? "autosign"
-          : response?.kind === "needs_wallet_sign"
+          : stagedForSessionSign
             ? "staged"
             : response?.kind === "executed"
               ? "done"
@@ -3471,11 +3705,15 @@ export function CopilotWorkspace() {
   const action = response?.preview?.action;
   const followUp = response?.intent?.template_id ? FOLLOW_UP[response.intent.template_id] : undefined;
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
-  // Multi-leg atomic legs set multi_leg:false — still auto-submit when session signing is on.
-  const willAutoSubmit =
-    response?.kind === "needs_wallet_sign" &&
-    sessionSigning &&
-    decision !== "block";
+  // Multi-leg: every hop with XDR auto-submits when session signing is on — including
+  // responses that older servers labeled needs_auto_sign.
+  const willAutoSubmit = shouldSessionAutoSubmit({
+    kind: response?.kind,
+    sessionSigning,
+    riskDecision: decision,
+    autoSubmitBlocked,
+    hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
+  });
   const txHash = response?.execution?.tx_hash ?? null;
 
   return (
@@ -3897,9 +4135,11 @@ export function CopilotWorkspace() {
                     {sessionSigning && !willAutoSubmit && (
                       <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: AMBER }}>
                         <CircleAlert size={13} className="mt-px shrink-0" />
-                        {action?.multi_leg
-                          ? "auto-approve is on, but multi-leg strategies always need your click"
-                          : "auto-approve is on, but the risk gate flagged this — needs your click"}
+                        {decision === "block"
+                          ? "auto-approve is on, but the risk gate blocked this write — it will not auto-sign"
+                          : autoSubmitBlocked
+                            ? "auto-sign failed for this step — click Approve & sign to retry"
+                            : "auto-approve is on — approve once if auto-sign did not start"}
                       </p>
                     )}
 

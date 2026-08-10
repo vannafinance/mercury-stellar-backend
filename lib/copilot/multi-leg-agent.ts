@@ -19,6 +19,7 @@ import {
 import { splitLeverageAmounts } from "./mcp-write";
 import { netOfOriginationFee } from "@/lib/borrow-fee";
 import { actionFrom, toSlots, type IntentSlots } from "./registry/intent";
+import { expandStepViaWorkflow } from "./registry/workflows";
 import type { ChatResponse, CopilotAction, RoutedIntent } from "./types";
 
 export type PlanStep = Extract<RoutedIntent, { kind: "plan" }>["steps"][number];
@@ -156,10 +157,34 @@ export function humanSwapLabel(
 
 /**
  * Expand high-level plan ops into atomic executable legs.
+ *
+ * Order and split metadata live in {@link ./registry/workflows}. Sizing still
+ * uses shared helpers (leverage / origination fee).
+ *
  * deploy_to_blend @ L>1 → deposit, borrow, supply_to_blend
  * deposit_and_borrow @ L>1 → deposit, borrow
  */
 export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
+  const out: ExpandedWrite[] = [];
+  const labels = { write: humanWriteLabel, swap: humanSwapLabel };
+
+  for (const step of steps) {
+    if (step.kind !== "write" || !(step.op || step.tool)) continue;
+    const legs = expandStepViaWorkflow(step, labels) as ExpandedWrite[];
+    out.push(...legs);
+  }
+
+  const cap = copilotConfig.multiLegMaxLegs;
+  return out.slice(0, Math.min(12, Math.max(1, cap)));
+}
+
+/**
+ * Pre-Phase-3 expander — kept only so the differential harness can prove the
+ * workflow table emits an identical step list. Do not call from production paths.
+ *
+ * @deprecated Prefer {@link expandPlanWrites}.
+ */
+export function expandPlanWritesLegacy(steps: PlanStep[]): ExpandedWrite[] {
   const out: ExpandedWrite[] = [];
 
   for (const step of steps) {
@@ -175,16 +200,12 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
             Number.isFinite(Number((step as { leverage?: number | null }).leverage))
           ? Number((step as { leverage?: number | null }).leverage)
           : null;
-    // The loan's own asset, when the plan named one. Null means "same as collateral".
     const borrowAsset =
       (step.args?.borrow_asset as string | undefined) ??
       (step as { borrow_asset?: string | null }).borrow_asset ??
       null;
 
     if (op === "swap") {
-      // Read through the slot record so token_in/token_out and token_a/token_b are one
-      // pair, whichever spelling the producer used — and so `venue` and the rest ride
-      // along instead of being dropped by a hand-picked push.
       const slots = toSlots(step);
       const tokenIn = (slots.token_a as string) || asset || "XLM";
       const tokenOut = (slots.token_b as string) || null;
@@ -214,8 +235,6 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
         continue;
       }
       const { deposit, borrow } = splitLeverageAmounts(amount, leverage, null);
-      // Borrow credits are net of origination fee — supplying the gross borrow
-      // amount traps with HostError #10 (insufficient free balance).
       const supplyAmt = borrow > 0 ? netOfOriginationFee(borrow) : deposit;
       out.push({
         ...otherSlots(step),
@@ -257,10 +276,6 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
         continue;
       }
       const L = leverage ?? 2;
-      // Sizing needs an oracle price when the two assets differ, and this expansion
-      // is synchronous. So a cross-asset plan keeps its deposit_and_borrow shape and
-      // is sized by the executor, which can price it; only the same-asset case — where
-      // the prices cancel — is split here.
       if (borrowAsset && asset && !sameAsset(borrowAsset, asset)) {
         out.push({
           ...otherSlots(step),
@@ -292,9 +307,6 @@ export function expandPlanWrites(steps: PlanStep[]): ExpandedWrite[] {
       continue;
     }
 
-    // The pass-through leg: carry EVERY slot the step had, not the four this used to
-    // name. The four narrowed ones are re-applied explicitly on top, because the
-    // branches above may have derived them (a split leg's size is not the step's size).
     out.push({
       ...otherSlots(step),
       op,

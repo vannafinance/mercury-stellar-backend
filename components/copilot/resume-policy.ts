@@ -121,6 +121,19 @@ export function strategyIsComplete(
 }
 
 /**
+ * Whether the full strategy card is done — never a single-hop patch.
+ *
+ * A resume hop often returns `multi_leg_steps: [thisLegOnly]`. Treating that
+ * 1-row array as "complete" cleared the borrow/supply queue while the card
+ * still showed PENDING (Leg 2 settled · advancing to leg 3 forever).
+ */
+export function isStrategyRunComplete(
+  fullCard: readonly { status?: unknown }[] | null | undefined,
+): boolean {
+  return strategyIsComplete(fullCard);
+}
+
+/**
  * Whether the client may auto-continue after an `executed` hop.
  *
  * **If the strategy card is complete → always false.** That is the live bug:

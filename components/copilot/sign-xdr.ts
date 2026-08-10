@@ -24,7 +24,79 @@ import { getAddress, signTransaction } from "@/lib/wallet-adapter";
 
 export type SignXdrResult =
   | { ok: true; hash: string }
-  | { ok: false; error: string; hash?: string };
+  | {
+      ok: false;
+      error: string;
+      hash?: string;
+      /** Stale account sequence — rebuild the envelope; do not resubmit this XDR. */
+      code?: "BAD_SEQ" | "ALREADY_SUBMITTED" | "TRY_AGAIN";
+    };
+
+/** True when Horizon/RPC rejected the envelope for a wrong account sequence. */
+export function isBadSequenceError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return /txBadSeq|bad.?seq|sequence number/i.test(error);
+}
+
+/**
+ * Source account + sequence embedded in an unsigned/signed envelope.
+ * Used to wait until that sequence is applied before building the next multi-leg hop.
+ */
+export function readEnvelopeSourceSequence(
+  xdr: string,
+): { source: string; sequence: string } | null {
+  try {
+    const parsed = StellarSdk.TransactionBuilder.fromXDR(xdr, NETWORK_PASSPHRASE);
+    if (!("source" in parsed) || !("sequence" in parsed)) return null;
+    const tx = parsed as StellarSdk.Transaction;
+    return { source: tx.source, sequence: String(tx.sequence) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After leg N confirms, Horizon can lag briefly. Building leg N+1 against a stale
+ * sequence produces txBadSeq on submit. Poll until the account's last-used sequence
+ * is at least the sequence we just landed.
+ */
+export async function waitForAccountSequenceApplied(
+  source: string,
+  usedSequence: string,
+  { attempts = 40, delayMs = 400 } = {},
+): Promise<boolean> {
+  const used = BigInt(usedSequence);
+  const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const acc = await horizon.loadAccount(source);
+      /**
+       * `sequenceNumber` is a METHOD on AccountResponse, not a field.
+       *
+       * This read `BigInt(acc.sequenceNumber)` — passing the function itself, which
+       * throws "Cannot convert a function to a BigInt" on every iteration. The throw
+       * landed in the catch below, which is labelled transient and keeps polling, so the
+       * loop always ran all 40 attempts (~16s) and always returned false. Every
+       * multi-leg hop therefore paid a silent 16-second stall and then acted as though
+       * the sequence had never been applied. A swallowed exception inside a retry loop
+       * looks exactly like a slow network, which is why it survived.
+       */
+      const last = BigInt(acc.sequenceNumber());
+      if (last >= used) return true;
+    } catch {
+      /* transient — keep polling */
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
+}
+
+/** Fingerprint so the same envelope is not submitted twice in one session. */
+function xdrSubmitKey(xdr: string): string {
+  return `${xdr.length}:${xdr.slice(0, 48)}:${xdr.slice(-32)}`;
+}
+
+const submittedXdrKeys = new Set<string>();
 
 /**
  * Whether `address` must sign this envelope.
@@ -134,6 +206,17 @@ export async function signAndSubmitMcpXdr(
     return { ok: false, error: "No transaction to sign — re-run the request." };
   }
 
+  const submitKey = xdrSubmitKey(unsignedXdr);
+  if (submittedXdrKeys.has(submitKey)) {
+    return {
+      ok: false,
+      code: "ALREADY_SUBMITTED",
+      error:
+        "This exact transaction was already submitted. The sequence is used — " +
+        "rebuild the step (auto-retry) rather than signing the same envelope again.",
+    };
+  }
+
   // 1. Resolve the signing address. `interactive` is safe here specifically
   //    because the user just pressed approve, so a Freighter unlock prompt is
   //    expected rather than a surprise. The adapter will resync Privy and fall
@@ -234,7 +317,18 @@ export async function signAndSubmitMcpXdr(
           detail.includes("tx_missing_operation") ||
           detail.includes("op_already_exists")
         ) {
+          submittedXdrKeys.add(submitKey);
           return { ok: true, hash: "already-funded" };
+        }
+        if (isBadSequenceError(detail)) {
+          return {
+            ok: false,
+            code: "BAD_SEQ",
+            error:
+              `Submission rejected: txBadSeq — this envelope's account sequence is stale ` +
+              `(usually the previous leg just landed). Rebuild the transaction; do not ` +
+              `re-sign the same XDR.`,
+          };
         }
         return { ok: false, error: `Setup submit failed: ${detail}` };
       }
@@ -245,6 +339,15 @@ export async function signAndSubmitMcpXdr(
 
     if (sent.status === "ERROR") {
       const reason = sent.errorResult?.result().switch().name ?? "rejected by RPC";
+      if (isBadSequenceError(reason) || reason === "txBadSeq") {
+        return {
+          ok: false,
+          code: "BAD_SEQ",
+          error:
+            `Submission rejected: txBadSeq — account sequence is out of date after the ` +
+            `previous step. The app will rebuild a fresh envelope; signing the same one again will keep failing.`,
+        };
+      }
       return { ok: false, error: `Submission rejected: ${reason}` };
     }
     // TRY_AGAIN_LATER means it was NOT queued — polling would just time out and
@@ -252,12 +355,15 @@ export async function signAndSubmitMcpXdr(
     if (sent.status === "TRY_AGAIN_LATER") {
       return {
         ok: false,
+        code: "TRY_AGAIN",
         error:
           "The network asked us to retry — usually another transaction from this " +
           "account is still in flight. Press approve again in a few seconds.",
       };
     }
     // PENDING and DUPLICATE both mean "it's in", so poll for the outcome.
+    // Mark submitted only once the network accepted the envelope (not on BadSeq).
+    submittedXdrKeys.add(submitKey);
     // Tell the caller now — the wait that follows is the long part.
     try {
       onSubmitted?.(sent.hash);

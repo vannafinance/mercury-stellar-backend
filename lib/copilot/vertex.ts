@@ -468,7 +468,8 @@ function logUsage(tag: string, parsed: unknown): void {
     const pct = promptTokens > 0 ? Math.round((cached / promptTokens) * 100) : 0;
     console.log(
       `[copilot:vertex] ${tag} prompt=${promptTokens} cached=${cached} (${pct}%) ` +
-        `output=${int(meta.candidatesTokenCount)}`,
+        `output=${int(meta.candidatesTokenCount)}` +
+        (int(meta.thoughtsTokenCount) ? ` thoughts=${int(meta.thoughtsTokenCount)}` : ""),
     );
   }
 }
@@ -537,17 +538,50 @@ function modelCandidates(): string[] {
   return [copilotConfig.vertexModel, ...copilotConfig.vertexModelFallbacks];
 }
 
+/**
+ * Turn thinking down for calls that only FORMAT numbers we already have.
+ *
+ * Gemini 3.x thinks by default. Measured here: explaining an oracle price cost
+ * `output=48 thoughts=515` — eleven times as many tokens deciding how to say "XLM is
+ * $0.1642" as saying it, and ~3s of the 4.6s that question took end to end, against ~1s
+ * for the MCP read behind it. There is nothing to reason about: the figures are already
+ * fetched, verified and rounded, and the schema fixes the shape.
+ *
+ * Deliberately NOT applied to routing, planning or function-calling. Those choose which
+ * tool runs and how a strategy decomposes, and a wrong choice there is a wrong ACTION —
+ * latency is the right thing to trade for correctness in that direction and the wrong
+ * thing to trade in this one.
+ *
+ * Field name differs by generation and sending both is rejected, so it is selected by
+ * model family; callers retry without it if the API refuses.
+ */
+function lowThinkingConfig(model: string): Record<string, unknown> | null {
+  if (/^gemini-3/.test(model)) return { thinkingLevel: "low" };
+  if (/^gemini-2\.5/.test(model)) return { thinkingBudget: 0 };
+  return null; // 2.0 and older do not think; sending the field 400s.
+}
+
+/** True when a Vertex error is the API rejecting the thinking field itself. */
+function isThinkingConfigRejection(msg: string): boolean {
+  return /HTTP 400/.test(msg) && /thinking|thinkingLevel|thinkingBudget/i.test(msg);
+}
+
 async function generateTextOnce(
   model: string,
   system: string,
   user: string,
   temperature: number,
+  opts?: { lowThinking?: boolean },
 ): Promise<string> {
   const token = await getAccessToken();
+  const thinking = opts?.lowThinking ? lowThinkingConfig(model) : null;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
-    generationConfig: { temperature },
+    generationConfig: {
+      temperature,
+      ...(thinking ? { thinkingConfig: thinking } : {}),
+    },
   };
 
   const res = await fetch(modelUrl(model), {
@@ -578,15 +612,27 @@ async function generateTextOnce(
 export async function generateText(
   system: string,
   user: string,
-  opts?: { temperature?: number },
+  opts?: { temperature?: number; lowThinking?: boolean },
 ): Promise<string> {
   const temperature = opts?.temperature ?? 0.2;
   const errors: string[] = [];
   for (const model of modelCandidates()) {
     try {
-      return await generateTextOnce(model, system, user, temperature);
+      return await generateTextOnce(model, system, user, temperature, {
+        lowThinking: opts?.lowThinking,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Model works, just dislikes the field: retry it rather than dropping to a weaker one.
+      if (opts?.lowThinking && isThinkingConfigRejection(msg)) {
+        console.warn(`[copilot:vertex] ${model} rejected thinkingConfig — retrying without it`);
+        try {
+          return await generateTextOnce(model, system, user, temperature);
+        } catch (retryErr) {
+          errors.push(retryErr instanceof Error ? retryErr.message : String(retryErr));
+          continue;
+        }
+      }
       errors.push(msg);
       // Only fall through on not-found / unavailable / model errors
       if (!/HTTP 404|HTTP 400|not found|NOT_FOUND|unsupported|does not exist|invalid model/i.test(msg)) {
@@ -1132,7 +1178,8 @@ export async function vertexExplain(
   const tidy = roundForProse(data) as Record<string, unknown>;
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
-  return generateText(EXPLAIN_SYSTEM, user);
+  // Same reasoning as vertexExplainStructured: the numbers are already decided.
+  return generateText(EXPLAIN_SYSTEM, user, { lowThinking: true });
 }
 
 /**
@@ -1153,25 +1200,36 @@ export async function vertexExplainStructured(
 
   const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
-  const body = {
+  const thinking = lowThinkingConfig(model);
+  const bodyFor = (withThinking: boolean) => ({
     systemInstruction: { parts: [{ text: ANSWER_SYSTEM }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
     generationConfig: {
       temperature: 0.2,
       responseMimeType: "application/json",
       responseSchema: ANSWER_RESPONSE_SCHEMA,
+      ...(withThinking && thinking ? { thinkingConfig: thinking } : {}),
     },
-  };
+  });
 
   try {
-    const res = await fetch(modelUrl(model), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
-      cache: "no-store",
-    });
-    const text = await res.text();
+    const post = (withThinking: boolean) =>
+      fetch(modelUrl(model), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(bodyFor(withThinking)),
+        signal: AbortSignal.timeout(60_000),
+        cache: "no-store",
+      });
+    let res = await post(true);
+    let text = await res.text();
+    // A 400 naming the thinking field means this model does not take it — the answer is
+    // still reachable without it, so retry rather than dropping to the prose path.
+    if (!res.ok && res.status === 400 && /thinking/i.test(text)) {
+      console.warn(`[copilot:vertex] ${model} rejected thinkingConfig on answer — retrying`);
+      res = await post(false);
+      text = await res.text();
+    }
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) tokenCache = null;
       console.warn(`[copilot:vertex] structured answer HTTP ${res.status}: ${text.slice(0, 200)}`);

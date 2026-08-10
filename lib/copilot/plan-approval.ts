@@ -28,6 +28,7 @@ import {
   toSlots,
   type IntentSlots,
 } from "./registry/intent";
+import { workflowLegCount } from "./registry/workflows";
 import type { RoutedIntent } from "./types";
 
 /** A plan is built on live prices and account health; both move. */
@@ -35,6 +36,18 @@ export const PLAN_TTL_MS = 5 * 60_000;
 
 export interface PlanStepView {
   n: number;
+  /**
+   * Writes move funds and need a signature; reads report a number and do not.
+   *
+   * Read legs exist because a strategy sentence often ends in a question — "…then tell me
+   * my health factor". `freezePlan` used to filter them out, so the card showed one step
+   * for a two-part instruction, the leg was excluded from the fingerprint, and the client
+   * replayed a plan the question had been silently removed from. The user approved
+   * something narrower than what they asked for and was never told.
+   */
+  kind: "write" | "read";
+  /** Read legs only — the MCP tool that answers the question. */
+  tool?: string | null;
   op: string;
   asset: string | null;
   amount: number | null;
@@ -164,16 +177,11 @@ function labelFor(
 /**
  * On-chain legs this step becomes, and therefore signatures.
  *
- * Mirrors expandPlanWrites() in multi-leg-agent.ts: a levered farm is not one
- * transaction, it is deposit → borrow → supply. Counting steps instead of legs told the
- * user "2 signatures" for a plan that actually asks for four.
+ * Sourced from {@link workflowLegCount} so the plan card cannot disagree with
+ * expandPlanWrites about how many hops a levered farm / deposit+borrow needs.
  */
 function legCount(op: string, leverage: number | null): number {
-  const levered = leverage != null && leverage > 1;
-  if (!levered) return 1;
-  if (op === "deploy_to_blend" || op === "supply_to_blend") return 3;
-  if (op === "deposit_and_borrow") return 2;
-  return 1;
+  return workflowLegCount(op, leverage);
 }
 
 /**
@@ -185,6 +193,8 @@ function legCount(op: string, leverage: number | null): number {
 export function planFingerprint(
   steps: Array<{
     op: string;
+    kind?: "write" | "read";
+    tool?: string | null;
     slots?: IntentSlots;
     // Legacy top-level spellings, still accepted: `toSlots` reads either, so a caller
     // that predates `slots` hashes to the same value as one that does not.
@@ -196,6 +206,10 @@ export function planFingerprint(
 ): string {
   const canonical = steps
     .map((s) => {
+      // A read leg has no slots that move funds, but it must still be hashed: otherwise a
+      // client could add or drop the reporting step after approval and the fingerprint
+      // would still match. The tool name is the whole executable content.
+      if (s.kind === "read") return `read:${s.tool ?? ""}`;
       // Derived from EXECUTABLE_SLOTS by iteration, so every slot that changes what
       // happens on-chain is hashed automatically. Hand-listing the fields here is what
       // left `leverage`, then `borrow_asset`, then `token_out` outside the hash — and an
@@ -211,8 +225,25 @@ export function planFingerprint(
 /** Turn a routed plan into something a user can read and approve. */
 export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   const steps: PlanStepView[] = plan.steps
-    .filter((s) => s.kind === "write" && s.op)
+    // Read legs are kept. Only a step that is neither runnable shape is dropped.
+    .filter((s) => (s.kind === "write" && s.op) || (s.kind === "read" && s.tool))
     .map((s, i) => {
+      if (s.kind === "read") {
+        const tool = String(s.tool);
+        return {
+          n: i + 1,
+          kind: "read" as const,
+          tool,
+          op: tool,
+          asset: null,
+          amount: null,
+          leverage: null,
+          borrow_asset: null,
+          slots: {} as IntentSlots,
+          label: `Report ${tool.replace(/^vanna_(get_)?/, "").replace(/_/g, " ")}`,
+          venue: "other" as const,
+        };
+      }
       const op = String(s.op);
       const venue = VENUE_BY_OP[op] ?? "other";
       const asset = s.asset ?? null;
@@ -225,6 +256,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         typeof slots.borrow_asset === "string" && slots.borrow_asset ? slots.borrow_asset : null;
       return {
         n: i + 1,
+        kind: "write" as const,
         op,
         // Display fields are DERIVED from slots, so the card and the hash can never
         // describe two different trades.
@@ -238,12 +270,20 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       };
     });
 
-  const signatureCount = steps.reduce((n, s) => n + legCount(s.op, s.leverage), 0);
+  /**
+   * Only writes are signed. A read leg reports a number and asks nothing of the wallet, so
+   * counting it here would tell the user to expect one more signature than they will see —
+   * and "how many times will I be asked to sign" is the number this card exists to get
+   * right.
+   */
+  const writeSteps = steps.filter((s) => s.kind === "write");
+  const signatureCount = writeSteps.reduce((n, s) => n + legCount(s.op, s.leverage), 0);
   const warnings: string[] = [];
 
   // A missing amount becomes a prompt mid-execution, after earlier legs have already
   // settled on-chain. Better to say so while the whole thing can still be cancelled.
-  const noAmount = steps.filter((s) => s.amount == null && s.op !== "create_account");
+  // Reads are exempt: a report has no size to be missing.
+  const noAmount = writeSteps.filter((s) => s.amount == null && s.op !== "create_account");
   if (noAmount.length) {
     warnings.push(
       `Step ${noAmount.map((s) => s.n).join(" and ")} has no amount yet — I'll have to ask once it gets there.`,
@@ -265,7 +305,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
 
   // A levered step is several transactions, so say what it expands into rather than
   // letting "2 steps" imply two signatures.
-  const levered = steps.filter((s) => legCount(s.op, s.leverage) > 1);
+  const levered = writeSteps.filter((s) => legCount(s.op, s.leverage) > 1);
   for (const s of levered) {
     const n = legCount(s.op, s.leverage);
     // Say what the legs ACTUALLY are. This read "…borrow against it, then supply" for
@@ -345,11 +385,21 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
     };
   }
 
-  // One canonical read per step, whichever shape the client sent.
-  const replay = approved.steps.map((s) => ({
-    op: s.op,
-    slots: s.slots ? compactSlots({ ...toSlots(s), ...compactSlots(s.slots) }) : toSlots(s),
-  }));
+  // One canonical read per step, whichever shape the client sent. A read leg carries only
+  // its tool, and is passed through so the fingerprint covers it and runPlan can run it.
+  const replay = approved.steps.map((s) => {
+    const isRead =
+      (s as { kind?: string }).kind === "read" || (!s.op && !!(s as { tool?: string }).tool);
+    if (isRead) {
+      const tool = String((s as { tool?: string }).tool ?? s.op ?? "");
+      return { kind: "read" as const, op: tool, tool, slots: {} as IntentSlots };
+    }
+    return {
+      kind: "write" as const,
+      op: s.op,
+      slots: s.slots ? compactSlots({ ...toSlots(s), ...compactSlots(s.slots) }) : toSlots(s),
+    };
+  });
 
   const recomputed = planFingerprint(replay);
   if (recomputed !== approved.plan_id) {
@@ -395,15 +445,19 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
        * directly. Neither is a hand-picked subset any more, which is what let an
        * approved trade differ from the executed one — twice, in two different fields.
        */
-      steps: replay.map((s) => ({
-        kind: "write" as const,
-        op: s.op,
-        args: s.slots,
-        leverage: typeof s.slots.leverage === "number" ? s.slots.leverage : null,
-        asset: (s.slots.asset as string) ?? null,
-        amount: typeof s.slots.amount === "number" ? s.slots.amount : null,
-        borrow_asset: (s.slots.borrow_asset as string) ?? null,
-      })),
+      steps: replay.map((s) =>
+        s.kind === "read"
+          ? { kind: "read" as const, tool: s.tool, args: {} }
+          : {
+              kind: "write" as const,
+              op: s.op,
+              args: s.slots,
+              leverage: typeof s.slots.leverage === "number" ? s.slots.leverage : null,
+              asset: (s.slots.asset as string) ?? null,
+              amount: typeof s.slots.amount === "number" ? s.slots.amount : null,
+              borrow_asset: (s.slots.borrow_asset as string) ?? null,
+            },
+      ),
     },
   };
 }

@@ -22,8 +22,22 @@ const GLOSSARY = glossaryJson as Record<string, GlossaryEntry>;
 const ACTION_INTENT =
   /\b(swap|lend|borrow|deposit|repay|redeem|withdraw|farm|supply|deploy|add\s+liquidity|remove\s+liquidity|enable\s+auto|disable\s+auto|create\s+(?:margin\s+)?account|transfer|bridge)\b/i;
 
+/**
+ * "Tell me about MY account" — always the copilot, never the page guide.
+ *
+ * Every inflection is spelled out because a trailing `\b` after a singular stem does not
+ * match its plural: `position\b` fails on "positions", since `s` is a word character.
+ * That single detail sent "what are my positions" — the most common question this
+ * surface gets — to the page assistant, which has no MCP access and answered "I do not
+ * have access to your live wallet balances or active positions" while the copilot was
+ * sitting behind it with the numbers. The singular "what is my position" worked, which
+ * is how it survived: it reads as a phrasing quirk rather than a whole class of failure.
+ *
+ * "what are" is in the possessive alternation for the same reason — it was absent, so
+ * only "what is my …" and "what's my …" were recognised.
+ */
 const LIVE_PERSONAL =
-  /\b(my|mine|mera|meri)\b.+\b(health|hf|balance|collateral|debt|borrowed|position|wallet|pnl|apy|earnings?|rewards?)\b|\b(what(?:'s| is)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have)|show\s+my|list\s+my|check\s+my)\b/i;
+  /\b(my|mine|mera|meri)\b.+\b(health|hf|balances?|collaterals?|debts?|borrowed|borrowings?|positions?|holdings?|exposures?|portfolios?|wallets?|accounts?|pnl|apy|credit|earnings?|rewards?)\b|\b(what(?:'s| is| are)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have|can\s+i)|show\s+my|list\s+my|check\s+my|am\s+i\s+(?:safe|at\s+risk|close\s+to))\b/i;
 
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;

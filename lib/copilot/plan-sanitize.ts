@@ -3,7 +3,7 @@
  * multi-goal plans when Vertex collapses a strategy to a single write.
  */
 
-import { parseMinHealthFactor } from "./router";
+import { findLeverage, parseMinHealthFactor } from "./router";
 import { coalesceLeveragedDepositBorrow } from "./step-extractor";
 import type { RoutedIntent } from "./types";
 
@@ -57,9 +57,8 @@ export function sanitizePlan(
   message: string,
 ): Extract<RoutedIntent, { kind: "plan" }> {
   const explicit = explicitAssetAmounts(message);
-  const leverageM = message.match(/(\d+(?:\.\d+)?)\s*x\b/i);
-  const leverage =
-    leverageM && Number.isFinite(Number(leverageM[1])) ? Number(leverageM[1]) : null;
+  // Same finder as the router — includes "deposit … borrow 3" (no trailing x).
+  const leverage = findLeverage(message);
 
   const rawSteps = plan.steps.map((step) => {
     if (step.kind !== "write") return step;
@@ -209,5 +208,26 @@ export function looksLikeMultiGoal(message: string): boolean {
     if (n >= 2) return true;
   }
   if (/\b(and|then)\b/i.test(t) && /\b(health|liquidat|farm|earn|hf)\b/i.test(t)) return true;
+  /**
+   * An action followed by a QUESTION is two goals, not one.
+   *
+   * Every gate above counts write verbs, so "…put 15 SOUSDC into it, then tell me my
+   * health factor" scored one — "put" is not even in those verb lists — and the whole
+   * message was handled as a single write. `preferExtractedPlan` never ran, so the
+   * trailing question was dropped without a trace: the plan card showed one step and the
+   * user was never told the second half of their instruction had been ignored.
+   *
+   * Requires a sequencing marker AND a report request AND some action word, so a plain
+   * question ("what is my health factor?") is untouched and stays a single read.
+   */
+  if (
+    /\b(then|,|and)\b/i.test(t) &&
+    /\b(tell me|show me|report|what(?:'s| is| are)\s+my|how much|check)\b/i.test(t) &&
+    /\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay|put|withdraw|redeem|deploy|add|remove)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
   return false;
 }

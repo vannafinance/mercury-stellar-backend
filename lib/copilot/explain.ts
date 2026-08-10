@@ -3,6 +3,8 @@
  * Prefer human-readable / *_pct / *_usd fields; never invent numbers.
  */
 
+import { isVerboseSignServiceDump } from "./execution-copy";
+
 function num(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "") {
@@ -250,9 +252,45 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
   if (ltv != null) out["ltv %"] = Number((ltv * 100).toFixed(2));
   if (typeof data.is_healthy === "boolean") out["healthy"] = data.is_healthy;
 
+  /**
+   * Drop a raw field when MCP also sent the formatted one.
+   *
+   * MCP returns pairs — `total_liquidity` (a bare 18-decimal wad integer) beside
+   * `total_liquidity_human` ("22,219.1975"). The `_wad`/`_raw` suffix filter below never
+   * matched the first of those, so the facts panel rendered both:
+   *
+   *   TOTAL LIQUIDITY        22219197454400000000000
+   *   TOTAL LIQUIDITY HUMAN  22,219.1975
+   *
+   * The unreadable one comes first, so the eye lands on it, and the same figure appearing
+   * twice in two magnitudes reads like the copilot disagreeing with itself. The Earn page
+   * shows only the formatted number; this makes the panel match.
+   */
+  const hasHumanTwin = new Set(
+    Object.keys(data)
+      .filter((k) => /_human$/i.test(k))
+      .map((k) => k.replace(/_human$/i, "")),
+  );
+
+  /** A 15+ digit integer is a wad however it was spelled — last-resort guard. */
+  const isRawWad = (v: unknown): boolean =>
+    (typeof v === "string" && /^\d{15,}$/.test(v)) ||
+    (typeof v === "number" && Number.isInteger(v) && Math.abs(v) >= 1e15);
+
   for (const [k, v] of Object.entries(data)) {
     if (v == null) continue;
     if (/_wad$|_raw$|address$|unsigned_xdr|auth_entries|balance_source/i.test(k)) continue;
+    if (hasHumanTwin.has(k) || isRawWad(v)) continue;
+    /**
+     * MCP's own receipt paragraph is not a fact.
+     *
+     * `sanitizeExecutionProse` already strips it from the message body, but the facts
+     * panel echoed the same string verbatim under `summary` — which is how "New smart
+     * account: CDNGNL…" reached the screen for an account that had existed for days, next
+     * to a duplicate of the tx hash and explorer link the card renders as its own fields.
+     * The dump is redundant here by construction, so it is dropped rather than trimmed.
+     */
+    if (typeof v === "string" && isVerboseSignServiceDump(v)) continue;
     if (Array.isArray(v)) {
       // Flatten first few position rows: "XLM balance", "XLM value_usd"
       v.slice(0, 6).forEach((item, i) => {

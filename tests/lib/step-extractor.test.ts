@@ -66,9 +66,19 @@ describe("step-extractor", () => {
 
   it("does not treat an unrelated 'and ... health' prompt as a carry strategy", () => {
     const p = extractOrderedPlan("deposit 10 XLM and check my health factor");
-    // No "carry"/"delta-neutral" vocabulary present — must fall through to the
-    // ordinary clause extractor, which finds only one write and returns null.
-    expect(p).toBeNull();
+    // What this guards is the STRATEGY misfire: no "carry"/"delta-neutral" vocabulary is
+    // present, so this must never acquire the borrow+lend legs of that overlay.
+    expect(p?.template_id).not.toBe("delta_neutral_carry");
+    expect(p!.steps.some((s) => s.op === "borrow")).toBe(false);
+    expect(p!.steps.some((s) => s.op === "lend")).toBe(false);
+    // It IS two instructions, and both are now kept: the deposit, then the question.
+    // This previously asserted `null`, which recorded a limitation rather than a rule —
+    // the extractor could only emit write legs, so the trailing read was dropped and a
+    // one-write extraction was discarded wholesale. Half the prompt went unanswered.
+    expect(p?.kind).toBe("plan");
+    expect(p!.steps.map((s) => s.kind)).toEqual(["write", "read"]);
+    expect(p!.steps[0]).toMatchObject({ op: "deposit_collateral", asset: "XLM", amount: 10 });
+    expect(p!.steps[1].tool).toBe("vanna_get_account_health");
   });
 
   it("splits a comma-separated action list", () => {

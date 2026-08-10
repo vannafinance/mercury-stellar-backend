@@ -132,6 +132,9 @@ export function findCollateralAsset(text: string): string | null {
  *
  * Leverage is stripped first so "3x" never reads as a quantity — the same trap
  * findAmount guards against for the deposit slot.
+ *
+ * Bare "borrow 3" (no asset) next to a deposit is leverage, not 3 tokens — see
+ * {@link findLeverage}. Returning 3 here is what sized a $3 loan instead of 3×.
  */
 export function findBorrowAmount(text: string): number | null {
   const cleaned = stripAddresses(text).replace(LEVERAGE_RE, " ");
@@ -140,7 +143,18 @@ export function findBorrowAmount(text: string): number | null {
   let after = cleaned.slice(verb.index + verb[0].length);
   const pivot = after.match(COLLATERAL_PIVOT);
   if (pivot && pivot.index != null) after = after.slice(0, pivot.index);
-  const m = after.match(new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})?\b`, "i"));
+  // Asset-tagged size always wins: "borrow 50 XLM" / "borrow 3 SOUSDC".
+  const withAsset = after.match(new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i"));
+  if (withAsset) {
+    const n = Number(withAsset[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Bare number after borrow with a deposit in the same prompt is the multiple
+  // ("deposit 20 and borrow 3"), not a token quantity.
+  if (/\bdeposit\b/i.test(cleaned) && isBorrowBareLeverageShorthand(after)) {
+    return null;
+  }
+  const m = after.match(/(\d+(?:\.\d+)?)/);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -181,11 +195,69 @@ function findAmount(text: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function findLeverage(text: string): number | null {
-  const m = text.match(LEVERAGE_RE);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 ? n : null;
+/**
+ * Stated leverage multiple — same meaning as the margin UI slider.
+ *
+ * Accepts:
+ *   - "3x" / "3×" / "at 2 x"
+ *   - "leverage 3" / "3 leverage"
+ *   - "deposit 20 SOUSDC and borrow 3"  ← bare N after borrow is Nx when no asset
+ *     follows (site users type this constantly; requiring the letter "x" made the
+ *     plan path split into deposit + "how much to borrow?" after collateral settled).
+ *
+ * Does NOT treat "borrow 3 SOUSDC" as leverage — that is an explicit 3-token size.
+ */
+export function findLeverage(text: string): number | null {
+  const cleaned = stripAddresses(text);
+
+  const withX = cleaned.match(LEVERAGE_RE);
+  if (withX) {
+    const n = Number(withX[1]);
+    if (Number.isFinite(n) && n > 1) return n;
+  }
+
+  const levPhrase =
+    cleaned.match(/\bleverage\s*(?:of\s*)?(\d+(?:\.\d+)?)\b/i) ||
+    cleaned.match(/\b(\d+(?:\.\d+)?)\s*leverage\b/i);
+  if (levPhrase) {
+    const n = Number(levPhrase[1]);
+    if (Number.isFinite(n) && n > 1) return n;
+  }
+
+  // Deposit + bare "borrow N" (optional trailing x already stripped by no-asset check).
+  if (/\bdeposit\b/i.test(cleaned) && BORROW_VERB.test(cleaned)) {
+    const verb = cleaned.match(BORROW_VERB);
+    if (verb && verb.index != null) {
+      let after = cleaned.slice(verb.index + verb[0].length);
+      const pivot = after.match(COLLATERAL_PIVOT);
+      if (pivot && pivot.index != null) after = after.slice(0, pivot.index);
+      if (isBorrowBareLeverageShorthand(after)) {
+        const m = after.match(/^\s*(\d+(?:\.\d+)?)/);
+        if (m) {
+          const n = Number(m[1]);
+          // Multiples the UI actually offers; 1× is "no leverage", >20 is not a slider.
+          if (Number.isFinite(n) && n > 1 && n <= 20) return n;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * After the word "borrow", is the next token a bare multiple (3 / 3x) rather than
+ * "3 SOUSDC" or "50 XLM"?
+ */
+function isBorrowBareLeverageShorthand(afterBorrow: string): boolean {
+  const s = afterBorrow.trimStart();
+  if (!s) return false;
+  // Explicit token amount — not leverage.
+  if (new RegExp(String.raw`^\d+(?:\.\d+)?\s*(${ASSET_ALT})\b`, "i").test(s)) return false;
+  // "3" or "3x" then end / punctuation / keep HF / and then…
+  return /^\d+(?:\.\d+)?\s*(?:x|×)?(?:\s*$|[\s,.;]|\band\b|\bkeep\b|\bwith\b|\bat\b|\bthen\b)/i.test(
+    s,
+  );
 }
 
 /**
@@ -428,7 +500,17 @@ function tryMultiGoalPlan(
       op: "deploy_to_blend",
       asset: farmAsset,
       amount: farmAmt != null && Number.isFinite(farmAmt) && farmAmt > 0 ? farmAmt : null,
-      leverage: leverage ?? 2,
+      /**
+       * NEVER invent leverage on a plain farm.
+       *
+       * This was `leverage ?? 2`, so "swap 10 XLM to BLUSDC then farm it on Blend" —
+       * which asks to borrow nothing — came back as a plan to "Supply BLUSDC into Blend
+       * at 2× leverage", i.e. deposit as collateral, TAKE A LOAN against it, and supply
+       * the proceeds. Three transactions and a debt position, from a prompt that
+       * mentioned neither. Unlevered supply is the honest reading of "farm it"; a user
+       * who wants leverage says a multiple, and `findLeverage` already reads it.
+       */
+      leverage: leverage ?? null,
     });
   }
 
@@ -614,6 +696,52 @@ export function routeMessage(message: string): RoutedIntent {
       requires_account: false,
       requires_amount: false,
     };
+  }
+
+  /**
+   * A token that does not exist on this network is not a sizing question.
+   *
+   * This gate used to sit below the LP / swap / Blend branches, so it only ever saw the
+   * writes that had already failed to match one of them. "Add liquidity to the XLM/BTC
+   * pool" returned from the LP branch three checks earlier and was answered with "how
+   * much of each token?" — inviting the user to size a BTC leg that can never execute.
+   * Ahead of every write branch it cannot be reached around, and no supported asset is
+   * affected because the guard only fires when an unsupported ticker is actually named.
+   */
+  {
+    const bad = findUnsupportedAsset(raw);
+    if (
+      bad &&
+      any(
+        text,
+        "lend",
+        "supply",
+        "earn",
+        "deposit",
+        "borrow",
+        "repay",
+        "swap",
+        "farm",
+        "add",
+        "provide",
+        "remove",
+        "park",
+        "invest",
+        "deploy",
+        "redeem",
+        "withdraw",
+        "to earn",
+        "liquidity",
+      )
+    ) {
+      return {
+        kind: "clarify",
+        message:
+          `“${bad}” is not a Vanna asset on this testnet. Supported: XLM, BLUSDC, AQUSDC, SOUSDC. ` +
+          `Example: “lend 10 XLM” or “supply 25 BLUSDC”.`,
+        template_id: "unsupported_asset",
+      };
+    }
   }
 
   // DEX swap (margin account free balance) — website Trade: XLM ↔ USDC via Aquarius or Soroswap.
@@ -802,6 +930,12 @@ export function routeMessage(message: string): RoutedIntent {
       "available to borrow",
       "left to borrow",
       "liquidity",
+      // Capacity questions, not instructions. "How much borrow power do I have" is
+      // answered by the credit read below; without these it became a borrow write that
+      // replied "how much do you want to borrow?" — a question answered with a question.
+      "borrow power",
+      "buying power",
+      "credit",
     )
   ) {
     return {
@@ -917,21 +1051,6 @@ export function routeMessage(message: string): RoutedIntent {
       requires_account: true,
       requires_amount: true,
       leverage: leverage ?? null,
-    };
-  }
-
-  // Unsupported tickers on write intents — reject before defaulting asset to USDC.
-  if (
-    findUnsupportedAsset(raw) &&
-    (any(text, "lend", "supply", "earn", "deposit", "borrow", "repay") || any(text, "to earn"))
-  ) {
-    const bad = findUnsupportedAsset(raw)!;
-    return {
-      kind: "clarify",
-      message:
-        `“${bad}” is not a Vanna asset on this testnet. Supported: XLM, BLUSDC, AQUSDC, SOUSDC. ` +
-        `Example: “lend 10 XLM” or “supply 25 BLUSDC”.`,
-      template_id: "unsupported_asset",
     };
   }
 
@@ -1114,6 +1233,39 @@ export function routeMessage(message: string): RoutedIntent {
       args: { symbol: asset ?? "USDC" },
       requires_account: true,
       template_id: "query_vtoken",
+    };
+  }
+
+  /**
+   * "How much credit do I have?" — the headline product question.
+   *
+   * Undercollateralised credit is what Vanna sells, and there was no deterministic route
+   * for asking about it: the phrasing people use ("available credit", "borrowing power",
+   * "how much can I take out") shares no keyword with the `can i borrow` list below, so
+   * it depended entirely on Vertex guessing right. `max_borrow` is the read that answers
+   * it. Kept above `can i borrow` so the more specific credit phrasing wins.
+   */
+  if (
+    any(
+      text,
+      "available credit",
+      "how much credit",
+      "credit available",
+      "credit limit",
+      "borrowing power",
+      "borrow power",
+      "buying power",
+      "credit line",
+      "my credit",
+    ) ||
+    (any(text, "credit") && any(text, "how much", "what is", "what's", "do i have", "left"))
+  ) {
+    return {
+      kind: "read",
+      tool: "vanna_get_max_borrow",
+      args: { symbol: asset ?? "USDC" },
+      requires_account: true,
+      template_id: "query_available_credit",
     };
   }
 

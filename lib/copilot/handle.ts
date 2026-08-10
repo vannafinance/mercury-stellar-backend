@@ -13,7 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
-import { cleanExecutionCopy } from "./execution-copy";
+import { cleanExecutionCopy, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
@@ -45,7 +45,12 @@ import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
-import { answerToText, type AnswerFact, type StructuredAnswer } from "./answer-schema";
+import {
+  answerToText,
+  type AnswerFact,
+  type AnswerVenue,
+  type StructuredAnswer,
+} from "./answer-schema";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -76,6 +81,8 @@ import { logCopilotEvent } from "./log";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { evaluateDomainFirewall } from "./domain-firewall";
 import { findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
+import { resolveAsset, resolveAssetDef, USDC_VARIANTS } from "./registry/assets";
+import { isTrackingSymbol } from "@/lib/account-snapshot";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
 import {
   actionFrom,
@@ -380,6 +387,12 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
             ? Number(req.summarize_execution.health_factor_floor)
             : null,
       });
+      // Same rule as runPlan's receipt: the badge names the product that moved, and the
+      // legs say which that was. The client sends labels, so the ops are read from those.
+      if (receipt) {
+        const v = receiptVenueFromOps(legs.map((l) => l.action));
+        if (v) receipt = { ...receipt, venue: v };
+      }
     } catch (e) {
       console.warn(
         "[copilot] summarize_execution failed:",
@@ -793,6 +806,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // round-trip to be understood. When Vertex is unreachable — an expired
           // `gcloud auth login` is enough — the fallback used to be the capability blurb.
           "query_all_positions",
+          // Same reasoning: "how much credit do I have" is the product's headline
+          // question and must not need a model round-trip to be understood.
+          "query_available_credit",
           "query_blend_position",
           "query_collateral_config",
           "query_addresses",
@@ -833,7 +849,13 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     const unsupported = findUnsupportedAsset(message);
     if (
       unsupported &&
-      /\b(lend|supply|earn|deposit|borrow|repay|farm)\b/i.test(message)
+      // LP and swap verbs belong here too. Without them "add liquidity to the XLM/BTC
+      // pool" skipped this gate entirely and was answered with "how much of each token?"
+      // — asking a user to size a position in a token that does not exist on this
+      // network, and only failing once the amounts came back.
+      /\b(lend|supply|earn|deposit|borrow|repay|farm|swap|provide|add|remove|park|invest|deploy|redeem|withdraw)\b/i.test(
+        message,
+      )
     ) {
       return {
         kind: "blocked",
@@ -1012,8 +1034,48 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // chance of a wrong swap, no chance of an improvement.
   const isConfirmedCarryPlan =
     routed.kind === "plan" && routed.template_id === "delta_neutral_carry";
+
+  /**
+   * The deterministic plan already accounts for every part of the message.
+   *
+   * `accountCoverage` records which character ranges of the prompt some component claimed
+   * and what was left over; `residueIsMaterial` says whether the leftovers mean anything.
+   * That measurement was already being computed every multi-goal turn and only LOGGED —
+   * it is the exact question "is there anything here the model could still add?", and the
+   * answer was being thrown away while the model was called regardless.
+   *
+   * This is the biggest single item on the Vertex bill for this surface: the planner costs
+   * ~950 prompt plus 400–1800 THINKING tokens, thinking bills at output rates, and on a
+   * fully-covered prompt it can only return the plan we already have. Gated on a complete
+   * decomposition of at least two legs, so anything ambiguous, partial or single-leg still
+   * gets the model — this trades no understanding for the saving, which is why it is safe
+   * to apply by default rather than behind a flag.
+   */
+  const deterministicPlanIsComplete = (() => {
+    if (routed.kind !== "plan") return false;
+    if (routed.steps.filter((s) => s.kind === "write").length < 2) return false;
+    // Every write leg must be fully sized — an open amount is exactly the gap the model
+    // is useful for.
+    if (routed.steps.some((s) => s.kind === "write" && s.amount == null)) return false;
+    try {
+      const ir = extractPlanIR(message);
+      if (ir.steps.length < 2) return false;
+      return !residueIsMaterial(classifyCoverage(ir.coverage));
+    } catch {
+      return false; // never let the optimisation decide a turn it failed to measure
+    }
+  })();
+  if (deterministicPlanIsComplete) {
+    logCopilotEvent("llm_planner_skipped", {
+      request_id,
+      reason: "deterministic_plan_complete",
+      steps: routed.kind === "plan" ? routed.steps.length : 0,
+    });
+  }
+
   if (
     !isConfirmedCarryPlan &&
+    !deterministicPlanIsComplete &&
     shouldLlmPlan(message) &&
     (routed.kind === "plan" || looksLikeMultiGoal(message))
   ) {
@@ -1849,10 +1911,182 @@ type MarginPositions = {
   netAvailableCollateral: number;
 };
 
+/**
+ * Did the user write Hinglish? Decides whether the answer mirrors their language.
+ *
+ * The old test was `/\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i` — and "apy"
+ * was in it. So "What is the supply APY on the XLM earn pool?", written in plain English,
+ * was classified as Hinglish and answered "XLM earn pool par supply APY 0.17% hai." APY is
+ * the single most common noun on this surface, so this fired on a large share of ordinary
+ * English questions. It also suppressed the structured-answer path, which is gated on the
+ * same flag, so those turns silently lost the facts layout too.
+ *
+ * Now: a strong marker (a word with no English meaning) is enough on its own; the weak
+ * ones — "ka", "ki", "ke", "hai" are all real English strings in other contexts — need
+ * two before they count.
+ */
+function looksHinglish(message: string): boolean {
+  const strong = /\b(kya|kaise|kitna|kitni|kitne|mujhe|batao|bataiye|karo|karna|chahiye|hain|nahi|acha|thik|zyada|kam|paisa|paise)\b/i;
+  if (strong.test(message)) return true;
+  const weak = message.match(/\b(hai|ka|ki|ke|se|me|mein|par|aur|toh|bhi)\b/gi) ?? [];
+  return weak.length >= 2;
+}
+
+/**
+ * The venue badge on an execution receipt, taken from what RAN — not from the model.
+ *
+ * `vertexSummarizeExecution` returns a `venue` field and the UI badges the card with it.
+ * The model guessed: a plain `deposit_collateral` receipt came back badged VANNA EARN, so
+ * the card named the wrong product for a margin deposit. The ops are known facts by the
+ * time a receipt is written, so there is nothing to infer — a mislabelled product is the
+ * one thing this surface cannot afford, since Earn, Farm and Margin hold different money.
+ *
+ * Mixed-venue strategies fall back to "none" rather than picking a winner: badging a
+ * four-leg earn→margin→farm plan with any single venue is wrong in three ways.
+ */
+function receiptVenueFromOps(ops: string[]): AnswerVenue | null {
+  const seen = new Set<AnswerVenue>();
+  for (const raw of ops) {
+    const op = String(raw).toLowerCase();
+    if (/blend/.test(op)) seen.add("blend");
+    else if (/liquidity|aquarius|soroswap|swap/.test(op)) seen.add("aquarius");
+    else if (/^(lend|supply|redeem)$|earn/.test(op)) seen.add("earn");
+    else if (/deposit|withdraw|borrow|repay|collateral|account|settle|margin/.test(op)) {
+      seen.add("margin");
+    }
+  }
+  if (seen.size === 1) return [...seen][0];
+  return seen.size > 1 ? "none" : null;
+}
+
+/**
+ * Ops the browser can execute locally through the site's own audited services.
+ *
+ * Mirrors `EXECUTABLE_OPS` in components/copilot/execute.ts — the client refuses anything
+ * outside it, so offering a fallback for an op it cannot run would strand the user on a
+ * sign button that does nothing.
+ */
+const LOCAL_FALLBACK_OPS = new Set([
+  "withdraw_collateral",
+  "deposit_collateral",
+  "borrow",
+  "repay",
+]);
+
 const money = (n: number) => `$${n.toFixed(2)}`;
 
 const listPositionRows = (rows: MarginPositionRow[]): string =>
   rows.map((r) => `${r.amount} ${r.symbol} (${money(r.usd)})`).join(", ");
+
+/**
+ * Which asset a position question is ABOUT, when it is about one.
+ *
+ * "How much XLM collateral is in C…?" and "how much USDC debt do I have?" were both
+ * answered with the whole holdings table — every token, totalled — because the only
+ * thing these reads looked at was the account. The named asset was parsed by the router
+ * and then dropped, so a question about one token got a dump of seven, and the number
+ * the user actually asked for was somewhere in the middle of it.
+ *
+ * Returns:
+ *   an AssetId    the user named exactly one asset
+ *   "USDC"        they said bare "USDC" — for a READ that is answerable (show the
+ *                 variants they hold) rather than a variant chip, which is only needed
+ *                 when something is about to be SPENT
+ *   null          no asset named — answer with the whole account, as before
+ *
+ * Addresses are stripped first: a C-address is 56 base32 characters and can contain the
+ * letters of a ticker by chance.
+ */
+function positionAssetFocus(
+  routed: Extract<RoutedIntent, { kind: "read" }>,
+  message: string,
+): string | null {
+  const fromArgs = routed.args?.symbol;
+  const raw =
+    typeof fromArgs === "string" && fromArgs.trim()
+      ? fromArgs
+      : message.replace(/\b[GC][A-Z0-9]{55,56}\b/g, " ");
+  const m = resolveAsset(raw);
+  if (m.kind === "asset") return m.def.id;
+  if (m.kind === "ambiguous") return "USDC";
+  return null;
+}
+
+/**
+ * Split holdings into the ones the question was about and the rest.
+ *
+ * A farm TRACKING symbol is never a plain holding, whatever it resolves to. That check
+ * runs first and uses the margin page's own `isTrackingSymbol`, because the two lists
+ * disagreed otherwise: the asset registry aliases `BLEND_USDC` to BLUSDC (they are the
+ * same token) but not `BLEND_XLM` to XLM, so Blend-supplied USDC was counted as plain
+ * collateral while Blend-supplied XLM was not. Same instrument, opposite treatment,
+ * from two tables that were each individually defensible.
+ *
+ * Tracking rows are reported separately rather than folded in or dropped — "you have
+ * 893 XLM" is true, and "you also have 5.2 XLM inside Blend" is a different fact.
+ */
+function focusPositionRows(
+  rows: MarginPositionRow[],
+  focus: string,
+): { matched: MarginPositionRow[]; related: MarginPositionRow[] } {
+  const wanted = focus.toUpperCase();
+  const ids: string[] =
+    wanted === "USDC" ? [...USDC_VARIANTS] : [wanted];
+  const exact = new Set<string>();
+  for (const id of ids) {
+    exact.add(id);
+    const def = resolveAssetDef(id);
+    for (const a of def?.aliases ?? []) exact.add(a.toUpperCase());
+  }
+
+  const matched: MarginPositionRow[] = [];
+  const related: MarginPositionRow[] = [];
+  for (const r of rows) {
+    const sym = r.symbol.toUpperCase();
+    const tracking = isTrackingSymbol(sym);
+    if (!tracking && exact.has(sym)) {
+      matched.push(r);
+      continue;
+    }
+    // Denominated in the asset they asked about, but a different instrument.
+    // Underscores become spaces so the alias scan sees BLEND_XLM as "BLEND XLM".
+    const asFreeText = resolveAsset(sym.replace(/_/g, " "));
+    const namesIt =
+      (asFreeText.kind === "asset" && ids.includes(asFreeText.def.id)) ||
+      (asFreeText.kind === "ambiguous" && wanted === "USDC") ||
+      (tracking && exact.has(sym));
+    if (namesIt) related.push(r);
+  }
+  return { matched, related };
+}
+
+/** One focused sentence: what they hold of the asset they asked about. */
+function focusedPositionMessage(
+  focus: string,
+  noun: "collateral" | "debt",
+  all: MarginPositionRow[],
+  totalUsd: number,
+): string {
+  const { matched, related } = focusPositionRows(all, focus);
+  const label = focus === "USDC" ? "USDC" : focus;
+  const verb = noun === "collateral" ? "have" : "owe";
+  const head = matched.length
+    ? `You ${verb} ${listPositionRows(matched)}` +
+      (matched.length > 1
+        ? ` — ${money(matched.reduce((s, r) => s + r.usd, 0))} of ${label} ${noun === "collateral" ? "collateral" : "debt"} in total.`
+        : ` of ${noun === "collateral" ? "collateral" : "debt"}.`)
+    : `You have no ${label} ${noun === "collateral" ? "posted as collateral" : "debt"} on this margin account.`;
+
+  const extra = related.length
+    ? `\n\nSeparately, held through a venue rather than as plain ${label}: ${listPositionRows(related)}.`
+    : "";
+  const context =
+    all.length > matched.length
+      ? `\n\nAcross every asset your ${noun === "collateral" ? "collateral" : "debt"} totals ${money(totalUsd)}` +
+        ` — ask for “my ${noun === "collateral" ? "collateral" : "debt"}” to see the full breakdown.`
+      : "";
+  return head + extra + context;
+}
 
 /**
  * The margin page's own read of the account, reshaped into per-token rows.
@@ -1942,15 +2176,26 @@ async function snapshotPositionAnswer(
   const pos = await readMarginPositions(ctx.smartAccount);
   if (!pos) return null;
 
+  // Only the two per-token reads can be narrowed. A health question is about the
+  // account as a whole even when it mentions an asset in passing.
+  const focus =
+    routed.tool === "vanna_get_collateral" || routed.tool === "vanna_get_debt"
+      ? positionAssetFocus(routed, ctx.message)
+      : null;
+
   let message: string;
   if (routed.tool === "vanna_get_collateral") {
-    message = pos.collateral.length
-      ? `Your collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`
-      : "You have no collateral posted on your margin account.";
+    message = !pos.collateral.length
+      ? "You have no collateral posted on your margin account."
+      : focus
+        ? focusedPositionMessage(focus, "collateral", pos.collateral, pos.grossCollateralValue)
+        : `Your collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`;
   } else if (routed.tool === "vanna_get_debt") {
-    message = pos.borrowed.length
-      ? `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`
-      : "You have no outstanding debt on your margin account.";
+    message = !pos.borrowed.length
+      ? "You have no outstanding debt on your margin account."
+      : focus
+        ? focusedPositionMessage(focus, "debt", pos.borrowed, pos.totalBorrowedValue)
+        : `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`;
   } else {
     message =
       `Health factor ${pos.hfText} · collateral ${money(pos.grossCollateralValue)} · ` +
@@ -1970,11 +2215,14 @@ async function snapshotPositionAnswer(
       net_available_collateral: pos.netAvailableCollateral,
       collateral_positions: pos.collateral,
       borrowed_positions: pos.borrowed,
+      // The full table stays in the facts whether or not the prose was narrowed, so the
+      // UI keeps rendering the whole position and only the sentence is focused.
+      ...(focus ? { asked_about: focus } : {}),
       source: "margin_page_snapshot",
     }),
     intent: {
       template_id: routed.template_id,
-      slots: { source: "computeMarginSnapshot" },
+      slots: { source: "computeMarginSnapshot", ...(focus ? { asset: focus } : {}) },
     },
     mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
     request_id: ctx.request_id,
@@ -2373,7 +2621,7 @@ async function runRead(
     }
 
     let prose: string;
-    const hinglish = /\b(kya|hai|ka|ki|ke|mujhe|kitna|kitni|batao|apy)\b/i.test(ctx.message);
+    const hinglish = looksHinglish(ctx.message);
 
     // Structured first: the UI renders headline/facts/venue itself, so number formatting
     // and venue labelling stop depending on the model following prompt rules. Falls back
@@ -3783,7 +4031,20 @@ async function runWrite(
     };
   }
 
-  if (result.status === "needs_wallet_sign") {
+  // Stage for wallet / client session sign whenever MCP built an XDR.
+  //
+  // Sign Service may report needs_auto_sign (no_active_session / not enabled). That is
+  // a *server-side* policy path. The app's auto-approve toggle is *client* session
+  // signing of the same XDR — it must not be blocked by Sign Service enable UI.
+  // Hop 2+ of multi-leg often hit needs_auto_sign while hop 1 was needs_wallet_sign;
+  // without this promotion every later leg asked the user to "enable auto-sign"
+  // even with auto-approve already on.
+  const xdrForSign = result.unsigned_xdr ?? null;
+  const hasSignableXdr = Boolean(xdrForSign && xdrForSign.length > 20);
+  if (
+    result.status === "needs_wallet_sign" ||
+    (result.status === "needs_auto_sign" && hasSignableXdr)
+  ) {
     const pickSummary = highestPickNote
       ? highestPickNote.replace(/\n+/g, " ").replace(/\s+/g, " ").trim()
       : "";
@@ -3792,7 +4053,7 @@ async function runWrite(
     const stagedTitle = pickSummary
       ? `${pickSummary} → ${mapped.step.label}`
       : mapped.step.label;
-    const xdr = result.unsigned_xdr ?? null;
+    const xdr = xdrForSign;
     const xdrNote =
       xdr && xdr.length > 20
         ? `\n\nWallet sign required — full unsigned_xdr is attached (${xdr.length} chars). Use Approve & sign / Freighter; do not invent a hash.`
@@ -3806,15 +4067,24 @@ async function runWrite(
           ]
         : ["wallet sign required (MCP built XDR)"],
     );
+    /**
+     * Manual signing is the default, so this path must read as the normal way through —
+     * not as auto-sign having failed. See stripAutoSignPlumbing.
+     */
+    const signBody =
+      stripAutoSignPlumbing(result.message) ||
+      `${mapped.step.label} is built and ready.`;
     return {
       kind: "needs_wallet_sign",
-      message: withImpact((highestPickNote || "") + result.message + xdrNote),
+      message: withImpact((highestPickNote || "") + signBody + xdrNote),
       data: factsForUi({
         ...result.build,
         ...(highestPickFacts || {}),
         action_label: mapped.step.label,
         has_unsigned_xdr: Boolean(xdr && xdr.length > 20),
         unsigned_xdr_chars: xdr?.length ?? 0,
+        // Preserve that Sign Service wanted enable — client may still session-sign.
+        promoted_from_auto_sign: result.status === "needs_auto_sign" ? true : undefined,
       }),
       unsigned_xdr: xdr,
       mcp: mcpMeta,
@@ -3844,6 +4114,7 @@ async function runWrite(
     };
   }
 
+  // No XDR — only then show Sign Service enable gate (cannot session-sign).
   if (result.status === "needs_auto_sign") {
     return {
       kind: "needs_auto_sign",
@@ -3903,6 +4174,71 @@ async function runWrite(
         slots: { asset: action.asset, amount: action.amount },
         risk: { decision: "block", reasons: reasonsWith([result.message]) },
         requires_signature: false,
+        action: { ...action, smart_account: smartAccount },
+        simulation,
+      },
+      request_id: ctx.request_id,
+    };
+  }
+
+  /**
+   * A budget-class simulation failure is not a refusal — hand it to the site's own path.
+   *
+   * `withdraw_collateral_balance` routinely trips `HostError(Budget, ExceededLimit)` in
+   * SIMULATION on an account holding several collateral tokens, and the transaction
+   * succeeds anyway once submitted. That is not a guess: `MarginAccountService
+   * .withdrawCollateralBalance` (lib/margin-utils.ts) treats a budget-class sim error as
+   * expected, skips the failed prepare, submits the original envelope, and that is the
+   * code behind the Margin page's Withdraw button.
+   *
+   * MCP cannot do the same — it simulates before returning an XDR, so a failed simulation
+   * means no envelope comes back — which left the copilot reporting "your withdraw is
+   * impossible" for something the site does one click away.
+   *
+   * So the leg is handed to the client executor instead: no `unsigned_xdr` plus an
+   * executable `preview.action` is exactly the shape `copilot-workspace` already routes to
+   * `executeAction`, which calls that same audited service. Nothing new is trusted — the
+   * user signs in their own wallet, and no unsimulated envelope is ever auto-signed.
+   *
+   * Deliberately narrow: only budget/resource errors, and only for ops the local executor
+   * actually implements (`EXECUTABLE_OPS`). Any other failure is still a real failure.
+   */
+  const budgetClassFailure = /Budget|ExceededLimit|resource limit/i.test(
+    String(result.message || ""),
+  );
+  if (budgetClassFailure && LOCAL_FALLBACK_OPS.has(action.op)) {
+    console.warn(
+      `[copilot] ${action.op}: MCP simulation hit the Soroban budget — handing to the ` +
+        `site's own executor (same path as the Margin page).`,
+    );
+    return {
+      kind: "needs_wallet_sign",
+      message: withImpact(
+        `The protocol's simulation of this ${action.op.replace(/_/g, " ")} hit a Soroban CPU ` +
+          `budget limit. That is a simulation limit, not a refusal — the risk engine did not ` +
+          `block it, and the Margin page submits these anyway because they go through.\n\n` +
+          `I've built it the same way the Margin page does. Approve and sign to submit it.`,
+      ),
+      data: withRepayData({
+        ...(result.build as Record<string, unknown>),
+        local_executor_fallback: true,
+        reason: "soroban_budget_exceeded_in_simulation",
+      }),
+      // has_unsigned_xdr false is the signal the client keys on to choose executeAction.
+      mcp: { ...mcpMeta, has_unsigned_xdr: false },
+      intent: { template_id: action.op, slots: { fallback: "local_executor" } },
+      preview: {
+        template_id: action.op,
+        human_summary: mapped.step.label,
+        slots: { asset: action.asset, amount: action.amount },
+        risk: {
+          decision: "allow",
+          reasons: reasonsWith([
+            "Simulation hit the Soroban CPU budget; submitting via the same path the Margin page uses.",
+          ]),
+        },
+        requires_signature: true,
+        // No unsigned_xdr on the response, so the client routes this to executeAction.
         action: { ...action, smart_account: smartAccount },
         simulation,
       },
@@ -4026,8 +4362,29 @@ async function runPlan(
   let finalHf: number | null = null;
   let lastPartial: ChatResponse | null = null;
 
+  /**
+   * A read that comes AFTER the writes has to run after them.
+   *
+   * Phase A used to run every read leg in the plan before any write was expanded, which
+   * was harmless while reads only ever appeared as leading context ("check health, then
+   * deposit"). Now that a trailing "…then tell me my health factor" becomes a real leg, the
+   * old behaviour reported the health factor BEFORE the lend that was supposed to change
+   * it — the run card showed "1. account health SETTLED / 2. Lend 15 SOUSDC WAITING", in
+   * the opposite order to the plan the user approved, and answered the question with a
+   * number from before the action. A report on stale state is worse than no report.
+   */
+  const firstWriteIdx = plan.steps.findIndex((s) => s.kind !== "read");
+  const deferredReads =
+    firstWriteIdx === -1
+      ? []
+      : plan.steps
+          .slice(firstWriteIdx)
+          .filter((s) => s.kind === "read" && s.tool);
+
   // ── Phase A: optional plan reads (not expanded) ─────────────────────────
-  for (const step of plan.steps.slice(0, 8)) {
+  // Leading reads only — anything after the first write is deferred to Phase B-end.
+  const leadingSteps = firstWriteIdx === -1 ? plan.steps : plan.steps.slice(0, firstWriteIdx);
+  for (const step of leadingSteps.slice(0, 8)) {
     if (step.kind !== "read" || !step.tool) continue;
     stepIndex += 1;
     if (needsSmartAccount(step.tool) && !smartAccount && ctx.trader) {
@@ -4609,6 +4966,50 @@ async function runPlan(
 
   }
 
+  /**
+   * Trailing reads, now that the writes have settled.
+   *
+   * Skipped when nothing executed: reporting the position after a plan that stopped on its
+   * first leg answers a question about a change that did not happen.
+   */
+  if (deferredReads.length && multiSteps.some((s) => s.status === "ok")) {
+    for (const step of deferredReads.slice(0, 4)) {
+      stepIndex += 1;
+      const built = buildToolArgs(step.tool!, step.args || {}, {
+        trader: ctx.trader,
+        smartAccount,
+      });
+      if (built.blocker) {
+        multiSteps.push({
+          index: stepIndex,
+          op: step.tool!,
+          label: step.tool!,
+          status: "skipped",
+          message: built.blocker,
+        });
+        continue;
+      }
+      try {
+        facts[step.tool!] = await mcp.call(step.tool!, built.args, ctx.userId);
+        multiSteps.push({
+          index: stepIndex,
+          op: step.tool!,
+          label: step.tool!,
+          status: "ok",
+          message: "read ok",
+        });
+      } catch (e) {
+        multiSteps.push({
+          index: stepIndex,
+          op: step.tool!,
+          label: step.tool!,
+          status: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+
   // ── Phase C: final report ───────────────────────────────────────────────
   if (finalHf == null && smartAccount && multiSteps.some((s) => s.status === "ok" && affectsHealth(s.op))) {
     finalHf = await sampleApproxHf(ctx.userId, smartAccount, ctx.trader);
@@ -4630,6 +5031,57 @@ async function runPlan(
   // made the model say "park 20 XLM did not run" and "1 of 1" while the client card
   // already showed 4/4 settled. The client posts summarize_execution with the full
   // accumulator once every leg is ok.
+  /**
+   * A plan made only of reads did not DO anything, and must not claim it did.
+   *
+   * "Rebalance my collateral to be safer" was decomposed into three reads — health,
+   * collateral, debt — which all succeeded, so the generic tail below returned
+   * `kind: "executed"` and the sentence "All strategy steps finished." Nothing had been
+   * rebalanced and nothing had been signed; `tx_hash` was null on every leg. That is the
+   * worst shape a wrong answer can take on this surface, because the user has no way to
+   * tell it apart from a strategy that really ran, and the obvious next move — checking
+   * the position — shows exactly what it showed before.
+   *
+   * Reads are a legitimate outcome (they answer "what would rebalancing involve?"), so
+   * this reports them as an ANSWER carrying what was found, and says plainly that
+   * nothing changed and what to say to actually act.
+   */
+  const planHasWriteStep = plan.steps.some((s) => s.kind !== "read");
+  const reachedChain = multiSteps.some((s) => s.tx_hash);
+  if (!planHasWriteStep && !reachedChain) {
+    const pos = smartAccount ? await readMarginPositions(smartAccount) : null;
+    const found = pos
+      ? [
+          `Health factor ${pos.hfText}`,
+          `collateral ${money(pos.grossCollateralValue)}`,
+          `debt ${money(pos.totalBorrowedValue)}`,
+          `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation`,
+        ].join(" · ")
+      : multiSteps
+          .filter((s) => s.status === "ok")
+          .map((s) => s.label ?? s.op)
+          .join(", ");
+    return {
+      kind: "answer",
+      message:
+        `I looked at your account but did not change anything — that request did not name a ` +
+        `specific move, and I will not pick one for you.\n\n${found}\n\n` +
+        `Tell me the action and I will plan it: “repay 20 BLUSDC”, “deposit 50 XLM as collateral”, ` +
+        `or “withdraw 10 XLM” all reduce or reshape risk in different ways.`,
+      data: multiLegUiData({
+        steps: multiSteps,
+        summary: plan.summary || "Account review",
+        minHf,
+        finalHf: pos?.hf ?? finalHf,
+        smartAccount,
+        extra: { all_legs_ok: allOk, read_only_plan: true, nothing_executed: true },
+      }),
+      intent: { template_id: "strategy_read_only", slots: { legs: multiSteps.length } },
+      execution: { status: "stopped", tx_hash: null, steps: multiSteps.map(toExecutionStep) },
+      request_id: ctx.request_id,
+    };
+  }
+
   let receipt: StructuredAnswer | null = null;
   const isResumeHop = plan.template_id === "multi_leg_resume";
   if (anyOk && !isResumeHop) {
@@ -4648,6 +5100,11 @@ async function runPlan(
       final_health_factor: finalHf ?? null,
       health_factor_floor: minHf ?? null,
     });
+    // The badge is a fact about which product moved, so it comes from the ops.
+    if (receipt) {
+      const v = receiptVenueFromOps(multiSteps.map((s) => s.op));
+      if (v) receipt = { ...receipt, venue: v };
+    }
   }
 
   return {

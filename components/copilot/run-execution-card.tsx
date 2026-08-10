@@ -430,7 +430,16 @@ export function RunExecutionCard({
         headDanger: false,
         beat: "Every leg settled",
         beatTone: "ok" as const,
-        beatSub: `${total} transaction${total === 1 ? "" : "s"} on chain. Nothing is left in flight.`,
+        /**
+         * Legs are not all transactions. A read leg reports a number and never touches
+         * the chain, so counting every leg here claimed "2 transactions on chain" on a
+         * run whose own TRANSACTIONS field, in the same card, correctly said 1. Counted
+         * from the legs that actually produced a hash.
+         */
+        beatSub: (() => {
+          const onChain = legs.filter((l) => l.txHash).length || total;
+          return `${onChain} transaction${onChain === 1 ? "" : "s"} on chain. Nothing is left in flight.`;
+        })(),
       };
     }
     if (failed) {
@@ -483,24 +492,47 @@ export function RunExecutionCard({
           : "Submitted to the ledger.",
       };
     }
-    // Nothing in flight but legs remain: the moment one settled and the next takes over.
+    // Nothing running / signing / gated, but legs remain. "Advancing" is only true
+    // while a hop request is on the wire (busy). Without that gate the card said
+    // "Leg 2 settled · advancing to leg 3 of 4" forever after the client queue
+    // was cleared — UI spinning, no POST.
     if (doneCount > 0) {
+      if (busy) {
+        return {
+          headline: signerLive ? "auto-approving" : "executing",
+          headDanger: false,
+          beat: `Leg ${doneCount} settled · advancing to ${nth(focus)}`,
+          beatTone: "ok" as const,
+          beatSub: legs[focus] ? `Next: ${legs[focus].label.toLowerCase()}.` : undefined,
+        };
+      }
+      return {
+        headline: "paused · continue",
+        headDanger: false,
+        beat: `Leg ${doneCount} settled · ${nth(focus)} still pending`,
+        beatTone: "warn" as const,
+        beatSub: legs[focus]
+          ? `Next: ${legs[focus].label.toLowerCase()}. Waiting for auto-resume or Continue.`
+          : "Waiting for auto-resume or Continue.",
+      };
+    }
+    if (busy) {
       return {
         headline: signerLive ? "auto-approving" : "executing",
         headDanger: false,
-        beat: `Leg ${doneCount} settled · advancing to ${nth(focus)}`,
-        beatTone: "ok" as const,
-        beatSub: legs[focus] ? `Next: ${legs[focus].label.toLowerCase()}.` : undefined,
+        beat: `Starting ${nth(focus)}`,
+        beatTone: "plain" as const,
+        beatSub: legs[focus] ? legs[focus].label : undefined,
       };
     }
     return {
-      headline: signerLive ? "auto-approving" : "executing",
+      headline: "paused · continue",
       headDanger: false,
-      beat: `Starting ${nth(focus)}`,
-      beatTone: "plain" as const,
+      beat: `Ready on ${nth(focus)}`,
+      beatTone: "warn" as const,
       beatSub: legs[focus] ? legs[focus].label : undefined,
     };
-  }, [shape, legs, total, signerLive]);
+  }, [shape, legs, total, signerLive, busy]);
 
   const beatColor =
     narration.beatTone === "danger"
@@ -615,7 +647,14 @@ export function RunExecutionCard({
           const isFocus = i === shape.focus && !shape.complete;
           const later = i > shape.focus && !shape.complete;
           const last = i === total - 1;
-          const missing = l.amount == null;
+          /**
+           * A read leg has no amount and never will — it reports a number, it does not
+           * spend one. Treating a missing amount as "to be confirmed" made a reporting
+           * step look like a write the run would stop and ask about. MCP read tools are
+           * named `vanna_get_*` / `vanna_list_*`, which is what distinguishes them here.
+           */
+          const isReadLeg = /^vanna_(get|list|can|resolve)_/.test(String(l.op ?? ""));
+          const missing = l.amount == null && !isReadLeg;
           /**
            * One field at a time, and only on the leg the run is actually waiting on.
            *

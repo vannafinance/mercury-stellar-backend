@@ -1001,6 +1001,31 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
         `Detail: ${firstLine}`
       );
     }
+    /**
+     * Withdraw trips a budget error in SIMULATION that does not mean the withdraw fails.
+     *
+     * `MarginAccountService.withdrawCollateralBalance` (lib/margin-utils.ts) treats a
+     * budget-class simulation error on `withdraw_collateral_balance` as expected: it
+     * logs it, skips the failed prepare, submits the original envelope, and the
+     * transaction goes through. That is the behaviour behind the Margin page's Withdraw
+     * button, and it is why the site can do something the copilot reports as impossible.
+     *
+     * The copilot cannot copy that trick through MCP — MCP simulates before it returns
+     * an XDR, so a failed simulation means no envelope comes back to submit. Reporting a
+     * bare "Simulation failed: HostError: Error(Budget, ExceededLimit)" is therefore
+     * doubly wrong: it reads as "your withdraw is impossible" when the same withdraw
+     * works from the Margin page one click away.
+     */
+    if (tool === "vanna_withdraw_collateral" && /Budget|ExceededLimit|resource/i.test(raw)) {
+      return (
+        `The withdraw hit a Soroban CPU budget limit while MCP was simulating it. That is a ` +
+        `simulation limit, not a refusal — the risk engine did not block this withdraw.\n\n` +
+        `The Margin page expects this on withdraws and submits anyway, so use Margin → ` +
+        `Withdraw for this one and it should go through. A smaller amount, or withdrawing ` +
+        `one token at a time, also tends to fit inside the budget here.\n\n` +
+        `Nothing was submitted and your collateral is unchanged.`
+      );
+    }
     // Truncate huge event logs for other tools
     const firstLine = raw.split(/\n/)[0]?.slice(0, 280) || raw.slice(0, 280);
     return `Simulation failed: ${firstLine}`;
@@ -1258,17 +1283,24 @@ export async function executeMcpWrite(
       // at all, so "enable auto-sign" understates what is being asked for — the
       // enable flow will then ask for the additional-signer consent (see
       // WalletBindPrompt). Naming it here keeps the two rails telling one story.
+      //
+      // When MCP already built XDR, return needs_wallet_sign — not needs_auto_sign.
+      // App auto-approve is client session signing of that XDR; forcing the Sign
+      // Service enable gate on hop 2+ made multi-leg ask for "auto-approve" again
+      // even when the toggle was already on.
       const unbound = /wallet_not_bound/i.test(asErr + as);
       return {
         tool: step.tool,
         label: step.label,
         build,
         unsigned_xdr: xdr,
-        status: "needs_auto_sign",
+        status: "needs_wallet_sign",
         message: unbound
-          ? "MCP prepared the transaction. Vanna is not authorized to sign for this wallet yet — " +
-            "enabling auto-sign will ask you to approve it as an additional signer first."
-          : "MCP prepared the transaction. Auto-sign is not enabled for this wallet — enable it to submit without a wallet popup.",
+          ? "MCP prepared the transaction. Vanna is not authorized as a Sign Service signer " +
+            "for this wallet — your connected wallet can still sign this XDR (app auto-approve " +
+            "uses session signing)."
+          : "MCP prepared the transaction. Sign Service auto-sign is not enabled — " +
+            "your connected wallet (or app auto-approve session signing) can submit this XDR.",
         mcp_trace: baseTrace,
       };
     }
@@ -1336,15 +1368,18 @@ export async function executeMcpWrite(
       };
     }
     if (/no_active_session|auto_sign.*disabled|wallet_not_bound|not.?enabled|no.?session/i.test(reason)) {
+      // XDR is present — prefer client/wallet sign so multi-leg auto-approve can
+      // continue without the Sign Service enable gate interrupting mid-strategy.
       return {
         tool: step.tool,
         label: step.label,
         build,
         unsigned_xdr: xdr,
         submitted,
-        status: "needs_auto_sign",
+        status: "needs_wallet_sign",
         message:
-          "MCP prepared the transaction. Enable auto-sign for this wallet to submit without a popup.",
+          "MCP prepared the transaction. Sign Service has no active session — " +
+          "sign with your connected wallet (app auto-approve uses session signing).",
         mcp_trace: baseTrace,
       };
     }

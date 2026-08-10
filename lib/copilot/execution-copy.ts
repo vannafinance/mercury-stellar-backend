@@ -39,6 +39,48 @@ export function cleanExecutionCopy(opts: {
   return { headline, body };
 }
 
+/**
+ * Strip auto-sign plumbing out of a message that is heading for the WALLET-SIGN path.
+ *
+ * Manual signing is the DEFAULT — auto-approve is off for every new user. So on that path
+ * "auto-sign did not happen" is not news, it is the setting the user chose, and MCP's
+ * explanation of why is a description of a feature they are not using.
+ *
+ * Reported live on "create a margin account for me" with auto-approve off: the card read
+ *
+ *   "Could not auto-complete account creation via the Sign Service: This wallet is not
+ *    bound to the authenticated user. Run wallet connect again WHILE SIGNED IN, then retry.
+ *    The binding is stamped at /wallets/connect/start from the forwarded user assertion, so
+ *    a connect performed with only the app's M2M credential — or before sign-in existed —
+ *    records no binding.. You can still sign the unsigned_xdr with your own wallet."
+ *
+ * — an internal endpoint path, a credential model and a doubled full stop, in front of a
+ * user whose account creation was about to work perfectly well by signing in their wallet.
+ * It reads as a failure, which is why it was reported as "opening an account does not work
+ * with auto-approve off". Nothing was broken except the sentence.
+ *
+ * The detail is not lost: it stays in `data` / `mcp` for debugging, and the bind flow still
+ * has its own dedicated prompt for users who actually want auto-sign.
+ */
+export function stripAutoSignPlumbing(text: string): string {
+  let s = String(text || "");
+  // The whole "could not auto-sign, here is why" clause, however it is phrased.
+  s = s.replace(
+    /\b(could not|couldn'?t|unable to)\s+auto[- ]?(complete|sign)[^.]*\.?/gi,
+    "",
+  );
+  s = s.replace(/\bThis wallet is not bound to the authenticated user\.?/gi, "");
+  s = s.replace(/\bRun wallet connect again[^.]*\.?/gi, "");
+  s = s.replace(/\bThe binding is stamped at[^]*?records no binding\.?\.?/gi, "");
+  s = s.replace(/\b(wallet[_ ]not[_ ]bound|missing_user_assertion|invalid_user_assertion)\b/gi, "");
+  s = s.replace(/\bfunction_not_allowlisted\b/gi, "");
+  // Redundant once the UI is showing an Approve & sign button.
+  s = s.replace(/\bYou can still sign the unsigned_xdr with your own wallet\.?/gi, "");
+  s = s.replace(/\/wallets\/connect\/\w+/gi, "");
+  s = s.replace(/[ \t]+/g, " ").replace(/\s*\.\s*\./g, ".").replace(/\n{3,}/g, "\n\n");
+  return s.replace(/^[\s.,;:·\-–—]+/, "").trim();
+}
+
 /** True when MCP returned the long Sign Service receipt paragraph. */
 export function isVerboseSignServiceDump(text: string): boolean {
   const t = String(text || "");

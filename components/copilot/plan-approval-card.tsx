@@ -43,6 +43,13 @@ export type PlanVenue = "earn" | "margin" | "farm" | "wallet" | "other";
 
 export interface PlanStepView {
   n: number;
+  /**
+   * A "read" leg reports a number and is not signed — "…then tell me my health factor".
+   * Rendered without an amount block and without an asset, because it has neither, and
+   * excluded from the signature count upstream.
+   */
+  kind?: "write" | "read";
+  tool?: string | null;
   op: string;
   asset: string | null;
   amount: number | null;
@@ -134,9 +141,11 @@ export function PlanApprovalCard({
     // Signatures are legs, not steps: a levered farm expands to deposit → borrow →
     // supply, so a 2-step plan can be 4 signatures.
     const sigs = plan.signature_count || stepCount;
+    // Venues describe where funds GO. A read leg has no venue, and including its "other"
+    // placeholder rendered the chain as "earn → other", which reads like a third product.
     const venues: string[] = [];
     for (const s of plan.steps)
-      if (!venues.includes(s.venue)) venues.push(s.venue);
+      if (s.kind !== "read" && !venues.includes(s.venue)) venues.push(s.venue);
     return {
       stepsText: stepCount === 1 ? "1 step" : `${stepCount} steps`,
       sigText: sigs === 1 ? "1 signature" : `${sigs} signatures`,
@@ -309,7 +318,7 @@ export function PlanApprovalCard({
                         color: "var(--pc-muted)",
                       }}
                     >
-                      {s.op.replace(/_/g, " ")}
+                      {s.kind === "read" ? "report" : s.op.replace(/_/g, " ")}
                     </span>
                   </div>
                   <p
@@ -326,7 +335,24 @@ export function PlanApprovalCard({
                 </div>
 
                 <div className="flex-shrink-0 text-right">
-                  {amount ? (
+                  {/* A read leg has no size and asks for no signature, so it gets neither
+                      the amount figure nor the "amount to be confirmed" warning — that
+                      warning is about a write that will stop mid-plan to ask. */}
+                  {s.kind === "read" ? (
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11.5,
+                        lineHeight: "26px",
+                        fontWeight: 600,
+                        letterSpacing: ".12em",
+                        color: "var(--pc-muted)",
+                      }}
+                    >
+                      no signature
+                    </p>
+                  ) : amount ? (
                     <p
                       className="m-0"
                       style={{

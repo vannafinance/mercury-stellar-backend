@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { envelopeRequiresSigner } from "@/components/copilot/sign-xdr";
+import { envelopeRequiresSigner, isBadSequenceError } from "@/components/copilot/sign-xdr";
 
 describe("envelopeRequiresSigner", () => {
   const trader = "G" + "A".repeat(55);
@@ -28,5 +28,13 @@ describe("envelopeRequiresSigner", () => {
     expect(
       envelopeRequiresSigner({ source: faucet, operations: [{ source: trader }] }, other),
     ).toBe(false);
+  });
+});
+
+describe("isBadSequenceError", () => {
+  it("detects txBadSeq from RPC / Horizon", () => {
+    expect(isBadSequenceError("Submission rejected: txBadSeq")).toBe(true);
+    expect(isBadSequenceError("tx_bad_seq")).toBe(true);
+    expect(isBadSequenceError("insufficient fee")).toBe(false);
   });
 });

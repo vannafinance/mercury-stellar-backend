@@ -138,6 +138,18 @@ const DOMAIN_WORDS = [
   "liquidate", "liquidated", "liquidation", "liquidations", "liquidatable",
   "margin", "margins",
   "hf",
+  /**
+   * Credit is the product.
+   *
+   * Undercollateralised credit is what Vanna sells — "available credit" is a field on
+   * the account state and one of the first things a trader asks for. It was missing
+   * here, so "what is my available credit right now?" hit the no-product-noun rule at
+   * step 5 and was refused with "I only help with Vanna Finance on Stellar" — the
+   * firewall turning away the headline feature.
+   */
+  "credit", "credits", "creditworthiness",
+  "borrowable", "headroom", "capacity",
+  "solvency", "solvent", "undercollateralized", "undercollateralised",
   // Markets
   "pool", "pools",
   "reserve", "reserves",
