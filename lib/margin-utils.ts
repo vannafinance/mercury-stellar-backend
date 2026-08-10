@@ -1137,10 +1137,19 @@ export class MarginAccountService {
   }
 
   /**
-   * Verify that the Registry has a contract address set for a token, by calling
-   * the per-token getter (e.g. `get_usdc_contract_address`, `get_xlm_contract_address`).
-   * A missing address is the most common cause of "deposit/borrow fails for no
-   * obvious reason" after a fresh Registry deploy.
+   * Verify that the Registry has a contract address set for a token, via the
+   * generic `get_token_address_for(symbol)` index. A missing address is the
+   * most common cause of "deposit/borrow fails for no obvious reason" after a
+   * fresh Registry deploy.
+   *
+   * Used to dispatch to per-token legacy getters (`get_xlm_contract_address`,
+   * `get_usdc_contract_address`, `get_aquarius_usdc_addr`,
+   * `get_soroswap_usdc_addr`) — the latter two no longer exist on the
+   * deployed contract (superseded by this generic index), so this check
+   * always reported AQUSDC/SOUSDC as "not configured" even when the Registry
+   * had them set correctly, incorrectly blocking valid deposits/borrows for
+   * those two tokens. `get_token_address_for` is generic across every
+   * registered symbol, so one uniform call now covers all of them.
    *
    * @param tokenSymbol - Token symbol or UI alias; normalized before lookup.
    * @returns `{ configured: true }` when the address is set, otherwise
@@ -1160,43 +1169,43 @@ export class MarginAccountService {
       const sourceAccount = await server.getAccount(userAddress.address);
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.REGISTRY);
 
-      // Build function name based on token.
-      let functionName: string;
-      if (contractTokenSymbol === 'XLM') {
-        functionName = 'get_xlm_contract_address';
-      } else if (contractTokenSymbol === 'BLUSDC' || contractTokenSymbol === 'USDC') {
-        functionName = 'get_usdc_contract_address';
-      } else if (contractTokenSymbol === 'AQUSDC') {
-        functionName = 'get_aquarius_usdc_addr';
-      } else if (contractTokenSymbol === 'SOUSDC') {
-        functionName = 'get_soroswap_usdc_addr';
-      } else {
-        return { configured: false, error: `Unknown token: ${contractTokenSymbol}` };
-      }
-
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
       })
-        .addOperation(contract.call(functionName))
+        .addOperation(
+          contract.call(
+            'get_token_address_for',
+            StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' })
+          )
+        )
         .setTimeout(30)
         .build();
 
       const simulationResult = await server.simulateTransaction(transaction);
 
       if ('error' in simulationResult && simulationResult.error) {
-        console.warn(`⚠️ ${contractTokenSymbol} not configured in Registry:`, simulationResult.error);
+        console.warn(`⚠️ ${contractTokenSymbol} lookup failed in Registry:`, simulationResult.error);
         return {
           configured: false,
           error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.`
         };
       }
 
+      // get_token_address_for returns Option<Address> — None (no address
+      // registered for this symbol) decodes to a falsy value, distinct from
+      // a genuine simulation error above.
       if ('result' in simulationResult && simulationResult.result) {
-        return { configured: true };
+        const decoded = StellarSdk.scValToNative(simulationResult.result.retval);
+        if (decoded) {
+          return { configured: true };
+        }
       }
 
-      return { configured: false, error: 'Unable to verify token configuration' };
+      return {
+        configured: false,
+        error: `${contractTokenSymbol} token contract address not set in Registry. Please configure it first.`
+      };
     } catch (error: any) {
       console.error(`❌ Error checking token configuration:`, error);
       if (error.message?.includes('UnreachableCodeReached') || 
