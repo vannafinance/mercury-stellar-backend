@@ -76,6 +76,20 @@ one of those samples was the first request after a source edit, i.e. Turbopack r
 This file already warns about that trap and I fell into it anyway. Measure on a warm server,
 over several samples, or don't quote a number.
 
+**Auto-approve, the actual flow (verified 2026-08-10):** rail toggle → budget radio
+(`defaults` is pre-selected; switch to `custom` if you want) → **`Done`**. Only `Done` calls
+`enableAutoSign`; the radios just set `railCapsMode`, which is deliberate so the choice can
+be changed before it is committed. A wallet's FIRST enable also needs the one-time signer
+bind (`Authorize in app`); after that `disable auto-sign` revokes only the policy session —
+"Privy addSigners was NOT removed" — so the bind never reappears.
+
+I wasted time reporting "Default caps does nothing" as a bug. It is a radio that was already
+selected, and my button-search regex never matched `Done`, so I judged a control I had never
+clicked. Twice this session I mistook my own tooling for the product: a mid-flight panel read
+as a dead click, and a filter gap read as a missing handler. The one method that never misled
+me was opening the site and comparing its numbers — that is how the 2241.7178423 swap figure
+and the 2498.9290941 collateral figure were settled.
+
 **The trap worth remembering:** MCP reports a Soroban budget overrun as a **200 with an error
 field**, never a rejection. Any `try/catch` around an MCP read is therefore the WRONG guard on
 its own — the catch never fires, and the failure becomes a plausible-looking zero. This bit
