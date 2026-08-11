@@ -1512,8 +1512,34 @@ export class MarginAccountService {
     return (
       text.includes('outside of the footprint') ||
       text.includes('exceeded_limit') ||
-      /budget|exceededlimit|resource/i.test(text)
+      /budget|exceededlimit|resource|try_again_later|txbadseq|txsorobaninvalid|txtoolate/i.test(text)
     );
+  }
+
+  /**
+   * Decodes a `sendTransaction` submission-time rejection (`result.status
+   * === 'ERROR'`) into its real `TransactionResult` code, e.g. `txBadSeq`.
+   * Previously this path did `${result.errorResult.toXDR()}` — `toXDR()`
+   * with no argument returns a raw Buffer, and string-interpolating it just
+   * calls the Buffer's default (garbled, non-UTF8) `toString()`. That
+   * garbage never matched any of {@link isFootprintRaceError}'s text
+   * patterns, so a `txBadSeq` — the second leg of a dual borrow/one-click,
+   * built and submitted moments after the first leg's tx bumped the
+   * account's sequence number, before the RPC node backing `getAccount()`
+   * had caught up — silently skipped the outer `borrowTokens()` rebuild
+   * retry and surfaced as an opaque immediate failure every time. `txBadSeq`
+   * carries no operation results (submission never reached the ops), which
+   * is why `errorResultXdr` here is a tiny handful of bytes with no
+   * diagnostic events, unlike a genuine on-chain contract trap.
+   */
+  private static describeSendError(result: any): string {
+    try {
+      const code = result?.errorResult?.result?.().switch?.().name;
+      if (code) return code;
+    } catch {
+      // Fall through to the generic message below.
+    }
+    return 'unknown';
   }
 
   /**
@@ -1697,9 +1723,21 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      
-      
+      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+
+      // TRY_AGAIN_LATER means the RPC's submission queue declined this
+      // attempt without judging the transaction itself (unlike `ERROR`, a
+      // real rejection) — seen live on a dual-borrow/one-click's second
+      // borrow, submitted moments after the first leg confirmed, while the
+      // RPC node is still catching up with that prior ledger close. The
+      // already-signed tx is still valid, so resubmitting the SAME signed
+      // tx after a short pause (not rebuilding) is the correct recovery.
+      for (let attempt = 0; result.status === 'TRY_AGAIN_LATER' && attempt < 3; attempt++) {
+        console.warn(`⚠️ Borrow submission returned TRY_AGAIN_LATER; resubmitting (attempt ${attempt + 1}/3).`);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      }
+
       if (result.status === 'PENDING') {
         const finalResult = await this.pollTransactionStatus(server, result.hash);
         
@@ -1725,25 +1763,24 @@ export class MarginAccountService {
           };
         }
       } else if (result.status === 'ERROR') {
-        console.error('❌ Borrow transaction failed immediately with ERROR status');
+        const resultCode = this.describeSendError(result);
+        console.error(`❌ Borrow transaction failed immediately with ERROR status (${resultCode})`);
         console.error('Error details:', {
-          errorResultXdr: result.errorResult?.toXDR(),
+          resultCode,
           diagnosticEvents: result.diagnosticEvents
         });
-        
-        // Try to extract more meaningful error information
-        let errorMessage = this.parseBorrowNotAllowedMessage(result, contractTokenSymbol);
-        
-        if (result.errorResult) {
-          try {
-            const errorResult = result.errorResult;
-            console.error('Detailed error result:', errorResult);
-            errorMessage = `Transaction failed: ${errorResult.toXDR()}`;
-          } catch (e) {
-            console.error('Could not parse error result:', e);
-          }
-        }
-        
+
+        // txBadSeq (stale sequence number — see describeSendError's doc
+        // comment) is the common case for a dual-borrow/one-click second
+        // leg submitted right after the first leg's tx. Surface it through
+        // the same footprint-race text pattern so borrowTokens()'s outer
+        // retry (which rebuilds with a freshly-fetched account/sequence)
+        // catches it, instead of an opaque one-shot failure.
+        const errorMessage =
+          resultCode !== 'unknown'
+            ? `Transaction failed with result: ${resultCode}`
+            : this.parseBorrowNotAllowedMessage(result, contractTokenSymbol);
+
         return {
           success: false,
           error: errorMessage
@@ -2464,7 +2501,39 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await server.prepareTransaction(transaction);
+      let preparedTx = await server.prepareTransaction(transaction);
+
+      // Pad the simulated write-byte ceiling with a safety margin. A repay
+      // whose amount lands right at (or just above) the live debt can tip
+      // into a bigger storage write than what simulation — taken BEFORE the
+      // wallet-signing popup opens — predicted, once a little more interest
+      // accrues in that gap (see this method's doc comment). Confirmed live:
+      // simulation declared a 2092-byte write ceiling, real execution needed
+      // 2132 — the host then rejects with `scecExceededLimit: operation
+      // byte-write resources exceeds amount specified` even on a retry with
+      // a fresh simulation, since the SAME small shortfall recurs every
+      // time the account is this close to the boundary. Widening the
+      // declared ceiling (not just the fee, which `borrowTokensAttempt`
+      // already pads) removes the boundary instead of racing it.
+      const WRITE_BYTES_SAFETY_MARGIN = 2048;
+      const RESOURCE_FEE_SAFETY_MARGIN_STROOPS = BigInt(5000);
+      const currentSorobanData = preparedTx.toEnvelope().v1().tx().ext().sorobanData();
+      const resources = currentSorobanData.resources();
+      const currentResourceFee = BigInt(currentSorobanData.resourceFee().toString());
+      const currentTotalFee = BigInt(preparedTx.fee);
+      const paddedSorobanData = new StellarSdk.SorobanDataBuilder(currentSorobanData)
+        .setResources(
+          resources.instructions(),
+          resources.diskReadBytes(),
+          resources.writeBytes() + WRITE_BYTES_SAFETY_MARGIN
+        )
+        .setResourceFee((currentResourceFee + RESOURCE_FEE_SAFETY_MARGIN_STROOPS).toString())
+        .build();
+      preparedTx = StellarSdk.TransactionBuilder.cloneFrom(preparedTx, {
+        fee: (currentTotalFee + RESOURCE_FEE_SAFETY_MARGIN_STROOPS).toString(),
+      })
+        .setSorobanData(paddedSorobanData)
+        .build();
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
