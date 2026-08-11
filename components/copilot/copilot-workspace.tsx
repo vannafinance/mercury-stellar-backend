@@ -456,20 +456,55 @@ function Eyebrow({
  * the next grid column. Both ends carry the information people actually check, so the
  * middle is what goes; the full value stays in `title` and remains selectable.
  */
+/**
+ * A full protocol address or tx hash — the values whose whole point is being checkable.
+ *
+ * Stellar addresses are exactly 56 base32 chars; hashes are 64 hex. Matched precisely so
+ * an ordinary long string in a fact value is not laid out as an identifier.
+ */
+function isFullIdentifier(s: string): boolean {
+  return /^[GC][A-Z2-7]{55}$/.test(s) || /^[0-9a-f]{64}$/i.test(s);
+}
+
 function shortenValue(v: string): { text: string; full: string | null } {
   const s = v.trim();
-  if (/^[GC][A-Z0-9]{40,}$/.test(s)) {
-    return { text: `${s.slice(0, 8)}…${s.slice(-6)}`, full: s };
-  }
-  // Long hex (tx hashes, XDR fragments) gets the same treatment.
-  if (s.length > 34 && /^[0-9a-fA-F]{34,}$/.test(s)) {
+  // Long hex that is NOT a 64-char hash (XDR fragments) still gets shortened — nobody
+  // verifies an envelope by eye.
+  if (!isFullIdentifier(s) && s.length > 34 && /^[0-9a-fA-F]{34,}$/.test(s)) {
     return { text: `${s.slice(0, 10)}…${s.slice(-6)}`, full: s };
   }
   return { text: s, full: null };
 }
 
+/**
+ * One fact row.
+ *
+ * A full identifier gets a STACKED row — label above, complete value below, wrapping on
+ * `break-all` — because "is this the right contract?" is the only question anyone asks of
+ * a protocol address, and `CBBQQULN…5LDXUO` cannot answer it. Callers that genuinely want
+ * a compact chip (the wallet pill, a tx-hash receipt) pass an already-shortened string via
+ * `truncAddr` / `truncHash`, so they are unaffected.
+ */
 function Row({ k, v, color }: { k: string; v: string; color?: string }) {
   const { text, full } = shortenValue(v);
+  const ident = isFullIdentifier(text);
+
+  if (ident) {
+    return (
+      <div className="border-b border-vgray-100 py-2 last:border-0">
+        <span className="block font-mono text-[11px] uppercase tracking-wider text-vgray-400">
+          {k}
+        </span>
+        <span
+          className="mt-1 block select-all font-mono text-[12px] leading-[17px] text-vgray-900"
+          style={{ wordBreak: "break-all", ...(color ? { color } : {}) }}
+        >
+          {text}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-baseline justify-between gap-3 border-b border-vgray-100 py-2 last:border-0">
       <span className="min-w-0 shrink-0 font-mono text-[11px] uppercase tracking-wider text-vgray-400">
@@ -870,7 +905,22 @@ function isChainableHopResponse(
   );
 }
 
-function FactsGrid({ data }: { data: Record<string, unknown> }) {
+/**
+ * Supporting figures for a response.
+ *
+ * `shown` carries the values the structured answer above has ALREADY rendered. Without it
+ * the same six protocol addresses appeared twice on one card — once as answer rows, once
+ * again here — which reads as two lists that might disagree rather than one fact stated
+ * once. Matched on VALUE, not label: the answer says "REGISTRY" where the payload key is
+ * `registry`, and an address is unique enough that value equality is the reliable join.
+ */
+function FactsGrid({
+  data,
+  shown,
+}: {
+  data: Record<string, unknown>;
+  shown?: ReadonlySet<string>;
+}) {
   const skipKeys = new Set([
     "unsigned_xdr",
     "auth_entries",
@@ -903,16 +953,22 @@ function FactsGrid({ data }: { data: Record<string, unknown> }) {
     "smart_account",
     "smartAccount",
   ]);
+  const already = (val: string) => !!shown && shown.has(val.trim());
   const rows: [string, string][] = [];
   for (const [k, v] of Object.entries(data)) {
     if (v == null || v === "" || skipKeys.has(k)) continue;
     if (typeof v === "object") {
       if (Array.isArray(v)) continue;
       for (const [sk, sv] of Object.entries(v as Record<string, unknown>)) {
-        if (sv != null && typeof sv !== "object") rows.push([prettyKey(sk), prettyVal(sv)]);
+        if (sv == null || typeof sv === "object") continue;
+        const pv = prettyVal(sv);
+        if (already(pv)) continue;
+        rows.push([prettyKey(sk), pv]);
       }
     } else {
-      rows.push([prettyKey(k), prettyVal(v)]);
+      const pv = prettyVal(v);
+      if (already(pv)) continue;
+      rows.push([prettyKey(k), pv]);
     }
   }
   if (!rows.length) return null;
@@ -4020,7 +4076,16 @@ export function CopilotWorkspace() {
                       </div>
                     ) : null}
                     {sim && !multiLeg && <ImpactPanel sim={sim} />}
-                    {response?.data && !multiLeg && <FactsGrid data={response.data} />}
+                    {response?.data && !multiLeg && (
+                      <FactsGrid
+                        data={response.data}
+                        shown={
+                          new Set(
+                            (response.answer?.facts ?? []).map((f) => String(f.value).trim()),
+                          )
+                        }
+                      />
+                    )}
 
                     {/* USDC variant (or other) clarify chips */}
                     {response?.kind === "clarification" &&
