@@ -27,6 +27,50 @@ Ask: a per-token withdraw path, or reduce the per-token work.
 Workaround in place: the copilot falls back to the site's own budget-tolerant executor
 (§C1) — **UNVERIFIED live**, because the authorised test wallet does not trip the limit.
 
+### A0. Earn APY: the **website** shows a hardcoded model, the copilot shows the chain
+Reported 2026-08-11 as "copilot data is misleading". Investigated — it is the other way
+round, and both surfaces are self-consistent, so neither looks obviously wrong on its own.
+
+The Earn page does **not** read a rate from the contract. It computes both numbers from
+utilization alone:
+
+```ts
+// lib/pool-stats.ts:15
+calculateSupplyAPY = (u) => (2.0 + u/100 * 10).toFixed(2)   // 2% floor + up to 10%
+// lib/utils/borrow-rate.ts — baseRate 2, optimalUtil 80, slope1 4, slope2 60
+```
+
+Every website figure reproduces exactly from those two formulas:
+
+| Pool | util | site supply = `2+u×10` | site borrow = kinked curve | **MCP (chain)** supply / borrow |
+|---|---|---|---|---|
+| XLM | 17.18% | 3.72% | 2.86% | **1.08% / 6.13%** |
+| BLUSDC | 63.18% | 8.32% | 5.16% | **16.23% / 23.83%** |
+| AqUSDC | 48.42% | 6.84% | 4.42% | **8.20% / 16.95%** |
+| SoUSDC | 4.51% | 2.45% | 2.23% | **0.07% / 1.58%** |
+
+`borrow-rate.ts` says so in its own comment: *"The constants below approximate Vanna's
+testnet target — tune in one place once the team publishes the real RateModel parameters."*
+
+Two tells that the site's numbers are the modelled ones:
+1. On XLM the site shows supply APY (3.72%) **above** borrow APY (2.86%) — impossible for a
+   lending pool, and an artefact of the 2% floor.
+2. MCP's figures satisfy `supply ≈ borrow × utilization` exactly, and MCP returns that
+   identity as `note_supply_apr`. The site's do not.
+
+**Amounts agree** on both surfaces (28,708.37 XLM supplied / 23,676.55 available), so only
+the rates diverge.
+
+**Decision needed — not a copilot bug.** Either publish the real RateModel params and have
+`pool-stats.ts` use them, or have the page read MCP. Until then a user comparing the two
+screens sees two different APYs for one pool. The copilot was **not** changed to match the
+site: reporting a modelled rate as though it were the live one would be worse than the
+disagreement.
+
+Copilot-side clarity fix that *was* made: the pool row used to end `liquidity 23,676.554` —
+a bare number with an ambiguous label. It now reads `28,708.3785 XLM supplied, 23,676.554
+available`, which maps onto the page's two columns.
+
 ### A2. Blend XLM reserve reports 366.53% supply APY
 Almost certainly a decimals/scaling error. It is rendered to users as-is.
 

@@ -2850,12 +2850,30 @@ async function runRead(
     // and round here rather than echoing MCP's 18-decimal strings. No markdown: the
     // UI renders this as plain text, so "**" would show as literal asterisks.
     const width = Math.max(...rows.map((r) => String(r.symbol).length));
+    /**
+     * Name the unit, and say WHICH liquidity.
+     *
+     * This row used to end `liquidity 23,676.554` — a bare number with no token and an
+     * ambiguous label. The Earn page shows two separate columns, "Assets Supplied"
+     * (28.71K XLM) and "Available Liquidity" (23.78K XLM), so a reader comparing the two
+     * surfaces could not tell which one the copilot meant, and the figure looked like it
+     * disagreed with the table when it was simply a different column.
+     *
+     * `total_assets` is everything deposited; `total_liquidity` is what is left to borrow.
+     * Both are reported, in the pool's own token, so the row lines up with the page.
+     */
     const fmtRow = (r: Record<string, unknown>) => {
       const name = String(r.symbol).padEnd(width);
       if (r.error) return `• ${name}  unavailable (${shortError(r.error)})`;
+      const sym = String(r.symbol);
+      const supplied = r.total_assets_human != null ? amount(r.total_assets_human) : null;
+      const avail = amount(r.total_liquidity_human);
+      const size = supplied
+        ? `${supplied} ${sym} supplied, ${avail} available`
+        : `${avail} ${sym} available to borrow`;
       return (
         `• ${name}  supply ${pct(r.supply_apy_pct)}  ·  borrow ${pct(r.borrow_apr_pct)}` +
-        `  ·  used ${pct(r.utilization_pct)}  ·  liquidity ${amount(r.total_liquidity_human)}`
+        `  ·  used ${pct(r.utilization_pct)}  ·  ${size}`
       );
     };
     const lines = rows.map(fmtRow);
