@@ -4,15 +4,15 @@ import { useUserStore } from "@/store/user";
 import { useAnalyticsSnapshot } from "@/hooks/use-analytics";
 
 /**
- * Warms the protocol-wide analytics snapshot query as soon as the app
- * mounts, regardless of which page the user lands on first. Without this,
- * `useAnalyticsSnapshot` only ran once the user actually navigated to
- * /analytics/overview2, so every first visit showed a "Loading margin
- * accounts from Soroban…" spinner even though the underlying scan is a
- * shared, edge-cached read that could have started the moment the app
- * mounted. React Query dedupes this against the Analytics page's own call to
- * the same hook (identical queryKey), so mounting it here doesn't double-fetch
- * — it just means the cache is already warm by the time the user gets there.
+ * Keeps the Analytics protocol snapshot warm app-wide, mounted once at the
+ * layout level (like MarginAccountHydrator) instead of only inside
+ * /analytics/overview2. `useAnalyticsSnapshot` is a plain React Query
+ * `useQuery` call — mounting it here subscribes to the SAME cache entry the
+ * Analytics page reads, so whichever page loads first (Earn, Margin, ...)
+ * starts the fetch immediately, and by the time the user actually navigates
+ * to Analytics the query is already warm (and kept warm via the existing
+ * ledger-tick invalidation) instead of showing a cold "Loading margin
+ * accounts from Soroban…" spinner on every fresh app load.
  */
 export function AnalyticsPrefetcher() {
   const address = useUserStore((s) => s.address);

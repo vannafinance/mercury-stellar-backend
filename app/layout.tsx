@@ -11,6 +11,7 @@ import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
+import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -101,6 +102,7 @@ export default function RootLayout({
               <LedgerSubscriberProvider>
                 <PriceProvider>
                   <MarginAccountHydrator />
+                  <AnalyticsPrefetcher />
                   <Navbar items={navbarItems}/>
                   <ScaleWrapper>{children}</ScaleWrapper>
                   <AppToaster />
