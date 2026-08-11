@@ -249,6 +249,22 @@ function summarizeList(label: string, data: Record<string, unknown>, keys: strin
  * not sufficient to spend" underneath. The humanised message carries that detail
  * already; the raw rows only make a handled failure look unhandled.
  */
+/**
+ * Is this value a machine status code rather than something written for a person?
+ *
+ * Scoped to `reason` on purpose. That is the one key observed carrying both kinds of
+ * content — `no_active_session` on a staged write, and a real sentence on a read
+ * ("Borrowing 20 USDC is permitted: it passes the gross-asset check…") — so the key alone
+ * cannot decide and the value has to. Whitespace is the signal: a reason meant for a person
+ * has spaces in it, a status code never does. Deliberately not applied to `status` or
+ * `error`, where a single bare word ("enabled", "wallet_not_bound") is the actual answer.
+ */
+function isStatusCode(key: string, value: string): boolean {
+  if (!/^reason$/i.test(key.trim())) return false;
+  const v = value.trim();
+  return v.length > 0 && v.length <= 64 && !/\s/.test(v) && /^[a-z0-9_.:-]+$/i.test(v);
+}
+
 const PLUMBING_FACT_KEY =
   /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error)$/i;
 
@@ -321,6 +337,19 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
      * The dump is redundant here by construction, so it is dropped rather than trimmed.
      */
     if (typeof v === "string" && isVerboseSignServiceDump(v)) continue;
+    /**
+     * A status CODE is not a reason, even under a key called `reason`.
+     *
+     * Observed live on a staged deposit: the approval gate showed `REASON no_active_session`
+     * beside the amount, which tells the user nothing — it is the Sign Service saying there
+     * is no session key yet, and the card already says "wallet sign required" in words. The
+     * key cannot go in `PLUMBING_FACT_KEY`, because the same field carries genuinely useful
+     * prose on a read ("Borrowing 20 USDC is permitted: it passes the gross-asset check…").
+     *
+     * So the value decides: a lone snake_case or SCREAMING_CASE token with no whitespace is
+     * a machine code, and a reason written for a person has spaces in it.
+     */
+    if (typeof v === "string" && isStatusCode(k, v)) continue;
     if (Array.isArray(v)) {
       // Flatten first few position rows: "XLM balance", "XLM value_usd"
       v.slice(0, 6).forEach((item, i) => {
