@@ -1,5 +1,15 @@
 # Vanna Copilot — Production Integration Plan
 
+> ## ⚠️ HISTORICAL PLAN — not the built system
+>
+> This was the plan. The architecture diagram below shows a separate **FastAPI
+> orchestrator**; the brain was instead built **in-process in TypeScript**
+> (`lib/copilot/`), and MCP consolidated its ~42 tools into **14 dispatchers**.
+>
+> For the system as built see
+> **[copilot/ARCHITECTURE.md](./copilot/ARCHITECTURE.md)** and
+> **[copilot/GUARDRAILS.md](./copilot/GUARDRAILS.md)**.
+
 > Goal: turn the `/copilot` UI shell into a production agent that lets a user perform **any**
 > read or write operation on the Vanna app through natural language — grounded in the MCP
 > (`vanna-mcp-server`, ~29 tools) + the app's on-chain contract services, gated by a

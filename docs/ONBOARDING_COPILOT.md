@@ -1,5 +1,21 @@
 # Vanna Copilot Orchestrator — Developer Onboarding
 
+> ## ⚠️ HISTORICAL — DO NOT ONBOARD FROM THIS FILE
+>
+> This describes a **FastAPI Python orchestrator** (`app/orchestrator/pipeline.py`,
+> `app/mcp/client.py`). **That service no longer exists in this repo.** The brain is
+> in-process TypeScript under `lib/copilot/` (38 modules), called from
+> `POST /api/copilot`.
+>
+> Current docs, in reading order:
+> **[copilot/ARCHITECTURE.md](./copilot/ARCHITECTURE.md)** ·
+> **[copilot/README.md](./copilot/README.md)** ·
+> **[copilot/GUARDRAILS.md](./copilot/GUARDRAILS.md)** ·
+> **[copilot/ONBOARDING.md](./copilot/ONBOARDING.md)**
+>
+> Kept only because the design intent — templates, zero-custody, "the LLM interprets
+> language; the code decides safety" — carried over and is still accurate.
+
 _For a developer who has never seen this project. Every path, function, template,
 and command below comes from the actual code in this repo._
 

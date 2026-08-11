@@ -4,8 +4,17 @@ Reference for the agent-native copilot: what it is, the path a message takes, wh
 does what, and where each safety property lives.
 
 Companion docs:
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — the same system as diagrams: services, message
+  path, write and plan lifecycles, identity, multi-leg execution.
+- [GUARDRAILS.md](./GUARDRAILS.md) — every refusal and safety gate, which file owns it, and
+  the failure that motivated it.
 - [ONBOARDING.md](./ONBOARDING.md) — pick this up and run it in ~15 minutes.
 - [OPEN-ISSUES.md](./OPEN-ISSUES.md) — what is still broken, and whose call each one is.
+- [NEXT-SESSION.md](./NEXT-SESSION.md) — live regression prompts, measured latency, traps.
+
+> `docs/ONBOARDING_COPILOT.md` and `docs/copilot-integration-plan.md` describe a FastAPI
+> Python orchestrator that **no longer exists**. Both now carry a banner; do not onboard
+> from them.
 
 ---
 
