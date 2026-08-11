@@ -1,5 +1,11 @@
 # Design prompt — Copilot answer card
 
+> **Superseded by [DESIGN-PROMPT-copilot-surface.md](./DESIGN-PROMPT-copilot-surface.md).**
+> Generating from this file alone designs the answer card in isolation, which is how it
+> diverged from the plan and run cards in the first place — those two carry 138 hardcoded
+> hex values in private `--pc-*` / `--rc-*` ramps. Use the surface-wide prompt; this is
+> kept only for the per-card detail in §3–§5.
+
 Paste everything inside the fence into Claude (claude.ai) and ask for an artifact. It is
 written so the output can be wired into `components/copilot/answer-view.tsx` mechanically:
 the variables it names already exist in `app/globals.css`.
