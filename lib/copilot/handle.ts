@@ -3064,6 +3064,31 @@ async function runRead(
     // and venue labelling stop depending on the model following prompt rules. Falls back
     // to the prose path on any failure, and is skipped for Hinglish, where the value is
     // in the model's own phrasing rather than in a fixed layout.
+    /**
+     * Name the pool that was actually read, not the wire symbol three pools share.
+     *
+     * BLUSDC, AQUSDC and SOUSDC are separate pools that all report `pool symbol: "USDC"` on
+     * the wire. So "BLUSDC pool stats" came back labelled "The USDC Vanna earn pool … 1,536
+     * USDC total liquidity" — right numbers, wrong name, and indistinguishable from the other
+     * two pools' answers. That is the failure the test script flags at R-11 and the reason
+     * R-11/R-12/R-13 all read as wrong.
+     *
+     * This does NOT relabel from the user's word — that is the documented P0 (a swap card
+     * once said BLUSDC while buying AQUSDC). `routed.args.symbol` is the ROUTER's resolved
+     * variant, the same resolution that chose which pool to read, so it agrees with the data
+     * by construction. The substitution is deliberately narrow: only when the wire value is
+     * exactly the ambiguous shared symbol, and only for a variant known to share it.
+     */
+    const wireSymbol = data["pool symbol"];
+    const resolvedSymbol = (routed.args as Record<string, unknown> | undefined)?.symbol;
+    if (
+      wireSymbol === "USDC" &&
+      typeof resolvedSymbol === "string" &&
+      /^(BLUSDC|AQUSDC|SOUSDC)$/i.test(resolvedSymbol)
+    ) {
+      data["pool symbol"] = resolvedSymbol.toUpperCase();
+    }
+
     let structured: StructuredAnswer | null = null;
     if (!hinglish) {
       structured = await vertexExplainStructured(ctx.message, routed.tool, data);
