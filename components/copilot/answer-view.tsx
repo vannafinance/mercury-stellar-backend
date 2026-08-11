@@ -216,7 +216,20 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
             <div
               key={`${f.label}-${i}`}
               className="flex min-w-0 items-baseline justify-between gap-3"
-              style={{ borderBottom: "1px solid var(--cp-g100)", padding: "7px 0" }}
+              style={{
+                borderBottom: "1px solid var(--cp-g100)",
+                padding: "7px 0",
+                /**
+                 * A long label takes the full width instead of half of it.
+                 *
+                 * The design's pair grid assumes labels like "SUPPLY APY". Real ones include
+                 * "COLLATERAL LEFT BEFORE LIQUIDATION", which in a half-width cell left no
+                 * room for its own figure — the label ran into the next column's label and
+                 * the value clipped to "1…". Same failure as the address grid that shattered
+                 * "REGISTRY", one column over: the fix is to stop competing for the width.
+                 */
+                gridColumn: f.label.length > 22 ? "1 / -1" : undefined,
+              }}
             >
               <dt style={labelStyle}>{f.label}</dt>
               <dd

@@ -258,6 +258,41 @@ const FOLLOW_UP: Record<string, string> = {
   page_assist: "What is my health factor?",
 };
 
+/**
+ * The follow-up must offer what the user actually asked about.
+ *
+ * The map above is a set of canned examples, so "Can I borrow 20 USDC?" — answered yes —
+ * offered "Borrow 2 USDC". Nothing was truncating the 20; the suggestion simply never looked
+ * at the question, and 2 is what the example happened to say. Answering a question about 20
+ * and then proposing 2 reads as though the check came back with a smaller number.
+ *
+ * The router already resolves the amount and asset into `intent.slots`, so the verb comes
+ * from the template and the quantity comes from what was asked. Anything without both slots
+ * keeps its canned example, which is still the right prompt for a read that named no amount.
+ */
+const AMOUNT_VERB: Record<string, string> = {
+  vanna_can_borrow: "Borrow",
+  vanna_get_max_borrow: "Borrow",
+  vanna_get_debt: "Repay",
+  vanna_get_pool_stats: "Lend",
+  vanna_get_blend_reserve_stats: "Lend",
+};
+
+function followUpFor(
+  intent: { template_id?: string | null; slots?: Record<string, unknown> } | null | undefined,
+): string | undefined {
+  const templateId = intent?.template_id;
+  if (!templateId) return undefined;
+  const verb = AMOUNT_VERB[templateId];
+  const slots = (intent?.slots ?? {}) as Record<string, unknown>;
+  const amount = slots.amount;
+  const symbol = slots.symbol ?? slots.asset;
+  if (verb && amount != null && amount !== "" && typeof symbol === "string" && symbol) {
+    return `${verb} ${amount} ${symbol}`;
+  }
+  return FOLLOW_UP[templateId];
+}
+
 // The surface's four status colours, as tokens rather than literals — read by ~60
 // `style` values below, so a literal here is a literal sixty times.
 //
@@ -592,7 +627,19 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
   }
 
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b border-vgray-100 py-2 last:border-0">
+    <div
+      className="flex items-baseline justify-between gap-3 border-b border-vgray-100 py-2 last:border-0"
+      /**
+       * A long key takes the whole row rather than half of it.
+       *
+       * FactsGrid is a two-column grid and this label is `shrink-0`, so
+       * "COLLATERAL LEFT BEFORE LIQUIDATION" filled its half-width cell, ran into the next
+       * column's label, and squeezed its own figure down to "1…" — the number the row exists
+       * to show. Spanning both columns is cheaper than truncating the value or shattering the
+       * label, which are the two failures this surface already fixed once elsewhere.
+       */
+      style={{ gridColumn: k.length > 22 ? "1 / -1" : undefined }}
+    >
       <span className="min-w-0 shrink-0 font-mono text-[11px] uppercase tracking-wider text-vgray-400">
         {k}
       </span>
@@ -3914,7 +3961,7 @@ export function CopilotWorkspace() {
   const reasons = response?.preview?.risk?.reasons ?? [];
   const decision = response?.preview?.risk?.decision;
   const action = response?.preview?.action;
-  const followUp = response?.intent?.template_id ? FOLLOW_UP[response.intent.template_id] : undefined;
+  const followUp = followUpFor(response?.intent);
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
   // Multi-leg: every hop with XDR auto-submits when session signing is on — including
   // responses that older servers labeled needs_auto_sign.
@@ -4265,7 +4312,24 @@ export function CopilotWorkspace() {
                       {followUp && (
                         <button
                           type="button"
-                          onClick={() => run(followUp)}
+                          /**
+                           * Loads the composer; it does not run.
+                           *
+                           * This suggestion is now a WRITE carrying the amount the user asked
+                           * about, and with auto-approve on a write leaves no gate — one click
+                           * here used to be one borrow, at whatever size the label said. Filling
+                           * the box puts the amount in front of the user with Run one deliberate
+                           * press away, which is also what makes the carried-through amount safe
+                           * to show in the first place.
+                           */
+                          onClick={() => {
+                            setIntentText(followUp);
+                            inputRef.current?.focus();
+                            inputRef.current?.scrollIntoView({
+                              block: "center",
+                              behavior: "smooth",
+                            });
+                          }}
                           className={`px-[18px] py-2.5 ${BTN_TINT}`}
                         >
                           {followUp}
