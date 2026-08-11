@@ -6,7 +6,6 @@
  */
 
 import { useMemo } from "react";
-import { useTheme } from "@/contexts/theme-context";
 
 /** Normalize model text for structured rendering. */
 export function sanitizeAssistantText(raw: string): string {
@@ -163,15 +162,24 @@ function parseBlocks(text: string): Block[] {
 }
 
 export function AssistantProse({ text }: { text: string }) {
-  const { isDark } = useTheme();
   const cleaned = useMemo(() => sanitizeAssistantText(text), [text]);
   const blocks = useMemo(() => parseBlocks(cleaned), [cleaned]);
 
-  const ink = isDark ? "text-[#F2F2F2]" : "text-[#1A1A1A]";
-  const body = isDark ? "text-[#D0D0D0]" : "text-[#3A3A3A]";
-  const accent = isDark ? "text-[#C4B0FF]" : "text-[#703AE6]";
-  const bullet = isDark ? "text-[#B8A0F0]" : "text-[#703AE6]";
-  const stepBg = isDark ? "bg-[#703AE6]/25 text-[#E8E0FF]" : "bg-[#703AE6]/12 text-[#703AE6]";
+  // Tokens, not a JS theme branch. These five lines were ten hardcoded hexes chosen
+  // per theme in render, which is the one place a theme can disagree with CSS: the
+  // component had to re-render to recolour, and every value was invisible to the
+  // palette. The drawer carries `.cp-root` (see `assistant-launcher`), so the
+  // surface's own tokens resolve here and the theme is handled where the rest of the
+  // app handles it.
+  //
+  // The step chip moves from an alpha wash on violet to the violet-50/violet-500
+  // pair the rest of the copilot uses for a soft chip (21 other sites), so it now
+  // matches them instead of approximating them.
+  const ink = "text-[var(--g800)]";
+  const body = "text-[var(--g500)]";
+  const accent = "text-[var(--cp-violet-500)]";
+  const bullet = accent;
+  const stepBg = "bg-[var(--cp-violet-soft)] text-[var(--cp-violet-500)]";
 
   return (
     <div

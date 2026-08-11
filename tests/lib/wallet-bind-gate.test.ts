@@ -30,7 +30,7 @@
  * a flow that looks like it worked and fixes nothing.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const MCP_URL = "https://mcp.test.invalid/mcp";
 const TOKEN_URL = "https://tenant.authkit.app/oauth2/token";
@@ -248,13 +248,31 @@ async function postCopilot(
 const callsTo = (name: string, action: string) =>
   toolCalls.filter((c) => c.name === name && c.action === action);
 
-beforeEach(async () => {
+/** Import-time configuration, so warming the route graph sees the same env a test does. */
+function setEnv() {
   process.env.MCP_MODE = "live";
   process.env.MCP_BASE_URL = MCP_URL;
   process.env.WORKOS_M2M_CLIENT_ID = "client_m2m";
   process.env.WORKOS_M2M_CLIENT_SECRET = "secret";
   process.env.WORKOS_M2M_TOKEN_URL = TOKEN_URL;
   process.env.NEXT_PUBLIC_PRIVY_APP_ID = "cmrdk67en003k0cjojj56n8mh";
+}
+
+// Warm the route module graph once, outside any test's budget. `postCopilot` imports the
+// real /api/copilot route, which pulls in the whole copilot brain; that load is over five
+// seconds while the full suite keeps every worker busy, and charged to a 5s test timeout it
+// made the first test in this file fail with "Test timed out in 5000ms" on about every
+// other full-suite run while passing alone every time (measured: 5277ms — marginally over,
+// not hanging). Env first, because the graph reads MCP_MODE and the WorkOS settings as it
+// loads. See the longer note in assertion-end-to-end.test.ts.
+beforeAll(async () => {
+  setEnv();
+  await import("@/app/api/copilot/route");
+  await import("next/server");
+}, 120_000);
+
+beforeEach(async () => {
+  setEnv();
   toolCalls = [];
   gatewayCalls = [];
   bound = false;

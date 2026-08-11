@@ -258,10 +258,74 @@ const FOLLOW_UP: Record<string, string> = {
   page_assist: "What is my health factor?",
 };
 
-const EMERALD = "#10b981";
-const AMBER = "#f59e0b";
-const IMPERIAL = "#fc5457";
-const VIOLET = "#703ae6";
+// The surface's four status colours, as tokens rather than literals — read by ~60
+// `style` values below, so a literal here is a literal sixty times.
+//
+// These were hex constants named for their hue (EMERALD / AMBER / IMPERIAL), and the
+// hue was the problem twice over.
+//
+// A literal does not invert: #10b981 / #f59e0b / #703ae6 stayed at their light values
+// on a #111 panel, the failure the comment above `BTN_GRADIENT` calls "a literal that
+// stayed light-mode-pale".
+//
+// And the bright hues are not readable as text on a white card: emerald is 2.54:1,
+// amber 2.15:1, imperial 3.21:1 — all three fail WCAG AA, and they were painting the
+// risk-gate chips, the health-factor figure, the settled badges and ~30 other labels.
+// So these now resolve to the palette's status INKS, which is what the names say now.
+// Each ink is dark in light mode and bright in dark mode:
+//
+//   OK_INK    #0b7a63 → #3fc0a3    5.28:1 light · 7.48:1 dark
+//   WARN_INK  #8a5a06 → #e0ac5c    5.92:1 light · 8.24:1 dark
+//   BAD_INK   #c9333b → #f0666e    5.22:1 light · 5.50:1 dark
+//   ACCENT    #703ae6 → #9a72f0    6.11:1 light · 4.87:1 dark  (already passed)
+//
+// That inversion is also why there is no separate "mark" colour for dots and bars.
+// A 5px dot or a gauge fill wants the SAME value: on white the darker ink is more
+// visible than the bright hue, and on a dark panel the ink already resolves to the
+// bright hue. One value per status, correct in both themes, legible in both roles.
+//
+// Chip fills pair with these, at ~10% of the same hue, via `TONE_TINT`.
+const OK_INK = "var(--cp-ok-fg)";
+const WARN_INK = "var(--cp-warn-fg)";
+const BAD_INK = "var(--cp-danger-fg)";
+const ACCENT = "var(--cp-violet-500)";
+
+/**
+ * A status as MEANING, never as a colour. Everything that needs to paint a status
+ * looks the colour up from this at render time.
+ *
+ * Both halves of that matter, and both were bugs:
+ *
+ * The fills used to be built as `` `${color}18` `` — an alpha byte appended to a
+ * 6-digit hex. The moment a colour became `var(--cp-ok-fg)` that produced
+ * `var(--cp-ok-fg)18`, which is not a colour, and the fill silently disappeared. An
+ * interpolated token cannot carry alpha, so a tint has to be its own token.
+ *
+ * Worse, the session log PERSISTED its colour into localStorage. Stored history
+ * therefore pinned whatever the palette was on the day each row was written — a
+ * reader found `#10b981`, `var(--cp-emerald)` and `var(--cp-ok-fg)` side by side in
+ * one store, three generations of the same "settled" green, and the oldest rows kept
+ * rendering at 2.54:1 where the fix could never reach them. A tone survives a
+ * palette change because it does not encode one.
+ */
+type Tone = "ok" | "active" | "warn" | "bad" | "muted";
+
+const TONE_INK: Record<Tone, string> = {
+  ok: OK_INK,
+  active: ACCENT,
+  warn: WARN_INK,
+  bad: BAD_INK,
+  muted: "var(--cp-g400)",
+};
+
+/** The ~10% fill that pairs with each ink. */
+const TONE_TINT: Record<Tone, string> = {
+  ok: "var(--cp-ok-bg)",
+  active: "var(--cp-violet-soft)",
+  warn: "var(--cp-warn-bg)",
+  bad: "var(--cp-danger-bg)",
+  muted: "var(--cp-g50)",
+};
 
 function truncAddr(a: string | null | undefined): string {
   if (!a) return "—";
@@ -302,10 +366,10 @@ function hfPct(v: number | null | undefined): string {
   return `${Math.max(2, Math.min(100, (v / 3) * 100))}%`;
 }
 function hfColor(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return EMERALD;
-  if (v >= 1.5) return EMERALD;
-  if (v >= 1.3) return AMBER;
-  return IMPERIAL;
+  if (v == null || !Number.isFinite(v)) return OK_INK;
+  if (v >= 1.5) return OK_INK;
+  if (v >= 1.3) return WARN_INK;
+  return BAD_INK;
 }
 function fmtHf(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "∞";
@@ -386,7 +450,13 @@ interface LogEntry {
   prompt: string;
   tool: string;
   status: string;
-  color: string;
+  /**
+   * Optional because this is PERSISTED data and rows written before the palette work
+   * carry a `color` hex instead — see `entryTone`, which recovers the tone from
+   * `status` so an old row picks up the current palette rather than staying frozen in
+   * whatever the colours were the day it was written.
+   */
+  tone?: Tone;
   /** When the turn was recorded. Absent on rows stored before history was persisted. */
   ts?: number;
   /** Multi-leg / agent-chain parent — child hops update this instead of new rows. */
@@ -407,6 +477,22 @@ const HISTORY_VISIBLE = 8;
 
 /** localStorage key. Per wallet, because the turns are about that wallet's account. */
 const historyKey = (address: string) => `vanna_copilot_history:${address}`;
+
+/**
+ * The tone of a stored row. `status` is persisted and carries the same meaning, so a
+ * row written before tones existed needs no migration — it just resolves through here
+ * and paints with today's palette.
+ *
+ * The one thing `status` cannot recover on its own is which flavour of "in progress" a
+ * strategy is in, so rows that care set `tone` explicitly and this only fills the gap.
+ */
+function toneFromStatus(status: string): Tone {
+  if (status === "executed" || status === "answered") return "ok";
+  if (status === "blocked" || status === "error") return "bad";
+  if (status === "staged" || status === "needs sign") return "active";
+  return "warn";
+}
+const entryTone = (e: LogEntry): Tone => e.tone ?? toneFromStatus(e.status);
 interface ActivityEntry {
   label: string;
   hash: string;
@@ -569,20 +655,20 @@ const BTN_GRADIENT =
   "disabled:cursor-not-allowed disabled:opacity-45";
 
 const RISK_TONE = {
-  allow: { label: "risk gate · allow", color: EMERALD, bg: "rgba(16,185,129,.12)" },
-  needs_confirmation: { label: "risk gate · confirm", color: AMBER, bg: "rgba(245,158,11,.14)" },
-  block: { label: "risk gate · blocked", color: IMPERIAL, bg: "rgba(252,84,87,.14)" },
-} as const;
+  allow: { label: "risk gate · allow", tone: "ok" },
+  needs_confirmation: { label: "risk gate · confirm", tone: "warn" },
+  block: { label: "risk gate · blocked", tone: "bad" },
+} as const satisfies Record<string, { label: string; tone: Tone }>;
 
 function RiskChip({ decision }: { decision: keyof typeof RISK_TONE }) {
-  const tone = RISK_TONE[decision];
+  const { label, tone } = RISK_TONE[decision];
   return (
     <span
       className="flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.15em]"
-      style={{ color: tone.color, background: tone.bg }}
+      style={{ color: TONE_INK[tone], background: TONE_TINT[tone] }}
     >
-      <span className="h-[5px] w-[5px] rounded-full" style={{ background: tone.color }} />
-      {tone.label}
+      <span className="h-[5px] w-[5px] rounded-full" style={{ background: TONE_INK[tone] }} />
+      {label}
     </span>
   );
 }
@@ -597,7 +683,7 @@ function StepList({ steps, running }: { steps: Step[]; running: boolean }) {
             <span
               className={`h-2 w-2 rounded-full ${s.state === "active" ? "animate-pulse" : ""}`}
               style={{
-                background: s.state === "done" ? EMERALD : s.state === "active" ? VIOLET : "var(--color-vgray-300)",
+                background: s.state === "done" ? OK_INK : s.state === "active" ? ACCENT : "var(--color-vgray-300)",
                 opacity: s.state === "pending" ? 0.45 : 1,
               }}
             />
@@ -720,8 +806,8 @@ function MultiLegStrategyCard({
           : "Needs your signature — approve in your wallet to continue."
         : rawTitle;
 
-  const tone = (status?: string) => {
-    if (status === "ok" || status === "done") return EMERALD;
+  const tone = (status?: string): Tone => {
+    if (status === "ok" || status === "done") return "ok";
     if (
       status === "needs_sign" ||
       status === "needs_wallet_sign" ||
@@ -729,9 +815,9 @@ function MultiLegStrategyCard({
       status === "pending" ||
       status === "clarification"
     )
-      return AMBER;
-    if (status === "error" || status === "blocked" || status === "stopped_hf") return IMPERIAL;
-    return "var(--color-vgray-400)";
+      return "warn";
+    if (status === "error" || status === "blocked" || status === "stopped_hf") return "bad";
+    return "muted";
   };
   const mark = (status?: string) => {
     // Never show SIGN on completed legs — only while that leg still needs a signature.
@@ -746,10 +832,14 @@ function MultiLegStrategyCard({
     return "·";
   };
 
+  // Outcome tints. These were fixed rgba() of the light-mode hues, so on a dark panel
+  // a settled strategy was outlined in light-mode green. The tokens invert; the border
+  // lands on the palette's standard 30% and the wash on its 10%, up from a hand-picked
+  // 35%/6% that only ever existed in light.
   const borderColor = allOk
-    ? "rgba(16,185,129,.35)"
+    ? "var(--cp-ok-bd)"
     : anyFail
-      ? "rgba(252,84,87,.28)"
+      ? "var(--cp-danger-bd)"
       : "var(--color-vgray-100)";
 
   return (
@@ -762,9 +852,9 @@ function MultiLegStrategyCard({
         style={{
           borderColor: "var(--color-vgray-100)",
           background: allOk
-            ? "rgba(16,185,129,.06)"
+            ? "var(--cp-ok-bg)"
             : anyFail
-              ? "rgba(252,84,87,.05)"
+              ? "var(--cp-danger-bg)"
               : "var(--color-vgray-50)",
         }}
       >
@@ -805,7 +895,10 @@ function MultiLegStrategyCard({
             <li key={`${legKey(String(s.label || ""))}-${s.index ?? i}`} className="flex gap-3 px-3 py-3.5">
               <span
                 className="mt-0.5 flex h-6 min-w-[3.25rem] shrink-0 items-center justify-center rounded-full px-2 font-mono text-[10px] font-semibold uppercase tracking-wide"
-                style={{ color: tone(isOk ? "ok" : st), background: `${tone(isOk ? "ok" : st)}18` }}
+                style={{
+                  color: TONE_INK[tone(isOk ? "ok" : st)],
+                  background: TONE_TINT[tone(isOk ? "ok" : st)],
+                }}
               >
                 {mark(st)}
               </span>
@@ -829,7 +922,7 @@ function MultiLegStrategyCard({
                 {showDetail && (
                   <p
                     className="mt-1.5 text-[12.5px] leading-snug"
-                    style={{ color: st === "error" || st === "blocked" ? IMPERIAL : "var(--color-vgray-500)" }}
+                    style={{ color: st === "error" || st === "blocked" ? BAD_INK : "var(--color-vgray-500)" }}
                   >
                     {s.message}
                   </p>
@@ -1053,12 +1146,12 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
           className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500 ease-out"
           style={{ width: hfPct(after), background: color }}
         />
-        <div className="absolute inset-y-0 left-[33.3%] w-0.5" style={{ background: IMPERIAL }} />
-        <div className="absolute inset-y-0 left-[43.3%] w-0.5" style={{ background: AMBER }} />
+        <div className="absolute inset-y-0 left-[33.3%] w-0.5" style={{ background: BAD_INK }} />
+        <div className="absolute inset-y-0 left-[43.3%] w-0.5" style={{ background: WARN_INK }} />
       </div>
       <div className="mt-1.5 flex justify-between font-mono text-[10px] text-vgray-400">
-        <span style={{ color: IMPERIAL }}>1.00 liquidation</span>
-        <span style={{ color: AMBER }}>1.30 caution</span>
+        <span style={{ color: BAD_INK }}>1.00 liquidation</span>
+        <span style={{ color: WARN_INK }}>1.30 caution</span>
         <span>3.00+</span>
       </div>
 
@@ -1196,7 +1289,7 @@ export function CopilotWorkspace() {
     return {
       ...e,
       status: "not completed",
-      color: AMBER,
+      tone: "warn",
       legs: e.legs?.map((l) =>
         l.status === "needs_sign" || l.status === "pending" ? { ...l, status: "not signed" } : l,
       ),
@@ -1232,7 +1325,28 @@ export function CopilotWorkspace() {
   useEffect(() => {
     if (!address) return;
     try {
-      localStorage.setItem(historyKey(address), JSON.stringify(log.slice(0, HISTORY_MAX)));
+      const key = historyKey(address);
+      /**
+       * THE SAVE PATH MAY NEVER EMPTY A NON-EMPTY STORE.
+       *
+       * This effect and the hydrate effect above both fire on the commit where `address`
+       * first becomes non-null, and effects run in declaration order — so hydrate reads
+       * storage and calls setLogRaw, then this runs with `log` still the empty initial
+       * state and writes `[]` straight over the history it just read. The rows are
+       * normally written back on the next commit and nobody notices. Reload inside that
+       * window and the history is gone permanently: a 40-turn log was emptied this way
+       * during a run of hard reloads.
+       *
+       * A "have we hydrated yet" ref does not fix it, because hydrate has already set
+       * such a ref by the time this runs in the same commit. The invariant that does
+       * hold, whatever the ordering, is the one below. Deliberately clearing the log
+       * goes through `clearHistory`, which calls removeItem itself and is unaffected.
+       */
+      if (log.length === 0) {
+        const existing = localStorage.getItem(key);
+        if (existing && existing !== "[]") return;
+      }
+      localStorage.setItem(key, JSON.stringify(log.slice(0, HISTORY_MAX)));
     } catch {
       /* quota / private mode — history is a convenience, not a requirement */
     }
@@ -1616,11 +1730,11 @@ export function CopilotWorkspace() {
     return "clarify";
   };
 
-  const colorFromKind = (kind: ChatResponse["kind"] | undefined): string => {
-    if (kind === "executed" || kind === "answer") return EMERALD;
-    if (kind === "blocked" || kind === "error") return IMPERIAL;
-    if (kind === "needs_wallet_sign" || kind === "needs_auto_sign") return VIOLET;
-    return AMBER;
+  const toneFromKind = (kind: ChatResponse["kind"] | undefined): Tone => {
+    if (kind === "executed" || kind === "answer") return "ok";
+    if (kind === "blocked" || kind === "error") return "bad";
+    if (kind === "needs_wallet_sign" || kind === "needs_auto_sign") return "active";
+    return "warn";
   };
 
   /**
@@ -1634,7 +1748,7 @@ export function CopilotWorkspace() {
       opts?: { chainHop?: boolean; hopLabel?: string },
     ) => {
       const status = statusFromKind(data.kind);
-      const color = colorFromKind(data.kind);
+      const tone = toneFromKind(data.kind);
       const tool = data.mcp?.tool || data.intent?.template_id || "router";
       const multi =
         !!(data.data && (data.data as Record<string, unknown>).multi_leg) ||
@@ -1717,7 +1831,7 @@ export function CopilotWorkspace() {
               tool: "multi_leg",
               ts: existing?.ts ?? Date.now(),
               status: allDone ? "executed" : overall,
-              color: allDone || overall === "executed" ? EMERALD : color,
+              tone: allDone || overall === "executed" ? "ok" : tone,
               strategy: true,
               legs: finalLegs,
             },
@@ -1742,7 +1856,7 @@ export function CopilotWorkspace() {
                 tool: "multi_leg",
                 ts: Date.now(),
                 status: status === "executed" ? "in progress" : status,
-                color: AMBER,
+                color: WARN_INK,
                 strategy: true,
                 legs: [
                   {
@@ -1792,8 +1906,8 @@ export function CopilotWorkspace() {
               : status === "staged" || status === "needs sign"
                 ? "in progress"
                 : "in progress";
-          parent.color =
-            parent.status === "executed" ? EMERALD : status === "staged" ? VIOLET : AMBER;
+          parent.tone =
+            parent.status === "executed" ? "ok" : status === "staged" ? "active" : "warn";
           parent.tool = "multi_leg";
           parent.strategy = true;
           copy[idx] = parent;
@@ -1814,7 +1928,7 @@ export function CopilotWorkspace() {
               tool: "multi_leg",
               ts: Date.now(),
               status: status === "executed" ? "in progress" : status,
-              color: status === "executed" ? AMBER : color,
+              tone: status === "executed" ? "warn" : tone,
               strategy: true,
               legs: [
                 {
@@ -1840,7 +1954,7 @@ export function CopilotWorkspace() {
             tool,
             ts: Date.now(),
             status,
-            color,
+            tone,
           },
           ...prev,
         ].slice(0, HISTORY_MAX),
@@ -3829,7 +3943,7 @@ export function CopilotWorkspace() {
           <div className="flex items-center gap-2 rounded-full border border-vgray-100 bg-surface px-3.5 py-[7px] font-mono text-[11px] text-vgray-500">
             <span
               className={`h-1.5 w-1.5 rounded-full ${brainOnline ? "animate-pulse" : ""}`}
-              style={{ background: brainOnline ? EMERALD : IMPERIAL }}
+              style={{ background: brainOnline ? OK_INK : BAD_INK }}
             />
             {health
               ? `${health.llm_provider} · mcp ${health.mcp_mode} · ${health.templates} tools`
@@ -3866,7 +3980,15 @@ export function CopilotWorkspace() {
       </div>
 
       {/* Composer — full-width card above the two-column grid (design: "Your intent"). */}
-      <div className="rounded-[20px] border border-vgray-100 bg-surface px-[26px] py-[22px]">
+      <div
+        className="bg-surface"
+        style={{
+          borderRadius: 11,
+          border: "1px solid var(--cp-violet-soft-border)",
+          borderLeft: "3px solid var(--cp-violet-500)",
+          padding: "22px 26px 22px 23px",
+        }}
+      >
         <p className="mb-2.5 font-mono text-[10.5px] uppercase tracking-[0.22em] text-violet-500">
           Your intent
         </p>
@@ -3946,14 +4068,22 @@ export function CopilotWorkspace() {
       <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,1fr)_372px]">
         {/* ── Main column: turn card, then independent session log ── */}
         <div className="flex min-w-0 flex-col gap-5">
-          <div className="min-w-0 rounded-[20px] border border-vgray-100 bg-surface px-7 py-[26px] sm:px-7">
+          <div
+            className="min-w-0 bg-surface"
+            style={{
+              borderRadius: 11,
+              border: "1px solid var(--cp-violet-soft-border)",
+              borderLeft: "3px solid var(--cp-violet-500)",
+              padding: "26px 28px 26px 25px",
+            }}
+          >
             {/* Idle — what the agent can run */}
             {phase === "idle" && (
               <div>
                 <Eyebrow>What the agent can run</Eyebrow>
                 <div className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                   {CAPABILITIES.map((c) => {
-                    const color = c.tone === "read" ? EMERALD : c.tone === "multi" ? AMBER : VIOLET;
+                    const color = c.tone === "read" ? OK_INK : c.tone === "multi" ? WARN_INK : ACCENT;
                     return (
                       <button
                         key={c.label}
@@ -4201,7 +4331,7 @@ export function CopilotWorkspace() {
                     </div>
 
                     {action?.multi_leg && (
-                      <p className="mt-3.5 rounded-2xl border border-vgray-100 bg-surface px-[18px] py-3 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: AMBER }}>
+                      <p className="mt-3.5 rounded-2xl border border-vgray-100 bg-surface px-[18px] py-3 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: WARN_INK }}>
                         multi-step strategy · legs are not atomic
                       </p>
                     )}
@@ -4212,7 +4342,7 @@ export function CopilotWorkspace() {
                       <div className="mt-4 flex flex-col gap-[7px]">
                         {reasons.map((r, i) => {
                           const bad = decision === "block";
-                          const color = bad ? IMPERIAL : action?.multi_leg ? AMBER : EMERALD;
+                          const color = bad ? BAD_INK : action?.multi_leg ? WARN_INK : OK_INK;
                           return (
                             <span key={i} className="flex items-start gap-2.5 text-body-2 text-vgray-500">
                               {bad || action?.multi_leg ? (
@@ -4239,7 +4369,7 @@ export function CopilotWorkspace() {
                     {response.data && <FactsGrid data={response.data} />}
 
                     {sessionSigning && !willAutoSubmit && (
-                      <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: AMBER }}>
+                      <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: WARN_INK }}>
                         <CircleAlert size={13} className="mt-px shrink-0" />
                         {decision === "block"
                           ? "auto-approve is on, but the risk gate blocked this write — it will not auto-sign"
@@ -4325,7 +4455,7 @@ export function CopilotWorkspace() {
                         of this bug is that these are different rows. */}
                     <div className="rounded-r4 border border-vgray-100 p-4">
                       <div className="flex flex-col gap-1.5">
-                        <Row k="wallet connected" v="yes" color={VIOLET} />
+                        <Row k="wallet connected" v="yes" color={ACCENT} />
                         <Row
                           k="vanna may sign"
                           v={
@@ -4335,7 +4465,7 @@ export function CopilotWorkspace() {
                                 ? "awaiting your approval"
                                 : "not authorized"
                           }
-                          color={bindGate.status === "bound" ? VIOLET : AMBER}
+                          color={bindGate.status === "bound" ? ACCENT : WARN_INK}
                         />
                         {bindGate.wallet_address && (
                           <Row k="wallet" v={`${bindGate.wallet_address.slice(0, 6)}…${bindGate.wallet_address.slice(-4)}`} />
@@ -4403,8 +4533,11 @@ export function CopilotWorkspace() {
                         </p>
                       </div>
                     ) : (
-                      <div className="rounded-r4 border p-4" style={{ borderColor: `${AMBER}55`, background: `${AMBER}14` }}>
-                        <p className="text-body-2" style={{ color: AMBER }}>
+                      <div
+                        className="rounded-r4 border p-4"
+                        style={{ borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }}
+                      >
+                        <p className="text-body-2" style={{ color: WARN_INK }}>
                           {bindGate.status === "expired"
                             ? "The authorization link expired before it was completed."
                             : "No authorization link is available right now."}
@@ -4443,7 +4576,7 @@ export function CopilotWorkspace() {
                       <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                         <ShieldCheck size={14} /> enable auto-sign
                       </p>
-                      {!address && <p className="mb-3 text-body-2" style={{ color: AMBER }}>Connect your wallet first.</p>}
+                      {!address && <p className="mb-3 text-body-2" style={{ color: WARN_INK }}>Connect your wallet first.</p>}
                       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                         <button
                           type="button"
@@ -4548,7 +4681,7 @@ export function CopilotWorkspace() {
                         <div className="mt-4 flex items-center gap-4">
                           <span
                             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full"
-                            style={{ background: "rgba(16,185,129,.15)", color: EMERALD }}
+                            style={{ background: TONE_TINT.ok, color: TONE_INK.ok }}
                           >
                             <Check size={26} />
                           </span>
@@ -4655,7 +4788,7 @@ export function CopilotWorkspace() {
                       <div className="flex items-start gap-3.5">
                         <span
                           className="mt-[5px] h-2 w-2 shrink-0 rounded-full"
-                          style={{ background: e.color }}
+                          style={{ background: TONE_INK[entryTone(e)] }}
                         />
                         <div className="min-w-0 flex-1">
                           <button
@@ -4677,8 +4810,8 @@ export function CopilotWorkspace() {
                             <span
                               className="rounded-md px-2 py-[3px] font-mono text-[9.5px] font-bold uppercase tracking-[0.16em]"
                               style={{
-                                color: e.color,
-                                background: `${e.color}18`,
+                                color: TONE_INK[entryTone(e)],
+                                background: TONE_TINT[entryTone(e)],
                               }}
                             >
                               {kindLabel}
@@ -4701,7 +4834,7 @@ export function CopilotWorkspace() {
                         <div className="shrink-0 text-right">
                           <p
                             className="font-mono text-[11px] font-semibold"
-                            style={{ color: e.color }}
+                            style={{ color: TONE_INK[entryTone(e)] }}
                           >
                             {e.status}
                           </p>
@@ -4766,7 +4899,15 @@ export function CopilotWorkspace() {
               </HealthDial>
 
               {/* Open positions — same snapshot / rules as the Margin positions table. */}
-              <div className="rounded-[20px] border border-vgray-100 bg-surface p-[22px]">
+              <div
+                className="bg-surface"
+                style={{
+                  borderRadius: 11,
+                  border: "1px solid var(--cp-g100)",
+                  borderLeft: "3px solid var(--cp-g300)",
+                  padding: "22px 22px 22px 19px",
+                }}
+              >
                 <div className="flex items-center justify-between gap-3">
                   <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
                     Open positions
@@ -4897,12 +5038,12 @@ export function CopilotWorkspace() {
               <Eyebrow>Autonomy</Eyebrow>
               <span
                 className="flex items-center gap-[7px] font-mono text-[11px] font-semibold"
-                style={{ color: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)" }}
+                style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
               >
                 <span
                   className="h-1.5 w-1.5 rounded-full"
                   style={{
-                    background: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)",
+                    background: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)",
                   }}
                 />
                 {sessionSigning ? "auto-approve on" : autoPending ? "choosing budget" : "manual signing"}
@@ -4966,7 +5107,7 @@ export function CopilotWorkspace() {
               <ShieldCheck
                 size={16}
                 className="shrink-0"
-                style={{ color: sessionSigning || autoPending ? VIOLET : "var(--color-vgray-400)" }}
+                style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
               />
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
@@ -4991,7 +5132,7 @@ export function CopilotWorkspace() {
                 className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
                 style={{
                   background: sessionSigning
-                    ? VIOLET
+                    ? ACCENT
                     : autoPending
                       ? "var(--color-violet-100)"
                       : "var(--color-vgray-200)",
@@ -5108,7 +5249,7 @@ export function CopilotWorkspace() {
                   </button>
                 </div>
                 {railCapsMode === "custom" && !capsValid && (
-                  <p className="mt-2 font-mono text-[11px]" style={{ color: AMBER }}>
+                  <p className="mt-2 font-mono text-[11px]" style={{ color: WARN_INK }}>
                     Enter a per-tx cap above 0 to continue.
                   </p>
                 )}
@@ -5124,13 +5265,15 @@ export function CopilotWorkspace() {
                   capsEnforced ? "border-violet-100 bg-violet-50" : ""
                 }`}
                 style={
-                  capsEnforced ? undefined : { borderColor: `${AMBER}55`, background: `${AMBER}14` }
+                  capsEnforced
+                    ? undefined
+                    : { borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }
                 }
               >
                 <ShieldCheck
                   size={15}
                   className={`shrink-0 ${capsEnforced ? "text-violet-500" : ""}`}
-                  style={capsEnforced ? undefined : { color: AMBER }}
+                  style={capsEnforced ? undefined : { color: WARN_INK }}
                 />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13px] font-semibold text-vgray-900">
@@ -5138,7 +5281,7 @@ export function CopilotWorkspace() {
                   </span>
                   <span
                     className={`block font-mono text-[11px] ${capsEnforced ? "text-violet-500" : ""}`}
-                    style={capsEnforced ? undefined : { color: AMBER }}
+                    style={capsEnforced ? undefined : { color: WARN_INK }}
                   >
                     {savedCaps
                       ? `$${savedCaps.tx}/tx · $${savedCaps.day}/day`
@@ -5167,7 +5310,7 @@ export function CopilotWorkspace() {
               <Row
                 k="signing"
                 v={sessionSigning ? "session key" : "wallet prompt"}
-                color={sessionSigning ? VIOLET : undefined}
+                color={sessionSigning ? ACCENT : undefined}
               />
               {/* The Sign Service is a separate mechanism from in-app session signing and
                   can fail on its own. Stating it here is what stops "auto-approve on" from
@@ -5182,7 +5325,7 @@ export function CopilotWorkspace() {
                         ? "not authorized for this wallet"
                         : `unavailable (${signServiceState.reason ?? "rejected"})`
                   }
-                  color={signServiceState.status === "ok" ? VIOLET : AMBER}
+                  color={signServiceState.status === "ok" ? ACCENT : WARN_INK}
                 />
               )}
               {/* Two permissions, two rows — never one.
@@ -5202,9 +5345,9 @@ export function CopilotWorkspace() {
                   }
                   color={
                     signServiceState.status === "ok"
-                      ? VIOLET
+                      ? ACCENT
                       : signServiceState.status === "unbound"
-                        ? AMBER
+                        ? WARN_INK
                         : undefined
                   }
                 />
@@ -5223,7 +5366,7 @@ export function CopilotWorkspace() {
                       })()
                     : "off (enable auto-approve)"
                 }
-                color={sessionSigning ? VIOLET : undefined}
+                color={sessionSigning ? ACCENT : undefined}
               />
               <Row k="signer" v={walletKind === "privy" ? "vanna embedded" : address ? "freighter" : "—"} />
               <Row k="enforcement" v="mcp + sign service" />
@@ -5232,7 +5375,15 @@ export function CopilotWorkspace() {
           </div>
 
           {/* Recent on-chain writes */}
-          <div className="rounded-[20px] border border-vgray-100 bg-surface p-[22px]">
+          <div
+                className="bg-surface"
+                style={{
+                  borderRadius: 11,
+                  border: "1px solid var(--cp-g100)",
+                  borderLeft: "3px solid var(--cp-g300)",
+                  padding: "22px 22px 22px 19px",
+                }}
+              >
             <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
               Recent on-chain
             </p>
@@ -5253,7 +5404,7 @@ export function CopilotWorkspace() {
                   >
                     <span
                       className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-r2 bg-vgray-50"
-                      style={{ color: EMERALD }}
+                      style={{ color: OK_INK }}
                     >
                       <Check size={13} />
                     </span>

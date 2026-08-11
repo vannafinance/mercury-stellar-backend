@@ -32,7 +32,6 @@
  */
 
 import { useCallback, useState } from "react";
-import { Check, Copy } from "lucide-react";
 import type { AnswerFact, AnswerVenue, StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
@@ -59,7 +58,10 @@ const VENUE_LABEL: Record<Exclude<AnswerVenue, "none">, string> = {
 function toneColor(tone: AnswerFact["tone"]): string {
   switch (tone) {
     case "good":
-      return "var(--cp-venue-earn-fg)";
+      // The `ok` status ink, not the earn venue's. They are the same green family, but a
+      // venue answers "which product" and a tone answers "is this good" — reusing the
+      // venue token here made colour mean two things on one card.
+      return "var(--cp-ok-fg)";
     case "warn":
       return "var(--cp-warn-fg)";
     case "bad":
@@ -68,6 +70,21 @@ function toneColor(tone: AnswerFact["tone"]): string {
       return "var(--cp-g900)";
   }
 }
+
+/**
+ * Tone, carried by SHAPE as well as colour.
+ *
+ * A tinted figure is invisible as a tone to anyone who cannot separate the hues, and this
+ * card reports health factors and debt — the two numbers where "is this bad" is the whole
+ * question. The glyph is `aria-hidden` and paired with a real word for screen readers, so
+ * the meaning arrives three ways: shape, colour and text.
+ */
+const TONE_MARK: Record<NonNullable<AnswerFact["tone"]>, { glyph: string; say: string } | null> = {
+  neutral: null,
+  good: { glyph: "▲", say: "good" },
+  warn: { glyph: "▪", say: "warning" },
+  bad: { glyph: "▼", say: "bad" },
+};
 
 /**
  * Is this value an identifier rather than a figure?
@@ -96,19 +113,26 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       });
   }, [value]);
 
+  // A worded button, per the design, not an icon: at 10.5px mono beside a 56-character
+  // address, "Copy" reads instantly and its "Copied" state is legible without colour. The
+  // aria-label still carries which row it belongs to, which an icon could not.
   return (
     <button
       type="button"
       onClick={copy}
       aria-label={done ? `${label} copied` : `Copy ${label}`}
-      className="shrink-0 rounded-[8px] p-1.5 transition-colors"
+      className="shrink-0 cursor-pointer rounded-[4px] transition-colors"
       style={{
         border: "1px solid var(--cp-g100)",
-        color: done ? "var(--cp-venue-earn-fg)" : "var(--cp-g400)",
-        background: "transparent",
+        background: "var(--cp-g50)",
+        padding: "4px 10px",
+        fontFamily: MONO,
+        fontSize: 10.5,
+        fontWeight: 600,
+        color: done ? "var(--cp-ok-fg)" : "var(--cp-g600)",
       }}
     >
-      {done ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
+      {done ? "Copied" : "Copy"}
     </button>
   );
 }
@@ -170,31 +194,49 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         {answer.headline}
       </p>
 
-      {/* Figures — tight two-column grid, tabular numerals, right-aligned to line up. */}
+      {/*
+        Figures — the design's two-column pair grid inside one hairline panel, so a set of
+        numbers aligns down a column and the whole set reads as one object rather than as a
+        run of loose rows.
+      */}
       {figures.length > 0 ? (
         <dl
-          className="mt-4 grid gap-x-8 gap-y-0"
-          style={{ gridTemplateColumns: "minmax(0,1fr) auto", maxWidth: 520 }}
+          className="mt-[18px] grid"
+          style={{
+            gridTemplateColumns: figures.length > 1 ? "1fr 1fr" : "1fr",
+            gap: "2px 32px",
+            borderRadius: 8,
+            border: "1px solid var(--cp-g100)",
+            background: "var(--cp-g50)",
+            padding: "16px 18px",
+            maxWidth: 620,
+          }}
         >
           {figures.map((f, i) => (
             <div
               key={`${f.label}-${i}`}
-              className="col-span-2 grid items-baseline gap-x-8 py-2"
-              style={{
-                gridTemplateColumns: "minmax(0,1fr) auto",
-                borderBottom: i === figures.length - 1 ? "none" : "1px solid var(--cp-g100)",
-              }}
+              className="flex min-w-0 items-baseline justify-between gap-3"
+              style={{ borderBottom: "1px solid var(--cp-g100)", padding: "7px 0" }}
             >
               <dt style={labelStyle}>{f.label}</dt>
               <dd
-                className="m-0 text-right"
+                className="m-0 flex min-w-0 items-baseline justify-end gap-1.5 text-right"
                 style={{
                   fontFamily: MONO,
-                  fontSize: 15,
+                  fontSize: 13,
                   fontVariantNumeric: "tabular-nums",
                   color: toneColor(f.tone),
+                  overflowWrap: "anywhere",
                 }}
               >
+                {f.tone && TONE_MARK[f.tone] ? (
+                  <>
+                    <span aria-hidden="true" style={{ fontSize: 9, lineHeight: 1 }}>
+                      {TONE_MARK[f.tone]!.glyph}
+                    </span>
+                    <span className="sr-only">{TONE_MARK[f.tone]!.say}:</span>
+                  </>
+                ) : null}
                 {f.value}
               </dd>
             </div>
@@ -203,42 +245,71 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
       ) : null}
 
       {/*
-        Identifiers — one full-width row each, complete value, copyable.
+        Identifiers — the design's scrolling register, not a stack of cards.
 
-        `min-w-0` on the value wrapper plus `break-all` is what lets a 56-character string
-        wrap inside its own row instead of pushing the layout sideways. The row is a panel
-        rather than a table cell because the value is the content here, not a column.
+        Sixteen addresses is the payload this card was drawn for, and the design's answer to
+        "sixteen identical rows" is density plus alignment rather than grouping: every label
+        sits in a fixed 172px column so the addresses all start at the same x and the eye can
+        run straight down them, and the list caps at 340px so a long set scrolls inside the
+        card instead of pushing the rest of the turn off screen.
+
+        The label truncates with an ellipsis and keeps its full text in `title`. That is
+        deliberately NOT the old "1fr auto" grid that shattered "REGISTRY" into "REG / IST /
+        RY" — `nowrap` makes shattering impossible, while the value keeps `break-all` so a
+        56-character address wraps inside its own cell and never widens the row.
       */}
       {identifiers.length > 0 ? (
-        <div className="mt-4 flex flex-col gap-2" style={{ maxWidth: 620 }}>
-          {identifiers.map((f, i) => (
-            <div
-              key={`${f.label}-${i}`}
-              className="rounded-[12px] px-3.5 py-3"
-              style={{ border: "1px solid var(--cp-g100)", background: "var(--cp-g50)" }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="m-0 mb-1.5" style={labelStyle}>
-                    {f.label}
-                  </p>
-                  <p
-                    className="m-0 select-all"
-                    style={{
-                      fontFamily: MONO,
-                      fontSize: 12.5,
-                      lineHeight: "18px",
-                      color: "var(--cp-g900)",
-                      wordBreak: "break-all",
-                    }}
-                  >
-                    {f.value}
-                  </p>
-                </div>
+        <div style={{ maxWidth: 620 }}>
+          <div
+            className="mt-[18px] overflow-y-auto"
+            style={{ border: "1px solid var(--cp-g100)", borderRadius: 8, maxHeight: 340 }}
+          >
+            {identifiers.map((f, i) => (
+              <div
+                key={`${f.label}-${i}`}
+                className="flex items-center gap-3.5"
+                style={{
+                  padding: "11px 16px",
+                  borderBottom:
+                    i === identifiers.length - 1 ? "none" : "1px solid var(--cp-g100)",
+                }}
+              >
+                <span
+                  title={f.label}
+                  className="shrink-0 overflow-hidden text-ellipsis whitespace-nowrap"
+                  style={{
+                    width: 172,
+                    fontFamily: MONO,
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    letterSpacing: ".05em",
+                    textTransform: "uppercase",
+                    color: "var(--cp-g400)",
+                  }}
+                >
+                  {f.label}
+                </span>
+                <span
+                  className="min-w-0 flex-1 select-all"
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 12.5,
+                    color: "var(--cp-g900)",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {f.value}
+                </span>
                 <CopyButton value={f.value} label={f.label} />
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
+          <p
+            className="m-0 mt-2"
+            style={{ fontFamily: MONO, fontSize: 11, color: "var(--cp-g400)" }}
+          >
+            {identifiers.length} contracts · full addresses, always copyable
+          </p>
         </div>
       ) : null}
 

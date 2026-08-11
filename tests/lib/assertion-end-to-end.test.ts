@@ -28,7 +28,7 @@
  * (vanna_enable_auto_sign → POST /sessions) with no Vertex dependency.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const MCP_URL = "https://mcp.test.invalid/mcp";
 const TOKEN_URL = "https://tenant.authkit.app/oauth2/token";
@@ -129,13 +129,37 @@ async function postCopilot(headers: Record<string, string>) {
 
 const mcpToolCalls = () => recorded.filter((r) => r.url === MCP_URL && r.body.includes("tools/call"));
 
-beforeEach(async () => {
+/** Import-time configuration, so warming the route graph sees the same env a test does. */
+function setEnv() {
   process.env.MCP_MODE = "live";
   process.env.MCP_BASE_URL = MCP_URL;
   process.env.WORKOS_M2M_CLIENT_ID = "client_m2m";
   process.env.WORKOS_M2M_CLIENT_SECRET = "secret";
   process.env.WORKOS_M2M_TOKEN_URL = TOKEN_URL;
   process.env.NEXT_PUBLIC_PRIVY_APP_ID = "cmrdk67en003k0cjojj56n8mh";
+}
+
+// Warm the route module graph once, outside any test's budget.
+//
+// `postCopilot` imports the real `/api/copilot` route, which pulls in the whole copilot
+// brain. That transform+load is genuine work — over five seconds while the full suite has
+// every worker busy — and inside `it()` it was charged to a 5s test timeout, so the FIRST
+// test here failed with "Test timed out in 5000ms" on roughly every other full-suite run
+// and passed alone every time. The measured failures were 5123ms / 5258ms / 5277ms: not a
+// hang, just marginally over. Later tests in the file were always fine, because by then
+// the module cache was warm.
+//
+// Paying it here lets the hook carry a timeout sized for "load a large module graph" while
+// the tests keep the default 5s and stay honest about their own work. Env first, because
+// the graph reads MCP_MODE and the WorkOS settings as it loads.
+beforeAll(async () => {
+  setEnv();
+  await import("@/app/api/copilot/route");
+  await import("next/server");
+}, 120_000);
+
+beforeEach(async () => {
+  setEnv();
   recorded = [];
   installFakeNetwork();
   const { resetMcpClient } = await import("@/lib/copilot/mcp-client");

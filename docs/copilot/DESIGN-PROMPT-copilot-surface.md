@@ -23,8 +23,41 @@ The three cards each define their **own** colour ramp, and two of them are off-b
 one surface, which is the actual reason it does not read as one product — and it cannot be
 fixed card by card.
 
-So the prompt below mandates a **single** token set. Wiring the result includes collapsing
-`--pc-*` and `--rc-*` onto brand-aligned aliases.
+So the prompt below mandates a **single** token set for anything newly designed.
+
+> ### Amendment, 2026-08-12 — do not collapse the two cards onto the brand ramp
+>
+> This section originally instructed that wiring should collapse `--pc-*` and `--rc-*`
+> onto brand-aligned aliases, "zero hex literals". That was written before anyone
+> measured the merge. It was then measured, exhaustively, and **it costs contrast on the
+> two safety-critical cards**, so it was not done and should not be done later by someone
+> tidying up:
+>
+> - None of the 75 card tokens holds the same value as a page token in **both** themes.
+>   Exactly one role (the white button label) is even perceptually indistinguishable.
+> - The venue and status colours are ΔE 13–30 from their nearest brand token — a different
+>   palette, not a variant of one. The card ramp was contrast-measured against a **card**
+>   surface and is opaque (`#ede6fd`); the page ramp is translucent over the **page**
+>   (`rgba(112,58,230,.10)`).
+> - Merging would cost, measured on the card surface: earn ink 8.8:1 → 5.3:1, farm
+>   9.2 → 5.9, danger 9.3 → 5.2, margin 11.3 → 7.0. Still AA, but these are the approval
+>   gate and the live run for transactions that move real money.
+>
+> What *was* done instead, and what "one token set" now means here: the two cards share a
+> single `--card-*` layer, so there is one palette rather than two hand-maintained copies,
+> and all 75 `--pc-*` / `--rc-*` names are aliases declared once and never per theme. The
+> literals that remain are 44 canonical values for the card layer, down from 138 spread
+> across four blocks. The shell's greys were moved onto the design's ramp separately, by
+> aliasing the names Tailwind resolves.
+>
+> Full mapping, every value and every contrast figure: **`TOKEN-MAP-cards.md`**.
+>
+> Two things §2's palette turned out to be missing, both now added rather than worked
+> around: an `ok` status trio (`--ok-fg/-bg/-bd`) to sit beside `warn` and `danger` — its
+> absence is why "settled" was painted with the raw emerald mark at 2.54:1 — and the
+> distinction between a status **ink** (for text) and a status **mark** (bright, for dots
+> and bars). The bright hues in §2 fail AA as text: emerald 2.54:1, amber 2.15:1,
+> imperial 3.21:1 on white. Use them for marks, not for labels.
 
 ---
 
@@ -280,10 +313,10 @@ colour.
 All three already receive exactly the data the prompt describes, so a component matching
 the interfaces drops in without touching the brain.
 
-**The token collapse is the part to get right.** `--pc-*` (64 hexes) and `--rc-*` (74)
-must be re-pointed at brand-aligned aliases like the existing `--cp-*` block, which has
-zero literals. Do it as its own commit, before swapping any component, so a visual
-regression is attributable to the ramp rather than the redesign.
+**The token collapse is the part to get right** — and it is now done; see the amendment
+in §0 for what shape it took and why it is not the shape this section originally asked
+for. It was landed as its own commit before any component swap, so a visual regression
+stays attributable to the ramp rather than to a redesign.
 
 Keep: the identifier/figure split, status-by-shape, `FactsGrid`'s `shown` de-duplication,
 and read legs counting zero signatures. Each of those is a bug that already happened once.

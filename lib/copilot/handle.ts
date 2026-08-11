@@ -52,6 +52,7 @@ import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
 import {
   answerToText,
+  completeIdentifierFacts,
   type AnswerFact,
   type AnswerVenue,
   type StructuredAnswer,
@@ -3066,6 +3067,10 @@ async function runRead(
     let structured: StructuredAnswer | null = null;
     if (!hinglish) {
       structured = await vertexExplainStructured(ctx.message, routed.tool, data);
+      // An enumeration must arrive whole. See completeIdentifierFacts: the model is capped
+      // at six facts, so "show me the protocol contract addresses" put six in the answer
+      // card and left the other nine to the generic facts dump underneath it.
+      if (structured) structured = completeIdentifierFacts(structured, data);
     }
     // Deliberately not an early return: the HF guardrails and response assembly below
     // must still run, so this only supplies the text and rides along as `answer`.
