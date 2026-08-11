@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
-import toast from "react-hot-toast";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
@@ -24,12 +23,12 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 
-const ONE_CLICK_TOAST_ID = "one-click-strategy-tx";
-const showStep = (message: string) => toast.loading(message, { id: ONE_CLICK_TOAST_ID });
+const showStep = (message: string) => showTxStep(message);
 const showStepSuccess = (message: string, txHash?: string) =>
-  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: ONE_CLICK_TOAST_ID });
-const showStepError = (message: string) => toast.error(message, { id: ONE_CLICK_TOAST_ID });
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types

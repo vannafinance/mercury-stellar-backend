@@ -60,12 +60,13 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
  * the net outstanding debt and the wallet's available balance (both in token
  * units with a live USD line), and a form with quick-% chips and a free-text
  * amount. Repayment runs through a React Query mutation that, before signing,
- * re-reads the on-chain debt and caps the WAD amount at both the real debt and
- * the smart account's spendable balance — the latter avoids Contract #10
- * overspend when accrued interest exceeds the funds the account holds. 100%
- * targets the full on-chain debt; any leftover accrued-interest sliver is
- * surfaced via a toast. State is reset on wallet disconnect, and the preview
- * (before → after debt / HF / liquidation buffer) is rendered by
+ * re-reads the on-chain debt and caps the WAD amount at that real debt. 100%
+ * targets the FULL on-chain debt (not just the smart account's own spendable
+ * balance) — {@link MarginAccountService.repayLoan} tops up any shortfall
+ * from the connected wallet before repaying, so a same-asset leverage
+ * position's accrued-interest sliver gets repaid too instead of being left
+ * behind as unrepayable dust. State is reset on wallet disconnect, and the
+ * preview (before → after debt / HF / liquidation buffer) is rendered by
  * {@link RepayPreviewSection}.
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
@@ -89,14 +90,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     netOutstandingAmountToPay: 0,
     availableBalance: 0,
   });
-  // How much of the outstanding debt is actually spendable FROM the margin
-  // account right now (as opposed to the full on-chain debt figure above, or
-  // the connected wallet's own balance in "Available Balance"). The gap
-  // between this and netOutstandingAmountToPay is money the margin account
-  // borrowed but no longer holds raw — usually because it's deployed into an
-  // Aquarius/Soroswap LP position, not (only) accrued interest. Surfaces as
-  // the "Max amount you can repay right now" note under the repay input.
-  const [spendableInMargin, setSpendableInMargin] = useState<number | null>(null);
   const [selectedRepayCurrency, setSelectedRepayCurrency] =
     useState<string>(() => toDropdownAsset(prefilledAsset) ?? DropdownOptions[0]);
   const [selectedRepayPercentage, setSelectedRepayPercentage] =
@@ -128,7 +121,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
-      setSpendableInMargin(null);
       setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
@@ -217,7 +209,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
             // Get borrowed balances
             await refreshSelectedTokenDebt(account.address);
-            await refreshSpendableInMargin(account.address);
 
             // Get selected token wallet balance
             await refreshSelectedWalletBalance(address.address, selectedRepayCurrency);
@@ -260,26 +251,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   };
 
-  // The margin account's real, live, spendable balance of the selected
-  // currency — the actual repay cap, distinct from the full debt figure above.
-  const refreshSpendableInMargin = async (marginAccountAddress: string) => {
-    try {
-      const wad = await MarginAccountService.getMarginAccountTokenBalanceWad(
-        marginAccountAddress,
-        normalizeContractTokenSymbol(selectedRepayCurrency),
-      );
-      setSpendableInMargin(wad != null ? parseFloat(wad) / 1e18 : 0);
-    } catch (error) {
-      console.error("Error refreshing spendable margin balance:", error);
-      setSpendableInMargin(null);
-    }
-  };
-
   // Refresh when currency changes
   useEffect(() => {
     if (marginAccount) {
       refreshSelectedTokenDebt(marginAccount);
-      refreshSpendableInMargin(marginAccount);
     }
   }, [selectedRepayCurrency, marginAccount]);
 
@@ -296,23 +271,20 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
       const fullAmount = parseFloat(currentDebtWad) / 1e18;
       const safeFullAmount = Number.isFinite(fullAmount) ? fullAmount : 0;
-      // 100% should fill in what's ACTUALLY repayable right now, not the raw
-      // on-chain debt — the account can only repay what it holds spendable
-      // (the rest is LP/Farm-locked, see the "Max amount you can repay right
-      // now" hint below). Without this cap, 100% showed 162.57 while the hint
-      // said only 112.57 was possible — the mutation silently capped it at
-      // submit time anyway, so the displayed amount should match up front.
-      const maxRepayable =
-        spendableInMargin != null && spendableInMargin < safeFullAmount
-          ? spendableInMargin
-          : safeFullAmount;
-      // Sub-cent accrued-interest residue (e.g. 0.0000024 BLUSDC left after an
-      // earlier repay capped to the account's spendable balance) is dust the
-      // user can't meaningfully act on — same $0.01 threshold the "Net
-      // Outstanding Amount to Repay" stat tile already uses to show "0", so
-      // 100% doesn't fill in a confusing non-zero amount the stat disagrees with.
-      const usdEquiv = selectedTokenPrice > 0 ? maxRepayable * selectedTokenPrice : maxRepayable;
-      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(maxRepayable);
+      // 100% fills in the FULL on-chain debt, not just what the smart account
+      // currently holds spendable — repayLoan() tops up any shortfall from
+      // the wallet before repaying (see this file's top doc comment), so
+      // there's no need to pre-cap to spendableInMargin here anymore. Doing
+      // so used to leave accrued-interest dust permanently unrepayable: 100%
+      // would show 0 (or a stale partial figure) once the account's spendable
+      // balance dropped near zero from an earlier repay, even though the
+      // wallet held plenty to cover the tiny remaining gap.
+      //
+      // Below-a-cent dust is still zeroed — same $0.01 threshold the "Net
+      // Outstanding Amount to Repay" stat tile uses — so 100% doesn't fill in
+      // a confusing non-zero amount the stat disagrees with.
+      const usdEquiv = selectedTokenPrice > 0 ? safeFullAmount * selectedTokenPrice : safeFullAmount;
+      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(safeFullAmount);
       setRepayInput(amountToInputString(clamped));
       return;
     }
@@ -352,29 +324,17 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         ? BigInt(latestDebt.debtWad)
         : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
       // "Repay Max" (100%) targets the full on-chain debt; otherwise cap the input
-      // at the debt.
-      let finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+      // at the debt. NOT further capped to the smart account's spendable token
+      // balance here — MarginAccountService.repayLoan tops up any shortfall
+      // from the connected wallet before repaying, so requesting the full debt
+      // (even when it exceeds what the account currently holds, e.g. accrued
+      // same-asset-leverage interest) is repaid in full instead of being
+      // silently capped down and left as unrepayable dust.
+      const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
         ? debtWad
         : debtWad > BigInt(0)
           ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
           : inputRepayWad;
-
-      // Repay pulls FROM the smart account, which holds the borrowed funds but NOT
-      // the accrued-interest portion of the debt. Repaying the raw debt overspends
-      // → Error(Contract,#10) "balance is not sufficient to spend". Cap at the
-      // account's actual token balance so the tx can't overspend.
-      const spendable = await MarginAccountService.getMarginAccountTokenBalanceWad(
-        marginAccount,
-        normalizeContractTokenSymbol(selectedRepayCurrency),
-      );
-      let cappedToBalance = false;
-      if (spendable != null) {
-        const spendableWad = BigInt(spendable);
-        if (finalRepayWad > spendableWad) {
-          finalRepayWad = spendableWad;
-          cappedToBalance = true;
-        }
-      }
 
       if (finalRepayWad <= BigInt(0)) {
         throw new Error('Nothing to repay for this token');
@@ -390,7 +350,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error(result.error || 'Loan repayment failed');
       }
 
-      return { hash: result.hash, finalRepayWad, cappedToBalance };
+      return { hash: result.hash, finalRepayWad };
     },
     onSuccess: async ({ hash, finalRepayWad }) => {
       if (hash) {
@@ -413,7 +373,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
       try {
         await refreshSelectedTokenDebt(marginAccount);
-        await refreshSpendableInMargin(marginAccount);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
         await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
       } catch (error) {
@@ -616,18 +575,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
             </span>
           </div>
 
-          {/* Spendable-cap hint — only when there's a real shortfall, so a
-              100%/"Pay Now" click doesn't silently repay less than shown above
-              without warning first. */}
-          {spendableInMargin != null &&
-            repayStats.netOutstandingAmountToPay > 0 &&
-            spendableInMargin < repayStats.netOutstandingAmountToPay && (
-              <div
-                className={`text-[12px] font-medium ${isDark ? "text-[#F59E0B]" : "text-[#B45309]"}`}
-              >
-                Max amount you can repay right now: {formatTokenAmount(spendableInMargin)} {selectedRepayCurrency}
-              </div>
-            )}
         </motion.article>
 
         {/* Repay preview — before → after values (same style as Leverage/Transfer tabs) */}

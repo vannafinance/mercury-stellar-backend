@@ -22,7 +22,17 @@
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { getAddress, signTransaction } from '@/lib/wallet-adapter';
 import { getReadSourceAddress } from '@/lib/read-source';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService, ASSET_TYPES, type AssetType } from './stellar-utils';
+import {
+  CONTRACT_ADDRESSES,
+  NETWORK_PASSPHRASE,
+  SOROBAN_RPC_URL,
+  ContractService,
+  ASSET_TYPES,
+  type AssetType,
+  resubmitOnTryAgainLater,
+  withFootprintRaceRetry,
+  describeSendError,
+} from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
@@ -1235,13 +1245,30 @@ export class MarginAccountService {
   static async depositCollateralTokens(
     marginAccountAddress: string,
     tokenSymbol: string,
-    amountWad: string
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    amountWad: string,
+    // Pass the `nextSequence` from a just-confirmed prior same-account tx to
+    // skip an RPC `getAccount()` read that isn't reliably fresh yet right
+    // after that tx. See borrowTokensAttempt's doc comment / stellar-utils.ts's
+    // isFootprintRaceError for the full explanation.
+    knownSequence?: string
+  ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
+    return withFootprintRaceRetry(
+      () => this.depositCollateralTokensAttempt(marginAccountAddress, tokenSymbol, amountWad, knownSequence),
+      'Deposit',
+    );
+  }
+
+  private static async depositCollateralTokensAttempt(
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    amountWad: string,
+    knownSequence?: string
+  ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
-      
+
       // Pre-flight checks
-      
+
       // Check 0: Token configuration in Registry
       const configCheck = await this.isTokenConfigured(contractTokenSymbol);
       if (!configCheck.configured) {
@@ -1252,7 +1279,7 @@ export class MarginAccountService {
                  `Please contact the admin to configure the new Registry deployment.`
         };
       }
-      
+
       // Check 1: Is collateral allowed for this token?
       const isCollateralAllowed = await this.isCollateralAllowed(contractTokenSymbol);
       if (!isCollateralAllowed) {
@@ -1261,15 +1288,15 @@ export class MarginAccountService {
           error: `${contractTokenSymbol} is not allowed as collateral. Please ask the contract admin to enable this token first.`
         };
       }
-      
+
       // Check 2: Read max asset cap when available. Some deployments omit get_max_asset_cap,
       // so do not hard-block here and let the contract enforce limits on execution.
       const maxAssetCap = await this.getMaxAssetCap();
       if (maxAssetCap === 0) {
         console.warn('⚠️ Max asset cap unavailable/zero from view call; continuing and deferring limit checks to contract execution.');
       }
-      
-      
+
+
       const userAddress = await getAddress();
       if (userAddress.error) {
         return {
@@ -1279,11 +1306,13 @@ export class MarginAccountService {
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      const sourceAccount = knownSequence
+        ? new StellarSdk.Account(userAddress.address, knownSequence)
+        : await server.getAccount(userAddress.address);
 
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
-      
+
       // Build the transaction to call deposit_collateral_tokens with higher fee
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 20).toString(), // 20x base fee for deposit operations
@@ -1300,8 +1329,13 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
+      // sourceAccount is mutated in place by .build() (sequence incremented
+      // by the tx it just consumed) — capture it now so a caller chaining
+      // straight into another same-account tx can skip re-reading it.
+      const nextSequence = sourceAccount.sequenceNumber();
+
       const preparedTx = await server.prepareTransaction(transaction);
-      
+
       // Sign the transaction
       const signResult = await signTransaction(preparedTx.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -1312,22 +1346,34 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
-      
+      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Deposit');
+
       if (result.status === 'PENDING') {
         const finalResult = await this.pollTransactionStatus(server, result.hash);
-        
+
         if (finalResult.status === 'SUCCESS') {
           return {
             success: true,
-            hash: result.hash
+            hash: result.hash,
+            nextSequence,
           };
         } else {
+          const reason = this.describeFailedTx(finalResult);
           return {
             success: false,
-            error: `Deposit transaction failed with status: ${finalResult.status}`
+            error: `Deposit transaction failed with status: ${finalResult.status}${reason ? `: ${reason}` : ''}`
           };
         }
+      } else if (result.status === 'ERROR') {
+        const resultCode = describeSendError(result);
+        console.error(`❌ Deposit transaction failed immediately with ERROR status (${resultCode})`);
+        return {
+          success: false,
+          error: resultCode !== 'unknown'
+            ? `Deposit transaction failed with result: ${resultCode}`
+            : `Deposit transaction failed immediately with status: ${result.status}`,
+        };
       } else {
         return {
           success: false,
@@ -1347,11 +1393,17 @@ export class MarginAccountService {
    * Withdraw collateral from a margin account back to the trader's wallet via
    * AccountManager `withdraw_collateral_balance` (50x BASE_FEE).
    *
-   * Budget handling is deliberate: this op routinely trips a budget-like
-   * simulation/prepare error that still succeeds once submitted, so a
-   * budget-class error is logged and the original envelope is sent anyway;
-   * only a genuine contract error (e.g. Risk Engine blocking the withdraw
-   * while debt is open) aborts with a user-facing message.
+   * Budget handling: this op routinely trips a budget-like error at the
+   * cheap pre-check `simulateTransaction` call even though the real
+   * `prepareTransaction` (which re-simulates with the actual submit-time
+   * footprint) goes on to succeed — so a budget-class simulation error is
+   * logged and prepare is attempted anyway. A PREPARE failure is not given
+   * the same benefit of the doubt: prepare is what attaches the Soroban
+   * resource footprint the network requires for this to submit at all, so a
+   * prepare failure aborts with a user-facing message instead of sending a
+   * transaction that has no footprint attached and cannot succeed. A
+   * genuine contract error (e.g. Risk Engine blocking the withdraw while
+   * debt is open) also aborts with a user-facing message.
    *
    * @param marginAccountAddress - Source SmartAccount C-address.
    * @param tokenSymbol - Token symbol or UI alias; normalized before use.
@@ -1433,10 +1485,23 @@ export class MarginAccountService {
       try {
         preparedTx = await server.prepareTransaction(transaction);
       } catch (prepareError: any) {
-        // Prepare also failed - this is also somewhat normal for budget-constrained operations
-        console.warn('⚠️ Prepare transaction also encountered issues, but will attempt to send anyway');
-        // Just use the original transaction envelope
-        preparedTx = transaction;
+        // Unlike the simulation-only budget error above, a prepare FAILURE is
+        // not safe to shrug off: prepareTransaction is what attaches the
+        // Soroban resource footprint (readOnly/readWrite ledger keys,
+        // instructions, fee) to the tx's `ext` field. Without it,
+        // TransactionBuilder.build() leaves `ext` as TransactionExt(0, Void)
+        // — no Soroban extension at all — which the network rejects outright
+        // for an InvokeHostFunction operation (this always touches many
+        // ledger entries; declaring none of them is invalid, not "usually
+        // fine"). Sending that envelope anyway (the previous behavior here)
+        // wasted a real signature + a real submitted tx on a submission that
+        // cannot succeed. Fail cleanly instead, matching the borrow path's
+        // handling of the same failure mode below.
+        console.error('❌ Withdraw preparation failed:', prepareError);
+        return {
+          success: false,
+          error: this.formatUserFacingContractError(prepareError?.message || prepareError, 'withdraw'),
+        };
       }
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -1494,55 +1559,6 @@ export class MarginAccountService {
    * @returns `{ success, hash?, error? }`.
    */
   /**
-   * Whether a borrow failure looks like the read-after-write ledger-lag race
-   * seen live on testnet: a footprint computed during simulate/prepare
-   * omits a storage key (e.g. a lending pool's `RateModel`) because, at
-   * simulation time, the RPC node's ledger view hadn't yet caught up with a
-   * just-confirmed prior transaction on the same account (e.g. the first
-   * leg of a dual borrow) — so a data-dependent code path (interest
-   * accrual only runs once the trader has nonzero borrow shares) took a
-   * different, wider branch by the time it actually executed on-chain than
-   * the branch simulation saw. Confirmed via a real failed tx's decoded
-   * diagnostic events: `{"storage":"exceeded_limit"}` /
-   * "trying to access contract data key outside of the footprint". Retrying
-   * after a short delay lets the RPC's view catch up and reliably succeeds.
-   */
-  private static isFootprintRaceError(raw: any): boolean {
-    const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
-    return (
-      text.includes('outside of the footprint') ||
-      text.includes('exceeded_limit') ||
-      /budget|exceededlimit|resource|try_again_later|txbadseq|txsorobaninvalid|txtoolate/i.test(text)
-    );
-  }
-
-  /**
-   * Decodes a `sendTransaction` submission-time rejection (`result.status
-   * === 'ERROR'`) into its real `TransactionResult` code, e.g. `txBadSeq`.
-   * Previously this path did `${result.errorResult.toXDR()}` — `toXDR()`
-   * with no argument returns a raw Buffer, and string-interpolating it just
-   * calls the Buffer's default (garbled, non-UTF8) `toString()`. That
-   * garbage never matched any of {@link isFootprintRaceError}'s text
-   * patterns, so a `txBadSeq` — the second leg of a dual borrow/one-click,
-   * built and submitted moments after the first leg's tx bumped the
-   * account's sequence number, before the RPC node backing `getAccount()`
-   * had caught up — silently skipped the outer `borrowTokens()` rebuild
-   * retry and surfaced as an opaque immediate failure every time. `txBadSeq`
-   * carries no operation results (submission never reached the ops), which
-   * is why `errorResultXdr` here is a tiny handful of bytes with no
-   * diagnostic events, unlike a genuine on-chain contract trap.
-   */
-  private static describeSendError(result: any): string {
-    try {
-      const code = result?.errorResult?.result?.().switch?.().name;
-      if (code) return code;
-    } catch {
-      // Fall through to the generic message below.
-    }
-    return 'unknown';
-  }
-
-  /**
    * Decodes a failed `getTransaction` result's diagnostic events into a
    * human-readable string (e.g. `scecExceededLimit: operation byte-write
    * resources exceeds amount specified (1920, 1880)`). The resource
@@ -1592,21 +1608,15 @@ export class MarginAccountService {
     // it was built on, so retries fall back to a fresh `getAccount()`.
     knownSequence?: string
   ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
-    // A shared testnet RPC endpoint can be backed by more than one node, so
-    // even a retried `getAccount()` has no guarantee of landing on one
-    // that's caught up. Growing the delay across more attempts (rather than
-    // trying twice and giving up) gives the slowest node in that pool more
-    // chances to catch up before the whole leg is reported as failed.
-    const RETRY_DELAYS_MS = [2000, 4000];
-    let result = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad, knownSequence);
-
-    for (let i = 0; i < RETRY_DELAYS_MS.length && !result.success && this.isFootprintRaceError(result.error); i++) {
-      console.warn(`⚠️ Borrow hit a footprint/ledger-lag race; retrying after a short delay (attempt ${i + 2}/${RETRY_DELAYS_MS.length + 1}).`);
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[i]));
-      result = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
-    }
-
-    return result;
+    let firstAttempt = true;
+    return withFootprintRaceRetry(() => {
+      // Only the FIRST attempt uses knownSequence — a failed attempt
+      // invalidates the assumption it was built on, so retries fall back to
+      // a fresh getAccount() (handled inside borrowTokensAttempt itself).
+      const seq = firstAttempt ? knownSequence : undefined;
+      firstAttempt = false;
+      return this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad, seq);
+    }, 'Borrow');
   }
 
   private static async borrowTokensAttempt(
@@ -1791,8 +1801,9 @@ export class MarginAccountService {
           };
         } else {
           // NOT necessarily a real failure yet: this is exactly the
-          // read-after-write footprint race isFootprintRaceError() above
-          // exists for (see its doc comment) — borrowTokens() transparently
+          // read-after-write footprint race stellar-utils.ts's
+          // isFootprintRaceError exists for (see its doc comment) —
+          // borrowTokens() transparently
           // retries once when this matches, which is the common case for a
           // dual borrow's second leg. console.warn, not .error: in dev mode
           // Next.js's overlay intercepts every console.error as a crash
@@ -1806,7 +1817,7 @@ export class MarginAccountService {
           };
         }
       } else if (result.status === 'ERROR') {
-        const resultCode = this.describeSendError(result);
+        const resultCode = describeSendError(result);
         console.error(`❌ Borrow transaction failed immediately with ERROR status (${resultCode})`);
         console.error('Error details:', {
           resultCode,
@@ -2406,18 +2417,10 @@ export class MarginAccountService {
     tokenSymbol: string,
     repayAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
-    // See borrowTokens()'s matching loop for why a single retry isn't
-    // always enough against a multi-node RPC endpoint.
-    const RETRY_DELAYS_MS = [2000, 4000];
-    let result = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
-
-    for (let i = 0; i < RETRY_DELAYS_MS.length && !result.success && this.isFootprintRaceError(result.error); i++) {
-      console.warn(`⚠️ Repay hit a footprint/ledger-lag race; retrying after a short delay (attempt ${i + 2}/${RETRY_DELAYS_MS.length + 1}).`);
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[i]));
-      result = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
-    }
-
-    return result;
+    return withFootprintRaceRetry(
+      () => this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad),
+      'Repay',
+    );
   }
 
   private static async repayLoanAttempt(
@@ -3116,6 +3119,7 @@ export class MarginAccountService {
 
       const finalResult = await this.pollTransactionStatus(server, result.hash);
       if (finalResult.status === 'SUCCESS') {
+        console.log(`[depositAndBorrow] confirmed, nextSequence=${nextSequence} (source account: ${userAddress.address})`);
         return { success: true, hash: result.hash, nextSequence };
       }
       return {

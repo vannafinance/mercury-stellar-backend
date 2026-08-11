@@ -16,17 +16,13 @@ import {
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
-
-// Stable id so every stage of one transfer (pending → success/error) updates
-// the SAME bottom-left toast in place, instead of a full-screen modal or a
-// stack of separate toasts.
-const TRANSFER_TOAST_ID = "transfer-collateral-tx";
 
 const XLM_WALLET_RESERVE = 1;
 const XLM_TRANSFER_EPSILON = 1e-7;
@@ -327,9 +323,8 @@ export const TransferCollateral = () => {
 
   const transferMutation = useMutation({
     onMutate: () => {
-      toast.loading(
-        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`,
-        { id: TRANSFER_TOAST_ID }
+      showTxStep(
+        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`
       );
     },
     mutationFn: async () => {
@@ -361,9 +356,8 @@ export const TransferCollateral = () => {
         hash: result.hash ?? "",
       });
 
-      toast.success(
-        `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`,
-        { id: TRANSFER_TOAST_ID }
+      showTxSuccess(
+        `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
       );
 
       // Reset the form and invalidate RQ caches first so the UI updates even
@@ -400,7 +394,7 @@ export const TransferCollateral = () => {
         setValueInput(floorAmountToInput(safeMaxAfterFailure));
       }
       const friendlyMessage = getFriendlyTransferError(message, safeMaxAfterFailure);
-      toast.error(friendlyMessage, { id: TRANSFER_TOAST_ID });
+      showTxError(friendlyMessage);
     },
   });
 

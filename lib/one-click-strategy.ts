@@ -400,19 +400,24 @@ export async function executeOneClickStrategy(
       // deposited asset (cross-asset-swap); otherwise deploy the collateral directly.
       const poolToken = poolTokens[0] as TokenAsset;
       let deployAmount = collateralAmount;
+      // Only valid when NO swap runs in between — a swap would bump the
+      // account's sequence again, making this stale (see nextSequence's doc
+      // comment on BlendTransactionResult).
+      let depositToBlendKnownSequence = depositResult.nextSequence;
       if (scenario === 'cross-asset-swap' && poolToken !== collateralAsset) {
         step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} → ${poolToken} via Soroswap...`);
         const sw = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
+        depositToBlendKnownSequence = undefined;
         deployAmount = collateralAmount * (prices[collateralAsset] / (prices[poolToken] || 1)) * 0.99;
         step(`Step 3/3: Deploying ~${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
       } else {
         step(`Step 2/2: Deploying ${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
       }
       const r = await BlendService.depositToBlendPool(
-        userAddress, marginAccountAddress, poolToken, deployAmount
+        userAddress, marginAccountAddress, poolToken, deployAmount, depositToBlendKnownSequence
       );
       return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
     }
@@ -455,6 +460,11 @@ export async function executeOneClickStrategy(
 
     // ── Phase 1: Deposit collateral + borrow ────────────────────────────────
 
+    // Carries the last Phase-1 tx's sequence into Phase 2's deploy call(s)
+    // below (e.g. depositToBlendPool right after depositAndBorrow) — same
+    // same-account race as the LP branch's b1→b2 chaining above.
+    let phase1NextSequence: string | undefined;
+
     if (scenario === 'same-asset') {
       step(
         leverage > 1
@@ -468,6 +478,7 @@ export async function executeOneClickStrategy(
         collateralAsset
       );
       if (!result.success) return { success: false, error: result.error };
+      phase1NextSequence = result.nextSequence;
     } else if (poolType === 'lp') {
       // LP pools (Aquarius/Soroswap): collateral funds one leg; the paired
       // leg must be sized off the pool's LIVE reserve ratio, not the UI's
@@ -526,20 +537,22 @@ export async function executeOneClickStrategy(
           : 0;
         pairedBorrowAmount = (collateralAmount + collateralLegBorrowAmount) * ratio;
 
-        // b2 is submitted from the SAME wallet account right after b1
-        // confirms. A fresh `getAccount()` read for b2 is not reliably
-        // caught up with b1's sequence bump yet — confirmed live hitting
-        // `txBadSeq` on every retry regardless of backoff — so hand b2 the
-        // exact next sequence b1 itself just consumed instead of re-reading
-        // it over RPC.
-        let nextSequence: string | undefined;
+        // b1 and b2 are both submitted from the SAME wallet account right
+        // after the Step 1/4 deposit confirms (Step 2/4 is a pure read, no
+        // tx) — a fresh `getAccount()` read for either is not reliably
+        // caught up with the prior tx's sequence bump yet — confirmed live
+        // hitting `txBadSeq` on every retry regardless of backoff — so chain
+        // each leg the exact next sequence the previous one just consumed
+        // instead of re-reading it over RPC.
+        let nextSequence: string | undefined = depositResult.nextSequence;
 
         if (collateralLegBorrowAmount > 0) {
           step(`Step 3/4: Borrowing ${collateralLegBorrowAmount.toFixed(2)} ${collateralAsset} from Vanna...`);
           const b1 = await MarginAccountService.borrowTokens(
             marginAccountAddress,
             poolTokenSymbol(collateralAsset, poolProtocol, poolType),
-            toWad(collateralLegBorrowAmount)
+            toWad(collateralLegBorrowAmount),
+            nextSequence
           );
           if (!b1.success) return { success: false, error: `Borrow failed: ${b1.error}` };
           nextSequence = b1.nextSequence;
@@ -579,17 +592,20 @@ export async function executeOneClickStrategy(
       if (!depositResult.success) {
         return { success: false, error: `Deposit failed: ${depositResult.error}` };
       }
+      phase1NextSequence = depositResult.nextSequence;
 
       if (leverage > 1 && borrowAmount > 0) {
         step(`Step 2/${totalSteps}: Borrowing ${borrowAmount.toFixed(2)} ${borrowAsset} from Vanna...`);
         const borrowResult = await MarginAccountService.borrowTokens(
           marginAccountAddress,
           poolTokenSymbol(borrowAsset, poolProtocol, poolType),
-          toWad(borrowAmount)
+          toWad(borrowAmount),
+          phase1NextSequence
         );
         if (!borrowResult.success) {
           return { success: false, error: `Borrow failed: ${borrowResult.error}` };
         }
+        phase1NextSequence = borrowResult.nextSequence;
       }
     }
 
@@ -602,24 +618,27 @@ export async function executeOneClickStrategy(
         const total = collateralAmount + borrowAmount;
         const stepLabel = leverage > 1 ? '2/2' : '1/1';
         step(`Step ${stepLabel}: Deploying ${total.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        console.log(`[OneClick] calling depositToBlendPool with phase1NextSequence=${phase1NextSequence} (userAddress=${userAddress})`);
         const r = await BlendService.depositToBlendPool(
-          userAddress, marginAccountAddress, poolToken, total
+          userAddress, marginAccountAddress, poolToken, total, phase1NextSequence
         );
         return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
       }
 
       if (scenario === 'cross-asset-keep') {
         const totalSteps = borrowAmount > 0 ? 4 : 2;
+        let nextSequence = phase1NextSequence;
         if (borrowAmount > 0) {
           step(`Step 3/${totalSteps}: Deploying ${borrowAmount.toFixed(2)} ${borrowAsset} to ${poolProtocol} ${borrowAsset} pool...`);
           const r1 = await BlendService.depositToBlendPool(
-            userAddress, marginAccountAddress, borrowAsset, borrowAmount
+            userAddress, marginAccountAddress, borrowAsset, borrowAmount, nextSequence
           );
           if (!r1.success) return { success: false, error: `Deploy ${borrowAsset} failed: ${r1.error}` };
+          nextSequence = r1.nextSequence;
         }
         step(`Step ${totalSteps}/${totalSteps}: Deploying ${collateralAmount.toFixed(2)} ${collateralAsset} to ${poolProtocol} ${collateralAsset} pool...`);
         const r2 = await BlendService.depositToBlendPool(
-          userAddress, marginAccountAddress, collateralAsset, collateralAmount
+          userAddress, marginAccountAddress, collateralAsset, collateralAmount, nextSequence
         );
         return r2.success ? { success: true, hash: r2.hash } : { success: false, error: r2.error };
       }

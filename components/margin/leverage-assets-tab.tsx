@@ -32,16 +32,16 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 // Live step-by-step progress for the WB deposit(+borrow) flow — a multi-leg
 // operation (deposit, then borrow, then a second borrow for Dual Borrow)
-// shows which step is running (and which one failed) via a single
-// bottom-left toast that updates in place, instead of a static
+// shows which step is running (and which one failed) via the centered
+// TransactionProgressModal, which updates in place, instead of a static
 // "Processing..." button with no visibility into a silently-dropped leg.
-const LEVERAGE_TOAST_ID = "leverage-assets-tx";
-const showStep = (message: string) => toast.loading(message, { id: LEVERAGE_TOAST_ID });
+const showStep = (message: string) => showTxStep(message);
 const showStepSuccess = (message: string, txHash?: string) =>
-  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: LEVERAGE_TOAST_ID });
-const showStepError = (message: string) => toast.error(message, { id: LEVERAGE_TOAST_ID });
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;

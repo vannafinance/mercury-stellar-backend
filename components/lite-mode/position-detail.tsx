@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Image from "next/image";
 import { motion } from "framer-motion";
-import toast from "react-hot-toast";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
 import { iconPaths } from "@/lib/constants";
@@ -17,12 +16,12 @@ import { applyLiteExit } from "@/lib/lite-positions";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 
-const CLOSE_POSITION_TOAST_ID = "close-position-tx";
-const showStep = (message: string) => toast.loading(message, { id: CLOSE_POSITION_TOAST_ID });
+const showStep = (message: string) => showTxStep(message);
 const showStepSuccess = (message: string, txHash?: string) =>
-  toast.success(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message, { id: CLOSE_POSITION_TOAST_ID });
-const showStepError = (message: string) => toast.error(message, { id: CLOSE_POSITION_TOAST_ID });
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";

@@ -10,6 +10,7 @@ import { PriceProvider } from "@/contexts/price-context";
 import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
+import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
 import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
 
@@ -106,6 +107,7 @@ export default function RootLayout({
                   <Navbar items={navbarItems}/>
                   <ScaleWrapper>{children}</ScaleWrapper>
                   <AppToaster />
+                  <TransactionProgressModal />
                 </PriceProvider>
               </LedgerSubscriberProvider>
             </AppPrivyProvider>
