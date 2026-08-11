@@ -25,7 +25,7 @@ Freighter) in the browser. A full server breach cannot move a single token.
 ```
 ┌──────────────┐  POST /api/copilot  ┌─────────────────────┐   Gemini + MCP   ┌───────────┐
 │ /copilot UI  │ ──────────────────► │  brain (lib/copilot)│ ───────────────► │ vanna-mcp │
-│ Next.js      │ ◄────────────────── │  in the same server │ ◄─────────────── │ (~29 tools)│
+│ Next.js      │ ◄────────────────── │  in the same server │ ◄─────────────── │ (14 tools)│
 └──────┬───────┘  answer / preview   └─────────────────────┘  data · build ·  └───────────┘
        │                                                       auto-sign attempt
        │ preview carries MCP's unsigned_xdr

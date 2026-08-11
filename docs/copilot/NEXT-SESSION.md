@@ -2,13 +2,13 @@
 
 ---
 
-## Session 2 (2026-08-10, later) — 11 bugs fixed, 13 transactions executed
+## Session 2 (2026-08-10, later) — 19 bugs fixed, 26 transactions executed
 
 Everything below in "Work queue" is superseded where it conflicts with this block.
 
 Test wallet for all of it: **`GDW3B2BVO3MUBPIYWZQA6ZGIOHD73CNZITY5YKVD5KOOHMZ72REVVJ52`**,
 smart account **`CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ`** (created this
-session by the copilot itself, with auto-approve OFF). Suite **694 → 770**, `tsc` clean.
+session by the copilot itself, with auto-approve OFF). Suite **694 → 778**, `tsc` clean.
 
 | # | Bug | Fix |
 |---|---|---|
@@ -23,15 +23,14 @@ session by the copilot itself, with auto-approve OFF). Suite **694 → 770**, `t
 | 9 | **TVL never totalled** — listed four pools, named a winner, answered no question. | Sums total **assets** in USD; declines rather than guessing if the XLM oracle fails. |
 | 10 | **Comparison never compared** — "compare the XLM and BLUSDC pools" dumped all four. | Narrows to named pools, leads with the verdict and the gap. Bare USDC expands to all three variants. |
 | 11 | **HF projection returned the present**; **liquidation price routed to the spot oracle** and claimed "no position data". | `parseHypotheticalMove` + `projectHealthFactor`; liquidation-price route + `liquidationPriceLine`. Threshold **derived** from the live pair, never assumed. |
-
 | 12 | **`remove_liquidity` sent arguments MCP rejects** — `fraction`/`share_fraction`, which it has never taken. Returned `invalid_input`, and the copilot pasted MCP's *developer* guidance to the user ("Never pass raw share integers"). | Full exit → `remove_all`; explicit size → `liquidity`; a partial share asks for a figure in the user's terms. |
 | 13 | **`PROJECTED IMPACT: reading your current position failed` on every Earn op** — NOT flakiness (I guessed that twice and was wrong). `risk.ts:105` deliberately returns an empty baseline for every `requires_account: false` op, because an Earn supply doesn't touch margin; the card could not tell that apart from a failed read. | `Simulation.margin_applicable` — card and prose now say "None — this moves tokens in your wallet and doesn't touch your margin account…". |
+| 14 | **`copilot-workspace.tsx` kept its OWN `Simulation` type** — the same "two definitions of one type" trap as `CopilotAction`, so a field added server-side did not exist in the UI. | Imports the server type from `lib/copilot/types`. Do not re-fork it. |
 | 15 | **Swap had no percentage support** — Trade/Spot offers 25 / 50 / 75 / Max, but both swap entry conditions in the router required a numeric amount, so "swap half my XLM to USDC" fell through to a generic clarify. | `swapShare` + `swapPair` open the branch on a share; `swap` added to `FRACTION_SIZED_OPS`. |
 | 16 | **The XLM reserve was charged against the wrong balance** — a swap spends the SMART ACCOUNT's XLM (a contract token balance), but `resolveBalanceFractionAmount` deducted the `(2+subentries)×0.5` **wallet** reserve, giving 2240.7178423 where Trade/Spot's own 25% gives **2241.7178423** — exactly 1 XLM short. | The reserve is now keyed on the balance SOURCE (`"in your wallet"`), so it cannot drift onto a contract balance again. |
+| 17 | **`PROJECTED IMPACT: reading your current position failed` on MARGIN ops** — I mis-diagnosed this twice as flaky RPC. It is not. `vanna_margin_status/health` returns **HTTP 200 carrying an error field** (`HostError: Error(Budget, ExceededLimit)`) on accounts holding several collateral tokens, so `fetchHealth`'s catch was unreachable, no key parsed, and the baseline silently zeroed. `runRead` documents this exact trap at `handle.ts:~2678`; `risk.ts` had never learned it. | `healthFromSnapshot` fallback in `risk.ts`, triggered on ANY unparseable payload (not just the budget string), plus a `console.warn` so a future silent zero is visible. Verified: HF 3.29 → 2.96 now renders where the card previously reported a failure. |
 | 18 | **Receipt denied a health factor it had** — "lend 15 SOUSDC, then tell me my health factor" ended with "no health factor was returned", directly under a card showing 3.29. `runPlan` only sampled HF when a leg had MOVED health, and `lend` does not, so the summariser was honestly handed null. | Asking for HF is now itself reason to read it (`askedForHealth` in `runPlan`). Verified: "…establishing a account health factor of 3.29". |
 | 19 | **Session log "stuck on staged"** (owner-reported) — an abandoned run never reports a terminal status, so its row said `staged` forever. | `settleAbandonedRow`, on hydration only. See the note below. |
-| 17 | **`PROJECTED IMPACT: reading your current position failed` on MARGIN ops** — I mis-diagnosed this twice as flaky RPC. It is not. `vanna_margin_status/health` returns **HTTP 200 carrying an error field** (`HostError: Error(Budget, ExceededLimit)`) on accounts holding several collateral tokens, so `fetchHealth`'s catch was unreachable, no key parsed, and the baseline silently zeroed. `runRead` documents this exact trap at `handle.ts:~2678`; `risk.ts` had never learned it. | `healthFromSnapshot` fallback in `risk.ts`, triggered on ANY unparseable payload (not just the budget string), plus a `console.warn` so a future silent zero is visible. Verified: HF 3.29 → 2.96 now renders where the card previously reported a failure. |
-| 14 | **`copilot-workspace.tsx` kept its OWN `Simulation` type** — the same "two definitions of one type" trap as `CopilotAction`, so a field added server-side did not exist in the UI. | Imports the server type from `lib/copilot/types`. Do not re-fork it. |
 
 Plus: internal tracking keys (`BLEND_USDC`) now render as "USDC in Blend" in prose — **label
 only, totals untouched**. Whether a Blend supply should count toward margin collateral is a
@@ -42,7 +41,7 @@ second copy of that rule.
 a dropdown over `/trade/spot|perps|options`. The "Approve & sign does nothing" I reported
 mid-session was me reading a mid-flight panel before it repainted; the clicks worked.
 
-**Exercised end to end (17 transactions, auto-approve OFF, all `successful: true`):** account
+**Exercised end to end (26 transactions, auto-approve OFF, all `successful: true`):** account
 creation · deposit · borrow · repay (incl. `repay 25% of my BLUSDC debt`) · withdraw
 collateral · swap · earn lend · earn redeem · Blend supply · Aquarius LP add/remove · plan
 approval · TVL / comparison / HF projection / liquidation-price reads · Portfolio ·
@@ -126,7 +125,7 @@ Test wallet (owner-authorised, **this one only**):
 with "disable auto-sign" then "enable auto-sign with default caps" (must be done in the
 BROWSER; the assertion is not on plain curl calls). The owner wants **both states tested**.
 
-Baseline to preserve: `npx tsc --noEmit` clean, `npx vitest run` = **694 passing**.
+Baseline to preserve: `npx tsc --noEmit` clean, `npx vitest run` = **778 passing**.
 
 ## 1. Test through the browser, not curl — the owner wants to watch
 

@@ -1,8 +1,14 @@
 # Copilot — open issues, by owner
 
 Everything known-broken or unfinished as of **2026-08-10**, grouped by who can fix it.
-Fixed items are in git history, not here. Anything marked **UNVERIFIED** has passing tests
-but has not been exercised against the chain.
+Anything marked **UNVERIFIED** has passing tests but has not been exercised against the
+chain.
+
+Items fixed in the **most recent** session are kept here marked **FIXED**, with the evidence
+(tx hash or verified figure), so the person who reported one can confirm it rather than take
+my word. Delete them once confirmed; older fixes live in git history.
+
+Baseline: `npx vitest run` = **778**, `npx tsc --noEmit` clean.
 
 ---
 
@@ -84,7 +90,7 @@ fallback proves insufficient.
 ### C1. Withdraw local fallback — **UNVERIFIED live**
 On a budget-class failure for an op the browser can run, `runWrite` returns an executable
 action with no XDR, which routes to `executeAction` → `MarginAccountService
-.withdrawCollateralBalance` (the Margin page's own path). Typechecks, 694 tests pass, never
+.withdrawCollateralBalance` (the Margin page's own path). Typechecks, 778 tests pass, never
 triggered against the chain because the authorised wallet's withdraw simulation succeeds.
 **Test next time a withdraw hits a budget error.**
 
@@ -95,17 +101,35 @@ Node's default ceiling, so OOM is the leading hypothesis. No unhandled rejection
 the copilot path — every MCP/Vertex call is awaited and wrapped. Mitigation:
 `NODE_OPTIONS=--max-old-space-size=6144`.
 
-### C3. Answers that dump instead of answering
-- "What is the total value locked across all earn pools?" lists the four pools and never
-  totals them.
-- "Compare the XLM and USDC pools" dumps all four with no comparison.
-- "Is Blend yield better than the Vanna USDC earn pool?" claims the earn figure is
-  "not available" — it fetched 11.51% one prompt earlier. It has the data; it does not fan
-  out to both sides.
+### C3. Answers that dump instead of answering — **MOSTLY FIXED 2026-08-10**
+- ~~TVL never totalled~~ → **fixed.** Sums total *assets* in USD, stables at $1 and XLM
+  through the oracle; **declines rather than guessing** if that price read fails. Verified:
+  *"Total value locked across all 4 Vanna earn pools is $33,243.49."*
+- ~~Comparison never compared~~ → **fixed.** Narrows to the named pools, leads with the
+  verdict and the gap, flags thin withdrawal liquidity above 80% utilisation. Bare "USDC"
+  expands to all three variants rather than picking one. Verified: *"BLUSDC pays more for
+  supplying: 13.36% vs 0.99% on XLM — 12.36 points apart."*
+- **STILL OPEN:** "Is Blend yield better than the Vanna USDC earn pool?" — needs a fan-out
+  to both venues in one answer. Untouched.
 
-### C4. Projections answer with current state
-- "Simulate borrowing 10 USDC — what happens to my health factor?" returns **current** HF.
-- "What's my liquidation price?" declines, though `collateralLeftBeforeLiquidation` exists.
+A related bug surfaced while fixing these and is also fixed: a WorkOS 502/520 was being
+pasted into the answer as a **raw HTML error page** (`<!DOCTYPE html><!--[if lt IE 7]>…`)
+where a pool's APY should have been. `shortError` now strips tags, maps known infra faults
+to a sentence, and caps length.
+
+### C4. Projections answer with current state — **FIXED 2026-08-10**
+- ~~"Simulate borrowing 10 USDC" returns current HF~~ → **fixed.** `parseHypotheticalMove` +
+  `projectHealthFactor`. Verified: *"After borrowing 10 BLUSDC ($10.00), your health factor
+  would be about 3.14 — down from 3.19."*
+- ~~"What's my liquidation price?" declines~~ → **fixed.** It was routing to
+  `query_price` (the **spot oracle**) because of the word "price", then claiming "no
+  position data was provided" to a user with an open position. Now routes to the account
+  read and solves `P* = (debt/lt − stables) / xlmQty`. Verified against the live account:
+  *"XLM at about $0.0218 — roughly 87% below the current $0.1627."*
+
+Both derive the liquidation threshold **from the live pair** rather than assuming one, so a
+projection can never contradict the health factor printed directly above it; and both
+decline instead of guessing when there is no debt to derive from, or the oracle read fails.
 
 ### C5. Contradictory instructions are executed, not questioned
 "whichever earn pool is paying the most, put 15 SOUSDC into it" is impossible as stated —
@@ -124,40 +148,79 @@ output rates — comparable to or larger than the entire prompt). Turning them d
 cost meaningfully but trades routing accuracy for money, which is a decision, not a patch.
 Measure before choosing.
 
-### C5b. Manual margin-account creation with auto-approve OFF — **STILL OPEN**
-Owner: opening an account on a new wallet works with auto-approve ON, fails with it OFF —
-which is the default for every user.
+### C5b. Manual margin-account creation with auto-approve OFF — **FIXED + VERIFIED ON CHAIN**
+The owner was right: the functional path really was broken, and the earlier wording fix was
+treating a symptom.
 
-The confusing message is fixed (`stripAutoSignPlumbing`), but **the functional path was never
-verified** and the owner re-raised the bug after that fix. Do not treat the wording fix as the
-fix. Verify: auto-approve OFF → `create a margin account for me` → a real Approve & sign
-button → Privy signs → a C-address returns. `create_account` is in `EXECUTABLE_OPS`, so the
-local executor is available as a fallback if MCP's XDR is unusable.
+**Root cause** (`mcp-write.ts`, `executeMcpWrite`): `wallet_not_bound` arrives as a
+top-level `build.error` with `auto_sign` and `auto_sign_error` **both null**, so it never
+reached the auto-sign branches. It fell into the generic `softFail` test (`!!build.error`),
+returned `status: "error"`, and **discarded the XDR MCP had already built** — the response
+carried `has_unsigned_xdr: true` while the card reported a failure with no Approve & sign
+button. With auto-approve ON the Sign Service signed before any of that ran, which is
+exactly why it "worked when ON".
 
-Test with the owner-supplied fresh wallet
-`GDW3B2BVO3MUBPIYWZQA6ZGIOHD73CNZITY5YKVD5KOOHMZ72REVVJ52` (no margin account yet).
+**Fix:** an auto-sign refusal carrying a usable XDR now returns `needs_wallet_sign`. Keyed
+on the error CODE, never the prose, so a genuine `simulation_failed` is still reported and
+never offered for signature. 6 tests in `tests/lib/auto-sign-refusal-stages.test.ts`.
 
-### C5c. Session log shows "in progress" after a turn completed — owner-reported
-Not investigated. Rows are driven off `strategyStepsRef` / `setStrategySteps` in
-`copilot-workspace.tsx`. Suspects: a terminal status no branch maps to done;
-`claimFirstAwaitingLeg` stamping a tx hash while deliberately keeping the leg pre-terminal for
-the ledger wait and never resolving; or a chain hop finishing without updating the parent row.
-Reproduce with a multi-leg approve and diff the row against `execution.status`.
+**Verified** with auto-approve OFF on the fresh wallet: tx
+`d04b076a86…c12e07` (`successful: true`, ledger 4069209) → smart account
+`CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ`.
 
-### C7. Percentage-of-balance amounts are not honoured
-"deposit XLM 50% of XLM in my wallet into the XLM pool" replies "How much XLM do you want to
-supply?" — a question answered with a question. The user gave a size: 50% of a quantity the
-copilot can read. `findAmountFraction` already exists and is wired for **repay only**; the
-Earn page offers the same 10/25/50/100% rungs. Extend fraction sizing to `lend` /
-`deposit_collateral` (needs a wallet-balance read for lend, a collateral read for deposit).
+The general lesson, worth keeping: **a refusal to AUTO-sign is not a failed transaction.**
+Manual signing is the default path, not a fallback — whenever an XDR exists, hand it to the
+wallet.
 
-### C8. Dual borrow is only half-represented
-"deposit XLM 500 … and borrow BLUSDC **and XLM** at 3X" now yields
-`deposit_and_borrow 500 XLM @3x (borrow BLUSDC)` + `borrow ? XLM @3x` — so the second borrow
-asset survives but is unsized, and the 3× is applied to a leg that already consumed it.
+### C5c. Session log shows "in progress" after a turn completed — **FIXED 2026-08-10**
+An abandoned run never reported a terminal status, so its row said `staged` forever.
+`settleAbandonedRow` now settles such a row on hydration only. Note the original report was
+**not reproducible** across 26 signed writes including four multi-leg runs — the fix targets
+the abandoned-run shape, which is the one path that demonstrably produces it. Worth the
+owner confirming against their original case before closing entirely.
+
+### C7. Percentage-of-balance amounts are not honoured — **FIXED 2026-08-10**
+The share was being dropped in **three** separate places, which is why an earlier partial
+fix did not hold:
+1. the router had no `fraction` slot for `lend` / `deposit_collateral` / `withdraw_collateral`;
+2. `step-extractor` only ever read an amount+asset **pair**, so a percentage produced no
+   amount at all;
+3. the **LLM planner** carried no fraction whatsoever — and that is the path a multi-goal
+   prompt actually takes.
+
+Plus two more found on the way: an approved plan lost the share at replay
+(`materializeLeverageWrites` needs a figure to multiply), and
+`coalesceLeveragedDepositBorrow` refused to merge a share-sized deposit because its guard
+required an absolute `amount > 0`.
+
+Sizing copies the site rather than inventing: wallet balance for lend/deposit, posted
+collateral for withdraw, **smart-account free balance for swap** (what Trade/Spot reads),
+`maxSpendableXlm` only for native XLM leaving the **wallet**, floored to 7dp.
+
+`findBalanceFraction` is deliberately stricter than `findAmountFraction`: "all"/"max" only
+counts as a size when the sentence names the balance it is a share of, so
+`invest for max yield` can never mean "100% of my wallet".
+
+Verified against the site's own chips: copilot `2241.7178423` vs Trade/Spot 25% button
+`2241.7178423`; margin deposit 25% `2498.9290941` both sides.
+
+### C8. Dual borrow is only half-represented — **STILL OPEN** (single borrow now fixed)
 The Margin page has an explicit **Dual Borrow** toggle, so this is a real product shape, not
 a malformed prompt. It needs a first-class two-borrow-asset representation with the leverage
 split across both legs rather than duplicated.
+
+**What was fixed 2026-08-10 (the SINGLE-borrow half):** "deposit X as collateral and borrow Y
+at N×" now merges into one `deposit_and_borrow` step carrying the leverage, sized
+`deposit_usd × (L−1)` and converted through the oracle when the tokens differ. Verified on
+chain both directions — XLM collateral → BLUSDC loan, and BLUSDC collateral → XLM loan
+(`7acc56d210…` + `5ebad7a6a2…`). 36 tests in `tests/lib/leveraged-cross-asset.test.ts` cover
+all 16 collateral→loan pairs.
+
+**What remains:** two borrow ASSETS in one instruction ("borrow BLUSDC **and** XLM at 3×").
+Per the owner's screenshot the leverage counts the TOTAL borrow across both legs, split
+evenly by USD — each leg is `deposit_value × (L−1)/2`. The decomposition belongs in
+`step-extractor.ts` (two borrow legs) and the sizing in `leverage-plan.ts`; a modifier should
+be applied **once, to the group**, not duplicated onto every leg it touches.
 
 ### C9. Emoji-only input is refused with the off-domain message
 "🚀🚀🚀" hits `block:default`. Harmless, but the message is wrong for it.
@@ -166,8 +229,21 @@ split across both legs rather than duplicated.
 
 ## D. Product decisions needed — not bugs
 
-These are the two places the copilot currently guesses, or refuses to. Both need a rule from
-the product owner; neither should be invented in code.
+These are the places the copilot currently guesses, or refuses to. Each needs a rule from
+the product owner; none should be invented in code.
+
+### Decided 2026-08-10 — do not re-open
+
+- **Swap venue routing — KEEP.** A named variant selects its venue (SOUSDC → Soroswap,
+  AQUSDC → Aquarius); BLUSDC is refused because neither DEX trades it; bare "USDC" takes the
+  venue's own token, matching Trade/Spot exactly. Owner: *"agar user SOUSDC bolta hai to
+  Soroswap pe hi jaana chahiye"*. Note the site's picker offers only one token, "USDC" — the
+  **venue** decides which SAC you receive, which is why the copilot names the real token
+  (it has no venue dropdown visible beside the figure).
+- **Blend supply counted as margin collateral — LEAVE AS IS.** This is website-side
+  behaviour (`account-snapshot.ts` counts it deliberately). Owner: if the website already
+  behaves that way, the copilot must match it, not diverge. Only the **label** was changed
+  (`BLEND_USDC` → "USDC in Blend"); every total is untouched.
 
 ### D1. Does `deposit_and_borrow` get a default leverage?
 Today an unspecified levered deposit+borrow defaults to **2×**. I removed the equivalent
