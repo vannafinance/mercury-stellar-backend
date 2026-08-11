@@ -1580,27 +1580,47 @@ export class MarginAccountService {
   static async borrowTokens(
     marginAccountAddress: string,
     tokenSymbol: string,
-    borrowAmountWad: string
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
-    const first = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
-    if (first.success || !this.isFootprintRaceError(first.error)) {
-      return first;
+    borrowAmountWad: string,
+    // Pass the `nextSequence` from a just-confirmed prior same-account tx
+    // (e.g. one-click's first borrow leg, or a dual-borrow's atomic
+    // deposit+borrow) to skip the RPC `getAccount()` read entirely on the
+    // first attempt. See borrowTokensAttempt's doc comment: a fresh RPC
+    // read is not reliably fresh enough right after a same-account tx —
+    // confirmed live hitting `txBadSeq` on every one of 3 growing-backoff
+    // retries, so retrying a stale RPC read is not itself a fix. Only the
+    // FIRST attempt uses it — a failed attempt invalidates the assumption
+    // it was built on, so retries fall back to a fresh `getAccount()`.
+    knownSequence?: string
+  ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
+    // A shared testnet RPC endpoint can be backed by more than one node, so
+    // even a retried `getAccount()` has no guarantee of landing on one
+    // that's caught up. Growing the delay across more attempts (rather than
+    // trying twice and giving up) gives the slowest node in that pool more
+    // chances to catch up before the whole leg is reported as failed.
+    const RETRY_DELAYS_MS = [2000, 4000];
+    let result = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad, knownSequence);
+
+    for (let i = 0; i < RETRY_DELAYS_MS.length && !result.success && this.isFootprintRaceError(result.error); i++) {
+      console.warn(`⚠️ Borrow hit a footprint/ledger-lag race; retrying after a short delay (attempt ${i + 2}/${RETRY_DELAYS_MS.length + 1}).`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[i]));
+      result = await this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
     }
 
-    // Give the RPC's ledger view a moment to catch up with the prior
-    // transaction on this account, then retry the whole build/simulate/
-    // prepare/sign/send cycle fresh — a stale footprint isn't fixable by
-    // resubmitting the same prepared transaction.
-    console.warn('⚠️ Borrow hit a footprint/ledger-lag race; retrying once after a short delay.');
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    return this.borrowTokensAttempt(marginAccountAddress, tokenSymbol, borrowAmountWad);
+    return result;
   }
 
   private static async borrowTokensAttempt(
     marginAccountAddress: string,
     tokenSymbol: string,
-    borrowAmountWad: string
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+    borrowAmountWad: string,
+    // When the caller already knows the account's post-prior-tx sequence
+    // (e.g. the previous leg of a dual-borrow/one-click just confirmed),
+    // pass it here instead of re-fetching via `getAccount()`. See this
+    // method's `nextSequence` return value doc comment for why — a fresh
+    // RPC read is NOT a reliable source of truth for "the very next
+    // sequence number" immediately after a same-account tx confirms.
+    knownSequence?: string
+  ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
 
@@ -1613,7 +1633,19 @@ export class MarginAccountService {
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      // `getAccount()` reads the account's sequence off whichever RPC node
+      // answers the request. Immediately after a same-account tx confirms
+      // (e.g. this leg's own retry, or a prior leg in the same flow), a
+      // multi-node RPC endpoint can keep answering with a STALE sequence no
+      // matter how long or how many times you retry — confirmed live: 3
+      // outer attempts with growing 2s/4s backoff, PLUS inner
+      // TRY_AGAIN_LATER resubmits, all still hit `txBadSeq`. Waiting longer
+      // doesn't fix a wrong answer. When the caller can supply the sequence
+      // directly (because IT just confirmed the prior tx and knows for a
+      // fact what comes next), skip the RPC read entirely.
+      const sourceAccount = knownSequence
+        ? new StellarSdk.Account(userAddress.address, knownSequence)
+        : await server.getAccount(userAddress.address);
 
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
@@ -1650,6 +1682,16 @@ export class MarginAccountService {
         )
         .setTimeout(60) // Reasonable timeout like successful operations
         .build();
+
+      // `TransactionBuilder.build()` mutates `sourceAccount` in place,
+      // incrementing its sequence to the value this tx just consumed — so
+      // this is the exact sequence the account will have once this tx
+      // confirms. Captured now (works whether `sourceAccount` came from
+      // `knownSequence` or a fresh `getAccount()`) so a caller chaining
+      // straight into another same-account tx (a dual-borrow/one-click's
+      // next leg) can pass it as that call's `knownSequence` instead of
+      // racing an RPC re-read.
+      const nextSequence = sourceAccount.sequenceNumber();
 
       const simulationResult = await server.simulateTransaction(transaction);
       if ('error' in simulationResult && simulationResult.error) {
@@ -1744,7 +1786,8 @@ export class MarginAccountService {
         if (finalResult.status === 'SUCCESS') {
           return {
             success: true,
-            hash: result.hash
+            hash: result.hash,
+            nextSequence
           };
         } else {
           // NOT necessarily a real failure yet: this is exactly the
@@ -2363,14 +2406,18 @@ export class MarginAccountService {
     tokenSymbol: string,
     repayAmountWad: string
   ): Promise<{ success: boolean; hash?: string; error?: string }> {
-    const first = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
-    if (first.success || !this.isFootprintRaceError(first.error)) {
-      return first;
+    // See borrowTokens()'s matching loop for why a single retry isn't
+    // always enough against a multi-node RPC endpoint.
+    const RETRY_DELAYS_MS = [2000, 4000];
+    let result = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
+
+    for (let i = 0; i < RETRY_DELAYS_MS.length && !result.success && this.isFootprintRaceError(result.error); i++) {
+      console.warn(`⚠️ Repay hit a footprint/ledger-lag race; retrying after a short delay (attempt ${i + 2}/${RETRY_DELAYS_MS.length + 1}).`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[i]));
+      result = await this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
     }
 
-    console.warn('⚠️ Repay hit a footprint/ledger-lag race; retrying once after a short delay.');
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    return this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad);
+    return result;
   }
 
   private static async repayLoanAttempt(
@@ -2961,7 +3008,7 @@ export class MarginAccountService {
     multiplier: number,
     tokenSymbol: string = 'XLM',
     options?: { borrowTokenSymbol?: string; borrowAmountTokens?: number }
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+  ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
     try {
       const contractDepositSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
       const contractBorrowSymbol = options?.borrowTokenSymbol
@@ -3046,6 +3093,13 @@ export class MarginAccountService {
         .setTimeout(60)
         .build();
 
+      // See borrowTokensAttempt's matching comment: `sourceAccount` is
+      // mutated in place by `.build()`, so this is the exact sequence the
+      // account will have once this tx confirms — a dual-borrow's standalone
+      // second-leg `borrow()` call (right after this atomic tx) should use
+      // it instead of racing a fresh `getAccount()` read.
+      const nextSequence = sourceAccount.sequenceNumber();
+
       const preparedTx = await server.prepareTransaction(transaction);
       const signResult = await signTransaction(preparedTx.toXDR(), {
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -3062,7 +3116,7 @@ export class MarginAccountService {
 
       const finalResult = await this.pollTransactionStatus(server, result.hash);
       if (finalResult.status === 'SUCCESS') {
-        return { success: true, hash: result.hash };
+        return { success: true, hash: result.hash, nextSequence };
       }
       return {
         success: false,

@@ -256,7 +256,6 @@ export const OneClickStrategy = () => {
     USDC: 1.0,
   };
   const [loading, setLoading] = useState(false);
-  const [showBreakdown, setShowBreakdown] = useState(false);
 
   const formatTvl = (tokens: string, priceUsd: number): string => {
     const usd = (parseFloat(tokens) || 0) * priceUsd;
@@ -509,10 +508,6 @@ export const OneClickStrategy = () => {
 
   const maxLeverageForAsset = (asset: string) => (asset === "USDC" ? 7 : 5);
   const maxLev = maxLeverageForAsset(collateralAsset);
-
-  const dailyEarning = (aprCalc.netApr / 100 / 365) * collateralUsd;
-  const monthlyEarning = dailyEarning * 30;
-  const yearlyEarning = (aprCalc.netApr / 100) * collateralUsd;
 
   /* ─── Create margin account ─── */
   const handleCreateAccount = async () => {
@@ -1119,90 +1114,6 @@ export const OneClickStrategy = () => {
                     )}
                   </AnimatePresence>
                 </div>
-
-                {/* ── NET APR ── */}
-                <AnimatePresence>
-                  {hasBorrow && (
-                    <motion.div initial="hidden" animate="visible" exit="exit" variants={expandCollapse} className="overflow-hidden">
-                      <div className={`w-full border border-t-0 p-4 sm:p-5 ${cardBg}`}>
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
-                            <span className={`text-[13px] font-semibold ${headingText}`}>Estimated Returns</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setShowBreakdown(!showBreakdown)}
-                            className={`text-[11px] font-semibold cursor-pointer px-2.5 py-1 rounded-[6px] transition-colors ${isDark ? "text-[#B794F6] hover:bg-[#703AE6]/10" : "text-[#703AE6] hover:bg-[#F1EBFD]"}`}
-                          >
-                            {showBreakdown ? "Hide details" : "View details"}
-                          </button>
-                        </div>
-
-                        <div className="flex items-end justify-between mb-4">
-                          <div>
-                            <span className={`text-[10px] font-semibold uppercase tracking-[0.3px] block mb-1 ${labelText}`}>Net APR</span>
-                            <motion.span
-                              key={aprCalc.netApr.toFixed(1)}
-                              initial={{ scale: 0.95, opacity: 0 }}
-                              animate={{ scale: 1, opacity: 1 }}
-                              className={`text-[36px] sm:text-[42px] font-bold leading-none block ${headingText}`}
-                            >
-                              {aprCalc.netApr.toFixed(1)}%
-                            </motion.span>
-                          </div>
-                          {collateralUsd > 0 && (
-                            <div className="flex gap-5">
-                              {[
-                                { label: "Daily", value: dailyEarning },
-                                { label: "Monthly", value: monthlyEarning },
-                                { label: "Yearly", value: yearlyEarning },
-                              ].map((item) => (
-                                <div key={item.label} className="flex flex-col items-end gap-[2px]">
-                                  <span className={`text-[10px] font-medium ${mutedText}`}>{item.label}</span>
-                                  <span className={`text-[14px] font-bold ${headingText}`}>
-                                    {item.value >= 0 ? "+" : "-"}${Math.abs(item.value).toFixed(2)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        <AnimatePresence>
-                          {showBreakdown && (
-                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
-                              <div className={`rounded-[12px] overflow-hidden border ${isDark ? "border-[#2C2C2C]" : "border-[#E5E7EB]"}`}>
-                                {aprCalc.legs.map((leg, i) => (
-                                  <div key={i} className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#1E1E1E]" : "bg-white"} ${i > 0 ? (isDark ? "border-t border-[#2C2C2C]" : "border-t border-[#F4F4F4]") : ""}`}>
-                                    <span className={`text-[12px] font-medium ${headingText}`}>{leg.label}</span>
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[12px] font-bold ${headingText}`}>+{leg.earning.toFixed(1)}%</span>
-                                      <span className={`text-[10px] font-medium ${mutedText}`}>{leg.apr}% × {leg.multiplier.toFixed(1)}x</span>
-                                    </div>
-                                  </div>
-                                ))}
-                                <div className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#1E1E1E] border-t border-[#2C2C2C]" : "bg-white border-t border-[#F4F4F4]"}`}>
-                                  <span className={`text-[12px] font-medium ${headingText}`}>Vanna Borrow Cost</span>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[12px] font-bold text-[#FC5457]">-{aprCalc.borrowCost.toFixed(1)}%</span>
-                                    <span className={`text-[10px] font-medium ${mutedText}`}>{selectedPoolLive.borrowApr.toFixed(2)}% × {(leverage - 1).toFixed(1)}x</span>
-                                  </div>
-                                </div>
-                                <div className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#703AE6]/8 border-t border-[#703AE6]/15" : "bg-[#F1EBFD]/50 border-t border-[#703AE6]/10"}`}>
-                                  <span className={`text-[12px] font-semibold ${headingText}`}>Net APR</span>
-                                  <span className={`text-[14px] font-bold ${headingText}`}>
-                                    {aprCalc.netApr > 0 ? "+" : ""}{aprCalc.netApr.toFixed(1)}%
-                                  </span>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
 
                 {/* ── RISK METRICS ── */}
                 <AnimatePresence>

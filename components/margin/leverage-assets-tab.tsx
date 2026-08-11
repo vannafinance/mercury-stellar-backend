@@ -885,7 +885,11 @@ export const LeverageAssetsTab = () => {
               const amt1 = parseFloat(b1.assetData.amount) || 0;
               if (amt1 > 0) {
                 showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}...`);
-                const borrow2Result = await borrowTokens(userAddress, sym1, amt1);
+                // Hand this leg the exact sequence the atomic deposit+borrow
+                // tx just consumed — a fresh RPC read right after that tx
+                // confirms is not reliably caught up (confirmed live:
+                // txBadSeq surviving multiple growing-backoff retries).
+                const borrow2Result = await borrowTokens(userAddress, sym1, amt1, atomicResult.nextSequence);
                 if (borrow2Result.success) {
                   borrowHash = borrow2Result.hash ?? borrowHash;
                   appendMarginHistory({

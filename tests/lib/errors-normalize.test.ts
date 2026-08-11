@@ -16,7 +16,7 @@ const XDR_CANCEL = 'XDR Read Error: attempt to read outside the boundary of the 
 const CANCEL_INPUTS = [
   XDR_CANCEL,
   'User declined access',
-  'Request rejected',
+  'User rejected the request',
   'Transaction was cancelled',
 ];
 
@@ -68,5 +68,31 @@ describe('non-cancel errors still pass through their domain message', () => {
   });
   it('create-account: no funds stays the faucet hint', () => {
     expect(normalizeCreateAccountError('account not found on network')).toMatch(/Faucet/i);
+  });
+});
+
+// Regression: `isCancel` previously bare-matched `includes('rejected')` /
+// `includes('declined')`, which also fires on genuine on-chain business-logic
+// failures that legitimately use those words (margin-utils.ts's "Borrow
+// action rejected for ...", aquarius/blend/soroswap/stellar-utils's
+// "Transaction rejected by network"). That silently relabeled real failures
+// as "Transaction cancelled by user", hiding the actual reason and making it
+// look like the wallet popup was cancelled when the user had confirmed it.
+describe('on-chain "rejected"/"declined" failures are not mistaken for a wallet cancel', () => {
+  it('a Risk-Engine borrow rejection is not treated as a cancel', () => {
+    const msg = normalizeContractError(
+      'Borrow action rejected for XLM. This usually means borrow constraints are not satisfied (health factor, debt limit, or collateral requirements).',
+    );
+    expect(msg).not.toBe('Transaction cancelled by user.');
+  });
+  it('"Transaction rejected by network" is not treated as a cancel', () => {
+    expect(normalizeContractError('Transaction rejected by network')).not.toBe(
+      'Transaction cancelled by user.',
+    );
+  });
+  it('an RPC submission "declined" is not treated as a cancel', () => {
+    expect(
+      normalizeContractError("RPC's submission queue declined this attempt"),
+    ).not.toBe('Transaction cancelled by user.');
   });
 });

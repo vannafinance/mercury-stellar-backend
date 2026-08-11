@@ -27,12 +27,21 @@ const showStepError = (message: string) => toast.error(message, { id: CLOSE_POSI
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";
   const lower = msg.toLowerCase();
-  // Freighter throws an XDR parse error when the user hits "Reject".
+  // Freighter throws an XDR parse error when the user hits "Reject". NOT a
+  // bare `includes("rejected")`/`includes("denied")` — real on-chain
+  // failures use those words too (e.g. "action rejected", "insufficient
+  // balance ... denied"), and matching the bare word mislabels a genuine
+  // failure as a user cancellation (see lib/errors/normalize.ts's isCancel
+  // for the same fix, with more detail on why).
   if (
     lower.includes("cancelled") ||
     lower.includes("canceled") ||
-    lower.includes("rejected") ||
-    lower.includes("denied") ||
+    lower.includes("rejected by user") ||
+    lower.includes("user rejected") ||
+    lower.includes("user denied") ||
+    lower.includes("user declined") ||
+    lower.includes("declined by user") ||
+    lower.includes("declined access") ||
     lower.includes("xdr read error") ||
     lower.includes("boundary of the buffer")
   )

@@ -526,6 +526,14 @@ export async function executeOneClickStrategy(
           : 0;
         pairedBorrowAmount = (collateralAmount + collateralLegBorrowAmount) * ratio;
 
+        // b2 is submitted from the SAME wallet account right after b1
+        // confirms. A fresh `getAccount()` read for b2 is not reliably
+        // caught up with b1's sequence bump yet — confirmed live hitting
+        // `txBadSeq` on every retry regardless of backoff — so hand b2 the
+        // exact next sequence b1 itself just consumed instead of re-reading
+        // it over RPC.
+        let nextSequence: string | undefined;
+
         if (collateralLegBorrowAmount > 0) {
           step(`Step 3/4: Borrowing ${collateralLegBorrowAmount.toFixed(2)} ${collateralAsset} from Vanna...`);
           const b1 = await MarginAccountService.borrowTokens(
@@ -534,13 +542,15 @@ export async function executeOneClickStrategy(
             toWad(collateralLegBorrowAmount)
           );
           if (!b1.success) return { success: false, error: `Borrow failed: ${b1.error}` };
+          nextSequence = b1.nextSequence;
         }
 
         step(`Step 4/4: Borrowing ${pairedBorrowAmount.toFixed(2)} ${otherAsset} from Vanna to pair into the pool...`);
         const b2 = await MarginAccountService.borrowTokens(
           marginAccountAddress,
           poolTokenSymbol(otherAsset, poolProtocol, poolType),
-          toWad(pairedBorrowAmount)
+          toWad(pairedBorrowAmount),
+          nextSequence
         );
         if (!b2.success) return { success: false, error: `Borrow failed: ${b2.error}` };
       }
