@@ -2416,7 +2416,7 @@ export class MarginAccountService {
     marginAccountAddress: string,
     tokenSymbol: string,
     repayAmountWad: string
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+  ): Promise<{ success: boolean; hash?: string; error?: string; repaidAmountWad?: string }> {
     return withFootprintRaceRetry(
       () => this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad),
       'Repay',
@@ -2427,7 +2427,7 @@ export class MarginAccountService {
     marginAccountAddress: string,
     tokenSymbol: string,
     repayAmountWad: string
-  ): Promise<{ success: boolean; hash?: string; error?: string }> {
+  ): Promise<{ success: boolean; hash?: string; error?: string; repaidAmountWad?: string }> {
     try {
       // The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC
       // and USDC both resolve to the same Blend USDC token address, so which
@@ -2464,6 +2464,10 @@ export class MarginAccountService {
       };
       const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
       let interestTopUp = BigInt(0);
+      // Set alongside interestTopUp when computable — the fallback below caps
+      // the repay to this exact figure if the top-up transfer turns out to be
+      // impossible, so it needs to survive past the try block that finds it.
+      let smartAcctBalanceStroops: bigint | null = null;
 
       if (repayTokenContractAddr) {
         try {
@@ -2486,6 +2490,7 @@ export class MarginAccountService {
           const balanceSim = await server.simulateTransaction(balanceTx);
           if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
             const smartAcctBalance = StellarSdk.scValToNative(balanceSim.result.retval) as bigint;
+            smartAcctBalanceStroops = smartAcctBalance;
             // Convert WAD repay amount → stroops (7-decimal token units)
             const repayInStroops = (BigInt(repayAmountWad) * BigInt(10 ** 7)) / BigInt(10 ** 18);
             if (repayInStroops > smartAcctBalance) {
@@ -2502,37 +2507,65 @@ export class MarginAccountService {
       // Freighter only allows one operation per transaction, so we submit the
       // top-up as a separate transaction and wait for confirmation before repay.
       let currentAccount = sourceAccount;
+      // Repay amount actually sent below — reduced to what the margin account
+      // already holds if the top-up turns out to be impossible (see catch).
+      let finalRepayAmountWad = repayAmountWad;
       if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
-        const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
-        const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
-          fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
-          networkPassphrase: NETWORK_PASSPHRASE,
-        })
-          .addOperation(
-            topUpContract.call(
-              'transfer',
-              StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
-              StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-              StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
-            ),
-          )
-          .setTimeout(30)
-          .build();
+        try {
+          const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
+          const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
+            fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
+            networkPassphrase: NETWORK_PASSPHRASE,
+          })
+            .addOperation(
+              topUpContract.call(
+                'transfer',
+                StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
+                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
+                StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
+              ),
+            )
+            .setTimeout(30)
+            .build();
 
-        const preparedTopUp = await server.prepareTransaction(topUpTx);
-        const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
-          networkPassphrase: NETWORK_PASSPHRASE,
-        });
-        const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
-          topUpSignResult.signedTxXdr,
-          NETWORK_PASSPHRASE,
-        );
-        const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
-        if (topUpSubmit.status === 'PENDING') {
-          await this.pollTransactionStatus(server, topUpSubmit.hash);
+          const preparedTopUp = await server.prepareTransaction(topUpTx);
+          const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
+            networkPassphrase: NETWORK_PASSPHRASE,
+          });
+          const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
+            topUpSignResult.signedTxXdr,
+            NETWORK_PASSPHRASE,
+          );
+          const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
+          if (topUpSubmit.status === 'PENDING') {
+            const topUpFinal = await this.pollTransactionStatus(server, topUpSubmit.hash);
+            if (topUpFinal.status !== 'SUCCESS') {
+              throw new Error(`Top-up failed on-chain with status: ${topUpFinal.status}`);
+            }
+          } else {
+            throw new Error(`Top-up submission failed with status: ${topUpSubmit.status}`);
+          }
+          // Refresh the sequence number for the follow-up repay transaction.
+          currentAccount = await server.getAccount(userAddress.address);
+        } catch (topUpError: any) {
+          // The wallet can't cover the shortfall — most commonly it has no
+          // trustline at all for the underlying classic asset behind this SAC
+          // (same-asset leverage tokens like BLUSDC only ever move through the
+          // margin account, so a wallet that never separately opted into the
+          // asset traps here with "trustline entry is missing for account
+          // <wallet>"). Rather than fail the whole repay outright, cap the
+          // request at what the margin account already holds — a partial
+          // repay the user can act on beats a hard error over a sub-stroop gap.
+          console.warn('⚠️ Interest top-up failed; falling back to a partial repay capped at the margin account balance:', topUpError?.message || topUpError);
+          if (smartAcctBalanceStroops == null || smartAcctBalanceStroops <= BigInt(0)) {
+            return {
+              success: false,
+              error: 'Repay requires a small top-up from your wallet to cover accrued interest, but your wallet has no trustline for this asset. Please repay a smaller amount, or open a trustline for this asset in your wallet first.',
+            };
+          }
+          finalRepayAmountWad = (smartAcctBalanceStroops * BigInt(10 ** 18) / BigInt(10 ** 7)).toString();
+          currentAccount = await server.getAccount(userAddress.address);
         }
-        // Refresh the sequence number for the follow-up repay transaction.
-        currentAccount = await server.getAccount(userAddress.address);
       }
 
       // ── Tx 2: repay ──────────────────────────────────────────────────────────
@@ -2543,7 +2576,7 @@ export class MarginAccountService {
         .addOperation(
           contract.call(
             'repay',
-            StellarSdk.nativeToScVal(repayAmountWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(finalRepayAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
             StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
           ),
@@ -2602,7 +2635,12 @@ export class MarginAccountService {
         if (finalResult.status === 'SUCCESS') {
           return {
             success: true,
-            hash: result.hash
+            hash: result.hash,
+            // Differs from the requested repayAmountWad only when the
+            // interest top-up above failed and this repay was capped down to
+            // a partial amount instead — callers logging history should
+            // prefer this over their own requested amount.
+            repaidAmountWad: finalRepayAmountWad,
           };
         } else {
           // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the

@@ -350,15 +350,20 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error(result.error || 'Loan repayment failed');
       }
 
-      return { hash: result.hash, finalRepayWad };
+      // repaidAmountWad can be LESS than finalRepayWad if the interest
+      // top-up above needed the wallet and the wallet couldn't cover it
+      // (e.g. no trustline for this asset) — repayLoan falls back to a
+      // partial repay capped at what the margin account already held.
+      const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
+      return { hash: result.hash, repaidWad };
     },
-    onSuccess: async ({ hash, finalRepayWad }) => {
+    onSuccess: async ({ hash, repaidWad }) => {
       if (hash) {
         appendMarginHistory({
           marginAccountAddress: marginAccount,
           type: "repay",
           asset: normalizeContractTokenSymbol(selectedRepayCurrency),
-          amount: wadToFixed7(finalRepayWad),
+          amount: wadToFixed7(repaidWad),
           hash,
         });
       }
