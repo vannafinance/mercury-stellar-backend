@@ -3885,6 +3885,52 @@ function assetSetupSignResponse(
   };
 }
 
+/**
+ * Freeze an already-sized multi-leg leveraged position into a `plan_preview` instead
+ * of executing its first leg immediately.
+ *
+ * `deposit_and_borrow` and the leveraged `deploy_to_blend`/`supply_to_blend` paths used
+ * to call `runWrite` on leg 1 directly here and chain the rest via `next_step` — so a
+ * multi-leg leveraged position could go straight to a signature with no approval card
+ * at all, even though every OTHER multi-leg entry point (`tryMultiGoalPlan`, the LLM
+ * planner) freezes and shows a plan first. Same trade, two different safety postures
+ * depending on phrasing — confirmed live: "open a 3x position with 50 BLUSDC" deposited
+ * for real with no card, while "deposit 100 AQUSDC and borrow XLM at 3x" (same shape,
+ * caught by `tryMultiGoalPlan` instead) correctly showed one.
+ *
+ * The steps here are already fully sized (via `planLeverage`/`splitLeverageAmounts`,
+ * which needs the async price fetch `routeMessage` can't do), so this only has to wrap
+ * them in the same freeze/approve shape `handleChat`'s own `kind === "plan"` branch
+ * uses — never re-derive amounts, never touch the chain until the user approves.
+ */
+function freezeLeveragedPlanPreview(
+  steps: Array<{ op: string; asset: string | null; amount: number | null; leverage?: number | null; args?: Record<string, unknown> }>,
+  opts: { templateId: string; summary: string; requestId: string },
+): ChatResponse {
+  const frozen = freezePlan(
+    { kind: "plan", template_id: opts.templateId, summary: opts.summary, steps: steps.map((s) => ({ kind: "write" as const, ...s })) },
+    Date.now(),
+  );
+  console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval — leveraged position`);
+  const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
+  return {
+    kind: "plan_preview",
+    message: [
+      `Here's the plan — nothing has run yet.`,
+      "",
+      ...lines,
+      "",
+      ...(frozen.warnings.length ? frozen.warnings.map((w) => `Note: ${w}`) : []),
+      "Approve it to run, or tell me what to change.",
+    ]
+      .filter((l, i, a) => !(l === "" && a[i - 1] === ""))
+      .join("\n"),
+    plan: frozen,
+    intent: { template_id: "plan_preview", slots: { plan_id: frozen.plan_id } },
+    request_id: opts.requestId,
+  };
+}
+
 async function runWrite(
   action: CopilotAction,
   ctx: {
@@ -4086,53 +4132,17 @@ async function runWrite(
       borrowUserAsset,
     );
     const levLine = describeLeveragePlan(plan, { collateral: uiAsset, borrow: uiBorrowAsset });
-    const step1: CopilotAction = {
-      ...legs.deposit,
-      requires_amount: true,
-      requires_account: true,
-      multi_leg: false,
-      smart_account: smartAccount,
-      trader: ctx.trader,
-    };
-    const step1Res = await runWrite(step1, {
-      ...ctx,
-      smartAccount,
-      message: `step 1/2 deposit ${deposit} ${uiAsset}`,
-    });
-    const nextNote =
-      `\n\nPlan (2 steps — not one atomic tx):\n` +
-      `  ${levLine}\n` +
-      `  Step 1/2 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
-      `  Step 2/2 — Borrow ${amount(borrow)} ${uiBorrowAsset} after step 1 confirms\n` +
-      `The copilot runs step 2 automatically once step 1 is on-chain.`;
-    if (step1Res.kind === "needs_wallet_sign" || step1Res.kind === "needs_auto_sign" || step1Res.kind === "executed") {
-      return {
-        ...step1Res,
-        message: (step1Res.message || "") + nextNote,
-        intent: {
-          template_id: "deposit_and_borrow_split",
-          slots: {
-            step: 1,
-            deposit,
-            borrow,
-            asset: userAsset,
-            borrow_asset: borrowUserAsset,
-            leverage: plan.leverage,
-          },
-        },
-        // Leg 2 is fully determined here: asset AND size. Leaving either for the
-        // client to re-derive is what reopened an amount prompt and a variant chip
-        // on a leg the user had already fully specified (product rule D).
-        next_step: {
-          ...legs.borrow,
-          leverage: plan.leverage,
-          label: `Borrow ${borrow} ${uiBorrowAsset}`,
-          step: 2,
-          total_steps: 2,
-        },
-      };
-    }
-    return step1Res;
+    return freezeLeveragedPlanPreview(
+      [
+        { op: legs.deposit.op, asset: userAsset, amount: deposit },
+        { op: legs.borrow.op, asset: borrowUserAsset, amount: borrow, leverage: plan.leverage },
+      ],
+      {
+        templateId: "deposit_and_borrow",
+        summary: `${levLine} — deposit ${amount(deposit)} ${uiAsset} as collateral, then borrow ${amount(borrow)} ${uiBorrowAsset}`,
+        requestId: ctx.request_id,
+      },
+    );
   }
 
   // ── Levered Blend farm → NEVER use atomic deposit_borrow_and_deploy ─────
@@ -4166,68 +4176,18 @@ async function runWrite(
     // Collateral is locked; never supply the gross borrow or HostError #10 fires.
     const supplyAmt = borrow > 0 ? netOfOriginationFee(borrow) : deposit;
     const levLine = formatLeveragePlanLine(deposit, borrow, action.leverage, uiAsset);
-    const step1: CopilotAction = {
-      op: "deposit_collateral",
-      asset: userAsset,
-      amount: deposit,
-      requires_amount: true,
-      requires_account: true,
-      multi_leg: false,
-      smart_account: smartAccount,
-      trader: ctx.trader,
-    };
-    const step1Res = await runWrite(step1, {
-      ...ctx,
-      smartAccount,
-      message: `step 1/3 farm Blend deposit ${deposit} ${uiAsset}`,
-    });
-    const planNote =
-      `\n\nBlend farm plan (3 steps — avoids Soroban Budget limit on atomic deploy):\n` +
-      `  ${levLine}\n` +
-      `  Step 1/3 — Deposit ${amount(deposit)} ${uiAsset} as collateral  ← now\n` +
-      `  Step 2/3 — Borrow ${amount(borrow)} ${uiAsset} (free balance in margin account)\n` +
-      `  Step 3/3 — Supply ${amount(supplyAmt)} ${uiAsset} free balance to Blend\n` +
-      `Auto-approve runs each next step after the previous confirms on-chain.`;
-    if (
-      step1Res.kind === "needs_wallet_sign" ||
-      step1Res.kind === "needs_auto_sign" ||
-      step1Res.kind === "executed"
-    ) {
-      return {
-        ...step1Res,
-        message: (step1Res.message || "") + planNote,
-        intent: {
-          template_id: "deploy_to_blend_split",
-          slots: {
-            step: 1,
-            deposit,
-            borrow,
-            supply: supplyAmt,
-            asset: userAsset,
-            leverage: action.leverage,
-          },
-        },
-        next_step: {
-          op: "borrow",
-          asset: userAsset,
-          amount: borrow,
-          leverage: action.leverage,
-          label: `Borrow ${borrow} ${uiAsset}`,
-          step: 2,
-          total_steps: 3,
-          follow_up: {
-            op: "supply_to_blend",
-            asset: userAsset,
-            amount: supplyAmt,
-            leverage: null,
-            label: `Supply ${supplyAmt} ${uiAsset} to Blend`,
-            step: 3,
-            total_steps: 3,
-          },
-        },
-      };
-    }
-    return step1Res;
+    return freezeLeveragedPlanPreview(
+      [
+        { op: "deposit_collateral", asset: userAsset, amount: deposit },
+        { op: "borrow", asset: userAsset, amount: borrow, leverage: action.leverage },
+        { op: "supply_to_blend", asset: userAsset, amount: supplyAmt },
+      ],
+      {
+        templateId: "deploy_to_blend_split",
+        summary: `${levLine} — deposit ${amount(deposit)} ${uiAsset} as collateral, borrow ${amount(borrow)} ${uiAsset}, then supply ${amount(supplyAmt)} ${uiAsset} to Blend`,
+        requestId: ctx.request_id,
+      },
+    );
   }
 
   // Max-yield / “invest where I earn most” / Sanujit EW5 highest-yielding pool.
