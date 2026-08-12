@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Image from "next/image";
 import { motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
-import { Modal } from "@/components/ui/modal";
 import { iconPaths } from "@/lib/constants";
 import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
@@ -14,16 +13,34 @@ import type { LitePosition } from "./lite-position-types";
 import { calcExitPreview } from "./lite-position-math";
 import { closePosition } from "@/lib/one-click-strategy";
 import { applyLiteExit } from "@/lib/lite-positions";
+import { AquariusService } from "@/lib/aquarius-utils";
+import { SoroswapService } from "@/lib/soroswap-utils";
+import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
+
+const showStep = (message: string) => showTxStep(message);
+const showStepSuccess = (message: string, txHash?: string) =>
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 function parseContractError(msg: string): string {
   if (!msg) return "Transaction failed. Please try again.";
   const lower = msg.toLowerCase();
-  // Freighter throws an XDR parse error when the user hits "Reject".
+  // Freighter throws an XDR parse error when the user hits "Reject". NOT a
+  // bare `includes("rejected")`/`includes("denied")` — real on-chain
+  // failures use those words too (e.g. "action rejected", "insufficient
+  // balance ... denied"), and matching the bare word mislabels a genuine
+  // failure as a user cancellation (see lib/errors/normalize.ts's isCancel
+  // for the same fix, with more detail on why).
   if (
     lower.includes("cancelled") ||
     lower.includes("canceled") ||
-    lower.includes("rejected") ||
-    lower.includes("denied") ||
+    lower.includes("rejected by user") ||
+    lower.includes("user rejected") ||
+    lower.includes("user denied") ||
+    lower.includes("user declined") ||
+    lower.includes("declined by user") ||
+    lower.includes("declined access") ||
     lower.includes("xdr read error") ||
     lower.includes("boundary of the buffer")
   )
@@ -126,13 +143,34 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
   const [exitPct, setExitPct] = useState<number>(100);
-  const [txModal, setTxModal] = useState<{
-    open: boolean;
-    status: "pending" | "success" | "error";
-    title: string;
-    message: string;
-    txHash?: string;
-  }>({ open: false, status: "pending", title: "", message: "" });
+
+  // Real on-chain LP balance — the actual unit RemoveLiquidity operates on,
+  // and NOT derivable from any borrowed-token amount (a different bug the
+  // old `approxLpAmt = borrowAmount * pct` heuristic in closePosition ran
+  // into: LP shares aren't priced 1:1 with either pooled token). Shown here
+  // so the exit review matches what will really be removed on-chain.
+  const [lpBalance, setLpBalance] = useState<number | null>(null);
+  useEffect(() => {
+    if (position.poolType !== "lp" || !marginAccountAddress) {
+      setLpBalance(null);
+      return;
+    }
+    let cancelled = false;
+    const isAquarius = position.protocol.toLowerCase().includes("aquarius");
+    const fetchLp = isAquarius
+      ? AquariusService.getUserLpBalance(marginAccountAddress, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL, "XLM", "USDC")
+      : SoroswapService.getLpBalance(marginAccountAddress);
+    fetchLp
+      .then((v) => {
+        if (!cancelled) setLpBalance(parseFloat(v) || 0);
+      })
+      .catch(() => {
+        if (!cancelled) setLpBalance(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [position.poolType, position.protocol, position.collateralAsset, marginAccountAddress]);
 
   const cardBg = isDark ? "bg-[#1A1A1A] border-[#2C2C2C]" : "bg-white border-[#E5E7EB]";
   const headingText = isDark ? "text-white" : "text-[#111111]";
@@ -143,46 +181,71 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
 
   const status = statusMeta(position.status);
 
+  // Leveraged LP positions carry a SECOND debt leg: a same-asset-as-collateral
+  // top-up that scaled the collateral leg to match the pool's ratio (see
+  // executeOneClickStrategy's LP branch in lib/one-click-strategy.ts). 0 for
+  // Blend and legacy LP positions opened before that existed.
+  const hasSecondDebtLeg = position.collateralBorrowAmount > 0;
+  // Total collateral-asset amount actually sitting in the pool — the raw
+  // deposit PLUS the same-asset top-up, matching what AddLiquidity actually
+  // received (this is what the Farm page's own LP Value reflects).
+  const totalCollateralLegAmount = position.collateralAmount + position.collateralBorrowAmount;
+  const totalCollateralLegUsd = position.collateralUsd + position.collateralBorrowUsd;
+
   /* ── Current on-chain balances ──
-     The FULL supplied balance in the pool is (collateral + borrow), both
-     earning yield. The user's equity = supplied − debt = collateral + earnings.
+     The FULL supplied balance in the pool is (collateral + both borrow legs),
+     all earning yield. The user's equity = supplied − debt = collateral + earnings.
      Exit withdraws from the TOTAL supplied, not just the user's equity:
-        withdraw(pct) = (collateral + borrow + earnings) × pct   (what leaves pool)
-        repay(pct)    = borrow × pct                             (debt paid off)
+        withdraw(pct) = (collateral + borrow legs + earnings) × pct  (what leaves pool)
+        repay(pct)    = borrow legs × pct                            (debt paid off)
         user net(pct) = withdraw − repay = (collateral + earnings) × pct        */
-  const currentSuppliedUsd = position.collateralUsd + position.borrowUsd + position.earningsUsd;
-  const currentBorrowUsd = position.borrowUsd;
+  const currentBorrowUsd = position.borrowUsd + position.collateralBorrowUsd;
+  const currentSuppliedUsd = position.collateralUsd + currentBorrowUsd + position.earningsUsd;
 
   const exit = useMemo(
     () => calcExitPreview(currentSuppliedUsd, currentBorrowUsd, position.healthFactor, exitPct),
     [currentSuppliedUsd, currentBorrowUsd, position.healthFactor, exitPct]
   );
 
-  /* Per-asset breakdown for the Review step. When collateralAsset ==
-     borrowAsset (common), we express gross-withdraw and repay in asset units
-     so the user sees e.g. "Withdraw 1.02 ETH / Repay 0.85 ETH → receive 0.17 ETH". */
-  const assetPrice = position.collateralUsd / position.collateralAmount;
-  const grossWithdrawAmount = exit.withdrawUsd / assetPrice;
-  const repayAmount = exit.repayUsd / assetPrice;
-  const netReceivedAmount = grossWithdrawAmount - repayAmount;
+  const pct = exitPct / 100;
 
-  const repayUsd = exit.repayUsd;
+  /* Per-asset breakdown for the Review step. Each debt leg has its OWN price —
+     collateralAsset and borrowAsset are DIFFERENT tokens on any LP position,
+     so blending them through one shared "assetPrice" (the old bug) silently
+     converted a USDC debt using XLM's price, e.g. showing "Repay 3.26 USDC"
+     for an actual $0.53 debt. Both legs scale by the same `pct` as `exit`,
+     since they were opened together and always repay together. */
+  const collateralAssetPrice = position.collateralAmount > 0 ? position.collateralUsd / position.collateralAmount : 0;
+  const borrowAssetPrice = position.borrowAmount > 0 ? position.borrowUsd / position.borrowAmount : 0;
+
+  const repayAmount = borrowAssetPrice > 0 ? (position.borrowUsd * pct) / borrowAssetPrice : 0;
+  const repayUsd = position.borrowUsd * pct;
+  const collateralRepayAmount = collateralAssetPrice > 0 ? (position.collateralBorrowUsd * pct) / collateralAssetPrice : 0;
+  const collateralRepayUsd = position.collateralBorrowUsd * pct;
+
+  // Gross withdraw / net received, expressed in the collateral asset — an LP
+  // removal actually returns BOTH tokens, so this is a normalized "as if it
+  // were all <collateralAsset>" figure, same convention the same-asset
+  // (Blend) case already used exactly (there the two assets ARE the same).
+  const grossWithdrawAmount = collateralAssetPrice > 0 ? exit.withdrawUsd / collateralAssetPrice : 0;
+  const netReceivedAmount = collateralAssetPrice > 0 ? exit.userReceivesUsd / collateralAssetPrice : 0;
   const withdrawUsd = exit.withdrawUsd;
   const withdrawAmount = grossWithdrawAmount;
 
   /* User equity on the position. The borrowed principal sits in the pool earning
      yield, so it is both an asset AND a liability on the user's balance sheet →
      it cancels out. Net Value = what user would walk away with if they exited now.
-        totalSupplied = collateral + borrow
-        debt          = borrow (principal + accrued borrow interest)
+        totalSupplied = collateral + both borrow legs
+        debt          = both borrow legs (principal + accrued borrow interest)
         equity        = totalSupplied − debt = collateral + earnings                */
   const netValueUsd = position.collateralUsd + position.earningsUsd;
 
   // For an LP position, both legs are pooled together and earn one combined
   // supply APR — "LP Value" (total deployed) is the number that actually
-  // matches what the Farm page shows for the same pool, distinct from
-  // "Net Value" (equity) above.
-  const lpValueUsd = position.collateralUsd + position.borrowUsd;
+  // matches what the Farm page shows for the same pool: the FULL collateral
+  // leg (deposit + same-asset top-up) paired with the borrowed leg, distinct
+  // from "Net Value" (equity) above.
+  const lpValueUsd = totalCollateralLegUsd + position.borrowUsd;
 
   const projectedHf = exit.projectedHf;
   const projectedLiquidity = exit.remainingBorrowUsd;
@@ -199,12 +262,13 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         borrowAmount: position.borrowAmount,
         collateralAsset: position.collateralAsset as "XLM" | "USDC",
         collateralAmount: position.collateralAmount,
+        collateralBorrowAmount: position.collateralBorrowAmount,
         poolProtocol: position.protocol,
         poolType: position.poolType,
         poolTokens: position.poolTokens,
         isSameAsset: position.isSameAsset,
         exitPct,
-        onStep: (msg) => setTxModal((p) => ({ ...p, message: msg })),
+        onStep: (msg) => showStep(msg),
       });
       if (!result.success) {
         throw new Error(result.error ?? "Close position failed.");
@@ -212,24 +276,26 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       return result;
     },
     onMutate: () => {
-      setTxModal({ open: true, status: "pending", title: "Closing Position", message: "Preparing transaction..." });
+      showStep("Preparing transaction...");
     },
     onSuccess: async (result) => {
       // Drop / scale the Lite registry record to match the on-chain state.
       // Without this the Position tab keeps showing the original numbers
       // even after a 100% close, which looks like the close failed.
       applyLiteExit(position.id, exitPct);
-      setTxModal({
-        open: true, status: "success",
-        title: exitPct === 100 ? "Position Closed" : `${exitPct}% Exit Complete`,
-        message: `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
-        txHash: result.hash,
-      });
+      showStepSuccess(
+        `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
+        result.hash
+      );
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
       if (marginAccountAddress) {
         try {
-          await refreshBorrowedBalances(marginAccountAddress);
+          // forceRefresh: this exit just repaid real debt — an unforced call
+          // silently no-ops inside the 5s cache TTL, leaving the NEXT Lite
+          // preview (e.g. reopening a position) combining against the
+          // pre-repay debt instead of the real, now-lower figure.
+          await refreshBorrowedBalances(marginAccountAddress, true);
         } catch (err) {
           console.warn("Post-exit balance refresh failed; ledger tick will reconcile.", err);
         }
@@ -238,12 +304,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
     },
     onError: (error: Error) => {
       const parsed = parseContractError(error?.message || "Close position failed.");
-      const cancelled = parsed === "Transaction cancelled by user.";
-      setTxModal({
-        open: true, status: "error",
-        title: cancelled ? "Cancelled" : "Transaction Failed",
-        message: parsed,
-      });
+      showStepError(parsed);
     },
   });
 
@@ -255,51 +316,6 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
   const loading = exitMutation.isPending;
 
   return (
-    <>
-      {/* ── Tx Modal ── */}
-      <Modal open={txModal.open} onClose={() => !loading && setTxModal((p) => ({ ...p, open: false }))}>
-        <div className={`w-[340px] sm:w-[400px] rounded-[20px] p-6 flex flex-col gap-5 ${isDark ? "bg-[#1A1A1A] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}>
-          <div className="flex items-center justify-center pt-2">
-            {txModal.status === "pending" && (
-              <div className="w-14 h-14 rounded-full border-4 border-[#703AE6]/30 border-t-[#703AE6] animate-spin" />
-            )}
-            {txModal.status === "success" && (
-              <div className="w-14 h-14 rounded-full bg-[#10B981]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-            )}
-            {txModal.status === "error" && (
-              <div className="w-14 h-14 rounded-full bg-[#FC5457]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FC5457" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-            )}
-          </div>
-          <div className="text-center">
-            <h3 className={`text-[16px] font-bold mb-1.5 ${isDark ? "text-white" : "text-[#111111]"}`}>{txModal.title}</h3>
-            <p className={`text-[13px] leading-[20px] ${isDark ? "text-[#919191]" : "text-[#6B7280]"}`}>{txModal.message}</p>
-            {txModal.txHash && (
-              <p className={`text-[11px] mt-2 font-mono ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>
-                {txModal.txHash.slice(0, 8)}...{txModal.txHash.slice(-8)}
-              </p>
-            )}
-          </div>
-          {txModal.status !== "pending" && (
-            <button
-              type="button"
-              onClick={() => setTxModal((p) => ({ ...p, open: false }))}
-              className="w-full text-white text-[14px] font-semibold py-3 rounded-[12px] hover:opacity-90 transition-opacity"
-              style={{ background: "linear-gradient(135deg, #703AE6 0%, #FF007A 100%)" }}
-            >
-              {txModal.status === "success" ? "Done" : "Close"}
-            </button>
-          )}
-        </div>
-      </Modal>
-
     <div className="w-full flex flex-col lg:flex-row gap-5">
       {/* ═══════ LEFT: Position management ═══════ */}
       <motion.div
@@ -357,13 +373,25 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
                 </span>
               </div>
             </div>
-            <span
-              className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
-                isDark ? "bg-[#222222] text-[#919191]" : "bg-[#F4F4F4] text-[#6B7280]"
-              }`}
-            >
-              {position.leverage.toFixed(1)}× leverage
-            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              {position.recovered && (
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
+                    isDark ? "bg-[#3D2A00] text-[#F59E0B]" : "bg-[#FEF3C7] text-[#92400E]"
+                  }`}
+                  title="No cached record was found for this position — rebuilt from live LP balance and current debt. Leverage/breakdown below are estimates, not the original values."
+                >
+                  Recovered from chain
+                </span>
+              )}
+              <span
+                className={`text-[10px] font-bold uppercase tracking-[0.5px] px-2.5 py-1 rounded-full ${
+                  isDark ? "bg-[#222222] text-[#919191]" : "bg-[#F4F4F4] text-[#6B7280]"
+                }`}
+              >
+                {position.leverage.toFixed(1)}× leverage
+              </span>
+            </div>
           </div>
 
           {/* LP Value — total pooled across both legs, matching how the Farm
@@ -377,7 +405,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
                 </span>
                 <PoolIcon position={position} size={18} />
                 <span className={`text-[13px] font-semibold truncate ${headingText}`}>
-                  {position.collateralAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {position.collateralAsset}
+                  {totalCollateralLegAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {position.collateralAsset}
                   {" + "}
                   {position.borrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {position.borrowAsset}
                 </span>
@@ -399,8 +427,10 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
               },
               {
                 label: "Borrowed",
-                value: `$${position.borrowUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
-                sub: `${position.borrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${position.borrowAsset}`,
+                value: `$${currentBorrowUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
+                sub: hasSecondDebtLeg
+                  ? `${position.borrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${position.borrowAsset} + ${position.collateralBorrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${position.collateralAsset}`
+                  : `${position.borrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${position.borrowAsset}`,
                 color: headingText,
               },
               {
@@ -469,6 +499,23 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
                 ${position.borrowUsd.toFixed(2)}
               </span>
             </div>
+            {hasSecondDebtLeg && (
+              <div className={`flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${subMuted}`}>
+                    Borrowed (top-up)
+                  </span>
+                  <TokenIcon symbol={position.collateralAsset} size={18} />
+                  <span className={`text-[13px] font-semibold truncate ${headingText}`}>
+                    {position.collateralBorrowAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}{" "}
+                    {position.collateralAsset}
+                  </span>
+                </div>
+                <span className={`text-[12px] ${subMuted} shrink-0`}>
+                  ${position.collateralBorrowUsd.toFixed(2)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -575,6 +622,28 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
           </div>
 
           <div className="flex flex-col gap-2">
+            {/* Remove Liquidity row — the actual on-chain unit this exit
+                operates on; LP shares aren't priced 1:1 with either pooled
+                token, so this is shown separately from the token amounts. */}
+            {position.poolType === "lp" && (
+              <div className={`flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
+                <div className="flex items-center gap-2.5">
+                  <span className={`text-[11px] font-semibold uppercase tracking-[0.5px] ${bodyText}`}>
+                    Remove Liquidity
+                  </span>
+                  <PoolIcon position={position} size={16} />
+                  <span className={`text-[13px] font-semibold ${headingText}`}>
+                    {lpBalance === null
+                      ? "…"
+                      : `${(lpBalance * pct).toLocaleString(undefined, { maximumFractionDigits: 4 })} LP`}
+                  </span>
+                </div>
+                <span className={`text-[12px] ${subMuted}`}>
+                  ≈ ${lpValueUsd.toFixed(2)}
+                </span>
+              </div>
+            )}
+
             {/* Repay row */}
             <div className={`flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
               <div className="flex items-center gap-2.5">
@@ -589,6 +658,23 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
               </div>
               <span className={`text-[12px] ${subMuted}`}>≈ ${repayUsd.toFixed(2)}</span>
             </div>
+
+            {/* Repay row — second leg (leveraged LP's same-asset top-up) */}
+            {hasSecondDebtLeg && (
+              <div className={`flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
+                <div className="flex items-center gap-2.5">
+                  <span className={`text-[11px] font-semibold uppercase tracking-[0.5px] ${bodyText}`}>
+                    Repay
+                  </span>
+                  <TokenIcon symbol={position.collateralAsset} size={16} />
+                  <span className={`text-[13px] font-semibold ${headingText}`}>
+                    {collateralRepayAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })}{" "}
+                    {position.collateralAsset}
+                  </span>
+                </div>
+                <span className={`text-[12px] ${subMuted}`}>≈ ${collateralRepayUsd.toFixed(2)}</span>
+              </div>
+            )}
 
             {/* Withdraw row */}
             <div className={`flex items-center justify-between gap-3 rounded-lg px-3.5 py-3 ${rowBg}`}>
@@ -842,6 +928,5 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
         </div>
       </motion.aside>
     </div>
-    </>
   );
 };

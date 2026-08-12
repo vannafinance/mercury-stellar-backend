@@ -4,7 +4,15 @@
 
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { signTransaction } from '@/lib/wallet-adapter';
-import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, ContractService } from './stellar-utils';
+import {
+  CONTRACT_ADDRESSES,
+  NETWORK_PASSPHRASE,
+  SOROBAN_RPC_URL,
+  ContractService,
+  resubmitOnTryAgainLater,
+  withFootprintRaceRetry,
+  describeSendError,
+} from './stellar-utils';
 
 /** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
 export type BlendAction = 'Deposit' | 'Withdraw';
@@ -43,6 +51,10 @@ export interface BlendTransactionResult {
   success: boolean;
   hash?: string;
   error?: string;
+  /** Sequence the account will have once this tx confirms — pass to a
+   * chained same-account call's `knownSequence` param instead of racing a
+   * fresh `getAccount()` read. See stellar-utils.ts's isFootprintRaceError. */
+  nextSequence?: string;
 }
 
 /** A user's Blend position: raw b-token balance and its underlying-asset value. */
@@ -231,7 +243,31 @@ export class BlendService {
     walletAddress: string,
     marginAccountAddress: string,
     tokenSymbol: string,
-    amount: number
+    amount: number,
+    // Pass the `nextSequence` from a just-confirmed prior same-account tx
+    // (e.g. one-click's deposit_and_borrow leg right before this deploy) to
+    // skip an RPC `getAccount()` read that isn't reliably fresh yet. See
+    // stellar-utils.ts's isFootprintRaceError for the full explanation —
+    // confirmed live: this call following right after a borrow/deposit leg
+    // was hitting a generic "Transaction rejected by network" with zero
+    // retry, because this function never had ANY of the resilience
+    // MarginAccountService.borrowTokens already has.
+    knownSequence?: string
+  ): Promise<BlendTransactionResult> {
+    let firstAttempt = true;
+    return withFootprintRaceRetry(() => {
+      const seq = firstAttempt ? knownSequence : undefined;
+      firstAttempt = false;
+      return BlendService.depositToBlendPoolAttempt(walletAddress, marginAccountAddress, tokenSymbol, amount, seq);
+    }, 'Blend deposit');
+  }
+
+  private static async depositToBlendPoolAttempt(
+    walletAddress: string,
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    amount: number,
+    knownSequence?: string
   ): Promise<BlendTransactionResult> {
     try {
       // Validate token
@@ -263,7 +299,12 @@ export class BlendService {
       );
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
+      const sourceAccount = knownSequence
+        ? new StellarSdk.Account(walletAddress, knownSequence)
+        : await server.getAccount(walletAddress);
+      console.log(
+        `[BlendService.depositToBlendPoolAttempt] walletAddress=${walletAddress} knownSequence=${knownSequence ?? '(none — fetched fresh)'} baseSequence=${sourceAccount.sequenceNumber()} txSequenceWillBe=${(BigInt(sourceAccount.sequenceNumber()) + BigInt(1)).toString()}`
+      );
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -280,6 +321,11 @@ export class BlendService {
         .setTimeout(30)
         .build();
 
+      // sourceAccount is mutated in place by .build() — capture the sequence
+      // this tx just consumed for a caller chaining into another same-account
+      // tx right after this one.
+      const nextSequence = sourceAccount.sequenceNumber();
+
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -291,13 +337,24 @@ export class BlendService {
         NETWORK_PASSPHRASE
       );
 
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend deposit');
 
       if (result.status === 'PENDING') {
         await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
+        return { success: true, hash: result.hash, nextSequence };
+      } else if (result.status === 'ERROR') {
+        const resultCode = describeSendError(result);
+        console.error(`❌ Blend deposit failed immediately with ERROR status (${resultCode})`);
+        console.error('Error details:', { resultCode, diagnosticEvents: result.diagnosticEvents });
+        return {
+          success: false,
+          error: resultCode !== 'unknown'
+            ? `Transaction failed with result: ${resultCode}`
+            : `Deposit transaction failed with status: ${result.status}`,
+        };
       } else {
-        throw new Error('Transaction rejected by network');
+        return { success: false, error: `Deposit transaction failed with status: ${result.status}` };
       }
     } catch (error: any) {
       console.error('[BlendService] Deposit error:', error);
@@ -317,7 +374,23 @@ export class BlendService {
     walletAddress: string,
     marginAccountAddress: string,
     tokenSymbol: string,
-    amount: number
+    amount: number,
+    knownSequence?: string
+  ): Promise<BlendTransactionResult> {
+    let firstAttempt = true;
+    return withFootprintRaceRetry(() => {
+      const seq = firstAttempt ? knownSequence : undefined;
+      firstAttempt = false;
+      return BlendService.withdrawFromBlendPoolAttempt(walletAddress, marginAccountAddress, tokenSymbol, amount, seq);
+    }, 'Blend withdraw');
+  }
+
+  private static async withdrawFromBlendPoolAttempt(
+    walletAddress: string,
+    marginAccountAddress: string,
+    tokenSymbol: string,
+    amount: number,
+    knownSequence?: string
   ): Promise<BlendTransactionResult> {
     try {
       const assetInfo = BLEND_POOL_ASSETS.find((a) => a.symbol === tokenSymbol);
@@ -348,7 +421,9 @@ export class BlendService {
       );
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(walletAddress);
+      const sourceAccount = knownSequence
+        ? new StellarSdk.Account(walletAddress, knownSequence)
+        : await server.getAccount(walletAddress);
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -365,6 +440,8 @@ export class BlendService {
         .setTimeout(30)
         .build();
 
+      const nextSequence = sourceAccount.sequenceNumber();
+
       const preparedTx = await server.prepareTransaction(transaction);
 
       const signResult = await signTransaction(preparedTx.toXDR(), {
@@ -376,13 +453,24 @@ export class BlendService {
         NETWORK_PASSPHRASE
       );
 
-      const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
+      result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend withdraw');
 
       if (result.status === 'PENDING') {
         await BlendService.pollTransactionStatus(server, result.hash);
-        return { success: true, hash: result.hash };
+        return { success: true, hash: result.hash, nextSequence };
+      } else if (result.status === 'ERROR') {
+        const resultCode = describeSendError(result);
+        console.error(`❌ Blend withdraw failed immediately with ERROR status (${resultCode})`);
+        console.error('Error details:', { resultCode, diagnosticEvents: result.diagnosticEvents });
+        return {
+          success: false,
+          error: resultCode !== 'unknown'
+            ? `Transaction failed with result: ${resultCode}`
+            : `Withdraw transaction failed with status: ${result.status}`,
+        };
       } else {
-        throw new Error('Transaction rejected by network');
+        return { success: false, error: `Withdraw transaction failed with status: ${result.status}` };
       }
     } catch (error: any) {
       console.error('[BlendService] Withdraw error:', error);
@@ -466,17 +554,25 @@ export class BlendService {
   }
 
   /**
-   * Get the actual token balance held by a margin account for Blend-supported assets.
-   * Uses token.balance(marginAccountAddress) on Blend asset contracts directly.
+   * Get the actual token balance held by a margin account, reading
+   * `token.balance(marginAccountAddress)` directly on the asset's own SAC —
+   * the live raw balance, not the (possibly stale) on-chain collateral
+   * ledger. Despite the Blend-specific name, this reads any of the four
+   * margin-supported assets; used for XLM/USDC by the Blend raw-SAC
+   * reconcile and for AQUSDC/SOUSDC by the same reconcile in
+   * farmTrackingCollateral.ts, since none of their collateral-ledger
+   * entries update when the balance moves into an Aquarius/Soroswap LP.
    */
   static async getMarginAccountTokenBalance(
     marginAccountAddress: string,
-    token: 'XLM' | 'USDC'
+    token: 'XLM' | 'USDC' | 'AQUSDC' | 'SOUSDC'
   ): Promise<string> {
     try {
-      const tokenContractId = token === 'XLM'
-        ? CONTRACT_ADDRESSES.BLEND_XLM
-        : CONTRACT_ADDRESSES.BLEND_USDC;
+      const tokenContractId =
+        token === 'XLM' ? CONTRACT_ADDRESSES.BLEND_XLM
+        : token === 'USDC' ? CONTRACT_ADDRESSES.BLEND_USDC
+        : token === 'AQUSDC' ? CONTRACT_ADDRESSES.AQUARIUS_USDC
+        : CONTRACT_ADDRESSES.SOROSWAP_USDC;
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
       const tempKeypair = StellarSdk.Keypair.random();

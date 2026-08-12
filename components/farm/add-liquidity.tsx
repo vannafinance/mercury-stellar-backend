@@ -89,6 +89,10 @@ export const AddLiquidity = memo(function AddLiquidity() {
     : (urlMatchedSoroswapPool?.tokens ?? urlMatchedAquariusPool?.tokens ?? ["XLM", "USDC"]);
   const tokenA = poolTokens[0] ?? "XLM";
   const tokenB = poolTokens[1] ?? "USDC";
+  // Display-only — every balance fetch, reserve lookup, and the actual
+  // addLiquidity() call below MUST keep using the raw tokenB ("XLM"/"USDC"),
+  // not this label. Only ever use tokenBLabel in rendered text.
+  const tokenBLabel = tokenB === "USDC" ? (isAquariusPool ? "AqUSDC" : "SoUSDC") : tokenB;
 
   // Resolve which actual on-chain pool this row is (order-insensitive on
   // tokens) — every stats/balance fetch below MUST use this pool's own
@@ -363,7 +367,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         poolKey: buildFarmPoolKey(tokenA, tokenB),
         marginAccountAddress: marginAccountAddress!,
         action: "add",
-        amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenB}`,
+        amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenBLabel}`,
         txHash: hash ?? "",
       });
       toast.success(`Liquidity added! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
@@ -428,7 +432,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         poolKey: buildFarmPoolKey(selectedToken),
         marginAccountAddress: marginAccountAddress!,
         action: "add",
-        amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
+        amountDisplay: `${amount.toFixed(2)} ${selectedToken === "USDC" ? "BLUSDC" : selectedToken}`,
         txHash: hash ?? "",
       });
       toast.success(`Deposit successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
@@ -511,7 +515,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
       if (txStatus === "loading") return "Adding Liquidity...";
       if (!isInputValid) return "Enter Amounts";
       if (isOverA || isOverB) return "Insufficient Balance";
-      return `Add ${tokenA}/${tokenB} (${dexName})`;
+      return `Add ${tokenA}/${tokenBLabel} (${dexName})`;
     };
 
     return (
@@ -526,12 +530,14 @@ export const AddLiquidity = memo(function AddLiquidity() {
                 const priceBinA = reserveA > 0 && reserveB > 0 ? reserveA / reserveB : 0;
                 const fmtA = priceAinB < 0.01 ? priceAinB.toFixed(4) : priceAinB.toFixed(2);
                 const fmtB = priceBinA < 0.01 ? priceBinA.toFixed(4) : priceBinA.toFixed(2);
-                return `1 ${tokenA} ≈ ${fmtA} ${tokenB} · 1 ${tokenB} ≈ ${fmtB} ${tokenA}`;
+                return `1 ${tokenA} ≈ ${fmtA} ${tokenBLabel} · 1 ${tokenBLabel} ≈ ${fmtB} ${tokenA}`;
               })()}
             </div>
           )}
           <div className="w-full flex flex-col gap-[12px]">
-            {[tokenA, tokenB].map((token, idx) => (
+            {[tokenA, tokenB].map((token, idx) => {
+              const tokenLabel = idx === 0 ? token : tokenBLabel;
+              return (
               <div
                 key={token}
                 className={`w-full h-fit flex flex-col gap-[8px] p-[12px] rounded-[12px] ${
@@ -568,7 +574,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
                       <span className={`text-[13px] font-semibold ${
                         isDark ? "text-white" : "text-[#111111]"
                       }`}>
-                        {token}
+                        {tokenLabel}
                       </span>
                     </div>
                     <span className={`text-[11px] font-medium whitespace-nowrap ${
@@ -621,7 +627,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -667,6 +674,9 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   // Token selector as inline token pills
   const token = selectedToken;
+  // Display-only — selectedToken itself stays the raw "XLM"/"USDC" used by
+  // every BlendService call above.
+  const tokenLabel = token === "USDC" ? "BLUSDC" : token;
   const tokenBalance = availableToDeployNum;
 
   const getButtonText = () => {
@@ -704,8 +714,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
               onClick={() => setTokenDropdownOpen(!tokenDropdownOpen)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full cursor-pointer transition-all ${isDark ? "bg-[#1A1A1A] border border-[#2A2A2A] hover:bg-[#222]" : "bg-[#F7F7F7] border border-[#E8E8E8] hover:bg-[#F0F0F0]"}`}
             >
-              <Image src={iconPath} alt={token} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
-              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{token}</span>
+              <Image src={iconPath} alt={tokenLabel} width={20} height={20} className="rounded-full w-5 h-5 flex-none" />
+              <span className={`text-[14px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>{tokenLabel}</span>
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-3.5 h-3.5 transition-transform duration-200 ${isDark ? "text-[#AAA]" : "text-[#555]"} ${tokenDropdownOpen ? "rotate-180" : ""}`}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
               </svg>
@@ -716,15 +726,18 @@ export const AddLiquidity = memo(function AddLiquidity() {
                   initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}
                   className={`absolute right-0 top-full mt-1 z-50 rounded-xl border shadow-lg overflow-hidden min-w-[120px] ${isDark ? "bg-[#222222] border-[#333333]" : "bg-white border-[#E8E8E8]"}`}
                 >
-                  {SUPPORTED_TOKENS.map((t) => (
+                  {SUPPORTED_TOKENS.map((t) => {
+                    const tLabel = t === "USDC" ? "BLUSDC" : t;
+                    return (
                     <button key={t} type="button"
                       onClick={() => { handleTokenSelect(t); setTokenDropdownOpen(false); }}
                       className={`flex items-center gap-2 w-full px-4 py-2.5 text-[13px] font-medium transition-colors ${selectedToken === t ? "text-[#703AE6]" : isDark ? "text-white hover:bg-[#333]" : "text-[#111] hover:bg-[#F5F5F5]"}`}
                     >
-                      <Image src={iconPaths[t] ?? "/coins/xlmbg.png"} alt={t} width={16} height={16} className="rounded-full" />
-                      {t}
+                      <Image src={iconPaths[t] ?? "/coins/xlmbg.png"} alt={tLabel} width={16} height={16} className="rounded-full" />
+                      {tLabel}
                     </button>
-                  ))}
+                    );
+                  })}
                 </motion.div>
               )}
             </AnimatePresence>
@@ -776,7 +789,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
       <AnimatePresence>
         {parseFloat(value) > 0 && (
           <DepositSummary
-            tokenSymbol={selectedToken}
+            tokenSymbol={tokenLabel}
             depositAmount={depositAmountNum}
             tokenPriceUsd={tokenPriceUsd}
             supplyApyPct={supplyApyPct}

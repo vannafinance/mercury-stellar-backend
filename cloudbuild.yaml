@@ -1,0 +1,81 @@
+# Build → push → deploy the Vanna app to Cloud Run.
+#
+# Invoked by .github/workflows/deploy-dev.yml, which passes _TAG and the
+# per-environment substitutions. Kept as the single source of truth for the
+# Cloud Run service config so the deploy flags live in the repo, not in
+# somebody's shell history.
+#
+# NEXT_PUBLIC_* is inlined into the client bundle at BUILD time, so the image is
+# environment-specific: a dev image can never be promoted to prod. Each
+# environment builds its own image from the same commit. That is why _SITE_URL
+# is a --build-arg here and not a runtime env var.
+
+substitutions:
+  _REGION: us-central1
+  _REPO: vanna
+  _SERVICE: vanna-app-dev
+  _SITE_URL: https://test.stellar.vanna.finance
+  # Public value (inlined into the client bundle). Empty means Privy sign-in is
+  # hidden and the app falls back to Freighter, which is the current behaviour.
+  _PRIVY_APP_ID: ""
+  _RUNTIME_SA: vanna-app-run@vanna-main.iam.gserviceaccount.com
+  _MIN_INSTANCES: "0"
+  _MAX_INSTANCES: "10"
+  # Hubble is PUBNET-only data and this environment runs against Stellar
+  # testnet, so /stats stays gated off. See lib/hubble/gate.ts.
+  _STATS_ENABLED: "false"
+  _TAG: latest
+
+options:
+  # Required when the build runs as a user-specified service account: without
+  # it Cloud Build wants a logs bucket and fails before the first step.
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg=NEXT_PUBLIC_SITE_URL=${_SITE_URL}
+      - --build-arg=NEXT_PUBLIC_PRIVY_APP_ID=${_PRIVY_APP_ID}
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:${_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:latest
+      - .
+
+  # Explicit push rather than the top-level `images:` key — that pushes only
+  # after every step completes, which would leave the deploy step below
+  # referencing a tag that does not exist yet.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/vanna-app:${_TAG}
+      - --region=${_REGION}
+      - --platform=managed
+      - --service-account=${_RUNTIME_SA}
+      - --allow-unauthenticated
+      - --port=8080
+      - --cpu=1
+      - --memory=1Gi
+      - --cpu-boost
+      - --min-instances=${_MIN_INSTANCES}
+      - --max-instances=${_MAX_INSTANCES}
+      # The protocol-wide margin scan in /api/analytics/accounts fans out to
+      # ~200 accounts at concurrency 8; the Vercel default of 60s was tight.
+      - --timeout=300
+      # GOOGLE_CLOUD_PROJECT alone puts lib/hubble/client.ts on the
+      # Application Default Credentials path — the attached service account.
+      # No GOOGLE_CREDS_JSON key needs to exist anywhere.
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED}
+      - --set-secrets=MERCURY_URL=MERCURY_URL:latest,MERCURY_KEY=MERCURY_KEY:latest

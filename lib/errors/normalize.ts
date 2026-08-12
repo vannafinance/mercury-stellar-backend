@@ -13,13 +13,22 @@ function isCancel(text: string): boolean {
     text.includes('cancelled') ||
     text.includes('canceled') ||
     text.includes('rejected by user') ||
+    text.includes('user rejected') ||
     text.includes('user denied') ||
-    text.includes('declined') ||
-    text.includes('rejected') ||
+    text.includes('user declined') ||
+    text.includes('declined by user') ||
+    text.includes('declined access') ||
     // Freighter sometimes throws an XDR parse error when the user hits
     // "Reject" — the wallet closes before the SDK can read the response.
     text.includes('xdr read error') ||
     text.includes('boundary of the buffer')
+    // NOT a bare `includes('rejected')`/`includes('declined')` — real
+    // on-chain business-logic failures legitimately use that word too
+    // (e.g. margin-utils.ts's "Borrow action rejected for ...", "rejected
+    // by the Risk Engine", "deposit_and_borrow rejected: ..."). Matching
+    // the bare word silently relabeled every one of those as "Transaction
+    // cancelled by user" — hiding the real reason (health factor, debt
+    // limit) and making it look like Freighter cancelled when it never did.
   );
 }
 

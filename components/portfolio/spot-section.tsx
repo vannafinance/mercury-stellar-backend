@@ -47,21 +47,30 @@ export const SpotSection = () => {
   const rows = useMemo(() => {
     const out: { cell: { title?: string; description?: string; chain?: string; titles?: string[]; tags?: string[] }[]; usd: number }[] = [];
 
-    const entries: { symbol: "XLM" | "USDC"; venue: string; balance: string }[] = [
-      { symbol: "XLM", venue: "Margin Account", balance: xlm },
-      { symbol: "USDC", venue: "Aquarius", balance: aqUsdc },
-      { symbol: "USDC", venue: "Soroswap", balance: ssUsdc },
+    // These are all raw SAC balances held directly BY the margin account
+    // (not deposited into an Aquarius/Soroswap LP or lent to Blend — those
+    // live under the Farm tab), so Venue is "Margin Account" for every row,
+    // same as XLM. AQUSDC vs SOUSDC are genuinely distinct SAC tokens, so
+    // that distinction is shown on the Asset column instead (displaySymbol),
+    // not smuggled into Venue.
+    const entries: { symbol: "USDC"; displaySymbol: string; venue: string; balance: string }[] = [
+      { symbol: "USDC" as const, displaySymbol: "XLM", venue: "Margin Account", balance: xlm },
+      { symbol: "USDC", displaySymbol: "AqUSDC", venue: "Margin Account", balance: aqUsdc },
+      { symbol: "USDC", displaySymbol: "SoUSDC", venue: "Margin Account", balance: ssUsdc },
     ];
+    // First entry is actually XLM — fix its price-lookup symbol separately below.
+    const priceSymbols: Array<"XLM" | "USDC"> = ["XLM", "USDC", "USDC"];
 
-    entries.forEach(({ symbol, venue, balance }) => {
+    entries.forEach(({ displaySymbol, venue, balance }, i) => {
       const amount = parseFloat(balance || "0");
       if (amount <= POSITION_DUST) return;
-      const price = prices[symbol] ?? (symbol === "USDC" ? 1 : 0);
+      const priceSymbol = priceSymbols[i];
+      const price = prices[priceSymbol] ?? (priceSymbol === "USDC" ? 1 : 0);
       out.push({
         cell: [
-          { chain: symbol, title: symbol, tags: [venue] },
+          { chain: priceSymbol, title: displaySymbol },
           { title: venue },
-          { title: `${amount.toFixed(4)} ${symbol}` },
+          { title: `${amount.toFixed(4)} ${priceSymbol}` },
           { title: fmtUsd(amount * price) },
         ],
         usd: amount * price,

@@ -166,6 +166,9 @@ export interface AggregatablePosition {
   borrowAsset: string;
   borrowAmount: number;
   borrowUsd: number;
+  /** Extra same-asset-as-collateral debt leg (LP leverage > 1 only). */
+  collateralBorrowAmount: number;
+  collateralBorrowUsd: number;
   leverage: number;
   supplyApr: number;
   vannaFeeApr: number;
@@ -212,18 +215,22 @@ export const aggregateByPool = <T extends AggregatablePosition>(positions: T[]):
     const collateralUsd = group.reduce((s, g) => s + g.collateralUsd, 0);
     const borrowAmount = group.reduce((s, g) => s + g.borrowAmount, 0);
     const borrowUsd = group.reduce((s, g) => s + g.borrowUsd, 0);
+    const collateralBorrowAmount = group.reduce((s, g) => s + (g.collateralBorrowAmount ?? 0), 0);
+    const collateralBorrowUsd = group.reduce((s, g) => s + (g.collateralBorrowUsd ?? 0), 0);
+    const totalDebtUsd = borrowUsd + collateralBorrowUsd;
     const earningsUsd = group.reduce((s, g) => s + g.earningsUsd, 0);
-    const leverage = collateralUsd > 0 ? (collateralUsd + borrowUsd) / collateralUsd : first.leverage;
+    const leverage = collateralUsd > 0 ? (collateralUsd + totalDebtUsd) / collateralUsd : first.leverage;
     const netApr = leverage * first.supplyApr - (leverage - 1) * first.vannaFeeApr;
     const worstStatus = group.reduce<T["status"]>(
       (w, g) => (statusRank[g.status] > statusRank[w] ? g.status : w),
       "active"
     );
-    /* Rough HF aggregate: weight each row's HF by its borrowUsd. Better than a
-       naive mean because a tiny risky position shouldn't drag down a large safe one. */
+    /* Rough HF aggregate: weight each row's HF by its total debt (both legs).
+       Better than a naive mean because a tiny risky position shouldn't drag
+       down a large safe one. */
     const weightedHf =
-      borrowUsd > 0
-        ? group.reduce((s, g) => s + g.healthFactor * g.borrowUsd, 0) / borrowUsd
+      totalDebtUsd > 0
+        ? group.reduce((s, g) => s + g.healthFactor * (g.borrowUsd + (g.collateralBorrowUsd ?? 0)), 0) / totalDebtUsd
         : first.healthFactor;
 
     merged.push({
@@ -233,6 +240,8 @@ export const aggregateByPool = <T extends AggregatablePosition>(positions: T[]):
       collateralUsd,
       borrowAmount,
       borrowUsd,
+      collateralBorrowAmount,
+      collateralBorrowUsd,
       earningsUsd,
       leverage,
       netApr,
@@ -242,7 +251,11 @@ export const aggregateByPool = <T extends AggregatablePosition>(positions: T[]):
   }
 
   /* Preserve a stable, deterministic order: largest exposure first. */
-  return merged.sort((a, b) => (b.collateralUsd + b.borrowUsd) - (a.collateralUsd + a.borrowUsd));
+  return merged.sort(
+    (a, b) =>
+      (b.collateralUsd + b.borrowUsd + (b.collateralBorrowUsd ?? 0)) -
+      (a.collateralUsd + a.borrowUsd + (a.collateralBorrowUsd ?? 0))
+  );
 };
 
 /* ─── Per-asset net-value math (ETH vs USDC exit scenarios) ───────────── */

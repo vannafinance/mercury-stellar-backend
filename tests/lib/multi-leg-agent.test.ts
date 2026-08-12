@@ -8,6 +8,7 @@ import {
   resumableLegsFromSteps,
 } from "@/lib/copilot/multi-leg-agent";
 import { routeMessage } from "@/lib/copilot/router";
+import { netOfOriginationFee } from "@/lib/borrow-fee";
 // multiLegUiData already imported above
 
 describe("multi-leg-agent expand", () => {
@@ -29,8 +30,9 @@ describe("multi-leg-agent expand", () => {
     expect(expanded[0].amount).toBe(20);
     expect(expanded[1].amount).toBe(10);
     expect(expanded[2].amount).toBe(10);
-    // Supply is net of borrow origination fee — gross 10 would HostError #10.
-    expect(expanded[3].amount).toBe(9.965);
+    // Supply is net of borrow origination fee (rounding buffer only, now the
+    // on-chain fee itself is 0% — see lib/borrow-fee.ts) — gross 10 would HostError #10.
+    expect(expanded[3].amount).toBe(netOfOriginationFee(10));
     for (const e of expanded) {
       expect(e.label).not.toMatch(/leg\s*\d|2×\s*leg/i);
     }

@@ -11,8 +11,10 @@ import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { PageContextProvider } from "@/contexts/page-context";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
+import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
 import { AssistantLauncher } from "@/components/copilot/assistant-launcher";
+import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -104,9 +106,11 @@ export default function RootLayout({
                 <PriceProvider>
                   <PageContextProvider>
                     <MarginAccountHydrator />
+                    <AnalyticsPrefetcher />
                     <Navbar items={navbarItems}/>
                     <ScaleWrapper>{children}</ScaleWrapper>
                     <AppToaster />
+                    <TransactionProgressModal />
                     {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
                     <AssistantLauncher />
                   </PageContextProvider>

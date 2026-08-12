@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { OneClickStrategy } from "./one-click-strategy";
 import { OnboardingTutorial } from "./onboarding-tutorial";
 import { PositionsList } from "./positions-list";
@@ -13,6 +13,7 @@ import { calcNetApr, calcEarningsUsd, aggregateByPool } from "./lite-position-ma
 import {
   getLitePositions,
   subscribeLitePositions,
+  reconcileLiteLpPositionsWithChain,
   type LitePositionRecord,
 } from "@/lib/lite-positions";
 import { useTokenPrices } from "@/hooks/use-token-prices";
@@ -52,6 +53,19 @@ export const LiteHome = () => {
 
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
 
+  // Lite mode reads totalCollateralValue/totalBorrowedValue straight off this
+  // store (see one-click-strategy.tsx's `newHF` and position-detail.tsx's exit
+  // preview) but never triggered its own refresh — so a user landing here
+  // could see a stale existing-debt figure, making the projected/combined
+  // Health Factor preview wrong (e.g. showing 2.50 for a trade that barely
+  // moves a real 1.50). Must be a FORCED refresh — the unforced call still
+  // silently no-ops inside refreshBorrowedBalances' 5s cache TTL, which is
+  // exactly the case right after opening/closing a Lite position (both
+  // mutate real debt and land well within that window).
+  useEffect(() => {
+    if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
+  }, [marginAccountAddress]);
+
   // Subscribe to the Lite-only registry. We deliberately don't read from the
   // margin store's borrowedBalances anymore — that would surface Pro-mode
   // borrows in the Lite Position tab, which is what the user pushed back on:
@@ -67,6 +81,17 @@ export const LiteHome = () => {
     });
   }, [marginAccountAddress]);
 
+  // The local cache above is a HINT, not a source of truth, for the two LP
+  // pools (Aquarius/Soroswap XLM-USDC) — validate it against live chain state
+  // every time this loads: drop any cached position whose real LP balance is
+  // now ~0 (closed some other way), and reconstruct a best-effort position
+  // for a real, nonzero LP balance that has nothing cached (cleared cache, or
+  // a different browser/device). Mutates the cache via appendLitePosition/
+  // removeLitePosition, which the subscription above already re-renders on.
+  useEffect(() => {
+    if (marginAccountAddress) reconcileLiteLpPositionsWithChain(marginAccountAddress);
+  }, [marginAccountAddress]);
+
   const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
 
   const positions = useMemo<LitePosition[]>(() => {
@@ -79,6 +104,14 @@ export const LiteHome = () => {
       const borrowPrice = tokenPrices[r.borrowAsset] ?? 0;
       const collateralUsd = collateralPrice > 0 ? r.collateralAmount * collateralPrice : r.collateralUsdAtOpen;
       const borrowUsd = borrowPrice > 0 ? r.borrowAmount * borrowPrice : r.borrowUsdAtOpen;
+      // Second debt leg for leveraged LP positions (same asset as collateral) —
+      // repriced the same way, defaults to 0 for Blend/legacy records.
+      const collateralBorrowAmount = r.collateralBorrowAmount ?? 0;
+      const collateralBorrowUsd =
+        collateralBorrowAmount > 0
+          ? (collateralPrice > 0 ? collateralBorrowAmount * collateralPrice : r.collateralBorrowUsdAtOpen ?? 0)
+          : 0;
+      const totalDebtUsd = borrowUsd + collateralBorrowUsd;
 
       // Earnings since opening — simple-APR estimate. The protocol doesn't
       // surface a per-position interest accrual, so we approximate with
@@ -92,8 +125,9 @@ export const LiteHome = () => {
       const earningsUsd = calcEarningsUsd(collateralUsd, netApr, elapsedYears);
 
       // Per-position health factor — independent of any other Pro-mode debt
-      // on the same margin account.
-      const hf = borrowUsd > 0 ? (collateralUsd + borrowUsd) / borrowUsd : 999;
+      // on the same margin account. Both debt legs count (paired-asset borrow
+      // + any same-asset top-up from leveraged LP pairing).
+      const hf = totalDebtUsd > 0 ? (collateralUsd + totalDebtUsd) / totalDebtUsd : 999;
       const status: LitePositionStatus =
         hf >= 1.5 ? "active" : hf >= 1.1 ? "risky" : "liquidation";
 
@@ -121,6 +155,8 @@ export const LiteHome = () => {
         borrowAsset: r.borrowAsset,
         borrowAmount: r.borrowAmount,
         borrowUsd,
+        collateralBorrowAmount,
+        collateralBorrowUsd,
         isSameAsset: r.isSameAsset,
         leverage: r.leverage,
         supplyApr: r.supplyApr,
@@ -131,6 +167,7 @@ export const LiteHome = () => {
         liquidationLtv: r.liquidationLtv,
         status,
         openedAt,
+        recovered: r.recovered,
       };
     });
     return aggregateByPool(built);

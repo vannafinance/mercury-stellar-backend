@@ -9,7 +9,6 @@ import { BALANCE_TYPE_OPTIONS } from "@/lib/constants/margin";
 import { Button } from "@/components/ui/button";
 import { Collateral } from "./collateral-box";
 import { DualBorrow, type DualBorrowState } from "./dual-borrow";
-import { MBSelectionGrid } from "./mb-selection-grid";
 import { Dialogue } from "@/components/ui/dialogue";
 import {
   useMarginAccountInfoStore,
@@ -31,7 +30,18 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
+// Live step-by-step progress for the WB deposit(+borrow) flow — a multi-leg
+// operation (deposit, then borrow, then a second borrow for Dual Borrow)
+// shows which step is running (and which one failed) via the centered
+// TransactionProgressModal, which updates in place, instead of a static
+// "Processing..." button with no visibility into a silently-dropped leg.
+const showStep = (message: string) => showTxStep(message);
+const showStepSuccess = (message: string, txHash?: string) =>
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 const LIQUIDATION_THRESHOLD = 1.1;
 const HF_INF_SENTINEL = 999;
@@ -85,7 +95,6 @@ export const LeverageAssetsTab = () => {
   const hasMarginAccount = useMarginAccountInfoStore((state) => state.hasMarginAccount);
   const marginAccountAddress = useMarginAccountInfoStore((state) => state.marginAccountAddress);
   const isCreatingAccount = useMarginAccountInfoStore((state) => state.isCreatingAccount);
-  const isLoadingBorrowedBalances = useMarginAccountInfoStore((state) => state.isLoadingBorrowedBalances);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [borrowItems, setBorrowItems] = useState<BorrowInfo[]>([]);
   // Validated dual-borrow output (items + Total/Max + red-text error). Gates
@@ -99,10 +108,6 @@ export const LeverageAssetsTab = () => {
 
   // Borrow token selected in BorrowBox (exposed via callback)
   const [borrowToken, setBorrowToken] = useState<string>(DropdownOptions[0]);
-
-  // MB mode: which margin-account collaterals the user has selected to use.
-  // Item IDs use the same `${asset}-${amount}` format as MBSelectionGrid.
-  const [mbSelectedIds, setMbSelectedIds] = useState<Set<string>>(new Set());
 
   const userAddress = useUserStore((state) => state.address);
   const tokenBalances = useUserStore((state) => state.tokenBalances);
@@ -202,70 +207,33 @@ export const LeverageAssetsTab = () => {
   const effectiveGross =
     grossCollateralValue > 0.01 ? grossCollateralValue : snapshot?.grossCollateralValue ?? 0;
 
-  // Build Collaterals[] from real on-chain margin account collateral (used in MB
-  // mode grid). Show every REAL collateral token the account holds (XLM / USDC
-  // family) so the user can borrow against their full balance. Exclude farm /
-  // Blend tracking receipts (BLEND_*, AQ_*, SS_*, *_LP) — those are enriched into
-  // collateralBalances for HF math but are farm positions, not borrowable margin
-  // collateral (and have no token icon). Mirrors the positions table's filter.
-  // Dust is shown via adaptive formatting, not hidden.
-  const mbCollateralItems = useMemo((): Collaterals[] => {
-    return (Object.entries(effectiveCollateral) as [string, BorrowedBalance][])
-      .filter(([token, bal]) => parseFloat(bal.amount) > 0 && !isTrackingSymbol(token))
-      .map(([token, bal]): Collaterals => ({
-        asset: token,
-        amount: parseFloat(parseFloat(bal.amount).toFixed(7)),
-        amountInUsd: parseFloat(parseFloat(bal.usdValue).toFixed(2)),
-        balanceType: "mb",
-        unifiedBalance: parseFloat(bal.usdValue),
-      }));
-  }, [effectiveCollateral]);
+  // Live on-chain margin-account balance for a given collateral asset, keyed
+  // through the same normalization the rest of this file uses. Backs MB mode's
+  // manual amount entry (the "Balance: X {asset}" line + %-of-balance quick
+  // chips inside the shared Collateral row editor) — the same real-balance
+  // source the old full-balance checkbox grid used, just looked up live by
+  // whichever asset the user has picked in the dropdown rather than frozen
+  // into the row at grid-build time. Excludes farm/Blend tracking receipts
+  // (BLEND_*, AQ_*, SS_*, *_LP) — those aren't borrowable margin collateral.
+  const getMarginBalanceForAsset = useCallback(
+    (asset: string): number => {
+      const key = normalizeContractTokenSymbol(asset);
+      const bal = effectiveCollateral[key];
+      if (!bal || isTrackingSymbol(key) || parseFloat(bal.usdValue) <= USD_DUST_EPSILON) return 0;
+      return parseFloat(bal.amount) || 0;
+    },
+    [effectiveCollateral]
+  );
 
   // Entering MB with no collateral loaded yet → pull the margin-account balances
-  // so the grid fills in instead of flashing the "no collateral" empty state
-  // during the gap. refreshBorrowedBalances dedups/throttles internally, so this
-  // is safe to call on every MB enter.
+  // so the row's live Balance/% math fills in instead of flashing zero during
+  // the gap. refreshBorrowedBalances dedups/throttles internally, so this is
+  // safe to call on every MB enter.
   useEffect(() => {
-    if (isMBMode && marginAccountAddress && mbCollateralItems.length === 0) {
-      // Force the read when the account demonstrably holds collateral value but
-      // the per-token map is empty (the inconsistency the user hit): bypass the
-      // throttle so the grid fills in seconds, not after the next slow cycle.
-      refreshBorrowedBalances(marginAccountAddress, effectiveGross > 0.01).catch(() => {});
+    if (isMBMode && marginAccountAddress && effectiveGross <= 0.01) {
+      refreshBorrowedBalances(marginAccountAddress, true).catch(() => {});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMBMode, marginAccountAddress, mbCollateralItems.length, effectiveGross]);
-
-  // When entering MB mode (or when margin-account collaterals first appear),
-  // pre-select every available collateral so the user can borrow against the
-  // full margin account without having to re-tick boxes manually.
-  useEffect(() => {
-    if (!isMBMode || mbCollateralItems.length === 0) return;
-    setMbSelectedIds((prev) => {
-      if (prev.size > 0) return prev;
-      return new Set(mbCollateralItems.map((item) => `${item.asset}-${item.amount}`));
-    });
-  }, [isMBMode, mbCollateralItems]);
-
-  // Total USD across selected MB collaterals — uses each item's full margin
-  // balance (no per-asset edit amounts now that selection is binary).
-  const mbSelectedUsd = useMemo(() => {
-    if (!isMBMode) return 0;
-    return mbCollateralItems.reduce((sum, item) => {
-      const itemId = `${item.asset}-${item.amount}`;
-      if (!mbSelectedIds.has(itemId)) return sum;
-      const price = MB_TOKEN_PRICES[item.asset] ?? 1;
-      return sum + item.amount * price;
-    }, 0);
-  }, [isMBMode, mbCollateralItems, mbSelectedIds, MB_TOKEN_PRICES]);
-
-  const handleMbToggleSelection = useCallback((itemId: string) => {
-    setMbSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
-      return next;
-    });
-  }, []);
+  }, [isMBMode, marginAccountAddress, effectiveGross]);
 
   // Initialize with one empty collateral if none exist
   useEffect(() => {
@@ -300,13 +268,15 @@ export const LeverageAssetsTab = () => {
   // Derived values (no state needed)
   const depositAmount = totalDepositValue;
   const depositCurrency = collateralList[0]?.asset || "USDT";
-  const mbTotalUsd = mbSelectedUsd;
 
   // Simple calculations
   const fees = totalDepositValue > 0 ? totalDepositValue * 0.000234 : 0;
   const totalDeposit = totalDepositValue + fees;
-  // Borrow preview/input should use pure collateral USD (no fee uplift).
-  const effectiveTotalForBorrow = isMBMode ? mbSelectedUsd : depositAmount;
+  // Borrow preview/input should use pure collateral USD (no fee uplift). In MB
+  // mode `collateralList` holds the single margin-account row the user is
+  // sizing against, so `depositAmount` already reflects whatever (possibly
+  // partial) amount they've entered for it — same formula as WB.
+  const effectiveTotalForBorrow = depositAmount;
   const projectedBorrowUsd = Math.max(0, effectiveTotalForBorrow * (leverage - 1));
 
   // Capture the validated dual-borrow output: feed the assembled items into the
@@ -452,14 +422,10 @@ export const LeverageAssetsTab = () => {
     });
 
     setSelectedBalanceType(balanceType.toUpperCase());
-    // When the user switches MB→WB, drop the form straight back into edit
-    // mode so they can type a fresh amount instead of having to click the
-    // pencil icon on a 0-amount saved card.
-    if (normalized === "wb") {
-      setEditingId(id);
-    } else {
-      setEditingId(null);
-    }
+    // Both WB and MB are manual-entry flows now — drop the form straight back
+    // into edit mode on either switch so the user can type a fresh amount
+    // instead of having to click the pencil icon on a 0-amount saved card.
+    setEditingId(id);
   }, []); // No dependencies - uses functional updates
 
   // Reset the entire Leverage Assets form back to its initial state.
@@ -478,7 +444,6 @@ export const LeverageAssetsTab = () => {
     setCollaterals(new Map([[newId, fresh]]));
     setEditingId(newId);
     setSelectedBalanceType(BALANCE_TYPE_OPTIONS[0]);
-    setMbSelectedIds(new Set());
     setLeverage(2);
     setBorrowItems([]);
     setCurrentBorrowItems([]);
@@ -509,8 +474,9 @@ export const LeverageAssetsTab = () => {
         borrowAmountTokens: params.borrowAmountTokens,
       };
     },
-    onMutate: () => {
+    onMutate: (params) => {
       setIsProcessing(true);
+      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}...`);
     },
     onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
       if (hash && marginAccountAddress) {
@@ -522,7 +488,7 @@ export const LeverageAssetsTab = () => {
           hash,
         });
       }
-      toast.success('Borrow successful! Tx: ' + (hash ? hash.slice(0, 16) + '…' : ''));
+      showStepSuccess(`Borrowed ${borrowAmountTokens.toFixed(2)} ${normalizedBorrowToken} against your margin collateral.`, hash);
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
       // Force past the 3s throttle so the new debt shows immediately — the tx is
@@ -539,7 +505,8 @@ export const LeverageAssetsTab = () => {
       }
     },
     onError: (error) => {
-      toast.error(normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.'));
+      const msg = normalizeContractError(error instanceof Error ? error.message : undefined, 'Borrow failed. Please try again.');
+      showStepError(msg);
     },
     onSettled: () => {
       setIsProcessing(false);
@@ -564,21 +531,33 @@ export const LeverageAssetsTab = () => {
     if (hasMarginAccount) {
       // ── MB mode: borrow-only (collateral already in margin account) ──────────
       if (isMBMode) {
-        if (mbCollateralItems.length === 0) {
+        const mbRow = collateralList[0];
+        if (!mbRow) {
           toast.error('No collateral found in your margin account. Deposit collateral first using WB mode.');
           return;
         }
 
-        // Sum the full balance of every selected MB collateral.
-        const totalCollateralUsd = mbCollateralItems.reduce((sum, item) => {
-          const itemId = `${item.asset}-${item.amount}`;
-          if (!mbSelectedIds.has(itemId)) return sum;
-          const price = MB_TOKEN_PRICES[item.asset] ?? 1;
-          return sum + item.amount * price;
-        }, 0);
+        // The manually-entered (possibly partial) amount for this asset — same
+        // shape as WB's deposit amount, just sized against margin-account
+        // balance instead of wallet balance.
+        const totalCollateralUsd = depositAmount;
 
         if (totalCollateralUsd <= 0) {
-          toast.error('Select at least one collateral from your margin account.');
+          toast.error('Enter how much of your margin-account collateral to borrow against.');
+          return;
+        }
+
+        // The row's amount is a sizing input, not a real transfer — but it
+        // shouldn't claim more collateral than the account actually holds for
+        // that asset, or the leverage math below would compute a target borrow
+        // size the user can't actually reach safely.
+        const realBalance = getMarginBalanceForAsset(mbRow.asset);
+        const realBalancePrice = MB_TOKEN_PRICES[normalizeContractTokenSymbol(mbRow.asset)] ?? 1;
+        const realBalanceUsd = realBalance * realBalancePrice;
+        if (mbRow.amount > realBalance + 1e-7) {
+          toast.error(
+            `You only have ${realBalance.toFixed(4)} ${mbRow.asset} (~$${realBalanceUsd.toFixed(2)}) in your margin account. Reduce the amount or use the 100% chip.`
+          );
           return;
         }
 
@@ -616,6 +595,78 @@ export const LeverageAssetsTab = () => {
           return;
         }
 
+        // Dual Borrow: mbBorrowMutation only ever executes ONE borrow call for
+        // `borrowToken` (the DualBorrow component's first item) — it never
+        // looped over a second asset, so a $165 dual-borrow request silently
+        // landed as a single $165 borrow of the first asset. Mirror the WB
+        // split-flow's dual-borrow loop: execute each item's own amount as a
+        // separate borrowTokens() call.
+        const isDualBorrow = borrowState != null && borrowState.items.length === 2;
+        if (isDualBorrow) {
+          setIsProcessing(true);
+          const items = borrowState!.items
+            .map((b) => ({
+              token: normalizeContractTokenSymbol(b.assetData.asset),
+              displayAsset: b.assetData.asset,
+              amount: parseFloat(b.assetData.amount) || 0,
+            }))
+            .filter((b) => b.amount > 0);
+
+          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}...`);
+
+          let lastHash = "";
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}...`);
+            const result = await borrowTokens(userAddress, item.token, item.amount);
+            if (!result.success) {
+              // Build the "first leg already landed" context BEFORE normalizing —
+              // normalizeContractError returns its `raw` argument as-is (when it
+              // doesn't match a cancel/generic-RPC pattern), so the context has to
+              // be baked into that argument, not passed as the fallback (which is
+              // only used when `raw` is empty).
+              const rawWithContext = lastHash
+                ? `First asset borrowed. Second borrow (${item.displayAsset}) failed: ${result.error ?? "Unknown error"}`
+                : `Borrow (${item.displayAsset}) failed: ${result.error ?? "Unknown error"}`;
+              const errorMsg = normalizeContractError(rawWithContext, 'Borrow failed. Please try again.');
+              showStepError(errorMsg);
+              try {
+                await refreshBalances(userAddress);
+              } catch (refreshErr) {
+                console.warn("Failed to refresh wallet balances after dual-borrow failure:", refreshErr);
+              }
+              if (marginAccountAddress) {
+                await refreshBorrowedBalances(marginAccountAddress, true);
+              }
+              setIsProcessing(false);
+              return;
+            }
+            lastHash = result.hash ?? lastHash;
+            appendMarginHistory({
+              marginAccountAddress: marginAccountAddress!,
+              type: "borrow",
+              asset: item.token,
+              amount: item.amount.toFixed(7),
+              hash: result.hash ?? "",
+            });
+          }
+
+          showStepSuccess(
+            `Borrowed ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")} against your margin collateral.`,
+            lastHash || undefined
+          );
+          resetForm();
+          setIsProcessing(false);
+          qc.invalidateQueries({ queryKey: ['margin'] });
+          if (marginAccountAddress) {
+            try {
+              await refreshBorrowedBalances(marginAccountAddress, true);
+            } catch (e) {
+              console.warn('Post-borrow refresh failed; ledger tick will reconcile:', e);
+            }
+          }
+          return;
+        }
 
         mbBorrowMutation.mutate({ userAddress, normalizedBorrowToken, borrowAmountTokens });
         return;
@@ -767,6 +818,12 @@ export const LeverageAssetsTab = () => {
         const depositHashes: string[] = [];
         let borrowHash = "";
 
+        showStep(
+          canUseAtomic
+            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing..." : "..."}`
+            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}...`
+        );
+
         if (canUseAtomic) {
           const item = wbDeposits[0];
           // For dual borrow, use the first item's explicit amount from the DualBorrow state.
@@ -827,7 +884,12 @@ export const LeverageAssetsTab = () => {
               const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
               const amt1 = parseFloat(b1.assetData.amount) || 0;
               if (amt1 > 0) {
-                const borrow2Result = await borrowTokens(userAddress, sym1, amt1);
+                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}...`);
+                // Hand this leg the exact sequence the atomic deposit+borrow
+                // tx just consumed — a fresh RPC read right after that tx
+                // confirms is not reliably caught up (confirmed live:
+                // txBadSeq surviving multiple growing-backoff retries).
+                const borrow2Result = await borrowTokens(userAddress, sym1, amt1, atomicResult.nextSequence);
                 if (borrow2Result.success) {
                   borrowHash = borrow2Result.hash ?? borrowHash;
                   appendMarginHistory({
@@ -838,9 +900,27 @@ export const LeverageAssetsTab = () => {
                     hash: borrow2Result.hash ?? "",
                   });
                 } else {
-                  toast.error(normalizeDepositCollateralError(
+                  // The deposit + first borrow already landed on-chain — don't let
+                  // this fall through to the unconditional "Deposit + borrow
+                  // successful!" toast below, which previously masked this exact
+                  // failure (second leg silently dropped, user saw a success toast
+                  // and a reset form as if both borrows went through). Refresh so
+                  // the UI reflects what actually happened, then stop here —
+                  // mirrors the split-flow borrow-failure handling below.
+                  const secondLegErrorMsg = normalizeDepositCollateralError(
                     `First asset borrowed. Second borrow (${b1.assetData.asset}) failed: ${borrow2Result.error ?? "Unknown error"}`
-                  ));
+                  );
+                  showStepError(secondLegErrorMsg);
+                  try {
+                    await refreshBalances(userAddress);
+                  } catch (refreshErr) {
+                    console.warn("Failed to refresh wallet balances after dual-borrow second-leg failure:", refreshErr);
+                  }
+                  if (marginAccountAddress) {
+                    await refreshBorrowedBalances(marginAccountAddress, true);
+                  }
+                  setIsProcessing(false);
+                  return;
                 }
               }
             }
@@ -855,11 +935,13 @@ export const LeverageAssetsTab = () => {
               console.warn('[leverage] atomic deposit_and_borrow hit Soroban budget; falling back to split 2-tx flow');
               useSplitFlow = true;
             } else if (atomicResult.error?.includes('not allowed as collateral') || atomicResult.error?.includes('Max asset cap')) {
-              toast.error(`Contract configuration error: ${atomicResult.error}`);
+              const msg = `Contract configuration error: ${atomicResult.error}`;
+              showStepError(msg);
               setIsProcessing(false);
               return;
             } else {
-              toast.error(normalizeDepositCollateralError(atomicResult.error));
+              const msg = normalizeDepositCollateralError(atomicResult.error);
+              showStepError(msg);
               setIsProcessing(false);
               return;
             }
@@ -869,7 +951,26 @@ export const LeverageAssetsTab = () => {
         if (useSplitFlow) {
           // Per-token deposit, then a separate borrow. Used for multi-collateral and
           // as the fallback when the atomic deposit+borrow exceeds the Soroban budget.
+          const borrowsToExecute = multiplier > 1
+            ? (isDualBorrow
+                ? borrowState!.items
+                    .map((b) => ({
+                      token: normalizeContractTokenSymbol(b.assetData.asset),
+                      amount: parseFloat(b.assetData.amount) || 0,
+                    }))
+                    .filter((b) => b.amount > 0)
+                : (() => {
+                    const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                    const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
+                    return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
+                  })())
+            : [];
+          const totalSteps = wbDeposits.length + borrowsToExecute.length;
+          let stepNum = 0;
+
           for (const item of wbDeposits) {
+            stepNum += 1;
+            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}...`);
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
               marginAccountAddress!,
@@ -877,8 +978,10 @@ export const LeverageAssetsTab = () => {
               amountWad
             );
             if (!depositResult.success) {
+              let depositErrorMsg: string;
               if (depositResult.error?.includes('not allowed as collateral') || depositResult.error?.includes('Max asset cap')) {
-                toast.error(`Contract configuration error: ${depositResult.error}`);
+                depositErrorMsg = `Contract configuration error: ${depositResult.error}`;
+                showStepError(depositErrorMsg);
                 try {
                   const configResult = await setupContractConfiguration();
                   if (configResult.success) {
@@ -890,7 +993,8 @@ export const LeverageAssetsTab = () => {
                   toast.error(normalizeContractError(setupError instanceof Error ? setupError.message : undefined, 'Setup error. Please try again.'));
                 }
               } else {
-                toast.error(normalizeDepositCollateralError(depositResult.error));
+                depositErrorMsg = normalizeDepositCollateralError(depositResult.error);
+                showStepError(depositErrorMsg);
               }
               setIsProcessing(false);
               return;
@@ -907,27 +1011,16 @@ export const LeverageAssetsTab = () => {
           }
 
           if (multiplier > 1) {
-            // Dual borrow: execute each item separately. Single borrow: compute from leverage.
-            const borrowsToExecute = isDualBorrow
-              ? borrowState!.items
-                  .map((b) => ({
-                    token: normalizeContractTokenSymbol(b.assetData.asset),
-                    amount: parseFloat(b.assetData.amount) || 0,
-                  }))
-                  .filter((b) => b.amount > 0)
-              : (() => {
-                  const borrowTokenPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
-                  const borrowAmountUsd = totalDepositAmountUsd * (multiplier - 1);
-                  return [{ token: normalizedBorrowToken, amount: borrowAmountUsd / borrowTokenPrice }];
-                })();
-
             for (const bItem of borrowsToExecute) {
+              stepNum += 1;
+              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}...`);
               const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
               if (!borrowResult.success) {
                 console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
-                toast.error(normalizeDepositCollateralError(
+                const borrowErrorMsg = normalizeDepositCollateralError(
                   `Deposits were successful. Borrow ${bItem.token} failed: ${borrowResult.error || "Unknown borrow error"}`
-                ));
+                );
+                showStepError(borrowErrorMsg);
                 try {
                   await refreshBalances(userAddress);
                 } catch (refreshErr) {
@@ -959,8 +1052,13 @@ export const LeverageAssetsTab = () => {
         // progressive set() updates the position/collateral within ~1-2s; any
         // refresh failure reconciles on the next ledger tick.
         const txPreview = borrowHash || depositHashes[depositHashes.length - 1] || "";
-        toast.success(
-          `Deposit${multiplier > 1 ? " + borrow" : ""} successful! Tx: ${txPreview ? txPreview.slice(0, 16) + "…" : ""}`
+        showStepSuccess(
+          isDualBorrow
+            ? "Deposited collateral and borrowed both assets successfully."
+            : multiplier > 1
+              ? "Deposited collateral and borrowed successfully."
+              : "Collateral deposited successfully.",
+          txPreview || undefined
         );
         resetForm();
         setIsProcessing(false);
@@ -1002,7 +1100,8 @@ export const LeverageAssetsTab = () => {
       } catch (error) {
         console.error('❌ Error in deposit and borrow:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        toast.error(normalizeDepositCollateralError(errorMessage));
+        const friendlyMsg = normalizeDepositCollateralError(errorMessage);
+        showStepError(friendlyMsg);
       } finally {
         setIsProcessing(false);
       }
@@ -1061,151 +1160,77 @@ export const LeverageAssetsTab = () => {
             Deposit
           </motion.h2>
           <section className="flex flex-col gap-[12px]">
-            {/* MB mode: pick which margin-account collaterals to leverage */}
-            {isMBMode ? (
-              <motion.article
-                className={`relative w-full rounded-2xl p-3 sm:p-4 flex flex-col gap-3 transition-colors border ${
-                  isDark ? "bg-[#1A1A1A] border-[#2A2A2A]" : "bg-white border-[#EEEEEE]"
-                }`}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-              >
-                {/* Header: Deposit label + WB/MB toggle */}
-                <div className="flex items-center justify-between gap-2">
-                  <span className={`text-sm font-medium ${isDark ? "text-[#A7A7A7]" : "text-[#777777]"}`}>
-                    Select collateral from margin account
-                  </span>
-                  <div className={`flex items-center rounded-lg p-0.5 ${isDark ? "bg-[#2A2A2A]" : "bg-[#F0F0F0]"}`}>
-                    {BALANCE_TYPE_OPTIONS.map((option) => (
-                      <motion.button
-                        key={option}
-                        type="button"
-                        onClick={() => {
-                          const id = collateralList[0]?.id || generateCollateralId();
-                          handleBalanceTypeChange(id, option);
-                        }}
-                        whileTap={{ scale: 0.95 }}
-                        transition={{ duration: 0.1 }}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-semibold cursor-pointer transition-all ${
-                          selectedBalanceType === option
-                            ? "bg-[#703AE6] text-white shadow-sm"
-                            : isDark ? "text-[#777777] hover:text-[#AAAAAA]" : "text-[#888888] hover:text-[#555555]"
-                        }`}
-                        aria-pressed={selectedBalanceType === option}
-                      >
-                        {option}
-                      </motion.button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Selection grid (or empty state) */}
-                {mbCollateralItems.length > 0 ? (
-                  <>
-                    <MBSelectionGrid
-                      items={mbCollateralItems}
-                      selectedIds={mbSelectedIds}
-                      mode="Deposit"
-                      onToggle={handleMbToggleSelection}
-                      onRadioSelect={() => {}}
-                    />
-                    <div className="flex items-center justify-between pt-1">
-                      <span className={`text-[12px] font-medium ${isDark ? "text-[#777777]" : "text-[#A7A7A7]"}`}>
-                        {mbSelectedIds.size} of {mbCollateralItems.length} selected
-                      </span>
-                      <span className={`text-[12px] font-semibold ${isDark ? "text-white" : "text-[#111111]"}`}>
-                        ≈ ${mbSelectedUsd.toFixed(2)} USD
-                      </span>
-                    </div>
-                  </>
-                ) : isLoadingBorrowedBalances || effectiveGross > 0.01 ? (
-                  // Loading skeleton — shown while balances are being read OR
-                  // whenever the account demonstrably holds collateral value
-                  // (grossCollateralValue > 0) but the per-token map is momentarily
-                  // empty mid-refresh. Using the account-level value as the source
-                  // of truth means we never flash "no collateral" for an account
-                  // that has some (matches the header's Net Available figure).
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2" aria-busy="true">
-                    {[0, 1].map((i) => (
-                      <div
-                        key={i}
-                        className={`h-[52px] rounded-xl animate-pulse ${isDark ? "bg-[#2A2A2A]" : "bg-[#ECECEC]"}`}
-                      />
-                    ))}
-                  </div>
+            {/* Both WB (deposit from wallet) and MB (borrow against existing
+                margin-account collateral) share this same row editor — MB just
+                sources its "Balance" and %-chip math from the live margin-account
+                balance (via getMarginBalanceForAsset) instead of the wallet. */}
+            <section
+              className={`${collateralList.length>2?"max-h-[364px] overflow-y-auto overflow-x-visible pr-[4px]":""}  thin-scrollbar `}
+            >
+              <AnimatePresence mode="popLayout">
+                {collateralList.length > 0 ? (
+                  <ul className="flex flex-col gap-[12px]" role="list">
+                    {collateralList.map((collateral, index) => {
+                      const id = collateral.id!;
+                      return (
+                        <motion.div
+                          key={id}
+                          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -20, scale: 0.95 }}
+                          transition={{
+                            duration: 0.3,
+                            ease: "easeOut",
+                            delay: index * 0.05,
+                          }}
+                          layout
+                        >
+                          <li>
+                            <Collateral
+                              id={id}
+                              collaterals={collateral}
+                              isEditing={editingId === id}
+                              isAnyOtherEditing={editingId !== null && editingId !== id}
+                              onEdit={handleEditCollateral}
+                              onSave={handleSaveCollateral}
+                              onCancel={handleCancelEdit}
+                              onDelete={handleDeleteCollateral}
+                              onBalanceTypeChange={handleBalanceTypeChange}
+                              marginBalanceFor={getMarginBalanceForAsset}
+                              index={index}
+                            />
+                          </li>
+                        </motion.div>
+                      );
+                    })}
+                  </ul>
                 ) : (
-                  <p className={`text-center text-sm py-2 ${isDark ? "text-[#777777]" : "text-[#AAAAAA]"}`}>
-                    No collateral in your margin account. Switch to WB to deposit first.
-                  </p>
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3 }}
+                  >
+                    <Collateral
+                      id={generateCollateralId()}
+                      collaterals={null}
+                      isEditing={true}
+                      isAnyOtherEditing={false}
+                      onEdit={handleEditCollateral}
+                      onSave={(id, data) => {
+                        const collateralWithId = ensureCollateralId(data);
+                        setCollaterals(new Map([[collateralWithId.id!, collateralWithId]]));
+                        setEditingId(null);
+                      }}
+                      onCancel={handleCancelEdit}
+                      onBalanceTypeChange={handleBalanceTypeChange}
+                      marginBalanceFor={getMarginBalanceForAsset}
+                      index={0}
+                    />
+                  </motion.div>
                 )}
-              </motion.article>
-            ) : (
-              <section 
-                className={`${collateralList.length>2?"max-h-[364px] overflow-y-auto overflow-x-visible pr-[4px]":""}  thin-scrollbar `}
-              >
-                <AnimatePresence mode="popLayout">
-                  {collateralList.length > 0 ? (
-                    <ul className="flex flex-col gap-[12px]" role="list">
-                      {collateralList.map((collateral, index) => {
-                        const id = collateral.id!;
-                        return (
-                          <motion.div
-                            key={id}
-                            initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: -20, scale: 0.95 }}
-                            transition={{
-                              duration: 0.3,
-                              ease: "easeOut",
-                              delay: index * 0.05,
-                            }}
-                            layout
-                          >
-                            <li>
-                              <Collateral
-                                id={id}
-                                collaterals={collateral}
-                                isEditing={editingId === id}
-                                isAnyOtherEditing={editingId !== null && editingId !== id}
-                                onEdit={handleEditCollateral}
-                                onSave={handleSaveCollateral}
-                                onCancel={handleCancelEdit}
-                                onDelete={handleDeleteCollateral}
-                                onBalanceTypeChange={handleBalanceTypeChange}
-                                index={index}
-                              />
-                            </li>
-                          </motion.div>
-                        );
-                      })}
-                    </ul>
-                  ) : (
-                    <motion.div
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -20 }}
-                      transition={{ duration: 0.3 }}
-                    >
-                      <Collateral
-                        id={generateCollateralId()}
-                        collaterals={null}
-                        isEditing={true}
-                        isAnyOtherEditing={false}
-                        onEdit={handleEditCollateral}
-                        onSave={(id, data) => {
-                          const collateralWithId = ensureCollateralId(data);
-                          setCollaterals(new Map([[collateralWithId.id!, collateralWithId]]));
-                          setEditingId(null);
-                        }}
-                        onCancel={handleCancelEdit}
-                        onBalanceTypeChange={handleBalanceTypeChange}
-                        index={0}
-                      />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </section>
-            )}
+              </AnimatePresence>
+            </section>
           </section>
 
           {/* Add Collateral button */}

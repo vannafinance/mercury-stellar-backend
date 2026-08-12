@@ -297,8 +297,13 @@ export const depositAndBorrow = async (
 export const borrowTokens = async (
   userAddress: string,
   tokenSymbol: string,
-  borrowAmount: number
-): Promise<{ success: boolean; hash?: string; error?: string }> => {
+  borrowAmount: number,
+  // Forwarded to MarginAccountService.borrowTokens — pass the `nextSequence`
+  // from a just-confirmed prior same-account tx (e.g. a dual-borrow's atomic
+  // deposit_and_borrow leg) to skip a same-account RPC re-read that isn't
+  // reliably caught up yet. See borrowTokensAttempt's doc comment.
+  knownSequence?: string
+): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> => {
   try {
     const normalizedTokenSymbol = canonicalMarginToken(tokenSymbol);
 
@@ -331,7 +336,8 @@ export const borrowTokens = async (
     const result = await MarginAccountService.borrowTokens(
       account.address,
       normalizedTokenSymbol,
-      borrowAmountWad
+      borrowAmountWad,
+      knownSequence
     );
 
 

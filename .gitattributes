@@ -1,0 +1,6 @@
+# Shell scripts and CI configs must check out with LF even on Windows: a
+# CRLF bootstrap.sh fails in Cloud Shell with `$'\r': command not found`, and
+# CRLF inside a workflow's `run: |` block breaks the same way on the runner.
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf

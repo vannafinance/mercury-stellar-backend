@@ -16,6 +16,7 @@ import {
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
@@ -321,6 +322,11 @@ export const TransferCollateral = () => {
   };
 
   const transferMutation = useMutation({
+    onMutate: () => {
+      showTxStep(
+        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`
+      );
+    },
     mutationFn: async () => {
       const amountWad = (BigInt(Math.floor(Number(valueInput) * 1000000)) * BigInt(1000000000000)).toString();
 
@@ -350,7 +356,7 @@ export const TransferCollateral = () => {
         hash: result.hash ?? "",
       });
 
-      toast.success(
+      showTxSuccess(
         `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
       );
 
@@ -387,7 +393,8 @@ export const TransferCollateral = () => {
       ) {
         setValueInput(floorAmountToInput(safeMaxAfterFailure));
       }
-      toast.error(getFriendlyTransferError(message, safeMaxAfterFailure));
+      const friendlyMessage = getFriendlyTransferError(message, safeMaxAfterFailure);
+      showTxError(friendlyMessage);
     },
   });
 

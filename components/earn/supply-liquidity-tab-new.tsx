@@ -27,6 +27,7 @@ import { normalizeSupplyError } from "@/lib/errors/normalize";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
 import { STELLAR_POOLS } from "@/lib/constants/earn";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 const POOL_OPTIONS = ["XLM", "BLUSDC", "AqUSDC", "SoUSDC"] as const;
 
@@ -79,11 +80,26 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
   const selectedPoolConfig = STELLAR_POOLS[normalizedAsset as keyof typeof STELLAR_POOLS];
 
+  // Real on-chain XLM minimum reserve (base + subentries) — a flat "keep 1
+  // XLM" either overshoots (blocking a valid 100% supply) or undershoots
+  // (trapping the account) depending on how many trustlines the wallet holds.
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
+
   // Calculate available balance
   const availableBalance = useMemo(() => {
     if (normalizedAsset === 'XLM') {
       const xlmBalance = parseFloat(balance) || 0;
-      return Math.max(0, xlmBalance - 1);
+      return maxSpendableXlm(xlmBalance, xlmMinReserve);
     } else if (normalizedAsset === 'USDC') {
       return parseFloat(storeTokenBalances.BLEND_USDC || storeTokenBalances.USDC || '0');
     } else if (normalizedAsset === 'AQUARIUS_USDC') {
@@ -92,13 +108,18 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       return parseFloat(storeTokenBalances.SOROSWAP_USDC || '0');
     }
     return 0;
-  }, [normalizedAsset, balance, storeTokenBalances]);
+  }, [normalizedAsset, balance, storeTokenBalances, xlmMinReserve]);
 
   const handlePercentageClick = (percent: number) => {
     setSelectedPercentage(percent);
     if (availableBalance > 0) {
       const calculatedAmount = (availableBalance * percent) / 100;
-      setAmount(calculatedAmount.toFixed(2).replace(/\.?0+$/, ""));
+      // Floor (not round) to 2dp — toFixed's rounding can nudge the 100%
+      // pill's value slightly ABOVE the true availableBalance, which then
+      // fails the `amount > availableBalance` check and shows a false
+      // "Insufficient Balance" for what should be a valid full-balance supply.
+      const floored = Math.floor(calculatedAmount * 100) / 100;
+      setAmount(floored.toFixed(2).replace(/\.?0+$/, ""));
     }
   };
 
@@ -110,14 +131,11 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const handleSupply = async () => {
     const numAmount = parseFloat(amount);
     if (numAmount > 0 && userAddress) {
-      const isFullBalanceSupply =
-        selectedPercentage === 100 || numAmount >= Math.max(0, availableBalance - 0.0000001);
-
-      if (isFullBalanceSupply) {
-        toast.error(`You cannot supply all your ${selectedOption}. Keep a small balance and try again.`);
-        return;
-      }
-
+      // No proactive "keep a small balance" block: for XLM, `availableBalance`
+      // already reserves the real on-chain minimum + fee buffer (see
+      // maxSpendableXlm above), and non-native assets (BLUSDC/AqUSDC/SoUSDC)
+      // have no reserve requirement of their own — their fees are paid in
+      // XLM, not the supplied asset — so a genuine 100% supply is safe.
       const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
       try {
         await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });

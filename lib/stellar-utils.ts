@@ -133,6 +133,103 @@ export function vTokenAddress(assetType: AssetType): string {
   }
 }
 
+// ─── Shared same-account back-to-back tx resilience ─────────────────────────
+//
+// Any two Soroban transactions submitted from the SAME wallet account back
+// to back (e.g. one-click's deposit → borrow → deploy chain) race the same
+// class of failure: the second tx's `getAccount()` call can read a stale
+// sequence number from an RPC endpoint that hasn't caught up with the first
+// tx yet. This surfaces as `txBadSeq` (submission-time rejection, no
+// operations even run) or, less often, the RPC's submission queue declining
+// the attempt outright (`TRY_AGAIN_LATER`). Neither means the transaction
+// was invalid — both self-heal on a proper retry. Originally solved ad hoc
+// inside MarginAccountService.borrowTokensAttempt; hoisted here once
+// BlendService's depositToBlendPool/withdrawFromBlendPool needed the exact
+// same handling and duplicating it a second time stopped being reasonable.
+
+/**
+ * Whether a transaction failure looks like the same-account race documented
+ * above — a stale sequence number (`txBadSeq`), a stale simulation
+ * footprint (`scecExceededLimit`/"outside of the footprint"), or an RPC
+ * submission queue that declined the attempt (`TRY_AGAIN_LATER`). All three
+ * self-heal on a fresh rebuild+resubmit; none of them mean the transaction
+ * itself was invalid.
+ */
+export function isFootprintRaceError(raw: any): boolean {
+  const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
+  return (
+    text.includes('outside of the footprint') ||
+    text.includes('exceeded_limit') ||
+    /budget|exceededlimit|resource|try_again_later|txbadseq|txsorobaninvalid|txtoolate/i.test(text)
+  );
+}
+
+/**
+ * Decodes a `sendTransaction` submission-time rejection (`result.status ===
+ * 'ERROR'`) into its real `TransactionResult` code, e.g. `txBadSeq`, instead
+ * of the raw XDR bytes `result.errorResult.toXDR()` would otherwise dump —
+ * `toXDR()` with no argument returns a Buffer, and string-interpolating it
+ * just calls the Buffer's garbled default `toString()`, which never matches
+ * {@link isFootprintRaceError}'s text patterns.
+ */
+export function describeSendError(result: any): string {
+  try {
+    const code = result?.errorResult?.result?.().switch?.().name;
+    if (code) return code;
+  } catch {
+    // Fall through to the generic message below.
+  }
+  return 'unknown';
+}
+
+/**
+ * Resubmits the SAME signed transaction (no rebuild) when the RPC's
+ * submission queue returns `TRY_AGAIN_LATER` — that status means the queue
+ * declined the attempt without judging the tx itself, so resubmitting the
+ * identical signed envelope (not rebuilding with a fresh sequence) is the
+ * correct recovery.
+ */
+export async function resubmitOnTryAgainLater(
+  server: StellarSdk.rpc.Server,
+  signedTx: StellarSdk.Transaction,
+  initialResult: any,
+  label: string,
+  maxAttempts = 3,
+  delayMs = 1500,
+): Promise<any> {
+  let result = initialResult;
+  for (let attempt = 0; result.status === 'TRY_AGAIN_LATER' && attempt < maxAttempts; attempt++) {
+    console.warn(`⚠️ ${label} submission returned TRY_AGAIN_LATER; resubmitting (attempt ${attempt + 1}/${maxAttempts}).`);
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    result = await server.sendTransaction(signedTx);
+  }
+  return result;
+}
+
+/**
+ * Runs `attempt` once, then retries with growing backoff (2s, 4s) whenever
+ * the failure looks like {@link isFootprintRaceError} — a stale RPC read
+ * that a full rebuild-from-scratch (calling `attempt` again re-fetches
+ * `getAccount()` fresh) can outlast. A single retry wasn't always enough
+ * against a multi-node RPC endpoint — confirmed live still hitting the same
+ * error on the first retry too — so this allows up to 3 total tries.
+ */
+export async function withFootprintRaceRetry<T extends { success: boolean; error?: string }>(
+  attempt: () => Promise<T>,
+  label: string,
+): Promise<T> {
+  const RETRY_DELAYS_MS = [2000, 4000];
+  let result = await attempt();
+
+  for (let i = 0; i < RETRY_DELAYS_MS.length && !result.success && isFootprintRaceError(result.error); i++) {
+    console.warn(`⚠️ ${label} hit a footprint/ledger-lag race; retrying after a short delay (attempt ${i + 2}/${RETRY_DELAYS_MS.length + 1}).`);
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[i]));
+    result = await attempt();
+  }
+
+  return result;
+}
+
 export class WalletService {
   static async connectWallet(): Promise<{ address: string; success: boolean; error?: string }> {
     try {
@@ -474,6 +571,57 @@ export class ContractService {
     }
     
     throw new Error('Transaction timeout');
+  }
+
+  /**
+   * Read the REAL per-second borrow interest rate straight from the deployed
+   * `RateModelContract.get_borrow_rate_per_sec(liquidity_wad, borrows_wad)` —
+   * the exact same curve `lending-pool`'s own `get_rate_factor` calls to
+   * accrue interest on-chain. This replaced a frontend-only synthetic curve
+   * (`lib/utils/borrow-rate.ts`'s `computeBorrowApr`) that had no relationship
+   * to the real contract math and could show Supply APY above Borrow APY —
+   * mathematically impossible under the real curve, since supply is always a
+   * fraction (utilization-scaled) of borrow.
+   *
+   * @param liquidityWad - Pool's available liquidity, WAD-scaled (1e18).
+   * @param borrowsWad - Pool's outstanding borrows, WAD-scaled (1e18).
+   * @returns The per-second rate, WAD-scaled, as a bigint; `null` on error.
+   */
+  static async getBorrowRatePerSecWad(liquidityWad: bigint, borrowsWad: bigint): Promise<bigint | null> {
+    try {
+      const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+      const tempKeypair = StellarSdk.Keypair.random();
+      const tempAccount = new StellarSdk.Account(tempKeypair.publicKey(), '0');
+      const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.RATE_MODEL);
+
+      const transaction = new StellarSdk.TransactionBuilder(tempAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            'get_borrow_rate_per_sec',
+            StellarSdk.nativeToScVal(liquidityWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(borrowsWad, { type: 'u256' }),
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulationResponse = await server.simulateTransaction(transaction);
+
+      if (StellarSdk.rpc.Api.isSimulationSuccess(simulationResponse)) {
+        const result = simulationResponse.result;
+        if (result && result.retval) {
+          const ratePerSecWad = StellarSdk.scValToNative(result.retval);
+          return BigInt(ratePerSecWad);
+        }
+      }
+      return null;
+    } catch (error: any) {
+      console.error('Error fetching borrow rate per sec:', error);
+      return null;
+    }
   }
 
   /**

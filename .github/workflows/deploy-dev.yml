@@ -1,0 +1,87 @@
+name: Deploy dev
+
+# dev → Cloud Run service vanna-app-dev → test.stellar.vanna.finance
+#
+# Auth is Workload Identity Federation: GitHub mints an OIDC token, GCP trades
+# it for a short-lived token on vanna-deployer. No service-account JSON key is
+# stored in GitHub secrets — the org policy blocks key creation anyway.
+
+on:
+  push:
+    branches: [dev]
+    # None of these change the container, and a full rebuild runs ~16 minutes.
+    # Editing a provisioning script should not cost a deploy. cloudbuild.yaml and
+    # this file are deliberately NOT ignored — both change how the app is built
+    # or run. workflow_dispatch still forces a deploy when one is wanted.
+    paths-ignore:
+      - "infra/**"
+      - "**/*.md"
+      - ".gitattributes"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/deploy-prod.yml"
+  workflow_dispatch:
+
+# id-token: write is what lets the runner mint the OIDC assertion. Without it
+# google-github-actions/auth fails with an unhelpful "unable to get credentials".
+permissions:
+  contents: read
+  id-token: write
+
+# A second push to dev should supersede an in-flight deploy, not race it.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: vanna-main
+  PROJECT_NUMBER: "1079109217674"
+  REGION: us-central1
+  SERVICE: vanna-app-dev
+  SITE_URL: https://test.stellar.vanna.finance
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Gate the deploy on the type-check. The full build is re-run inside the
+      # container build, so running `npm run build` here too would only double
+      # the wall-clock for no extra signal.
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github
+          service_account: vanna-deployer@vanna-main.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy
+        # Public value, so a repository variable rather than a secret. Unset is
+        # fine: the build arg goes empty and Privy sign-in stays hidden.
+        env:
+          PRIVY_APP_ID: ${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
+        run: |
+          gcloud builds submit \
+            --config=cloudbuild.yaml \
+            --region="$REGION" \
+            --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID}" \
+            .
+
+      - name: Report URL
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          echo "Deployed: $URL"
+          echo "### Deployed [$SERVICE]($URL)" >> "$GITHUB_STEP_SUMMARY"

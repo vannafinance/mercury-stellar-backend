@@ -5,7 +5,7 @@ import { motion, AnimatePresence, type Variants } from "framer-motion";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
-import { useMarginAccountInfoStore, createMarginAccount } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, createMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
@@ -13,7 +13,6 @@ import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { LeverageSlider } from "@/components/ui/leverage-slider";
-import { Modal } from "@/components/ui/modal";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import {
   distanceToLiquidationPct,
@@ -21,6 +20,15 @@ import {
 } from "@/components/lite-mode/lite-position-math";
 import { usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { AquariusService } from "@/lib/aquarius-utils";
+import { SoroswapService } from "@/lib/soroswap-utils";
+import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
+
+const showStep = (message: string) => showTxStep(message);
+const showStepSuccess = (message: string, txHash?: string) =>
+  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepError = (message: string) => showTxError(message);
 
 /* ═══════════════════════════════════════════════════════════════
    Pool & Token types
@@ -59,6 +67,21 @@ const POOL_OPTIONS: PoolOption[] = [
     feeTier: "0.3%", storeKey: "SOROSWAP_USDC", tags: ["Vanna", "Soroswap"],
   },
 ];
+
+/**
+ * Display-only symbol for a pool's generic "USDC" entry — AqUSDC/SoUSDC/
+ * BLUSDC are genuinely distinct SAC tokens, but `PoolOption.tokens`/
+ * `collateralAsset`/`borrowAsset` stay the generic "XLM"|"USDC" everywhere
+ * else in this file (state, TokenAsset typing, the actual borrow/swap/
+ * addLiquidity calls in lib/one-click-strategy.ts resolve the real on-chain
+ * symbol themselves). Only ever use this when rendering text/icons.
+ */
+const poolAssetLabel = (pool: Pick<PoolOption, "protocol">, asset: string): string => {
+  if (asset !== "USDC") return asset;
+  if (pool.protocol === "Aquarius") return "AqUSDC";
+  if (pool.protocol === "Soroswap") return "SoUSDC";
+  return "BLUSDC";
+};
 
 /* ─── token helpers ─── */
 type TokenAsset = "XLM" | "USDC";
@@ -157,6 +180,16 @@ export const OneClickStrategy = () => {
     () => POOL_OPTIONS.find((p) => p.id === selectedPoolId) || POOL_OPTIONS[0],
     [selectedPoolId]
   );
+  // Display-only token labels for `selectedPool` — every functional usage
+  // elsewhere in this file (collateralAsset/borrowAsset comparisons, the
+  // actual borrow/swap/addLiquidity calls) keeps using selectedPool.tokens
+  // directly; these two are ONLY for rendered text/icons.
+  const selectedPoolTokenLabels = useMemo(
+    () => selectedPool.tokens.map((t) => poolAssetLabel(selectedPool, t)),
+    [selectedPool]
+  );
+  const selectedPoolLabelStr = selectedPoolTokenLabels.join("/");
+  const selectedPoolFirstTokenLabel = selectedPoolTokenLabels[0] ?? selectedPool.tokens[0];
 
   // ─── Form state ───
   const [collateralAsset, setCollateralAsset] = useState<TokenAsset>("XLM");
@@ -176,20 +209,52 @@ export const OneClickStrategy = () => {
   const [collateralAmount, setCollateralAmount] = useState("");
   const [leverage, setLeverage] = useState(1);
   const [scenario, setScenario] = useState<StrategyScenario>("same-asset");
+
+  // Live XLM/USDC reserves for the selected LP pool — the paired/borrowed leg
+  // of an Aquarius/Soroswap LP position must match the pool's CURRENT reserve
+  // ratio, not an oracle-price split. Aquarius/Soroswap's classic-pool deposit
+  // pulls the full amounts requested but mints LP shares only for the
+  // proportionally smaller side, so an oracle-priced pair silently donates
+  // the mismatched excess to the pool. This is a preview only — the actual
+  // execution (lib/one-click-strategy.ts) re-fetches fresh reserves right
+  // before borrowing, so a few seconds of staleness here can't cause a loss.
+  const [lpReserves, setLpReserves] = useState<{ xlm: number; usdc: number } | null>(null);
+  const [lpReservesLoading, setLpReservesLoading] = useState(false);
+  useEffect(() => {
+    if (selectedPool.type !== "lp") {
+      setLpReserves(null);
+      return;
+    }
+    let cancelled = false;
+    setLpReservesLoading(true);
+    const fetchReserves =
+      selectedPool.protocol === "Aquarius"
+        ? AquariusService.getAquariusPoolStats(CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL).then((s) =>
+            s ? { xlm: parseFloat(s.reserveA), usdc: parseFloat(s.reserveB) } : null
+          )
+        : SoroswapService.getPoolStats().then((s) =>
+            s ? { xlm: parseFloat(s.reserveXLM), usdc: parseFloat(s.reserveUSDC) } : null
+          );
+    fetchReserves
+      .then((r) => {
+        if (!cancelled) setLpReserves(r);
+      })
+      .catch(() => {
+        if (!cancelled) setLpReserves(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLpReservesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPool.type, selectedPool.protocol]);
   const oraclePrices = useTokenPrices(["XLM", "USDC"]);
   const prices: Record<string, number> = {
     XLM: oraclePrices.XLM ?? 1.0,
     USDC: 1.0,
   };
   const [loading, setLoading] = useState(false);
-  const [showBreakdown, setShowBreakdown] = useState(false);
-  const [txModal, setTxModal] = useState<{
-    open: boolean;
-    status: "pending" | "success" | "error";
-    title: string;
-    message: string;
-    txHash?: string;
-  }>({ open: false, status: "pending", title: "", message: "" });
 
   const formatTvl = (tokens: string, priceUsd: number): string => {
     const usd = (parseFloat(tokens) || 0) * priceUsd;
@@ -291,14 +356,51 @@ export const OneClickStrategy = () => {
   }, [selectedPool, collateralAsset, isSameAsset]);
 
   const borrowPrice = prices[borrowAsset] || 1;
+  // Display-only labels — collateralAsset/borrowAsset themselves stay the
+  // functional "XLM"|"USDC" used for balance lookups, deposit/borrow calls,
+  // and every comparison in this file. Only ever render these two in JSX text.
+  const collateralAssetLabel = poolAssetLabel(selectedPool, collateralAsset);
+  const borrowAssetLabel = poolAssetLabel(selectedPool, borrowAsset);
+
+  // How much of `borrowAsset` the pool's live reserves want per 1 unit of
+  // `collateralAsset` — 0 while reserves haven't loaded yet (LP pools only).
+  const lpPoolRatio = useMemo(() => {
+    if (selectedPool.type !== "lp" || !lpReserves) return 0;
+    const collateralReserve = collateralAsset === "XLM" ? lpReserves.xlm : lpReserves.usdc;
+    const otherReserve = collateralAsset === "XLM" ? lpReserves.usdc : lpReserves.xlm;
+    return collateralReserve > 0 ? otherReserve / collateralReserve : 0;
+  }, [selectedPool.type, lpReserves, collateralAsset]);
+
+  // For LP pools, leverage scales BOTH legs together to keep the pair on the
+  // pool's ratio, while the two legs' borrow amounts still sum to exactly
+  // collateralUsd × (leverage − 1) — so the position lands at exactly the
+  // chosen leverage instead of overshooting it. (A flat top-up of
+  // collateralNum × (leverage − 1) in the collateral asset ALONE, with the
+  // paired leg added on top, silently added extra exposure beyond the chosen
+  // multiplier — a chosen 2x landed closer to ~2.2x on this pool's live
+  // ratio.) Solving `x·Pc + (collateralNum+x)·ratio·Po = collateralUsd·(L−1)`
+  // for x gives the top-up below. For single-asset (Blend) pools there's no
+  // ratio constraint, so the borrowed leg stays a plain oracle-priced split.
+  const collateralBorrowAmount = useMemo(() => {
+    if (selectedPool.type !== "lp" || leverage <= 1 || collateralNum <= 0 || lpPoolRatio <= 0) return 0;
+    const totalBorrowUsdTarget = collateralUsd * (leverage - 1);
+    const denom = collateralPrice + lpPoolRatio * borrowPrice;
+    if (denom <= 0) return 0;
+    return Math.max(0, (totalBorrowUsdTarget - collateralNum * lpPoolRatio * borrowPrice) / denom);
+  }, [selectedPool.type, leverage, collateralNum, collateralUsd, collateralPrice, lpPoolRatio, borrowPrice]);
 
   const borrowedAmount = useMemo(() => {
     if (leverage <= 1 || collateralNum <= 0) return 0;
+    if (selectedPool.type === "lp") {
+      if (lpPoolRatio <= 0) return 0;
+      return (collateralNum + collateralBorrowAmount) * lpPoolRatio;
+    }
     const borrowUsdNeeded = collateralUsd * (leverage - 1);
     return borrowUsdNeeded / borrowPrice;
-  }, [leverage, collateralNum, collateralUsd, borrowPrice]);
+  }, [leverage, collateralNum, collateralUsd, borrowPrice, selectedPool.type, lpPoolRatio, collateralBorrowAmount]);
 
-  const borrowUsd = borrowedAmount * borrowPrice;
+  const collateralBorrowUsd = collateralBorrowAmount * collateralPrice;
+  const borrowUsd = borrowedAmount * borrowPrice + collateralBorrowUsd;
   const totalPositionUsd = collateralUsd + borrowUsd;
 
   // APR calculations
@@ -320,7 +422,7 @@ export const OneClickStrategy = () => {
       const netApr = supplyEarnings - borrowCost;
       return {
         netApr, supplyEarnings, borrowCost,
-        legs: [{ label: `${selectedPool.protocol} ${selectedPool.tokens.join("/")} LP`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+        legs: [{ label: `${selectedPool.protocol} ${selectedPoolLabelStr} LP`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
       };
     }
 
@@ -332,7 +434,7 @@ export const OneClickStrategy = () => {
       const netApr = supplyEarnings - borrowCost;
       return {
         netApr, supplyEarnings, borrowCost,
-        legs: [{ label: `${selectedPool.tokens.join("/")} Supply`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+        legs: [{ label: `${selectedPoolLabelStr} Supply`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
       };
     }
 
@@ -348,8 +450,8 @@ export const OneClickStrategy = () => {
       return {
         netApr, supplyEarnings: collateralEarning + targetEarning, borrowCost,
         legs: [
-          { label: `${selectedPool.protocol} ${collateralAsset} pool`, apr: collateralSupplyApr, multiplier: 1, earning: collateralEarning },
-          { label: `${selectedPool.protocol} ${selectedPool.tokens[0]} pool`, apr: supplyApr, multiplier: borrowMultiplier, earning: targetEarning },
+          { label: `${selectedPool.protocol} ${collateralAssetLabel} pool`, apr: collateralSupplyApr, multiplier: 1, earning: collateralEarning },
+          { label: `${selectedPool.protocol} ${selectedPoolFirstTokenLabel} pool`, apr: supplyApr, multiplier: borrowMultiplier, earning: targetEarning },
         ],
       };
     }
@@ -363,7 +465,7 @@ export const OneClickStrategy = () => {
     const netApr = supplyEarnings - borrowCost;
     return {
       netApr, supplyEarnings, borrowCost,
-      legs: [{ label: `${selectedPool.tokens.join("/")} (all-in)`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
+      legs: [{ label: `${selectedPoolLabelStr} (all-in)`, apr: supplyApr, multiplier: totalMultiplier, earning: supplyEarnings }],
     };
   }, [scenario, selectedPool, selectedPoolLive, livePools, collateralNum, borrowedAmount, leverage, collateralUsd, borrowUsd, borrowPrice, collateralAsset]);
 
@@ -406,24 +508,20 @@ export const OneClickStrategy = () => {
   const maxLeverageForAsset = (asset: string) => (asset === "USDC" ? 7 : 5);
   const maxLev = maxLeverageForAsset(collateralAsset);
 
-  const dailyEarning = (aprCalc.netApr / 100 / 365) * collateralUsd;
-  const monthlyEarning = dailyEarning * 30;
-  const yearlyEarning = (aprCalc.netApr / 100) * collateralUsd;
-
   /* ─── Create margin account ─── */
   const handleCreateAccount = async () => {
     if (!userAddress) return;
     setLoading(true);
-    setTxModal({ open: true, status: "pending", title: "Creating Margin Account", message: "Creating your Vanna margin account on Stellar..." });
+    showStep("Creating your Vanna margin account on Stellar...");
     try {
       const success = await createMarginAccount(userAddress);
       if (success) {
-        setTxModal({ open: true, status: "success", title: "Account Created", message: "Your Vanna margin account is ready!" });
+        showStepSuccess("Your Vanna margin account is ready!");
       } else {
         throw new Error("Failed to create margin account");
       }
     } catch (err: any) {
-      setTxModal({ open: true, status: "error", title: "Failed", message: normalizeCreateAccountError(err?.message) });
+      showStepError(normalizeCreateAccountError(err?.message));
     } finally {
       setLoading(false);
     }
@@ -434,10 +532,7 @@ export const OneClickStrategy = () => {
     if (!userAddress || !marginAccountAddress || collateralNum <= 0) return;
     setLoading(true);
 
-    setTxModal({
-      open: true, status: "pending", title: "Opening Leveraged Position",
-      message: `Preparing transaction...`,
-    });
+    showStep("Preparing transaction...");
 
     try {
       const result = await executeOneClickStrategy({
@@ -454,7 +549,7 @@ export const OneClickStrategy = () => {
         scenario,
         prices,
         onStep: (msg) => {
-          setTxModal((p) => ({ ...p, message: msg }));
+          showStep(msg);
         },
       });
 
@@ -469,7 +564,7 @@ export const OneClickStrategy = () => {
         // LP positions hold both tokens paired together, so the label should
         // read "XLM/USDC" — not just the collateral leg — matching how the
         // Farm page titles the same pool.
-        poolLabel: selectedPool.type === "lp" ? selectedPool.tokens.join("/") : collateralAsset,
+        poolLabel: selectedPool.type === "lp" ? selectedPoolLabelStr : collateralAsset,
         protocol: selectedPool.protocol,
         poolVersion: selectedPool.poolVersion,
         poolType: selectedPool.type,
@@ -479,7 +574,9 @@ export const OneClickStrategy = () => {
         collateralUsdAtOpen: collateralUsd,
         borrowAsset,
         borrowAmount: borrowedAmount,
-        borrowUsdAtOpen: borrowUsd,
+        borrowUsdAtOpen: borrowedAmount * borrowPrice,
+        collateralBorrowAmount,
+        collateralBorrowUsdAtOpen: collateralBorrowUsd,
         leverage,
         supplyApr: selectedPoolLive.supplyApr,
         vannaFeeApr: selectedPoolLive.borrowApr,
@@ -488,30 +585,36 @@ export const OneClickStrategy = () => {
         txHash: result.hash,
       });
 
-      setTxModal({
-        open: true, status: "success",
-        title: "Strategy Deployed!",
-        message: `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPool.tokens.join("/")} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
-        txHash: result.hash,
-      });
+      showStepSuccess(
+        `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPoolLabelStr} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
+        result.hash
+      );
       setCollateralAmount("");
       setLeverage(1);
+      // This trade just changed real on-chain debt/collateral — force past the
+      // 5s cache TTL so the NEXT preview (another Lite trade, or navigating to
+      // Margin) reflects it immediately instead of the pre-trade snapshot.
+      if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
     } catch (err: any) {
       const message = normalizeContractError(err?.message, "Operation failed");
-      const rejected = message === "Transaction cancelled by user.";
-      setTxModal({
-        open: true, status: "error",
-        title: rejected ? "Cancelled" : "Failed",
-        message,
-      });
+      showStepError(message);
     } finally {
       setLoading(false);
     }
   };
 
+  // A leveraged LP position needs live reserves to size its paired/borrowed
+  // leg on-ratio (see lpPoolRatio above). Without this guard, clicking
+  // "Deploy" while reserves are still loading would send `borrowedAmount: 0`
+  // to executeOneClickStrategy, which reads that as "deposit-only" and
+  // silently opens a 1x position instead of the leverage the slider shows.
+  const lpReservesNotReady =
+    selectedPool.type === "lp" && leverage > 1 && (lpReservesLoading || !lpReserves || lpPoolRatio <= 0);
+
   const isValid =
     collateralNum > 0 &&
     collateralNum <= maxDeposit &&
+    !lpReservesNotReady &&
     (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > 1.2)) &&
     !!userAddress &&
     !!marginAccountAddress;
@@ -524,6 +627,7 @@ export const OneClickStrategy = () => {
       return collateralAsset === "XLM" && collateralNum <= balanceNum
         ? "Keep XLM for fees & reserve"
         : "Insufficient Balance";
+    if (lpReservesNotReady) return "Loading Pool Data...";
     if (borrowedAmount > 0 && borrowUsd > maxBorrowUsd) return "Exceeds Borrow Limit";
     if (borrowedAmount > 0 && newHF > 0 && newHF <= 1.2) return "Position Too Risky";
     if (loading) return "Processing...";
@@ -540,51 +644,6 @@ export const OneClickStrategy = () => {
   const hfColor = newHF >= 1.5 ? "#703AE6" : newHF >= 1.2 ? "#F59E0B" : "#FC5457";
 
   return (
-    <>
-      {/* ─── Transaction Status Modal ─── */}
-      <Modal open={txModal.open} onClose={() => !loading && setTxModal((p) => ({ ...p, open: false }))}>
-        <div className={`w-[340px] sm:w-[400px] rounded-[20px] p-6 flex flex-col gap-5 ${isDark ? "bg-[#1A1A1A] border border-[#2C2C2C]" : "bg-white border border-[#E5E7EB]"}`}>
-          <div className="flex items-center justify-center pt-2">
-            {txModal.status === "pending" && (
-              <div className="w-14 h-14 rounded-full border-4 border-[#703AE6]/30 border-t-[#703AE6] animate-spin" />
-            )}
-            {txModal.status === "success" && (
-              <div className="w-14 h-14 rounded-full bg-[#10B981]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-            )}
-            {txModal.status === "error" && (
-              <div className="w-14 h-14 rounded-full bg-[#FC5457]/15 flex items-center justify-center">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#FC5457" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </div>
-            )}
-          </div>
-          <div className="text-center">
-            <h3 className={`text-[16px] font-bold mb-1.5 ${headingText}`}>{txModal.title}</h3>
-            <p className={`text-[13px] leading-[20px] ${labelText}`}>{txModal.message}</p>
-            {txModal.txHash && (
-              <p className={`text-[11px] mt-2 font-mono ${mutedText}`}>
-                {txModal.txHash.slice(0, 8)}...{txModal.txHash.slice(-8)}
-              </p>
-            )}
-          </div>
-          {txModal.status !== "pending" && (
-            <button
-              type="button"
-              onClick={() => setTxModal((p) => ({ ...p, open: false }))}
-              className="w-full text-white text-[14px] font-semibold py-3 rounded-[12px] hover:opacity-90 transition-opacity"
-              style={{ background: "linear-gradient(135deg, #703AE6 0%, #FF007A 100%)" }}
-            >
-              Close
-            </button>
-          )}
-        </div>
-      </Modal>
-
       <div className="w-full h-fit flex flex-col lg:flex-row gap-5">
         {/* ═══════ LEFT: Strategy Form ═══════ */}
         <motion.div
@@ -618,7 +677,7 @@ export const OneClickStrategy = () => {
                   </div>
                   <div className="flex flex-col gap-[2px]">
                     <span className={`text-[15px] sm:text-[16px] font-bold leading-[22px] ${headingText}`}>
-                      {selectedPool.tokens.join(" / ")}
+                      {selectedPoolTokenLabels.join(" / ")}
                     </span>
                     <span className={`text-[11px] leading-[14px] ${mutedText}`}>
                       {selectedPool.protocol} {selectedPool.poolVersion} {selectedPool.feeTier !== "-" && `· ${selectedPool.feeTier}`}
@@ -670,7 +729,7 @@ export const OneClickStrategy = () => {
                             ))}
                           </div>
                           <div className="flex flex-col items-start gap-[1px]">
-                            <span className={`text-[13px] font-semibold ${headingText}`}>{pool.tokens.join("/")}</span>
+                            <span className={`text-[13px] font-semibold ${headingText}`}>{pool.tokens.map((t) => poolAssetLabel(pool, t)).join("/")}</span>
                             <span className={`text-[10px] ${mutedText}`}>{pool.protocol} {pool.poolVersion}</span>
                           </div>
                         </div>
@@ -744,7 +803,7 @@ export const OneClickStrategy = () => {
                     aria-expanded={tokenDropdownOpen}
                   >
                     <PoolTokenBadge symbol={collateralAsset} size={20} />
-                    <span>{collateralAsset}</span>
+                    <span>{collateralAssetLabel}</span>
                     <svg
                       className={`shrink-0 transition-transform duration-200 ${tokenDropdownOpen ? "rotate-180" : ""}`}
                       width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -786,7 +845,7 @@ export const OneClickStrategy = () => {
                             aria-selected={t.asset === collateralAsset}
                           >
                             <PoolTokenBadge symbol={t.asset} size={16} />
-                            {t.label}
+                            {poolAssetLabel(selectedPool, t.asset)}
                           </button>
                         ))}
                       </motion.div>
@@ -821,7 +880,7 @@ export const OneClickStrategy = () => {
                     <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
                     <span className={`text-[13px] font-semibold ${headingText}`}>Deploy Strategy</span>
                     <span className={`text-[10px] px-2 py-0.5 rounded-[6px] font-semibold ${isDark ? "bg-[#2C2C2C] text-[#919191]" : "bg-[#F4F4F4] text-[#76737B]"}`}>
-                      {collateralAsset} → {selectedPool.tokens[0]}
+                      {collateralAssetLabel} → {selectedPoolFirstTokenLabel}
                     </span>
                   </div>
                   <div className="flex gap-3">
@@ -836,14 +895,14 @@ export const OneClickStrategy = () => {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`text-[12px] font-semibold ${scenario === "cross-asset-keep" ? (isDark ? "text-[#B794F6]" : "text-[#703AE6]") : headingText}`}>
-                          Keep {collateralAsset} Exposure
+                          Keep {collateralAssetLabel} Exposure
                         </span>
                         <span className="text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-[2px] rounded-[5px] bg-gradient text-white leading-none">
                           2 Pools
                         </span>
                       </div>
                       <span className={`text-[10px] leading-[15px] block ${mutedText}`}>
-                        Supply {collateralAsset} to {selectedPool.protocol} {collateralAsset} pool + supply borrowed {borrowAsset} to {selectedPool.protocol} {borrowAsset} pool
+                        Supply {collateralAssetLabel} to {selectedPool.protocol} {collateralAssetLabel} pool + supply borrowed {borrowAssetLabel} to {selectedPool.protocol} {borrowAssetLabel} pool
                       </span>
                     </button>
                     <button
@@ -857,14 +916,14 @@ export const OneClickStrategy = () => {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`text-[12px] font-semibold ${scenario === "cross-asset-swap" ? (isDark ? "text-[#B794F6]" : "text-[#703AE6]") : headingText}`}>
-                          Full {selectedPool.tokens[0]} Exposure
+                          Full {selectedPoolFirstTokenLabel} Exposure
                         </span>
                         <span className={`text-[9px] font-bold uppercase tracking-[0.5px] px-1.5 py-[2px] rounded-[5px] leading-none ${isDark ? "bg-[#2C2C2C] text-[#919191]" : "bg-[#EEF2FF] text-[#6B7280]"}`}>
                           1 Pool
                         </span>
                       </div>
                       <span className={`text-[10px] leading-[15px] block ${mutedText}`}>
-                        Swap via Soroswap {collateralAsset} → {selectedPool.tokens[0]}, supply all to {selectedPool.protocol} {selectedPool.tokens[0]} pool
+                        Swap via Soroswap {collateralAssetLabel} → {selectedPoolFirstTokenLabel}, supply all to {selectedPool.protocol} {selectedPoolFirstTokenLabel} pool
                       </span>
                     </button>
                   </div>
@@ -913,7 +972,7 @@ export const OneClickStrategy = () => {
                     <div className="flex flex-col">
                       <h3 className={`text-[14px] font-semibold leading-5 ${headingText}`}>Set Leverage</h3>
                       <span className={`text-[11px] leading-4 ${mutedText}`}>
-                        Borrow {borrowAsset} from Vanna at {selectedPoolLive.borrowApr.toFixed(2)}% APR
+                        Borrow {borrowAssetLabel} from Vanna at {selectedPoolLive.borrowApr.toFixed(2)}% APR
                       </span>
                     </div>
                   </div>
@@ -941,11 +1000,21 @@ export const OneClickStrategy = () => {
                         <div className={`rounded-[10px] border p-[12px] flex flex-col gap-[8px] ${subtleCard}`}>
                           <div className="flex items-center justify-between">
                             <span className={`text-[11px] font-medium ${labelText}`}>Borrowing</span>
-                            <div className="flex items-center gap-[6px]">
-                              <PoolTokenBadge symbol={borrowAsset} size={14} />
-                              <span className={`text-[13px] font-bold ${headingText}`}>
-                                {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAsset}
-                              </span>
+                            <div className="flex flex-col items-end gap-[4px]">
+                              {collateralBorrowAmount > 0 && (
+                                <div className="flex items-center gap-[6px]">
+                                  <PoolTokenBadge symbol={collateralAsset} size={14} />
+                                  <span className={`text-[13px] font-bold ${headingText}`}>
+                                    {collateralBorrowAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {collateralAssetLabel}
+                                  </span>
+                                </div>
+                              )}
+                              <div className="flex items-center gap-[6px]">
+                                <PoolTokenBadge symbol={borrowAsset} size={14} />
+                                <span className={`text-[13px] font-bold ${headingText}`}>
+                                  {borrowedAmount.toFixed(collateralAsset === "XLM" ? 4 : 2)} {borrowAssetLabel}
+                                </span>
+                              </div>
                             </div>
                           </div>
                           <div className="flex items-center justify-between">
@@ -974,8 +1043,8 @@ export const OneClickStrategy = () => {
                             <div className="flex items-center gap-[8px]">
                               <PoolTokenBadge symbol={collateralAsset} size={14} />
                               <span className={`text-[12px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                <strong>{collateralNum.toFixed(2)} + {borrowedAmount.toFixed(2)} = {(collateralNum + borrowedAmount).toFixed(2)} {collateralAsset}</strong>
-                                {" "}→ <strong>{selectedPool.protocol} {collateralAsset} pool</strong>
+                                <strong>{collateralNum.toFixed(2)} + {borrowedAmount.toFixed(2)} = {(collateralNum + borrowedAmount).toFixed(2)} {collateralAssetLabel}</strong>
+                                {" "}→ <strong>{selectedPool.protocol} {collateralAssetLabel} pool</strong>
                               </span>
                             </div>
                           )}
@@ -983,7 +1052,7 @@ export const OneClickStrategy = () => {
                             <div className="flex flex-col gap-[6px]">
                               <div className="flex items-center gap-[6px] mb-[2px]">
                                 <span className={`text-[10px] font-semibold uppercase tracking-[0.5px] ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  Add Liquidity — {selectedPool.protocol} {selectedPool.tokens.join("/")} pool
+                                  Add Liquidity — {selectedPool.protocol} {selectedPoolLabelStr} pool
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
@@ -992,9 +1061,12 @@ export const OneClickStrategy = () => {
                                   <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 </div>
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} + {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {selectedPool.tokens.join("/")} LP</strong>
+                                  {(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAssetLabel} + {borrowedAmount.toFixed(2)} {borrowAssetLabel} → <strong>{selectedPool.protocol} {selectedPoolLabelStr} LP</strong>
                                 </span>
                               </div>
+                              <span className={`text-[10px] ${mutedText}`}>
+                                ({collateralNum.toFixed(2)} deposited + {collateralBorrowAmount.toFixed(2)} borrowed {collateralAssetLabel}, paired at the pool&apos;s live ratio)
+                              </span>
                             </div>
                           )}
                           {scenario === "cross-asset-keep" && selectedPool.type === "single" && (
@@ -1007,13 +1079,13 @@ export const OneClickStrategy = () => {
                               <div className="flex items-center gap-[8px]">
                                 <PoolTokenBadge symbol={collateralAsset} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} → <strong>{selectedPool.protocol} {collateralAsset} pool</strong>
+                                  {collateralNum.toFixed(2)} {collateralAssetLabel} → <strong>{selectedPool.protocol} {collateralAssetLabel} pool</strong>
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
                                 <PoolTokenBadge symbol={borrowAsset} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {borrowedAmount.toFixed(2)} {borrowAsset} → <strong>{selectedPool.protocol} {borrowAsset} pool</strong>
+                                  {borrowedAmount.toFixed(2)} {borrowAssetLabel} → <strong>{selectedPool.protocol} {borrowAssetLabel} pool</strong>
                                 </span>
                               </div>
                             </div>
@@ -1025,13 +1097,13 @@ export const OneClickStrategy = () => {
                                   <polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" />
                                 </svg>
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  {collateralNum.toFixed(2)} {collateralAsset} swapped via Soroswap → {selectedPool.tokens[0]}
+                                  {collateralNum.toFixed(2)} {collateralAssetLabel} swapped via Soroswap → {selectedPoolFirstTokenLabel}
                                 </span>
                               </div>
                               <div className="flex items-center gap-[8px]">
-                                <PoolTokenBadge symbol={selectedPool.tokens[0]} size={14} />
+                                <PoolTokenBadge symbol={selectedPoolFirstTokenLabel} size={14} />
                                 <span className={`text-[11px] font-medium ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
-                                  <strong>${totalPositionUsd.toFixed(2)}</strong> total → <strong>{selectedPool.protocol} {selectedPool.tokens[0]} pool</strong>
+                                  <strong>${totalPositionUsd.toFixed(2)}</strong> total → <strong>{selectedPool.protocol} {selectedPoolFirstTokenLabel} pool</strong>
                                 </span>
                               </div>
                             </div>
@@ -1041,90 +1113,6 @@ export const OneClickStrategy = () => {
                     )}
                   </AnimatePresence>
                 </div>
-
-                {/* ── NET APR ── */}
-                <AnimatePresence>
-                  {hasBorrow && (
-                    <motion.div initial="hidden" animate="visible" exit="exit" variants={expandCollapse} className="overflow-hidden">
-                      <div className={`w-full border border-t-0 p-4 sm:p-5 ${cardBg}`}>
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-2">
-                            <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
-                            <span className={`text-[13px] font-semibold ${headingText}`}>Estimated Returns</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setShowBreakdown(!showBreakdown)}
-                            className={`text-[11px] font-semibold cursor-pointer px-2.5 py-1 rounded-[6px] transition-colors ${isDark ? "text-[#B794F6] hover:bg-[#703AE6]/10" : "text-[#703AE6] hover:bg-[#F1EBFD]"}`}
-                          >
-                            {showBreakdown ? "Hide details" : "View details"}
-                          </button>
-                        </div>
-
-                        <div className="flex items-end justify-between mb-4">
-                          <div>
-                            <span className={`text-[10px] font-semibold uppercase tracking-[0.3px] block mb-1 ${labelText}`}>Net APR</span>
-                            <motion.span
-                              key={aprCalc.netApr.toFixed(1)}
-                              initial={{ scale: 0.95, opacity: 0 }}
-                              animate={{ scale: 1, opacity: 1 }}
-                              className={`text-[36px] sm:text-[42px] font-bold leading-none block ${headingText}`}
-                            >
-                              {aprCalc.netApr.toFixed(1)}%
-                            </motion.span>
-                          </div>
-                          {collateralUsd > 0 && (
-                            <div className="flex gap-5">
-                              {[
-                                { label: "Daily", value: dailyEarning },
-                                { label: "Monthly", value: monthlyEarning },
-                                { label: "Yearly", value: yearlyEarning },
-                              ].map((item) => (
-                                <div key={item.label} className="flex flex-col items-end gap-[2px]">
-                                  <span className={`text-[10px] font-medium ${mutedText}`}>{item.label}</span>
-                                  <span className={`text-[14px] font-bold ${headingText}`}>
-                                    {item.value >= 0 ? "+" : "-"}${Math.abs(item.value).toFixed(2)}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        <AnimatePresence>
-                          {showBreakdown && (
-                            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25 }} className="overflow-hidden">
-                              <div className={`rounded-[12px] overflow-hidden border ${isDark ? "border-[#2C2C2C]" : "border-[#E5E7EB]"}`}>
-                                {aprCalc.legs.map((leg, i) => (
-                                  <div key={i} className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#1E1E1E]" : "bg-white"} ${i > 0 ? (isDark ? "border-t border-[#2C2C2C]" : "border-t border-[#F4F4F4]") : ""}`}>
-                                    <span className={`text-[12px] font-medium ${headingText}`}>{leg.label}</span>
-                                    <div className="flex items-center gap-2">
-                                      <span className={`text-[12px] font-bold ${headingText}`}>+{leg.earning.toFixed(1)}%</span>
-                                      <span className={`text-[10px] font-medium ${mutedText}`}>{leg.apr}% × {leg.multiplier.toFixed(1)}x</span>
-                                    </div>
-                                  </div>
-                                ))}
-                                <div className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#1E1E1E] border-t border-[#2C2C2C]" : "bg-white border-t border-[#F4F4F4]"}`}>
-                                  <span className={`text-[12px] font-medium ${headingText}`}>Vanna Borrow Cost</span>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[12px] font-bold text-[#FC5457]">-{aprCalc.borrowCost.toFixed(1)}%</span>
-                                    <span className={`text-[10px] font-medium ${mutedText}`}>{selectedPoolLive.borrowApr.toFixed(2)}% × {(leverage - 1).toFixed(1)}x</span>
-                                  </div>
-                                </div>
-                                <div className={`flex items-center justify-between px-4 py-3 ${isDark ? "bg-[#703AE6]/8 border-t border-[#703AE6]/15" : "bg-[#F1EBFD]/50 border-t border-[#703AE6]/10"}`}>
-                                  <span className={`text-[12px] font-semibold ${headingText}`}>Net APR</span>
-                                  <span className={`text-[14px] font-bold ${headingText}`}>
-                                    {aprCalc.netApr > 0 ? "+" : ""}{aprCalc.netApr.toFixed(1)}%
-                                  </span>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
 
                 {/* ── RISK METRICS ── */}
                 <AnimatePresence>
@@ -1174,7 +1162,7 @@ export const OneClickStrategy = () => {
                                   : "Implied oracle price of this asset at HF = 1.1 (cross-asset preview)."
                               }
                             >
-                              Liq. Price ({collateralAsset})
+                              Liq. Price ({collateralAssetLabel})
                             </span>
                             {liquidationPriceUsd != null ? (
                               <span className={`text-[20px] font-bold ${headingText}`}>
@@ -1233,7 +1221,7 @@ export const OneClickStrategy = () => {
                             <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>1.</span>
                             <span>
                               You deposit{" "}
-                              <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" "}
+                              <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAssetLabel}</span>{" "}
                               (~${collateralUsd.toFixed(2)}) as collateral to your Vanna margin account on Stellar.
                             </span>
                           </li>
@@ -1241,7 +1229,7 @@ export const OneClickStrategy = () => {
                             <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>2.</span>
                             <span>
                               Vanna lenders fund{" "}
-                              <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
+                              <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
                               (~${borrowUsd.toFixed(2)}) at {selectedPoolLive.borrowApr.toFixed(2)}% APR.
                             </span>
                           </li>
@@ -1249,9 +1237,9 @@ export const OneClickStrategy = () => {
                             <li className="flex gap-[10px]">
                               <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                               <span>
-                                <span className={`font-semibold ${headingText}`}>{(collateralNum + borrowedAmount).toFixed(2)} {collateralAsset}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{(collateralNum + borrowedAmount).toFixed(2)} {collateralAssetLabel}</span>{" "}
                                 deployed to{" "}
-                                <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{selectedPoolLabelStr}</span>{" "}
                                 on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
                               </span>
                             </li>
@@ -1260,10 +1248,11 @@ export const OneClickStrategy = () => {
                             <li className="flex gap-[10px]">
                               <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                               <span>
-                                <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" + "}
-                                <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{(collateralNum + collateralBorrowAmount).toFixed(2)} {collateralAssetLabel}</span>{" "}
+                                (deposited + borrowed) paired with{" "}
+                                <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
                                 added as liquidity to the{" "}
-                                <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPool.tokens.join("/")} pool</span>{" "}
+                                <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {selectedPoolLabelStr} pool</span>{" "}
                                 at {selectedPoolLive.supplyApr.toFixed(2)}% supply APR.
                               </span>
                             </li>
@@ -1273,15 +1262,15 @@ export const OneClickStrategy = () => {
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                                 <span>
-                                  Your <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAsset} pool</span> at {(livePools[POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}% APR.
+                                  Your <span className={`font-semibold ${headingText}`}>{collateralNum.toFixed(2)} {collateralAssetLabel}</span>{" "}
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {collateralAssetLabel} pool</span> at {(livePools[POOL_OPTIONS.find((p) => p.tokens[0] === collateralAsset)?.id as keyof typeof livePools]?.supplyApr ?? 0).toFixed(2)}% APR.
                                 </span>
                               </li>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>4.</span>
                                 <span>
-                                  <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAsset}</span>{" "}
-                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAsset} pool</span> at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
+                                  <span className={`font-semibold ${headingText}`}>{borrowedAmount.toFixed(2)} {borrowAssetLabel}</span>{" "}
+                                  supplied to <span className={`font-semibold ${headingText}`}>{selectedPool.protocol} {borrowAssetLabel} pool</span> at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
                             </>
@@ -1291,14 +1280,14 @@ export const OneClickStrategy = () => {
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>3.</span>
                                 <span>
-                                  Your {collateralAsset} is <span className={`font-semibold ${headingText}`}>swapped via Soroswap to {selectedPool.tokens[0]}</span> — no more {collateralAsset} exposure.
+                                  Your {collateralAssetLabel} is <span className={`font-semibold ${headingText}`}>swapped via Soroswap to {selectedPoolFirstTokenLabel}</span> — no more {collateralAssetLabel} exposure.
                                 </span>
                               </li>
                               <li className="flex gap-[10px]">
                                 <span className={`shrink-0 ${isDark ? "text-[#595959]" : "text-[#A9A9A9]"}`}>4.</span>
                                 <span>
                                   <span className={`font-semibold ${headingText}`}>${totalPositionUsd.toFixed(2)}</span>{" "}
-                                  total deployed to <span className={`font-semibold ${headingText}`}>{selectedPool.tokens.join("/")}</span>{" "}
+                                  total deployed to <span className={`font-semibold ${headingText}`}>{selectedPoolLabelStr}</span>{" "}
                                   on {selectedPool.protocol} at {selectedPoolLive.supplyApr.toFixed(2)}% APR.
                                 </span>
                               </li>
@@ -1378,7 +1367,7 @@ export const OneClickStrategy = () => {
           <div className={`rounded-[14px] border p-4 flex flex-col gap-3 ${isDark ? "bg-[#1A1A1A] border-[#2C2C2C]" : "bg-white border-[#E5E7EB]"}`}>
             <div className="flex items-center gap-2">
               <div className="w-[6px] h-[6px] rounded-full bg-[#703AE6] shrink-0" />
-              <span className={`text-[12px] font-semibold ${headingText}`}>{selectedPool.protocol} · {selectedPool.tokens.join("/")} Pool</span>
+              <span className={`text-[12px] font-semibold ${headingText}`}>{selectedPool.protocol} · {selectedPoolLabelStr} Pool</span>
             </div>
             {[
               { label: "Supply APY", value: `${selectedPoolLive.supplyApr.toFixed(2)}%`, color: "text-[#10B981]" },
@@ -1431,6 +1420,5 @@ export const OneClickStrategy = () => {
           </div>
         </motion.div>
       </div>
-    </>
   );
 };

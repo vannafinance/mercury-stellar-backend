@@ -33,6 +33,11 @@ interface Collateral {
   onDelete?: (id: string) => void;
   /** Notifies the parent when the WB/MB source toggle changes (MB is single-collateral). */
   onBalanceTypeChange?: (id: string, balanceType: string) => void;
+  /** Live on-chain margin-account balance for an asset — backs MB mode's
+   *  "Balance:" line and %-chip math, looked up by whichever asset is
+   *  currently selected in this row's dropdown (mirrors how WB mode reads
+   *  `tokenBalances` for the wallet balance). */
+  marginBalanceFor?: (asset: string) => number;
   /** Row position; index 0 is the anchor row and cannot be deleted. */
   index?: number;
 }
@@ -145,13 +150,11 @@ const CollateralComponent = (props: Collateral) => {
 
   const handlePercentageClick = (item: number) => {
     setPercentage(item);
-    const balance = hasCollateral && collateral
-      ? parseFloat(String(
-          selectedBalanceType === "WB"
-            ? tokenBalances[getTokenBalanceKey(selectedCurrency) as keyof typeof tokenBalances] || "0"
-            : collateral.unifiedBalance
-        )) || 0
-      : 0;
+    const balance = selectedBalanceType === "WB"
+      ? parseFloat(String(tokenBalances[getTokenBalanceKey(selectedCurrency) as keyof typeof tokenBalances] || "0")) || 0
+      : props.marginBalanceFor
+        ? props.marginBalanceFor(selectedCurrency)
+        : parseFloat(String(collateral?.unifiedBalance ?? 0)) || 0;
     // For a WB-sourced native XLM deposit, percentages apply to the safely
     // spendable balance (wallet balance minus the account's real reserve),
     // not the raw balance — otherwise 100% (or any high %) computes an amount
@@ -184,11 +187,11 @@ const CollateralComponent = (props: Collateral) => {
   };
 
   // Compute live balance for display
-  const liveBalance = hasCollateral && collateral
-    ? (selectedBalanceType === "WB"
-        ? tokenBalances[getTokenBalanceKey(selectedCurrency) as keyof typeof tokenBalances] || "0"
-        : collateral.unifiedBalance)
-    : "0";
+  const liveBalance = selectedBalanceType === "WB"
+    ? tokenBalances[getTokenBalanceKey(selectedCurrency) as keyof typeof tokenBalances] || "0"
+    : props.marginBalanceFor
+      ? props.marginBalanceFor(selectedCurrency)
+      : collateral?.unifiedBalance ?? 0;
 
   return (
     <motion.article
@@ -522,7 +525,9 @@ const CollateralComponent = (props: Collateral) => {
                       {(parseFloat(String(
                         collateral.balanceType.toLowerCase() === "wb"
                           ? tokenBalances[getTokenBalanceKey(collateral.asset) as keyof typeof tokenBalances] || "0"
-                          : collateral.unifiedBalance
+                          : props.marginBalanceFor
+                            ? props.marginBalanceFor(collateral.asset)
+                            : collateral.unifiedBalance
                       )) || 0).toFixed(2)}{" "}
                       {collateral.asset}
                     </span>
@@ -562,6 +567,14 @@ const CollateralComponent = (props: Collateral) => {
 export const Collateral = memo(CollateralComponent, (prevProps, nextProps) => {
   const prevCollateral = prevProps.collaterals;
   const nextCollateral = nextProps.collaterals;
+
+  // marginBalanceFor is a useCallback in the parent keyed off the live margin
+  // balances — its identity changes exactly when those balances change, so a
+  // reference diff here is a legitimate "re-render, MB's Balance/%% math is
+  // stale" signal, not render-thrash from an unmemoized inline function.
+  if (prevProps.marginBalanceFor !== nextProps.marginBalanceFor) {
+    return false;
+  }
 
   if (prevCollateral === nextCollateral) {
     return (

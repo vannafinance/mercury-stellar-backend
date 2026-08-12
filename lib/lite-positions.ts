@@ -12,7 +12,20 @@
  * account address, with the metadata needed to rebuild a LitePosition row
  * without consulting the margin store (which doesn't know which pool a
  * borrow was deployed into). On full exit we drop the record.
+ *
+ * This cache is a HINT, not a source of truth: for the two LP pools
+ * (Aquarius/Soroswap XLM-USDC), `reconcileLiteLpPositionsWithChain` below
+ * validates it against live on-chain state every time the Lite Position tab
+ * loads — dropping stale records the position was actually closed
+ * elsewhere, and reconstructing a best-effort position from chain data alone
+ * when the cache is missing one that's real. A cleared cache (or a
+ * different browser/device) degrades to a less precise view of a real
+ * position, never a permanently-lost or unmanageable one.
  * ═══════════════════════════════════════════════════════════════════════ */
+
+import { AquariusService, AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
+import { SoroswapService } from "@/lib/soroswap-utils";
+import { fetchTokenPrice } from "@/lib/oracle-price";
 
 /**
  * One Lite-mode leveraged-yield position, persisted to localStorage. Carries
@@ -34,6 +47,10 @@ export interface LitePositionRecord {
   borrowAsset: string;
   borrowAmount: number;         // initial borrow, asset units
   borrowUsdAtOpen: number;
+  /** Extra same-asset-as-collateral borrow (LP leverage > 1 only) — scales
+   *  the collateral leg to stay on the pool's ratio; see one-click-strategy.ts. */
+  collateralBorrowAmount?: number;
+  collateralBorrowUsdAtOpen?: number;
   leverage: number;
   supplyApr: number;
   vannaFeeApr: number;
@@ -41,6 +58,13 @@ export interface LitePositionRecord {
   isSameAsset: boolean;
   openedAt: number;             // ms timestamp
   txHash?: string;
+  /** True for a position reconstructed live from chain state because no
+   *  local record existed (cache cleared / different device). The
+   *  collateral-vs-top-up-borrow split and true leverage can't be recovered
+   *  from current state alone, so these are best-effort (leverage defaults
+   *  to 1x, collateralBorrowAmount to 0) — real LP balance and current debt
+   *  are still accurate, so it's fully manageable, just imprecise. */
+  recovered?: boolean;
 }
 
 const STORAGE_KEY = "vanna_lite_positions_v1";
@@ -131,6 +155,8 @@ export const applyLiteExit = (id: string, exitPct: number): void => {
       collateralUsdAtOpen: r.collateralUsdAtOpen * remaining,
       borrowAmount: r.borrowAmount * remaining,
       borrowUsdAtOpen: r.borrowUsdAtOpen * remaining,
+      collateralBorrowAmount: r.collateralBorrowAmount ? r.collateralBorrowAmount * remaining : r.collateralBorrowAmount,
+      collateralBorrowUsdAtOpen: r.collateralBorrowUsdAtOpen ? r.collateralBorrowUsdAtOpen * remaining : r.collateralBorrowUsdAtOpen,
     };
   }
   writeAll(all);
@@ -145,3 +171,126 @@ export const removeLitePosition = (id: string): void => {
 export const clearLitePositions = (marginAccountAddress: string): void => {
   writeAll(readAll().filter((r) => r.marginAccountAddress !== marginAccountAddress));
 };
+
+const LP_DUST = 1e-6;
+
+/** The two Lite-manageable LP pools — matches POOL_OPTIONS in one-click-strategy.tsx. */
+const LITE_LP_POOLS = [
+  { poolId: "xlm-usdc-aquarius", protocol: "Aquarius", poolVersion: "AMM" },
+  { poolId: "xlm-usdc-soroswap", protocol: "Soroswap", poolVersion: "DEX" },
+] as const;
+
+/** Real LP balance for one of the two Lite-manageable pools, human-readable. */
+async function fetchRealLpBalance(poolId: string, marginAccountAddress: string): Promise<number> {
+  if (poolId === "xlm-usdc-aquarius") {
+    const bal = await AquariusService.getUserLpBalance(
+      marginAccountAddress,
+      AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ?? "",
+      "XLM",
+      "USDC",
+    );
+    return parseFloat(bal) || 0;
+  }
+  const bal = await SoroswapService.getLpBalance(marginAccountAddress);
+  return parseFloat(bal) || 0;
+}
+
+/** Underlying {xlm, usdc} for a real LP balance, via each pool's live reserves. */
+async function fetchLpUnderlying(poolId: string, lpBalance: number): Promise<{ xlm: number; usdc: number }> {
+  if (poolId === "xlm-usdc-aquarius") {
+    const poolAddress = AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ?? "";
+    const stats = await AquariusService.getAquariusPoolStats(poolAddress);
+    if (!stats) return { xlm: 0, usdc: 0 };
+    const { amountA, amountB } = aquariusLpUnderlyingAmounts(lpBalance, stats, "XLM", "USDC");
+    return { xlm: amountA, usdc: amountB };
+  }
+  const stats = await SoroswapService.getPoolStats();
+  const totalShares = parseFloat(stats?.totalShares ?? "0");
+  if (!stats || !(totalShares > 0)) return { xlm: 0, usdc: 0 };
+  const ratio = lpBalance / totalShares;
+  return {
+    xlm: ratio * (parseFloat(stats.reserveXLM) || 0),
+    usdc: ratio * (parseFloat(stats.reserveUSDC) || 0),
+  };
+}
+
+/**
+ * Reconciles the locally-cached Lite LP positions (Aquarius/Soroswap
+ * XLM/USDC) against LIVE on-chain state for one margin account:
+ *  - **Self-heals**: drops any cached record whose pool now has ~0 real LP
+ *    balance — it was closed through some other path (e.g. a Pro-mode
+ *    manual remove-liquidity), so keeping the stale record would show a
+ *    permanent ghost position.
+ *  - **Recovers**: when a pool has a real, nonzero LP balance but NO
+ *    matching cached record (cache cleared, or opened from a different
+ *    browser/device), synthesizes a best-effort position from live chain
+ *    data alone, marked `recovered: true`. The collateral-vs-top-up-borrow
+ *    split and true leverage can't be recovered from current state (only
+ *    from the now-lost history of how it was opened) — leverage defaults to
+ *    1x and the top-up leg to 0, but the real LP balance and its current
+ *    underlying value are accurate, so the position is still fully visible
+ *    and closable, just without the original leverage framing.
+ *
+ * Call this once when the Lite Position tab loads, before reading
+ * {@link getLitePositions}. Never throws — a fetch failure just skips that
+ * pool's reconciliation for this pass (the cached record, if any, still shows).
+ */
+export async function reconcileLiteLpPositionsWithChain(marginAccountAddress: string): Promise<void> {
+  if (!marginAccountAddress) return;
+  const cached = getLitePositions(marginAccountAddress);
+
+  await Promise.all(
+    LITE_LP_POOLS.map(async (pool) => {
+      try {
+        const realLp = await fetchRealLpBalance(pool.poolId, marginAccountAddress);
+        const cachedForPool = cached.filter((r) => r.poolId === pool.poolId);
+
+        if (!(realLp > LP_DUST)) {
+          // Self-heal: no real position left, but the cache still thinks there is.
+          for (const rec of cachedForPool) removeLitePosition(rec.id);
+          return;
+        }
+
+        if (cachedForPool.length > 0) return; // cache already has it — trust the precise record
+
+        // Recover: a real position exists with nothing cached for it.
+        const { xlm, usdc } = await fetchLpUnderlying(pool.poolId, realLp);
+        if (!(xlm > LP_DUST) && !(usdc > LP_DUST)) return;
+        const [xlmPrice, usdcPrice] = await Promise.all([
+          fetchTokenPrice("XLM").catch(() => 0),
+          fetchTokenPrice("USDC").catch(() => 0),
+        ]);
+        const collateralUsd = xlm * xlmPrice;
+        const borrowUsd = usdc * usdcPrice;
+
+        appendLitePosition({
+          id: `lite-recovered-${marginAccountAddress}-${pool.poolId}`,
+          marginAccountAddress,
+          poolId: pool.poolId,
+          poolLabel: "XLM/USDC",
+          protocol: pool.protocol,
+          poolVersion: pool.poolVersion,
+          poolType: "lp",
+          poolTokens: ["XLM", "USDC"],
+          collateralAsset: "XLM",
+          collateralAmount: xlm,
+          collateralUsdAtOpen: collateralUsd,
+          borrowAsset: "USDC",
+          borrowAmount: usdc,
+          borrowUsdAtOpen: borrowUsd,
+          collateralBorrowAmount: 0,
+          collateralBorrowUsdAtOpen: 0,
+          leverage: 1,
+          supplyApr: 0,
+          vannaFeeApr: 0,
+          liquidationLtv: 82,
+          isSameAsset: false,
+          openedAt: Date.now(),
+          recovered: true,
+        });
+      } catch (e) {
+        console.warn(`[lite-positions] chain reconciliation failed for ${pool.poolId}:`, e);
+      }
+    }),
+  );
+}

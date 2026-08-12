@@ -3,6 +3,7 @@ import { BlendService } from './blend-utils';
 import { SoroswapService } from './soroswap-utils';
 import { AquariusService } from './aquarius-utils';
 import { appendFarmHistory, buildFarmPoolKey } from './farm-history';
+import { CONTRACT_ADDRESSES } from './stellar-utils';
 
 /** True when `poolProtocol` names the Aquarius AMM (case-insensitive). Every
  * LP call site below branches on this — Aquarius and Soroswap are different
@@ -40,6 +41,30 @@ async function addLpLiquidity(
   }
 
   return result;
+}
+
+/**
+ * Live XLM/USDC reserves for the given LP protocol, human-readable. Used to
+ * pair a leveraged LP deposit at the pool's CURRENT ratio — Aquarius/Soroswap
+ * classic-pool deposits pull the full amounts requested but mint LP shares
+ * only for the proportionally smaller side, so an oracle-priced (rather than
+ * reserve-ratio-priced) pair donates the mismatched excess to the pool for
+ * free. Fetched fresh at execution time rather than trusted from an earlier
+ * UI estimate, since the ratio can move between page-load and this call.
+ */
+async function fetchLpReserves(poolProtocol: string): Promise<{ xlm: number; usdc: number } | null> {
+  if (isAquarius(poolProtocol)) {
+    const stats = await AquariusService.getAquariusPoolStats(CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL);
+    if (!stats) return null;
+    const xlm = parseFloat(stats.reserveA);
+    const usdc = parseFloat(stats.reserveB);
+    return Number.isFinite(xlm) && Number.isFinite(usdc) ? { xlm, usdc } : null;
+  }
+  const stats = await SoroswapService.getPoolStats();
+  if (!stats) return null;
+  const xlm = parseFloat(stats.reserveXLM);
+  const usdc = parseFloat(stats.reserveUSDC);
+  return Number.isFinite(xlm) && Number.isFinite(usdc) ? { xlm, usdc } : null;
 }
 
 /** Protocol-aware "swap from the margin account" — used only for the 1x
@@ -116,6 +141,9 @@ export interface ClosePositionParams {
   borrowAmount: number;       // total borrowed (human-readable)
   collateralAsset: TokenAsset;
   collateralAmount: number;   // user's deposited collateral
+  /** Extra same-asset-as-collateral debt from leveraged LP pairing (0 for
+   *  Blend / non-leveraged / legacy positions opened before this existed). */
+  collateralBorrowAmount?: number;
   poolProtocol: string;       // 'Blend' | 'Soroswap' | 'Aquarius'
   poolType: PoolType;
   poolTokens: string[];
@@ -126,11 +154,15 @@ export interface ClosePositionParams {
 
 /**
  * Unwind a leveraged-yield position (full or partial via `exitPct`): withdraw
- * from the external pool (Blend single-asset, or Soroswap LP) then repay that
- * fraction of the Vanna loan. Same-asset positions deploy collateral+borrow into
- * the pool, so the withdraw covers both; cross-asset positions leave collateral
- * in the margin account (freed on repay) and only the borrow lives in the pool.
- * Freed collateral is NOT auto-withdrawn — the user pulls it via Pro-mode.
+ * from the external pool (Blend single-asset, or Soroswap/Aquarius LP) then
+ * repay that fraction of the Vanna loan(s). Same-asset Blend positions deploy
+ * collateral+borrow into the pool, so the withdraw covers both. LP positions
+ * remove the REAL on-chain LP balance (not an amount-based approximation —
+ * LP shares are a different unit from any token amount) and repay BOTH debt
+ * legs when the position was leveraged: the paired-asset borrow and the
+ * same-asset top-up borrow that scaled the collateral leg (see
+ * executeOneClickStrategy's LP branch). Freed collateral is NOT
+ * auto-withdrawn — the user pulls it via Pro-mode.
  * Returns `{ success:false, error }` on the first failing leg; never throws.
  */
 export async function closePosition(params: ClosePositionParams): Promise<OneClickStrategyResult> {
@@ -139,7 +171,9 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
     marginAccountAddress,
     borrowAsset,
     borrowAmount,
+    collateralAsset,
     collateralAmount,
+    collateralBorrowAmount = 0,
     poolProtocol,
     poolType,
     poolTokens,
@@ -154,17 +188,17 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
 
   const pct = Math.max(1, Math.min(100, exitPct)) / 100;
   const repayAmt = borrowAmount * pct;
-
-  // For same-asset: collateral + borrow is all deployed in the external pool.
-  // For cross-asset: only the borrowed amount lives in the pool (collateral
-  //   stays in the margin account as security and is freed after repay).
-  const withdrawAmt = isSameAsset
-    ? (collateralAmount + borrowAmount) * pct
-    : borrowAmount * pct;
+  const collateralRepayAmt = collateralBorrowAmount * pct;
 
   try {
     // ── Step 1: Withdraw from yield pool ──────────────────────────────────
     if (poolType === 'single') {
+      // For same-asset: collateral + borrow is all deployed in the external
+      // pool. For cross-asset: only the borrowed amount lives in the pool
+      // (collateral stays in the margin account as security, freed on repay).
+      const withdrawAmt = isSameAsset
+        ? (collateralAmount + borrowAmount) * pct
+        : borrowAmount * pct;
       const poolToken = poolTokens[0] as TokenAsset;
       step(`Step 1/2: Withdrawing ${withdrawAmt.toFixed(2)} ${poolToken} from ${poolProtocol}...`);
       const r = await BlendService.withdrawFromBlendPool(
@@ -172,20 +206,67 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
       );
       if (!r.success) return { success: false, error: `Withdraw failed: ${r.error}` };
     } else {
-      // LP pool — remove proportional liquidity (approx. borrowAmount as LP units)
-      step(`Step 1/2: Removing liquidity from ${poolProtocol} ${poolTokens.join('/')} pool...`);
-      const approxLpAmt = borrowAmount * pct;
-      const r = await removeLpLiquidity(poolProtocol, userAddress, marginAccountAddress, approxLpAmt);
+      // LP pool — remove the REAL on-chain LP balance, matching how the Farm
+      // page's own Remove Liquidity does it. LP shares are not the same unit
+      // as any borrowed-token amount, so approximating with borrowAmount (the
+      // old behavior) removed the wrong fraction of the real position.
+      const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
+      const tokenA = collateralAsset === 'XLM' ? collateralAsset : otherAsset;
+      const tokenB = collateralAsset === 'XLM' ? otherAsset : collateralAsset;
+      const lpBalanceStr = isAquarius(poolProtocol)
+        ? await AquariusService.getUserLpBalance(marginAccountAddress, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL, tokenA, tokenB)
+        : await SoroswapService.getLpBalance(marginAccountAddress);
+      const realLpBalance = parseFloat(lpBalanceStr) || 0;
+      if (realLpBalance <= 0) {
+        return { success: false, error: `No ${poolProtocol} LP balance found to remove.` };
+      }
+      const lpAmt = realLpBalance * pct;
+      step(`Step 1/2: Removing ${lpAmt.toFixed(4)} LP from ${poolProtocol} ${poolTokens.join('/')} pool...`);
+      const r = await removeLpLiquidity(poolProtocol, userAddress, marginAccountAddress, lpAmt);
       if (!r.success) return { success: false, error: `Remove liquidity failed: ${r.error}` };
     }
 
-    // ── Step 2: Repay Vanna loan ──────────────────────────────────────────
+    // ── Step 2: Repay Vanna loan(s) ─────────────────────────────────────────
+    // Leveraged LP positions carry TWO debt legs (paired-asset + same-asset
+    // top-up) — both must be repaid, or the top-up leg is left orphaned.
+    // Both legs go through poolTokenSymbol() — for an LP position, the real
+    // on-chain USDC-side debt is denominated in AQUSDC/SOUSDC (whichever the
+    // borrow itself used), not generic USDC/Blend-USDC. Repaying the plain
+    // "USDC" symbol here would target the wrong debt entirely.
+    const collateralRepaySymbol = poolTokenSymbol(collateralAsset, poolProtocol, poolType);
+    const borrowRepaySymbol = poolTokenSymbol(borrowAsset, poolProtocol, poolType);
+
+    // Cap each leg at what's actually spendable in the margin account right
+    // now — same reasoning as the Pro-mode Repay tab: the stored debt amount
+    // can exceed what's really there (interest, or — for a position whose
+    // amounts came from a stale/recovered source — an imprecise estimate).
+    // Repaying the raw amount blind risks Error(Contract,#10) "balance is not
+    // sufficient to spend" instead of a partial, successful repay.
+    const capToSpendable = async (symbol: string, amount: number): Promise<number> => {
+      if (amount <= 0) return 0;
+      const spendableWad = await MarginAccountService.getMarginAccountTokenBalanceWad(marginAccountAddress, symbol);
+      if (spendableWad == null) return amount;
+      const spendable = Number(BigInt(spendableWad)) / 1e18;
+      return Math.min(amount, spendable);
+    };
+
+    if (collateralRepayAmt > 0) {
+      const cappedAmt = await capToSpendable(collateralRepaySymbol, collateralRepayAmt);
+      if (cappedAmt > 0) {
+        step(`Repaying ${cappedAmt.toFixed(4)} ${collateralAsset} to Vanna...`);
+        const r = await MarginAccountService.repayLoan(marginAccountAddress, collateralRepaySymbol, toWad(cappedAmt));
+        if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
+      }
+    }
+
     if (repayAmt > 0) {
-      step(`Step 2/2: Repaying ${repayAmt.toFixed(2)} ${borrowAsset} to Vanna...`);
-      const repayWad = toWad(repayAmt);
-      const r = await MarginAccountService.repayLoan(marginAccountAddress, borrowAsset, repayWad);
-      if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
-      return { success: true, hash: r.hash };
+      const cappedAmt = await capToSpendable(borrowRepaySymbol, repayAmt);
+      if (cappedAmt > 0) {
+        step(`Step 2/2: Repaying ${cappedAmt.toFixed(4)} ${borrowAsset} to Vanna...`);
+        const r = await MarginAccountService.repayLoan(marginAccountAddress, borrowRepaySymbol, toWad(cappedAmt));
+        if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
+        return { success: true, hash: r.hash };
+      }
     }
 
     return { success: true };
@@ -312,19 +393,24 @@ export async function executeOneClickStrategy(
       // deposited asset (cross-asset-swap); otherwise deploy the collateral directly.
       const poolToken = poolTokens[0] as TokenAsset;
       let deployAmount = collateralAmount;
+      // Only valid when NO swap runs in between — a swap would bump the
+      // account's sequence again, making this stale (see nextSequence's doc
+      // comment on BlendTransactionResult).
+      let depositToBlendKnownSequence = depositResult.nextSequence;
       if (scenario === 'cross-asset-swap' && poolToken !== collateralAsset) {
         step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} → ${poolToken} via Soroswap...`);
         const sw = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
+        depositToBlendKnownSequence = undefined;
         deployAmount = collateralAmount * (prices[collateralAsset] / (prices[poolToken] || 1)) * 0.99;
         step(`Step 3/3: Deploying ~${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
       } else {
         step(`Step 2/2: Deploying ${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
       }
       const r = await BlendService.depositToBlendPool(
-        userAddress, marginAccountAddress, poolToken, deployAmount
+        userAddress, marginAccountAddress, poolToken, deployAmount, depositToBlendKnownSequence
       );
       return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
     }
@@ -367,6 +453,11 @@ export async function executeOneClickStrategy(
 
     // ── Phase 1: Deposit collateral + borrow ────────────────────────────────
 
+    // Carries the last Phase-1 tx's sequence into Phase 2's deploy call(s)
+    // below (e.g. depositToBlendPool right after depositAndBorrow) — same
+    // same-account race as the LP branch's b1→b2 chaining above.
+    let phase1NextSequence: string | undefined;
+
     if (scenario === 'same-asset') {
       step(
         leverage > 1
@@ -380,8 +471,110 @@ export async function executeOneClickStrategy(
         collateralAsset
       );
       if (!result.success) return { success: false, error: result.error };
+      phase1NextSequence = result.nextSequence;
+    } else if (poolType === 'lp') {
+      // LP pools (Aquarius/Soroswap): collateral funds one leg; the paired
+      // leg must be sized off the pool's LIVE reserve ratio, not the UI's
+      // oracle-price estimate (see fetchLpReserves doc comment above) — so
+      // reserves are re-read here, right before borrowing, rather than
+      // trusting whatever `borrowAmount`/`borrowAsset` the caller passed in.
+      step(`Step 1/4: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
+      const depositResult = await MarginAccountService.depositCollateralTokens(
+        marginAccountAddress,
+        poolTokenSymbol(collateralAsset, poolProtocol, poolType),
+        toWad(collateralAmount)
+      );
+      if (!depositResult.success) {
+        return { success: false, error: `Deposit failed: ${depositResult.error}` };
+      }
+
+      const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
+      let collateralLegBorrowAmount = 0;
+      let pairedBorrowAmount = 0;
+
+      if (leverage > 1) {
+        step(`Step 2/4: Reading live ${poolProtocol} pool reserves...`);
+        const reserves = await fetchLpReserves(poolProtocol);
+        if (!reserves) {
+          return { success: false, error: `Could not read ${poolProtocol} pool reserves — please retry.` };
+        }
+        const collateralReserve = collateralAsset === 'XLM' ? reserves.xlm : reserves.usdc;
+        const otherReserve = collateralAsset === 'XLM' ? reserves.usdc : reserves.xlm;
+        if (collateralReserve <= 0 || otherReserve <= 0) {
+          return { success: false, error: `${poolProtocol} pool has no liquidity to price the pair against.` };
+        }
+        const ratio = otherReserve / collateralReserve;
+
+        // Solve for the collateral-leg borrow that makes BOTH true at once:
+        //  1. total borrowed USD == depositUsd × (leverage − 1), so the
+        //     position lands at exactly the selected leverage instead of
+        //     overshooting it — pairedBorrowAmount used to be tacked on TOP
+        //     of a full (leverage−1)× collateral-leg borrow, silently adding
+        //     extra exposure beyond the chosen multiplier.
+        //  2. (collateralAmount + collateralLegBorrowAmount) : pairedBorrowAmount
+        //     still matches the pool's live reserve ratio, so nothing is
+        //     donated to the pool for free (see fetchLpReserves' doc comment) —
+        //     a flat 50/50 USD split would do exactly that on an imbalanced
+        //     pool like this one.
+        //
+        // pairedBorrowAmount = (collateralAmount + x) × ratio, and
+        // x·Pc + pairedBorrowAmount·Po = depositUsd·(leverage−1) together give:
+        //   x = [depositUsd·(leverage−1) − collateralAmount·ratio·Po] / (Pc + ratio·Po)
+        const collateralPrice = prices[collateralAsset] ?? 1;
+        const otherPrice = prices[otherAsset] ?? 1;
+        const depositUsd = collateralAmount * collateralPrice;
+        const totalBorrowUsdTarget = depositUsd * (leverage - 1);
+        const denom = collateralPrice + ratio * otherPrice;
+        collateralLegBorrowAmount = denom > 0
+          ? Math.max(0, (totalBorrowUsdTarget - collateralAmount * ratio * otherPrice) / denom)
+          : 0;
+        pairedBorrowAmount = (collateralAmount + collateralLegBorrowAmount) * ratio;
+
+        // b1 and b2 are both submitted from the SAME wallet account right
+        // after the Step 1/4 deposit confirms (Step 2/4 is a pure read, no
+        // tx) — a fresh `getAccount()` read for either is not reliably
+        // caught up with the prior tx's sequence bump yet — confirmed live
+        // hitting `txBadSeq` on every retry regardless of backoff — so chain
+        // each leg the exact next sequence the previous one just consumed
+        // instead of re-reading it over RPC.
+        let nextSequence: string | undefined = depositResult.nextSequence;
+
+        if (collateralLegBorrowAmount > 0) {
+          step(`Step 3/4: Borrowing ${collateralLegBorrowAmount.toFixed(2)} ${collateralAsset} from Vanna...`);
+          const b1 = await MarginAccountService.borrowTokens(
+            marginAccountAddress,
+            poolTokenSymbol(collateralAsset, poolProtocol, poolType),
+            toWad(collateralLegBorrowAmount),
+            nextSequence
+          );
+          if (!b1.success) return { success: false, error: `Borrow failed: ${b1.error}` };
+          nextSequence = b1.nextSequence;
+        }
+
+        step(`Step 4/4: Borrowing ${pairedBorrowAmount.toFixed(2)} ${otherAsset} from Vanna to pair into the pool...`);
+        const b2 = await MarginAccountService.borrowTokens(
+          marginAccountAddress,
+          poolTokenSymbol(otherAsset, poolProtocol, poolType),
+          toWad(pairedBorrowAmount),
+          nextSequence
+        );
+        if (!b2.success) return { success: false, error: `Borrow failed: ${b2.error}` };
+      }
+
+      // Both borrowed legs are shaved by the origination fee — the account
+      // is only ever credited the net amount, and asking AddLiquidity for
+      // the full gross borrow traps with "balance is not sufficient to spend".
+      const netCollateralLeg = collateralAmount + netOfOriginationFee(collateralLegBorrowAmount);
+      const netPairedLeg = netOfOriginationFee(pairedBorrowAmount);
+      const xlmAmt = collateralAsset === 'XLM' ? netCollateralLeg : netPairedLeg;
+      const usdcAmt = collateralAsset === 'USDC' ? netCollateralLeg : netPairedLeg;
+
+      step(`Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
+      const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
+      return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
     } else {
-      // cross-asset: deposit collateral first, then borrow the other token
+      // cross-asset for single-asset (Blend) pools: deposit collateral first,
+      // then borrow the other token.
       const totalSteps = borrowAmount > 0 ? 4 : 2;
       step(`Step 1/${totalSteps}: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
@@ -392,17 +585,20 @@ export async function executeOneClickStrategy(
       if (!depositResult.success) {
         return { success: false, error: `Deposit failed: ${depositResult.error}` };
       }
+      phase1NextSequence = depositResult.nextSequence;
 
       if (leverage > 1 && borrowAmount > 0) {
         step(`Step 2/${totalSteps}: Borrowing ${borrowAmount.toFixed(2)} ${borrowAsset} from Vanna...`);
         const borrowResult = await MarginAccountService.borrowTokens(
           marginAccountAddress,
           poolTokenSymbol(borrowAsset, poolProtocol, poolType),
-          toWad(borrowAmount)
+          toWad(borrowAmount),
+          phase1NextSequence
         );
         if (!borrowResult.success) {
           return { success: false, error: `Borrow failed: ${borrowResult.error}` };
         }
+        phase1NextSequence = borrowResult.nextSequence;
       }
     }
 
@@ -415,24 +611,27 @@ export async function executeOneClickStrategy(
         const total = collateralAmount + borrowAmount;
         const stepLabel = leverage > 1 ? '2/2' : '1/1';
         step(`Step ${stepLabel}: Deploying ${total.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        console.log(`[OneClick] calling depositToBlendPool with phase1NextSequence=${phase1NextSequence} (userAddress=${userAddress})`);
         const r = await BlendService.depositToBlendPool(
-          userAddress, marginAccountAddress, poolToken, total
+          userAddress, marginAccountAddress, poolToken, total, phase1NextSequence
         );
         return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
       }
 
       if (scenario === 'cross-asset-keep') {
         const totalSteps = borrowAmount > 0 ? 4 : 2;
+        let nextSequence = phase1NextSequence;
         if (borrowAmount > 0) {
           step(`Step 3/${totalSteps}: Deploying ${borrowAmount.toFixed(2)} ${borrowAsset} to ${poolProtocol} ${borrowAsset} pool...`);
           const r1 = await BlendService.depositToBlendPool(
-            userAddress, marginAccountAddress, borrowAsset, borrowAmount
+            userAddress, marginAccountAddress, borrowAsset, borrowAmount, nextSequence
           );
           if (!r1.success) return { success: false, error: `Deploy ${borrowAsset} failed: ${r1.error}` };
+          nextSequence = r1.nextSequence;
         }
         step(`Step ${totalSteps}/${totalSteps}: Deploying ${collateralAmount.toFixed(2)} ${collateralAsset} to ${poolProtocol} ${collateralAsset} pool...`);
         const r2 = await BlendService.depositToBlendPool(
-          userAddress, marginAccountAddress, collateralAsset, collateralAmount
+          userAddress, marginAccountAddress, collateralAsset, collateralAmount, nextSequence
         );
         return r2.success ? { success: true, hash: r2.hash } : { success: false, error: r2.error };
       }
@@ -457,47 +656,8 @@ export async function executeOneClickStrategy(
       }
     }
 
-    if (poolType === 'lp') {
-      // LP pools (Soroswap / Aquarius).
-      // For same-asset: we only have one token → swap half to get the other, then addLiquidity.
-      // For cross-asset: we already have both tokens → addLiquidity directly.
-
-      if (scenario === 'same-asset') {
-        const totalAmount = collateralAmount + borrowAmount;
-        const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
-        const halfNative = totalAmount / 2;
-        // Estimate how much otherAsset we get after swapping half (0.99 for fee/slippage)
-        const otherNative =
-          halfNative * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
-
-        step(`Step 2/3: Swapping ${halfNative.toFixed(2)} ${collateralAsset} → ${otherAsset}...`);
-        const swapResult = await swapLpAsset(poolProtocol, userAddress, marginAccountAddress, collateralAsset, halfNative);
-        if (!swapResult.success) return { success: false, error: `Swap failed: ${swapResult.error}` };
-
-        const xlmAmt = collateralAsset === 'XLM' ? halfNative : otherNative;
-        const usdcAmt = collateralAsset === 'USDC' ? halfNative : otherNative;
-
-        step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
-        const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
-        return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
-      }
-
-      // cross-asset: collateral is one token, borrowed is the other (the
-      // normal path once leverage > 1 — deposit and borrow already left the
-      // margin account holding both LP tokens, so no swap is needed here).
-      // The borrowed leg must be shaved by the origination fee — the account
-      // was only ever credited the net amount, and asking AddLiquidity for
-      // the full gross borrow traps with "balance is not sufficient to spend".
-      const netBorrowAmount = netOfOriginationFee(borrowAmount);
-      const xlmAmt = collateralAsset === 'XLM' ? collateralAmount : netBorrowAmount;
-      const usdcAmt = collateralAsset === 'USDC' ? collateralAmount : netBorrowAmount;
-      const stepNum = borrowAmount > 0 ? 3 : 2;
-      const totalSteps = stepNum;
-
-      step(`Step ${stepNum}/${totalSteps}: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
-      const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
-      return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
-    }
+    // LP pools (Aquarius/Soroswap) already returned above, in the ratio-aware
+    // branch of Phase 1 — only single-asset (Blend) pools reach here.
 
     return { success: false, error: 'Unknown pool type' };
   } catch (err: any) {

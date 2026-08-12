@@ -1,0 +1,80 @@
+name: Deploy prod
+
+# main → Cloud Run service vanna-app-prod → app.stellar.vanna.finance
+#
+# Mirrors deploy-dev.yml. The only differences are the target service, the
+# baked-in site URL, and min-instances: prod keeps one warm instance so nobody
+# pays a cold start, dev scales to zero.
+#
+# NEXT_PUBLIC_SITE_URL is inlined into the client bundle at build time, so prod
+# builds its own image from the same commit rather than promoting the dev image.
+
+on:
+  push:
+    branches: [main]
+    # Same reasoning as dev: none of these change the container, and a rebuild
+    # is ~16 minutes. cloudbuild.yaml and this file stay in scope.
+    paths-ignore:
+      - "infra/**"
+      - "**/*.md"
+      - ".gitattributes"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/deploy-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false # never cancel a production rollout mid-flight
+
+env:
+  PROJECT_ID: vanna-main
+  PROJECT_NUMBER: "1079109217674"
+  REGION: us-central1
+  SERVICE: vanna-app-prod
+  SITE_URL: https://app.stellar.vanna.finance
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github
+          service_account: vanna-deployer@vanna-main.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy
+        env:
+          PRIVY_APP_ID: ${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
+        run: |
+          gcloud builds submit \
+            --config=cloudbuild.yaml \
+            --region="$REGION" \
+            --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID},_MIN_INSTANCES=1,_MAX_INSTANCES=20" \
+            .
+
+      - name: Report URL
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          echo "Deployed: $URL"
+          echo "### Deployed [$SERVICE]($URL)" >> "$GITHUB_STEP_SUMMARY"

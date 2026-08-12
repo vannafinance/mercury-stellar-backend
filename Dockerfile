@@ -19,6 +19,14 @@ COPY . .
 # Change this to your real domain, or override via --build-arg / cloudbuild _SITE_URL.
 ARG NEXT_PUBLIC_SITE_URL=https://stellar.vanna.finance
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+
+# Privy app id. Public by nature — it is inlined into the client bundle and
+# readable in any browser — so it is a plain build arg, not a secret. Empty by
+# default: contexts/privy-provider.tsx renders children unwrapped when it is
+# unset, so an unconfigured build simply hides Privy sign-in and falls back to
+# Freighter rather than failing.
+ARG NEXT_PUBLIC_PRIVY_APP_ID=
+ENV NEXT_PUBLIC_PRIVY_APP_ID=$NEXT_PUBLIC_PRIVY_APP_ID
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build
@@ -40,6 +48,10 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static     ./.next/static
 COPY --from=builder /app/public           ./public
 
+# Entrypoint wrapper that strips Next's RSC Vary values from /api responses so
+# Cloud CDN will cache them. See the file header for why this is necessary.
+COPY server-vary-patch.cjs ./
+
 # next/image needs sharp in production. It is NOT in package.json, so install it
 # explicitly into the standalone node_modules (glibc build for this base image).
 RUN npm install --no-save sharp@^0.34.0 \
@@ -48,4 +60,4 @@ RUN npm install --no-save sharp@^0.34.0 \
 
 USER nextjs
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["node", "server-vary-patch.cjs"]
