@@ -123,6 +123,29 @@ export const useWallet = () => {
       return;
     }
 
+    /**
+     * A live Privy session outranks "Freighter says no".
+     *
+     * `walletKind` is NOT persisted, so after a reload it rehydrates as null even when the
+     * Privy session is still alive in `privy:token`. The branch above only catches
+     * kind==='privy', so a reloaded Privy user fell straight through to Freighter here,
+     * Freighter reported not-connected, and the else-branch below wiped `address` to null.
+     *
+     * That is the "connected for two seconds, then back to Connect" flip: Privy's SDK
+     * rehydrates and paints the address, then this runs and clears it. Pressing Connect
+     * looked dead afterwards because Privy still had the session, so `login()` no-opped.
+     *
+     * Asking Privy directly is the fix — `authenticated` is exactly "Privy already has a
+     * live session". Freighter is only consulted once we know Privy does not.
+     */
+    const privy = getPrivyAuthControls();
+    if (privy?.authenticated) {
+      setActiveWalletKind('privy');
+      useUserStore.getState().set({ walletKind: 'privy', isLoading: false });
+      privy.resync?.();
+      return;
+    }
+
     setActiveWalletKind('freighter');
     try {
       const { address: walletAddress, connected } = await WalletService.checkConnection();

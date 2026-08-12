@@ -3074,19 +3074,22 @@ async function runRead(
      * R-11/R-12/R-13 all read as wrong.
      *
      * This does NOT relabel from the user's word — that is the documented P0 (a swap card
-     * once said BLUSDC while buying AQUSDC). `routed.args.symbol` is the ROUTER's resolved
-     * variant, the same resolution that chose which pool to read, so it agrees with the data
-     * by construction. The substitution is deliberately narrow: only when the wire value is
-     * exactly the ambiguous shared symbol, and only for a variant known to share it.
+     * once said BLUSDC while buying AQUSDC). `built.args.symbol` is the same resolved value
+     * that ends up in `intent.slots` a few lines down and the same one that picked which
+     * pool to call, so it agrees with the data by construction. (Not `routed.args.symbol` —
+     * that is the router's PRE-normalisation guess; `buildToolArgs` is what upper-cases it
+     * and applies the "USDC" fallback, so reading `routed.args` here silently never matched
+     * and the fix did nothing.) The substitution is deliberately narrow: only when the wire
+     * value is exactly the ambiguous shared symbol, and only for a variant known to share it.
      */
-    const wireSymbol = data["pool symbol"];
-    const resolvedSymbol = (routed.args as Record<string, unknown> | undefined)?.symbol;
-    if (
-      wireSymbol === "USDC" &&
-      typeof resolvedSymbol === "string" &&
-      /^(BLUSDC|AQUSDC|SOUSDC)$/i.test(resolvedSymbol)
-    ) {
-      data["pool symbol"] = resolvedSymbol.toUpperCase();
+    const resolvedSymbol = (built.args as Record<string, unknown> | undefined)?.symbol;
+    if (typeof resolvedSymbol === "string" && /^(BLUSDC|AQUSDC|SOUSDC)$/i.test(resolvedSymbol)) {
+      // Both spellings: the MCP sends `pool_symbol`, and `factsForUi` is what turns
+      // underscores into spaces for display. Reading only the spaced form meant this
+      // matched nothing on the raw payload — the second reason this fix sat dead.
+      for (const key of ["pool_symbol", "pool symbol", "symbol"]) {
+        if (data[key] === "USDC") data[key] = resolvedSymbol.toUpperCase();
+      }
     }
 
     let structured: StructuredAnswer | null = null;
