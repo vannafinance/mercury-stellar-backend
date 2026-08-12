@@ -629,7 +629,11 @@ export function routeMessage(message: string): RoutedIntent {
   if (!raw) {
     return { kind: "clarify", message: "Please type a question or action." };
   }
-  const text = raw.toLowerCase();
+  // Collapsed once, here, so every exact-phrase `any(text, "...")` check below benefits —
+  // "how   much    do i owe" (G-04) has the same words as "how much do i owe" but none of
+  // the phrase lists match irregular whitespace, so it fell through to the generic
+  // clarify_capabilities blurb instead of answering.
+  const text = raw.toLowerCase().replace(/\s+/g, " ");
   const asset = findAsset(raw);
   const amount = findAmount(raw);
   const leverage = findLeverage(raw);
