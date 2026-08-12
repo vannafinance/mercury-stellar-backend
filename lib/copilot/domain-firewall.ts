@@ -154,6 +154,16 @@ const DOMAIN_WORDS = [
   "pool", "pools",
   "reserve", "reserves",
   "liquidity",
+  /**
+   * "remove 50% of my LP" was refused as off-domain chat — the generic "I only help
+   * with Vanna Finance" message — while "remove half my liquidity" (same request, one
+   * word different) got a real, specific answer. Neither "remove" nor "LP" was in this
+   * list; "liquidity" was, so only the phrasing that happened to use it passed. "LP" is
+   * unambiguous in this domain (liquidity-pool position/token) and, with the `\b`
+   * word-boundary matching every entry here already uses, cannot match inside another
+   * word ("help" has no boundary before its "lp").
+   */
+  "lp", "lps",
   "apy", "apr", "tvl", "yield", "yields", "interest",
   "oracle", "oracles",
   "price", "prices", "priced", "pricing",
