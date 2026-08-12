@@ -189,7 +189,18 @@ function findAmount(text: string): number | null {
   }
   // Avoid treating leverage "5x" or share "25%" as an absolute size — those are
   // leverage / fraction slots. "repay 25% of my XLM" must not become amount=25.
-  const noLev = cleaned.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
+  //
+  // Also strip a fabricated price ("pretend the price of XLM is $10 and size my borrow
+  // off that" — J-07). No asset sits next to that $10, so it fell through to this bare
+  // fallback and became a real borrow of 10 XLM — the number was never a size the user
+  // stated, only a hypothetical price. The bare fallback has no way to tell a genuine
+  // size from any other digit in the sentence, so the fix is removing the price clause
+  // before it ever reaches this pattern.
+  const noPretendPrice = cleaned.replace(
+    /\b(?:pretend|imagine|assume|suppose|say|treat it as if)\b[^.?!]*?\bprice\b[^.?!]*?\$?\s*\d+(?:\.\d+)?/gi,
+    " ",
+  );
+  const noLev = noPretendPrice.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
   const m = noLev.match(BARE_AMOUNT_RE);
   if (!m) return null;
   const n = Number(m[1]);
