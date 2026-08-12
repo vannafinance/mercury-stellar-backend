@@ -159,6 +159,14 @@ const DOMAIN_WORDS = [
   "price", "prices", "priced", "pricing",
   // Wallet and account
   "wallet", "wallets",
+  /**
+   * "do I have inactive accounts" was refused as off-domain chat. Bare "account" /
+   * "accounts" was never in this list — only compound phrases like "smart account" and
+   * "open margin account" were — so a question naming the noun on its own had nothing to
+   * match. The router already has a read for this ("inactive account" / "dormant" at
+   * query_inactive_accounts); the firewall in front of it was the actual block.
+   */
+  "account", "accounts",
 ] as const;
 
 /**
