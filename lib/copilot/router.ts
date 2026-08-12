@@ -171,8 +171,22 @@ export function findUnsupportedAsset(text: string): string | null {
   return null;
 }
 
+/**
+ * "1,000" and "1k" both mean one thousand, but neither `AMOUNT_ASSET_RE` nor
+ * `BARE_AMOUNT_RE` read past the comma or the suffix — "1,000 BLUSDC" asked for an
+ * amount instead of parsing 1000 (safe, but not what G-07 wants), and "1k BLUSDC" (G-08)
+ * silently parsed as 1, then actually borrowed 1 BLUSDC instead of 1000 — the one outcome
+ * that spec explicitly rules out. Expanded once, before any amount pattern runs, so both
+ * shapes read as a normal bare number from there on.
+ */
+function normalizeShorthandAmounts(text: string): string {
+  return text
+    .replace(/(\d),(?=\d{3}\b)/g, "$1")
+    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000));
+}
+
 function findAmount(text: string): number | null {
-  const cleaned = stripAddresses(text);
+  const cleaned = stripAddresses(normalizeShorthandAmounts(text));
   // Explicit negative amounts (Sanujit EW8) — return the signed value so
   // validateLendParams can reject them instead of dropping the sign.
   const negWithAsset = cleaned.match(
