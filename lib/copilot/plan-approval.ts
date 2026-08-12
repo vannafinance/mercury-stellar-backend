@@ -288,14 +288,33 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
     });
 
   /**
+   * Cap the number of top-level steps a single plan can carry.
+   *
+   * Nothing upstream limits how many clauses a sentence can chain — "do 15 things" builds
+   * 15 real steps, each a signature, with no ceiling. Dropped rather than shown-then-refused,
+   * because every one of them would otherwise reach `Approve & run` looking identical to an
+   * intended plan.
+   */
+  const MAX_PLAN_STEPS = 8;
+  const overflow = steps.length > MAX_PLAN_STEPS ? steps.length - MAX_PLAN_STEPS : 0;
+  const cappedSteps = overflow ? steps.slice(0, MAX_PLAN_STEPS) : steps;
+  const renumberedSteps = cappedSteps.map((s, i) => ({ ...s, n: i + 1 }));
+
+  /**
    * Only writes are signed. A read leg reports a number and asks nothing of the wallet, so
    * counting it here would tell the user to expect one more signature than they will see —
    * and "how many times will I be asked to sign" is the number this card exists to get
    * right.
    */
-  const writeSteps = steps.filter((s) => s.kind === "write");
+  const writeSteps = renumberedSteps.filter((s) => s.kind === "write");
   const signatureCount = writeSteps.reduce((n, s) => n + legCount(s.op, s.leverage), 0);
   const warnings: string[] = [];
+  if (overflow) {
+    warnings.push(
+      `This plan is capped at ${MAX_PLAN_STEPS} steps — ${overflow} more you asked for were dropped. ` +
+        `Ask again for the rest once these run.`,
+    );
+  }
 
   // A missing amount becomes a prompt mid-execution, after earlier legs have already
   // settled on-chain. Better to say so while the whole thing can still be cancelled.
@@ -315,13 +334,13 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   // "USDC" is three different tokens here, and picking the wrong one is unrecoverable.
   // Checked on BOTH slots: a bare-USDC loan against a specific collateral is just as
   // ambiguous, and only the collateral was being looked at.
-  if (steps.some((s) => s.asset === "USDC" || s.borrow_asset === "USDC")) {
+  if (renumberedSteps.some((s) => s.asset === "USDC" || s.borrow_asset === "USDC")) {
     warnings.push(
       "USDC is ambiguous on this network (BLUSDC, AQUSDC, SOUSDC) — I'll ask which one before that leg runs.",
     );
   }
 
-  if (steps.some((s) => s.venue === "farm") && steps.some((s) => s.venue === "earn")) {
+  if (renumberedSteps.some((s) => s.venue === "farm") && renumberedSteps.some((s) => s.venue === "earn")) {
     warnings.push("This plan touches both Earn and Farm — check each step is against the product you meant.");
   }
 
@@ -353,9 +372,9 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
   }
 
   return {
-    plan_id: planFingerprint(steps),
+    plan_id: planFingerprint(renumberedSteps),
     summary: plan.summary?.trim() || "Multi-step strategy",
-    steps,
+    steps: renumberedSteps,
     created_at: nowMs,
     signature_count: signatureCount,
     warnings,
