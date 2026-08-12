@@ -104,6 +104,22 @@ All 12 pass, no fixes needed.
 - V-11: opened a plan_preview, navigated away, browser-backed — the stale card did not resurface; only session-log history remained.
 - V-12: two tabs, two different plans — each tab kept its own composer/plan state; only the shared on-chain account numbers updated across both, as they should.
 
+## Section 16 — failure & resilience (Z-01–Z-08)
+
+| 31 | Z-07: two identical "lend 1 XLM" requests fired concurrently (raw `fetch`, bypassing the client) both executed independently — two real, separate transactions, not one deduped into the other. The real UI's Run/action buttons are `disabled` while `loading` (checked in `copilot-workspace.tsx`), so an ordinary double-click cannot reach the server twice — this only reproduces below that layer (devtools, a retry, a second tab). Same root gap as #16 (no server-side idempotency on writes) | Medium — same as #16 | handle.ts |
+
+Z-01 (kill network mid-plan), Z-03 (disconnect wallet mid-preview), Z-04 (switch wallet
+mid-session), Z-05 (`COPILOT_READS_ONLY=true`), Z-06 (mainnet wallet on testnet app) all need
+capabilities this session doesn't have — network throttling, a second (unauthorised) wallet,
+or restarting the dev server with a different env var. Not run; noted rather than skipped
+silently. Z-02 (Soroban budget overrun must not read as "collateral: 0") is the same failure
+shape as finding #7 (`walletSacBalance`), fixed and verified on-chain earlier this run — every
+account-health read since has returned real numbers, never a suspicious zero. Z-08 (zero-balance
+account) verified by reading the fixed `walletSacBalance`/`preflightAssetReadiness` code rather
+than a live test — no unfunded wallet is authorised for this session — and confirmed it returns
+a real `0` (triggering a clear insufficient-balance message) only on an explicit Horizon
+"not found," never on a merely-unknown read.
+
 ## Section 13 — auto-sign behaviour (S-01–S-08)
 
 S-01 (enable, reports scope + caps), S-02 (single write executes immediately under
