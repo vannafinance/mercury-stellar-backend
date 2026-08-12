@@ -30,7 +30,7 @@ import { PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
 import { normalizeContractError } from "@/lib/errors/normalize";
-import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 
 const SUPPORTED_TOKENS = ["XLM", "USDC"] as const;
@@ -236,10 +236,11 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       }
       return { ...result, amount };
     },
-    onMutate: () => {
+    onMutate: ({ amount }) => {
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
+      showTxStep(`Withdrawing ${amount.toFixed(2)} ${selectedToken} from Blend`);
     },
     onSuccess: ({ hash, amount }) => {
       setTxStatus("success");
@@ -252,7 +253,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
         amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
         txHash: hash ?? "",
       });
-      toast.success(`Withdrawal successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      showTxSuccess("Withdrawal successful!");
       setValue("");
       setSelectedPercentage(0);
       qc.invalidateQueries({ queryKey: ['farm'] });
@@ -266,7 +267,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       setTxStatus("error");
       const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Withdrawal failed");
       setTxError(errorMsg);
-      toast.error(errorMsg);
+      showTxError(errorMsg);
     },
   });
 
@@ -283,10 +284,11 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       }
       return { ...result, amount };
     },
-    onMutate: () => {
+    onMutate: ({ amount }) => {
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
+      showTxStep(`Removing ${amount.toFixed(2)} LP from ${isSoroswapPool ? "Soroswap" : "Aquarius"} ${tokenA}/${tokenB}`);
     },
     onSuccess: ({ hash, amount }) => {
       setTxStatus("success");
@@ -299,7 +301,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
         amountDisplay: `${amount.toFixed(2)} LP`,
         txHash: hash ?? "",
       });
-      toast.success(`Liquidity removed! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      showTxSuccess("Liquidity removed!");
       setValue("");
       setSelectedPercentage(0);
       qc.invalidateQueries({ queryKey: ['farm'] });
@@ -326,7 +328,7 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       setTxStatus("error");
       const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Remove liquidity failed");
       setTxError(errorMsg);
-      toast.error(errorMsg);
+      showTxError(errorMsg);
     },
   });
 

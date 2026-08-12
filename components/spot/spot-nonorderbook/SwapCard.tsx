@@ -22,7 +22,7 @@ import { SwapSettings } from "./SwapSettings";
 import { Token, SwapButtonState, DexOption } from "./types";
 import { MOCK_TOKENS, MOCK_DEXES } from "./mock-data";
 import { AnimatePresence, motion } from "framer-motion";
-import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import {
   amountFromBalancePercent,
   capAmountToMaxBalance,
@@ -667,11 +667,12 @@ export const SwapCard = ({
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
+      showTxStep(`Swapping ${amountIn} ${displaySymbolOf(tokenIn)} → ${displaySymbolOf(tokenOut)}`);
     },
     onSuccess: (result) => {
       setTxStatus("success");
       setTxHash(result.hash ?? "");
-      toast.success(`Swap submitted! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`);
+      showTxSuccess("Swap submitted!");
       // Spot swaps always route through the margin account (swapMode is
       // locked to "margin" — see the showModeTabs comment below), so its
       // history is scoped to marginAccountAddress like Farm/Lender history.
@@ -703,7 +704,7 @@ export const SwapCard = ({
       setTxStatus("error");
       const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Swap failed");
       setTxError(errorMsg);
-      toast.error(errorMsg);
+      showTxError(errorMsg);
     },
   });
 

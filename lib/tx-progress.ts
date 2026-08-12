@@ -18,15 +18,40 @@ import { useTxProgressStore } from "@/store/tx-progress-store";
  * submit-then-toast pattern the UI redesign asked for.
  */
 export function showTxStep(message: string): void {
-  useTxProgressStore.getState().set({ isOpen: true, message });
+  // Every new step needs its own wallet approval first — reset to "signing"
+  // (no forward progress shown) even if the previous step had already
+  // reached "confirming". See markTxSubmitted's doc comment for why the two
+  // phases are visually different.
+  useTxProgressStore.getState().set({ isOpen: true, message, phase: "signing", submittedAt: null });
+}
+
+/**
+ * Call the instant a wallet returns a signed transaction (right after
+ * `signTransaction(...)` resolves), before `sendTransaction`. Until this
+ * fires, the modal is purely waiting on the USER (there is no "progress" to
+ * animate — the wallet popup's timing is entirely up to them, so faking
+ * forward motion during that wait was misleading, matching the "isn't this
+ * just blinking, not real progress" complaint). Once called, the modal
+ * switches to animating progress against elapsed wall-clock time, since
+ * we're now waiting on the NETWORK — a bounded, genuinely "in progress" wait.
+ */
+export function markTxSubmitted(): void {
+  useTxProgressStore.getState().set({ phase: "confirming", submittedAt: Date.now() });
 }
 
 export function showTxSuccess(message: string): void {
-  useTxProgressStore.getState().set({ isOpen: false });
-  toast.success(message);
+  // Briefly force the bar to its full width before closing, instead of
+  // vanishing mid-fill (the asymptotic "confirming" curve never actually
+  // reaches 100% on its own — see the modal's doc comment) — the bar should
+  // visibly finish, THEN the popup goes away, not disappear at ~90%.
+  useTxProgressStore.getState().set({ forceComplete: true });
+  setTimeout(() => {
+    useTxProgressStore.getState().set({ isOpen: false, phase: "signing", submittedAt: null, forceComplete: false });
+    toast.success(message);
+  }, 350);
 }
 
 export function showTxError(message: string): void {
-  useTxProgressStore.getState().set({ isOpen: false });
+  useTxProgressStore.getState().set({ isOpen: false, phase: "signing", submittedAt: null });
   toast.error(message);
 }

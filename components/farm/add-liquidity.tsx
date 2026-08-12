@@ -33,7 +33,7 @@ import { useTokenPrice } from "@/hooks/use-token-prices";
 import { DepositSummary } from "./deposit-summary";
 import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
 import { normalizeContractError } from "@/lib/errors/normalize";
-import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { formatUsdValue } from "@/lib/utils/format-amount";
 import { attributeFarmDeposit } from "@/lib/utils/margin-token-attribution";
@@ -354,10 +354,11 @@ export const AddLiquidity = memo(function AddLiquidity() {
       }
       return { ...result, amtA, amtB };
     },
-    onMutate: () => {
+    onMutate: ({ amtA, amtB }) => {
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
+      showTxStep(`Adding ${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenBLabel} liquidity to ${isSoroswapPool ? "Soroswap" : "Aquarius"}`);
     },
     onSuccess: ({ hash, amtA, amtB }) => {
       setTxStatus("success");
@@ -370,7 +371,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenBLabel}`,
         txHash: hash ?? "",
       });
-      toast.success(`Liquidity added! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      showTxSuccess("Liquidity added!");
       setMarginDexBalances((prev) => ({
         ...prev,
         [tokenA]: Math.max(0, parseFloat(prev[tokenA] || "0") - amtA).toFixed(2),
@@ -394,7 +395,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
       setTxStatus("error");
       const message = normalizeContractError(error instanceof Error ? error.message : undefined, "Add liquidity failed");
       setTxError(message);
-      toast.error(message);
+      showTxError(message);
     },
   });
 
@@ -419,10 +420,11 @@ export const AddLiquidity = memo(function AddLiquidity() {
       }
       return { ...result, amount };
     },
-    onMutate: () => {
+    onMutate: ({ amount }) => {
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
+      showTxStep(`Depositing ${amount.toFixed(2)} ${selectedToken === "USDC" ? "BLUSDC" : selectedToken} to Blend`);
     },
     onSuccess: ({ hash, amount }) => {
       setTxStatus("success");
@@ -435,7 +437,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         amountDisplay: `${amount.toFixed(2)} ${selectedToken === "USDC" ? "BLUSDC" : selectedToken}`,
         txHash: hash ?? "",
       });
-      toast.success(`Deposit successful! Tx: ${hash ? hash.slice(0, 16) + '…' : ''}`);
+      showTxSuccess("Deposit successful!");
       setValue("");
       qc.invalidateQueries({ queryKey: ['farm'] });
       refreshBorrowedBalances(marginAccountAddress!, true);
@@ -449,7 +451,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
       setTxStatus("error");
       const errorMsg = normalizeContractError(error instanceof Error ? error.message : undefined, "Deposit failed");
       setTxError(errorMsg);
-      toast.error(errorMsg);
+      showTxError(errorMsg);
     },
   });
 

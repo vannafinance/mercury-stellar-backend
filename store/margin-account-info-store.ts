@@ -9,6 +9,8 @@ import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
+import { normalizeCreateAccountError } from "@/lib/errors/normalize";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -461,9 +463,10 @@ export const checkUserMarginAccount = async (
 export const createMarginAccount = async (userAddress: string): Promise<boolean> => {
   try {
     setAccountCreationLoading(true);
-    
+    showTxStep("Creating your Vanna margin account on Stellar");
+
     const result = await MarginAccountService.createMarginAccount(userAddress);
-    
+
     if (result.success && result.marginAccountAddress) {
       const marginAccount: MarginAccount = {
         address: result.marginAccountAddress,
@@ -471,15 +474,20 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
         isActive: true,
         createdAt: Date.now()
       };
-      
+
       setMarginAccount(marginAccount);
+      showTxSuccess("Margin account created!");
       return true;
     } else {
-      setAccountCreationError(result.error || 'Failed to create margin account');
+      const rawMessage = result.error || 'Failed to create margin account';
+      setAccountCreationError(rawMessage);
+      showTxError(normalizeCreateAccountError(rawMessage));
       return false;
     }
   } catch (error: any) {
-    setAccountCreationError(error?.message || 'Failed to create margin account');
+    const rawMessage = error?.message || 'Failed to create margin account';
+    setAccountCreationError(rawMessage);
+    showTxError(normalizeCreateAccountError(rawMessage));
     return false;
   }
 };

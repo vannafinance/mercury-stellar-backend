@@ -8,7 +8,7 @@ import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore, createMarginAccount, refreshBorrowedBalances } from "@/store/margin-account-info-store";
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
-import { normalizeContractError, normalizeCreateAccountError } from "@/lib/errors/normalize";
+import { normalizeContractError } from "@/lib/errors/normalize";
 import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -26,8 +26,7 @@ import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 
 const showStep = (message: string) => showTxStep(message);
-const showStepSuccess = (message: string, txHash?: string) =>
-  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
 /* ═══════════════════════════════════════════════════════════════
@@ -512,16 +511,10 @@ export const OneClickStrategy = () => {
   const handleCreateAccount = async () => {
     if (!userAddress) return;
     setLoading(true);
-    showStep("Creating your Vanna margin account on Stellar...");
     try {
-      const success = await createMarginAccount(userAddress);
-      if (success) {
-        showStepSuccess("Your Vanna margin account is ready!");
-      } else {
-        throw new Error("Failed to create margin account");
-      }
-    } catch (err: any) {
-      showStepError(normalizeCreateAccountError(err?.message));
+      // createMarginAccount (store) already drives the progress modal and
+      // the final success/error toast — nothing else needed here either way.
+      await createMarginAccount(userAddress);
     } finally {
       setLoading(false);
     }
@@ -532,7 +525,7 @@ export const OneClickStrategy = () => {
     if (!userAddress || !marginAccountAddress || collateralNum <= 0) return;
     setLoading(true);
 
-    showStep("Preparing transaction...");
+    showStep("Preparing transaction");
 
     try {
       const result = await executeOneClickStrategy({

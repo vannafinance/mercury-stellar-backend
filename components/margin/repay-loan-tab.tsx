@@ -390,8 +390,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   });
 
   useMutationToast(repayMutation, {
-    loading: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}...`,
-    success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
+    loading: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}`,
+    success: () => `Loan repayment successful!`,
     error: (e) => normalizeContractError(e.message),
   });
 

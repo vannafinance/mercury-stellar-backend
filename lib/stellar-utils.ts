@@ -1,5 +1,6 @@
 import { requestAccess, getAddress, signTransaction } from '@/lib/wallet-adapter';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { markTxSubmitted } from './tx-progress';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
 export const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
@@ -207,6 +208,39 @@ export async function resubmitOnTryAgainLater(
 }
 
 /**
+ * Decodes a failed `getTransaction` result's diagnostic events into a
+ * human-readable string (e.g. `scecExceededLimit: operation byte-write
+ * resources exceeds amount specified (1920, 1880)`, or a contract's own
+ * `error` event). The resource footprint `prepareTransaction` computes from
+ * simulation can go stale by the time the signed tx actually executes, and a
+ * bare `status: 'FAILED'` gives no way to tell that apart from a genuine
+ * business-logic rejection — callers need this decoded text to both surface
+ * a real reason to the user and to feed {@link isFootprintRaceError} for a
+ * retry decision.
+ */
+export function describeFailedTx(finalResult: any): string {
+  try {
+    const events: any[] = finalResult?.diagnosticEventsXdr ?? [];
+    const reasons: string[] = [];
+    for (const ev of events) {
+      try {
+        const body = ev.event().body().v0();
+        const topics = body.topics().map((t: any) => StellarSdk.scValToNative(t));
+        if (!topics.includes('error')) continue;
+        const data = StellarSdk.scValToNative(body.data());
+        const errorCode = topics.find((t: any) => typeof t === 'object' && t?.value)?.value;
+        reasons.push([errorCode, ...(Array.isArray(data) ? data : [data])].filter(Boolean).join(': '));
+      } catch {
+        // Skip events that don't decode as a v0 diagnostic event.
+      }
+    }
+    return reasons.join('; ');
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Runs `attempt` once, then retries with growing backoff (2s, 4s) whenever
  * the failure looks like {@link isFootprintRaceError} — a stale RPC read
  * that a full rebuild-from-scratch (calling `attempt` again re-fetches
@@ -372,8 +406,13 @@ export class ContractService {
 
       const contract = new StellarSdk.Contract(contractAddress);
 
-      const amountWAD = (BigInt(Math.floor(amount * 1e18))).toString();
-      
+      // See ContractService.withdraw's matching comment: raw `amount * 1e18`
+      // float multiplication loses precision once the product needs more
+      // significant digits than a JS double can hold, most likely to bite on
+      // a 100%-of-balance supply with many decimal digits. Splitting through
+      // a 7-decimal (stroop-precision) integer step keeps it exact.
+      const amountWAD = (BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11)).toString();
+
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -398,6 +437,10 @@ export class ContractService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -436,9 +479,21 @@ export class ContractService {
       const methodName = 'redeem_vtokens';
       
       const contract = new StellarSdk.Contract(contractAddress);
-      
-      const amountWAD = (BigInt(Math.floor(amount * 1e18))).toString();
-      
+
+      // `amount * 1e18` in raw floating point loses precision once the
+      // product needs more significant digits than a JS double can hold
+      // (~15-17) — confirmed live: withdrawing the exact 100% vToken balance
+      // (999.5544013) computed as 999554401300000014336 instead of the true
+      // 999554401300000000000, a 14336-unit excess over the real balance.
+      // redeem_vtokens has no tolerance for that — it trapped with
+      // `HostError(WasmVm, InvalidAction) / UnreachableCodeReached`
+      // instead of a clean "insufficient balance" the caller could act on.
+      // Splitting the conversion through a 7-decimal (stroop-precision —
+      // Stellar amounts never carry more real precision than this) integer
+      // step keeps the multiplication that actually needs 18 digits of
+      // headroom in exact BigInt arithmetic instead of a float.
+      const amountWAD = (BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11)).toString();
+
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: StellarSdk.BASE_FEE,
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -463,6 +518,10 @@ export class ContractService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 

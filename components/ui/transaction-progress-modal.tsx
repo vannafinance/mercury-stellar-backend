@@ -1,41 +1,79 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useTxProgressStore } from "@/store/tx-progress-store";
 
 // Most step messages across the codebase already follow "Step X/Y: <what's
 // happening>" (leverage-assets-tab, one-click-strategy, position-detail) —
-// parsed here to drive a real progress bar instead of an indeterminate one.
+// parsed here to know how many steps the WHOLE flow has, so each step only
+// fills its own slice of the bar instead of restarting from 0 every time.
 const STEP_PATTERN = /^Step\s+(\d+)\s*\/\s*(\d+)\s*:\s*(.*)$/i;
+
+// Within a step's slice, how much of it an in-flight ("confirming") wait
+// visually fills — an asymptotic curve (approaches but never reaches 100% of
+// the slice on its own) so a slow confirmation never looks "stuck at 100%
+// but not actually done". TIME_CONSTANT_MS is how quickly it approaches;
+// ASYMPTOTE caps how close it gets without real completion.
+const TIME_CONSTANT_MS = 6000;
+const ASYMPTOTE = 0.94;
 
 /**
  * App-wide "transaction in progress" overlay, mounted once at the root
  * layout (see app/layout.tsx) — replaces the old bottom-left
  * toast.loading(...) used for every multi-step on-chain flow (deposit,
  * borrow, repay, transfer collateral, one-click Lite mode). Flows drive it
- * via lib/tx-progress.ts's showTxStep; this component only reads the store,
- * it never calls into a specific flow.
+ * via lib/tx-progress.ts's showTxStep/markTxSubmitted; this component only
+ * reads the store, it never calls into a specific flow.
  *
- * By design this never shows a completed/failed state itself — showTxSuccess
- * /showTxError close it and hand off to a normal (bottom-right) toast, so the
- * overlay's whole lifecycle is just "something is in flight right now".
- * Dismissing it (the X button) only hides the overlay; the underlying signed
- * transaction is already submitted and keeps running regardless.
+ * The bar deliberately does NOT move while waiting on the wallet popup
+ * (`phase: "signing"`) — that wait is entirely up to the user, so animating
+ * "progress" during it would be fake motion with nothing behind it. Once a
+ * step's tx is actually signed and submitted (`markTxSubmitted`,
+ * `phase: "confirming"`), the bar climbs continuously toward that step's
+ * slice of the whole bar, driven by real elapsed time. `showTxSuccess`
+ * briefly forces the bar to 100% before closing, so it visibly finishes
+ * instead of vanishing mid-fill.
+ *
+ * By design this never shows a completed/failed state itself beyond that
+ * flash — showTxSuccess/showTxError close it and hand off to a normal
+ * (bottom-right) toast. Dismissing it (the X button) only hides the
+ * overlay; the underlying signed transaction is already submitted and keeps
+ * running regardless.
  */
 export function TransactionProgressModal() {
   const { isDark } = useTheme();
   const isOpen = useTxProgressStore((s) => s.isOpen);
   const message = useTxProgressStore((s) => s.message);
+  const phase = useTxProgressStore((s) => s.phase);
+  const submittedAt = useTxProgressStore((s) => s.submittedAt);
+  const forceComplete = useTxProgressStore((s) => s.forceComplete);
 
   const stepMatch = message.match(STEP_PATTERN);
-  const stepIndex = stepMatch ? parseInt(stepMatch[1], 10) : null;
-  const stepTotal = stepMatch ? parseInt(stepMatch[2], 10) : null;
+  const stepIndex = stepMatch ? parseInt(stepMatch[1], 10) : 1;
+  const stepTotal = stepMatch ? parseInt(stepMatch[2], 10) : 1;
   const title = stepMatch ? stepMatch[3] : message;
-  const progressPct =
-    stepIndex != null && stepTotal
-      ? Math.min(100, (stepIndex / stepTotal) * 100)
-      : null;
+
+  // Re-renders on an interval only while actually animating, so the
+  // component is otherwise idle (no wasted work while "signing" or closed).
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (!isOpen || phase !== "confirming" || forceComplete) return;
+    const id = setInterval(() => forceTick((t) => t + 1), 100);
+    return () => clearInterval(id);
+  }, [isOpen, phase, forceComplete]);
+
+  const baseFraction = (stepIndex - 1) / stepTotal;
+  const sliceSize = 1 / stepTotal;
+  let withinStepFraction = 0;
+  if (forceComplete) {
+    withinStepFraction = 1;
+  } else if (phase === "confirming" && submittedAt != null) {
+    const elapsed = Date.now() - submittedAt;
+    withinStepFraction = ASYMPTOTE * (1 - Math.exp(-elapsed / TIME_CONSTANT_MS));
+  }
+  const progressPct = Math.min(100, (baseFraction + sliceSize * withinStepFraction) * 100);
 
   return (
     <AnimatePresence>
@@ -86,7 +124,7 @@ export function TransactionProgressModal() {
                 </svg>
               </div>
 
-              {stepIndex != null && stepTotal != null && (
+              {stepMatch && (
                 <p className={`text-[11px] font-bold uppercase tracking-wide mb-2 ${isDark ? "text-[#B794F6]" : "text-[#703AE6]"}`}>
                   Step {stepIndex} of {stepTotal}
                 </p>
@@ -96,24 +134,17 @@ export function TransactionProgressModal() {
                 {title}
               </h3>
               <p className={`text-[12px] mb-6 ${isDark ? "text-[#888]" : "text-[#888]"}`}>
-                This may take a few moments
+                {phase === "signing" && !forceComplete
+                  ? "Confirm in your wallet to continue"
+                  : "This may take a few moments"}
               </p>
 
               <div className={`w-full h-1.5 rounded-full overflow-hidden ${isDark ? "bg-[#2A2A2A]" : "bg-[#F0F0F0]"}`}>
-                {progressPct != null ? (
-                  <motion.div
-                    className="h-full rounded-full bg-linear-to-r from-[#703AE6] to-[#9B6BFF]"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${progressPct}%` }}
-                    transition={{ duration: 0.4, ease: "easeOut" }}
-                  />
-                ) : (
-                  <motion.div
-                    className="h-full w-1/3 rounded-full bg-linear-to-r from-[#703AE6] to-[#9B6BFF]"
-                    animate={{ x: ["-100%", "220%"] }}
-                    transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
-                  />
-                )}
+                <motion.div
+                  className="h-full rounded-full bg-linear-to-r from-[#703AE6] to-[#9B6BFF]"
+                  animate={{ width: `${progressPct}%` }}
+                  transition={{ duration: forceComplete ? 0.25 : 0.3, ease: "easeOut" }}
+                />
               </div>
             </div>
           </motion.div>

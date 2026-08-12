@@ -324,7 +324,7 @@ export const TransferCollateral = () => {
   const transferMutation = useMutation({
     onMutate: () => {
       showTxStep(
-        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`
+        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}`
       );
     },
     mutationFn: async () => {
@@ -357,7 +357,7 @@ export const TransferCollateral = () => {
       });
 
       showTxSuccess(
-        `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
+        `${selectedTransferType === "MB" ? "Transfer to margin successful!" : "Transfer to wallet successful!"}`
       );
 
       // Reset the form and invalidate RQ caches first so the UI updates even

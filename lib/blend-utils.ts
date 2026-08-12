@@ -12,7 +12,9 @@ import {
   resubmitOnTryAgainLater,
   withFootprintRaceRetry,
   describeSendError,
+  describeFailedTx,
 } from './stellar-utils';
+import { markTxSubmitted } from './tx-progress';
 
 /** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
 export type BlendAction = 'Deposit' | 'Withdraw';
@@ -287,8 +289,13 @@ export class BlendService {
       }
       const blendPoolAddress = registryAddr;
 
-      // Convert amount to WAD (18 decimals)
-      const amountWad = BigInt(Math.floor(amount * 1e18));
+      // Convert amount to WAD (18 decimals). Split through a 7-decimal
+      // (stroop-precision) integer step rather than `amount * 1e18` directly
+      // — that raw float multiplication loses precision once the product
+      // needs more significant digits than a JS double can hold, confirmed
+      // live to overshoot the real balance by a tiny excess on a 100%
+      // withdraw elsewhere (see ContractService.withdraw in stellar-utils.ts).
+      const amountWad = BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
 
       const callBytes = BlendService.buildExternalProtocolCallBytes(
         blendPoolAddress,
@@ -336,6 +343,10 @@ export class BlendService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend deposit');
@@ -409,8 +420,10 @@ export class BlendService {
       }
       const blendPoolAddress = registryAddr;
 
-      // Convert amount to WAD (18 decimals)
-      const amountWad = BigInt(Math.floor(amount * 1e18));
+      // Convert amount to WAD (18 decimals) — see depositToBlendPoolAttempt's
+      // matching comment on why this goes through a 7-decimal integer step
+      // instead of a single `amount * 1e18` float multiplication.
+      const amountWad = BigInt(Math.floor(amount * 1e7)) * BigInt(10 ** 11);
 
       const callBytes = BlendService.buildExternalProtocolCallBytes(
         blendPoolAddress,
@@ -452,6 +465,10 @@ export class BlendService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Blend withdraw');
@@ -683,6 +700,10 @@ export class BlendService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status === 'PENDING') {
@@ -1085,7 +1106,14 @@ export class BlendService {
           if (transaction.status === 'SUCCESS') {
             return;
           } else {
-            throw new Error(`Transaction failed with status: ${transaction.status}`);
+            // Decode the real on-chain reason (e.g. a Blend pool's own error
+            // event, or scecExceededLimit) instead of a bare status string —
+            // a generic "Transaction failed with status: FAILED" gave no way
+            // to tell a genuine rejection apart from a retriable footprint
+            // race, and hid the actual cause from the user entirely.
+            const reason = describeFailedTx(transaction);
+            console.error('❌ Blend tx did not succeed:', { hash, status: transaction.status, reason });
+            throw new Error(`Transaction failed with status: ${transaction.status}${reason ? `: ${reason}` : ''}`);
           }
         }
       } catch (error: any) {

@@ -19,8 +19,7 @@ import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 
 const showStep = (message: string) => showTxStep(message);
-const showStepSuccess = (message: string, txHash?: string) =>
-  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
 function parseContractError(msg: string): string {
@@ -276,7 +275,7 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       return result;
     },
     onMutate: () => {
-      showStep("Preparing transaction...");
+      showStep("Preparing transaction");
     },
     onSuccess: async (result) => {
       // Drop / scale the Lite registry record to match the on-chain state.

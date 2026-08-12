@@ -25,7 +25,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
 import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
-import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
+import { normalizeContractError, normalizeDepositCollateralError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
@@ -39,8 +39,7 @@ import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 // TransactionProgressModal, which updates in place, instead of a static
 // "Processing..." button with no visibility into a silently-dropped leg.
 const showStep = (message: string) => showTxStep(message);
-const showStepSuccess = (message: string, txHash?: string) =>
-  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -476,7 +475,7 @@ export const LeverageAssetsTab = () => {
     },
     onMutate: (params) => {
       setIsProcessing(true);
-      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}...`);
+      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}`);
     },
     onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
       if (hash && marginAccountAddress) {
@@ -612,12 +611,12 @@ export const LeverageAssetsTab = () => {
             }))
             .filter((b) => b.amount > 0);
 
-          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}...`);
+          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}`);
 
           let lastHash = "";
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}...`);
+            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}`);
             const result = await borrowTokens(userAddress, item.token, item.amount);
             if (!result.success) {
               // Build the "first leg already landed" context BEFORE normalizing —
@@ -820,8 +819,8 @@ export const LeverageAssetsTab = () => {
 
         showStep(
           canUseAtomic
-            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing..." : "..."}`
-            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}...`
+            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing" : ""}`
+            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}`
         );
 
         if (canUseAtomic) {
@@ -884,7 +883,7 @@ export const LeverageAssetsTab = () => {
               const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
               const amt1 = parseFloat(b1.assetData.amount) || 0;
               if (amt1 > 0) {
-                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}...`);
+                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}`);
                 // Hand this leg the exact sequence the atomic deposit+borrow
                 // tx just consumed — a fresh RPC read right after that tx
                 // confirms is not reliably caught up (confirmed live:
@@ -970,7 +969,7 @@ export const LeverageAssetsTab = () => {
 
           for (const item of wbDeposits) {
             stepNum += 1;
-            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}...`);
+            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}`);
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
               marginAccountAddress!,
@@ -1013,7 +1012,7 @@ export const LeverageAssetsTab = () => {
           if (multiplier > 1) {
             for (const bItem of borrowsToExecute) {
               stepNum += 1;
-              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}...`);
+              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}`);
               const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
               if (!borrowResult.success) {
                 console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
@@ -1117,20 +1116,16 @@ export const LeverageAssetsTab = () => {
     }
 
     try {
+      // createMarginAccount (store) already drives the progress modal and
+      // the final success/error toast — don't fire a second one here.
       const created = await createMarginAccount(userAddress);
 
       if (created) {
         await checkUserMarginAccount(userAddress);
         setActiveDialogue("none");
-        toast.success("Margin account created successfully.");
-      } else {
-        const reason = useMarginAccountInfoStore.getState().accountCreationError || "";
-        toast.error(normalizeCreateAccountError(reason));
       }
     } catch (error) {
       console.error("Failed to create margin account:", error);
-      const msg = error instanceof Error ? error.message : "";
-      toast.error(normalizeCreateAccountError(msg));
     }
   };
 

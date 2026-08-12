@@ -32,10 +32,12 @@ import {
   resubmitOnTryAgainLater,
   withFootprintRaceRetry,
   describeSendError,
+  describeFailedTx,
 } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
+import { markTxSubmitted } from './tx-progress';
 
 // Types
 /**
@@ -165,9 +167,19 @@ export class MarginAccountService {
     const entry = poolMap[contractBorrowSymbol];
     if (!entry) return { ok: true };
 
+    // Matches lending-pool's own MAX_UTILIZATION_WAD (pool.rs) — 95%. A small
+    // safety margin below the real cap (94% here) absorbs interest accruing
+    // between this read and the transaction actually executing, same
+    // rationale as this file's other pre-execution safety buffers.
+    const MAX_UTILIZATION = 0.94;
+
     try {
-      const poolLiqStr = await ContractService.getPoolLiquidity(entry.assetType);
+      const [poolLiqStr, poolBorrowsStr] = await Promise.all([
+        ContractService.getPoolLiquidity(entry.assetType),
+        ContractService.getPoolBorrows(entry.assetType),
+      ]);
       const poolBalance = parseFloat(poolLiqStr) || 0;
+      const poolBorrows = parseFloat(poolBorrowsStr) || 0;
 
       if (borrowAmountTokens > poolBalance) {
         return {
@@ -178,6 +190,31 @@ export class MarginAccountService {
             `you need: ${borrowAmountTokens.toFixed(2)} ${entry.displayName}. ` +
             `Please reduce your leverage or wait for more liquidity to be supplied to the pool.`,
         };
+      }
+
+      // The pool rejects ANY borrow that would push utilization
+      // (borrows / (liquidity + borrows)) past its hard cap, even when raw
+      // liquidity above is technically enough — confirmed live: a pool at
+      // 94.88% utilization traps on a borrow request that raw liquidity
+      // alone would have allowed, because it pushes utilization to 96.42%.
+      // That trap surfaces as an opaque generic HostError (Soroban strips
+      // panic message text in the release WASM build), so this check must
+      // catch it BEFORE submission — there's no way to give the user a
+      // clear reason after the fact.
+      const totalAssets = poolBalance + poolBorrows;
+      if (totalAssets > 0) {
+        const newUtilization = (poolBorrows + borrowAmountTokens) / totalAssets;
+        if (newUtilization > MAX_UTILIZATION) {
+          const maxAdditionalBorrow = Math.max(0, totalAssets * MAX_UTILIZATION - poolBorrows);
+          return {
+            ok: false,
+            error:
+              `The ${entry.displayName} lending pool is already at ${(poolBorrows / totalAssets * 100).toFixed(1)}% utilization ` +
+              `and can only safely lend ${maxAdditionalBorrow.toFixed(2)} more ${entry.displayName} right now ` +
+              `(you requested ${borrowAmountTokens.toFixed(2)}). Please reduce your leverage/borrow amount, ` +
+              `or wait for more liquidity to be supplied to the pool.`,
+          };
+        }
       }
 
       return { ok: true };
@@ -552,6 +589,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -1346,6 +1387,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Deposit');
 
@@ -1359,7 +1404,7 @@ export class MarginAccountService {
             nextSequence,
           };
         } else {
-          const reason = this.describeFailedTx(finalResult);
+          const reason = describeFailedTx(finalResult);
           return {
             success: false,
             error: `Deposit transaction failed with status: ${finalResult.status}${reason ? `: ${reason}` : ''}`
@@ -1513,6 +1558,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -1571,28 +1620,6 @@ export class MarginAccountService {
    * decoded text (not just `status: 'FAILED'`) to detect that case via
    * {@link isFootprintRaceError} and retry with a fresh simulation.
    */
-  private static describeFailedTx(finalResult: any): string {
-    try {
-      const events: any[] = finalResult?.diagnosticEventsXdr ?? [];
-      const reasons: string[] = [];
-      for (const ev of events) {
-        try {
-          const body = ev.event().body().v0();
-          const topics = body.topics().map((t: any) => StellarSdk.scValToNative(t));
-          if (!topics.includes('error')) continue;
-          const data = StellarSdk.scValToNative(body.data());
-          const errorCode = topics.find((t: any) => typeof t === 'object' && t?.value)?.value;
-          reasons.push([errorCode, ...(Array.isArray(data) ? data : [data])].filter(Boolean).join(': '));
-        } catch {
-          // Skip events that don't decode as a v0 diagnostic event.
-        }
-      }
-      return reasons.join('; ');
-    } catch {
-      return '';
-    }
-  }
-
   static async borrowTokens(
     marginAccountAddress: string,
     tokenSymbol: string,
@@ -1633,6 +1660,18 @@ export class MarginAccountService {
   ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
+
+      // Same pre-flight depositAndBorrow already runs — a borrow this
+      // standalone path issues (dual-borrow's 2nd leg, one-click's b1/b2,
+      // Pro mode's single borrow) is just as capable of pushing the target
+      // pool past its 95% utilization cap, which traps with an opaque
+      // generic HostError (see checkPoolLiquidity's doc comment) instead of
+      // a message a user can act on.
+      const borrowAmountTokens = Number(borrowAmountWad) / 1e18;
+      const liquidityCheck = await this.checkPoolLiquidity(contractTokenSymbol, borrowAmountTokens);
+      if (!liquidityCheck.ok) {
+        return { success: false, error: liquidityCheck.error };
+      }
 
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1774,6 +1813,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -1947,6 +1990,10 @@ export class MarginAccountService {
             signResult.signedTxXdr,
             NETWORK_PASSPHRASE
           );
+
+          // Wallet just returned a signed tx — switch the progress modal from
+          // "waiting on you" to an animated "confirming on-chain" fill.
+          markTxSubmitted();
 
           const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
           
@@ -2627,6 +2674,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -2645,7 +2696,7 @@ export class MarginAccountService {
         } else {
           // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
           // real on-chain reason is inspectable instead of a generic "failed".
-          const reason = this.describeFailedTx(finalResult);
+          const reason = describeFailedTx(finalResult);
           console.error('❌ Repay tx did not succeed:', {
             hash: result.hash,
             status: finalResult.status,
@@ -2727,6 +2778,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -2976,6 +3031,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status !== 'PENDING') {
         return {
@@ -3149,6 +3208,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status !== 'PENDING') {

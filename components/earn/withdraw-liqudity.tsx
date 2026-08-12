@@ -79,7 +79,7 @@ export const WithdrawLiquidity = memo(function WithdrawLiquidity() {
   const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   useMutationToast(withdraw, {
-    loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool…`,
+    loading: (v) => `Withdrawing ${v.amount} v${v.assetType} from the lending pool`,
     success: (d) => `Successfully withdrew ${d.assetType}! Transaction confirmed.`,
     error: (e) => e.message,
   });
