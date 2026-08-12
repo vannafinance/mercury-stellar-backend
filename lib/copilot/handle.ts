@@ -4677,6 +4677,36 @@ async function runWrite(
     /* readiness is best-effort; MCP sim + humanize remain as safety net */
   }
 
+  /**
+   * A stated HF floor ("...keep HF above 1.4") is a promise only the copilot can honour —
+   * MCP and the Sign Service enforce their own policy floor, not a number the user typed
+   * into a chat box. `projectImpact` below normally runs AFTER `executeMcpWrite` (display
+   * only, by design — see the comment on that call), so a single-leg write with a stated
+   * floor was signed and submitted before the breach was ever computed. Sequential, not
+   * concurrent, and gated on min_hf being set, so it does not touch the shared MCP session
+   * for the overwhelming majority of writes that state no floor at all.
+   */
+  if (action.min_hf != null && Number.isFinite(action.min_hf) && action.min_hf > 0) {
+    const preCheck = await projectImpact({ ...action, smart_account: smartAccount }, smartAccount, ctx.trader);
+    const hfAfter = preCheck.simulation?.hf_after;
+    if (hfAfter != null && Number.isFinite(hfAfter) && hfAfter < action.min_hf) {
+      return {
+        kind: "blocked",
+        message:
+          `Projected HF ${hfAfter.toFixed(2)} would breach your floor of ${action.min_hf.toFixed(2)} ` +
+          `("keep health factor above ${action.min_hf}"). Nothing was submitted — lower the size, ` +
+          `add collateral, or raise your floor.`,
+        data: factsForUi({
+          hf_before: preCheck.simulation?.hf_before ?? null,
+          hf_after: hfAfter,
+          min_hf: action.min_hf,
+        }),
+        intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount, min_hf: action.min_hf } },
+        request_id: ctx.request_id,
+      };
+    }
+  }
+
   // IMPORTANT: do NOT run projectImpact in parallel with executeMcpWrite.
   // Both use the shared MCP Streamable-HTTP session; concurrent tools/call
   // responses get interleaved and we were attaching get_price payloads to
