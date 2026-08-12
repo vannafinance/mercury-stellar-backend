@@ -1362,8 +1362,12 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  // "whats my helth factr" (G-06) — a loose enough match to survive the common drop of a
+  // vowel in either word ("helth", "factr") without turning into a real fuzzy matcher.
+  const asksHealthFactorTypo = /\bh\w*lth\s+fact\w*\b/i.test(text);
   if (
-    any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") &&
+    (any(text, "health factor", "am i safe", "close to liquidation", "at risk", "my health", "account health") ||
+      asksHealthFactorTypo) &&
     !hasActionWriteIntent
   ) {
     return {

@@ -36,8 +36,17 @@ const ACTION_INTENT =
  * "what are" is in the possessive alternation for the same reason — it was absent, so
  * only "what is my …" and "what's my …" were recognised.
  */
+/**
+ * "whats my helth factr" (G-06, typos and all) has to reach this second branch, which
+ * asks for the question FRAME only ("what's my …") and never checks the noun that
+ * follows — so a typo in "health factor" never matters here, unlike the first branch.
+ * "whats" (no apostrophe) was missing from the frame alternatives even though
+ * `DEFINITIONAL` below already treats it as equivalent to "what's" — that mismatch is
+ * what let the message fall all the way through to the generic concept explainer,
+ * which then wrongly claimed "I cannot view your personal account balances".
+ */
 const LIVE_PERSONAL =
-  /\b(my|mine|mera|meri)\b.+\b(health|hf|balances?|collaterals?|debts?|borrowed|borrowings?|positions?|holdings?|exposures?|portfolios?|wallets?|accounts?|pnl|apy|credit|earnings?|rewards?)\b|\b(what(?:'s| is| are)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have|can\s+i)|show\s+my|list\s+my|check\s+my|am\s+i\s+(?:safe|at\s+risk|close\s+to))\b/i;
+  /\b(my|mine|mera|meri)\b.+\b(health|hf|balances?|collaterals?|debts?|borrowed|borrowings?|positions?|holdings?|exposures?|portfolios?|wallets?|accounts?|pnl|apy|credit|earnings?|rewards?)\b|\b(what(?:'s|s| is| are)\s+my|how\s+much\s+(?:do\s+i|have\s+i|i\s+have|can\s+i)|show\s+my|list\s+my|check\s+my|am\s+i\s+(?:safe|at\s+risk|close\s+to))\b/i;
 
 const LIVE_DATA_QUERY =
   /\b(list|show|fetch|get|check|query|look\s+up)\b.+\b(pool|pools|reserve|reserves|price|prices|apy|tvl|farm\s+overview|wallet|balance|health|position|positions|stats)\b|\b(all\s+earn\s+pools|earn\s+pools|blend\s+reserves|pool\s+stats|oracle\s+price|current\s+price)\b/i;
