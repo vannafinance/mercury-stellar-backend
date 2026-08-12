@@ -808,6 +808,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       kwFast.kind === "auto_sign" ||
       // G-wallet create/connect is always client-side — never let Vertex map it to create_account
       kwFast.kind === "client" ||
+      /**
+       * A deterministic "which one do you mean?" is the safest kind here, not one to
+       * distrust — yet it was the one kind missing from this list, so it was never
+       * "confident" and Vertex re-decided the message from scratch every time.
+       *
+       * That is why "swap 10 XLM to USDC" kept answering "Vanna does not offer direct
+       * spot token swaps" — router.ts's own clarify for exactly this case ran, produced
+       * the right "which USDC?" message, and was thrown away right here because
+       * `kind: "clarify"` matched none of the branches above. Vertex then answered the
+       * question independently and never saw the clarify at all. Same root cause as the
+       * bare "vtoken"/"supply balance" reads answering with no chips: those routes exist
+       * in router.ts too, and were exchanged for Vertex's version for the same reason.
+       */
+      kwFast.kind === "clarify" ||
       (kwFast.kind === "read" &&
         !!kwFast.template_id &&
         [
