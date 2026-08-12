@@ -75,6 +75,19 @@ leg 1 never got past "needs signature" in this pass.
 | 24 | S-04: the $1000/tx Sign Service spend cap did not hold once — "borrow 8000 XLM" (~$1293) auto-signed and submitted for real; a follow-up "borrow 5000 XLM" (~$808, smaller) correctly fell to manual-sign. Same op, larger amount went through, smaller amount was capped — backwards for a magnitude check, points at session/state non-determinism in the Sign Service's own cap tracking (external to this repo, not reproduced a second time). Account remained healthy throughout (HF settled at 1.61, floor 1.30, liquidation 1.10). Owner decision: do not chase further with more live writes | **Critical — open, external, not reproduced twice** | sign-service (external) |
 | 25 | S-06/S-07: "disable auto-sign" typed as a plain message correctly revoked the Sign Service session server-side, but the CLIENT's own local auto-approve flag never flipped — so the embedded session-key signer kept auto-signing every write anyway. Same root shape as #20/#21 (a chat-driven change only syncing the button-driven path) — **FIXED, verified both directions** | **Critical (closed)** | copilot-workspace |
 | 26 | S-08 not reproducible as written — this account signs via an embedded Privy session key with no separate external-wallet prompt to reject; "Approve & sign" signs directly. Needs a Freighter-style external-wallet account to test the literal scenario | Untestable in this config | — |
+| 27 | G-04: "how   much    do i owe" (irregular whitespace) fell to the generic capabilities blurb instead of answering — **FIXED, verified** | Medium (closed) | router |
+| 28 | G-06: "whats my helth factr" (typos, no apostrophe) routed to the wrong page-concept explainer, which then wrongly claimed "I cannot view your personal account balances" — **FIXED, verified** | Medium (closed) | concept/router |
+| 29 | G-08: "borrow 1k BLUSDC" silently parsed as amount=1 and actually borrowed 1, not 1000 — the one outcome the spec explicitly rules out. G-07's "1,000" (comma) also failed to parse (safely asked instead, not dangerous but not ideal) — **FIXED both, verified** | High (closed) | router |
+| 30 | Borrowing a large BLUSDC amount that hits HostError #13 reports "XLM is not ready in your wallet" regardless of which asset actually has the trustline/setup problem — misleading but still refuses to submit, seen on "borrow 2000 BLUSDC", "borrow 1k BLUSDC", "borrow 1,000 BLUSDC" | Medium | mcp-write.ts |
+
+## Section 14 — language / paraphrase / robustness (G-01–G-12)
+
+G-01 (Hinglish HF), G-02 (Hinglish lend), G-03 (all caps), G-05 (punctuation), G-09 (word
+numbers ask rather than guess), G-10 (empty prompt, no crash), G-11 (5000+ chars junk, no
+crash, clean refusal), G-12 (repeated phrase, one clean answer, no loop) all passed as-is.
+G-04, G-06, G-07, G-08 were real misses, all fixed above (#27–#29). #30 is a real but
+lower-severity mislabel, logged rather than fixed given the volume of higher-severity
+findings still to verify.
 
 ## Section 13 — auto-sign behaviour (S-01–S-08)
 
