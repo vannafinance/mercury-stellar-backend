@@ -901,10 +901,21 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  // Remove LP (half or explicit amount).
+  /**
+   * Remove LP (half or explicit amount).
+   *
+   * "remove 50% of my LP" reached Vertex instead of this branch — non-deterministically,
+   * since the SAME exact message answered differently on different turns ("which pool?"
+   * once, the generic capability blurb another time). The outer gate only recognised the
+   * word "half" as a fraction phrase; a few lines down, `half` itself already checks for
+   * "50%"/"50 %" too — the outer gate and the value it gates were never kept in sync, so
+   * the more common phrasing ("50%") never got past the gate to reach the check that
+   * already understood it.
+   */
   if (
     any(text, "remove liquidity", "remove my liquidity", "withdraw liquidity", "withdraw lp") ||
-    (any(text, "remove half") && any(text, "liquidity", "lp", "xlm/usdc", "pool"))
+    (any(text, "remove half", "remove 50%", "remove 50 %") &&
+      any(text, "liquidity", "lp", "xlm/usdc", "pool"))
   ) {
     const half = any(text, "half", "50%", "50 %");
     // Pair default XLM / USDC family from message.
