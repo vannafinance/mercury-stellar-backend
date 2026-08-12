@@ -31,6 +31,15 @@ const CONDITIONAL =
 const STANDING_ORDER =
   /\b(keep an eye|keep watching|keep checking|monitor|watch my|watch the|whenever|every time|each time|as soon as|automatically|on its own|by yourself|without me|while i(?:'m| am)? (?:away|offline|asleep|not here|gone)|24\/7|round the clock|continuously|never let|make sure .* (?:never|always|stays?))\b/i;
 
+/**
+ * "every day at 9am lend 5 XLM" is the same unfulfilled promise as STANDING_ORDER's
+ * "keep an eye on it" — a recurring schedule, not a one-off action — but named by clock
+ * time instead of a watch verb, so it slipped past every word in that list and reached
+ * a live `needs_wallet_sign` for a single lend with no schedule anywhere in sight.
+ */
+const RECURRING_SCHEDULE =
+  /\b(every|each)\s+(day|morning|night|evening|hour|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b|\bdaily\b|\bweekly\b|\bmonthly\b/i;
+
 export type AutomationGap =
   | { kind: "conditional"; message: string }
   | { kind: "standing_order"; message: string }
@@ -71,7 +80,7 @@ export function detectAutomationGap(message: string, willWrite: boolean): Automa
   // harmless to run, but the unfulfilled promise to watch is the same either way, and a
   // message can be both ("watch it and if it drops, sell") — the honest answer is the
   // one about not being able to watch at all.
-  if (STANDING_ORDER.test(m)) {
+  if (STANDING_ORDER.test(m) || RECURRING_SCHEDULE.test(m)) {
     return { kind: "standing_order", message: STANDING_ORDER_MESSAGE };
   }
 
