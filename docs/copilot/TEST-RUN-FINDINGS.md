@@ -8,8 +8,8 @@ Against `note.txt`. Only open items listed.
 | 1 | Pool stats named the wrong pool — **FIXED and verified on all three pools** | P0 (closed) | — |
 | 2 | A single-leg deposit routed as `multi_leg` and errored | High | router |
 | 3 | `how much is AQUA` → oracle error — **cause found: AQUA has no oracle feed** | Medium | product call |
-| 4 | Script sections 10 + 12 never run — both gate ship per §19 | Blocks ship | QA |
-| 5 | `note.txt` §18 says 778 tests; it is 790 | Doc fix | QA |
+| 4 | Script sections 10 + 12 never run — **RESOLVED: both fully run this session (see below)** | Closed | QA |
+| 5 | `note.txt` §18 says 778 tests; it is now 792 (grew during this session's fixes, no tests removed) | Doc fix | QA |
 | 6 | 66 dependabot vulns (32 high) on default branch | Before handover | infra |
 | 7 | `walletSacBalance` treated a failed Horizon read as a confident 0 XLM — **FIXED, verified on-chain** | P0 (closed) | — |
 | 8 | Compound sentences with "post" (not "deposit") dropped the deposit leg and misattached the amount to borrow — **FIXED, verified** | High (closed) | router |
@@ -360,3 +360,56 @@ the script is still open. Everything above ran on a single funded W2.
 - Reads fine: can-borrow, health factor, 15/15 protocol addresses, XLM price.
 - With auto-sign OFF the write gate held correctly (staged → `Approve & sign`).
 - `tsc` clean · 790 tests passing.
+
+## Section 17 — observability (O-01–O-05)
+
+Not verifiable from this session — O-01, O-02, and O-05 need live PostHog/Sentry dashboard
+access, which this session doesn't have. Code-level check on the two that don't:
+
+- **O-03 (no PII/secrets/XDRs in payloads)** — `lib/copilot/log.ts`'s `logCopilotEvent` (this
+  repo's structured-log layer, whatever feeds the dashboards reads from stdout) drops any key
+  matching `secret|token|password|authorization` outright, truncates `wallet`/`trader`/
+  `smart_account`/`hash` to a short preview, and caps any string over 200 chars. An
+  `unsigned_xdr` field would hit that last rule — truncated to a 200-char prefix, not fully
+  redacted, but an unsigned XDR isn't a secret (no private key material) and 200 chars isn't
+  enough to reconstruct or submit one. Reasonable as written; flag if the dashboards need zero
+  XDR bytes rather than a harmless prefix.
+- **O-04 (intent, op, asset, leg count, risk decision on every run event)** — confirmed present
+  on the `logCopilotEvent` call sites read this session (e.g. `plan_coverage_shadow`,
+  `llm_planner_skipped`). Whether these actually land in PostHog is O-01's question, unverified.
+
+## Section 19 — production sign-off gate
+
+Going through the gate's own checklist against everything run this session and the prior one:
+
+- [x] Section 11 — every refusal fires, none leak to a tool call (all 15 pass, N-08 fixed).
+- [x] Section 12 — zero injections moved a token, **as of the fixes in this session** — J-01
+  and J-07 both DID move real state (a spend cap, a real borrow) before being fixed; verified
+  clean after.
+- [~] Section 10 — no plan executed differently from its preview, for every plan that HAD a
+  preview (P-01–P-06 all pass). Open exception: S-03's `deposit_and_borrow` single-clause path
+  never shows a preview at all for a multi-leg leveraged position, so there's nothing to compare
+  execution against — arguably outside this specific gate's literal wording, squarely inside
+  its spirit. Logged as #23, deliberately deferred.
+- [x] V-06 — copilot, side panel, and Margin page agree (three-way checked, all read 1.61).
+- [x] Section 18 green on the current commit — `tsc` clean, 792/792, just reconfirmed on HEAD.
+- [~] No card ever claimed a transaction that did not happen — true for everything this session
+  checked (every tx hash shown resolved on Horizon; every "in progress"/"blocked"/"executed"
+  state matched on-chain reality where cross-checked). Not exhaustively proven for every card
+  ever rendered — a absence-of-evidence caveat, not a known counterexample.
+- [ ] Sections 1–9 pass with auto-sign OFF — **not done**. This session (and the prior one)
+  ran overwhelmingly with auto-sign ON; the OFF sweep specifically across sections 1–9 was
+  never repeated end-to-end. Section 13's S-06/S-07 confirm the OFF *mechanism* itself now
+  works correctly, but that's not the same as re-running sections 1–9's actual prompts under it.
+- [~] Sections 1–9 pass with auto-sign ON — yes, with three known, named exceptions: K-01–K-04
+  need the W3 thin-account wallet (not authorised this session); the ~$5 BLUSDC borrow
+  threshold (#9, external/MCP-side); and K-06/N-06/N-10's minor wrong-clarifying-question issue
+  (#15/#19, safe but not ideal).
+
+**Net: not clean to ship on this checklist's own terms.** The blocking gaps are the auto-sign
+OFF sweep of sections 1–9 (never run) and the two deliberately-deferred owner calls from this
+session — S-03 (multi-leg approval bypass on one phrasing) and S-04 (spend cap held
+inconsistently once, not reproduced a second time). Neither is a "silent" P0 by the gate's own
+definition (differs from preview / UI states something untrue on-chain) — both are known,
+named, and logged — but both are live-execution-path issues on a checklist that explicitly asks
+for all-clear before shipping.
