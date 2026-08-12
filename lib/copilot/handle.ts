@@ -50,6 +50,7 @@ import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
 import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
+import { claimOnce, planDedupeKey, writeDedupeKey } from "./write-dedupe";
 import {
   answerToText,
   completeIdentifierFacts,
@@ -452,6 +453,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         kind: "clarification",
         message: check.message,
         intent: { template_id: `plan_rejected_${check.reason}` },
+        request_id,
+      };
+    }
+    // Server-side idempotency (§16 Z-07): the same plan_id posted twice — a retry, a
+    // second tab, a replayed request — must not execute twice. Client-side button
+    // disabling already prevents an ordinary double-click; this is the second gate.
+    if (!claimOnce(planDedupeKey(req.approved_plan.plan_id))) {
+      console.warn(`[copilot] approved plan ${req.approved_plan.plan_id} already running/ran — refusing duplicate`);
+      return {
+        kind: "blocked",
+        message:
+          "This plan was already submitted a moment ago — I won't run it twice. " +
+          "Check the session log for its progress before approving again.",
+        intent: { template_id: "plan_duplicate_refused" },
         request_id,
       };
     }
@@ -1354,6 +1369,25 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       requires_amount: !!routed.requires_amount,
       requires_account: !!routed.requires_account,
     };
+    // Server-side idempotency (§16 Z-07): the same instruction sent twice within
+    // seconds — a retry, a second tab, a replayed request — must not execute twice.
+    // Scoped to this fresh top-level dispatch only, not runWrite itself, so a
+    // legitimate internal chain (leg 1 then leg 2 of the SAME approved plan) is never
+    // mistaken for a duplicate even if two legs happen to share op/asset/amount.
+    if (
+      action.amount != null &&
+      !claimOnce(writeDedupeKey({ trader, op: action.op, asset: action.asset, amount: action.amount }))
+    ) {
+      console.warn(`[copilot] duplicate write refused: ${action.op} ${action.asset} ${action.amount} (${trader})`);
+      return {
+        kind: "blocked",
+        message:
+          "That looks like the same instruction I just ran a moment ago — I won't submit it twice. " +
+          "Check the session log for the first one before asking again.",
+        intent: { template_id: `${action.op}_duplicate_refused` },
+        request_id,
+      };
+    }
     return runWrite(action, { userId, trader, smartAccount, request_id, message });
   }
 
