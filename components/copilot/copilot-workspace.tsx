@@ -2138,6 +2138,25 @@ export function CopilotWorkspace() {
           setSavedCaps({ tx: caps.max_per_tx_usd, day: caps.max_per_day_usd });
         }
 
+        /**
+         * Same gap, the more dangerous direction: "disable auto-sign" typed as a plain
+         * message revokes the Sign Service session server-side (S-06 reports "Auto-sign
+         * disabled... 0 session(s) revoked" correctly) but never called `setAutoApprove`,
+         * which only runs from the dedicated enable/disable buttons. The client's OWN
+         * local auto-approve flag — which is what actually lets `promoteSignableAutoSignResponse`
+         * sign a `needs_wallet_sign` with the embedded Privy session key — stayed on, so
+         * every write after "disable auto-sign" kept auto-signing anyway (S-07 failure).
+         * Synced generically off the same message text MCP already returns, in both
+         * directions, so this can't drift from whichever path changed it.
+         */
+        if (address) {
+          if (/\bauto-sign disabled\b/i.test(data.message || "")) {
+            setAutoApprove(address, false);
+          } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
+            setAutoApprove(address, true);
+          }
+        }
+
         const hopSteps = Array.isArray(d?.multi_leg_steps)
           ? (d!.multi_leg_steps as MultiLegStepUi[])
           : null;
