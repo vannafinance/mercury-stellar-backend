@@ -1105,6 +1105,24 @@ export function routeMessage(message: string): RoutedIntent {
       "credit",
     )
   ) {
+    /**
+     * "borrow the max I can safely" names no asset word at all, yet `asset ?? "USDC"`
+     * below turned that into a literal USDC borrow — which then hit the bare-USDC
+     * ambiguity gate in handle.ts and asked which USDC variant *before* ever asking
+     * a size, since that gate runs on the manufactured default with no way to tell
+     * it apart from a genuine "USDC". When nothing was named, ask for both amount
+     * and asset together instead of inventing an asset the user never said.
+     */
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Borrow ${amount} of which asset? e.g. "borrow ${amount} XLM" or "borrow ${amount} BLUSDC".`
+            : `How much do you want to borrow, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
+        template_id: "borrow_amount_and_asset",
+      };
+    }
     return {
       kind: "write",
       op: "borrow",
