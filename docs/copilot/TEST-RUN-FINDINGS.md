@@ -14,6 +14,43 @@ Against `note.txt`. Only open items listed.
 | 7 | `walletSacBalance` treated a failed Horizon read as a confident 0 XLM — **FIXED, verified on-chain** | P0 (closed) | — |
 | 8 | Compound sentences with "post" (not "deposit") dropped the deposit leg and misattached the amount to borrow — **FIXED, verified** | High (closed) | router |
 | 9 | `vanna_borrow` simulation is deterministically rejected above ~$5 BLUSDC right now, with no diagnostic beyond "On-chain simulation rejected the transaction" | Blocks X-03/X-04/X-05 | mcp/on-chain |
+| 10 | "5x Blend on 10 BLUSDC" (no verb) fell through to clarify_capabilities — **FIXED, verified** | High (closed) | router |
+| 11 | "open an 11x position on BLUSDC" (no "leverage"/"lever" word) misrouted to a positions read instead of the leverage-cap refusal — **FIXED, verified** | High (closed) | router |
+| 12 | A stated HF floor ("...keep HF above 1.4") was silently dropped by multi-leg plans — approval sends `message: "approve plan"`, not the original text, so nothing downstream could recover it — **FIXED, verified** | High (closed) | plan-approval |
+| 13 | A plan could chain unlimited clauses ("do 15 things" → 15 real steps/signatures) — **FIXED: capped at 8, verified** | Medium (closed) | plan-approval |
+
+Section 8 (multi-leg & leverage, X-01–X-12) is now fully run, in order. X-01, X-02, X-08, X-09, X-10, X-11, X-12 pass.
+X-03/X-04/X-05 route and build their legs correctly but the borrow leg hits finding #9 above (external, not this repo).
+X-06/X-07 refuse up front with no round-trip, as required.
+
+| 14 | A stated HF floor on a SINGLE write ("borrow 5 BLUSDC keep HF above 1.4") was never enforced — the risk/impact simulation ran only AFTER the transaction was already signed and ready, display-only by design — **FIXED, verified** | **Critical (closed)** | handle.ts |
+| 15 | "borrow the max I can safely" asks which USDC variant before asking for a size — technically non-executing (no bug in the safety property) but the wrong question first | Low | router |
+
+## 14. HF floor silently unenforced on single-leg writes (K-05)
+
+Reproduced directly against `/api/copilot`: account HF was ~2.0, message said `"borrow 1 BLUSDC
+keep HF above 3"` (guaranteed breach — HF only drops on a borrow) — response was
+`needs_wallet_sign` with a real unsigned XDR ready to sign, not a block. The only thing that had
+stopped auto-sign from completing it live was an unrelated Sign Service daily-spend cap.
+
+Root cause: `runWrite`'s single-op path calls `executeMcpWrite` (build + sign) BEFORE
+`projectImpact` (the HF simulation) — by design, per the comment on that call: "this must never
+change the outcome of a write... Write first, then optional sim." That rule is correct for the
+*policy* risk decision (MCP/Sign Service are the authority there), but a user-stated floor is
+different — it's a promise made only to the copilot, in natural language, and nothing else can
+see or honour it. Multi-leg plans already enforce it correctly (`runPlan` stops remaining legs on
+breach); single writes had no equivalent check at all.
+
+Fix: in `handle.ts`, added a narrow pre-check — only when `action.min_hf` is set — that runs
+`projectImpact` sequentially (not concurrently, so it doesn't hit the shared-MCP-session
+interleaving bug the ordering comment warns about) and returns `blocked` before `executeMcpWrite`
+is ever called if the projection breaches the floor. Verified: `"borrow 1 BLUSDC keep HF above 3"`
+now blocks with "Nothing was submitted"; `"borrow 1 BLUSDC keep HF above 1.4"` (floor not breached)
+still proceeds to `needs_wallet_sign` as before.
+
+K-01–K-04 need the **W3 thin/near-liquidation wallet** named in the note — not authorised for this
+session (only the one wallet in `docs/copilot/NEXT-SESSION.md` is), so not run. K-06/K-07/K-08 run
+against W2: K-07 and (after a router fix) K-08 pass; K-06 has the minor wrong-question issue above.
 
 ---
 
