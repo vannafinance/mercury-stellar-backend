@@ -377,8 +377,20 @@ function tryMultiGoalPlan(
   amount: number | null,
   leverage: number | null,
 ): RoutedIntent | null {
+  /**
+   * "post 200 XLM and borrow BLUSDC" executed a bare `borrow 200 BLUSDC` — no deposit
+   * leg at all, and "200" attached to the wrong noun. "post" is a plain synonym for
+   * "deposit" (the note's own X-02 uses it), and it was in neither this count nor the
+   * `any(text, "deposit")` checks below, so the sentence counted as ONE verb ("borrow"),
+   * `multiGoalShape` never matched, `tryMultiGoalPlan` returned null, and the message
+   * fell through to the single-action borrow branch — which grabbed the only number in
+   * the sentence as the borrow amount, regardless of which asset it was next to. Real
+   * consequence, not a wording nit: health factor dropped 2.30 → 1.83 borrowing an
+   * amount nobody asked for, because the deposit leg that should have run first never
+   * did.
+   */
   const multiVerbCount = (
-    text.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay|redeem|withdraw)\b/gi) || []
+    text.match(/\b(lend|borrow|deposit|post|farm|supply|swap|invest|park|repay|redeem|withdraw)\b/gi) || []
   ).length;
   const hasActionWriteIntent =
     multiVerbCount >= 1 ||
@@ -387,7 +399,7 @@ function tryMultiGoalPlan(
   // Prefer multi-leg whenever the user stacks actions — heavy production use case.
   const multiGoalShape =
     (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
-    (any(text, "deposit") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
+    (any(text, "deposit", "post") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
     (any(text, "repay") && any(text, "deposit", "lend", "borrow", "farm")) ||
     (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply", "borrow")) ||
     (any(text, "farm", "blend") && any(text, "lend", "park", "swap", "repay", "deposit")) ||
@@ -515,7 +527,11 @@ function tryMultiGoalPlan(
     });
   }
 
-  if (any(text, "deposit") && any(text, "borrow") && !steps.some((s) => s.op === "deploy_to_blend")) {
+  if (
+    any(text, "deposit", "post") &&
+    any(text, "borrow") &&
+    !steps.some((s) => s.op === "deploy_to_blend")
+  ) {
     let depAmt = amount;
     const depM = raw.match(/(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i);
     if (depM) depAmt = Number(depM[1]);
