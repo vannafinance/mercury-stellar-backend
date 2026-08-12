@@ -947,12 +947,41 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  /**
+   * "is a 500 BLUSDC borrow safe" EXECUTED a real borrow.
+   *
+   * That sentence contains the word "borrow" and matched none of the exclusions below,
+   * so it fell into the write branch, built op:"borrow" asset:"BLUSDC" amount:500, and —
+   * with auto-sign on and this being a single-leg write — signed and submitted on testnet
+   * from what was a question, not an instruction. This is the one class of bug worse than
+   * a wrong answer: real state changed because a question was misread as a command.
+   *
+   * A fixed phrase list cannot cover this — "is X safe", "would X be safe", "is it safe to
+   * X" all vary the words around "safe". A regex on the shape of the sentence is what these
+   * three have in common: the word "safe" sitting near a question opener ("is"/"would"/
+   * "will"/"should"), not a fixed string.
+   */
+  const asksIfSafe = /\b(is|would|will|should)\b[\s\S]{0,60}\bsafe\b/i.test(text);
+  if (asksIfSafe && any(text, "borrow")) {
+    return {
+      kind: "read",
+      tool: "vanna_can_borrow",
+      args: {
+        symbol: asset ?? "USDC",
+        ...(amount != null ? { amount: String(amount) } : {}),
+      },
+      requires_account: true,
+      template_id: "query_can_borrow",
+    };
+  }
+
   // "available to borrow" / "liquidity … to borrow" are pool-liquidity READS. Without
   // these exclusions the bare "borrow" match turned "how much liquidity is available to
   // borrow from the XLM pool?" into a borrow write that then asked "how much do you want
   // to borrow?" — a question answered with a question.
   if (
     any(text, "borrow") &&
+    !asksIfSafe &&
     !any(
       text,
       "can i borrow",
