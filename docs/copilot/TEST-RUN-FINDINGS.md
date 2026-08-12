@@ -14,10 +14,8 @@ lists only what remains open, with severity, location, and a proposed fix for ea
 | 1 | Single-leg deposit intermittently routes as `multi_leg` and errors. "deposit 5 XLM as collateral" failed once tagged `multi_leg`, then succeeded plain seconds later on the identical prompt. | Medium | `lib/copilot/router.ts` | Reproduce reliably, find which branch intermittently attaches `multi_leg: true` to a single-op deposit, and tighten that guard. |
 | 2 | Multi-leg leveraged positions can skip the approval card. "open a 3x position with 50 BLUSDC" auto-executes the deposit leg immediately with no preview, because this phrasing hits `deposit_and_borrow`'s direct-execute + `pending_write.follow_up` chain — a second multi-leg mechanism separate from the `plan_preview`/freeze/approve flow that "deposit X and borrow Y at Nx" phrasing correctly uses for the identical trade. | High | `lib/copilot/handle.ts` (`deposit_and_borrow` branch) | Route single-clause leveraged-position phrasings through the same `tryMultiGoalPlan` / `coalesceLeveragedDepositBorrow` → `plan_preview` path instead of calling `runWrite` directly. |
 | 3 | No server-side idempotency on writes. The same `approved_plan`, or an identical write request, sent twice both execute independently — confirmed with two concurrent "lend 1 XLM" calls producing two real tx hashes. The UI's Run button disables while loading, so a normal double-click can't trigger this, but a retry, a second tab, or a replayed request below the UI layer still can. | Medium | `lib/copilot/handle.ts`, `lib/copilot/plan-approval.ts` | Add a server-side idempotency key (hash of `plan_id` + step index, or a request nonce) checked before calling `executeMcpWrite`, instead of relying on client-side button state alone. |
-| 4 | HostError #13 on a large BLUSDC borrow always reports "XLM is not ready in your wallet", regardless of which asset actually needs a trustline. | Low | `lib/copilot/mcp-write.ts` (`humanizeMcpWriteError`) | Add a `vanna_borrow` branch (every other write op already has one) that names the asset actually involved instead of falling through to the generic XLM-trustline message. |
-| 5 | "borrow the max I can safely" asks which USDC variant before asking for a size. Safe (never auto-executes), but the wrong question first — no asset was named at all, yet `asset` defaults to `"USDC"` and triggers the variant-clarify before the size-ask. | Low | `lib/copilot/router.ts` | When no asset word appears anywhere in the message, ask for amount + asset together instead of defaulting to `"USDC"` first. |
-| 6 | "when XLM hits $0.50 sell everything" and "what's the XLM/BTC pool" both fall to the generic capabilities blurb instead of a specific conditional / unsupported-asset refusal. Safe either way, just unhelpful. | Low | `lib/copilot/conditional-guard.ts` | Extend trigger words to catch "when X hits/reaches" (currently only "if"), and extend the unsupported-asset check to cover read-style questions naming an asset outside the supported set. |
-| 7 | AQUA price lookup returns "oracle contract error" instead of "AQUA has no price feed". Root cause is in the external `vanna_mcp` repo — `oracle.py`'s `SYMBOL_CANONICALIZATION` / `LP_SYMBOLS` don't include AQUA. | Medium | `vanna_mcp` repo, `oracle.py` (external) | Needs a product decision first: should AQUA be priceable at all? If not, add it to the feed-less set so the error reads honestly instead of like an outage. |
+| 4 | "borrow the max I can safely" asks which USDC variant before asking for a size. Safe (never auto-executes), but the wrong question first — no asset was named at all, yet `asset` defaults to `"USDC"` and triggers the variant-clarify before the size-ask. | Low | `lib/copilot/router.ts` | When no asset word appears anywhere in the message, ask for amount + asset together instead of defaulting to `"USDC"` first. |
+| 5 | "when XLM hits $0.50 sell everything" and "what's the XLM/BTC pool" both fall to the generic capabilities blurb instead of a specific conditional / unsupported-asset refusal. Safe either way, just unhelpful. | Low | `lib/copilot/conditional-guard.ts` | Extend trigger words to catch "when X hits/reaches" (currently only "if"), and extend the unsupported-asset check to cover read-style questions naming an asset outside the supported set. |
 
 ---
 
@@ -25,21 +23,33 @@ lists only what remains open, with severity, location, and a proposed fix for ea
 
 | # | Issue | Status | Notes |
 |---|-------|--------|-------|
-| 1 | `vanna_borrow` rejects any BLUSDC amount above ~$5, with no diagnostic beyond "On-chain simulation rejected the transaction". Blocks any leveraged BLUSDC position. | Blocked | Ruled out pool liquidity, risk/HF gate, and flakiness. Needs MCP/backend logs to see the actual on-chain rejection reason. |
-| 2 | Sign Service $1000/tx spend cap didn't hold once — a ~$1293 borrow auto-signed while a smaller ~$808 one was correctly capped moments later. | Not reproduced twice | Needs a Sign Service session-state audit, not a change in this repo. |
+| 1 | `vanna_borrow` rejects any BLUSDC amount above a low threshold (~$5, sometimes higher), with no diagnostic beyond a generic message. Blocks any leveraged BLUSDC position. | Open — narrowed | MCP server logs (`vanna-mcp-server`, Cloud Run) show the real on-chain failure is `HostError: Error(Contract, #13)` on the token transfer *into* the smart account during `borrow()` — the same class of error as the trustline issue fixed in §3.4 below, just not proven to be the identical cause. `is_borrow_precheck` returns `true` (the risk gate is not the blocker); Soroban SAC balances held by a *contract* have no classic trustline "limit" field, so the size-dependent threshold is still unexplained. Needs `vanna_core`'s token-contract source (not in this repo or `vanna_mcp`) or direct ledger-state inspection to pin down further. |
+| 2 | ~~Sign Service $1000/tx spend cap didn't hold once~~ | **Resolved — was not a Sign Service bug** | Root-caused via `vanna-sign-service` Cloud Run logs: the Sign Service correctly rejected the over-cap borrow **twice** (`over_per_tx_cap`, confirmed in its own logs), but this repo's `mcp-write.ts` mapped that policy rejection to `needs_wallet_sign` with the XDR still attached, and the client's own embedded-session-key auto-approve signed and submitted it anyway — bypassing the Sign Service entirely. Fixed in §3 below; the Sign Service itself needed no change. |
 
 ---
 
-## 3. Housekeeping (No Urgency)
+## 3. Fixed This Pass (MCP / Sign Service root causes, requested separately)
+
+| # | Issue | Fix | Repo | Status |
+|---|-------|-----|------|--------|
+| 1 | **Critical** — a genuine Sign Service policy rejection (`over_per_tx_cap`, `over_daily_cap`, `contract_not_allowlisted`, `function_not_allowlisted`, `session_expired`, ...) was staged as `needs_wallet_sign`, and the client's embedded-session-key auto-approve silently signed and submitted it anyway. | `executeMcpWrite` now recognises `auto_sign: "rejected"` with a genuine policy reason and returns `status: "rejected"` (→ `risk.decision: "block"`, no XDR attached) instead of falling through to the generic "stage for signature" path. | vanna-copilot-orchestrator | ✅ Fixed, tested (6 new unit tests), pushed to `copilot-ui-rewire`, PR [#57](https://github.com/vannafinance/mercury-stellar-backend/pull/57) |
+| 2 | HostError #13 (trustline missing) on a borrow always reported "XLM is not ready in your wallet", regardless of which asset actually hit the error — `classifyTrustlineFailure` is itself asset-aware, but its only call site never passed an asset, so `readinessDisplayAsset(null)` defaulted to `"XLM"` every time. | `humanizeMcpWriteError` now takes an `{asset, trader}` context and threads `step.args.symbol` through to `classifyTrustlineFailure`. | vanna-copilot-orchestrator | ✅ Fixed, tested (3 new unit tests), pushed, same PR as above |
+| 3 | AQUA (and any symbol with no oracle feed) surfaced as a generic `contract_error` reading like a transient outage ("the price for AQUA is currently unavailable due to an oracle contract error") — `oracle.py`'s own exception message ("Oracle: price not found for symbol 'AQUA'") was already specific, but `error_handling.py`'s `tool_safe` flattened every `ContractCallError` into the same generic bucket regardless of message. | Added a `reason: "no_price_feed"` case matched on the wrapper's own message shape (not a per-symbol allowlist, so it stays correct if a symbol gains/loses a feed) — message now says plainly "X has no price feed on this oracle deployment... not transient, retrying will not help." | `vanna_mcp` (mercury-stellar-backend) | ✅ Fixed, tested (1 new unit test passing, full suite otherwise green besides 2 pre-existing unrelated failures — see below). **Committed locally on `main`, not pushed** — only the copilot repo's push/PR was requested; say if you want this pushed too. |
+
+**Pre-existing, unrelated to this pass:** `vanna_mcp`'s working tree already had uncommitted changes to `mcp_server/tools/sign_tools.py`, `mcp_server/tools/borrow_tools.py`, and a deleted `ALLOWLIST_FIX_PLAN.md` before this session touched the repo — left untouched. Two tests in `tests/test_mcp_sign_tools.py` (`test_enable_auto_sign_success_forwards_and_summarizes`, `test_enable_auto_sign_forwards_optional_caps_and_expiry`) fail against that uncommitted state (an in-progress `function_allowlist` change), unrelated to anything in this document.
+
+---
+
+## 4. Housekeeping (No Urgency)
 
 | # | Item | Action |
 |---|------|--------|
 | 1 | 66 dependabot vulnerabilities (32 high) on the default branch. | Schedule a dependency-upgrade pass. |
-| 2 | `note.txt` §18's expected test count (778) is stale. | Update to 792. |
+| 2 | `note.txt` §18's expected test count (778) is stale. | Update to 801. |
 
 ---
 
-## 4. Still Needs Testing (Coverage Gap, Not a Known Bug)
+## 5. Still Needs Testing (Coverage Gap, Not a Known Bug)
 
 | # | Area | Blocked By |
 |---|------|------------|
