@@ -780,7 +780,15 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         // "create"/"open"/"connect" count as actions: without them "create a wallet and
         // deposit 10 XLM" scored one verb, took the fast keyword path, and returned only
         // the wallet dialog — silently dropping the deposit.
-        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy|create|open|connect)\b/gi,
+        //
+        // "post" is the same trap one word over: "post 200 XLM and borrow BLUSDC" counted
+        // ONE verb (only "borrow"), so this stayed false, the deterministic single-borrow
+        // branch answered alone with no Vertex involved, and it borrowed 200 BLUSDC with
+        // no deposit leg at all — "200" was the deposit amount, attached to the wrong verb.
+        // "deposit 200 XLM and borrow BLUSDC" (same sentence, one word different) took the
+        // Vertex path and built the correct two-leg plan, which is how this survived
+        // undetected: the fast path silently answers, it does not visibly fail.
+        /\b(swap|lend|borrow|deposit|post|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy|create|open|connect)\b/gi,
       ) || [];
     const uniqueVerbs = new Set(actionVerbs.map((v) => v.toLowerCase()));
     if (uniqueVerbs.size >= 2) return true;
