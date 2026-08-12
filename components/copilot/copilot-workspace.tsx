@@ -2262,6 +2262,10 @@ export function CopilotWorkspace() {
               leverage: s.leverage,
               borrow_asset: s.borrow_asset ?? null,
             })),
+            // Carried so a stated HF floor ("...keep HF above 1.4") survives the round
+            // trip — this call sends `message: "approve plan"`, not the original text,
+            // so the server's fallback of re-parsing the message finds nothing.
+            constraints: plan.constraints ?? null,
           },
         },
         label,

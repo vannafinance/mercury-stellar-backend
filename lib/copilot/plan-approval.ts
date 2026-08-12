@@ -29,6 +29,7 @@ import {
   type IntentSlots,
 } from "./registry/intent";
 import { workflowLegCount } from "./registry/workflows";
+import type { PlanConstraints } from "./plan-ir";
 import type { RoutedIntent } from "./types";
 
 /** A plan is built on live prices and account health; both move. */
@@ -99,6 +100,14 @@ export interface FrozenPlan {
   signature_count: number;
   /** Things the user should read before approving. */
   warnings: string[];
+  /**
+   * A stated HF floor etc., read once from the message that built this plan.
+   *
+   * Absent for plans from the LLM planner. Carried so approval — which sends back
+   * `message: "approve plan"`, not the original text — can still see it; `runPlan`'s
+   * fallback of re-parsing `ctx.message` finds nothing in that generic string.
+   */
+  constraints?: PlanConstraints | null;
 }
 
 type PlanIntent = Extract<RoutedIntent, { kind: "plan" }>;
@@ -350,6 +359,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
     created_at: nowMs,
     signature_count: signatureCount,
     warnings,
+    constraints: plan.constraints ?? null,
   };
 }
 
@@ -370,6 +380,8 @@ export interface ApprovedPlan {
     leverage?: number | null;
     borrow_asset?: string | null;
   }>;
+  /** Echoed back from the plan_preview's own `constraints` — e.g. a stated HF floor. */
+  constraints?: PlanConstraints | null;
 }
 
 export type ApprovalCheck =
@@ -450,6 +462,7 @@ export function verifyApprovedPlan(approved: ApprovedPlan, nowMs: number): Appro
       kind: "plan",
       template_id: "approved_plan",
       summary: "Approved plan",
+      constraints: approved.constraints ?? undefined,
       /**
        * Replayed from the slot record, in both spellings.
        *

@@ -159,6 +159,8 @@ export interface ChatRequest {
       leverage?: number | null;
       borrow_asset?: string | null;
     }>;
+    /** Echoed back from the plan_preview's own `constraints` — e.g. a stated HF floor. */
+    constraints?: PlanConstraints | null;
   } | null;
   /**
    * Resume a multi-leg strategy from remaining / failed legs (client button).
@@ -408,6 +410,8 @@ export interface ChatResponse {
     /** On-chain legs the user will sign; exceeds steps.length when a step is levered. */
     signature_count: number;
     warnings: string[];
+    /** A stated HF floor etc., read once at preview time. Echo back verbatim on approval. */
+    constraints?: PlanConstraints | null;
     steps: Array<{
       n: number;
       /** "read" legs report a number and need no signature. */

@@ -85,6 +85,11 @@ export interface PlanPreview {
   signature_count: number;
   warnings: string[];
   steps: PlanStepView[];
+  /**
+   * A stated HF floor etc., read once when the plan was built. Opaque here — this card
+   * only has to carry it back verbatim on approve, not act on it.
+   */
+  constraints?: { minHf?: number | null } | null;
 }
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";

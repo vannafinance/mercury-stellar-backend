@@ -578,6 +578,13 @@ function tryMultiGoalPlan(
     kind: "plan",
     template_id: "multi_goal_strategy",
     summary: `Multi-step strategy: ${parts.join(" → ")}`,
+    // "keep HF above 1.4" was read into `minHf` above only to keep it from being
+    // misparsed as a deposit amount, then thrown away — approval sends back
+    // `message: "approve plan"`, not this text, so runPlan's fallback parse found
+    // nothing and the user's stated floor was silently dropped. Carrying it on the
+    // plan is what makes it survive the round-trip.
+    constraints:
+      minHf != null ? { minHf, leverage: null, preferMaxYield: false, spans: [] } : undefined,
     steps: deduped.map((s) => {
       // Preserve swap token_in/out etc. — do not replace args with only leverage.
       const args: Record<string, unknown> = {
