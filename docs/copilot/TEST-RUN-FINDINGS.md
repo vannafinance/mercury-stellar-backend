@@ -52,6 +52,21 @@ K-01–K-04 need the **W3 thin/near-liquidation wallet** named in the note — n
 session (only the one wallet in `docs/copilot/NEXT-SESSION.md` is), so not run. K-06/K-07/K-08 run
 against W2: K-07 and (after a router fix) K-08 pass; K-06 has the minor wrong-question issue above.
 
+## Section 10 — plan integrity (P-01–P-06)
+
+P-01 (expiry), P-03 (approving the frozen card ignores edited message text), P-05 (each leg gets
+its own tx hash — already evidenced by X-08/X-10), P-06 (Cancel never calls the server at all, so
+"nothing executes" holds by construction) all verified PASS.
+
+P-04 (refresh mid-execution): verified the session log reports "in progress" honestly (never a
+false "executed") after a refresh, and re-running builds a fresh plan rather than blindly
+resubmitting a leg that may already be signed. Could not fully exercise "leg 1 actually landed,
+then refresh" — auto-sign is currently blocked by the Sign Service daily-spend cap (see below), so
+leg 1 never got past "needs signature" in this pass.
+
+| 16 | No server-side idempotency on `approved_plan` — the same `plan_id` posted twice independently rebuilds and re-signs the same leg both times. Protection today is client-only (button disabled/removed after one click) | Medium | plan-approval |
+| 17 | Sign Service daily-spend cap (`max_per_day`) is nearly exhausted from this test run's own volume — most writes now fall to `needs_wallet_sign` instead of auto-signing, regardless of amount | Test-environment, not a bug | — |
+
 ---
 
 ## 9. `vanna_borrow` rejects above a ~$5 threshold (blocks X-03–X-05)
