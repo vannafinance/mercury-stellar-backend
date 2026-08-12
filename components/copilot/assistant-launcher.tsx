@@ -126,6 +126,7 @@ function AssistantLauncherInner() {
             smart_account: smartAccount ?? null,
             semantic_page_context: semantic,
             history,
+            surface: "assistant",
           }),
         });
         if (!res.ok) {

@@ -2089,6 +2089,7 @@ export function CopilotWorkspace() {
             user_id: address ?? "guest",
             tier: "paid",
             smart_account: smartAccount ?? null,
+            surface: "copilot",
             ...body,
           }),
           signal: ac.signal,

@@ -64,6 +64,19 @@ export interface ChatRequest {
   message: string;
   tier?: "free" | "paid";
   smart_account?: string | null;
+  /**
+   * Which UI surface sent this request.
+   *
+   * "assistant" is the floating page-guide widget docked on every other page (Gemini-Assist
+   * style: explain this page, answer questions). "copilot" is the dedicated `/copilot`
+   * workspace, the one place meant to actually execute transactions. Both call this same
+   * endpoint, so without this flag the assistant widget had no way to tell "explain what
+   * Blend is" apart from "deposit 5 XLM as collateral" other than the message's own wording —
+   * and a plain action sentence typed into the widget fell through to the same MCP write
+   * path the Copilot page uses, signing and submitting for real. Omitted (or any value other
+   * than "assistant") keeps today's full read+write behaviour, so no other caller is affected.
+   */
+  surface?: "assistant" | "copilot" | null;
   /** @deprecated Prefer semantic_page_context. */
   page_context?: PageDescriptorCtx | null;
   /** @deprecated Prefer semantic_page_context. */

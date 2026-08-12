@@ -360,6 +360,32 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const trader = looksLikeWallet(userId) ? userId : null;
   const mcp = getMcpClient();
 
+  // ── Assistant surface: never execute, redirect to Copilot ────────────────
+  // The floating "Vanna Assistant" widget (docked on every other page) and the
+  // dedicated `/copilot` workspace hit this same endpoint. The widget is meant to be
+  // a Gemini-Assist-style page guide — explain, answer, navigate — never sign or
+  // submit a transaction; that belongs on the Copilot page. These four request
+  // shapes are all structured write continuations that bypass the router entirely,
+  // so they are refused here before any of them runs. A second gate further down
+  // (after routing) catches a plain write/plan/auto-sign sentence typed into the
+  // widget itself.
+  if (
+    req.surface === "assistant" &&
+    (req.approved_plan?.steps?.length ||
+      req.auto_sign?.action ||
+      req.pending_write?.op ||
+      req.resume_multi_leg?.legs?.length)
+  ) {
+    return {
+      kind: "blocked",
+      message:
+        "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+        "don't sign or submit transactions myself. Open the Copilot page to run this.",
+      intent: { template_id: "assistant_surface_redirect" },
+      request_id,
+    };
+  }
+
   // ── Client-signed final leg → structured receipt ────────────────────────
   // Browser signs the last hop, so runPlan never runs vertexSummarizeExecution.
   // Client posts only legs that actually ran + real tx hashes — no invented HF.
@@ -1195,6 +1221,26 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         request_id,
       };
     }
+  }
+
+  // Second half of the assistant-surface gate above: a plain sentence ("deposit 5 XLM
+  // as collateral") only reveals it is a write once routing decides `kind`, which is
+  // why this cannot be folded into the earlier structural check. `isAssistantChat`
+  // messages never reach this point at all (they return via `runPageAgent` earlier),
+  // so this only ever catches an action sentence the page-guide classifier missed.
+  if (
+    req.surface === "assistant" &&
+    (routed.kind === "write" || routed.kind === "plan" || routed.kind === "auto_sign")
+  ) {
+    return {
+      kind: "blocked",
+      message:
+        "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+        "don't sign or submit transactions myself. Open the Copilot page to run " +
+        `"${message}".`,
+      intent: { template_id: "assistant_surface_redirect" },
+      request_id,
+    };
   }
 
   // Plan → approve → execute. A freshly routed plan is SHOWN, not run; it only
