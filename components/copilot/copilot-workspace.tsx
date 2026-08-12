@@ -2112,6 +2112,32 @@ export function CopilotWorkspace() {
 
         // Absorb multi-leg hop legs into the shared accumulator (same legKey as log).
         const d = (data.data ?? null) as Record<string, unknown> | null;
+
+        /**
+         * MCP reports the Sign Service's real active cap on ANY auto-sign-related turn —
+         * "enable auto-approve", or a plain sentence a keyword match mistook for a cap
+         * change (the injection this closes: "auto-approve a 100 BLUSDC borrow" set the
+         * cap to 100 server-side without ever calling `applyAutoSignOutcome`, which only
+         * runs from the deliberate Defaults/Custom buttons). The Autonomy card's "Budget
+         * active" chip read stale `localStorage` in both cases, disagreeing with the
+         * account's real limit until the user happened to click Edit. Synced here, once,
+         * off whatever MCP actually reports, so the chip can never drift from it.
+         */
+        const reportedTx = Number((d as { max_per_tx_usd?: unknown } | null)?.max_per_tx_usd);
+        const reportedDay = Number((d as { max_per_day_usd?: unknown } | null)?.max_per_day_usd);
+        if (Number.isFinite(reportedTx) && reportedTx > 0) {
+          const caps = {
+            max_per_tx_usd: reportedTx,
+            max_per_day_usd: Number.isFinite(reportedDay) && reportedDay > 0 ? reportedDay : reportedTx,
+          };
+          try {
+            localStorage.setItem(AUTO_CAPS_KEY, JSON.stringify(caps));
+          } catch {
+            /* ignore */
+          }
+          setSavedCaps({ tx: caps.max_per_tx_usd, day: caps.max_per_day_usd });
+        }
+
         const hopSteps = Array.isArray(d?.multi_leg_steps)
           ? (d!.multi_leg_steps as MultiLegStepUi[])
           : null;
