@@ -363,6 +363,13 @@ export function isMaxYieldInvestIntent(text: string): boolean {
   ) || (
     /\b(where|wherever).*(best|highest|max).*(yield|apy|return|profit)\b/.test(t) &&
     /\b(invest|put|supply|lend|farm|deposit)\b/.test(t)
+  ) || (
+    // "max yield with my XLM" names no verb at all — just a superlative, an asset, and a
+    // possessive. Without this it fell through to clarify_capabilities, the generic
+    // catch-all, on a request the other three clauses above already know how to answer.
+    /\b(max|maximum|best|highest|most|optimal)\b/.test(t) &&
+    /\b(yield|profit|return|apy|earn|pay)\b/.test(t) &&
+    /\bmy\b/.test(t)
   );
 }
 
