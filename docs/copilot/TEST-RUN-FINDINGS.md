@@ -89,6 +89,21 @@ G-04, G-06, G-07, G-08 were real misses, all fixed above (#27–#29). #30 is a r
 lower-severity mislabel, logged rather than fixed given the volume of higher-severity
 findings still to verify.
 
+## Section 15 — UI/UX sign-off (V-01–V-12)
+
+All 12 pass, no fixes needed.
+
+- V-01: header chip reads `vertex · mcp live · 14 tools` consistently, every turn checked this run.
+- V-02: clicked a "WHAT THE AGENT CAN RUN" chip live — ran and answered.
+- V-03/V-04: no raw wads anywhere, no figure duplicated in two formats on one card, across every card this whole session.
+- V-05/V-06: dial, side panel HF, and the Margin page's own "Net Health Factor" all read 1.61 at the same moment — three-way cross-check.
+- V-07: multi-leg cards showed live per-leg progress ("confirming on ledger…", settled checkmarks) throughout, never a frozen spinner.
+- V-08: every error this session was a plain sentence — no raw JSON or stack trace surfaced to the card.
+- V-09: pulled a tx hash's `href` from the DOM and confirmed it resolves on Horizon (the same source stellar.expert reads from).
+- V-10: resized to 375×812, ran a live prompt — `document.body.scrollWidth === window.innerWidth`, no horizontal overflow.
+- V-11: opened a plan_preview, navigated away, browser-backed — the stale card did not resurface; only session-log history remained.
+- V-12: two tabs, two different plans — each tab kept its own composer/plan state; only the shared on-chain account numbers updated across both, as they should.
+
 ## Section 13 — auto-sign behaviour (S-01–S-08)
 
 S-01 (enable, reports scope + caps), S-02 (single write executes immediately under
