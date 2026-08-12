@@ -23,9 +23,18 @@
  * instruction instead.
  */
 
-/** "do X only when Y" — a write gated on a condition we do not evaluate. */
+/**
+ * "do X only when Y" — a write gated on a condition we do not evaluate.
+ *
+ * "when XLM hits $0.50 sell everything" and "when my health factor drops below 1.2
+ * repay 10 XLM" name their trigger with "when ... hits/reaches/drops/..." rather than
+ * "if", so the original `\bif\b`-only pattern missed them — and worse, since the
+ * router already recognises "repay 10 XLM" as a plain write, the SECOND example ran
+ * for real with the condition silently dropped, the exact failure this guard exists
+ * to catch. The "when" alternative below mirrors the "if ... above/below/..." shape.
+ */
 const CONDITIONAL =
-  /\bif\b[^.?!]*\b(then|otherwise|else)\b|\b(only if|unless|provided that|as long as|in case)\b|\bif\b[^.?!]*\b(above|below|under|over|drops?|falls?|rises?|goes?|is fine|is ok|is safe|stays?)\b/i;
+  /\bif\b[^.?!]*\b(then|otherwise|else)\b|\b(only if|unless|provided that|as long as|in case)\b|\bif\b[^.?!]*\b(above|below|under|over|drops?|falls?|rises?|goes?|is fine|is ok|is safe|stays?)\b|\bwhen\b[^.?!]*\b(hits?|reaches?|crosses?|exceeds?|above|below|under|over|drops?|falls?|rises?|goes?)\b/i;
 
 /** "watch this and act later" — a standing order with no scheduler behind it. */
 const STANDING_ORDER =

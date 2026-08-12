@@ -767,6 +767,12 @@ export function routeMessage(message: string): RoutedIntent {
    * much of each token?" — inviting the user to size a BTC leg that can never execute.
    * Ahead of every write branch it cannot be reached around, and no supported asset is
    * affected because the guard only fires when an unsupported ticker is actually named.
+   *
+   * "what's the XLM/BTC pool" named no write verb at all — a plain read-style question —
+   * so it missed every word above and fell through to the generic capabilities blurb
+   * instead of this same specific refusal. "pool"/"price"/"rate"/"apy"/"stats"/"worth"
+   * cover that shape without widening the gate to fire on a bad ticker mentioned only
+   * in passing.
    */
   {
     const bad = findUnsupportedAsset(raw);
@@ -792,6 +798,13 @@ export function routeMessage(message: string): RoutedIntent {
         "withdraw",
         "to earn",
         "liquidity",
+        "pool",
+        "price",
+        "rate",
+        "apy",
+        "apr",
+        "stats",
+        "worth",
       )
     ) {
       return {
