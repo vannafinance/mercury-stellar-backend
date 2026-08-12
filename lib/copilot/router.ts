@@ -965,7 +965,11 @@ export function routeMessage(message: string): RoutedIntent {
       any(text, "deposit and borrow", "deposit + borrow", "lever up", "leveraged position") ||
       (leverage != null &&
         leverage > 1 &&
-        any(text, "leverage", "lever") &&
+        // "open an 11x position on BLUSDC" names no "leverage"/"lever" word at all — just
+        // a multiple plus "position". Without this it fell through to asksAboutHoldings
+        // below (word "position" alone matches that), answering with a positions summary
+        // instead of ever reaching the leverage-cap refusal in handle.ts.
+        (any(text, "leverage", "lever") || any(text, "position")) &&
         !any(text, "blend", "farm", "aquarius", "lp"))) &&
     !any(text, "blend", "farm blend", "aquarius")
   ) {
