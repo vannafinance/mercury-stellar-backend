@@ -1044,9 +1044,19 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  /**
+   * "can I withdraw my collateral" executed a write. Unlike the borrow branch a few
+   * hundred lines up, this one had no "can i …" exclusion at all, so a bare capability
+   * question with no amount fell straight into `op: "withdraw_collateral"`, hit the
+   * bare-USDC ambiguity gate meant for an actual withdrawal, and asked the user to pick a
+   * USDC variant for an action they never asked to take. There IS a read for this
+   * (`vanna_can_borrow`'s sibling, matched a little further down at "can i withdraw" /
+   * "can i pull out"), but it can never be reached while this branch matches first.
+   */
   if (
-    (any(text, "withdraw") && any(text, "collateral")) ||
-    any(text, "take out collateral", "pull collateral")
+    !any(text, "can i withdraw", "can i pull out", "withdraw allowed") &&
+    ((any(text, "withdraw") && any(text, "collateral")) ||
+      any(text, "take out collateral", "pull collateral"))
   ) {
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
