@@ -95,4 +95,51 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     expect(r.status).toBe("needs_wallet_sign");
     expect(r.unsigned_xdr).toBe(XDR);
   });
+
+  /**
+   * The Sign Service's policy engine is "THE security boundary" (its own docs) — spend
+   * caps, allowlists, session checks. Live on 2026-08-12: "borrow 8000 XLM" against a
+   * $1000/tx cap. MCP's `maybe_auto_sign` reports this as `auto_sign: "rejected"`,
+   * `reason: "over_per_tx_cap"`, with the built `unsigned_xdr` still attached (so a human
+   * could sign it manually if they chose to override the cap themselves). Before this
+   * fix, `as === "rejected"` matched none of the specific auto_sign branches and fell
+   * through to the generic "no auto_sign field, try sign_and_submit" path, which
+   * ultimately returned `needs_wallet_sign` with that same XDR — and the CLIENT's own
+   * embedded-session-key auto-approve (gated only on `riskDecision !== "block"`) signed
+   * and submitted it anyway, confirmed via the Sign Service's own logs rejecting the
+   * exact same transaction twice moments apart while it landed on-chain a third time.
+   * A genuine policy rejection must never be staged as "just needs a signature".
+   */
+  const overCapRejection = {
+    reason: "over_per_tx_cap",
+    detail: "amount 80000000000 (cap-comparable stroops) > max_per_tx 10000000000",
+    message: "The Sign Service refused to sign (policy: over_per_tx_cap). Nothing was signed.",
+    unsigned_xdr: XDR,
+    auto_sign: "rejected",
+    auto_sign_error: null,
+  };
+
+  it("a genuine Sign Service policy rejection is blocked, never staged for signature", async () => {
+    const r = await executeMcpWrite(fakeMcp(overCapRejection), STEP, CTX);
+    expect(r.status).toBe("rejected");
+    expect(r.status).not.toBe("needs_wallet_sign");
+  });
+
+  it("carries the policy reason for the UI, and the message says nothing was signed", async () => {
+    const r = await executeMcpWrite(fakeMcp(overCapRejection), STEP, CTX);
+    expect(r.message).toMatch(/over_per_tx_cap/i);
+    expect(r.message).toMatch(/nothing was signed/i);
+  });
+
+  it.each(["over_daily_cap", "contract_not_allowlisted", "function_not_allowlisted", "session_expired"])(
+    "also blocks the %s policy reason",
+    async (reason) => {
+      const r = await executeMcpWrite(
+        fakeMcp({ ...overCapRejection, reason, detail: undefined }),
+        STEP,
+        CTX,
+      );
+      expect(r.status).toBe("rejected");
+    },
+  );
 });

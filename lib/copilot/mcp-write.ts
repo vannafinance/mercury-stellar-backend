@@ -959,7 +959,11 @@ function isRiskRejection(build: Record<string, unknown>): boolean {
  * Turn raw MCP simulation dumps (Contract #3 balance failures, WAD amounts) into
  * a short plain-English note so the UI does not dump the full diagnostic log.
  */
-export function humanizeMcpWriteError(build: Record<string, unknown>, tool: string): string {
+export function humanizeMcpWriteError(
+  build: Record<string, unknown>,
+  tool: string,
+  ctx?: { asset?: string | null; trader?: string | null },
+): string {
   const code = String(build.error ?? build.reason ?? "").toLowerCase();
   const raw = humanizeWadAmounts(String(build.message || build.error || build.reason || "MCP write failed"));
 
@@ -974,8 +978,13 @@ export function humanizeMcpWriteError(build: Record<string, unknown>, tool: stri
   }
 
   // Fallback only — preflightAssetReadiness should prevent these. Never dump HostError #13.
+  //
+  // `classifyTrustlineFailure` is itself asset-aware (`${asset} is not ready...`), but this
+  // call site never passed one, so every trustline fallback read "XLM is not ready in your
+  // wallet" regardless of which asset actually hit HostError #13 — seen live on "borrow 2000
+  // BLUSDC" / "borrow 1k BLUSDC" / "borrow 1,000 BLUSDC", all reported as an XLM problem.
   if (isTrustlineMissingError(raw)) {
-    return classifyTrustlineFailure(raw, { tool }).message;
+    return classifyTrustlineFailure(raw, { tool, asset: ctx?.asset ?? null, trader: ctx?.trader ?? null }).message;
   }
 
   if (code === "collateral_not_allowed" || /not accepted as collateral/i.test(raw)) {
@@ -1309,9 +1318,42 @@ export async function executeMcpWrite(
    * contract, and matching prose would misread a genuine simulation failure that happens
    * to mention signing.
    */
+  /**
+   * A genuine Sign Service POLICY rejection (spend cap, allowlist, session identity) is
+   * not the same class of thing as the infrastructure refusals below — those mean "the
+   * plumbing isn't set up yet, ask the human to sign instead"; this means "this tx must
+   * not be signed by anyone right now". `function_not_allowlisted` used to sit in the
+   * `autoSignRefused` regex just below, alongside `wallet_not_bound` — an easy mistake
+   * since both come back as `auto_sign` refusals, but one is "you haven't connected"
+   * and the other is "this call is not permitted". See the block below for the live
+   * repro (`over_per_tx_cap`) that exposed this: staged as `needs_wallet_sign`, then
+   * auto-signed anyway by the client's own embedded session key, bypassing a cap the
+   * Sign Service had already refused twice.
+   */
+  const policyReason = String(build.reason ?? "").toLowerCase();
+  const isGenuinePolicyRejection =
+    String(build.auto_sign ?? "").toLowerCase() === "rejected" &&
+    /^(over_per_tx_cap|over_daily_cap|contract_not_allowlisted|function_not_allowlisted|source_mismatch|op_source_mismatch|amount_undecodable|session_expired|session_not_active|unauthorized)$/.test(
+      policyReason,
+    );
+  if (isGenuinePolicyRejection) {
+    return {
+      tool: step.tool,
+      label: step.label,
+      build,
+      status: "rejected",
+      message:
+        `The Sign Service refused to sign this (policy: ${policyReason}). Nothing was signed. ` +
+        (build.detail
+          ? String(build.detail)
+          : String(build.auto_sign_error || build.message || "Lower the size, or check the account's spend caps.")),
+      mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
+    };
+  }
+
   const autoSignRefused =
     !!xdr &&
-    /wallet_not_bound|no_active_session|auto_sign|not_enabled|missing_user_assertion|invalid_user_assertion|function_not_allowlisted/i.test(
+    /wallet_not_bound|no_active_session|auto_sign|not_enabled|missing_user_assertion|invalid_user_assertion/i.test(
       errCode,
     );
   if (autoSignRefused) {
@@ -1331,6 +1373,10 @@ export async function executeMcpWrite(
     const base = humanizeMcpWriteError(
       { ...build, error: build.error ?? build.reason ?? "error", message: errMsg || errCode },
       step.tool,
+      {
+        asset: (step.args?.symbol as string) ?? (step.args?.asset as string) ?? null,
+        trader: (step.args?.trader as string) ?? ctx.trader ?? null,
+      },
     );
     return {
       tool: step.tool,
