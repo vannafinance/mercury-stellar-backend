@@ -871,12 +871,16 @@ export function routeMessage(message: string): RoutedIntent {
   // Farm Blend with leverage MUST win over margin deposit_and_borrow.
   // Old guard `(leverage && blend)` routed "Farm Blend at 3x with 10 BLUSDC"
   // into deposit_and_borrow, which then asked for USDC chips or stuck after deposit.
+  // "5x Blend on 10 BLUSDC" names no verb at all — the leverage multiple plus "Blend"
+  // is the only signal. Without this clause it fell through everything to
+  // clarify_capabilities, silently dropping a valid leverage request.
   const isBlendFarmWrite =
     any(text, "farm blend", "blend at", "to blend", "into blend", "on blend", "blend reserve", "blend pool") ||
-    (any(text, "blend") && any(text, "farm", "deploy", "supply", "deposit") && !any(text, "position", "stats", "apy"));
+    (any(text, "blend") && any(text, "farm", "deploy", "supply", "deposit") && !any(text, "position", "stats", "apy")) ||
+    (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
   if (
     isBlendFarmWrite &&
-    any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever") &&
+    (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever") || (leverage != null && leverage > 1)) &&
     !any(text, "supply apy", "borrow apy", "position", "btoken", "pays more", "which reserve")
   ) {
     return {

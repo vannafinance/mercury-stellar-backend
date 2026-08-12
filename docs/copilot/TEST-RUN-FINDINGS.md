@@ -11,8 +11,42 @@ Against `note.txt`. Only open items listed.
 | 4 | Script sections 10 + 12 never run — both gate ship per §19 | Blocks ship | QA |
 | 5 | `note.txt` §18 says 778 tests; it is 790 | Doc fix | QA |
 | 6 | 66 dependabot vulns (32 high) on default branch | Before handover | infra |
+| 7 | `walletSacBalance` treated a failed Horizon read as a confident 0 XLM — **FIXED, verified on-chain** | P0 (closed) | — |
+| 8 | Compound sentences with "post" (not "deposit") dropped the deposit leg and misattached the amount to borrow — **FIXED, verified** | High (closed) | router |
+| 9 | `vanna_borrow` simulation is deterministically rejected above ~$5 BLUSDC right now, with no diagnostic beyond "On-chain simulation rejected the transaction" | Blocks X-03/X-04/X-05 | mcp/on-chain |
 
 ---
+
+## 9. `vanna_borrow` rejects above a ~$5 threshold (blocks X-03–X-05)
+
+Not a routing bug — confirmed by sweeping the borrow amount directly against `/api/copilot`
+(bypassing the UI) on an account that is nowhere near its health-factor or LTV limits:
+
+```
+borrow 1 BLUSDC   -> executed (tx 91e7275c...)
+borrow 2 BLUSDC   -> needs_wallet_sign (sim ok)
+borrow 3 BLUSDC   -> needs_wallet_sign (sim ok), 3/3 repeats
+borrow 4 BLUSDC   -> needs_wallet_sign (sim ok)
+borrow 5 BLUSDC   -> blocked: simulation_failed
+borrow 6–10 BLUSDC -> blocked: simulation_failed
+borrow 15/30/100 BLUSDC -> blocked: simulation_failed, 3/3 repeats (deterministic, not flaky)
+```
+
+Ruled out:
+- **Pool liquidity** — `vanna_get_pool_stats` on BLUSDC shows 261.98 BLUSDC total liquidity available; every blocked amount above is far under that.
+- **Risk/HF gate** — projected HF after the blocked borrows stays 1.9–2.0 (safe zone is >1.30); LTV projected 44–47%. The risk preview itself says `"within policy limits"` — the block reason is purely the on-chain simulation.
+- **Flakiness/RPC timeout** — repeated the same amount 3x back-to-back; small amounts succeed 3/3, large amounts fail 3/3. Deterministic threshold, not transient.
+- **App-side cap** — grepped `mcp-write.ts`/`handle.ts`/`router.ts` for a hardcoded ~$5 borrow limit; none exists. The in-app budget is $1000/tx.
+
+`humanizeMcpWriteError` has no branch for `vanna_borrow` (lend/repay/withdraw/swap/LP/blend all have
+one) — the raw MCP message really is just `"On-chain simulation rejected the transaction."`, no nested
+HostError/contract code to decode. This looks like a live constraint on the Blend margin pool/account
+contract itself (a per-call borrow cap, oracle guard, or similar) that this repo has no visibility into
+via MCP's response. Needs the MCP/backend logs (outside this repo) to diagnose further.
+
+Discovered while re-verifying the X-02 fix: `open a 3x leveraged position with 50 BLUSDC` (X-03) correctly
+built and executed the deposit leg (tx `85b6173410f1...`), then hit this wall on the borrow leg (asking
+for $100.08 of BLUSDC). Same wall will hit X-04 and X-05, which also borrow well above $5.
 
 ## 1. Pool stats named the wrong pool  (P0 — FIXED, verified)
 
