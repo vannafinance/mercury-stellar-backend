@@ -114,8 +114,11 @@ describe("routeMessage — a stated share survives as a fraction slot", () => {
 });
 
 describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
-  it("swap half my XLM to USDC → fraction 0.5, no amount ask", () => {
-    const r = routeMessage("swap half my XLM to USDC");
+  // A concrete destination (BLUSDC), not bare "USDC" — these three test fraction/amount
+  // parsing, which is orthogonal to which USDC variant was named. Bare "USDC" is covered
+  // separately below, where it must clarify rather than parse into a write at all.
+  it("swap half my XLM to BLUSDC → fraction 0.5, no amount ask", () => {
+    const r = routeMessage("swap half my XLM to BLUSDC");
     expect(r.kind).toBe("write");
     if (r.kind !== "write") return;
     expect(r.op).toBe("swap");
@@ -124,19 +127,43 @@ describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
     expect(r.requires_amount).toBe(false);
   });
 
-  it("swap 75% of my XLM to USDC → fraction 0.75", () => {
-    const r = routeMessage("swap 75% of my XLM to USDC");
+  it("swap 75% of my XLM to BLUSDC → fraction 0.75", () => {
+    const r = routeMessage("swap 75% of my XLM to BLUSDC");
     expect(r.kind).toBe("write");
     if (r.kind !== "write") return;
     expect(r.fraction).toBe(0.75);
   });
 
   it("an explicit amount still wins", () => {
-    const r = routeMessage("swap 10 XLM to USDC");
+    const r = routeMessage("swap 10 XLM to BLUSDC");
     expect(r.kind).toBe("write");
     if (r.kind !== "write") return;
     expect(r.amount).toBe(10);
     expect(r.fraction).toBeNull();
+  });
+
+  /**
+   * THE LIVE BUG: "swap 10 XLM to USDC" executed a real swap with no variant ever asked.
+   *
+   * `usdcOps` — the shared bare-USDC gate every other write goes through in handle.ts —
+   * only ever checks `action.asset` / `action.borrow_asset`. A swap's destination lives in
+   * `token_b`, a field that gate has never looked at, and swap is deliberately excluded
+   * from `usdcOps` besides (so a swap that already names AQUSDC/BLUSDC/SOUSDC is never
+   * asked a redundant question). Bare "USDC" fell through both and reached the executor.
+   */
+  it("THE LIVE BUG: swap 10 XLM to USDC clarifies instead of executing", () => {
+    const r = routeMessage("swap 10 XLM to USDC");
+    expect(r.kind).toBe("clarify");
+    if (r.kind !== "clarify") return;
+    expect(r.message).toMatch(/which usdc/i);
+    expect(r.message).toMatch(/BLUSDC/);
+    expect(r.message).toMatch(/AQUSDC/);
+    expect(r.message).toMatch(/SOUSDC/);
+  });
+
+  it("a fraction into bare USDC also clarifies rather than guessing a variant", () => {
+    const r = routeMessage("swap half my XLM to USDC");
+    expect(r.kind).toBe("clarify");
   });
 });
 

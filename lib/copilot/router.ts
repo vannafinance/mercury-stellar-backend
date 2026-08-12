@@ -9,6 +9,7 @@
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
+import { usdcVariantClarifyMessage } from "./mcp-write";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -790,6 +791,33 @@ export function routeMessage(message: string): RoutedIntent {
       : any(text, "aquarius", "on aquarius", "via aquarius")
         ? "aquarius"
         : null;
+
+    /**
+     * "swap 10 XLM to USDC" EXECUTED a real swap. No variant was ever asked for.
+     *
+     * `usdcOps` (in handle.ts) is the generic bare-USDC gate every other write goes
+     * through, and swap is deliberately excluded from it — on purpose, per the comment
+     * there, so a swap that already names a concrete variant (AQUSDC/BLUSDC/SOUSDC) is
+     * never asked a redundant question. But that gate only ever looks at `action.asset`
+     * and `action.borrow_asset`; a swap's destination lives in `token_b`, a field the
+     * shared gate has never seen. So a swap landing on bare "USDC" here — because the
+     * user typed it, or because the tokenIn/tokenOut fallback above chose it — passed
+     * straight through with no ambiguity check at all and settled on-chain.
+     *
+     * Handled here rather than by teaching the shared gate a third field: `token_b` only
+     * exists on this one action shape, and this is the one place that already knows
+     * whether it is genuinely unresolved. Returned as `kind: "clarify"` — the same router
+     * result the unsupported-asset case above uses — so nothing downstream builds a
+     * transaction for a token nobody named.
+     */
+    if (tokenOut === "USDC") {
+      return {
+        kind: "clarify",
+        message: usdcVariantClarifyMessage("the swap"),
+        template_id: "clarify_usdc_variant",
+      };
+    }
+
     return {
       kind: "write",
       op: "swap",
