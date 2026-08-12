@@ -95,8 +95,32 @@ async function walletSacBalance(trader: string, display: string): Promise<number
       const account = await server.loadAccount(trader);
       const native = account.balances.find((b) => b.asset_type === "native");
       return native ? parseFloat(native.balance) || 0 : 0;
-    } catch {
-      return 0;
+    } catch (e) {
+      /**
+       * A failed balance check is not the same fact as a zero balance, and reporting it
+       * as one is a false claim, not a safe default — the preflight this feeds built
+       * "You asked for 10 XLM but the wallet only has ~0.0000 XLM" for an account the
+       * Margin page showed holding 9,806 XLM at the same moment. This Horizon call is a
+       * SEPARATE read path from the one `vanna_get_wallet_balance` uses (that one kept
+       * reporting real numbers all session), so the two disagreeing means THIS path was
+       * the one failing, not that the wallet emptied.
+       *
+       * A 404 is different: Horizon's own way of saying the account has never been
+       * funded, which genuinely is zero. Anything else — timeout, DNS, 5xx — is "we don't
+       * know," and "unknown" must never render as a specific, confident, wrong number.
+       * The non-XLM branch below already treats "unknown" as "don't block" — an
+       * unrecognised contract returns `Number.POSITIVE_INFINITY`, not 0. XLM was the one
+       * branch that didn't follow that rule, which is why this bug only ever showed up
+       * for XLM deposits.
+       */
+      const notFound =
+        e instanceof Error && (/not\s*found/i.test(e.message) || /404/.test(e.message));
+      if (notFound) return 0;
+      console.warn(
+        `[copilot] Horizon balance check failed for ${trader} — treating as unknown, not zero:`,
+        e instanceof Error ? e.message : e,
+      );
+      return Number.POSITIVE_INFINITY;
     }
   }
   const contract = sacContractFor(display);
