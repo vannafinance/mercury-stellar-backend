@@ -2433,8 +2433,48 @@ async function snapshotPositionAnswer(
         ? focusedPositionMessage(focus, "debt", pos.borrowed, pos.totalBorrowedValue)
         : `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`;
   } else {
+    /**
+     * "What's my health factor", "am I safe" and "am I close to liquidation" are three
+     * different questions and were returning the BYTE-IDENTICAL sentence — this branch
+     * never looked at `ctx.message` beyond the hypothetical/liquidation-price checks below.
+     * It is deterministic on purpose (no LLM call, so it can never disagree with the margin
+     * page it shares a data source with), so the fix has to stay deterministic too: a
+     * keyword check picks the lead clause, not a model call.
+     *
+     * 1.1 here is `LIQUIDATION_THRESHOLD` from `lib/margin-health.ts` (not imported
+     * statically — this file already reaches that module by dynamic import a few lines
+     * down for the Soroban-budget fallback, so this follows the same pattern). 1.3 is the
+     * same default safety floor `parseMinHealthFactor(...) ?? 1.3` already uses elsewhere
+     * in this file — not a new number, the existing one made explicit here.
+     */
+    const { LIQUIDATION_THRESHOLD, HEALTH_FACTOR_INFINITY_SENTINEL: INF } = await import(
+      "@/lib/margin-health"
+    );
+    const infinite = pos.hf >= INF;
+    const askedDistance = /\bclose\s+to\s+liquidat|\bdistance\s+to\s+liquidat|\bhow\s+far\b.*\bliquidat/i.test(
+      ctx.message,
+    );
+    const askedIfSafe = /\bam\s+i\s+safe\b|\bis\s+(?:it|this|my\s+(?:account|position))\s+safe\b|\bat\s+risk\b/i.test(
+      ctx.message,
+    );
+    let lead: string;
+    if (askedDistance) {
+      lead = infinite
+        ? "No debt, so there is nothing to liquidate"
+        : `Health factor ${pos.hfText} is ${(pos.hf - LIQUIDATION_THRESHOLD).toFixed(2)} above the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
+    } else if (askedIfSafe) {
+      lead = infinite
+        ? "Yes — no debt, so there is nothing to liquidate"
+        : pos.hf >= 1.3
+          ? `Yes, you're safe — health factor ${pos.hfText} is above the 1.30 floor`
+          : pos.hf > LIQUIDATION_THRESHOLD
+            ? `Below your 1.30 safety floor but not liquidatable yet — health factor ${pos.hfText}`
+            : `No — health factor ${pos.hfText} is at or below the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
+    } else {
+      lead = `Health factor ${pos.hfText}`;
+    }
     message =
-      `Health factor ${pos.hfText} · collateral ${money(pos.grossCollateralValue)} · ` +
+      `${lead} · collateral ${money(pos.grossCollateralValue)} · ` +
       `borrowed ${money(pos.totalBorrowedValue)} · ` +
       `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
 
