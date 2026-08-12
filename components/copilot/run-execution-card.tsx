@@ -435,9 +435,20 @@ export function RunExecutionCard({
          * the chain, so counting every leg here claimed "2 transactions on chain" on a
          * run whose own TRANSACTIONS field, in the same card, correctly said 1. Counted
          * from the legs that actually produced a hash.
+         *
+         * The `|| total` fallback below looked harmless — "if nothing has a hash yet,
+         * assume the leg count" — and was itself the same bug for the one case that
+         * matters most: an all-read strategy. "show me everything about my account" (5
+         * read legs, zero signatures, zero writes) said "5 transactions on chain. Nothing
+         * is left in flight." — the exact false on-chain claim this card exists to
+         * prevent, just arrived at through the fallback instead of the count. Zero on
+         * chain must say zero, in words a read run has actually earned.
          */
         beatSub: (() => {
-          const onChain = legs.filter((l) => l.txHash).length || total;
+          const onChain = legs.filter((l) => l.txHash).length;
+          if (onChain === 0) {
+            return "Every leg was a read — nothing signed, nothing on chain.";
+          }
           return `${onChain} transaction${onChain === 1 ? "" : "s"} on chain. Nothing is left in flight.`;
         })(),
       };
