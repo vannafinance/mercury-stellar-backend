@@ -77,11 +77,11 @@ export interface MarginAccountCreationResult {
  * Read methods simulate transactions (no signature, no fee); write methods
  * prepare → sign via Freighter → submit → poll. Most writes bump the fee well
  * above BASE_FEE (20x–120x) because the chained collateral/borrow/deploy paths
- * are resource-heavy. Account discovery results are cached to localStorage.
+ * are resource-heavy. Account discovery is always authoritative on-chain; the
+ * in-memory map below only avoids duplicate lookups during the current runtime.
  */
 export class MarginAccountService {
-  // Local storage key for margin accounts
-  private static STORAGE_KEY = 'vanna_margin_accounts';
+  private static marginAccountCache = new Map<string, MarginAccount>();
 
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
@@ -463,62 +463,35 @@ export class MarginAccountService {
   }
 
   /**
-   * Read the cached margin account for a trader from localStorage.
+   * Read the runtime-cached margin account for a trader.
    *
-   * @param userAddress - Trader's G-address (the localStorage map key).
-   * @returns The cached {@link MarginAccount}, or null if none is stored,
-   *          parsing fails, or the entry was minted by a different (older)
-   *          AccountManager deployment — stale entries are deliberately
-   *          discarded so callers re-discover against the live contract.
+   * @param userAddress - Trader's G-address used for registry discovery.
+   * The cache is deliberately memory-only: financial/account state must never
+   * be restored from browser storage. The layout hydrator first discovers the
+   * account from AccountManager persistent storage and then fills this map.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
-      if (!stored) return null;
-      
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      const account = accounts[userAddress] || null;
-      if (!account) return null;
-
-      // Safety: invalidate accounts stored under an older AccountManager deployment.
-      if (account.accountManagerAddress !== CONTRACT_ADDRESSES.ACCOUNT_MANAGER) {
-        return null;
-      }
-      return account;
-    } catch (error) {
-      console.error('Error reading margin account from storage:', error);
-      return null;
-    }
+    return this.marginAccountCache.get(userAddress) ?? null;
   }
 
   /**
-   * Cache a trader's margin account in localStorage, stamping it with the
-   * current AccountManager address so {@link getStoredMarginAccount} can later
-   * invalidate it after a redeploy. Swallows storage errors (logs only).
+   * Cache a chain-resolved margin account for this runtime only.
    *
    * @param userAddress - Trader's G-address (map key).
    * @param marginAccount - Account to persist; its `accountManagerAddress` is
    *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      
-      accounts[userAddress] = {
-        ...marginAccount,
-        accountManagerAddress: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
-      };
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(accounts));
-    } catch (error) {
-      console.error('Error storing margin account:', error);
-    }
+    this.marginAccountCache.set(userAddress, {
+      ...marginAccount,
+      accountManagerAddress: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
+    });
   }
 
 
   /**
-   * Whether the trader has an active, locally-cached margin account.
-   * Checks localStorage only — does not hit the chain. Use
+   * Whether the trader has an active runtime-cached margin account.
+   * This is only a synchronous UI convenience. Use
    * {@link discoverExistingAccount} to recover one that isn't cached.
    *
    * @param userAddress - Trader's G-address.
@@ -532,7 +505,7 @@ export class MarginAccountService {
    * Create a margin smart account for a trader via AccountManager
    * `create_account`, enforcing one-account-per-trader.
    *
-   * Idempotent by design: checks localStorage, then the chain
+   * Idempotent by design: checks the runtime cache, then the chain
    * ({@link discoverExistingAccount}), and returns the existing account if
    * found — only signs/submits a creation tx when none exists anywhere. On a
    * successful tx it extracts the new C-address from the result (or re-reads it
@@ -549,13 +522,13 @@ export class MarginAccountService {
   ): Promise<MarginAccountCreationResult> {
     try {
       
-      // STEP 1: Check localStorage first
+      // STEP 1: reuse an account already resolved from chain in this runtime.
       const existingAccount = this.getStoredMarginAccount(userAddress);
       if (existingAccount && existingAccount.isActive) {
         return {
           success: true,
           marginAccountAddress: existingAccount.address,
-          error: 'User already has an active margin account (localStorage)'
+          error: 'User already has an active margin account'
         };
       }
       
@@ -805,9 +778,8 @@ export class MarginAccountService {
    * Stellar SDK delivers contract events with `topic` (array of ScVals) and
    * `value` (the body ScVal) as separate fields — NOT a single ScVal of
    * `[topics, data]`. The previous implementation parsed the wrong shape and
-   * always returned []. This is the only path that recovers a margin account
-   * for a wallet on a fresh origin (no localStorage), e.g. when the user
-   * connects on the deployed URL after creating their account on localhost.
+   * always returned []. This is the bounded fallback when AccountManager's
+   * persistent trader→account registry lookup cannot resolve an account.
    */
   private static async getAccountsFromEvents(userAddress: string, server: StellarSdk.rpc.Server): Promise<string[]> {
     const accounts: string[] = [];
@@ -919,8 +891,8 @@ export class MarginAccountService {
       // days (17280*7) lands ~1 ledger BELOW the retention floor as the chain
       // advances, which makes getEvents throw "startLedger must be within the
       // ledger range". Use ~6 days so startLedger stays comfortably inside the
-      // window. (Accounts older than the retention window are recovered via the
-      // Registry storage read / localStorage, not event scraping.)
+      // window. Accounts older than retention are recovered from AccountManager
+      // persistent registry storage, not browser state or event scraping.
       const lookBackLedgers = 17280 * 6; // ~6 days of ledgers (5s blocks)
       const startLedger = Math.max(1, latestLedger.sequence - lookBackLedgers);
       return startLedger;
@@ -1034,11 +1006,9 @@ export class MarginAccountService {
   }
 
   /**
-   * Discover a trader's existing margin account directly from the chain (used
-   * when localStorage is empty — e.g. a fresh browser or the deployed origin
-   * after creating the account on localhost). Reads AccountManager persistent
-   * storage first, falling back to creation events, and re-caches the resolved
-   * account. Public wrapper over the registry lookup.
+   * Discover a trader's existing margin account directly from the chain. Reads
+   * AccountManager persistent storage first, falling back to creation events,
+   * and stores the resolved address in the runtime cache.
    *
    * @param userAddress - Trader's G-address.
    * @returns The newest active SmartAccount C-address, or null if none found.
@@ -1048,8 +1018,8 @@ export class MarginAccountService {
   }
 
   /**
-   * Summarize the cached margin account for UI display. localStorage-only (no
-   * chain read). Returns `{ hasAccount: false }` when nothing is cached.
+   * Summarize the runtime-cached margin account for UI display. Returns
+   * `{ hasAccount: false }` until authoritative chain discovery completes.
    *
    * @param userAddress - Trader's G-address.
    */
@@ -1084,22 +1054,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Remove a trader's cached margin account from localStorage (testing/reset).
-   * Does not touch the chain — the account still exists on-chain and will be
-   * re-discovered. Swallows storage errors (logs only).
+   * Remove a trader's runtime-cached margin account (testing/reset). Does not
+   * touch the chain; the account will be re-discovered.
    *
    * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      
-      delete accounts[userAddress];
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(accounts));
-    } catch (error) {
-      console.error('Error clearing margin account:', error);
-    }
+    this.marginAccountCache.delete(userAddress);
   }
 
   /**
@@ -2105,7 +2066,8 @@ export class MarginAccountService {
    *          `{ amount, usdValue }`; an account with no debt yields `{}`.
    */
   static async getCurrentBorrowedBalances(
-    marginAccountAddress: string
+    marginAccountAddress: string,
+    options: { includePrices?: boolean } = {},
   ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
     try {
       // Validate address before making any blockchain calls
@@ -2136,8 +2098,9 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
       
-      const preparedTx = await server.prepareTransaction(getAllBorrowedTokensTx);
-      const simulationResult = await server.simulateTransaction(preparedTx);
+      // prepareTransaction already simulates; doing prepare + simulate doubled
+      // every read RPC. A view call only needs one direct simulation.
+      const simulationResult = await server.simulateTransaction(getAllBorrowedTokensTx);
       
       if ('error' in simulationResult) {
         console.error('❌ Failed to get borrowed tokens:', simulationResult.error);
@@ -2161,11 +2124,13 @@ export class MarginAccountService {
       }
 
       const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
+      const sourceSequence = sourceAccount.sequenceNumber();
 
-      // Read debt only for tokens present in SmartAccount borrowed list.
-      for (const token of borrowedTokens) {
-        try {
-          const getBalanceTx = new StellarSdk.TransactionBuilder(sourceAccount, {
+      // Every token debt is independent. Run the simulations (and optional
+      // price lookups) concurrently instead of one token at a time.
+      const rows = await Promise.allSettled(borrowedTokens.map(async (token) => {
+          const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
+          const getBalanceTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
             networkPassphrase: NETWORK_PASSPHRASE,
           })
@@ -2178,29 +2143,31 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
           
-          const preparedBalanceTx = await server.prepareTransaction(getBalanceTx);
-          const balanceResult = await server.simulateTransaction(preparedBalanceTx);
+          const balanceResult = await server.simulateTransaction(getBalanceTx);
           
           if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
             const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
 
             if (balanceNumber > 0) {
-              // USD value comes straight from the on-chain Reflector oracle so
-              // event-based callers that don't run the store's recompute still
-              // see live prices instead of a 1:1 placeholder.
-              const price = await fetchTokenPrice(token);
+              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
               const usdValue = (balanceNumber * price).toFixed(2);
-              borrowedBalances[token] = {
+              return { token, balance: {
                 amount: balanceNumber.toFixed(6),
                 usdValue
-              };
+              } };
             }
           }
-        } catch (error) {
-          console.warn(`⚠️ Failed to get balance for token ${token}:`, error);
+          return null;
+      }));
+
+      rows.forEach((row, index) => {
+        if (row.status === 'fulfilled' && row.value) {
+          borrowedBalances[row.value.token] = row.value.balance;
+        } else if (row.status === 'rejected') {
+          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
         }
-      }
+      });
       
       return {
         success: true,
@@ -2344,7 +2311,8 @@ export class MarginAccountService {
    *          `{ amount, usdValue }`; empty collateral yields `{}`.
    */
   static async getCollateralBalances(
-    marginAccountAddress: string
+    marginAccountAddress: string,
+    options: { includeFarm?: boolean; includePrices?: boolean } = {},
   ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
     try {
       if (!marginAccountAddress || typeof marginAccountAddress !== 'string' || marginAccountAddress.length < 10) {
@@ -2368,8 +2336,7 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      const preparedList = await server.prepareTransaction(listTx);
-      const listSim = await server.simulateTransaction(preparedList);
+      const listSim = await server.simulateTransaction(listTx);
 
       if ('error' in listSim) {
         console.error('❌ Failed to get collateral token list:', listSim.error);
@@ -2393,10 +2360,11 @@ export class MarginAccountService {
       }
 
       const balances: Record<string, { amount: string; usdValue: string }> = {};
+      const sourceSequence = sourceAccount.sequenceNumber();
 
-      for (const token of collateralTokens) {
-        try {
-          const balTx = new StellarSdk.TransactionBuilder(sourceAccount, {
+      const rows = await Promise.allSettled(collateralTokens.map(async (token) => {
+          const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
+          const balTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
             networkPassphrase: NETWORK_PASSPHRASE,
           })
@@ -2409,8 +2377,7 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
 
-          const preparedBal = await server.prepareTransaction(balTx);
-          const balSim = await server.simulateTransaction(preparedBal);
+          const balSim = await server.simulateTransaction(balTx);
 
           if (!('error' in balSim) && 'result' in balSim && balSim.result) {
             const rawBal = StellarSdk.scValToNative(balSim.result.retval);
@@ -2418,20 +2385,28 @@ export class MarginAccountService {
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
 
             if (balanceNumber > 0) {
-              const price = await fetchTokenPrice(token);
+              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
               const usdValue = (balanceNumber * price).toFixed(2);
-              balances[token] = {
+              return { token, balance: {
                 amount: balanceNumber.toFixed(7),
                 usdValue
-              };
+              } };
             }
           }
-        } catch (err) {
-          console.warn(`⚠️ Failed to read collateral balance for ${token}:`, err);
-        }
-      }
+          return null;
+      }));
 
-      const withFarm = await mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, balances);
+      rows.forEach((row, index) => {
+        if (row.status === 'fulfilled' && row.value) {
+          balances[row.value.token] = row.value.balance;
+        } else if (row.status === 'rejected') {
+          console.warn(`⚠️ Failed to read collateral balance for ${collateralTokens[index]}:`, row.reason);
+        }
+      });
+
+      const withFarm = options.includeFarm === false
+        ? balances
+        : await mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, balances);
       return { success: true, data: this.addUsdcAliases(withFarm) };
     } catch (error: any) {
       console.error('❌ Error getting collateral balances:', error);

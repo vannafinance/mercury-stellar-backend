@@ -67,6 +67,44 @@ function isSorobanRpcError(text: string): boolean {
   );
 }
 
+function contractErrorCode(text: string): number | null {
+  const match = text.match(/error\s*\(\s*contract\s*,\s*#(\d+)\s*\)/i)
+    ?? text.match(/contract(?:error)?[^#\d]{0,12}#?(\d+)/i);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return Number.isInteger(code) ? code : null;
+}
+
+const lendingErrorMessage = (code: number, action: 'supply' | 'withdraw'): string | null => {
+  const messages: Record<number, string> = {
+    1: 'The lending pool is not initialized.',
+    2: 'The lending pool rejected this wallet authorization.',
+    3: action === 'supply' ? 'Insufficient wallet balance for this supply.' : 'Insufficient deposited balance for this withdrawal.',
+    4: 'The requested loan-to-value ratio is invalid.',
+    5: 'The lending pool could not find an on-chain price for this asset.',
+    6: 'The oracle price is stale. Please wait for a fresh price update.',
+    8: 'This account is not eligible for liquidation.',
+    9: 'The lending pool could not find this account.',
+    10: 'This account does not have the required on-chain role.',
+    11: 'The lending pool has not been initialized.',
+    12: 'This address is not registered as a lender in the pool.',
+    13: 'The lending pool does not have enough available liquidity.',
+    14: 'The amount is outside the contract numeric range.',
+  };
+  return messages[code] ?? null;
+};
+
+const marginErrorMessage = (code: number): string | null => {
+  const messages: Record<number, string> = {
+    1: 'The collateral token or balance was not found on this margin account.',
+    2: 'The borrowed token was not found on this margin account.',
+    3: 'The margin account was not found on chain.',
+    4: 'The amount is outside the contract numeric range.',
+    5: 'This margin account does not hold the requested collateral token.',
+  };
+  return messages[code] ?? null;
+};
+
 /**
  * Pulls a `Tx: <hash>` (or bare 64-char hex hash) out of a raw error string,
  * if present. `isSorobanRpcError`'s generic fallback below otherwise
@@ -102,6 +140,8 @@ export function normalizeContractError(
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(`On-chain contract rejected the transaction (error #${code}).`, text);
   if (isSorobanRpcError(lower)) return appendTxHash(fallback, text);
 
   return text.length > 200 ? `${text.slice(0, 200)}...` : text || fallback;
@@ -119,6 +159,8 @@ export function normalizeSupplyError(
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(lendingErrorMessage(code, 'supply') ?? `Supply contract error #${code}.`, text);
   if (isInsufficientBalance(lower))
     return `You cannot supply all your ${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
@@ -139,6 +181,8 @@ export function normalizeWithdrawError(
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
   if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(lendingErrorMessage(code, 'withdraw') ?? `Withdrawal contract error #${code}.`, text);
   if (isInsufficientBalance(lower))
     return `You cannot withdraw all your v${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
@@ -159,6 +203,10 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
     lower.includes('resulting balance is not within the allowed range')
   ) {
     return 'You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.';
+  }
+  const code = contractErrorCode(compact);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `Margin deposit contract error #${code}.`, compact);
   }
   if (lower.includes('insufficient')) return 'Insufficient wallet balance for this deposit.';
   if (lower.includes('trustline entry is missing')) {
@@ -191,6 +239,10 @@ export function normalizeTransferCollateralError(
     lower.includes('resulting balance is not within the allowed range')
   ) {
     return 'You cannot transfer all your wallet balance. Please keep at least 1 XLM in your wallet.';
+  }
+  const code = contractErrorCode(compact);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `Margin transfer contract error #${code}.`, compact);
   }
 
   if (
@@ -232,6 +284,10 @@ export function normalizeCreateAccountError(msg: string): string {
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
   if (isBudgetExceeded(m)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(msg);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `AccountManager contract error #${code}.`, msg);
+  }
   if (m.includes('account not found') || m.includes('not found on network'))
     return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))

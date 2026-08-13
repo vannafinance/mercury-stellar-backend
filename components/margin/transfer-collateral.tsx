@@ -9,7 +9,6 @@ import { useTheme } from "@/contexts/theme-context";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService, CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
-import { appendMarginHistory } from "@/lib/margin-history";
 import {
   useMarginAccountInfoStore,
   refreshBorrowedBalances,
@@ -384,14 +383,6 @@ export const TransferCollateral = () => {
       return result;
     },
     onSuccess: async (result) => {
-      appendMarginHistory({
-        marginAccountAddress: marginAccount,
-        type: selectedTransferType === "MB" ? "transfer-in" : "transfer-out",
-        asset: normalizeContractTokenSymbol(selectedCurrency),
-        amount: Number(valueInput).toFixed(7),
-        hash: result.hash ?? "",
-      });
-
       showTxSuccess(
         `${selectedTransferType === "MB" ? "Transfer to margin successful!" : "Transfer to wallet successful!"}`
       );

@@ -3,12 +3,13 @@ import { NextResponse } from "next/server";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 
-// Node runtime: the Stellar SDK reads need Node APIs. The Cache-Control header
-// still gives CDN-level edge caching (s-maxage) regardless of runtime, so a
-// burst of refreshes within the window is served from cache, not re-read.
+// Node runtime: the Stellar SDK reads need Node APIs. Responses are explicitly
+// no-store because balances are mutation-sensitive and user-specific.
 export const runtime = "nodejs";
 
-const CACHE = "public, s-maxage=15, stale-while-revalidate=60";
+// Account balances are mutation-sensitive and user-specific. CDN caching made
+// a confirmed transaction appear stale for up to 15 seconds after invalidation.
+const CACHE = "private, no-store, max-age=0";
 
 export async function GET(
   _req: Request,

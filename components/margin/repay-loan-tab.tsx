@@ -12,7 +12,6 @@ import { Popup } from "@/components/ui/popup";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
-import { appendMarginHistory } from "@/lib/margin-history";
 import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService } from "@/lib/stellar-utils";
 import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
@@ -162,13 +161,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const clampRepayDust = (value: number) => {
     if (!Number.isFinite(value)) return 0;
     return Math.abs(value) < REPAY_DUST_EPSILON ? 0 : value;
-  };
-
-  const wadToFixed7 = (wad: bigint) => {
-    const whole = wad / WAD;
-    const frac = wad % WAD;
-    const frac7 = (frac / BigInt("100000000000")).toString().padStart(7, "0");
-    return `${whole.toString()}.${frac7}`;
   };
 
   // Both stat tiles are denominated in tokens of the selected repay currency.
@@ -408,16 +400,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error(detail || 'Repay threw with no message — see "🔴 REPAY THREW" in console.');
       }
     },
-    onSuccess: async ({ hash, repaidWad }) => {
-      if (hash) {
-        appendMarginHistory({
-          marginAccountAddress: marginAccount,
-          type: "repay",
-          asset: normalizeContractTokenSymbol(selectedRepayCurrency),
-          amount: wadToFixed7(repaidWad),
-          hash,
-        });
-      }
+    onSuccess: async () => {
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
       // can transiently throw when Freighter's getAddress returns undefined

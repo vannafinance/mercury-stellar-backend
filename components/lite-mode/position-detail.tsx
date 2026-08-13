@@ -12,7 +12,6 @@ import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/marg
 import type { LitePosition } from "./lite-position-types";
 import { calcExitPreview } from "./lite-position-math";
 import { closePosition } from "@/lib/one-click-strategy";
-import { applyLiteExit } from "@/lib/lite-positions";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
@@ -128,7 +127,7 @@ const EXIT_PRESETS = [25, 50, 75, 100] as const;
  *
  * Confirming runs `closePosition` through a React Query mutation that streams
  * progress into a status modal; on success it scales the local Lite registry
- * record to the new state (`applyLiteExit`), invalidates the margin/earn caches,
+ * invalidates the chain-derived Lite/margin/earn caches,
  * and refreshes balances. Contract/Freighter errors are mapped to friendly
  * copy (including treating user-reject XDR parse errors as a cancellation).
  *
@@ -278,16 +277,13 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       showStep("Preparing transaction");
     },
     onSuccess: async (result) => {
-      // Drop / scale the Lite registry record to match the on-chain state.
-      // Without this the Position tab keeps showing the original numbers
-      // even after a 100% close, which looks like the close failed.
-      applyLiteExit(position.id, exitPct);
       showStepSuccess(
         `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
         result.hash
       );
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
+      qc.invalidateQueries({ queryKey: ['lite-positions', marginAccountAddress] });
       if (marginAccountAddress) {
         try {
           // forceRefresh: this exit just repaid real debt — an unforced call

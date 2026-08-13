@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  * deriveMarginHealth. These tests pin the handler's own responsibilities:
  *   • input validation (short/empty addr → 400 no-store)
  *   • address routing: C-address used directly, G-address resolved via discovery
- *   • the { hasMarginAccount, ...snapshot } success shape + CACHE header
+ *   • the { hasMarginAccount, ...snapshot } success shape + no-store header
  *   • the no-account (200 hasMarginAccount:false) and 502 error contracts
  */
 const mocks = vi.hoisted(() => ({
@@ -24,7 +24,7 @@ vi.mock("@/lib/account-snapshot", () => ({
 
 import { GET } from "@/app/api/account/[addr]/route";
 
-const CACHE = "public, s-maxage=15, stale-while-revalidate=60";
+const CACHE = "private, no-store, max-age=0";
 const C_ADDR = "C".padEnd(56, "A"); // margin account address
 const G_ADDR = "G".padEnd(56, "B"); // user wallet address
 
@@ -92,7 +92,7 @@ describe("GET /api/account/[addr]", () => {
     expect((await res.json()).marginAccountAddress).toBe(C_ADDR);
   });
 
-  it("G-address with no margin account → 200 { hasMarginAccount:false } (cacheable)", async () => {
+  it("G-address with no margin account → 200 { hasMarginAccount:false } (no-store)", async () => {
     mocks.discoverExistingAccount.mockResolvedValue(null);
 
     const res = await call(G_ADDR);

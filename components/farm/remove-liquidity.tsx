@@ -28,7 +28,6 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { iconPaths } from "@/lib/constants";
 import { PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
-import { appendFarmHistory, buildFarmPoolKey } from "@/lib/farm-history";
 import { normalizeContractError } from "@/lib/errors/normalize";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
@@ -242,26 +241,16 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       setTxHash("");
       showTxStep(`Withdrawing ${amount.toFixed(2)} ${selectedToken} from Blend`);
     },
-    onSuccess: ({ hash, amount }) => {
+    onSuccess: ({ hash }) => {
       setTxStatus("success");
       setTxHash(hash ?? "");
-      appendFarmHistory({
-        protocol: "blend",
-        poolKey: buildFarmPoolKey(selectedToken),
-        marginAccountAddress: marginAccountAddress!,
-        action: "remove",
-        amountDisplay: `${amount.toFixed(2)} ${selectedToken}`,
-        txHash: hash ?? "",
-      });
       showTxSuccess("Withdrawal successful!");
       setValue("");
       setSelectedPercentage(0);
       qc.invalidateQueries({ queryKey: ['farm'] });
-      setTimeout(() => {
-        BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken).then((info) =>
-          setBlendBalance(info.underlyingBalance),
-        ).catch(() => {});
-      }, 3000);
+      BlendService.getUserBlendBalance(marginAccountAddress!, selectedToken).then((info) =>
+        setBlendBalance(info.underlyingBalance),
+      ).catch(() => {});
     },
     onError: (error) => {
       setTxStatus("error");
@@ -290,17 +279,9 @@ export const RemoveLiquidity = memo(function RemoveLiquidity() {
       setTxHash("");
       showTxStep(`Removing ${amount.toFixed(2)} LP from ${isSoroswapPool ? "Soroswap" : "Aquarius"} ${tokenA}/${tokenB}`);
     },
-    onSuccess: ({ hash, amount }) => {
+    onSuccess: ({ hash }) => {
       setTxStatus("success");
       setTxHash(hash ?? "");
-      appendFarmHistory({
-        protocol: isSoroswapPool ? "soroswap" : "aquarius",
-        poolKey: buildFarmPoolKey(tokenA, tokenB),
-        marginAccountAddress: marginAccountAddress!,
-        action: "remove",
-        amountDisplay: `${amount.toFixed(2)} LP`,
-        txHash: hash ?? "",
-      });
       showTxSuccess("Liquidity removed!");
       setValue("");
       setSelectedPercentage(0);

@@ -23,7 +23,6 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
-import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
 import { normalizeContractError, normalizeDepositCollateralError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
@@ -184,13 +183,9 @@ export const LeverageAssetsTab = () => {
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   // Same per-account /api/account snapshot the page HEADER reads (React Query
-  // dedupes by key — no extra fetch; it's already cached in memory + localStorage
-  // so it paints instantly). This is the reliable single source of truth for MB
-  // collateral. The live Zustand store is only an OVERLAY for optimistic
-  // mutations; after a deposit the snapshot feed is suppressed for ~20s and the
-  // store can go stale/blank while the header still shows the real value from
-  // this snapshot. Reading it here is exactly why the header showed $971 while
-  // the grid said "no collateral" — now the grid uses the same source.
+  // dedupes by key, so mounted consumers share the same in-memory response).
+  // The route is no-store and the query is invalidated after mutations, making
+  // this an authoritative snapshot rather than a browser-persisted cache.
   const { snapshot } = useAccountSnapshot(userAddress);
 
   // Effective collateral = store when it has balances (live/optimistic), else the
@@ -478,15 +473,6 @@ export const LeverageAssetsTab = () => {
       showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}`);
     },
     onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
-      if (hash && marginAccountAddress) {
-        appendMarginHistory({
-          marginAccountAddress,
-          type: "borrow",
-          asset: normalizedBorrowToken,
-          amount: borrowAmountTokens.toFixed(7),
-          hash,
-        });
-      }
       showStepSuccess(`Borrowed ${borrowAmountTokens.toFixed(2)} ${normalizedBorrowToken} against your margin collateral.`, hash);
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
@@ -641,13 +627,6 @@ export const LeverageAssetsTab = () => {
               return;
             }
             lastHash = result.hash ?? lastHash;
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: item.token,
-              amount: item.amount.toFixed(7),
-              hash: result.hash ?? "",
-            });
           }
 
           showStepSuccess(
@@ -890,23 +869,6 @@ export const LeverageAssetsTab = () => {
               depositHashes.push(atomicResult.hash);
               if (multiplier > 1) borrowHash = atomicResult.hash;
             }
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "deposit",
-              asset: item.asset,
-              amount: item.amount.toFixed(7),
-              hash: atomicResult.hash ?? "",
-            });
-            if (multiplier > 1) {
-              const borrowAmountTokens = item.amount * (multiplier - 1);
-              appendMarginHistory({
-                marginAccountAddress: marginAccountAddress!,
-                type: "borrow",
-                asset: normalizedBorrowToken,
-                amount: borrowAmountTokens.toFixed(7),
-                hash: atomicResult.hash ?? "",
-              });
-            }
             // Dual borrow second leg: borrow the second asset as a separate tx.
             if (isDualBorrow && borrowState!.items.length > 1 && multiplier > 1) {
               const b1 = borrowState!.items[1];
@@ -921,13 +883,6 @@ export const LeverageAssetsTab = () => {
                 const borrow2Result = await borrowTokens(userAddress, sym1, amt1, atomicResult.nextSequence);
                 if (borrow2Result.success) {
                   borrowHash = borrow2Result.hash ?? borrowHash;
-                  appendMarginHistory({
-                    marginAccountAddress: marginAccountAddress!,
-                    type: "borrow",
-                    asset: sym1,
-                    amount: amt1.toFixed(7),
-                    hash: borrow2Result.hash ?? "",
-                  });
                 } else {
                   // The deposit + first borrow already landed on-chain — don't let
                   // this fall through to the unconditional "Deposit + borrow
@@ -1030,13 +985,6 @@ export const LeverageAssetsTab = () => {
             }
 
             if (depositResult.hash) depositHashes.push(depositResult.hash);
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "deposit",
-              asset: item.asset,
-              amount: item.amount.toFixed(7),
-              hash: depositResult.hash ?? "",
-            });
           }
 
           if (multiplier > 1) {
@@ -1062,13 +1010,6 @@ export const LeverageAssetsTab = () => {
                 return;
               }
               borrowHash = borrowResult.hash ?? "";
-              appendMarginHistory({
-                marginAccountAddress: marginAccountAddress!,
-                type: "borrow",
-                asset: bItem.token,
-                amount: bItem.amount.toFixed(7),
-                hash: borrowHash,
-              });
             }
           }
         }

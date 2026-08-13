@@ -17,7 +17,7 @@ import { fetchTxTimestamps } from "./mercury-timestamps";
 // full history, deduped — same helper as the Soroswap/Blend adapters.
 
 export interface MarginTxEntry {
-  type: "borrow" | "repay" | "deposit";
+  type: "borrow" | "repay" | "deposit" | "withdraw";
   asset: string;
   amount: string;
   timestamp: number;
@@ -50,7 +50,8 @@ export async function getMarginHistoryFromMercury(
     (e) =>
       e.eventName === "Trader_Borrow" ||
       e.eventName === "Trader_Repay_Event" ||
-      e.eventName === "Trader_Deposit",
+      e.eventName === "Trader_Deposit" ||
+      e.eventName === "Trader_Withdraw",
   );
 
   const mapped: MarginTxEntry[] = mine.map((e) => {
@@ -69,6 +70,16 @@ export async function getMarginHistoryFromMercury(
       const d = (e.data ?? {}) as Record<string, unknown>;
       return {
         type: "deposit",
+        asset: String(d.token_symbol ?? ""),
+        amount: wadToHuman(d.amount).toFixed(7),
+        timestamp: 0,
+        hash: e.tx ?? "",
+      };
+    }
+    if (e.eventName === "Trader_Withdraw") {
+      const d = (e.data ?? {}) as Record<string, unknown>;
+      return {
+        type: "withdraw",
         asset: String(d.token_symbol ?? ""),
         amount: wadToHuman(d.amount).toFixed(7),
         timestamp: 0,

@@ -446,6 +446,7 @@ export default function Earn() {
               chartProps={{
                 type: "overall-deposit",
                 customData: liveDepositData,
+                defaultTimeframe: "3 Months",
               }}
             />
           </article>
@@ -467,6 +468,7 @@ export default function Earn() {
               chartProps={{
                 type: "net-apy",
                 customData: liveEarnedYieldData,
+                defaultTimeframe: "3 Months",
               }}
             />
           </article>

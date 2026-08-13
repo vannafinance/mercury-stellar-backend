@@ -348,7 +348,7 @@ export const Positionstable = ({
   const HISTORY_HEADINGS = ["Date", "Type", "Asset", "Amount", "Tx Hash"];
 
   const renderHistoryRow = (
-    item: { type: 'deposit' | 'borrow' | 'repay' | 'transfer-in' | 'transfer-out'; asset: string; amount: string; timestamp: number; hash: string },
+    item: { type: 'deposit' | 'withdraw' | 'borrow' | 'repay'; asset: string; amount: string; timestamp: number; hash: string },
     idx: number
   ) => {
     const date = item.timestamp
@@ -360,10 +360,8 @@ export const Positionstable = ({
         ? { className: 'bg-red-100 text-red-600', label: 'Borrow' }
         : item.type === 'repay'
           ? { className: 'bg-green-100 text-green-600', label: 'Repay' }
-          : item.type === 'transfer-in'
-            ? { className: 'bg-violet-100 text-violet-700', label: 'Transfer In' }
-            : item.type === 'transfer-out'
-              ? { className: 'bg-amber-100 text-amber-700', label: 'Transfer Out' }
+          : item.type === 'withdraw'
+              ? { className: 'bg-amber-100 text-amber-700', label: 'Withdraw' }
               : { className: 'bg-blue-100 text-blue-600', label: 'Deposit' };
 
     const shortHash = item.hash
@@ -741,7 +739,7 @@ export const Positionstable = ({
 
   // ── MOBILE HISTORY CARD ──
   const renderMobileHistoryCard = (
-    item: { type: 'deposit' | 'borrow' | 'repay' | 'transfer-in' | 'transfer-out'; asset: string; amount: string; timestamp: number; hash: string },
+    item: { type: 'deposit' | 'withdraw' | 'borrow' | 'repay'; asset: string; amount: string; timestamp: number; hash: string },
     idx: number,
   ) => {
     const date = item.timestamp
@@ -752,10 +750,8 @@ export const Positionstable = ({
         ? { className: 'bg-red-100 text-red-600', label: 'Borrow' }
         : item.type === 'repay'
           ? { className: 'bg-green-100 text-green-600', label: 'Repay' }
-          : item.type === 'transfer-in'
-            ? { className: 'bg-violet-100 text-violet-700', label: 'Transfer In' }
-            : item.type === 'transfer-out'
-              ? { className: 'bg-amber-100 text-amber-700', label: 'Transfer Out' }
+          : item.type === 'withdraw'
+              ? { className: 'bg-amber-100 text-amber-700', label: 'Withdraw' }
               : { className: 'bg-blue-100 text-blue-600', label: 'Deposit' };
     const shortHash = item.hash ? `${item.hash.slice(0, 8)}...${item.hash.slice(-4)}` : '—';
     return (

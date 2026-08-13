@@ -60,6 +60,7 @@ export async function getMarginHistoryFromRpc(
       if (
         eventName !== 'Trader_Borrow' &&
         eventName !== 'Trader_Deposit' &&
+        eventName !== 'Trader_Withdraw' &&
         eventName !== 'Trader_Repay_Event'
       ) {
         continue;
@@ -81,6 +82,15 @@ export async function getMarginHistoryFromRpc(
         const d = (raw ?? {}) as Record<string, unknown>;
         entries.push({
           type: 'deposit',
+          asset: String(d.token_symbol ?? ''),
+          amount: wadToHuman(d.amount).toFixed(7),
+          timestamp,
+          hash: e.txHash,
+        });
+      } else if (eventName === 'Trader_Withdraw') {
+        const d = (raw ?? {}) as Record<string, unknown>;
+        entries.push({
+          type: 'withdraw',
           asset: String(d.token_symbol ?? ''),
           amount: wadToHuman(d.amount).toFixed(7),
           timestamp,

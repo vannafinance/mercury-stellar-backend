@@ -1,10 +1,8 @@
 'use client';
 
 /**
- * "Activity" tab for an earn pool: shows the pool's distribution and a merged
- * transaction feed. On-chain transactions (from the indexer) are de-duplicated
- * against locally-recorded history by tx hash so a just-submitted action shows
- * immediately and isn't double-listed once it lands on-chain.
+ * "Activity" tab for an earn pool: shows the pool's distribution and the
+ * chain-indexed transaction feed.
  */
 import { useMemo } from "react";
 import { Table } from "./table";
@@ -12,9 +10,7 @@ import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/contexts/price-context";
 import { usePoolData, useEarnTransactions } from "@/hooks/use-earn";
 import { useSelectedPoolStore } from "@/store/selected-pool-store";
-import { useUserStore } from "@/store/user";
 import { iconPaths } from "@/lib/constants";
-import { getEarnHistoryByAsset } from "@/lib/earn-history";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 
 type EarnTx = {
@@ -88,14 +84,13 @@ const normalizeTimestamp = (value: number | string | undefined): number => {
 };
 
 /**
- * Renders pool distribution + a merged (on-chain ∪ local) transaction table for
+ * Renders pool distribution + an on-chain transaction table for
  * the currently selected pool, with USD values derived from oracle prices.
  */
 export const ActivityTab = () => {
   const { isDark } = useTheme();
   const { getPrice } = useTokenPrices();
   const { transactions: recentTransactions } = useEarnTransactions();
-  const walletAddress = useUserStore((state) => state.address);
   const { pools } = usePoolData();
   const selectedAsset = useSelectedPoolStore((state) => state.selectedAsset);
   const assetKey = toInternalAsset(selectedAsset);
@@ -107,7 +102,7 @@ export const ActivityTab = () => {
   const filteredTransactions = useMemo(() => {
     const normalizeAsset = (value: string) => toInternalAsset(value || "");
 
-    const onchain = (recentTransactions ?? [])
+    return (recentTransactions ?? [])
       .filter((tx: EarnTx) => normalizeAsset(tx.asset) === assetKey)
       .map((tx: EarnTx) => ({
         type: tx.type === "withdraw" ? "withdraw" : "supply",
@@ -116,22 +111,9 @@ export const ActivityTab = () => {
         timestamp: normalizeTimestamp(tx.timestamp),
         hash: String(tx.hash ?? ""),
         status: tx.status ?? "success",
-      }));
-
-    const onchainHashes = new Set(onchain.map((tx) => tx.hash).filter(Boolean));
-    const local = getEarnHistoryByAsset(assetKey, walletAddress)
-      .filter((tx) => !tx.hash || !onchainHashes.has(tx.hash))
-      .map((tx) => ({
-        type: tx.type,
-        asset: assetKey,
-        amount: tx.amount,
-        timestamp: normalizeTimestamp(tx.timestamp),
-        hash: tx.hash,
-        status: tx.status,
-      }));
-
-    return [...onchain, ...local].sort((a, b) => b.timestamp - a.timestamp);
-  }, [recentTransactions, assetKey, walletAddress]);
+      }))
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [recentTransactions, assetKey]);
 
   // Pool distribution for the currently viewed pool
   const userDistributionBody = useMemo(() => {

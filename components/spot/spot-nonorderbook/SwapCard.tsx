@@ -11,7 +11,6 @@ import { AquariusService, getAquariusSwapPartners, AquariusSwapSymbol } from "@/
 import { SoroswapService, getSoroswapSwapPartner, SoroswapSwapSymbol } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { normalizeContractError } from "@/lib/errors/normalize";
-import { appendSpotHistory } from "@/lib/spot-history";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { SwapInput } from "./SwapInput";
 import { SwapDirectionButton } from "./SwapDirectionButton";
@@ -673,26 +672,18 @@ export const SwapCard = ({
       setTxStatus("success");
       setTxHash(result.hash ?? "");
       showTxSuccess("Swap submitted!");
-      // Spot swaps always route through the margin account (swapMode is
-      // locked to "margin" — see the showModeTabs comment below), so its
-      // history is scoped to marginAccountAddress like Farm/Lender history.
-      if (swapMode === "margin" && marginAccountAddress) {
-        appendSpotHistory({
-          protocol: result.dexProtocol,
-          marginAccountAddress,
-          tokenIn: result.tokenInSymbol,
-          tokenOut: result.tokenOutSymbol,
-          amountIn: result.amountInUsed.toFixed(7),
-          amountOut: result.amountOutAtSubmit || "0",
-          txHash: result.hash ?? "",
-        });
-      }
       setAmountIn("");
       setAmountOut("");
       if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
       qc.invalidateQueries({ queryKey: ['spot'] });
+      // RPC normally exposes the confirmed transfer events immediately, while
+      // Mercury can trail the ledger by a few seconds. Retry the on-chain
+      // history refresh twice so a temporarily lagging indexer cannot leave
+      // Spot History empty until the user reloads the page.
+      window.setTimeout(() => qc.invalidateQueries({ queryKey: ['spot', 'history'] }), 2_500);
+      window.setTimeout(() => qc.invalidateQueries({ queryKey: ['spot', 'history'] }), 7_500);
       // Spot Balances (Portfolio's spot-section.tsx) reads live per-venue
       // balances under these two separate query-key prefixes, not ['spot'] —
       // without this they only refreshed on the next ledger tick, showing

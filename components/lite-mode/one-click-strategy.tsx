@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
@@ -9,7 +10,6 @@ import { useMarginAccountInfoStore, createMarginAccount, refreshBorrowedBalances
 import { executeOneClickStrategy } from "@/lib/one-click-strategy";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 import { normalizeContractError } from "@/lib/errors/normalize";
-import { appendLitePosition } from "@/lib/lite-positions";
 import { iconPaths } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { LeverageSlider } from "@/components/ui/leverage-slider";
@@ -158,11 +158,11 @@ const PoolTokenBadge = ({ symbol, size = 20 }: { symbol: string; size?: number }
  * The CTA is context-aware (connect wallet → create margin account → enter
  * amount → deploy) and validation blocks over-deposit, over-borrow, and unsafe
  * (HF ≤ 1.2) positions. Execution runs `executeOneClickStrategy` with progress
- * streamed into a status modal; on success the deployment is recorded in the
- * Lite-only registry (`appendLitePosition`) so it surfaces in the Position tab
- * separately from any Pro-mode borrows.
+ * streamed into a status modal. The Position tab then reconstructs the result
+ * from tracking-token, LP-token, and debt state on chain.
  */
 export const OneClickStrategy = () => {
+  const queryClient = useQueryClient();
   const { isDark } = useTheme();
   const { pools: earnPools } = usePoolData();
   const userAddress = useUserStore((s) => s.address);
@@ -548,46 +548,17 @@ export const OneClickStrategy = () => {
 
       if (!result.success) throw new Error(result.error);
 
-      // Track this deployment in our Lite-only registry. The Position tab
-      // reads from here (not from the margin store's borrowedBalances) so a
-      // user with both Pro borrows and Lite strategies sees them separated.
-      appendLitePosition({
-        marginAccountAddress,
-        poolId: selectedPool.id,
-        // LP positions hold both tokens paired together, so the label should
-        // read "XLM/USDC" — not just the collateral leg — matching how the
-        // Farm page titles the same pool.
-        poolLabel: selectedPool.type === "lp" ? selectedPoolLabelStr : collateralAsset,
-        protocol: selectedPool.protocol,
-        poolVersion: selectedPool.poolVersion,
-        poolType: selectedPool.type,
-        poolTokens: selectedPool.tokens,
-        collateralAsset,
-        collateralAmount: collateralNum,
-        collateralUsdAtOpen: collateralUsd,
-        borrowAsset,
-        borrowAmount: borrowedAmount,
-        borrowUsdAtOpen: borrowedAmount * borrowPrice,
-        collateralBorrowAmount,
-        collateralBorrowUsdAtOpen: collateralBorrowUsd,
-        leverage,
-        supplyApr: selectedPoolLive.supplyApr,
-        vannaFeeApr: selectedPoolLive.borrowApr,
-        liquidationLtv: 82,
-        isSameAsset: collateralAsset === borrowAsset,
-        txHash: result.hash,
-      });
-
       showStepSuccess(
         `Deployed $${totalPositionUsd.toFixed(2)} to ${selectedPoolLabelStr} on ${selectedPool.protocol}. Net APR: ~${aprCalc.netApr.toFixed(1)}%`,
         result.hash
       );
       setCollateralAmount("");
       setLeverage(1);
+      await queryClient.invalidateQueries({ queryKey: ["lite-positions", marginAccountAddress] });
       // This trade just changed real on-chain debt/collateral — force past the
       // 5s cache TTL so the NEXT preview (another Lite trade, or navigating to
       // Margin) reflects it immediately instead of the pre-trade snapshot.
-      if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
+      if (marginAccountAddress) await refreshBorrowedBalances(marginAccountAddress, true);
     } catch (err: any) {
       const message = normalizeContractError(err?.message, "Operation failed");
       showStepError(message);

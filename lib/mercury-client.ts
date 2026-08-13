@@ -113,12 +113,19 @@ export const decodeMercuryEvent = (e: RawMercuryEvent): DecodedMercuryEvent => {
 async function fetchEventsPage(
   params: URLSearchParams,
 ): Promise<RawMercuryEvent[]> {
-  const res = await fetch(`/api/mercury/events?${params.toString()}`);
+  const res = await fetch(`/api/mercury/events?${params.toString()}`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
   const json = (await res.json().catch(() => null)) as
     | RawMercuryEvent[]
     | { events?: RawMercuryEvent[]; data?: RawMercuryEvent[]; error?: string }
     | null;
   if (!json) throw new Error(`Mercury events: non-JSON response (HTTP ${res.status}).`);
+  if (!res.ok) {
+    const detail = !Array.isArray(json) ? json.error : undefined;
+    throw new Error(detail || `Mercury events failed (HTTP ${res.status}).`);
+  }
   if (!Array.isArray(json) && json.error) {
     throw new Error(`Mercury events failed: ${json.error}`);
   }

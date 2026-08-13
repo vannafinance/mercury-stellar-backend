@@ -124,8 +124,11 @@ export async function computeMarginSnapshot(
   opts?: { onPartial?: (p: PartialSnapshot) => void },
 ): Promise<MarginSnapshot> {
   const [borrowedResult, collateralResult] = await Promise.all([
-    MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress),
-    MarginAccountService.getCollateralBalances(marginAccountAddress),
+    MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress, { includePrices: false }),
+    MarginAccountService.getCollateralBalances(marginAccountAddress, {
+      includeFarm: false,
+      includePrices: false,
+    }),
     fetchTokenPrices([...PRICEABLE_TOKENS]),
   ]);
 

@@ -2,7 +2,6 @@ import { MarginAccountService } from './margin-utils';
 import { BlendService } from './blend-utils';
 import { SoroswapService } from './soroswap-utils';
 import { AquariusService } from './aquarius-utils';
-import { appendFarmHistory, buildFarmPoolKey } from './farm-history';
 import { CONTRACT_ADDRESSES } from './stellar-utils';
 
 /** True when `poolProtocol` names the Aquarius AMM (case-insensitive). Every
@@ -10,16 +9,6 @@ import { CONTRACT_ADDRESSES } from './stellar-utils';
  * contracts with different call shapes, so routing both through one service
  * silently added liquidity to the wrong pool. */
 const isAquarius = (poolProtocol: string): boolean => poolProtocol.toLowerCase().includes('aquarius');
-
-/** Current LP-share balance for the fixed XLM/USDC pool this file's LP flows
- * use — read before/after AddLiquidity to work out how many LP tokens a call
- * actually minted, since that value isn't in the tx result itself. */
-async function fetchXlmUsdcLpBalance(poolProtocol: string, marginAccountAddress: string): Promise<number> {
-  const raw = isAquarius(poolProtocol)
-    ? await AquariusService.getUserLpBalance(marginAccountAddress, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL, 'XLM', 'USDC')
-    : await SoroswapService.getLpBalance(marginAccountAddress);
-  return parseFloat(raw) || 0;
-}
 
 /** Protocol-aware "add liquidity from the margin account" — both pools here
  * are the XLM/USDC pair, so tokenA/tokenB are fixed for the Aquarius call. */
@@ -30,36 +19,9 @@ async function addLpLiquidity(
   xlmAmt: number,
   usdcAmt: number,
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
-  const preLp = await fetchXlmUsdcLpBalance(poolProtocol, marginAccountAddress).catch(() => 0);
   const result = isAquarius(poolProtocol)
     ? await AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt)
     : await SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
-
-  // Record locally so the Farm pool detail page and Portfolio's Farm tab have
-  // a Position History entry for this action even when it was opened through
-  // Lite mode rather than the Farm page's own Add Liquidity form — this
-  // helper is the single chokepoint both paths route through. (Farm's direct
-  // Add Liquidity form already does this itself; see components/farm/add-liquidity.tsx.)
-  if (result.success) {
-    // LP tokens minted aren't in the tx result — read the before/after balance
-    // delta instead, same approach as components/farm/add-liquidity.tsx.
-    let lpReceived = 0;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      const postLp = await fetchXlmUsdcLpBalance(poolProtocol, marginAccountAddress).catch(() => preLp);
-      lpReceived = postLp - preLp;
-      if (lpReceived > 0) break;
-    }
-
-    appendFarmHistory({
-      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
-      poolKey: buildFarmPoolKey('XLM', 'USDC'),
-      marginAccountAddress,
-      action: 'add',
-      amountDisplay: lpReceived > 0 ? `${lpReceived.toFixed(4)} LP` : 'Liquidity added',
-      txHash: result.hash ?? '',
-    });
-  }
 
   return result;
 }
@@ -129,17 +91,6 @@ async function removeLpLiquidity(
   const result = isAquarius(poolProtocol)
     ? await AquariusService.removeLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', lpAmount)
     : await SoroswapService.removeLiquidity(userAddress, marginAccountAddress, lpAmount);
-
-  if (result.success) {
-    appendFarmHistory({
-      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
-      poolKey: buildFarmPoolKey('XLM', 'USDC'),
-      marginAccountAddress,
-      action: 'remove',
-      amountDisplay: `${lpAmount.toFixed(2)} LP`,
-      txHash: result.hash ?? '',
-    });
-  }
 
   return result;
 }

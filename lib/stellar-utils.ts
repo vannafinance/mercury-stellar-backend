@@ -362,10 +362,14 @@ export class ContractService {
     tokenContract: string,
     walletAddress: string,
     sourceUserAddress?: string,
+    options?: { sourceSequence?: string; decimals?: number; throwOnError?: boolean },
   ): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(sourceUserAddress ?? walletAddress);
+      const sourceAddress = sourceUserAddress ?? walletAddress;
+      const sourceAccount = options?.sourceSequence !== undefined
+        ? new StellarSdk.Account(sourceAddress, options.sourceSequence)
+        : await server.getAccount(sourceAddress);
       const token = new StellarSdk.Contract(tokenContract);
 
       const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -382,12 +386,16 @@ export class ContractService {
         .build();
 
       const sim = await server.simulateTransaction(tx);
-      if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) return '0';
+      if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
+        if (options?.throwOnError) throw new Error(`Token balance simulation failed for ${tokenContract}`);
+        return '0';
+      }
 
       const raw = StellarSdk.scValToNative(sim.result.retval) as bigint;
-      const decimals = await this.getTokenDecimals(tokenContract);
+      const decimals = options?.decimals ?? await this.getTokenDecimals(tokenContract);
       return (Number(raw) / 10 ** decimals).toFixed(7);
-    } catch {
+    } catch (error) {
+      if (options?.throwOnError) throw error;
       return '0';
     }
   }
@@ -448,7 +456,7 @@ export class ContractService {
         await ContractService.pollTransactionStatus(server, result.hash);
         return { success: true, hash: result.hash };
       } else {
-        throw new Error('Transaction rejected by network');
+        throw new Error(`Transaction rejected by network: ${describeSendError(result)}`);
       }
     } catch (error: any) {
       console.error('Deposit error:', error);
@@ -529,7 +537,7 @@ export class ContractService {
         await ContractService.pollTransactionStatus(server, result.hash);
         return { success: true, hash: result.hash };
       } else {
-        throw new Error('Transaction rejected by network');
+        throw new Error(`Transaction rejected by network: ${describeSendError(result)}`);
       }
     } catch (error: any) {
       console.error('Withdraw error:', error);
@@ -552,7 +560,8 @@ export class ContractService {
   ): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(address);
+      // Read-only simulation does not need a live sequence-number lookup.
+      const sourceAccount = new StellarSdk.Account(address, '0');
       
       const contractAddress = vTokenAddress(assetType);
 
@@ -615,7 +624,12 @@ export class ContractService {
           if (transaction.status === 'SUCCESS') {
             return;
           } else {
-            throw new Error('Transaction failed');
+            const detail = describeFailedTx(transaction);
+            throw new Error(
+              detail
+                ? `Transaction failed: ${detail} (Tx: ${hash})`
+                : `Transaction failed (Tx: ${hash})`,
+            );
           }
         }
       } catch (error: any) {
@@ -923,7 +937,8 @@ export class ContractService {
   ): Promise<string> {
     try {
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(address);
+      // Read-only simulation does not need a live sequence-number lookup.
+      const sourceAccount = new StellarSdk.Account(address, '0');
       
       const contractAddress = lendingPoolAddress(assetType);
 
@@ -980,54 +995,65 @@ export class ContractService {
     AQUARIUS_USDC: string;
     SOROSWAP_USDC: string;
   }> {
-    try {
-      const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-      const account = await server.loadAccount(address);
-      
-      let xlmBalance = '0';
-      
-      for (const balance of account.balances) {
-        if (balance.asset_type === 'native') {
-          xlmBalance = parseFloat(balance.balance).toFixed(7);
-        }
-      }
+    const horizon = new StellarSdk.Horizon.Server(HORIZON_URL);
+    const rpc = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
 
-      // Read protocol-specific token balances directly from Soroban SAC contracts
-      // to avoid issuer/trustline source mismatches in UI.
-      const [
-        blendUsdcContractBalance,
-        aquariusUsdcContractBalance,
-        soroswapUsdcBalance,
-      ] = await Promise.all([
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.BLEND_USDC, address),
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.AQUARIUS_USDC, address),
-        ContractService.getSorobanTokenWalletBalance(CONTRACT_ADDRESSES.SOROSWAP_USDC, address),
-      ]);
+    // Horizon and RPC source-account reads are independent. Starting them
+    // together removes the old Horizon-before-Soroban waterfall.
+    const [horizonResult, rpcAccountResult] = await Promise.allSettled([
+      horizon.loadAccount(address),
+      rpc.getAccount(address),
+    ]);
 
-      // Collateral transfers use Soroban token contracts, so show contract balances
-      // directly to avoid false-positive "available" amounts from Horizon trustlines.
-      const blendUsdc = (parseFloat(blendUsdcContractBalance) || 0).toFixed(7);
-      const aquariusUsdc = (parseFloat(aquariusUsdcContractBalance) || 0).toFixed(7);
-      
-      return {
-        XLM: xlmBalance,
-        USDC: blendUsdc,
-        BLEND_USDC: blendUsdc,
-        AQUARIUS_USDC: aquariusUsdc,
-        SOROSWAP_USDC: soroswapUsdcBalance,
-      };
-    } catch (error: any) {
-      // Transient Horizon/RPC failure (testnet rate-limit or brief outage). Handled
-      // with a zero fallback — warn, not error, so the dev overlay doesn't flag a
-      // recoverable network blip the next ledger tick / refresh will fix.
-      console.warn('Error fetching token balances (using zero fallback):', error?.message ?? error);
-      return {
-        XLM: '0',
-        USDC: '0',
-        BLEND_USDC: '0',
-        AQUARIUS_USDC: '0',
-        SOROSWAP_USDC: '0',
-      };
+    let xlmBalance = '0';
+    if (horizonResult.status === 'fulfilled') {
+      const native = horizonResult.value.balances.find((balance) => balance.asset_type === 'native');
+      if (native) xlmBalance = parseFloat(native.balance).toFixed(7);
     }
+
+    // All Stellar Asset Contracts use 7 decimals. Reuse the one source
+    // sequence fetched above and run the three simulations concurrently;
+    // previously every token performed its own getAccount + decimals call.
+    const sourceSequence = rpcAccountResult.status === 'fulfilled'
+      ? rpcAccountResult.value.sequenceNumber()
+      : undefined;
+    const tokenContracts = [
+      CONTRACT_ADDRESSES.BLEND_USDC,
+      CONTRACT_ADDRESSES.AQUARIUS_USDC,
+      CONTRACT_ADDRESSES.SOROSWAP_USDC,
+    ] as const;
+    const tokenResults = sourceSequence === undefined
+      ? []
+      : await Promise.allSettled(
+          tokenContracts.map((tokenContract) =>
+            ContractService.getSorobanTokenWalletBalance(tokenContract, address, address, {
+              sourceSequence,
+              decimals: 7,
+              throwOnError: true,
+            }),
+          ),
+        );
+
+    const valueAt = (index: number): string => {
+      const result = tokenResults[index];
+      return result?.status === 'fulfilled'
+        ? (parseFloat(result.value) || 0).toFixed(7)
+        : '0';
+    };
+    const blendUsdc = valueAt(0);
+    const aquariusUsdc = valueAt(1);
+    const soroswapUsdc = valueAt(2);
+
+    if (horizonResult.status === 'rejected' && tokenResults.every((r) => r.status === 'rejected')) {
+      throw new Error('Unable to read wallet balances from Horizon or Soroban RPC');
+    }
+
+    return {
+      XLM: xlmBalance,
+      USDC: blendUsdc,
+      BLEND_USDC: blendUsdc,
+      AQUARIUS_USDC: aquariusUsdc,
+      SOROSWAP_USDC: soroswapUsdc,
+    };
   }
 }

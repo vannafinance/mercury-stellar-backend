@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "@/contexts/theme-context";
 import Image from "next/image";
 import { useMemo, useState, useCallback, useEffect, memo } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { iconPaths } from "@/lib/constants";
 import { AccountStatsGhost } from "@/components/earn/account-stats-ghost";
 import { Chart } from "@/components/earn/chart";
@@ -36,7 +35,6 @@ import {
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
-import { buildFarmPoolKey, getFarmHistory } from "@/lib/farm-history";
 import { formatTokenAmount } from "@/lib/utils/format-amount";
 
 // Compact human-readable number: "62.44M", "1.23K", "987.65".
@@ -245,44 +243,9 @@ export default function FarmDetailPage() {
   const mySSLpBalance = parseFloat(ssLpBalanceRaw ?? '0');
   const { events: ssEvents } = useSoroswapEvents(ssStats?.pairAddress, marginAccountAddress);
   const ssTokenA = matchedSoroswapPool?.tokens[0] ?? 'XLM';
-  // Raw pool-config symbol — keep using this (not the display label below)
-  // for buildFarmPoolKey so cached local-history keys stay stable.
   const ssTokenB = matchedSoroswapPool?.tokens[1] ?? 'USDC';
   // Soroswap-specific display label for everywhere this renders as text.
   const ssTokenBLabel = ssTokenB === 'USDC' ? 'SoUSDC' : ssTokenB;
-
-  // Local farm tx log, read through a real query (not a plain useMemo) so a
-  // completed add/remove-liquidity actually shows up without a page reload.
-  // add-liquidity.tsx/remove-liquidity.tsx already call
-  // `qc.invalidateQueries({ queryKey: ['farm'] })` on success — that already
-  // correctly refreshes every real useQuery-backed farm hook, but was a
-  // no-op against these three bare useMemos with no matching query to
-  // invalidate (the symptom reported live: history only appears after a
-  // manual refresh). A `['farm', ...]`-prefixed key lets that existing
-  // invalidation reach them too.
-  const blendPoolKey = buildFarmPoolKey(tokenSymbol ?? "XLM");
-  const { data: blendLocalHistory = [] } = useQuery({
-    queryKey: ['farm', 'blend', 'localHistory', blendPoolKey, marginAccountAddress ?? null],
-    queryFn: () => getFarmHistory({ protocol: "blend", poolKey: blendPoolKey, marginAccountAddress }),
-    enabled: Boolean(marginAccountAddress),
-    staleTime: 4_000,
-  });
-
-  const aquariusPoolKey = buildFarmPoolKey(matchedPool?.tokens[0] ?? "XLM", matchedPool?.tokens[1] ?? "USDC");
-  const { data: aquariusLocalHistory = [] } = useQuery({
-    queryKey: ['farm', 'aquarius', 'localHistory', aquariusPoolKey, marginAccountAddress ?? null],
-    queryFn: () => getFarmHistory({ protocol: "aquarius", poolKey: aquariusPoolKey, marginAccountAddress }),
-    enabled: Boolean(marginAccountAddress),
-    staleTime: 4_000,
-  });
-
-  const soroswapPoolKey = buildFarmPoolKey(ssTokenA, ssTokenB);
-  const { data: soroswapLocalHistory = [] } = useQuery({
-    queryKey: ['farm', 'soroswap', 'localHistory', soroswapPoolKey, marginAccountAddress ?? null],
-    queryFn: () => getFarmHistory({ protocol: "soroswap", poolKey: soroswapPoolKey, marginAccountAddress }),
-    enabled: Boolean(marginAccountAddress),
-    staleTime: 4_000,
-  });
 
   const reserveData = tokenSymbol ? poolStats[tokenSymbol] : null;
 
@@ -325,28 +288,13 @@ export default function FarmDetailPage() {
 
   // Position History table from blockchain events
   const mergedBlendHistory = useMemo(() => {
-    const normalizedOnchain = events.map((ev) => ({
+    return events.map((ev) => ({
       timestamp: normalizeTimestamp(ev.timestamp),
       action: ev.type === "supply" ? "add" : "remove",
       amountDisplay: `${(parseFloat(String(ev.underlyingAmount ?? '0')) || 0).toFixed(2)} ${ev.tokenSymbol}`,
       txHash: ev.txHash ?? "",
-    }));
-
-    const onchainHashes = new Set(
-      normalizedOnchain.map((item) => item.txHash).filter((hash) => Boolean(hash))
-    );
-
-    const normalizedLocal = blendLocalHistory
-      .filter((item) => !item.txHash || !onchainHashes.has(item.txHash))
-      .map((item) => ({
-        timestamp: normalizeTimestamp(item.timestamp),
-        action: item.action,
-        amountDisplay: item.amountDisplay,
-        txHash: item.txHash,
-      }));
-
-    return [...normalizedOnchain, ...normalizedLocal].sort((a, b) => b.timestamp - a.timestamp);
-  }, [events, blendLocalHistory]);
+    })).sort((a, b) => b.timestamp - a.timestamp);
+  }, [events]);
 
   const positionHistoryBody = useMemo(() => {
     if (mergedBlendHistory.length === 0) return { rows: [] };
@@ -460,28 +408,13 @@ export default function FarmDetailPage() {
 
   // Aquarius position history table
   const mergedAquariusHistory = useMemo(() => {
-    const normalizedOnchain = aqEvents.map((ev) => ({
+    return aqEvents.map((ev) => ({
       timestamp: normalizeTimestamp(ev.timestamp),
       action: ev.type === "deposit" ? "add" : "remove",
       amountDisplay: `${ev.shareAmount} LP`,
       txHash: ev.txHash ?? "",
-    }));
-
-    const onchainHashes = new Set(
-      normalizedOnchain.map((item) => item.txHash).filter((hash) => Boolean(hash))
-    );
-
-    const normalizedLocal = aquariusLocalHistory
-      .filter((item) => !item.txHash || !onchainHashes.has(item.txHash))
-      .map((item) => ({
-        timestamp: normalizeTimestamp(item.timestamp),
-        action: item.action,
-        amountDisplay: item.amountDisplay,
-        txHash: item.txHash,
-      }));
-
-    return [...normalizedOnchain, ...normalizedLocal].sort((a, b) => b.timestamp - a.timestamp);
-  }, [aqEvents, aquariusLocalHistory]);
+    })).sort((a, b) => b.timestamp - a.timestamp);
+  }, [aqEvents]);
 
   const aquariusHistoryBody = useMemo(() => {
     if (mergedAquariusHistory.length === 0) return { rows: [] };
@@ -547,28 +480,13 @@ export default function FarmDetailPage() {
 
   // Soroswap position history table
   const mergedSoroswapHistory = useMemo(() => {
-    const normalizedOnchain = ssEvents.map((ev) => ({
+    return ssEvents.map((ev) => ({
       timestamp: normalizeTimestamp(ev.timestamp),
       action: ev.type === "deposit" ? "add" : "remove",
       amountDisplay: `${ev.shareAmount} LP`,
       txHash: ev.txHash ?? "",
-    }));
-
-    const onchainHashes = new Set(
-      normalizedOnchain.map((item) => item.txHash).filter((hash) => Boolean(hash))
-    );
-
-    const normalizedLocal = soroswapLocalHistory
-      .filter((item) => !item.txHash || !onchainHashes.has(item.txHash))
-      .map((item) => ({
-        timestamp: normalizeTimestamp(item.timestamp),
-        action: item.action,
-        amountDisplay: item.amountDisplay,
-        txHash: item.txHash,
-      }));
-
-    return [...normalizedOnchain, ...normalizedLocal].sort((a, b) => b.timestamp - a.timestamp);
-  }, [ssEvents, soroswapLocalHistory]);
+    })).sort((a, b) => b.timestamp - a.timestamp);
+  }, [ssEvents]);
 
   const soroswapHistoryBody = useMemo(() => {
     if (mergedSoroswapHistory.length === 0) return { rows: [] };

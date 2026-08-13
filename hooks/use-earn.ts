@@ -5,12 +5,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { useUserStore } from '@/store/user';
 import { useEarnPoolStore, addTransaction } from '@/store/earn-pool-store';
-import { appendEarnHistory } from '@/lib/earn-history';
 import { getEarnTransactionsFromMercury, type EarnTxEntry } from '@/lib/mercury-earn';
 import { getEarnHistoryFromRpc } from '@/lib/earn-history-rpc';
 import { type AllPoolStats } from '@/lib/pool-stats';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
 import { normalizeSupplyError, normalizeWithdrawError } from '@/lib/errors/normalize';
+import { refreshWalletBalancesOnChain } from '@/hooks/use-wallet';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pool data
@@ -216,7 +216,8 @@ export const useUserPositions = () => {
  * Mutation to supply (deposit) liquidity into a pool. Variables:
  * `{ amount, assetType }`. No optimistic write — `ContractService.deposit`
  * waits for SUCCESS, then `onSettled` invalidates `['earn']` to refetch the real
- * balance. Records the tx in the store/earn-history and normalizes errors.
+ * balance. Records the in-memory notification row and normalizes errors; the
+ * persistent history itself comes only from Mercury/RPC events.
  */
 export const useSupplyLiquidity = () => {
   const qc = useQueryClient();
@@ -237,10 +238,8 @@ export const useSupplyLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('supply', assetType, amount.toString(), hash, 'success');
-        if (address) {
-          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'supply', amount: amount.toString(), hash, status: 'success' });
-        }
       }
+      if (address) void refreshWalletBalancesOnChain(address);
     },
 
     // No optimistic write — the position must change only after the tx confirms.
@@ -282,10 +281,8 @@ export const useWithdrawLiquidity = () => {
     onSuccess: ({ hash, amount, assetType }) => {
       if (hash) {
         addTransaction('withdraw', assetType, amount.toString(), hash, 'success');
-        if (address) {
-          appendEarnHistory({ walletAddress: address, asset: assetType, type: 'withdraw', amount: amount.toString(), hash, status: 'success' });
-        }
       }
+      if (address) void refreshWalletBalancesOnChain(address);
     },
 
     // No optimistic write — the position must change only after the tx confirms.

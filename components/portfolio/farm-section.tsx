@@ -20,7 +20,21 @@ import {
 } from "@/hooks/use-farm";
 import { useSoroswapPoolStats, useSoroswapLpPosition, useSoroswapEvents } from "@/hooks/use-soroswap";
 import { AQUARIUS_POOLS, aquariusLpUnderlyingAmounts } from "@/lib/aquarius-utils";
-import { getFarmHistory, buildFarmPoolKey, type FarmHistoryEntry, type FarmAction } from "@/lib/farm-history";
+
+type FarmAction = "add" | "remove";
+type FarmHistoryEntry = {
+  id: string;
+  protocol: "blend" | "aquarius" | "soroswap";
+  poolKey: string;
+  marginAccountAddress: string;
+  action: FarmAction;
+  amountDisplay: string;
+  txHash: string;
+  timestamp: number;
+};
+
+const buildFarmPoolKey = (tokenA: string, tokenB?: string) =>
+  tokenB ? [tokenA.toUpperCase(), tokenB.toUpperCase()].sort().join("-") : tokenA.toUpperCase();
 
 const POSITION_DUST = 1e-4;
 
@@ -195,10 +209,7 @@ export const FarmSection = () => {
   // instead of scoped to one.
   //
   // Real on-chain events (Mercury + RPC fallback, via the same resilient hooks
-  // the Farm detail page uses) are the source of truth; the local tx log
-  // (lib/farm-history) only fills in entries whose txHash isn't already
-  // covered on-chain (e.g. very recent local optimistic rows) — it is never
-  // the sole source, so history survives a cleared cache / fresh reconnect.
+  // the Farm detail page uses) are the only source of history.
   const { events: blendEvents } = useBlendEvents();
   const { events: aqEvents } = useAquariusEvents(null, marginAccountAddress);
   const { events: ssEvents } = useSoroswapEvents(ssStats?.pairAddress, marginAccountAddress);
@@ -206,7 +217,7 @@ export const FarmSection = () => {
   const historyEntries = useMemo((): FarmHistoryEntry[] => {
     if (!marginAccountAddress) return [];
 
-    const onchain: FarmHistoryEntry[] = [
+    return [
       ...blendEvents.map((ev) => ({
         id: `blend:${ev.txHash}:${ev.type}:${ev.tokenSymbol}`,
         protocol: "blend" as const,
@@ -237,22 +248,7 @@ export const FarmSection = () => {
         txHash: ev.txHash ?? "",
         timestamp: ev.timestamp,
       })),
-    ];
-
-    const onchainHashes = new Set(onchain.map((e) => e.txHash).filter(Boolean));
-
-    const local: FarmHistoryEntry[] = [
-      ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("XLM"), marginAccountAddress }),
-      ...getFarmHistory({ protocol: "blend", poolKey: buildFarmPoolKey("USDC"), marginAccountAddress }),
-      ...getFarmHistory({ protocol: "soroswap", poolKey: buildFarmPoolKey("XLM", "USDC"), marginAccountAddress }),
-    ];
-    AQUARIUS_POOLS.forEach((pool) => {
-      const [tokenA, tokenB] = pool.tokens;
-      local.push(...getFarmHistory({ protocol: "aquarius", poolKey: buildFarmPoolKey(tokenA, tokenB), marginAccountAddress }));
-    });
-    const localFiltered = local.filter((e) => !e.txHash || !onchainHashes.has(e.txHash));
-
-    return [...onchain, ...localFiltered].sort((a, b) => b.timestamp - a.timestamp);
+    ].sort((a, b) => b.timestamp - a.timestamp) as FarmHistoryEntry[];
   }, [marginAccountAddress, blendEvents, aqEvents, ssEvents]);
 
   const historyTableBody = useMemo(

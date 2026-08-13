@@ -18,7 +18,6 @@ import { AccountStats } from "@/components/margin/account-stats";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import {
   useMarginAccountInfoStore,
-  isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import { formatValue } from "@/lib/utils/format-value";
@@ -123,7 +122,7 @@ const MarginContent = () => {
   }, [snapshotLoading, snapshot]);
 
   useEffect(() => {
-    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    if (!snapshot) return;
     const store = useMarginAccountInfoStore.getState();
     if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
       // Don't let a degraded snapshot (no collateral) overwrite collateral the

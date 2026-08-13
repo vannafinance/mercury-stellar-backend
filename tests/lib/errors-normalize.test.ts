@@ -53,6 +53,18 @@ describe('cancel detection across every normalizer', () => {
 });
 
 describe('non-cancel errors still pass through their domain message', () => {
+  it('generic normalization preserves the exact contract code and tx hash', () => {
+    const hash = 'a'.repeat(64);
+    expect(normalizeContractError(`HostError: Error(Contract, #13) Tx: ${hash}`)).toBe(
+      `On-chain contract rejected the transaction (error #13). (Tx: ${hash})`,
+    );
+  });
+  it('supply maps lending-pool contract codes to their contract meaning', () => {
+    expect(normalizeSupplyError('HostError: Error(Contract, #6)', 'XLM')).toMatch(/oracle price is stale/i);
+  });
+  it('withdraw maps insufficient pool liquidity precisely', () => {
+    expect(normalizeWithdrawError('Error(Contract, #13)', 'USDC')).toMatch(/enough available liquidity/i);
+  });
   it('deposit: contract #10 stays the keep-1-XLM message', () => {
     expect(normalizeDepositCollateralError('Error(Contract, #10)')).toMatch(/keep at least 1 XLM/i);
   });
@@ -62,6 +74,12 @@ describe('non-cancel errors still pass through their domain message', () => {
         'trustline entry is missing for account GDPMCPUXAHICI4SPGSXG5YXQI2OECTD5A3OCEDKDL3YOOPZ475OSM6YH',
       ),
     ).toMatch(/Faucet/i);
+  });
+  it('margin deposit preserves AccountManager error meaning', () => {
+    expect(normalizeDepositCollateralError('HostError: Error(Contract, #5)')).toMatch(/does not hold/i);
+  });
+  it('margin transfer preserves unknown exact contract code', () => {
+    expect(normalizeTransferCollateralError('HostError: Error(Contract, #77)', 'XLM')).toMatch(/#77/);
   });
   it('transfer: risk-engine block stays informative', () => {
     expect(normalizeTransferCollateralError('is_withdraw_allowed failed', 'USDC')).toMatch(/Risk Engine/i);

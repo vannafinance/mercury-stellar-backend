@@ -1,9 +1,7 @@
 // Margin-account store: the connected user's smart margin account (identity +
 // health-factor / collateral / borrowed / derived-risk fields) plus the action
-// functions that discover, create, and mutate it on-chain. Account resolution is
-// cache-then-reconcile (localStorage hint → authoritative on-chain discovery),
-// and all reads share computeMarginSnapshot with the cached /api/account route so
-// the client and server can never diverge.
+// functions that discover, create, and mutate it on-chain. Account identity and
+// balances are runtime-only and always rebuilt from authoritative chain reads.
 
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
@@ -24,24 +22,6 @@ const inflightCheckByUser = new Map<string, Promise<void>>();
 
 const lastRefreshByAccount = new Map<string, number>();
 const inflightRefreshByAccount = new Map<string, Promise<void>>();
-
-// D25: when a mutation force-refreshes the store directly (authoritative client
-// read), pause the cached /api/account snapshot from feeding the store for a
-// window just past the route's 15s edge TTL — otherwise the still-cached
-// (pre-mutation) snapshot could clobber the fresh post-mutation values. After
-// the window the edge cache has caught up, so the snapshot feed resumes safely.
-let snapshotFeedSuppressedUntil = 0;
-/**
- * Pause the cached /api/account snapshot from feeding the store for `ms`
- * (default 20s, just past the route's 15s edge TTL). Called after a mutation
- * does an authoritative client read so the lagging cached snapshot can't clobber
- * the fresh post-mutation values.
- */
-export const suppressSnapshotFeed = (ms = 20_000) => {
-  snapshotFeedSuppressedUntil = Date.now() + ms;
-};
-/** True while the snapshot feed is suppressed; consumers should skip writing snapshot data into the store. */
-export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
 
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
@@ -115,13 +95,7 @@ const initialState: MarginAccountInfoStateType = {
 
 // Export Store
 //
-// NOT persisted. The account identity has a single cache — MarginAccountService's
-// wallet-keyed, AccountManager-guarded localStorage (STORAGE_KEY). On reload,
-// checkUserMarginAccount reads that cache synchronously for an instant paint, then
-// reconciles against on-chain discovery (the source of truth). Persisting identity
-// here too was a second, wallet-agnostic cache that could rehydrate the previously
-// connected wallet's account and disagree with the chain. Balances are never
-// persisted (they bled across accounts on reload) — they always come fresh.
+// NOT persisted. Identity and balances always come from AccountManager/Soroban.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
@@ -385,10 +359,9 @@ export const setupContractConfiguration = async (): Promise<{ success: boolean; 
 };
 
 /**
- * Resolve the user's margin account into the store (cache-then-reconcile):
- * applies the localStorage-cached address for an instant paint, then ALWAYS
- * reconciles against authoritative on-chain discovery (adopting the newest active
- * account). Concurrent calls for the same user are deduped, and results are
+ * Resolve the user's margin account into the store from authoritative on-chain
+ * discovery (adopting the newest active account). Concurrent calls for the same
+ * user are deduped, and results are
  * throttled by CACHE_DURATION_MS / MIN_FETCH_INTERVAL_MS unless `forceRefresh`.
  *
  * @param userAddress - Owner wallet to resolve.
@@ -415,16 +388,15 @@ export const checkUserMarginAccount = async (
   const run = (async () => {
     try {
 
-      // Step 1: localStorage gives an instant first paint, but it is only a
-      // hint — a stale entry must never pin an old account. So we apply the
-      // cached address for speed, then ALWAYS reconcile against the chain.
+      // A runtime entry can paint immediately during same-session navigation,
+      // but it was originally resolved from chain and is never persisted.
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
       const cachedAddress = accountInfo.hasAccount ? accountInfo.accountAddress ?? null : null;
       if (cachedAddress) {
         applyResolvedMarginAccount(cachedAddress);
       }
 
-      // Step 2: on-chain discovery is authoritative — it resolves the NEWEST
+      // On-chain discovery is authoritative — it resolves the NEWEST
       // active account (see getMarginAccountFromRegistry). Adopt it even when a
       // cached account exists, so the cache can't keep showing an older one.
       try {
@@ -508,7 +480,7 @@ export const updateAccountData = (data: Partial<MarginAccountInfoStateType>) => 
  * overwrite the fresh post-mutation values.
  *
  * @param marginAccountAddress - Account to refresh (validated for basic shape).
- * @param forceRefresh - Bypass throttle caches and suppress the snapshot feed.
+ * @param forceRefresh - Bypass throttle caches after an on-chain mutation.
  */
 export const refreshBorrowedBalances = async (
   marginAccountAddress: string,
@@ -528,10 +500,6 @@ export const refreshBorrowedBalances = async (
   const age = Date.now() - last;
   if (!forceRefresh && age < CACHE_DURATION_MS) return;
   if (!forceRefresh && age < MIN_FETCH_INTERVAL_MS) return;
-
-  // A forced refresh means a mutation just changed state — protect the result
-  // from the lagging cached snapshot for one TTL window.
-  if (forceRefresh) suppressSnapshotFeed();
 
   const run = (async () => {
   try {
