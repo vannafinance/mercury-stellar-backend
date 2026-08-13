@@ -61,7 +61,7 @@ describe('MarginAccountService.parseBorrowNotAllowedMessage', () => {
 
   it('detects Budget/resource limit error', () => {
     const msg = parse('Budget exceeded ExceededLimit', 'XLM');
-    expect(msg).toMatch(/resource limits/i);
+    expect(msg).toMatch(/budget exceeded/i);
   });
 
   it('detects InvalidAction / UnreachableCodeReached', () => {

@@ -130,6 +130,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
       setMarginAccountBalanceWad('0');
+      setWalletBalanceTokens(0);
     }
   }, [globalIsConnected, globalAddress]);
   const [currentDebtWad, setCurrentDebtWad] = useState<string>('0');
@@ -137,6 +138,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // WAD — used to cap 100%/the displayed "repayable" figure so borrowed funds
   // deployed elsewhere (e.g. into a Farm pool) aren't shown as repayable.
   const [marginAccountBalanceWad, setMarginAccountBalanceWad] = useState<string>('0');
+  // Wallet's own balance of the selected currency, in token units — kept
+  // separately from `repayStats.availableBalance` (which now DISPLAYS the
+  // margin account's balance, the actually-relevant figure for repay) but
+  // still needed internally: repayLoan's interest-dust top-up pulls from
+  // here, so the 100% cap must still account for it.
+  const [walletBalanceTokens, setWalletBalanceTokens] = useState<number>(0);
 
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
@@ -225,6 +232,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         : 0;
       setCurrentDebtWad(debtResult.success && debtResult.debtWad ? debtResult.debtWad : '0');
       setMarginAccountBalanceWad(marginBalWad ?? '0');
+      setWalletBalanceTokens(walletBalance);
 
       // A failed margin-account-balance read (marginBalWad === null) falls back
       // to NOT capping — same "assume repayable" fallback repayLoan itself uses
@@ -236,7 +244,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
       setRepayStats({
         netOutstandingAmountToPay: repayableTokens,
-        availableBalance: walletBalance,
+        // The margin account's own balance — what actually gets spent when you
+        // hit repay — not the wallet's, which is largely irrelevant here (these
+        // synthetic same-asset-leverage tokens rarely live in the wallet at all).
+        availableBalance: marginBalWad != null ? clampRepayDust(marginBalTokens) : 0,
       });
     } catch (error) {
       console.error("Error refreshing repayable stats:", error);
@@ -309,62 +320,93 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error('Please enter a valid repay amount');
       }
 
-      const [latestDebt, latestMarginBalWad] = await Promise.all([
-        MarginAccountService.getBorrowedTokenDebtWad(
+      try {
+        const [latestDebt, latestMarginBalWad] = await Promise.all([
+          MarginAccountService.getBorrowedTokenDebtWad(
+            marginAccount,
+            normalizeContractTokenSymbol(selectedRepayCurrency)
+          ),
+          MarginAccountService.getMarginAccountTokenBalanceWad(
+            marginAccount,
+            normalizeContractTokenSymbol(selectedRepayCurrency)
+          ),
+        ]);
+
+        const inputRepayWad = BigInt(Math.floor(repayAmount * 1_000_000)) * BigInt(1_000_000_000_000);
+        const debtWad = latestDebt.success && latestDebt.debtWad
+          ? BigInt(latestDebt.debtWad)
+          : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
+        // "Repay Max" (100%) targets what's actually spendable right now — the
+        // margin account's own balance plus a small wallet top-up allowance for
+        // interest-dust (float precision is fine here; it's only a ceiling, the
+        // real exactness guard is repayLoan's own margin-balance fallback below)
+        // — NOT the raw on-chain debt. Borrowed funds routed elsewhere (e.g. into
+        // a Farm pool) aren't held by the margin account, and the wallet top-up
+        // can't conjure funds the wallet also doesn't have, so blindly targeting
+        // the full debt just meant a silent partial repay for less than
+        // requested. A failed balance read (null) falls back to the full debt —
+        // same "assume repayable" behavior as before this cap existed.
+        // Otherwise cap the typed input at the debt (never overpay).
+        const walletTopUpAllowanceWad = BigInt(Math.floor(walletBalanceTokens * 1e7)) * BigInt(10 ** 11);
+        const spendableNowWad = latestMarginBalWad != null
+          ? BigInt(latestMarginBalWad) + walletTopUpAllowanceWad
+          : debtWad;
+        const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+          ? (spendableNowWad < debtWad ? spendableNowWad : debtWad)
+          : debtWad > BigInt(0)
+            ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
+            : inputRepayWad;
+
+        if (finalRepayWad <= BigInt(0)) {
+          throw new Error('Nothing to repay for this token');
+        }
+
+        const result = await MarginAccountService.repayLoan(
           marginAccount,
-          normalizeContractTokenSymbol(selectedRepayCurrency)
-        ),
-        MarginAccountService.getMarginAccountTokenBalanceWad(
-          marginAccount,
-          normalizeContractTokenSymbol(selectedRepayCurrency)
-        ),
-      ]);
+          normalizeContractTokenSymbol(selectedRepayCurrency),
+          finalRepayWad.toString()
+        );
 
-      const inputRepayWad = BigInt(Math.floor(repayAmount * 1_000_000)) * BigInt(1_000_000_000_000);
-      const debtWad = latestDebt.success && latestDebt.debtWad
-        ? BigInt(latestDebt.debtWad)
-        : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-      // "Repay Max" (100%) targets what's actually spendable right now — the
-      // margin account's own balance plus a small wallet top-up allowance for
-      // interest-dust (float precision is fine here; it's only a ceiling, the
-      // real exactness guard is repayLoan's own margin-balance fallback below)
-      // — NOT the raw on-chain debt. Borrowed funds routed elsewhere (e.g. into
-      // a Farm pool) aren't held by the margin account, and the wallet top-up
-      // can't conjure funds the wallet also doesn't have, so blindly targeting
-      // the full debt just meant a silent partial repay for less than
-      // requested. A failed balance read (null) falls back to the full debt —
-      // same "assume repayable" behavior as before this cap existed.
-      // Otherwise cap the typed input at the debt (never overpay).
-      const walletTopUpAllowanceWad = BigInt(Math.floor(repayStats.availableBalance * 1e7)) * BigInt(10 ** 11);
-      const spendableNowWad = latestMarginBalWad != null
-        ? BigInt(latestMarginBalWad) + walletTopUpAllowanceWad
-        : debtWad;
-      const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
-        ? (spendableNowWad < debtWad ? spendableNowWad : debtWad)
-        : debtWad > BigInt(0)
-          ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
-          : inputRepayWad;
+        if (!result.success) {
+          // A visible, hard-to-miss console entry regardless of the DevTools
+          // level/context filter — margin-utils.ts already logs its own
+          // failure detail deeper in the call chain, but that log has been
+          // reported as not showing up (likely filtered/hidden by DevTools),
+          // so this is a second, closer-to-the-surface copy of the SAME info,
+          // logged as the raw object (not stringified) so every property is
+          // inspectable even if some field doesn't serialize cleanly.
+          console.error('🔴 REPAY FAILED — raw result:', result);
+          throw new Error(result.error || 'Loan repayment failed (no further detail returned — see "🔴 REPAY FAILED" above in console)');
+        }
 
-      if (finalRepayWad <= BigInt(0)) {
-        throw new Error('Nothing to repay for this token');
+        // repaidAmountWad can be LESS than finalRepayWad if the interest
+        // top-up above needed the wallet and the wallet couldn't cover it
+        // (e.g. no trustline for this asset) — repayLoan falls back to a
+        // partial repay capped at what the margin account already held.
+        const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
+        return { hash: result.hash, repaidWad };
+      } catch (error: any) {
+        // Belt-and-suspenders: catches anything that escapes repayLoan's own
+        // try/catch (e.g. a rejected promise from getBorrowedTokenDebtWad/
+        // getMarginAccountTokenBalanceWad above, or Freighter itself
+        // throwing a non-Error value with no usable .message) and logs it
+        // as the raw object — un-stringified, so every property is
+        // inspectable even if some field doesn't serialize cleanly — before
+        // rethrowing with a message guaranteed to be non-empty, so the toast
+        // is never a bare, contentless fallback.
+        console.error('🔴 REPAY THREW — raw error:', error);
+        const detail =
+          typeof error?.message === 'string' && error.message
+            ? error.message
+            : (() => {
+                try {
+                  return JSON.stringify(error);
+                } catch {
+                  return String(error);
+                }
+              })();
+        throw new Error(detail || 'Repay threw with no message — see "🔴 REPAY THREW" in console.');
       }
-
-      const result = await MarginAccountService.repayLoan(
-        marginAccount,
-        normalizeContractTokenSymbol(selectedRepayCurrency),
-        finalRepayWad.toString()
-      );
-
-      if (!result.success) {
-        throw new Error(result.error || 'Loan repayment failed');
-      }
-
-      // repaidAmountWad can be LESS than finalRepayWad if the interest
-      // top-up above needed the wallet and the wallet couldn't cover it
-      // (e.g. no trustline for this asset) — repayLoan falls back to a
-      // partial repay capped at what the margin account already held.
-      const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
-      return { hash: result.hash, repaidWad };
     },
     onSuccess: async ({ hash, repaidWad }) => {
       if (hash) {

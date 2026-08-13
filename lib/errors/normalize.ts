@@ -32,6 +32,21 @@ function isCancel(text: string): boolean {
   );
 }
 
+/**
+ * Soroban's per-transaction resource/instruction budget was exceeded
+ * (`HostError: Error(Budget, ExceededLimit)`) — a network-level "this
+ * transaction is too complex" failure, completely unrelated to balance,
+ * health factor, or any other business-logic limit. Every normalizer below
+ * checks this FIRST, before any other pattern, so a budget error never gets
+ * mis-labeled as e.g. "max transferable: X" (a real prior bug — the message
+ * that check produces has nothing to do with why the tx actually failed).
+ */
+function isBudgetExceeded(text: string): boolean {
+  return text.includes('budget') || text.includes('exceededlimit');
+}
+
+const BUDGET_EXCEEDED_MESSAGE = 'Budget exceeded.';
+
 function isInsufficientBalance(text: string): boolean {
   return (
     text.includes('insufficient') ||
@@ -52,6 +67,25 @@ function isSorobanRpcError(text: string): boolean {
   );
 }
 
+/**
+ * Pulls a `Tx: <hash>` (or bare 64-char hex hash) out of a raw error string,
+ * if present. `isSorobanRpcError`'s generic fallback below otherwise
+ * discards the ENTIRE raw message — including a hash that was the only
+ * concrete, traceable-on-stellar.expert detail in it — leaving a boilerplate
+ * "Transaction failed. Please try again." with nothing to actually go on.
+ */
+function extractTxHash(text: string): string | null {
+  const labeled = text.match(/tx:\s*([a-f0-9]{64})/i);
+  if (labeled) return labeled[1];
+  const bare = text.match(/\b([a-f0-9]{64})\b/i);
+  return bare ? bare[1] : null;
+}
+
+function appendTxHash(message: string, raw: string): string {
+  const hash = extractTxHash(raw);
+  return hash ? `${message} (Tx: ${hash})` : message;
+}
+
 // ─── public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -67,7 +101,8 @@ export function normalizeContractError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
-  if (isSorobanRpcError(lower)) return fallback;
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  if (isSorobanRpcError(lower)) return appendTxHash(fallback, text);
 
   return text.length > 200 ? `${text.slice(0, 200)}...` : text || fallback;
 }
@@ -83,10 +118,11 @@ export function normalizeSupplyError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (isInsufficientBalance(lower))
     return `You cannot supply all your ${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
-    return `Supply failed for ${asset}. Please reduce the amount and try again.`;
+    return appendTxHash(`Supply failed for ${asset}. Please reduce the amount and try again.`, text);
 
   return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 }
@@ -102,10 +138,11 @@ export function normalizeWithdrawError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (isInsufficientBalance(lower))
     return `You cannot withdraw all your v${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
-    return `Withdraw failed for ${asset}. Please reduce the amount and try again.`;
+    return appendTxHash(`Withdraw failed for ${asset}. Please reduce the amount and try again.`, text);
 
   return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 }
@@ -116,6 +153,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
@@ -127,7 +165,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
     return 'Your wallet is missing the USDC trustline required to deposit BLUSDC. Open the Faucet, mint Blend USDC, then retry.';
   }
   if (lower.includes('hosterror'))
-    return 'Deposit failed on-chain. Please retry with a slightly smaller amount.';
+    return appendTxHash('Deposit failed on-chain. Please retry with a slightly smaller amount.', compact);
 
   return compact || 'Deposit and borrow failed. Please try again.';
 }
@@ -147,6 +185,7 @@ export function normalizeTransferCollateralError(
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
@@ -175,13 +214,13 @@ export function normalizeTransferCollateralError(
     }
     if (typeof opts.maxSafe === 'number' && opts.maxSafe > 0)
       return `Withdrawal failed on-chain. Max transferable right now: ${opts.maxSafe.toFixed(2)} ${asset}.`;
-    return 'Withdrawal failed on-chain. Please retry with a slightly smaller amount.';
+    return appendTxHash('Withdrawal failed on-chain. Please retry with a slightly smaller amount.', compact);
   }
 
   if (lower.includes('hosterror')) {
     if (opts.isFullWithdraw && typeof opts.maxExecutableWithdraw === 'number')
       return `Full withdrawal can fail due to on-chain rounding/state dust. Try up to ${opts.maxExecutableWithdraw.toFixed(2)} ${asset}.`;
-    return 'Transfer failed on-chain. Please retry in a moment.';
+    return appendTxHash('Transfer failed on-chain. Please retry in a moment.', compact);
   }
 
   return compact || 'Transfer failed. Please try again.';
@@ -192,6 +231,7 @@ export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(m)) return BUDGET_EXCEEDED_MESSAGE;
   if (m.includes('account not found') || m.includes('not found on network'))
     return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))

@@ -37,7 +37,7 @@ import {
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
-import { markTxSubmitted } from './tx-progress';
+import { markTxSubmitted, showTxStep } from './tx-progress';
 
 // Types
 /**
@@ -245,7 +245,7 @@ export class MarginAccountService {
     }
 
     if (text.includes('Budget') || text.includes('ExceededLimit')) {
-      return `Borrow simulation exceeded Soroban resource limits for ${tokenSymbol}. Please retry once; if it persists, reduce borrow size slightly or increase transaction resources.`;
+      return 'Budget exceeded.';
     }
 
     if (text.includes('InvalidAction') || text.includes('UnreachableCodeReached')) {
@@ -258,6 +258,19 @@ export class MarginAccountService {
   private static formatUserFacingContractError(raw: any, action: 'repay' | 'borrow' | 'withdraw' | 'generic' = 'generic'): string {
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
     const compact = text.split('\nEvent log')[0]?.trim() || text;
+
+    // Checked FIRST, before any action-specific branch below — a Soroban
+    // resource/budget overflow (`HostError: Error(Budget, ExceededLimit)`) is
+    // a "this transaction is too complex" network limit, unrelated to
+    // balance/health-factor/risk-engine business logic. Every action's
+    // generic `compact.includes('HostError')` fallback below would otherwise
+    // catch this too and mislabel it as e.g. "Withdraw transaction failed
+    // on-chain. Please retry with a smaller amount." — which then gets
+    // further mangled by a caller's maxSafe-based message, actively hiding
+    // the real (and differently-actionable) cause.
+    if (/budget|exceededlimit/i.test(compact)) {
+      return 'Budget exceeded.';
+    }
 
     if (action === 'repay') {
       if (
@@ -2559,6 +2572,13 @@ export class MarginAccountService {
       let finalRepayAmountWad = repayAmountWad;
       if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
         try {
+          // A second wallet signature is genuinely required here — Freighter
+          // only allows one operation per tx, so the top-up can't be folded
+          // into the repay call — but the progress modal was showing the
+          // SAME static "Repaying X" title for both, leaving the user with
+          // two unlabeled signature prompts and no idea a top-up was even
+          // happening. Label it explicitly.
+          showTxStep(`Step 1/2: Topping up ${(Number(interestTopUp) / 1e7).toFixed(7)} ${tokenSymbol} (interest accrued since you opened Repay)`);
           const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
           const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
             fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
@@ -2587,10 +2607,18 @@ export class MarginAccountService {
           if (topUpSubmit.status === 'PENDING') {
             const topUpFinal = await this.pollTransactionStatus(server, topUpSubmit.hash);
             if (topUpFinal.status !== 'SUCCESS') {
-              throw new Error(`Top-up failed on-chain with status: ${topUpFinal.status}`);
+              const reason = describeFailedTx(topUpFinal);
+              throw new Error(`Top-up failed on-chain with status: ${topUpFinal.status}${reason ? `: ${reason}` : ''}`);
             }
           } else {
-            throw new Error(`Top-up submission failed with status: ${topUpSubmit.status}`);
+            // Decode the real submission-time rejection (e.g. txBadSeq) —
+            // same reasoning as the repay leg's own ERROR-status branch below:
+            // a bare status string can't be told apart from a genuine
+            // "wallet can't cover this" failure, so the catch block right
+            // below always took the "fall back to a partial repay" path even
+            // when the real cause was a transient, retry-worthy race.
+            const resultCode = describeSendError(topUpSubmit);
+            throw new Error(`Top-up submission failed with status: ${topUpSubmit.status}${resultCode !== 'unknown' ? ` (${resultCode})` : ''}`);
           }
           // Refresh the sequence number for the follow-up repay transaction.
           currentAccount = await server.getAccount(userAddress.address);
@@ -2616,6 +2644,12 @@ export class MarginAccountService {
       }
 
       // ── Tx 2: repay ──────────────────────────────────────────────────────────
+      const repayAmountDisplay = (Number(finalRepayAmountWad) / 1e18).toFixed(7);
+      showTxStep(
+        interestTopUp > BigInt(0)
+          ? `Step 2/2: Repaying ${repayAmountDisplay} ${tokenSymbol}`
+          : `Repaying ${repayAmountDisplay} ${tokenSymbol}`
+      );
       const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -2712,9 +2746,23 @@ export class MarginAccountService {
           };
         }
       } else if (result.status === 'ERROR') {
+        // Bare "ERROR status" with no decoded reason meant a transient
+        // submission-time rejection here — most plausibly `txBadSeq` (this
+        // repay's sequence number was just re-read via getAccount() right
+        // after Tx1's top-up confirmed, which can still be stale on a
+        // different RPC node — the same multi-node sequence race documented
+        // on isFootprintRaceError) — never got a chance to retry: the outer
+        // withFootprintRaceRetry wrapper only retries when the error text
+        // matches a known race pattern, and a bare generic string matches
+        // none of them. Decoding the real result code (same pattern as the
+        // borrow/deposit flows above) lets that retry actually fire.
+        const resultCode = describeSendError(result);
+        console.error(`❌ Repay transaction failed immediately with ERROR status (${resultCode})`);
         return {
           success: false,
-          error: 'Repay transaction failed with ERROR status'
+          error: resultCode !== 'unknown'
+            ? `Repay transaction failed with result: ${resultCode}`
+            : 'Repay transaction failed with ERROR status',
         };
       } else {
         return {

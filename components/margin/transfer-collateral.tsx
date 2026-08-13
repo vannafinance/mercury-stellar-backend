@@ -34,8 +34,10 @@ const BORROW_DUST_USD = 0.01;
 // which costs ~5 XLM in base reserve, plus Soroban storage TTL/rent and
 // b_rate→underlying rounding dust. A 5 XLM buffer was too tight in
 // practice (4 XLM withdraws still failed on-chain); bumping to 8 keeps
-// the margin account safely above all on-chain minimums.
-const XLM_MARGIN_WITHDRAW_BUFFER = 5;
+// the margin account safely above all on-chain minimums. Applies to every
+// WB XLM withdrawal, not just debt-free accounts — this is the margin
+// account's OWN on-chain float, unrelated to the health-factor check below.
+const XLM_MARGIN_WITHDRAW_BUFFER = 8;
 const LIQUIDATION_THRESHOLD = 1.1;
 
 /**
@@ -159,9 +161,16 @@ export const TransferCollateral = () => {
   const maxExecutableWithdraw = (() => {
     if (selectedTransferType !== "WB") return maxTransferableBalance;
     const token = normalizeContractTokenSymbol(selectedCurrency);
-    // In practice, exact full XLM collateral withdraw can fail on-chain due to
-    // state/rounding drift. Keep a small operational buffer for WB XLM when no debt.
-    if (token === "XLM" && !hasMeaningfulDebt) {
+    // Exact full XLM collateral withdraw can fail on-chain due to state/
+    // rounding drift — keep a small operational buffer for WB XLM. This is
+    // the margin account's OWN on-chain reserve requirement (trustlines +
+    // persistent Soroban storage), completely separate from the
+    // health-factor check `maxRiskSafeWithdraw` already applies — so it must
+    // apply regardless of whether the account carries any debt. Previously
+    // gated behind `!hasMeaningfulDebt`, which let 100%/Max fill in the full
+    // margin balance for any account WITH debt, always failing on-chain by
+    // exactly this buffer amount.
+    if (token === "XLM") {
       return Math.max(
         0,
         Math.min(maxRiskSafeWithdraw, maxTransferableBalance - XLM_MARGIN_WITHDRAW_BUFFER)
