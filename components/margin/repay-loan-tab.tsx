@@ -57,16 +57,21 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
 
 /**
  * Repay tab for paying down an outstanding margin loan in a chosen asset. Shows
- * the net outstanding debt and the wallet's available balance (both in token
+ * the net REPAYABLE amount and the wallet's available balance (both in token
  * units with a live USD line), and a form with quick-% chips and a free-text
- * amount. Repayment runs through a React Query mutation that, before signing,
- * re-reads the on-chain debt and caps the WAD amount at that real debt. 100%
- * targets the FULL on-chain debt (not just the smart account's own spendable
- * balance) — {@link MarginAccountService.repayLoan} tops up any shortfall
- * from the connected wallet before repaying, so a same-asset leverage
- * position's accrued-interest sliver gets repaid too instead of being left
- * behind as unrepayable dust. State is reset on wallet disconnect, and the
- * preview (before → after debt / HF / liquidation buffer) is rendered by
+ * amount. "Net Outstanding Amount to Repay" — and what 100% fills in — is the
+ * on-chain debt capped at what's actually spendable right now (margin account
+ * balance + wallet balance), NOT the raw debt: funds routed elsewhere (e.g.
+ * deployed into a Farm pool) aren't held by the margin account, and
+ * {@link MarginAccountService.repayLoan}'s wallet top-up can't cover that gap
+ * either (synthetic same-asset-leverage tokens like BLUSDC never separately
+ * land in the wallet) — showing the raw debt as "repayable" there just meant
+ * requesting more than could actually be repaid, landing as a silent partial
+ * repay. The mutation re-reads both figures fresh before signing (see
+ * `refreshRepayableStats`/the mutationFn) and caps the WAD amount accordingly;
+ * repayLoan's own margin-balance fallback is the final exactness guard for any
+ * remaining accrued-interest sliver. State is reset on wallet disconnect, and
+ * the preview (before → after debt / HF / liquidation buffer) is rendered by
  * {@link RepayPreviewSection}.
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
@@ -124,9 +129,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
+      setMarginAccountBalanceWad('0');
     }
   }, [globalIsConnected, globalAddress]);
   const [currentDebtWad, setCurrentDebtWad] = useState<string>('0');
+  // Margin account's OWN spendable balance of the selected repay currency, in
+  // WAD — used to cap 100%/the displayed "repayable" figure so borrowed funds
+  // deployed elsewhere (e.g. into a Farm pool) aren't shown as repayable.
+  const [marginAccountBalanceWad, setMarginAccountBalanceWad] = useState<string>('0');
 
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
@@ -186,12 +196,51 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   };
 
-  const refreshSelectedWalletBalance = async (address: string, selectedToken: string) => {
-    const walletBalance = await getSelectedWalletBalance(address, selectedToken);
-    setRepayStats(prev => ({
-      ...prev,
-      availableBalance: walletBalance,
-    }));
+  // Debt, margin-account balance, and wallet balance for the CURRENT
+  // `selectedRepayCurrency`, fetched together so "Net Outstanding Amount to
+  // Repay" never mixes a fresh debt read with a stale balance from whatever
+  // currency was selected a moment ago.
+  //
+  // The displayed/repayable figure is capped at what's actually spendable
+  // right now (margin account balance + wallet balance) — NOT the raw debt.
+  // Borrowed funds routed elsewhere (e.g. deployed into a Farm pool) are no
+  // longer held by the margin account, and repayLoan's wallet top-up can't
+  // conjure funds the wallet also doesn't have (synthetic same-asset-leverage
+  // tokens like BLUSDC never separately land in the wallet) — so showing the
+  // raw debt as "repayable" and letting 100% target it just meant a silent
+  // partial repay for less than what the UI promised. Once more of the debt
+  // becomes spendable again (e.g. after removing it from that Farm pool),
+  // this recomputes and the previously-"stuck" portion reappears here.
+  const refreshRepayableStats = async (marginAccountAddress: string, walletAddress: string) => {
+    try {
+      const normalizedSymbol = normalizeContractTokenSymbol(selectedRepayCurrency);
+      const [debtResult, marginBalWad, walletBalance] = await Promise.all([
+        MarginAccountService.getBorrowedTokenDebtWad(marginAccountAddress, normalizedSymbol),
+        MarginAccountService.getMarginAccountTokenBalanceWad(marginAccountAddress, normalizedSymbol),
+        getSelectedWalletBalance(walletAddress, selectedRepayCurrency),
+      ]);
+
+      const trueDebtTokens = debtResult.success && debtResult.debtWad
+        ? clampRepayDust(parseFloat(debtResult.amount || '0') || 0)
+        : 0;
+      setCurrentDebtWad(debtResult.success && debtResult.debtWad ? debtResult.debtWad : '0');
+      setMarginAccountBalanceWad(marginBalWad ?? '0');
+
+      // A failed margin-account-balance read (marginBalWad === null) falls back
+      // to NOT capping — same "assume repayable" fallback repayLoan itself uses
+      // when this read fails — rather than showing a scary false "$0 repayable".
+      const marginBalTokens = marginBalWad != null ? parseFloat(marginBalWad) / 1e18 : trueDebtTokens;
+      const repayableTokens = marginBalWad != null
+        ? clampRepayDust(Math.min(trueDebtTokens, marginBalTokens + walletBalance))
+        : trueDebtTokens;
+
+      setRepayStats({
+        netOutstandingAmountToPay: repayableTokens,
+        availableBalance: walletBalance,
+      });
+    } catch (error) {
+      console.error("Error refreshing repayable stats:", error);
+    }
   };
 
   // Load user data and borrowed balances on mount
@@ -206,12 +255,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
-
-            // Get borrowed balances
-            await refreshSelectedTokenDebt(account.address);
-
-            // Get selected token wallet balance
-            await refreshSelectedWalletBalance(address.address, selectedRepayCurrency);
+            await refreshRepayableStats(account.address, address.address);
           }
         }
       } catch (error) {
@@ -222,75 +266,26 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     loadUserData();
   }, []);
 
-  // Refresh borrowed balances for selected currency
-  const refreshSelectedTokenDebt = async (marginAccountAddress: string) => {
-    try {
-      const debtResult = await MarginAccountService.getBorrowedTokenDebtWad(
-        marginAccountAddress,
-        normalizeContractTokenSymbol(selectedRepayCurrency)
-      );
-
-      if (debtResult.success && debtResult.debtWad) {
-        // Show the real residual (even sub-cent dust) — adaptive formatting keeps
-        // it readable and the USD line renders "<$0.01" rather than a fake "$0.00".
-        const outstanding = clampRepayDust(parseFloat(debtResult.amount || '0') || 0);
-        setCurrentDebtWad(debtResult.debtWad);
-        setRepayStats(prev => ({
-          ...prev,
-          netOutstandingAmountToPay: outstanding,
-        }));
-      } else {
-        setCurrentDebtWad('0');
-        setRepayStats(prev => ({
-          ...prev,
-          netOutstandingAmountToPay: 0,
-        }));
-      }
-    } catch (error) {
-      console.error("Error refreshing balances:", error);
-    }
-  };
-
   // Refresh when currency changes
   useEffect(() => {
-    if (marginAccount) {
-      refreshSelectedTokenDebt(marginAccount);
+    if (marginAccount && userAddress) {
+      refreshRepayableStats(marginAccount, userAddress);
     }
-  }, [selectedRepayCurrency, marginAccount]);
+  }, [selectedRepayCurrency, marginAccount, userAddress]);
 
-  useEffect(() => {
-    if (userAddress) {
-      refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
-    }
-  }, [selectedRepayCurrency, userAddress]);
-
-  // Handler for percentage click
+  // Handler for percentage click. All percentages — including 100% — are
+  // fractions of `repayStats.netOutstandingAmountToPay`, which is already the
+  // repayable-right-now figure (debt capped at margin-account + wallet
+  // balance; see {@link refreshRepayableStats}), not the raw on-chain debt.
   const handlePercentageClick = (item: number) => {
     setSelectedRepayPercentage(item);
 
-    if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
-      const fullAmount = parseFloat(currentDebtWad) / 1e18;
-      const safeFullAmount = Number.isFinite(fullAmount) ? fullAmount : 0;
-      // 100% fills in the FULL on-chain debt, not just what the smart account
-      // currently holds spendable — repayLoan() tops up any shortfall from
-      // the wallet before repaying (see this file's top doc comment), so
-      // there's no need to pre-cap to spendableInMargin here anymore. Doing
-      // so used to leave accrued-interest dust permanently unrepayable: 100%
-      // would show 0 (or a stale partial figure) once the account's spendable
-      // balance dropped near zero from an earlier repay, even though the
-      // wallet held plenty to cover the tiny remaining gap.
-      //
-      // Below-a-cent dust is still zeroed — same $0.01 threshold the "Net
-      // Outstanding Amount to Repay" stat tile uses — so 100% doesn't fill in
-      // a confusing non-zero amount the stat disagrees with.
-      const usdEquiv = selectedTokenPrice > 0 ? safeFullAmount * selectedTokenPrice : safeFullAmount;
-      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(safeFullAmount);
-      setRepayInput(amountToInputString(clamped));
-      return;
-    }
-
-    // Calculate amount based on percentage — keep 7dp so sub-cent debt survives.
-    const calculatedAmount = clampRepayDust((repayStats.netOutstandingAmountToPay * item) / 100);
+    // Below-a-cent dust is zeroed — same $0.01 threshold the "Net Outstanding
+    // Amount to Repay" stat tile uses — so 100% doesn't fill in a confusing
+    // non-zero amount the stat disagrees with.
+    const rawAmount = (repayStats.netOutstandingAmountToPay * item) / 100;
+    const usdEquiv = selectedTokenPrice > 0 ? rawAmount * selectedTokenPrice : rawAmount;
+    const calculatedAmount = usdEquiv < 0.01 ? 0 : clampRepayDust(rawAmount);
     setRepayInput(amountToInputString(calculatedAmount));
   };
 
@@ -314,24 +309,38 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error('Please enter a valid repay amount');
       }
 
-      const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
-        marginAccount,
-        normalizeContractTokenSymbol(selectedRepayCurrency)
-      );
+      const [latestDebt, latestMarginBalWad] = await Promise.all([
+        MarginAccountService.getBorrowedTokenDebtWad(
+          marginAccount,
+          normalizeContractTokenSymbol(selectedRepayCurrency)
+        ),
+        MarginAccountService.getMarginAccountTokenBalanceWad(
+          marginAccount,
+          normalizeContractTokenSymbol(selectedRepayCurrency)
+        ),
+      ]);
 
       const inputRepayWad = BigInt(Math.floor(repayAmount * 1_000_000)) * BigInt(1_000_000_000_000);
       const debtWad = latestDebt.success && latestDebt.debtWad
         ? BigInt(latestDebt.debtWad)
         : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-      // "Repay Max" (100%) targets the full on-chain debt; otherwise cap the input
-      // at the debt. NOT further capped to the smart account's spendable token
-      // balance here — MarginAccountService.repayLoan tops up any shortfall
-      // from the connected wallet before repaying, so requesting the full debt
-      // (even when it exceeds what the account currently holds, e.g. accrued
-      // same-asset-leverage interest) is repaid in full instead of being
-      // silently capped down and left as unrepayable dust.
+      // "Repay Max" (100%) targets what's actually spendable right now — the
+      // margin account's own balance plus a small wallet top-up allowance for
+      // interest-dust (float precision is fine here; it's only a ceiling, the
+      // real exactness guard is repayLoan's own margin-balance fallback below)
+      // — NOT the raw on-chain debt. Borrowed funds routed elsewhere (e.g. into
+      // a Farm pool) aren't held by the margin account, and the wallet top-up
+      // can't conjure funds the wallet also doesn't have, so blindly targeting
+      // the full debt just meant a silent partial repay for less than
+      // requested. A failed balance read (null) falls back to the full debt —
+      // same "assume repayable" behavior as before this cap existed.
+      // Otherwise cap the typed input at the debt (never overpay).
+      const walletTopUpAllowanceWad = BigInt(Math.floor(repayStats.availableBalance * 1e7)) * BigInt(10 ** 11);
+      const spendableNowWad = latestMarginBalWad != null
+        ? BigInt(latestMarginBalWad) + walletTopUpAllowanceWad
+        : debtWad;
       const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
-        ? debtWad
+        ? (spendableNowWad < debtWad ? spendableNowWad : debtWad)
         : debtWad > BigInt(0)
           ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
           : inputRepayWad;
@@ -377,9 +386,8 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       qc.invalidateQueries({ queryKey: ['margin'] });
 
       try {
-        await refreshSelectedTokenDebt(marginAccount);
+        await refreshRepayableStats(marginAccount, userAddress);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
-        await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
       } catch (error) {
         console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }

@@ -817,14 +817,44 @@ export const LeverageAssetsTab = () => {
         const depositHashes: string[] = [];
         let borrowHash = "";
 
+        // Computed up front (not just inside the atomic branch below) so the
+        // step message can state the ACTUAL borrow amount instead of trailing
+        // off after "and borrowing" with nothing after it. Kept separate from
+        // `borrowOptions` below, which must stay undefined for the plain
+        // same-asset case so MarginAccountService derives it from `multiplier`
+        // itself — this is a display-only preview of that same math.
+        const atomicItem = wbDeposits[0];
+        const atomicDisplayBorrow = canUseAtomic && multiplier > 1
+          ? (() => {
+              if (isDualBorrow && borrowState!.items.length > 0) {
+                const b0 = borrowState!.items[0];
+                return { amountTokens: parseFloat(b0.assetData.amount) || 0, displaySymbol: b0.assetData.asset };
+              }
+              if (isCrossAsset) {
+                const depositUsd = atomicItem.amount * (MB_TOKEN_PRICES[atomicItem.asset] ?? 1);
+                const borrowUsd = depositUsd * (multiplier - 1);
+                const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                return {
+                  amountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
+                  displaySymbol: borrowToken || atomicItem.asset,
+                };
+              }
+              return { amountTokens: atomicItem.amount * (multiplier - 1), displaySymbol: atomicItem.asset };
+            })()
+          : undefined;
+
         showStep(
           canUseAtomic
-            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing" : ""}`
+            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${atomicItem.amount.toFixed(2)} ${atomicItem.asset}${
+                atomicDisplayBorrow
+                  ? ` and borrowing ${atomicDisplayBorrow.amountTokens.toFixed(2)} ${atomicDisplayBorrow.displaySymbol}`
+                  : ""
+              }`
             : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}`
         );
 
         if (canUseAtomic) {
-          const item = wbDeposits[0];
+          const item = atomicItem;
           // For dual borrow, use the first item's explicit amount from the DualBorrow state.
           // For cross-asset single borrow, convert the leverage USD target into borrow token units.
           // Same-asset single borrow leaves options undefined so MarginAccountService uses the multiplier.

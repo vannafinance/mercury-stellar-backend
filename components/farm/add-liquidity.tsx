@@ -341,8 +341,28 @@ export const AddLiquidity = memo(function AddLiquidity() {
 
   const qc = useQueryClient();
 
+  // The pool's own LP-share balance for this margin account — used to work
+  // out how many LP tokens an AddLiquidity call actually minted (that value
+  // isn't in the tx result itself, so it's read as a before/after delta).
+  const fetchPoolLpBalance = useCallback(async (): Promise<number> => {
+    const raw = isSoroswapPool
+      ? await SoroswapService.getLpBalance(
+          marginAccountAddress!,
+          matchedSoroswapPoolConfig?.trackingSymbol,
+          matchedSoroswapPoolConfig?.pairAddress,
+        )
+      : await AquariusService.getUserLpBalance(
+          marginAccountAddress!,
+          matchedAquariusPoolConfig?.poolAddress ?? CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL,
+          tokenA,
+          tokenB,
+        );
+    return parseFloat(raw) || 0;
+  }, [isSoroswapPool, marginAccountAddress, matchedSoroswapPoolConfig, matchedAquariusPoolConfig, tokenA, tokenB]);
+
   const addLiquidityMutation = useMutation({
     mutationFn: async ({ amtA, amtB }: { amtA: number; amtB: number }) => {
+      const preLp = await fetchPoolLpBalance().catch(() => 0);
       const result = isSoroswapPool
         ? await SoroswapService.addLiquidity(
             userAddress!, marginAccountAddress!, amtA, amtB,
@@ -352,7 +372,18 @@ export const AddLiquidity = memo(function AddLiquidity() {
       if (!result.success) {
         throw new Error(result.error ?? "Add liquidity failed");
       }
-      return { ...result, amtA, amtB };
+
+      // Give the ledger a moment to settle, then poll for the LP balance to
+      // actually move — same retry shape as refreshDexMarginBalances below.
+      let lpReceived = 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const postLp = await fetchPoolLpBalance().catch(() => preLp);
+        lpReceived = postLp - preLp;
+        if (lpReceived > 0) break;
+      }
+
+      return { ...result, amtA, amtB, lpReceived };
     },
     onMutate: ({ amtA, amtB }) => {
       setTxStatus("loading");
@@ -360,7 +391,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
       setTxHash("");
       showTxStep(`Adding ${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenBLabel} liquidity to ${isSoroswapPool ? "Soroswap" : "Aquarius"}`);
     },
-    onSuccess: ({ hash, amtA, amtB }) => {
+    onSuccess: ({ hash, amtA, amtB, lpReceived }) => {
       setTxStatus("success");
       setTxHash(hash ?? "");
       appendFarmHistory({
@@ -368,7 +399,7 @@ export const AddLiquidity = memo(function AddLiquidity() {
         poolKey: buildFarmPoolKey(tokenA, tokenB),
         marginAccountAddress: marginAccountAddress!,
         action: "add",
-        amountDisplay: `${amtA.toFixed(2)} ${tokenA} + ${amtB.toFixed(2)} ${tokenBLabel}`,
+        amountDisplay: lpReceived > 0 ? `${lpReceived.toFixed(4)} LP` : "Liquidity added",
         txHash: hash ?? "",
       });
       showTxSuccess("Liquidity added!");

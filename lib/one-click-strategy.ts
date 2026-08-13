@@ -11,6 +11,16 @@ import { CONTRACT_ADDRESSES } from './stellar-utils';
  * silently added liquidity to the wrong pool. */
 const isAquarius = (poolProtocol: string): boolean => poolProtocol.toLowerCase().includes('aquarius');
 
+/** Current LP-share balance for the fixed XLM/USDC pool this file's LP flows
+ * use — read before/after AddLiquidity to work out how many LP tokens a call
+ * actually minted, since that value isn't in the tx result itself. */
+async function fetchXlmUsdcLpBalance(poolProtocol: string, marginAccountAddress: string): Promise<number> {
+  const raw = isAquarius(poolProtocol)
+    ? await AquariusService.getUserLpBalance(marginAccountAddress, CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL, 'XLM', 'USDC')
+    : await SoroswapService.getLpBalance(marginAccountAddress);
+  return parseFloat(raw) || 0;
+}
+
 /** Protocol-aware "add liquidity from the margin account" — both pools here
  * are the XLM/USDC pair, so tokenA/tokenB are fixed for the Aquarius call. */
 async function addLpLiquidity(
@@ -20,6 +30,7 @@ async function addLpLiquidity(
   xlmAmt: number,
   usdcAmt: number,
 ): Promise<{ success: boolean; hash?: string; error?: string }> {
+  const preLp = await fetchXlmUsdcLpBalance(poolProtocol, marginAccountAddress).catch(() => 0);
   const result = isAquarius(poolProtocol)
     ? await AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt)
     : await SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
@@ -30,12 +41,22 @@ async function addLpLiquidity(
   // helper is the single chokepoint both paths route through. (Farm's direct
   // Add Liquidity form already does this itself; see components/farm/add-liquidity.tsx.)
   if (result.success) {
+    // LP tokens minted aren't in the tx result — read the before/after balance
+    // delta instead, same approach as components/farm/add-liquidity.tsx.
+    let lpReceived = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const postLp = await fetchXlmUsdcLpBalance(poolProtocol, marginAccountAddress).catch(() => preLp);
+      lpReceived = postLp - preLp;
+      if (lpReceived > 0) break;
+    }
+
     appendFarmHistory({
       protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
       poolKey: buildFarmPoolKey('XLM', 'USDC'),
       marginAccountAddress,
       action: 'add',
-      amountDisplay: `${xlmAmt.toFixed(2)} XLM + ${usdcAmt.toFixed(2)} USDC`,
+      amountDisplay: lpReceived > 0 ? `${lpReceived.toFixed(4)} LP` : 'Liquidity added',
       txHash: result.hash ?? '',
     });
   }
@@ -386,7 +407,7 @@ export async function executeOneClickStrategy(
         const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
         const half = collateralAmount / 2;
         const other = half * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
-        step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} → ${otherAsset}`);
+        step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} for ${otherAsset}`);
         const sw = await swapLpAsset(poolProtocol, userAddress, marginAccountAddress, collateralAsset, half);
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
         const xlmAmt = collateralAsset === 'XLM' ? half : other;
@@ -405,7 +426,7 @@ export async function executeOneClickStrategy(
       // comment on BlendTransactionResult).
       let depositToBlendKnownSequence = depositResult.nextSequence;
       if (scenario === 'cross-asset-swap' && poolToken !== collateralAsset) {
-        step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} → ${poolToken} via Soroswap`);
+        step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} for ${poolToken} via Soroswap`);
         const sw = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );
@@ -644,7 +665,7 @@ export async function executeOneClickStrategy(
       }
 
       if (scenario === 'cross-asset-swap') {
-        step(`Step 3/4: Swapping ${collateralAmount.toFixed(2)} ${collateralAsset} → ${poolToken} via Soroswap`);
+        step(`Step 3/4: Swapping ${collateralAmount.toFixed(2)} ${collateralAsset} for ${poolToken} via Soroswap`);
         const swapResult = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );

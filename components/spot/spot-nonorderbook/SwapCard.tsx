@@ -667,7 +667,7 @@ export const SwapCard = ({
       setTxStatus("loading");
       setTxError("");
       setTxHash("");
-      showTxStep(`Swapping ${amountIn} ${displaySymbolOf(tokenIn)} → ${displaySymbolOf(tokenOut)}`);
+      showTxStep(`Swapping ${amountIn} ${displaySymbolOf(tokenIn)} for ${displaySymbolOf(tokenOut)}`);
     },
     onSuccess: (result) => {
       setTxStatus("success");

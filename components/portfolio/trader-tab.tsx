@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { Positionstable } from "@/components/margin/positions-table";
 import { FarmSection } from "./farm-section";
@@ -141,7 +142,15 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
 
 export const TraderTab = () => {
   const { isDark } = useTheme();
+  const router = useRouter();
   const [activeSubTab, setActiveSubTab] = useState<TradeTab>("Margin");
+
+  // Repay/Open-Position live on the Margin page's Leverage panel, not here —
+  // hand off via a query param the Margin page reads on mount to switch to
+  // its Repay tab pre-filled with this asset (see app/margin/page.tsx).
+  const handleRepayClick = (asset?: string) => {
+    router.push(asset ? `/margin?repay=${encodeURIComponent(asset)}` : "/margin");
+  };
 
   const subTabBase = `flex-1 sm:flex-none sm:w-[101px] rounded-[8px] px-[8px] sm:px-[12px] py-[10px] text-[11px] sm:text-[12px] font-semibold cursor-pointer transition text-center`;
   const subTabActive = "bg-[#f1ebfd] text-[#703ae6]";
@@ -173,7 +182,7 @@ export const TraderTab = () => {
           <MarginStatsGrid isDark={isDark} />
 
           {/* Positions Table — real on-chain margin positions */}
-          <Positionstable />
+          <Positionstable onRepayClick={handleRepayClick} onOpenPositionClick={() => router.push("/margin")} />
         </div>
       ) : activeSubTab === "Farm" ? (
         <FarmSection />
