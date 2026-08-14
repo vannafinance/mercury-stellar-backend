@@ -47,3 +47,16 @@ export function validateAmountChange(raw: string): string | null {
   }
   return null;
 }
+
+/**
+ * Convert a validated decimal amount string to 18-decimal WAD exactly.
+ * Keeping this string-based avoids floating-point rounding and preserves the
+ * seventh Stellar decimal (the repay form previously truncated it to 6dp).
+ */
+export function decimalAmountToWad(value: string): bigint {
+  if (!value || !isValidAmountInput(value) || value === ".") return BigInt(0);
+  const [wholeRaw = "0", fractionRaw = ""] = value.split(".");
+  const whole = wholeRaw || "0";
+  const fraction = fractionRaw.padEnd(18, "0").slice(0, 18);
+  return BigInt(whole) * BigInt("1000000000000000000") + BigInt(fraction || "0");
+}

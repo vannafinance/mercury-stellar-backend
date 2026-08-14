@@ -11,6 +11,10 @@ import { useMarginHistory } from "@/hooks/use-margin";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { formatTokenAmount, formatUsdValue } from "@/lib/utils/format-amount";
+import {
+  buildNetBorrowCashByToken,
+  calculateAccruedBorrowInterest,
+} from "@/lib/margin-position-attribution";
 
 interface PositionstableProps {
   /** Fired from a row's Repay button; passes the borrowed asset to prefill the Repay tab. */
@@ -53,6 +57,50 @@ const formatTokenName = (asset: string): string => {
 // Delegate to the shared adaptive formatter: "$0.00" for true zero, "<$0.01" for
 // sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
 const formatInterestUsd = (value: number): string => formatUsdValue(value);
+
+const BorrowInterestTooltip = ({
+  asset,
+  amount,
+  usdValue,
+  known,
+  isDark,
+}: {
+  asset: string;
+  amount: number;
+  usdValue: number;
+  known: boolean;
+  isDark: boolean;
+}) => {
+  const content = known
+    ? `Interest accrued till date: ${formatTokenAmount(amount)} ${formatTokenName(asset)} (≈ ${formatUsdValue(usdValue)})`
+    : "Accrued interest is unavailable until this asset's original on-chain borrow history is indexed.";
+
+  return (
+    <span className="group relative inline-flex shrink-0 items-center">
+      <button
+        type="button"
+        aria-label={content}
+        className={`flex h-[15px] w-[15px] items-center justify-center rounded-full border text-[9px] font-bold leading-none outline-none transition-colors ${
+          isDark
+            ? "border-[#555555] text-[#A7A7A7] hover:border-[#8B5CF6] hover:text-white focus-visible:border-[#8B5CF6]"
+            : "border-[#B8B8B8] text-[#777777] hover:border-[#703AE6] hover:text-[#703AE6] focus-visible:border-[#703AE6]"
+        }`}
+      >
+        i
+      </button>
+      <span
+        role="tooltip"
+        className={`pointer-events-none absolute right-0 top-[22px] z-50 w-max max-w-[260px] rounded-lg border px-3 py-2 text-[11px] font-medium leading-[1.45] opacity-0 shadow-xl transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 xl:left-[22px] xl:right-auto xl:top-1/2 xl:-translate-y-1/2 ${
+          isDark
+            ? "border-[#3A3A3A] bg-[#252525] text-[#E5E5E5]"
+            : "border-[#E5E7EB] bg-white text-[#374151]"
+        }`}
+      >
+        {content}
+      </span>
+    </span>
+  );
+};
 
 /**
  * Collateral cell for a borrow-only position row — a borrow that is
@@ -175,19 +223,9 @@ export const Positionstable = ({
     }
 
     // ── Step 3: Build per-token interest principal from history ──────────────
-    const netPrincipalByToken: Record<string, number> = {};
-    if (!historyInitialLoading) {
-      for (const item of history) {
-        const canonical = canonicalToken(item.asset || '');
-        const amt = parseFloat(String(item.amount ?? '0')) || 0;
-        if (!Number.isFinite(amt) || amt <= 0) continue;
-        if (item.type === 'borrow') {
-          netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) + amt;
-        } else if (item.type === 'repay') {
-          netPrincipalByToken[canonical] = (netPrincipalByToken[canonical] ?? 0) - amt;
-        }
-      }
-    }
+    const netBorrowCashByToken = historyInitialLoading
+      ? new Map<string, number>()
+      : buildNetBorrowCashByToken(history);
 
     // ── Step 4: One combined row for the whole margin account ────────────────
     // Vanna's margin accounts are cross-collateralized — one shared Health
@@ -218,11 +256,22 @@ export const Positionstable = ({
       c.percentage = totalCollateralUsd > 0 ? Math.round((c.usdValue / totalCollateralUsd) * 100) : 0;
     });
 
-    const borrowedArray: Position["borrowed"] = borrowEntries.map(([, entry]) => ({
-      assetData: { asset: entry.token, amount: formatTokenAmount(parseFloat(entry.balance.amount || '0')) },
-      percentage: 0,
-      usdValue: parseFloat(entry.balance.usdValue || '0'),
-    }));
+    const borrowedArray: Position["borrowed"] = borrowEntries.map(([canonical, entry]) => {
+      const currentDebt = parseFloat(entry.balance.amount || '0');
+      const interest = calculateAccruedBorrowInterest(
+        currentDebt,
+        netBorrowCashByToken.get(canonical),
+      );
+      const price = tokenPrices[canonical] ?? 1;
+      return {
+        assetData: { asset: entry.token, amount: formatTokenAmount(currentDebt) },
+        percentage: 0,
+        usdValue: parseFloat(entry.balance.usdValue || '0'),
+        accruedInterestAmount: interest ?? 0,
+        accruedInterestUsd: (interest ?? 0) * price,
+        isAccruedInterestKnown: interest !== null,
+      };
+    });
     const totalBorrowUsd = borrowedArray.reduce((sum, b) => sum + b.usdValue, 0);
     borrowedArray.forEach((b) => {
       b.percentage = totalBorrowUsd > 0 ? Math.round((b.usdValue / totalBorrowUsd) * 100) : 0;
@@ -243,13 +292,14 @@ export const Positionstable = ({
     let interestAccruedUsd = 0;
     if (!historyInitialLoading) {
       for (const [canonical, entry] of borrowEntries) {
-        if (!Object.prototype.hasOwnProperty.call(netPrincipalByToken, canonical)) continue;
         const currentAmt = parseFloat(entry.balance.amount || '0');
-        const principalAmt = Math.max(0, netPrincipalByToken[canonical]);
-        const diff = currentAmt - principalAmt;
-        if (diff > 0) {
+        const interest = calculateAccruedBorrowInterest(
+          currentAmt,
+          netBorrowCashByToken.get(canonical),
+        );
+        if (interest !== null && interest > 0) {
           const price = tokenPrices[canonical] ?? 1;
-          interestAccruedUsd += diff * price;
+          interestAccruedUsd += interest * price;
         }
       }
     }
@@ -507,12 +557,21 @@ export const Positionstable = ({
               />
               <div className="flex flex-col gap-[1px]">
                 <div
-                  className={`text-[13px] font-medium leading-tight ${
+                  className={`flex items-center gap-1 text-[13px] font-medium leading-tight ${
                     isDark ? "text-white" : ""
                   }`}
                 >
-                  {borrowedItem.assetData.amount}{" "}
-                  {formatTokenName(borrowedItem.assetData.asset)}
+                  <span>
+                    {borrowedItem.assetData.amount}{" "}
+                    {formatTokenName(borrowedItem.assetData.asset)}
+                  </span>
+                  <BorrowInterestTooltip
+                    asset={borrowedItem.assetData.asset}
+                    amount={borrowedItem.accruedInterestAmount ?? 0}
+                    usdValue={borrowedItem.accruedInterestUsd ?? 0}
+                    known={borrowedItem.isAccruedInterestKnown === true}
+                    isDark={isDark}
+                  />
                 </div>
                 <div
                   className={`text-[11px] font-medium ${
@@ -677,8 +736,15 @@ export const Positionstable = ({
                       className="rounded-full shrink-0"
                     />
                     <div>
-                      <div className={`text-[12px] font-medium leading-tight ${isDark ? "text-white" : ""}`}>
-                        {borrowedItem.assetData.amount} {formatTokenName(borrowedItem.assetData.asset)}
+                      <div className={`flex items-center gap-1 text-[12px] font-medium leading-tight ${isDark ? "text-white" : ""}`}>
+                        <span>{borrowedItem.assetData.amount} {formatTokenName(borrowedItem.assetData.asset)}</span>
+                        <BorrowInterestTooltip
+                          asset={borrowedItem.assetData.asset}
+                          amount={borrowedItem.accruedInterestAmount ?? 0}
+                          usdValue={borrowedItem.accruedInterestUsd ?? 0}
+                          known={borrowedItem.isAccruedInterestKnown === true}
+                          isDark={isDark}
+                        />
                       </div>
                       <div className="flex items-center gap-1">
                         <span className={`text-[10px] ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>

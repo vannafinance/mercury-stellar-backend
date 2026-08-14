@@ -20,7 +20,7 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 import { useMutationToast } from "@/hooks/use-mutation-toast";
 import toast from "react-hot-toast";
 import { normalizeRepayError } from "@/lib/errors/normalize";
-import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+import { decimalAmountToWad, validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
 
 /** Format a numeric amount for the editable input: clean string, no trailing
  *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
@@ -253,9 +253,20 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = validateAmountChange(e.target.value);
     if (sanitized === null) return; // invalid char — toast already shown
+    // A percentage chip is only a shortcut for filling the field. Once the
+    // user edits that value, the typed amount becomes authoritative; leaving
+    // 100 selected made submit silently replace the manual value with the
+    // entire latest debt.
+    setSelectedRepayPercentage(0);
     // Keep the raw string; `repayAmount` is derived. This is what lets a partial
     // "937." or "0.0000001" be typed without becoming NaN or being truncated.
     setRepayInput(sanitized);
+  };
+
+  const handleCurrencyChange = (currency: string) => {
+    setSelectedRepayCurrency(currency);
+    setRepayInput("");
+    setSelectedRepayPercentage(0);
   };
 
   const repayMutation = useMutation({
@@ -275,7 +286,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           normalizeContractTokenSymbol(selectedRepayCurrency)
         );
 
-        const inputRepayWad = BigInt(Math.floor(repayAmount * 1_000_000)) * BigInt(1_000_000_000_000);
+        const inputRepayWad = decimalAmountToWad(repayInput);
         const debtWad = latestDebt.success && latestDebt.debtWad
           ? BigInt(latestDebt.debtWad)
           : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
@@ -347,6 +358,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       // address). Swallowing the error here keeps the mutation in its success
       // state — the ledger tick will reconcile the store on the next close.
       setRepayInput("");
+      setSelectedRepayPercentage(0);
       qc.invalidateQueries({ queryKey: ['margin'] });
 
       try {
@@ -511,7 +523,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                 }`}
                 items={DropdownOptions}
                 selectedOption={selectedRepayCurrency}
-                setSelectedOption={setSelectedRepayCurrency}
+                setSelectedOption={handleCurrencyChange}
                 dropdownClassname="text-[13px] gap-2"
               />
             </div>

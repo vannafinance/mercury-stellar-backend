@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Positionstable } from "@/components/margin/positions-table";
@@ -12,6 +12,13 @@ import { useUserStore } from "@/store/user";
 import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { useMarginHistory } from "@/hooks/use-margin";
+import { useTokenPrices } from "@/hooks/use-token-prices";
+import {
+  buildNetBorrowCashByToken,
+  calculateAccruedBorrowInterest,
+  canonicalMarginPositionToken,
+} from "@/lib/margin-position-attribution";
 
 const fmtUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -39,7 +46,8 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   const [showHFTooltip, setShowHFTooltip] = useState(false);
 
   // Real margin-account figures — same snapshot/store the margin page + Portfolio
-  // header read. Interest-accrued has no clean on-chain source yet → shown as 0.
+  // header read. Borrowed interest combines live on-chain debt with the same
+  // Mercury/RPC event history used by the Positions tooltips.
   const userAddress = useUserStore((s) => s.address);
   const { snapshot } = useAccountSnapshot(userAddress);
   const store = useMarginAccountInfoStore(
@@ -47,6 +55,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
       gross: s.grossCollateralValue,
       collat: s.totalCollateralValue,
       borrowed: s.totalBorrowedValue,
+      borrowedBalances: s.borrowedBalances,
     })),
   );
   const gross = snapshot?.grossCollateralValue ?? store.gross ?? 0;
@@ -59,6 +68,25 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   });
   const leverage = collat > 0 ? Math.min(10, 1 + borrowed / collat) : 1;
   const ltv = gross > 0 ? (borrowed / gross) * 100 : 0;
+  const { history, isLoading: historyLoading } = useMarginHistory();
+  const interestPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
+  const netBorrowedInterest = useMemo(() => {
+    if (historyLoading) return 0;
+    const netBorrowCash = buildNetBorrowCashByToken(history);
+    const dedupedDebt = new Map<string, number>();
+    for (const [rawAsset, balance] of Object.entries(store.borrowedBalances)) {
+      const asset = canonicalMarginPositionToken(rawAsset);
+      const amount = parseFloat(balance.amount || "0");
+      if (amount > (dedupedDebt.get(asset) ?? 0)) dedupedDebt.set(asset, amount);
+    }
+    let totalUsd = 0;
+    for (const [asset, currentDebt] of dedupedDebt) {
+      const interest = calculateAccruedBorrowInterest(currentDebt, netBorrowCash.get(asset));
+      if (interest === null) continue;
+      totalUsd += interest * (interestPrices[asset] ?? 1);
+    }
+    return totalUsd;
+  }, [history, historyLoading, interestPrices, store.borrowedBalances]);
 
   const stats = [
     { id: "totalMarginBalance", label: "Total Margin Balance", value: fmtUsd(collat) },
@@ -68,7 +96,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
     { id: "healthFactor", label: "Health Factor", value: fmtHF(health.avgHealthFactor), special: "gauge" },
     { id: "crossMarginRatio", label: "Cross Margin Ratio", value: `${ltv.toFixed(1)}%` },
     { id: "collateralLeftBeforeLiquidation", label: "Collateral Left Before Liquidation", value: fmtUsd(health.collateralLeftBeforeLiquidation) },
-    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: fmtUsd(0) },
+    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: fmtUsd(netBorrowedInterest) },
   ];
   const row1 = stats.slice(0, 4);
   const row2 = stats.slice(4, 8);

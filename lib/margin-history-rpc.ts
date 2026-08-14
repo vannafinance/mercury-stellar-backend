@@ -34,12 +34,12 @@ export async function getMarginHistoryFromRpc(
 ): Promise<MarginTxEntry[]> {
   try {
     const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-    const latest = await server.getLatestLedger();
-    // RPC's retention window on this node has been observed to cover roughly
-    // the last several hours (~9,000 ledgers at ~2s/ledger) — well short of
-    // Mercury's intended "full history", but enough to cover activity from
-    // the last few hours, which is exactly the kind of gap this fills.
-    const startLedger = Math.max(1, latest.sequence - 9000);
+    const health = await server.getHealth();
+    // Read up to ~3 days while respecting the node's actual retention floor.
+    // The previous 9,000-ledger range was only about 12 hours, which could make
+    // a still-open loan lose its borrow event and therefore its interest basis
+    // before Mercury caught up. 50k stays below the public RPC processing cap.
+    const startLedger = Math.max(health.oldestLedger, health.latestLedger - 50_000);
 
     const topicFilter = ['*', accountTopicXdr(marginAccountAddress)];
     const response = await server.getEvents({
