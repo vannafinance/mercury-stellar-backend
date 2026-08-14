@@ -4,7 +4,11 @@ import { CONTRACT_ADDRESSES, NETWORK_PASSPHRASE, SOROBAN_RPC_URL, HORIZON_URL } 
 
 // ─── Faucet endpoints / constants ──────────────────────────────────────────
 const FRIENDBOT_URL = 'https://friendbot.stellar.org';
-const BLEND_FAUCET_URL = 'https://ewqw4hx7oa.execute-api.us-east-1.amazonaws.com/getAssets';
+// Routed through our own /api/faucet/blend (see that route's doc comment) —
+// Blend's endpoint has no CORS allowlist for our domain, so calling it
+// directly from the browser gets blocked ("blocked by CORS policy") even
+// though the request itself succeeds server-side.
+const BLEND_FAUCET_URL = '/api/faucet/blend';
 const SOROSWAP_FAUCET_URL = 'https://api.soroswap.finance/api/faucet';
 
 // Aquarius publishes this faucet keypair's secret in their app bundle. It's
