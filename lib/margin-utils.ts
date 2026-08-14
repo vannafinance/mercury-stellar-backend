@@ -259,27 +259,44 @@ export class MarginAccountService {
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
     const compact = text.split('\nEvent log')[0]?.trim() || text;
 
-    // Checked FIRST, before any action-specific branch below — a Soroban
-    // resource/budget overflow (`HostError: Error(Budget, ExceededLimit)`) is
-    // a "this transaction is too complex" network limit, unrelated to
-    // balance/health-factor/risk-engine business logic. Every action's
-    // generic `compact.includes('HostError')` fallback below would otherwise
-    // catch this too and mislabel it as e.g. "Withdraw transaction failed
-    // on-chain. Please retry with a smaller amount." — which then gets
-    // further mangled by a caller's maxSafe-based message, actively hiding
-    // the real (and differently-actionable) cause.
-    if (/budget|exceededlimit/i.test(compact)) {
+    // The diagnostic clues that actually distinguish WHY a call failed —
+    // collect_from's boolean false, remove_borrowed_token_balance's underflow
+    // trap, ArithDomain/u256_sub panics, Budget/ExceededLimit — live INSIDE
+    // the "Event log" section, which `compact` (used for the short fallback
+    // return at the bottom) deliberately cuts off. Match keyword checks
+    // against the FULL `text` below, never `compact` — checking `compact`
+    // here silently never matches (confirmed live: a genuine insufficient-
+    // margin-account-balance repay fell through every check below straight
+    // to the generic "HostError" fallback, because every distinguishing
+    // keyword was in the truncated-away event log).
+    if (/budget|exceededlimit/i.test(text)) {
       return 'Budget exceeded.';
     }
 
     if (action === 'repay') {
+      // collect_from's u256 subtraction underflows (ArithDomain) whenever the
+      // requested amount exceeds what the margin account actually holds —
+      // this fires identically whether the gap is a hair of freshly-accrued
+      // interest or the account genuinely never had enough of this asset.
+      // `remove_borrowed_token_balance` traps the same way when the token's
+      // OWN transfer discovers the shortfall a step later (confirmed live:
+      // collect_from returns false, then AccountManager still calls
+      // remove_borrowed_token_balance, which underflows and panics —
+      // surfacing as a generic `Error(WasmVm, InvalidAction)` with none of
+      // that detail in the headline). Repay only ever pulls from the margin
+      // account (no wallet top-up), so the fix is the same either way: bring
+      // more of this asset into the margin account (Transfer Collateral)
+      // before repaying again.
       if (
-        compact.includes('Error(Object, ArithDomain)') ||
-        compact.includes('ArithDomain') ||
-        compact.includes('collect_from') ||
-        compact.includes('u256_sub')
+        text.includes('Error(Object, ArithDomain)') ||
+        text.includes('ArithDomain') ||
+        text.includes('collect_from') ||
+        text.includes('u256_sub') ||
+        text.includes('remove_borrowed_token_balance') ||
+        text.toLowerCase().includes('insufficient') ||
+        text.toLowerCase().includes('balance is not sufficient')
       ) {
-        return 'Repay amount is slightly above the live outstanding debt (rounding/interest update). Please retry with 100% again or use a slightly lower amount.';
+        return 'Insufficient balance in your margin account to repay this amount. Transfer more funds to your margin account (Transfer Collateral) first, then retry.';
       }
 
       if (compact.includes('HostError')) {
@@ -2480,151 +2497,23 @@ export class MarginAccountService {
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      const currentAccount = await server.getAccount(userAddress.address);
 
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
-      // ── Interest shortfall top-up ─────────────────────────────────────────
-      // Same-asset leverage: the smart account holds borrowed tokens as raw SAC
-      // balances. WAD debt accumulates interest at sub-stroop precision, so by
-      // repay time the required stroop amount can exceed what sits in the account.
-      // Detect the gap; if present, submit a separate single-op top-up transfer
-      // first (Freighter rejects multi-op transactions), then do the repay.
-      const REPAY_TOKEN_CONTRACT: Record<string, string> = {
-        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
-        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
-        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
-      };
-      const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
-      let interestTopUp = BigInt(0);
-      // Set alongside interestTopUp when computable — the fallback below caps
-      // the repay to this exact figure if the top-up transfer turns out to be
-      // impossible, so it needs to survive past the try block that finds it.
-      let smartAcctBalanceStroops: bigint | null = null;
-
-      if (repayTokenContractAddr) {
-        try {
-          const dummyKp = StellarSdk.Keypair.random();
-          const dummyAcct = new StellarSdk.Account(dummyKp.publicKey(), '0');
-          const tokenContract = new StellarSdk.Contract(repayTokenContractAddr);
-          const balanceTx = new StellarSdk.TransactionBuilder(dummyAcct, {
-            fee: StellarSdk.BASE_FEE,
-            networkPassphrase: NETWORK_PASSPHRASE,
-          })
-            .addOperation(
-              tokenContract.call(
-                'balance',
-                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-              ),
-            )
-            .setTimeout(10)
-            .build();
-
-          const balanceSim = await server.simulateTransaction(balanceTx);
-          if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
-            const smartAcctBalance = StellarSdk.scValToNative(balanceSim.result.retval) as bigint;
-            smartAcctBalanceStroops = smartAcctBalance;
-            // Convert WAD repay amount → stroops (7-decimal token units)
-            const repayInStroops = (BigInt(repayAmountWad) * BigInt(10 ** 7)) / BigInt(10 ** 18);
-            if (repayInStroops > smartAcctBalance) {
-              interestTopUp = repayInStroops - smartAcctBalance + BigInt(100); // 100-stroop safety buffer
-            }
-          }
-        } catch {
-          // Balance simulation failure is non-fatal — proceed; contract will
-          // surface the real error if tokens are still short.
-        }
-      }
-
-      // ── Tx 1 (conditional): single-op top-up to cover accrued interest gap ──
-      // Freighter only allows one operation per transaction, so we submit the
-      // top-up as a separate transaction and wait for confirmation before repay.
-      let currentAccount = sourceAccount;
-      // Repay amount actually sent below — reduced to what the margin account
-      // already holds if the top-up turns out to be impossible (see catch).
-      let finalRepayAmountWad = repayAmountWad;
-      if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
-        try {
-          // A second wallet signature is genuinely required here — Freighter
-          // only allows one operation per tx, so the top-up can't be folded
-          // into the repay call — but the progress modal was showing the
-          // SAME static "Repaying X" title for both, leaving the user with
-          // two unlabeled signature prompts and no idea a top-up was even
-          // happening. Label it explicitly.
-          showTxStep(`Step 1/2: Topping up ${(Number(interestTopUp) / 1e7).toFixed(7)} ${tokenSymbol} (interest accrued since you opened Repay)`);
-          const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
-          const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
-            fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
-            networkPassphrase: NETWORK_PASSPHRASE,
-          })
-            .addOperation(
-              topUpContract.call(
-                'transfer',
-                StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
-                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-                StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
-              ),
-            )
-            .setTimeout(30)
-            .build();
-
-          const preparedTopUp = await server.prepareTransaction(topUpTx);
-          const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
-            networkPassphrase: NETWORK_PASSPHRASE,
-          });
-          const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
-            topUpSignResult.signedTxXdr,
-            NETWORK_PASSPHRASE,
-          );
-          const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
-          if (topUpSubmit.status === 'PENDING') {
-            const topUpFinal = await this.pollTransactionStatus(server, topUpSubmit.hash);
-            if (topUpFinal.status !== 'SUCCESS') {
-              const reason = describeFailedTx(topUpFinal);
-              throw new Error(`Top-up failed on-chain with status: ${topUpFinal.status}${reason ? `: ${reason}` : ''}`);
-            }
-          } else {
-            // Decode the real submission-time rejection (e.g. txBadSeq) —
-            // same reasoning as the repay leg's own ERROR-status branch below:
-            // a bare status string can't be told apart from a genuine
-            // "wallet can't cover this" failure, so the catch block right
-            // below always took the "fall back to a partial repay" path even
-            // when the real cause was a transient, retry-worthy race.
-            const resultCode = describeSendError(topUpSubmit);
-            throw new Error(`Top-up submission failed with status: ${topUpSubmit.status}${resultCode !== 'unknown' ? ` (${resultCode})` : ''}`);
-          }
-          // Refresh the sequence number for the follow-up repay transaction.
-          currentAccount = await server.getAccount(userAddress.address);
-        } catch (topUpError: any) {
-          // The wallet can't cover the shortfall — most commonly it has no
-          // trustline at all for the underlying classic asset behind this SAC
-          // (same-asset leverage tokens like BLUSDC only ever move through the
-          // margin account, so a wallet that never separately opted into the
-          // asset traps here with "trustline entry is missing for account
-          // <wallet>"). Rather than fail the whole repay outright, cap the
-          // request at what the margin account already holds — a partial
-          // repay the user can act on beats a hard error over a sub-stroop gap.
-          console.warn('⚠️ Interest top-up failed; falling back to a partial repay capped at the margin account balance:', topUpError?.message || topUpError);
-          if (smartAcctBalanceStroops == null || smartAcctBalanceStroops <= BigInt(0)) {
-            return {
-              success: false,
-              error: 'Repay requires a small top-up from your wallet to cover accrued interest, but your wallet has no trustline for this asset. Please repay a smaller amount, or open a trustline for this asset in your wallet first.',
-            };
-          }
-          finalRepayAmountWad = (smartAcctBalanceStroops * BigInt(10 ** 18) / BigInt(10 ** 7)).toString();
-          currentAccount = await server.getAccount(userAddress.address);
-        }
-      }
-
-      // ── Tx 2: repay ──────────────────────────────────────────────────────────
-      const repayAmountDisplay = (Number(finalRepayAmountWad) / 1e18).toFixed(7);
-      showTxStep(
-        interestTopUp > BigInt(0)
-          ? `Step 2/2: Repaying ${repayAmountDisplay} ${tokenSymbol}`
-          : `Repaying ${repayAmountDisplay} ${tokenSymbol}`
-      );
+      // Repay pulls the requested amount directly from the margin account's
+      // own SAC balance — a single transaction, no wallet top-up. If the
+      // margin account doesn't hold enough (interest ticked the debt above
+      // what's actually there, or debt is just bigger than the account's
+      // balance), the token contract's own transfer rejects it and that
+      // surfaces as a clean "insufficient balance" error below — same as any
+      // other DEX (Aave included): you repay what the account has, no
+      // automatic wallet-side rescue. The caller decides whether to bring
+      // more of this asset into the margin account (Transfer Collateral)
+      // first, rather than that decision being made silently for them here.
+      const repayAmountDisplay = (Number(repayAmountWad) / 1e18).toFixed(7);
+      showTxStep(`Repaying ${repayAmountDisplay} ${tokenSymbol}`);
       const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -2632,7 +2521,7 @@ export class MarginAccountService {
         .addOperation(
           contract.call(
             'repay',
-            StellarSdk.nativeToScVal(finalRepayAmountWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(repayAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
             StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
           ),
@@ -2696,11 +2585,7 @@ export class MarginAccountService {
           return {
             success: true,
             hash: result.hash,
-            // Differs from the requested repayAmountWad only when the
-            // interest top-up above failed and this repay was capped down to
-            // a partial amount instead — callers logging history should
-            // prefer this over their own requested amount.
-            repaidAmountWad: finalRepayAmountWad,
+            repaidAmountWad: repayAmountWad,
           };
         } else {
           // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
@@ -2722,10 +2607,8 @@ export class MarginAccountService {
         }
       } else if (result.status === 'ERROR') {
         // Bare "ERROR status" with no decoded reason meant a transient
-        // submission-time rejection here — most plausibly `txBadSeq` (this
-        // repay's sequence number was just re-read via getAccount() right
-        // after Tx1's top-up confirmed, which can still be stale on a
-        // different RPC node — the same multi-node sequence race documented
+        // submission-time rejection here — most plausibly `txBadSeq` (a
+        // multi-node RPC sequence-number race, same class of issue documented
         // on isFootprintRaceError) — never got a chance to retry: the outer
         // withFootprintRaceRetry wrapper only retries when the error text
         // matches a known race pattern, and a bare generic string matches

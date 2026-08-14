@@ -6,6 +6,7 @@ import {
   normalizeDepositCollateralError,
   normalizeTransferCollateralError,
   normalizeCreateAccountError,
+  normalizeRepayError,
 } from '@/lib/errors/normalize';
 
 // The Freighter "Reject" button makes the SDK throw this while parsing the
@@ -112,5 +113,31 @@ describe('on-chain "rejected"/"declined" failures are not mistaken for a wallet 
     expect(
       normalizeContractError("RPC's submission queue declined this attempt"),
     ).not.toBe('Transaction cancelled by user.');
+  });
+});
+
+// Regression: a genuine insufficient-margin-account-balance repay confirmed
+// live as `HostError: Error(WasmVm, InvalidAction)` — collect_from returns
+// false, then AccountManager still calls remove_borrowed_token_balance,
+// which underflows and panics. None of that detail is in the headline; it's
+// only in the "Event log" section, which every normalizer's `compact` cuts
+// off before pattern-matching. Checking `compact` here silently never
+// matched, so this real failure fell through to a generic "failed on-chain"
+// message instead of the clean insufficient-balance one it should produce.
+const REAL_INSUFFICIENT_BALANCE_REPAY_ERROR = [
+  'HostError: Error(WasmVm, InvalidAction)',
+  '',
+  'Event log (newest first):',
+  '   0: [Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)], data:"escalating error to VM trap from failed host function call: call"',
+  '   1: [Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)], data:["contract call failed", remove_borrowed_token_balance, [USDC, 15920235423598650494]]',
+  '   2: [Failed Diagnostic Event (not emitted)] topics:[error, Error(WasmVm, InvalidAction)], data:["VM call trapped: UnreachableCodeReached", remove_borrowed_token_balance]',
+  '   8: [Diagnostic Event] topics:[fn_return, collect_from], data:false',
+].join('\n');
+
+describe('repay: a real insufficient-margin-account-balance failure is decoded, not shown as a raw dump', () => {
+  it('normalizeRepayError recognizes it', () => {
+    const msg = normalizeRepayError(REAL_INSUFFICIENT_BALANCE_REPAY_ERROR, 'BLUSDC');
+    expect(msg).toMatch(/insufficient/i);
+    expect(msg).not.toMatch(/Event log/);
   });
 });

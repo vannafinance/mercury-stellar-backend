@@ -278,6 +278,45 @@ export function normalizeTransferCollateralError(
   return compact || 'Transfer failed. Please try again.';
 }
 
+/**
+ * Normalize repay errors (from repay-loan-tab). Repay pulls the requested
+ * amount only from the margin account's own balance — no wallet top-up — so
+ * a shortfall (debt outgrew the account's balance, or the account never had
+ * enough of this asset) surfaces as a plain insufficient-balance failure,
+ * not something margin-utils.ts's `formatUserFacingContractError` already
+ * caught (that only covers the exception-thrown path; this also covers the
+ * on-chain-execution-failed path, which builds its own message directly).
+ */
+export function normalizeRepayError(raw: string | undefined, asset: string): string {
+  const compact = (raw ?? '').split('\nEvent log')[0]?.trim() ?? '';
+  // The diagnostic clues that actually distinguish "insufficient balance"
+  // from every other repay failure — collect_from's boolean false return,
+  // remove_borrowed_token_balance's underflow trap, the ArithDomain/u256_sub
+  // panic text — live INSIDE the "Event log" section, which `compact` just
+  // cut off above. Match against the FULL text for these; `compact` is only
+  // for the plain-fallback return at the bottom, where showing the whole
+  // multi-line diagnostic dump would be worse than a short generic message.
+  const full = (raw ?? '').toLowerCase();
+  const lower = compact.toLowerCase();
+
+  if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(full)) return BUDGET_EXCEEDED_MESSAGE;
+  if (
+    full.includes('arithdomain') ||
+    full.includes('collect_from') ||
+    full.includes('u256_sub') ||
+    full.includes('remove_borrowed_token_balance') ||
+    isInsufficientBalance(full)
+  ) {
+    return `Insufficient ${asset} balance in your margin account to repay this amount. Transfer more ${asset} to your margin account (Transfer Collateral) first, then retry.`;
+  }
+  if (lower.includes('hosterror') || lower.includes('error(contract')) {
+    return appendTxHash('Repay failed on-chain. Please retry.', compact);
+  }
+
+  return compact || 'Repay failed. Please try again.';
+}
+
 /** Normalize margin account creation errors (from leverage-assets-tab). */
 export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
