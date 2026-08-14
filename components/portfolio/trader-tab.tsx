@@ -19,6 +19,7 @@ import {
   calculateAccruedBorrowInterest,
   canonicalMarginPositionToken,
 } from "@/lib/margin-position-attribution";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 const fmtUsd = (n: number): string =>
   `$${(n < 0 ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -27,23 +28,13 @@ const fmtHF = (hf: number): string => (!Number.isFinite(hf) || hf >= 999 ? "∞"
 const TRADE_TABS = ["Margin", "Spot", "Farm"] as const;
 type TradeTab = (typeof TRADE_TABS)[number];
 
-type MarginStat = { id: string; label: string; value: string; special?: string };
-
-const InfoIcon = ({ isDark }: { isDark: boolean }) => (
-  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" className="flex-shrink-0">
-    <path
-      d="M6 3.33333H7.33333V4.66667H6V3.33333ZM6 6H7.33333V10H6V6ZM6.66667 0C2.98667 0 0 2.98667 0 6.66667C0 10.3467 2.98667 13.3333 6.66667 13.3333C10.3467 13.3333 13.3333 10.3467 13.3333 6.66667C13.3333 2.98667 10.3467 0 6.66667 0ZM6.66667 12C3.72667 12 1.33333 9.60667 1.33333 6.66667C1.33333 3.72667 3.72667 1.33333 6.66667 1.33333C9.60667 1.33333 12 3.72667 12 6.66667C12 9.60667 9.60667 12 6.66667 12Z"
-      fill={isDark ? "#A0A0A0" : "#777777"}
-    />
-  </svg>
-);
+type MarginStat = { id: string; label: string; value: string; special?: string; tooltip: string };
 
 const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   const d = isDark;
   const border = d ? "border-[#2D2D2D]" : "border-[#E8E8E8]";
   const labelClass = `text-[13px] font-medium leading-tight ${d ? "text-[#A0A0A0]" : "text-[#777777]"}`;
   const valueClass = `text-[20px] font-bold leading-tight ${d ? "text-white" : "text-[#111]"}`;
-  const [showHFTooltip, setShowHFTooltip] = useState(false);
 
   // Real margin-account figures — same snapshot/store the margin page + Portfolio
   // header read. Borrowed interest combines live on-chain debt with the same
@@ -89,39 +80,28 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
   }, [history, historyLoading, interestPrices, store.borrowedBalances]);
 
   const stats = [
-    { id: "totalMarginBalance", label: "Total Margin Balance", value: fmtUsd(collat) },
-    { id: "totalCollateralDeposited", label: "Total Collateral Deposited", value: fmtUsd(gross) },
-    { id: "totalLoanTaken", label: "Total Loan Taken", value: fmtUsd(borrowed) },
-    { id: "crossAccountLeverage", label: "Cross Account Leverage", value: `${leverage.toFixed(2)}x/10x`, special: "leverage" },
-    { id: "healthFactor", label: "Health Factor", value: fmtHF(health.avgHealthFactor), special: "gauge" },
-    { id: "crossMarginRatio", label: "Cross Margin Ratio", value: `${ltv.toFixed(1)}%` },
-    { id: "collateralLeftBeforeLiquidation", label: "Collateral Left Before Liquidation", value: fmtUsd(health.collateralLeftBeforeLiquidation) },
-    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: fmtUsd(netBorrowedInterest) },
+    { id: "totalMarginBalance", label: "Total Margin Balance", value: fmtUsd(collat), tooltip: "Current value held in your margin account." },
+    { id: "totalCollateralDeposited", label: "Total Collateral Deposited", value: fmtUsd(gross), tooltip: "Collateral backing your margin positions." },
+    { id: "totalLoanTaken", label: "Total Loan Taken", value: fmtUsd(borrowed), tooltip: "Outstanding debt, including interest." },
+    { id: "crossAccountLeverage", label: "Cross Account Leverage", value: `${leverage.toFixed(2)}x/10x`, special: "leverage", tooltip: "Total exposure relative to margin balance." },
+    { id: "healthFactor", label: "Health Factor", value: fmtHF(health.avgHealthFactor), special: "gauge", tooltip: "Liquidation safety. Higher is safer." },
+    { id: "crossMarginRatio", label: "Cross Margin Ratio", value: `${ltv.toFixed(1)}%`, tooltip: "Borrowed value relative to collateral." },
+    { id: "collateralLeftBeforeLiquidation", label: "Collateral Left Before Liquidation", value: fmtUsd(health.collateralLeftBeforeLiquidation), tooltip: "Safety buffer before liquidation." },
+    { id: "netBorrowedInterestAccrued", label: "Net Borrowed Interest Accrued", value: fmtUsd(netBorrowedInterest), tooltip: "Interest accrued across borrowed assets." },
   ];
   const row1 = stats.slice(0, 4);
   const row2 = stats.slice(4, 8);
 
+  const renderLabel = (stat: MarginStat) => (
+    <div className={`flex items-center gap-1 ${labelClass}`}>
+      <span>{stat.label}</span>
+      <InfoTooltip content={stat.tooltip} label={`${stat.label} information`} placement="bottom" />
+    </div>
+  );
+
   const renderGauge = (stat: MarginStat) => (
     <div className="flex flex-col gap-2">
-      <div className={`flex items-center gap-1 ${labelClass}`}>
-        {stat.label}
-        <div
-          className="relative flex items-center"
-          onMouseEnter={() => setShowHFTooltip(true)}
-          onMouseLeave={() => setShowHFTooltip(false)}
-        >
-          <InfoIcon isDark={d} />
-          {showHFTooltip && (
-            <div
-              className={`absolute bottom-[18px] left-1/2 -translate-x-1/2 w-[220px] px-3 py-2 rounded-[8px] text-[12px] leading-[1.5] font-medium shadow-md border z-50 pointer-events-none ${
-                d ? "bg-[#2a2a2a] border-[#3a3a3a] text-[#ccc]" : "bg-white border-[#E8E8E8] text-[#374151]"
-              }`}
-            >
-              Measures collateral safety. Values above&nbsp;1.5 are healthy; below&nbsp;1.1 risks liquidation.
-            </div>
-          )}
-        </div>
-      </div>
+      {renderLabel(stat)}
       <span className={valueClass}>{stat.value}</span>
     </div>
   );
@@ -132,7 +112,7 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
       const [current, max] = stat.value.split("/");
       return (
         <div className="flex flex-col gap-2">
-          <span className={labelClass}>{stat.label}</span>
+          {renderLabel(stat)}
           <div className="flex items-baseline gap-1">
             <span className={valueClass}>{current}</span>
             <span className={`text-[14px] font-medium ${d ? "text-[#A0A0A0]" : "text-[#777777]"}`}>/ {max}</span>
@@ -142,14 +122,14 @@ const MarginStatsGrid = ({ isDark }: { isDark: boolean }) => {
     }
     return (
       <div className="flex flex-col gap-2">
-        <span className={labelClass}>{stat.label}</span>
+        {renderLabel(stat)}
         <span className={valueClass}>{stat.value}</span>
       </div>
     );
   };
 
   return (
-    <div className={`w-full rounded-[16px] overflow-hidden border ${border} ${d ? "bg-[#222222]" : "bg-[#f7f7f7]"}`}>
+    <div className={`w-full rounded-[16px] overflow-visible border ${border} ${d ? "bg-[#222222]" : "bg-[#f7f7f7]"}`}>
       <div className="grid grid-cols-2 lg:grid-cols-4">
         {row1.map((stat) => (
           <div key={stat.id} className="flex flex-col gap-2 px-5 py-4">

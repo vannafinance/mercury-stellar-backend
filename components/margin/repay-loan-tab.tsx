@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DropdownOptions } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -18,9 +18,15 @@ import { useUserStore } from "@/store/user";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { useMutationToast } from "@/hooks/use-mutation-toast";
-import toast from "react-hot-toast";
 import { normalizeRepayError } from "@/lib/errors/normalize";
 import { decimalAmountToWad, validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { useMarginHistory } from "@/hooks/use-margin";
+import {
+  buildNetBorrowCashByToken,
+  calculateAccruedBorrowInterest,
+  canonicalMarginPositionToken,
+} from "@/lib/margin-position-attribution";
 
 /** Format a numeric amount for the editable input: clean string, no trailing
  *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
@@ -36,7 +42,10 @@ const formatHF = (hf: number): string =>
 const formatUsd = (n: number): string => formatUsdValue(n);
 
 const REPAY_DUST_EPSILON = 1e-6;
-const WAD = BigInt("1000000000000000000");
+const formatDetailedTokenAmount = (value: number): string =>
+  Number.isFinite(value)
+    ? value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 7 })
+    : "0";
 
 interface RepayLoanTabProps {
   /** Asset to preselect on mount / when changed (e.g. from a positions-row Repay click). */
@@ -51,6 +60,20 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   if (cleaned === "AQUSDC" || cleaned === "AQUIRESUSDC" || cleaned === "AQUARIUS_USDC") return "AqUSDC";
   if (cleaned === "SOUSDC" || cleaned === "SOROSWAPUSDC" || cleaned === "SOROSWAP_USDC") return "SoUSDC";
   return null;
+};
+
+const normalizeContractTokenSymbol = (symbol: string): string =>
+  symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
+    ? "BLUSDC"
+    : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
+      ? "AQUSDC"
+      : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
+        ? "SOUSDC"
+        : symbol;
+
+const clampRepayDust = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.abs(value) < REPAY_DUST_EPSILON ? 0 : value;
 };
 
 /**
@@ -70,16 +93,7 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
-  const normalizeContractTokenSymbol = (symbol: string) =>
-    symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
-      ? "BLUSDC"
-      : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-        ? "AQUSDC"
-        : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
-          ? "SOUSDC"
-          : symbol;
   // Wallet and margin account state
-  const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
   const qc = useQueryClient();
   
@@ -117,13 +131,11 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const globalAddress = useUserStore((state) => state.address);
   useEffect(() => {
     if (!globalIsConnected || !globalAddress) {
-      setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
       setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
-      setMarginAccountBalanceWad('0');
     }
   }, [globalIsConnected, globalAddress]);
   const [currentDebtWad, setCurrentDebtWad] = useState<string>('0');
@@ -133,34 +145,30 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // requests the full debt regardless of this — no wallet top-up, no
   // client-side capping — so a shortfall surfaces as a clean on-chain
   // "insufficient balance" error instead of a silent partial repay.
-  const [marginAccountBalanceWad, setMarginAccountBalanceWad] = useState<string>('0');
-
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
   const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
-
-  // Current margin account state for computing updated values
-  const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
-  const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const { history: marginHistory, isLoading: marginHistoryLoading } = useMarginHistory();
+  const selectedAccruedInterest = useMemo(() => {
+    if (marginHistoryLoading) return null;
+    const netBorrowCash = buildNetBorrowCashByToken(marginHistory);
+    const token = canonicalMarginPositionToken(selectedRepayCurrency);
+    return calculateAccruedBorrowInterest(
+      repayStats.netOutstandingAmountToPay,
+      netBorrowCash.get(token),
+    );
+  }, [marginHistory, marginHistoryLoading, repayStats.netOutstandingAmountToPay, selectedRepayCurrency]);
 
   // Popup visibility states
   const [isPayNowPopupOpen, setIsPayNowPopupOpen] = useState(false);
 
-  const clampRepayDust = (value: number) => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.abs(value) < REPAY_DUST_EPSILON ? 0 : value;
-  };
-
   // Both stat tiles are denominated in tokens of the selected repay currency.
   // Primary line shows the token amount (the actual on-chain debt/balance),
   // secondary line shows the live USD equivalent via the oracle price.
-  const formatStatValue = (
-    value: number,
-    _key: string,
-  ): { token: string; usd: string | null } => {
+  const formatStatValue = (value: number): { token: string; usd: string | null } => {
     const cleaned = clampRepayDust(value);
     // Treat as zero if the USD equivalent is below $0.01 (post-repay dust).
     const usdEquiv = selectedTokenPrice > 0 ? cleaned * selectedTokenPrice : 0;
@@ -180,7 +188,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // whether they have enough. If they don't, repay fails on-chain with a
   // clean insufficient-balance message (see normalizeRepayError) instead of
   // silently repaying a smaller amount — same as any other DEX.
-  const refreshRepayableStats = async (marginAccountAddress: string) => {
+  const refreshRepayableStats = useCallback(async (marginAccountAddress: string) => {
     try {
       const normalizedSymbol = normalizeContractTokenSymbol(selectedRepayCurrency);
       const [debtResult, marginBalWad] = await Promise.all([
@@ -192,8 +200,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         ? clampRepayDust(parseFloat(debtResult.amount || '0') || 0)
         : 0;
       setCurrentDebtWad(debtResult.success && debtResult.debtWad ? debtResult.debtWad : '0');
-      setMarginAccountBalanceWad(marginBalWad ?? '0');
-
       setRepayStats({
         netOutstandingAmountToPay: trueDebtTokens,
         availableBalance: marginBalWad != null ? clampRepayDust(parseFloat(marginBalWad) / 1e18) : 0,
@@ -201,7 +207,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     } catch (error) {
       console.error("Error refreshing repayable stats:", error);
     }
-  };
+  }, [selectedRepayCurrency]);
 
   // Load user data and borrowed balances on mount
   useEffect(() => {
@@ -209,13 +215,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       try {
         const address = await getAddress();
         if (!address.error && address.address) {
-          setUserAddress(address.address);
-
           // Get margin account
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
-            await refreshRepayableStats(account.address);
           }
         }
       } catch (error) {
@@ -231,7 +234,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     if (marginAccount) {
       refreshRepayableStats(marginAccount);
     }
-  }, [selectedRepayCurrency, marginAccount]);
+  }, [marginAccount, refreshRepayableStats]);
 
   // Handler for percentage click. All percentages — including 100% — are
   // fractions of `repayStats.netOutstandingAmountToPay`, the TRUE full debt
@@ -327,7 +330,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
         const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
         return { hash: result.hash, repaidWad };
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Belt-and-suspenders: catches anything that escapes repayLoan's own
         // try/catch (e.g. a rejected promise from getBorrowedTokenDebtWad/
         // getMarginAccountTokenBalanceWad above, or Freighter itself
@@ -338,7 +341,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         // is never a bare, contentless fallback.
         console.error('🔴 REPAY THREW — raw error:', error);
         const detail =
-          typeof error?.message === 'string' && error.message
+          error instanceof Error && error.message
             ? error.message
             : (() => {
                 try {
@@ -429,12 +432,52 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                   isDark ? "text-[#777777]" : "text-[#A7A7A7]"
                 }`}
               >
-                {key === "netOutstandingAmountToPay"
-                  ? "Net Outstanding Amount to Repay"
-                  : "Available Balance"}
+                {key === "netOutstandingAmountToPay" ? (
+                  <>
+                    Net Outstanding Amount to Repay
+                    <InfoTooltip
+                      placement="bottom"
+                      size="regular"
+                      label={`${selectedRepayCurrency} outstanding loan and accrued interest details`}
+                      content={(
+                        <span className="flex flex-col gap-1">
+                          {selectedAccruedInterest !== null ? (
+                            <>
+                              <span>
+                                Net borrowed amount: {formatDetailedTokenAmount(Math.max(0, repayStats.netOutstandingAmountToPay - selectedAccruedInterest))} {selectedRepayCurrency}
+                              </span>
+                              <span>
+                                Interest accrued till date: {formatDetailedTokenAmount(selectedAccruedInterest)} {selectedRepayCurrency} (≈ {formatUsdValue(selectedAccruedInterest * selectedTokenPrice)})
+                              </span>
+                              <span>
+                                Total outstanding loan: {formatDetailedTokenAmount(repayStats.netOutstandingAmountToPay)} {selectedRepayCurrency}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span>
+                                Total outstanding loan: {formatDetailedTokenAmount(repayStats.netOutstandingAmountToPay)} {selectedRepayCurrency}
+                              </span>
+                              <span>Principal and interest breakdown is unavailable until the original on-chain borrow is indexed.</span>
+                            </>
+                          )}
+                        </span>
+                      )}
+                    />
+                  </>
+                ) : (
+                  <>
+                    Available Balance in Margin Account
+                    <InfoTooltip
+                      placement="bottom"
+                      label="Available margin account balance information"
+                      content="Selected asset available in your margin account."
+                    />
+                  </>
+                )}
               </span>
               {(() => {
-                const { token, usd } = formatStatValue(value, key);
+                const { token, usd } = formatStatValue(value);
                 return (
                   <>
                     <span

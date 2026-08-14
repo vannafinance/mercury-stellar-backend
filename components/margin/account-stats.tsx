@@ -3,11 +3,13 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import { useTheme } from "@/contexts/theme-context";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 export interface AccountStatItem {
   id: string;
   name: string;
   icon: string;
+  tooltip?: string;
 }
 
 interface AccountStatsProps {
@@ -77,13 +79,16 @@ export const AccountStats = ({
               >
                 <Image width={14} height={14} alt={item.id} src={item.icon} />
               </div>
-              <p
-                className={`text-[11px] font-medium mb-1 ${
+              <div
+                className={`flex items-center gap-1 text-[11px] font-medium mb-1 ${
                   isDark ? "text-[#919191]" : "text-[#919191]"
                 }`}
               >
-                {item.name}
-              </p>
+                <span>{item.name}</span>
+                {item.tooltip && (
+                  <InfoTooltip content={item.tooltip} label={`${item.name} information`} placement="bottom" />
+                )}
+              </div>
               <p
                 className={`text-[15px] font-bold leading-tight ${
                   valueColors?.[item.id] ?? (isDark ? "text-white" : "text-neutral-800")
@@ -98,7 +103,7 @@ export const AccountStats = ({
 
       {/* Tablet/Desktop: grid layout (768px+) */}
       <div
-        className={`hidden md:grid border rounded-2xl w-full h-auto overflow-hidden ${gridCols} ${calculatedGridRows} ${
+        className={`hidden md:grid border rounded-2xl w-full h-auto overflow-visible ${gridCols} ${calculatedGridRows} ${
           isDark ? `bg-[${darkBackgroundColor}]` : `bg-[${backgroundColor}]`
         }`}
       >
@@ -130,6 +135,9 @@ export const AccountStats = ({
                 >
                   {item.name}
                 </span>
+                {item.tooltip && (
+                  <InfoTooltip content={item.tooltip} label={`${item.name} information`} placement="bottom" />
+                )}
               </div>
               {/* Value */}
               <motion.div

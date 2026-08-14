@@ -15,6 +15,7 @@ import {
   buildNetBorrowCashByToken,
   calculateAccruedBorrowInterest,
 } from "@/lib/margin-position-attribution";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 interface PositionstableProps {
   /** Fired from a row's Repay button; passes the borrowed asset to prefill the Repay tab. */
@@ -57,48 +58,62 @@ const formatTokenName = (asset: string): string => {
 // Delegate to the shared adaptive formatter: "$0.00" for true zero, "<$0.01" for
 // sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
 const formatInterestUsd = (value: number): string => formatUsdValue(value);
+const formatDetailedTokenAmount = (value: number): string =>
+  Number.isFinite(value)
+    ? value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 7 })
+    : "0";
 
 const BorrowInterestTooltip = ({
   asset,
+  outstandingAmount,
   amount,
   usdValue,
   known,
-  isDark,
+  alignEnd = false,
 }: {
   asset: string;
+  outstandingAmount: number;
   amount: number;
   usdValue: number;
   known: boolean;
-  isDark: boolean;
+  alignEnd?: boolean;
 }) => {
-  const content = known
-    ? `Interest accrued till date: ${formatTokenAmount(amount)} ${formatTokenName(asset)} (≈ ${formatUsdValue(usdValue)})`
-    : "Accrued interest is unavailable until this asset's original on-chain borrow history is indexed.";
+  const assetName = formatTokenName(asset);
+  const netBorrowedAmount = known ? Math.max(0, outstandingAmount - amount) : null;
+  const accessibleLabel = known
+    ? `Net borrowed amount ${formatDetailedTokenAmount(netBorrowedAmount ?? 0)} ${assetName}. Interest accrued till date ${formatDetailedTokenAmount(amount)} ${assetName}. Total outstanding loan ${formatDetailedTokenAmount(outstandingAmount)} ${assetName}.`
+    : `Outstanding loan ${formatDetailedTokenAmount(outstandingAmount)} ${assetName}. Accrued interest history is unavailable.`;
 
   return (
-    <span className="group relative inline-flex shrink-0 items-center">
-      <button
-        type="button"
-        aria-label={content}
-        className={`flex h-[15px] w-[15px] items-center justify-center rounded-full border text-[9px] font-bold leading-none outline-none transition-colors ${
-          isDark
-            ? "border-[#555555] text-[#A7A7A7] hover:border-[#8B5CF6] hover:text-white focus-visible:border-[#8B5CF6]"
-            : "border-[#B8B8B8] text-[#777777] hover:border-[#703AE6] hover:text-[#703AE6] focus-visible:border-[#703AE6]"
-        }`}
-      >
-        i
-      </button>
-      <span
-        role="tooltip"
-        className={`pointer-events-none absolute right-0 top-[22px] z-50 w-max max-w-[260px] rounded-lg border px-3 py-2 text-[11px] font-medium leading-[1.45] opacity-0 shadow-xl transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 xl:left-[22px] xl:right-auto xl:top-1/2 xl:-translate-y-1/2 ${
-          isDark
-            ? "border-[#3A3A3A] bg-[#252525] text-[#E5E5E5]"
-            : "border-[#E5E7EB] bg-white text-[#374151]"
-        }`}
-      >
-        {content}
-      </span>
-    </span>
+    <InfoTooltip
+      label={accessibleLabel}
+      placement={alignEnd ? "right-end" : "right"}
+      size="regular"
+      content={(
+        <span className="flex flex-col gap-1">
+          {known ? (
+            <>
+              <span>
+                Net borrowed amount: {formatDetailedTokenAmount(netBorrowedAmount ?? 0)} {assetName}
+              </span>
+              <span>
+                Interest accrued till date: {formatDetailedTokenAmount(amount)} {assetName} (≈ {formatUsdValue(usdValue)})
+              </span>
+              <span>
+                Total outstanding loan: {formatDetailedTokenAmount(outstandingAmount)} {assetName}
+              </span>
+            </>
+          ) : (
+            <>
+              <span>
+                Total outstanding loan: {formatDetailedTokenAmount(outstandingAmount)} {assetName}
+              </span>
+              <span>Principal and interest breakdown is unavailable until the original on-chain borrow is indexed.</span>
+            </>
+          )}
+        </span>
+      )}
+    />
   );
 };
 
@@ -267,6 +282,7 @@ export const Positionstable = ({
         assetData: { asset: entry.token, amount: formatTokenAmount(currentDebt) },
         percentage: 0,
         usdValue: parseFloat(entry.balance.usdValue || '0'),
+        outstandingLoanAmount: currentDebt,
         accruedInterestAmount: interest ?? 0,
         accruedInterestUsd: (interest ?? 0) * price,
         isAccruedInterestKnown: interest !== null,
@@ -567,10 +583,11 @@ export const Positionstable = ({
                   </span>
                   <BorrowInterestTooltip
                     asset={borrowedItem.assetData.asset}
+                    outstandingAmount={borrowedItem.outstandingLoanAmount ?? 0}
                     amount={borrowedItem.accruedInterestAmount ?? 0}
                     usdValue={borrowedItem.accruedInterestUsd ?? 0}
                     known={borrowedItem.isAccruedInterestKnown === true}
-                    isDark={isDark}
+                    alignEnd={borrowedIdx === item.borrowed.filter((b) => b.usdValue >= 0.01).length - 1 && borrowedIdx > 0}
                   />
                 </div>
                 <div
@@ -740,10 +757,11 @@ export const Positionstable = ({
                         <span>{borrowedItem.assetData.amount} {formatTokenName(borrowedItem.assetData.asset)}</span>
                         <BorrowInterestTooltip
                           asset={borrowedItem.assetData.asset}
+                          outstandingAmount={borrowedItem.outstandingLoanAmount ?? 0}
                           amount={borrowedItem.accruedInterestAmount ?? 0}
                           usdValue={borrowedItem.accruedInterestUsd ?? 0}
                           known={borrowedItem.isAccruedInterestKnown === true}
-                          isDark={isDark}
+                          alignEnd={borrowedIdx === item.borrowed.filter((b) => b.usdValue >= 0.01).length - 1 && borrowedIdx > 0}
                         />
                       </div>
                       <div className="flex items-center gap-1">

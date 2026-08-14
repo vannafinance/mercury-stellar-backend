@@ -9,6 +9,8 @@ export interface BorrowInfo {
   assetData: AssetAmount;
   percentage: number;
   usdValue: number;
+  /** Current principal + interest debt shown for this borrowed asset. */
+  outstandingLoanAmount?: number;
   /** On-chain-event-derived interest accrued till date, in this token. */
   accruedInterestAmount?: number;
   accruedInterestUsd?: number;
