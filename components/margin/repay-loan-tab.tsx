@@ -395,6 +395,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   // Check if buttons should be disabled (when input is 0 or empty)
   const isInputEmpty = repayAmount === 0 || repayAmount === null || repayAmount === undefined;
 
+  // Repay is margin-account-balance-based only (no wallet top-up) — an amount
+  // above what's actually sitting in the margin account can never succeed
+  // on-chain, so surface that up front instead of letting the user hit Pay
+  // Now and land on the contract's insufficient-balance error. Small epsilon
+  // avoids flagging a 100%-preset amount as "over" due to float rounding.
+  const exceedsAvailableBalance =
+    !isInputEmpty && repayAmount > repayStats.availableBalance + 1e-7;
+
   return (
     <motion.section
       className="w-full flex flex-col gap-6 pt-8"
@@ -632,15 +640,23 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               damping: 25,
               delay: 0.5,
             }}
-            whileHover={isInputEmpty ? {} : { scale: 1.02 }}
-            whileTap={isInputEmpty ? {} : { scale: 0.98 }}
+            whileHover={isInputEmpty || exceedsAvailableBalance ? {} : { scale: 1.02 }}
+            whileTap={isInputEmpty || exceedsAvailableBalance ? {} : { scale: 0.98 }}
           >
             <Button
-              text={repayMutation.isPending ? "Processing..." : "Pay Now"}
+              text={
+                repayMutation.isPending
+                  ? "Processing..."
+                  : exceedsAvailableBalance
+                    ? "Insufficient Balance"
+                    : "Pay Now"
+              }
               size="large"
               type="gradient"
               onClick={handlePayNowClick}
-              disabled={isInputEmpty || repayMutation.isPending || !marginAccount}
+              disabled={
+                isInputEmpty || repayMutation.isPending || !marginAccount || exceedsAvailableBalance
+              }
             />
           </motion.div>
         </motion.section>

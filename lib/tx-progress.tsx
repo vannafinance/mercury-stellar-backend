@@ -2,6 +2,7 @@
 
 import toast from "react-hot-toast";
 import { useTxProgressStore } from "@/store/tx-progress-store";
+import { TxToastProgressIcon } from "@/components/ui/tx-toast-progress-icon";
 
 /**
  * Shared drop-in replacement for the old bottom-left
@@ -17,6 +18,11 @@ import { useTxProgressStore } from "@/store/tx-progress-store";
  * modal never renders a completed/failed state itself, matching the
  * submit-then-toast pattern the UI redesign asked for.
  */
+// Shared id so a dismissed-to-background loading toast gets replaced in
+// place by the eventual success/error toast, instead of stacking a second,
+// duplicate toast once the flow finishes.
+const TX_BACKGROUND_TOAST_ID = "tx-progress-background";
+
 export function showTxStep(message: string): void {
   // Every new step needs its own wallet approval first — reset to "signing"
   // (no forward progress shown) even if the previous step had already
@@ -47,11 +53,41 @@ export function showTxSuccess(message: string): void {
   useTxProgressStore.getState().set({ forceComplete: true });
   setTimeout(() => {
     useTxProgressStore.getState().set({ isOpen: false, phase: "signing", submittedAt: null, forceComplete: false });
-    toast.success(message);
+    // Same id as dismissTxProgressToBackground: if the user dismissed the
+    // modal earlier and a background "in progress" toast is still up, this
+    // replaces it in place instead of stacking a second toast.
+    //
+    // icon MUST be explicitly reset here: react-hot-toast updates a toast by
+    // id via `{...oldToast, ...newToast}` (see its store reducer), and
+    // toast.success()'s own options never set an `icon` key at all — so
+    // without this, the background toast's custom progress-ring icon (set
+    // by dismissTxProgressToBackground) silently survives the update and
+    // the default green checkmark never renders.
+    toast.success(message, { id: TX_BACKGROUND_TOAST_ID, icon: undefined });
   }, 350);
 }
 
 export function showTxError(message: string): void {
   useTxProgressStore.getState().set({ isOpen: false, phase: "signing", submittedAt: null });
-  toast.error(message);
+  // icon: undefined — see showTxSuccess's comment; same reset needed here so
+  // the default error icon renders instead of a lingering progress ring.
+  toast.error(message, { id: TX_BACKGROUND_TOAST_ID, icon: undefined });
+}
+
+/**
+ * Call when the user dismisses TransactionProgressModal via its X button.
+ * The underlying signed transaction keeps running regardless of whether the
+ * modal is open — dismissing it used to just make that fact invisible, with
+ * no way to tell what was still happening in the background. Surfaces the
+ * current step as a persistent bottom-right loading toast instead, with a
+ * real progress ring (not a generic spinner) so it visibly fills up as the
+ * flow proceeds. `showTxSuccess`/`showTxError` later replace it in place
+ * with the real result (react-hot-toast's own success/error icon).
+ */
+export function dismissTxProgressToBackground(): void {
+  const { message } = useTxProgressStore.getState();
+  useTxProgressStore.getState().set({ isOpen: false });
+  if (message) {
+    toast.loading(message, { id: TX_BACKGROUND_TOAST_ID, icon: <TxToastProgressIcon /> });
+  }
 }
