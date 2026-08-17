@@ -1113,7 +1113,13 @@ function FactsGrid({
   }
   if (!rows.length) return null;
   return (
-    <div className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2">
+    <div
+      className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2"
+      // Matches AnswerView's figures grid (answer-view.tsx) so the two answer cards
+      // read as one consistent width instead of the readable card sitting narrower
+      // than the raw-data card underneath it.
+      style={{ maxWidth: 620 }}
+    >
       {rows.slice(0, 10).map(([k, v], i) => (
         <Row key={i} k={k} v={v} />
       ))}
@@ -4291,33 +4297,40 @@ export function CopilotWorkspace() {
                         )}
                         {/* Structured answer when the model returned data; the prose
                             paragraph remains for errors, clarifications, Hinglish and
-                            anything the structured call could not produce. */}
-                        {response.answer && !isError ? (
-                          <div className="min-w-0 flex-1">
+                            anything the structured call could not produce.
+
+                            ImpactPanel and FactsGrid live in this same indented column
+                            (not as siblings of it) so every card in the answer lines up
+                            under the icon at the same left edge and the same width,
+                            instead of the facts-grid card sitting flush left of it. */}
+                        <div className="min-w-0 flex-1">
+                          {response.answer && !isError ? (
                             <AnswerView answer={response.answer} />
-                          </div>
-                        ) : (
-                          <p
-                            className={`min-w-0 flex-1 whitespace-pre-wrap text-[20px] leading-[32px] ${
-                              isError ? "text-imperial-600" : "text-vgray-800"
-                            }`}
-                          >
-                            {response.message}
-                          </p>
-                        )}
+                          ) : (
+                            <p
+                              className={`whitespace-pre-wrap text-[20px] leading-[32px] ${
+                                isError ? "text-imperial-600" : "text-vgray-800"
+                              }`}
+                            >
+                              {response.message}
+                            </p>
+                          )}
+                          {sim && !multiLeg && <ImpactPanel sim={sim} />}
+                          {response?.data && !multiLeg && (
+                            <FactsGrid
+                              data={response.data}
+                              shown={
+                                new Set(
+                                  (response.answer?.facts ?? []).map((f) =>
+                                    String(f.value).trim(),
+                                  ),
+                                )
+                              }
+                            />
+                          )}
+                        </div>
                       </div>
                     ) : null}
-                    {sim && !multiLeg && <ImpactPanel sim={sim} />}
-                    {response?.data && !multiLeg && (
-                      <FactsGrid
-                        data={response.data}
-                        shown={
-                          new Set(
-                            (response.answer?.facts ?? []).map((f) => String(f.value).trim()),
-                          )
-                        }
-                      />
-                    )}
 
                     {/* USDC variant (or other) clarify chips */}
                     {response?.kind === "clarification" &&
