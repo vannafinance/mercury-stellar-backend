@@ -2669,18 +2669,22 @@ function fmtPosAmount(amount: string): string {
  * The old path jammed every holding into one comma-separated paragraph, which
  * rendered as an unreadable wall of text. Same numbers; layout via AnswerView.
  */
-function allPositionsStructured(
+export function allPositionsStructured(
   pos: MarginPositions | null,
   farmProse: string,
 ): StructuredAnswer {
   const facts: AnswerFact[] = [];
 
   if (pos) {
-    facts.push({
-      label: "health factor",
-      value: pos.hfText,
-      tone: pos.hf < 1.1 ? "bad" : pos.hf < 1.4 ? "warn" : "good",
-    });
+    // Reused below on every `borrowed · X` row instead of a flat "warn" — a debt
+    // line isn't inherently a warning, the account's actual risk tier is. A flat
+    // "warn" put the same small-square glyph (AnswerFact's colorblind-accessible
+    // tone shape, see TONE_MARK in answer-view.tsx) on every borrowed asset even
+    // at a comfortable HF ~4.8, reading as "something is wrong here" when nothing
+    // was — reported live as "what is this box representing?". A genuinely
+    // stressed account (HF < 1.4) still shows it; a healthy one no longer does.
+    const hfTone: AnswerFact["tone"] = pos.hf < 1.1 ? "bad" : pos.hf < 1.4 ? "warn" : "good";
+    facts.push({ label: "health factor", value: pos.hfText, tone: hfTone });
     facts.push({ label: "collateral", value: money(pos.grossCollateralValue) });
     facts.push({ label: "borrowed", value: money(pos.totalBorrowedValue) });
     // "net value" must mean equity (collateral minus debt), not `pos.totalValue` —
@@ -2700,7 +2704,7 @@ function allPositionsStructured(
       facts.push({
         label: `borrowed · ${r.symbol}`,
         value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
-        tone: "warn",
+        tone: hfTone === "good" ? undefined : hfTone,
       });
     }
   }
