@@ -107,7 +107,7 @@ export const SpotSection = () => {
           },
           { title: "Swap", badge: "green" },
           {
-            title: `${(parseFloat(ev.amountIn) || 0).toFixed(2)} ${ev.tokenIn} → ${(parseFloat(ev.amountOut) || 0).toFixed(2)} ${ev.tokenOut}`,
+            title: `${(parseFloat(ev.amountIn) || 0).toFixed(2)} ${ev.tokenIn} to ${(parseFloat(ev.amountOut) || 0).toFixed(2)} ${ev.tokenOut}`,
             description: ev.protocol === "aquarius" ? "Aquarius" : "Soroswap",
           },
           { title: "Success", badge: "green" },

@@ -61,7 +61,7 @@ describe('MarginAccountService.parseBorrowNotAllowedMessage', () => {
 
   it('detects Budget/resource limit error', () => {
     const msg = parse('Budget exceeded ExceededLimit', 'XLM');
-    expect(msg).toMatch(/resource limits/i);
+    expect(msg).toMatch(/budget exceeded/i);
   });
 
   it('detects InvalidAction / UnreachableCodeReached', () => {
@@ -82,14 +82,34 @@ describe('MarginAccountService.formatUserFacingContractError', () => {
   const fmt = (raw: string, action: string) =>
     svc['formatUserFacingContractError'](raw, action);
 
-  it('formats repay ArithDomain error with debt hint', () => {
+  it('formats repay ArithDomain error as an insufficient-balance message', () => {
     const msg = fmt('Error(Object, ArithDomain) in u256_sub', 'repay');
-    expect(msg).toMatch(/outstanding debt/i);
+    expect(msg).toMatch(/insufficient balance/i);
   });
 
   it('formats repay HostError generically', () => {
     const msg = fmt('HostError occurred', 'repay');
     expect(msg).toMatch(/failed on-chain/i);
+  });
+
+  // Regression: confirmed live as `HostError: Error(WasmVm, InvalidAction)` —
+  // collect_from returns false, then AccountManager still calls
+  // remove_borrowed_token_balance, which underflows and panics. That detail
+  // only exists in the "Event log" section, which this function's `compact`
+  // (used for the plain fallback) strips off before pattern-matching — so
+  // checking against `compact` here silently never matched, and this real
+  // insufficient-balance repay fell through to the generic "failed on-chain"
+  // message instead.
+  it('recognizes a real insufficient-margin-account-balance repay failure buried in the Event log', () => {
+    const raw = [
+      'HostError: Error(WasmVm, InvalidAction)',
+      '',
+      'Event log (newest first):',
+      '   1: [Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)], data:["contract call failed", remove_borrowed_token_balance, [USDC, 15920235423598650494]]',
+      '   8: [Diagnostic Event] topics:[fn_return, collect_from], data:false',
+    ].join('\n');
+    const msg = fmt(raw, 'repay');
+    expect(msg).toMatch(/insufficient balance/i);
   });
 
   it('formats withdraw is_withdraw_allowed=false with Risk Engine hint', () => {

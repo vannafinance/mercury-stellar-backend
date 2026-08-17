@@ -8,6 +8,7 @@ import {
   normalizeCreateAccountError,
   isUnfundedWalletError,
   unfundedWalletMessage,
+  normalizeRepayError,
 } from '@/lib/errors/normalize';
 import { humanizeMcpWriteError } from '@/lib/copilot/mcp-write';
 import { humanizeLegError } from '@/lib/copilot/multi-leg-agent';
@@ -57,6 +58,18 @@ describe('cancel detection across every normalizer', () => {
 });
 
 describe('non-cancel errors still pass through their domain message', () => {
+  it('generic normalization preserves the exact contract code and tx hash', () => {
+    const hash = 'a'.repeat(64);
+    expect(normalizeContractError(`HostError: Error(Contract, #13) Tx: ${hash}`)).toBe(
+      `On-chain contract rejected the transaction (error #13). (Tx: ${hash})`,
+    );
+  });
+  it('supply maps lending-pool contract codes to their contract meaning', () => {
+    expect(normalizeSupplyError('HostError: Error(Contract, #6)', 'XLM')).toMatch(/oracle price is stale/i);
+  });
+  it('withdraw maps insufficient pool liquidity precisely', () => {
+    expect(normalizeWithdrawError('Error(Contract, #13)', 'USDC')).toMatch(/enough available liquidity/i);
+  });
   it('deposit: contract #10 stays the keep-1-XLM message', () => {
     expect(normalizeDepositCollateralError('Error(Contract, #10)')).toMatch(/keep at least 1 XLM/i);
   });
@@ -66,6 +79,12 @@ describe('non-cancel errors still pass through their domain message', () => {
         'trustline entry is missing for account GDPMCPUXAHICI4SPGSXG5YXQI2OECTD5A3OCEDKDL3YOOPZ475OSM6YH',
       ),
     ).toMatch(/Faucet/i);
+  });
+  it('margin deposit preserves AccountManager error meaning', () => {
+    expect(normalizeDepositCollateralError('HostError: Error(Contract, #5)')).toMatch(/does not hold/i);
+  });
+  it('margin transfer preserves unknown exact contract code', () => {
+    expect(normalizeTransferCollateralError('HostError: Error(Contract, #77)', 'XLM')).toMatch(/#77/);
   });
   it('transfer: risk-engine block stays informative', () => {
     expect(normalizeTransferCollateralError('is_withdraw_allowed failed', 'USDC')).toMatch(/Risk Engine/i);
@@ -156,5 +175,31 @@ describe('on-chain "rejected"/"declined" failures are not mistaken for a wallet 
     expect(
       normalizeContractError("RPC's submission queue declined this attempt"),
     ).not.toBe('Transaction cancelled by user.');
+  });
+});
+
+// Regression: a genuine insufficient-margin-account-balance repay confirmed
+// live as `HostError: Error(WasmVm, InvalidAction)` — collect_from returns
+// false, then AccountManager still calls remove_borrowed_token_balance,
+// which underflows and panics. None of that detail is in the headline; it's
+// only in the "Event log" section, which every normalizer's `compact` cuts
+// off before pattern-matching. Checking `compact` here silently never
+// matched, so this real failure fell through to a generic "failed on-chain"
+// message instead of the clean insufficient-balance one it should produce.
+const REAL_INSUFFICIENT_BALANCE_REPAY_ERROR = [
+  'HostError: Error(WasmVm, InvalidAction)',
+  '',
+  'Event log (newest first):',
+  '   0: [Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)], data:"escalating error to VM trap from failed host function call: call"',
+  '   1: [Diagnostic Event] topics:[error, Error(WasmVm, InvalidAction)], data:["contract call failed", remove_borrowed_token_balance, [USDC, 15920235423598650494]]',
+  '   2: [Failed Diagnostic Event (not emitted)] topics:[error, Error(WasmVm, InvalidAction)], data:["VM call trapped: UnreachableCodeReached", remove_borrowed_token_balance]',
+  '   8: [Diagnostic Event] topics:[fn_return, collect_from], data:false',
+].join('\n');
+
+describe('repay: a real insufficient-margin-account-balance failure is decoded, not shown as a raw dump', () => {
+  it('normalizeRepayError recognizes it', () => {
+    const msg = normalizeRepayError(REAL_INSUFFICIENT_BALANCE_REPAY_ERROR, 'BLUSDC');
+    expect(msg).toMatch(/insufficient/i);
+    expect(msg).not.toMatch(/Event log/);
   });
 });

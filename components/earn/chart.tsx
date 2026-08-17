@@ -42,6 +42,7 @@ interface ChartProps {
   supplyAPY?: number; // Live on-chain supply APY (decimal, e.g. 0.2394 = 23.94%)
   borrowAPY?: number; // Live on-chain borrow APY (decimal, e.g. 0.2418 = 24.18%)
   hideTitle?: boolean; // Hide the title + value row (used when wrapped in CollapsibleChart)
+  defaultTimeframe?: "1 Week" | "1 Month" | "3 Months" | "All Time";
 }
 
 const filterOptions = ["1 Week", "1 Month", "3 Months", "All Time"];
@@ -218,9 +219,9 @@ const filterDataByDays = (
  * and renders both an inline view and an expandable modal. Shows an empty
  * state ("No data" / "No supply position yet") when the filtered series is empty.
  */
-export const Chart = memo(function Chart({ type, currencyTab, height, containerWidth, containerHeight, heading, downtrend, uptrend, customData, supplyAPY, borrowAPY, hideTitle }: ChartProps) {
+export const Chart = memo(function Chart({ type, currencyTab, height, containerWidth, containerHeight, heading, downtrend, uptrend, customData, supplyAPY, borrowAPY, hideTitle, defaultTimeframe = "All Time" }: ChartProps) {
   const { isDark } = useTheme();
-  const [selectedFilter, setSelectedFilter] = useState("All Time");
+  const [selectedFilter, setSelectedFilter] = useState<string>(defaultTimeframe);
   const [selectedCurrency, setSelectedCurrency] = useState<string>("usd");
   const [selectedDays, setSelectedDays] = useState<string>(dayOptions[3]);
   const [selectedDepositApy, setSelectedDepositApy] = useState<string>(

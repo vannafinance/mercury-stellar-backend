@@ -9,7 +9,6 @@ import { useTheme } from "@/contexts/theme-context";
 import { MarginAccountService } from "@/lib/margin-utils";
 import { getAddress } from "@/lib/wallet-adapter";
 import { ContractService, CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
-import { appendMarginHistory } from "@/lib/margin-history";
 import {
   useMarginAccountInfoStore,
   refreshBorrowedBalances,
@@ -23,8 +22,8 @@ import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-pric
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
-const XLM_WALLET_RESERVE = 1;
 const XLM_TRANSFER_EPSILON = 1e-7;
 /** Match store + positions table: sub-cent residual debt is not real debt. */
 const BORROW_DUST_USD = 0.01;
@@ -34,8 +33,10 @@ const BORROW_DUST_USD = 0.01;
 // which costs ~5 XLM in base reserve, plus Soroban storage TTL/rent and
 // b_rate→underlying rounding dust. A 5 XLM buffer was too tight in
 // practice (4 XLM withdraws still failed on-chain); bumping to 8 keeps
-// the margin account safely above all on-chain minimums.
-const XLM_MARGIN_WITHDRAW_BUFFER = 5;
+// the margin account safely above all on-chain minimums. Applies to every
+// WB XLM withdrawal, not just debt-free accounts — this is the margin
+// account's OWN on-chain float, unrelated to the health-factor check below.
+const XLM_MARGIN_WITHDRAW_BUFFER = 8;
 const LIQUIDATION_THRESHOLD = 1.1;
 
 /**
@@ -70,6 +71,14 @@ export const TransferCollateral = () => {
   const [marginAccount, setMarginAccount] = useState<string>("");
   const [marginAccountBalance, setMarginAccountBalance] = useState<number>(0);
   const [walletBalance, setWalletBalance] = useState<number>(0);
+  // Real on-chain XLM minimum reserve (base + subentries) — a flat "keep 1
+  // XLM" undershoots for a wallet holding several trustlines (USDC, BLUSDC,
+  // AQUSDC, SOUSDC, LP shares, ...), each adding 0.5 XLM to the real floor.
+  // That underestimate let Max/100% fill in more than the wallet could
+  // actually send, which then traps on-chain with Error(Contract, #10)
+  // ("resulting balance is not within the allowed range") — same bug the
+  // Earn Supply tab's XLM Max had, fixed there with this same helper.
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
   const qc = useQueryClient();
   const totalCollateralValue = useMarginAccountInfoStore((state) => state.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
@@ -92,6 +101,17 @@ export const TransferCollateral = () => {
     }
   }, [globalIsConnected, globalAddress]);
 
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
+
   const tokenPrices = useTokenPricesFromHook(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const sourceBalance = selectedTransferType === "MB" ? walletBalance : marginAccountBalance;
   const maxTransferableBalance = computeMaxTransferableBalance(
@@ -100,9 +120,17 @@ export const TransferCollateral = () => {
     sourceBalance
   );
   const selectedTokenPrice = tokenPrices[normalizeContractTokenSymbol(selectedCurrency)] ?? 1;
-  // USD value of the balance shown on the right side of the input row,
-  // which mirrors `sourceBalance` (wallet for MB transfers, margin for WB).
-  const sourceBalanceInUsd = sourceBalance * selectedTokenPrice;
+  // What gets SHOWN as "your balance" — for a wallet→margin XLM transfer this
+  // is the spendable amount (`maxTransferableBalance`), not the raw wallet
+  // balance: showing the full balance and then having Max/100% fill in a
+  // smaller number made it look like XLM had "gone missing". Every other
+  // case (non-XLM, or margin→wallet) has no such reserve, so the two already
+  // match and this is a no-op there.
+  const displayedSourceBalance =
+    selectedTransferType === "MB" && normalizeContractTokenSymbol(selectedCurrency) === "XLM"
+      ? maxTransferableBalance
+      : sourceBalance;
+  const sourceBalanceInUsd = displayedSourceBalance * selectedTokenPrice;
   const maxRiskSafeWithdraw = (() => {
     if (selectedTransferType !== "WB") return maxTransferableBalance;
     if (!hasMeaningfulDebt) return maxTransferableBalance;
@@ -132,9 +160,16 @@ export const TransferCollateral = () => {
   const maxExecutableWithdraw = (() => {
     if (selectedTransferType !== "WB") return maxTransferableBalance;
     const token = normalizeContractTokenSymbol(selectedCurrency);
-    // In practice, exact full XLM collateral withdraw can fail on-chain due to
-    // state/rounding drift. Keep a small operational buffer for WB XLM when no debt.
-    if (token === "XLM" && !hasMeaningfulDebt) {
+    // Exact full XLM collateral withdraw can fail on-chain due to state/
+    // rounding drift — keep a small operational buffer for WB XLM. This is
+    // the margin account's OWN on-chain reserve requirement (trustlines +
+    // persistent Soroban storage), completely separate from the
+    // health-factor check `maxRiskSafeWithdraw` already applies — so it must
+    // apply regardless of whether the account carries any debt. Previously
+    // gated behind `!hasMeaningfulDebt`, which let 100%/Max fill in the full
+    // margin balance for any account WITH debt, always failing on-chain by
+    // exactly this buffer amount.
+    if (token === "XLM") {
       return Math.max(
         0,
         Math.min(maxRiskSafeWithdraw, maxTransferableBalance - XLM_MARGIN_WITHDRAW_BUFFER)
@@ -167,7 +202,7 @@ export const TransferCollateral = () => {
     balance: number
   ) {
     if (transferType === "MB" && tokenSymbol === "XLM") {
-      return Math.max(0, balance - XLM_WALLET_RESERVE);
+      return maxSpendableXlm(balance, xlmMinReserve);
     }
     return Math.max(0, balance);
   }
@@ -324,7 +359,7 @@ export const TransferCollateral = () => {
   const transferMutation = useMutation({
     onMutate: () => {
       showTxStep(
-        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}...`
+        `${selectedTransferType === "MB" ? "Transferring" : "Withdrawing"} ${valueInput || 0} ${selectedCurrency} ${selectedTransferType === "MB" ? "to your margin account" : "to your wallet"}`
       );
     },
     mutationFn: async () => {
@@ -348,16 +383,8 @@ export const TransferCollateral = () => {
       return result;
     },
     onSuccess: async (result) => {
-      appendMarginHistory({
-        marginAccountAddress: marginAccount,
-        type: selectedTransferType === "MB" ? "transfer-in" : "transfer-out",
-        asset: normalizeContractTokenSymbol(selectedCurrency),
-        amount: Number(valueInput).toFixed(7),
-        hash: result.hash ?? "",
-      });
-
       showTxSuccess(
-        `${selectedTransferType === "MB" ? "Transfer to margin successful" : "Transfer to wallet successful"}! Tx: ${result.hash ? result.hash.slice(0, 16) + '…' : ''}`
+        `${selectedTransferType === "MB" ? "Transfer to margin successful!" : "Transfer to wallet successful!"}`
       );
 
       // Reset the form and invalidate RQ caches first so the UI updates even
@@ -582,7 +609,7 @@ export const TransferCollateral = () => {
                 isDark ? "text-white" : "text-[#111111]"
               }`}
             >
-              {(selectedTransferType === "MB" ? walletBalance : marginAccountBalance).toFixed(2)} {selectedCurrency}
+              {displayedSourceBalance.toFixed(2)} {selectedCurrency}
             </span>
             <motion.p
               className={`text-sm font-medium ${

@@ -9,21 +9,25 @@ export const PORTFOLIO_STATS_ITEMS = [
     id: "walletBalance",
     name: "Wallet Balance",
     icon: "/margin/dollar.png",
+    tooltip: "Spendable assets in your connected wallet.",
   },
   {
     id: "marginAccountBalance",
     name: "Margin Account Balance",
     icon: "/margin/bag.png",
+    tooltip: "Current value held in your margin account.",
   },
   {
     id: "netAvailableCollateral",
     name: "Net Available Collateral",
     icon: "/margin/health.png",
+    tooltip: "Collateral currently available after debt.",
   },
   {
     id: "totalBorrowed",
     name: "Total Borrowed",
     icon: "/margin/retry.png",
+    tooltip: "Outstanding debt, including accrued interest.",
   },
 ] as const;
 
@@ -33,7 +37,7 @@ export const netEarningsData = [
     { date: "2025-01-08", amount: 1230 },
     { date: "2025-01-15", amount: 1270 },
     { date: "2025-01-22", amount: 1300 },
-  
+
     // FEB 2025
     { date: "2025-02-01", amount: 1350 },
     { date: "2025-02-08", amount: 1380 },
@@ -175,4 +179,3 @@ export const netEarningsData = [
     { date: "2025-12-15", amount: 3300 },
     { date: "2025-12-22", amount: 3400 },
   ];
-  

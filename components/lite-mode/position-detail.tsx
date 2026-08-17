@@ -12,15 +12,13 @@ import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/marg
 import type { LitePosition } from "./lite-position-types";
 import { calcExitPreview } from "./lite-position-math";
 import { closePosition } from "@/lib/one-click-strategy";
-import { applyLiteExit } from "@/lib/lite-positions";
 import { AquariusService } from "@/lib/aquarius-utils";
 import { SoroswapService } from "@/lib/soroswap-utils";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 
 const showStep = (message: string) => showTxStep(message);
-const showStepSuccess = (message: string, txHash?: string) =>
-  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
 function parseContractError(msg: string): string {
@@ -129,7 +127,7 @@ const EXIT_PRESETS = [25, 50, 75, 100] as const;
  *
  * Confirming runs `closePosition` through a React Query mutation that streams
  * progress into a status modal; on success it scales the local Lite registry
- * record to the new state (`applyLiteExit`), invalidates the margin/earn caches,
+ * invalidates the chain-derived Lite/margin/earn caches,
  * and refreshes balances. Contract/Freighter errors are mapped to friendly
  * copy (including treating user-reject XDR parse errors as a cancellation).
  *
@@ -276,19 +274,16 @@ export const PositionDetail = ({ position, onBack, onExitSuccess }: PositionDeta
       return result;
     },
     onMutate: () => {
-      showStep("Preparing transaction...");
+      showStep("Preparing transaction");
     },
     onSuccess: async (result) => {
-      // Drop / scale the Lite registry record to match the on-chain state.
-      // Without this the Position tab keeps showing the original numbers
-      // even after a 100% close, which looks like the close failed.
-      applyLiteExit(position.id, exitPct);
       showStepSuccess(
         `Successfully withdrew from ${position.protocol} and repaid Vanna loan. Your collateral is now freed.`,
         result.hash
       );
       qc.invalidateQueries({ queryKey: ['margin'] });
       qc.invalidateQueries({ queryKey: ['earn'] });
+      qc.invalidateQueries({ queryKey: ['lite-positions', marginAccountAddress] });
       if (marginAccountAddress) {
         try {
           // forceRefresh: this exit just repaid real debt — an unforced call

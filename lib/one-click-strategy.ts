@@ -2,7 +2,6 @@ import { MarginAccountService } from './margin-utils';
 import { BlendService } from './blend-utils';
 import { SoroswapService } from './soroswap-utils';
 import { AquariusService } from './aquarius-utils';
-import { appendFarmHistory, buildFarmPoolKey } from './farm-history';
 import { CONTRACT_ADDRESSES } from './stellar-utils';
 
 /** True when `poolProtocol` names the Aquarius AMM (case-insensitive). Every
@@ -23,22 +22,6 @@ async function addLpLiquidity(
   const result = isAquarius(poolProtocol)
     ? await AquariusService.addLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', xlmAmt, usdcAmt)
     : await SoroswapService.addLiquidity(userAddress, marginAccountAddress, xlmAmt, usdcAmt);
-
-  // Record locally so the Farm pool detail page and Portfolio's Farm tab have
-  // a Position History entry for this action even when it was opened through
-  // Lite mode rather than the Farm page's own Add Liquidity form — this
-  // helper is the single chokepoint both paths route through. (Farm's direct
-  // Add Liquidity form already does this itself; see components/farm/add-liquidity.tsx.)
-  if (result.success) {
-    appendFarmHistory({
-      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
-      poolKey: buildFarmPoolKey('XLM', 'USDC'),
-      marginAccountAddress,
-      action: 'add',
-      amountDisplay: `${xlmAmt.toFixed(2)} XLM + ${usdcAmt.toFixed(2)} USDC`,
-      txHash: result.hash ?? '',
-    });
-  }
 
   return result;
 }
@@ -108,17 +91,6 @@ async function removeLpLiquidity(
   const result = isAquarius(poolProtocol)
     ? await AquariusService.removeLiquidity(userAddress, marginAccountAddress, 'XLM', 'USDC', lpAmount)
     : await SoroswapService.removeLiquidity(userAddress, marginAccountAddress, lpAmount);
-
-  if (result.success) {
-    appendFarmHistory({
-      protocol: isAquarius(poolProtocol) ? 'aquarius' : 'soroswap',
-      poolKey: buildFarmPoolKey('XLM', 'USDC'),
-      marginAccountAddress,
-      action: 'remove',
-      amountDisplay: `${lpAmount.toFixed(2)} LP`,
-      txHash: result.hash ?? '',
-    });
-  }
 
   return result;
 }
@@ -200,7 +172,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
         ? (collateralAmount + borrowAmount) * pct
         : borrowAmount * pct;
       const poolToken = poolTokens[0] as TokenAsset;
-      step(`Step 1/2: Withdrawing ${withdrawAmt.toFixed(2)} ${poolToken} from ${poolProtocol}...`);
+      step(`Step 1/2: Withdrawing ${withdrawAmt.toFixed(2)} ${poolToken} from ${poolProtocol}`);
       const r = await BlendService.withdrawFromBlendPool(
         userAddress, marginAccountAddress, poolToken, withdrawAmt
       );
@@ -221,7 +193,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
         return { success: false, error: `No ${poolProtocol} LP balance found to remove.` };
       }
       const lpAmt = realLpBalance * pct;
-      step(`Step 1/2: Removing ${lpAmt.toFixed(4)} LP from ${poolProtocol} ${poolTokens.join('/')} pool...`);
+      step(`Step 1/2: Removing ${lpAmt.toFixed(4)} LP from ${poolProtocol} ${poolTokens.join('/')} pool`);
       const r = await removeLpLiquidity(poolProtocol, userAddress, marginAccountAddress, lpAmt);
       if (!r.success) return { success: false, error: `Remove liquidity failed: ${r.error}` };
     }
@@ -253,7 +225,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
     if (collateralRepayAmt > 0) {
       const cappedAmt = await capToSpendable(collateralRepaySymbol, collateralRepayAmt);
       if (cappedAmt > 0) {
-        step(`Repaying ${cappedAmt.toFixed(4)} ${collateralAsset} to Vanna...`);
+        step(`Repaying ${cappedAmt.toFixed(4)} ${collateralAsset} to Vanna`);
         const r = await MarginAccountService.repayLoan(marginAccountAddress, collateralRepaySymbol, toWad(cappedAmt));
         if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
       }
@@ -262,7 +234,7 @@ export async function closePosition(params: ClosePositionParams): Promise<OneCli
     if (repayAmt > 0) {
       const cappedAmt = await capToSpendable(borrowRepaySymbol, repayAmt);
       if (cappedAmt > 0) {
-        step(`Step 2/2: Repaying ${cappedAmt.toFixed(4)} ${borrowAsset} to Vanna...`);
+        step(`Step 2/2: Repaying ${cappedAmt.toFixed(4)} ${borrowAsset} to Vanna`);
         const r = await MarginAccountService.repayLoan(marginAccountAddress, borrowRepaySymbol, toWad(cappedAmt));
         if (!r.success) return { success: false, error: `Repay failed: ${r.error}` };
         return { success: true, hash: r.hash };
@@ -364,7 +336,7 @@ export async function executeOneClickStrategy(
     // inherits any borrow-path failure. The standalone `deposit_collateral_tokens`
     // path below never touches borrow, so a deposit works independently of it.
     if (borrowAmount <= 0) {
-      step(`Step 1/2: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
+      step(`Step 1/2: Depositing ${collateralAmount} ${collateralAsset} as collateral`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
         marginAccountAddress,
         poolTokenSymbol(collateralAsset, poolProtocol, poolType),
@@ -379,12 +351,12 @@ export async function executeOneClickStrategy(
         const otherAsset = (collateralAsset === 'XLM' ? 'USDC' : 'XLM') as TokenAsset;
         const half = collateralAmount / 2;
         const other = half * (prices[collateralAsset] / (prices[otherAsset] || 1)) * 0.99;
-        step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} → ${otherAsset}...`);
+        step(`Step 2/3: Swapping ${half.toFixed(2)} ${collateralAsset} for ${otherAsset}`);
         const sw = await swapLpAsset(poolProtocol, userAddress, marginAccountAddress, collateralAsset, half);
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
         const xlmAmt = collateralAsset === 'XLM' ? half : other;
         const usdcAmt = collateralAsset === 'USDC' ? half : other;
-        step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
+        step(`Step 3/3: Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool`);
         const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
         return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
       }
@@ -398,16 +370,16 @@ export async function executeOneClickStrategy(
       // comment on BlendTransactionResult).
       let depositToBlendKnownSequence = depositResult.nextSequence;
       if (scenario === 'cross-asset-swap' && poolToken !== collateralAsset) {
-        step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} → ${poolToken} via Soroswap...`);
+        step(`Step 2/3: Swapping ${collateralAmount} ${collateralAsset} for ${poolToken} via Soroswap`);
         const sw = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );
         if (!sw.success) return { success: false, error: `Swap failed: ${sw.error}` };
         depositToBlendKnownSequence = undefined;
         deployAmount = collateralAmount * (prices[collateralAsset] / (prices[poolToken] || 1)) * 0.99;
-        step(`Step 3/3: Deploying ~${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        step(`Step 3/3: Deploying ~${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}`);
       } else {
-        step(`Step 2/2: Deploying ${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        step(`Step 2/2: Deploying ${deployAmount.toFixed(2)} ${poolToken} to ${poolProtocol}`);
       }
       const r = await BlendService.depositToBlendPool(
         userAddress, marginAccountAddress, poolToken, deployAmount, depositToBlendKnownSequence
@@ -428,8 +400,8 @@ export async function executeOneClickStrategy(
       const total = collateralAmount + borrowAmount;
       step(
         leverage > 1
-          ? `Step 1/1: Depositing ${collateralAmount} ${collateralAsset}, borrowing ${borrowAmount.toFixed(4)} ${collateralAsset}, and deploying ${total.toFixed(4)} ${collateralAsset} to ${poolProtocol}...`
-          : `Step 1/1: Depositing ${collateralAmount} ${collateralAsset} and deploying ${total.toFixed(4)} ${collateralAsset} to ${poolProtocol}...`
+          ? `Step 1/1: Depositing ${collateralAmount} ${collateralAsset}, borrowing ${borrowAmount.toFixed(4)} ${collateralAsset}, and deploying ${total.toFixed(4)} ${collateralAsset} to ${poolProtocol}`
+          : `Step 1/1: Depositing ${collateralAmount} ${collateralAsset} and deploying ${total.toFixed(4)} ${collateralAsset} to ${poolProtocol}`
       );
 
       const atomicResult = await MarginAccountService.depositBorrowAndDeployBlendAtomic(
@@ -461,8 +433,8 @@ export async function executeOneClickStrategy(
     if (scenario === 'same-asset') {
       step(
         leverage > 1
-          ? `Step 1/2: Depositing ${collateralAmount} ${collateralAsset} and borrowing ${borrowAmount.toFixed(2)} ${collateralAsset}...`
-          : `Step 1/1: Depositing ${collateralAmount} ${collateralAsset} as collateral...`
+          ? `Step 1/2: Depositing ${collateralAmount} ${collateralAsset} and borrowing ${borrowAmount.toFixed(2)} ${collateralAsset}`
+          : `Step 1/1: Depositing ${collateralAmount} ${collateralAsset} as collateral`
       );
       const result = await MarginAccountService.depositAndBorrow(
         marginAccountAddress,
@@ -478,7 +450,7 @@ export async function executeOneClickStrategy(
       // oracle-price estimate (see fetchLpReserves doc comment above) — so
       // reserves are re-read here, right before borrowing, rather than
       // trusting whatever `borrowAmount`/`borrowAsset` the caller passed in.
-      step(`Step 1/4: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
+      step(`Step 1/4: Depositing ${collateralAmount} ${collateralAsset} as collateral`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
         marginAccountAddress,
         poolTokenSymbol(collateralAsset, poolProtocol, poolType),
@@ -493,7 +465,7 @@ export async function executeOneClickStrategy(
       let pairedBorrowAmount = 0;
 
       if (leverage > 1) {
-        step(`Step 2/4: Reading live ${poolProtocol} pool reserves...`);
+        step(`Step 2/4: Reading live ${poolProtocol} pool reserves`);
         const reserves = await fetchLpReserves(poolProtocol);
         if (!reserves) {
           return { success: false, error: `Could not read ${poolProtocol} pool reserves — please retry.` };
@@ -540,7 +512,7 @@ export async function executeOneClickStrategy(
         let nextSequence: string | undefined = depositResult.nextSequence;
 
         if (collateralLegBorrowAmount > 0) {
-          step(`Step 3/4: Borrowing ${collateralLegBorrowAmount.toFixed(2)} ${collateralAsset} from Vanna...`);
+          step(`Step 3/4: Borrowing ${collateralLegBorrowAmount.toFixed(2)} ${collateralAsset} from Vanna`);
           const b1 = await MarginAccountService.borrowTokens(
             marginAccountAddress,
             poolTokenSymbol(collateralAsset, poolProtocol, poolType),
@@ -551,7 +523,7 @@ export async function executeOneClickStrategy(
           nextSequence = b1.nextSequence;
         }
 
-        step(`Step 4/4: Borrowing ${pairedBorrowAmount.toFixed(2)} ${otherAsset} from Vanna to pair into the pool...`);
+        step(`Step 4/4: Borrowing ${pairedBorrowAmount.toFixed(2)} ${otherAsset} from Vanna to pair into the pool`);
         const b2 = await MarginAccountService.borrowTokens(
           marginAccountAddress,
           poolTokenSymbol(otherAsset, poolProtocol, poolType),
@@ -569,14 +541,14 @@ export async function executeOneClickStrategy(
       const xlmAmt = collateralAsset === 'XLM' ? netCollateralLeg : netPairedLeg;
       const usdcAmt = collateralAsset === 'USDC' ? netCollateralLeg : netPairedLeg;
 
-      step(`Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool...`);
+      step(`Adding liquidity to ${poolProtocol} ${poolTokens.join('/')} pool`);
       const r = await addLpLiquidity(poolProtocol, userAddress, marginAccountAddress, xlmAmt, usdcAmt);
       return r.success ? { success: true, hash: r.hash } : { success: false, error: r.error };
     } else {
       // cross-asset for single-asset (Blend) pools: deposit collateral first,
       // then borrow the other token.
       const totalSteps = borrowAmount > 0 ? 4 : 2;
-      step(`Step 1/${totalSteps}: Depositing ${collateralAmount} ${collateralAsset} as collateral...`);
+      step(`Step 1/${totalSteps}: Depositing ${collateralAmount} ${collateralAsset} as collateral`);
       const depositResult = await MarginAccountService.depositCollateralTokens(
         marginAccountAddress,
         poolTokenSymbol(collateralAsset, poolProtocol, poolType),
@@ -588,7 +560,7 @@ export async function executeOneClickStrategy(
       phase1NextSequence = depositResult.nextSequence;
 
       if (leverage > 1 && borrowAmount > 0) {
-        step(`Step 2/${totalSteps}: Borrowing ${borrowAmount.toFixed(2)} ${borrowAsset} from Vanna...`);
+        step(`Step 2/${totalSteps}: Borrowing ${borrowAmount.toFixed(2)} ${borrowAsset} from Vanna`);
         const borrowResult = await MarginAccountService.borrowTokens(
           marginAccountAddress,
           poolTokenSymbol(borrowAsset, poolProtocol, poolType),
@@ -610,7 +582,7 @@ export async function executeOneClickStrategy(
       if (scenario === 'same-asset') {
         const total = collateralAmount + borrowAmount;
         const stepLabel = leverage > 1 ? '2/2' : '1/1';
-        step(`Step ${stepLabel}: Deploying ${total.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        step(`Step ${stepLabel}: Deploying ${total.toFixed(2)} ${poolToken} to ${poolProtocol}`);
         console.log(`[OneClick] calling depositToBlendPool with phase1NextSequence=${phase1NextSequence} (userAddress=${userAddress})`);
         const r = await BlendService.depositToBlendPool(
           userAddress, marginAccountAddress, poolToken, total, phase1NextSequence
@@ -622,14 +594,14 @@ export async function executeOneClickStrategy(
         const totalSteps = borrowAmount > 0 ? 4 : 2;
         let nextSequence = phase1NextSequence;
         if (borrowAmount > 0) {
-          step(`Step 3/${totalSteps}: Deploying ${borrowAmount.toFixed(2)} ${borrowAsset} to ${poolProtocol} ${borrowAsset} pool...`);
+          step(`Step 3/${totalSteps}: Deploying ${borrowAmount.toFixed(2)} ${borrowAsset} to ${poolProtocol} ${borrowAsset} pool`);
           const r1 = await BlendService.depositToBlendPool(
             userAddress, marginAccountAddress, borrowAsset, borrowAmount, nextSequence
           );
           if (!r1.success) return { success: false, error: `Deploy ${borrowAsset} failed: ${r1.error}` };
           nextSequence = r1.nextSequence;
         }
-        step(`Step ${totalSteps}/${totalSteps}: Deploying ${collateralAmount.toFixed(2)} ${collateralAsset} to ${poolProtocol} ${collateralAsset} pool...`);
+        step(`Step ${totalSteps}/${totalSteps}: Deploying ${collateralAmount.toFixed(2)} ${collateralAsset} to ${poolProtocol} ${collateralAsset} pool`);
         const r2 = await BlendService.depositToBlendPool(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount, nextSequence
         );
@@ -637,7 +609,7 @@ export async function executeOneClickStrategy(
       }
 
       if (scenario === 'cross-asset-swap') {
-        step(`Step 3/4: Swapping ${collateralAmount.toFixed(2)} ${collateralAsset} → ${poolToken} via Soroswap...`);
+        step(`Step 3/4: Swapping ${collateralAmount.toFixed(2)} ${collateralAsset} for ${poolToken} via Soroswap`);
         const swapResult = await SoroswapService.swapFromMargin(
           userAddress, marginAccountAddress, collateralAsset, collateralAmount
         );
@@ -648,7 +620,7 @@ export async function executeOneClickStrategy(
           collateralAmount * (prices[collateralAsset] / (prices[poolToken] || 1)) * 0.99;
         const totalPoolToken = borrowAmount + swappedTokens;
 
-        step(`Step 4/4: Deploying ~${totalPoolToken.toFixed(2)} ${poolToken} to ${poolProtocol}...`);
+        step(`Step 4/4: Deploying ~${totalPoolToken.toFixed(2)} ${poolToken} to ${poolProtocol}`);
         const r = await BlendService.depositToBlendPool(
           userAddress, marginAccountAddress, poolToken, totalPoolToken
         );

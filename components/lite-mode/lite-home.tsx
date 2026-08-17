@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useMarginAccountInfoStore, refreshBorrowedBalances } from "@/store/margin-account-info-store";
@@ -11,12 +12,11 @@ import { PositionDetail } from "./position-detail";
 import type { LitePosition, LitePositionStatus } from "./lite-position-types";
 import { calcNetApr, calcEarningsUsd, aggregateByPool } from "./lite-position-math";
 import {
-  getLitePositions,
-  subscribeLitePositions,
-  reconcileLiteLpPositionsWithChain,
+  getLitePositionsFromChain,
   type LitePositionRecord,
 } from "@/lib/lite-positions";
 import { useTokenPrices } from "@/hooks/use-token-prices";
+import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
 const containerVariants: Variants = {
   hidden: { opacity: 0 },
@@ -38,10 +38,8 @@ type LiteTab = "deposit" | "position";
  * tab switcher: "Deposit & Deploy" (the {@link OneClickStrategy} flow) and
  * "Position" (the user's open leveraged-yield positions).
  *
- * Positions are sourced exclusively from the Lite-only registry
- * (`getLitePositions`, kept live via `subscribeLitePositions`), deliberately NOT
- * from the margin store's borrowedBalances — so vanilla Pro-mode borrows never
- * leak into the Lite Position tab. Each record is re-priced against live oracle
+ * Positions are reconstructed from live tracking-token/LP/debt state. Each
+ * record is re-priced against live oracle
  * prices to recompute collateral/borrow USD, a simple-APR earnings estimate, and
  * a per-position health factor, then collapsed per-pool via `aggregateByPool`.
  * The Position tab routes between a list, a detail/exit view, and an empty state.
@@ -52,6 +50,8 @@ export const LiteHome = () => {
   const [selectedPositionId, setSelectedPositionId] = useState<string | null>(null);
 
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
+  const qc = useQueryClient();
+  const { tick } = useLedgerTick();
 
   // Lite mode reads totalCollateralValue/totalBorrowedValue straight off this
   // store (see one-click-strategy.tsx's `newHF` and position-detail.tsx's exit
@@ -66,31 +66,18 @@ export const LiteHome = () => {
     if (marginAccountAddress) refreshBorrowedBalances(marginAccountAddress, true);
   }, [marginAccountAddress]);
 
-  // Subscribe to the Lite-only registry. We deliberately don't read from the
-  // margin store's borrowedBalances anymore — that would surface Pro-mode
-  // borrows in the Lite Position tab, which is what the user pushed back on:
-  // a wallet with a vanilla margin borrow (no Lite "Deposit & Deploy") should
-  // show nothing here.
-  const [liteRecords, setLiteRecords] = useState<LitePositionRecord[]>(() =>
-    getLitePositions(marginAccountAddress)
-  );
-  useEffect(() => {
-    setLiteRecords(getLitePositions(marginAccountAddress));
-    return subscribeLitePositions(() => {
-      setLiteRecords(getLitePositions(marginAccountAddress));
-    });
-  }, [marginAccountAddress]);
+  const { data: liteRecords = [] } = useQuery<LitePositionRecord[]>({
+    queryKey: ["lite-positions", marginAccountAddress],
+    queryFn: () => getLitePositionsFromChain(marginAccountAddress),
+    enabled: Boolean(marginAccountAddress),
+    staleTime: 3_000,
+  });
 
-  // The local cache above is a HINT, not a source of truth, for the two LP
-  // pools (Aquarius/Soroswap XLM-USDC) — validate it against live chain state
-  // every time this loads: drop any cached position whose real LP balance is
-  // now ~0 (closed some other way), and reconstruct a best-effort position
-  // for a real, nonzero LP balance that has nothing cached (cleared cache, or
-  // a different browser/device). Mutates the cache via appendLitePosition/
-  // removeLitePosition, which the subscription above already re-renders on.
   useEffect(() => {
-    if (marginAccountAddress) reconcileLiteLpPositionsWithChain(marginAccountAddress);
-  }, [marginAccountAddress]);
+    if (tick && marginAccountAddress) {
+      qc.invalidateQueries({ queryKey: ["lite-positions", marginAccountAddress] });
+    }
+  }, [tick, marginAccountAddress, qc]);
 
   const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
 

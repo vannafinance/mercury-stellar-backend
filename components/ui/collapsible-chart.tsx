@@ -24,6 +24,7 @@ interface CollapsibleChartProps {
     customData?: Array<{ date: string; amount: number }>;
     supplyAPY?: number;
     borrowAPY?: number;
+    defaultTimeframe?: "1 Week" | "1 Month" | "3 Months" | "All Time";
   };
   /** Desktop chart height */
   desktopHeight?: number;

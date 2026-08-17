@@ -53,22 +53,10 @@ const initialState: User = {
 
 // Export Store
 //
-// Persisted (versioned) for an instant first paint of the last-connected wallet.
-// The migrate fn always forces `isLoading` back to false on rehydrate so a
-// reload mid-connect never leaves the UI stuck on "Connecting...".
+// Financial and wallet state is intentionally memory-only. Freighter/Privy are
+// authoritative for connection state and every balance is re-read on-chain;
+// persisting these values caused stale balances to appear after reloads.
 export const useUserStore = createNewStore(initialState, {
   name: "user-store",
   devTools: true,
-  persist: {
-    name: "user-store",
-    version: 1,
-    migrate: (persistedState: any, version: number) => {
-      // Always reset isLoading to false on load to prevent stuck "Connecting..." state
-      return {
-        ...persistedState,
-        isLoading: false,
-      };
-    },
-  },
 });
-

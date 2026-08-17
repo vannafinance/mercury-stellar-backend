@@ -11,7 +11,9 @@ export type AccountSnapshot = Partial<MarginSnapshot> & {
   marginAccountAddress?: string;
 };
 
-export const ACCOUNT_SNAPSHOT_KEY = ["account-snapshot"] as const;
+// Nest under `margin` so every existing post-transaction
+// invalidateQueries({ queryKey: ['margin'] }) also refreshes this snapshot.
+export const ACCOUNT_SNAPSHOT_KEY = ["margin", "account-snapshot"] as const;
 
 /** Matches the route's `s-maxage=15`, so at most one on-chain read per window. */
 const SNAPSHOT_TTL_MS = 15_000;

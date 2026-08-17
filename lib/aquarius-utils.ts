@@ -1563,6 +1563,7 @@ export class AquariusService {
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status === 'PENDING') {
+        await AquariusService.pollTransactionStatus(server, result.hash);
         return { success: true, hash: result.hash };
       }
       return { success: false, error: `Network rejected (status: ${result.status})` };

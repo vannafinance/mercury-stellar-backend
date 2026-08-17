@@ -37,18 +37,22 @@ export async function GET(req: NextRequest) {
   if (!REST_BASE || !MERCURY_KEY) {
     return NextResponse.json(
       { error: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." },
-      { status: 500 },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
     );
   }
 
   const sp = req.nextUrl.searchParams;
   const contract = sp.get("contract");
   const account = sp.get("account");
-  const limit = sp.get("limit") ?? DEFAULT_LIMIT;
+  const requestedLimit = Number(sp.get("limit") ?? DEFAULT_LIMIT);
+  const limit = String(Number.isFinite(requestedLimit) ? Math.min(200, Math.max(1, Math.floor(requestedLimit))) : 100);
   const cursor = sp.get("cursor");
 
-  if (!contract) {
-    return NextResponse.json({ error: "Missing `contract` query param." }, { status: 400 });
+  if (!contract || !accountTopicXdr(contract)) {
+    return NextResponse.json(
+      { error: "Missing or invalid `contract` query param." },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const url = new URL(`${REST_BASE}/rest/events/by-contract/${contract}`);
@@ -57,22 +61,35 @@ export async function GET(req: NextRequest) {
   if (account) {
     const topics = accountTopicXdr(account);
     if (!topics) {
-      return NextResponse.json({ error: "Invalid `account` address." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid `account` address." },
+        { status: 400, headers: { "Cache-Control": "no-store" } },
+      );
     }
     url.searchParams.set("topics", topics);
   }
 
-  const upstream = await fetch(url, {
-    headers: { Authorization: `Bearer ${MERCURY_KEY}` },
-  });
+  try {
+    const upstream = await fetch(url, {
+      headers: { Authorization: `Bearer ${MERCURY_KEY}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+    });
 
-  const json = await upstream.json().catch(() => null);
-  if (!upstream.ok || json === null) {
+    const json = await upstream.json().catch(() => null);
+    if (!upstream.ok || json === null) {
+      return NextResponse.json(
+        { error: `Mercury returned ${upstream.status}.` },
+        { status: upstream.ok ? 502 : upstream.status, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    return NextResponse.json(json, { status: 200, headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
     return NextResponse.json(
-      { error: `Mercury returned ${upstream.status}.` },
-      { status: upstream.ok ? 502 : upstream.status },
+      { error: timedOut ? "Mercury request timed out." : "Mercury is unavailable." },
+      { status: 504, headers: { "Cache-Control": "no-store" } },
     );
   }
-
-  return NextResponse.json(json, { status: 200 });
 }

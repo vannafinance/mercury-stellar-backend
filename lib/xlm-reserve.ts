@@ -11,9 +11,12 @@ const BASE_RESERVE_XLM = 0.5;
 // Used when the on-chain read fails: base (2 entries = 1 XLM) + one trustline.
 const FALLBACK_MIN_RESERVE_XLM = 1.5;
 
-// Headroom kept on top of the strict minimum so transaction fees (and a little
-// slack) never push the wallet under its reserve mid-flow.
-export const XLM_FEE_BUFFER = 0.5;
+// Headroom kept on top of the strict minimum so a transaction fee never pushes
+// the wallet under its reserve. Deliberately tiny — actual Stellar fees are a
+// small fraction of an XLM — so a "Max" XLM send only holds back what the
+// network itself requires (the reserve above), not an oversized extra cushion
+// that reads as "some of my balance just vanished".
+export const XLM_FEE_BUFFER = 0.05;
 
 /**
  * The minimum native XLM `address` must keep on-chain: `(2 + subentries) ×

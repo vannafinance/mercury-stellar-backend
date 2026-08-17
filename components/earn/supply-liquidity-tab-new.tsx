@@ -11,7 +11,7 @@
  */
 import { useState, useEffect, useMemo, useRef, memo } from "react";
 import { useRouter } from "next/navigation";
-import toast from "react-hot-toast";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import Image from "next/image";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { iconPaths } from "@/lib/constants";
@@ -136,14 +136,14 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
       // maxSpendableXlm above), and non-native assets (BLUSDC/AqUSDC/SoUSDC)
       // have no reserve requirement of their own — their fees are paid in
       // XLM, not the supplied asset — so a genuine 100% supply is safe.
-      const toastId = toast.loading(`Supplying ${numAmount} ${selectedOption} to the lending pool...`);
+      showTxStep(`Supplying ${numAmount} ${selectedOption} to the lending pool`);
       try {
         await supply.mutateAsync({ amount: numAmount, assetType: normalizedAsset as AssetType });
-        toast.success(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`, { id: toastId });
+        showTxSuccess(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`);
         setAmount("");
         setSelectedPercentage(0);
       } catch (err) {
-        toast.error(normalizeSupplyError(err instanceof Error ? err.message : undefined, selectedOption), { id: toastId });
+        showTxError(normalizeSupplyError(err instanceof Error ? err.message : undefined, selectedOption));
       }
     }
   };

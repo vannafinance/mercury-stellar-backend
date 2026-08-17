@@ -13,17 +13,17 @@ import { maxSpendableXlm, XLM_FEE_BUFFER, getXlmMinReserve } from "@/lib/xlm-res
  * spending the MAX, the wallet must still hold at least its minimum reserve.
  */
 describe("maxSpendableXlm", () => {
-  it("keeps a 0.5 XLM fee buffer constant", () => {
-    expect(XLM_FEE_BUFFER).toBe(0.5);
+  it("keeps a small (0.05 XLM) fee buffer constant", () => {
+    expect(XLM_FEE_BUFFER).toBe(0.05);
   });
 
   it("subtracts reserve + fee buffer from the balance", () => {
-    // 100 - 1.5 reserve - 0.5 buffer = 98
-    expect(maxSpendableXlm(100, 1.5)).toBeCloseTo(98, 7);
+    // 100 - 1.5 reserve - 0.05 buffer = 98.45
+    expect(maxSpendableXlm(100, 1.5)).toBeCloseTo(98.45, 7);
   });
 
   it("never returns a negative amount when the balance is at/under the floor", () => {
-    expect(maxSpendableXlm(2.0, 1.5)).toBe(0); // 2 - 1.5 - 0.5 = 0
+    expect(maxSpendableXlm(1.55, 1.5)).toBeCloseTo(0, 7); // 1.55 - 1.5 - 0.05 = 0
     expect(maxSpendableXlm(1.0, 1.5)).toBe(0); // would be negative -> clamped
     expect(maxSpendableXlm(0, 1.5)).toBe(0);
   });
@@ -47,9 +47,10 @@ describe("maxSpendableXlm", () => {
     }
   });
 
-  it("reserves strictly more than the old flat-0.5 bug for a multi-subentry account", () => {
-    // Old code: balance - 0.5. New code must hold back more so the wallet
-    // never lands below a >0.5 minimum reserve.
+  it("reserves strictly more than a naive flat-0.5-only assumption for a multi-subentry account", () => {
+    // A flat "balance - 0.5" assumption (the original bug) must hold back
+    // less than the real reserve here. New code must hold back more so the
+    // wallet never lands below its real minimum reserve.
     const balance = 4955.42;
     const minReserve = 1.5;
     const buggyOld = balance - 0.5;

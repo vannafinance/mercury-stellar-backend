@@ -96,7 +96,7 @@ an unbounded fan-out (see §5).
 and lets us query them *scoped to one account*, with cursor pagination, in real time.
 
 **Why we use it (and not RPC) for history:** the old path scraped RPC `getEvents` (capped at
-~7 days, slow) plus a per-browser `localStorage` history. Mercury gives **full history**,
+~7 days and slow). Mercury gives **full on-chain history**,
 server-side filtered to one account, fast — the right tool for "show me *this user's*
 deposits/borrows/repays."
 

@@ -31,6 +31,16 @@ const MARGIN_SAC_TOKENS = [
   { sac: "SOUSDC" as const, balanceKey: "SOUSDC" },
 ];
 
+/** balanceKeys `reconcileMarginRawSacCollateral` already owns — callers that
+ *  re-derive their own collateral total from the same `collateralBalances`
+ *  object must exclude every one of these, not just XLM/BLUSDC, or a token
+ *  reconciled here gets summed a second time as if it were separate
+ *  collateral (it previously didn't, causing AQUSDC/SOUSDC to double-count
+ *  into gross collateral value and mask an unhealthy account's real HF). */
+export const MARGIN_SAC_BALANCE_KEYS: readonly string[] = MARGIN_SAC_TOKENS.map(
+  (t) => t.balanceKey,
+);
+
 /**
  * Read live XLM/USDC SAC balances on the margin account and overlay them onto
  * `collateralBalances`. The on-chain collateral ledger (CollateralBalanceWAD)

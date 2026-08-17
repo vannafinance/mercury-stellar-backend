@@ -23,9 +23,8 @@ import { MarginAccountService } from "@/lib/margin-utils";
 import { useUserStore } from "@/store/user";
 import { useTheme } from "@/contexts/theme-context";
 import { useWallet } from "@/hooks/use-wallet";
-import { appendMarginHistory } from "@/lib/margin-history";
 import toast from "react-hot-toast";
-import { normalizeContractError, normalizeDepositCollateralError, normalizeCreateAccountError } from "@/lib/errors/normalize";
+import { normalizeContractError, normalizeDepositCollateralError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
@@ -39,8 +38,7 @@ import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 // TransactionProgressModal, which updates in place, instead of a static
 // "Processing..." button with no visibility into a silently-dropped leg.
 const showStep = (message: string) => showTxStep(message);
-const showStepSuccess = (message: string, txHash?: string) =>
-  showTxSuccess(txHash ? `${message} Tx: ${txHash.slice(0, 16)}…` : message);
+const showStepSuccess = (message: string, _txHash?: string) => showTxSuccess(message);
 const showStepError = (message: string) => showTxError(message);
 
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -185,13 +183,9 @@ export const LeverageAssetsTab = () => {
   const MB_TOKEN_PRICES = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   // Same per-account /api/account snapshot the page HEADER reads (React Query
-  // dedupes by key — no extra fetch; it's already cached in memory + localStorage
-  // so it paints instantly). This is the reliable single source of truth for MB
-  // collateral. The live Zustand store is only an OVERLAY for optimistic
-  // mutations; after a deposit the snapshot feed is suppressed for ~20s and the
-  // store can go stale/blank while the header still shows the real value from
-  // this snapshot. Reading it here is exactly why the header showed $971 while
-  // the grid said "no collateral" — now the grid uses the same source.
+  // dedupes by key, so mounted consumers share the same in-memory response).
+  // The route is no-store and the query is invalidated after mutations, making
+  // this an authoritative snapshot rather than a browser-persisted cache.
   const { snapshot } = useAccountSnapshot(userAddress);
 
   // Effective collateral = store when it has balances (live/optimistic), else the
@@ -476,18 +470,9 @@ export const LeverageAssetsTab = () => {
     },
     onMutate: (params) => {
       setIsProcessing(true);
-      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}...`);
+      showStep(`Borrowing ${params.borrowAmountTokens.toFixed(2)} ${params.normalizedBorrowToken}`);
     },
     onSuccess: async ({ hash, normalizedBorrowToken, borrowAmountTokens }) => {
-      if (hash && marginAccountAddress) {
-        appendMarginHistory({
-          marginAccountAddress,
-          type: "borrow",
-          asset: normalizedBorrowToken,
-          amount: borrowAmountTokens.toFixed(7),
-          hash,
-        });
-      }
       showStepSuccess(`Borrowed ${borrowAmountTokens.toFixed(2)} ${normalizedBorrowToken} against your margin collateral.`, hash);
       resetForm();
       qc.invalidateQueries({ queryKey: ['margin'] });
@@ -612,12 +597,12 @@ export const LeverageAssetsTab = () => {
             }))
             .filter((b) => b.amount > 0);
 
-          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}...`);
+          showStep(`Borrowing ${items.map((b) => `${b.amount.toFixed(2)} ${b.displayAsset}`).join(" + ")}`);
 
           let lastHash = "";
           for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}...`);
+            showStep(`Step ${i + 1}/${items.length}: Borrowing ${item.amount.toFixed(2)} ${item.displayAsset}`);
             const result = await borrowTokens(userAddress, item.token, item.amount);
             if (!result.success) {
               // Build the "first leg already landed" context BEFORE normalizing —
@@ -642,13 +627,6 @@ export const LeverageAssetsTab = () => {
               return;
             }
             lastHash = result.hash ?? lastHash;
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "borrow",
-              asset: item.token,
-              amount: item.amount.toFixed(7),
-              hash: result.hash ?? "",
-            });
           }
 
           showStepSuccess(
@@ -818,14 +796,44 @@ export const LeverageAssetsTab = () => {
         const depositHashes: string[] = [];
         let borrowHash = "";
 
+        // Computed up front (not just inside the atomic branch below) so the
+        // step message can state the ACTUAL borrow amount instead of trailing
+        // off after "and borrowing" with nothing after it. Kept separate from
+        // `borrowOptions` below, which must stay undefined for the plain
+        // same-asset case so MarginAccountService derives it from `multiplier`
+        // itself — this is a display-only preview of that same math.
+        const atomicItem = wbDeposits[0];
+        const atomicDisplayBorrow = canUseAtomic && multiplier > 1
+          ? (() => {
+              if (isDualBorrow && borrowState!.items.length > 0) {
+                const b0 = borrowState!.items[0];
+                return { amountTokens: parseFloat(b0.assetData.amount) || 0, displaySymbol: b0.assetData.asset };
+              }
+              if (isCrossAsset) {
+                const depositUsd = atomicItem.amount * (MB_TOKEN_PRICES[atomicItem.asset] ?? 1);
+                const borrowUsd = depositUsd * (multiplier - 1);
+                const borrowPrice = MB_TOKEN_PRICES[normalizedBorrowToken] ?? 1;
+                return {
+                  amountTokens: borrowPrice > 0 ? borrowUsd / borrowPrice : 0,
+                  displaySymbol: borrowToken || atomicItem.asset,
+                };
+              }
+              return { amountTokens: atomicItem.amount * (multiplier - 1), displaySymbol: atomicItem.asset };
+            })()
+          : undefined;
+
         showStep(
           canUseAtomic
-            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${wbDeposits[0].amount.toFixed(2)} ${wbDeposits[0].asset}${multiplier > 1 ? " and borrowing..." : "..."}`
-            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}...`
+            ? `${isDualBorrow ? "Step 1/2: " : ""}Depositing ${atomicItem.amount.toFixed(2)} ${atomicItem.asset}${
+                atomicDisplayBorrow
+                  ? ` and borrowing ${atomicDisplayBorrow.amountTokens.toFixed(2)} ${atomicDisplayBorrow.displaySymbol}`
+                  : ""
+              }`
+            : `Depositing ${wbDeposits.map((d) => `${d.amount.toFixed(2)} ${d.asset}`).join(" + ")}`
         );
 
         if (canUseAtomic) {
-          const item = wbDeposits[0];
+          const item = atomicItem;
           // For dual borrow, use the first item's explicit amount from the DualBorrow state.
           // For cross-asset single borrow, convert the leverage USD target into borrow token units.
           // Same-asset single borrow leaves options undefined so MarginAccountService uses the multiplier.
@@ -861,30 +869,13 @@ export const LeverageAssetsTab = () => {
               depositHashes.push(atomicResult.hash);
               if (multiplier > 1) borrowHash = atomicResult.hash;
             }
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "deposit",
-              asset: item.asset,
-              amount: item.amount.toFixed(7),
-              hash: atomicResult.hash ?? "",
-            });
-            if (multiplier > 1) {
-              const borrowAmountTokens = item.amount * (multiplier - 1);
-              appendMarginHistory({
-                marginAccountAddress: marginAccountAddress!,
-                type: "borrow",
-                asset: normalizedBorrowToken,
-                amount: borrowAmountTokens.toFixed(7),
-                hash: atomicResult.hash ?? "",
-              });
-            }
             // Dual borrow second leg: borrow the second asset as a separate tx.
             if (isDualBorrow && borrowState!.items.length > 1 && multiplier > 1) {
               const b1 = borrowState!.items[1];
               const sym1 = normalizeContractTokenSymbol(b1.assetData.asset);
               const amt1 = parseFloat(b1.assetData.amount) || 0;
               if (amt1 > 0) {
-                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}...`);
+                showStep(`Step 2/2: Borrowing ${amt1.toFixed(2)} ${b1.assetData.asset}`);
                 // Hand this leg the exact sequence the atomic deposit+borrow
                 // tx just consumed — a fresh RPC read right after that tx
                 // confirms is not reliably caught up (confirmed live:
@@ -892,13 +883,6 @@ export const LeverageAssetsTab = () => {
                 const borrow2Result = await borrowTokens(userAddress, sym1, amt1, atomicResult.nextSequence);
                 if (borrow2Result.success) {
                   borrowHash = borrow2Result.hash ?? borrowHash;
-                  appendMarginHistory({
-                    marginAccountAddress: marginAccountAddress!,
-                    type: "borrow",
-                    asset: sym1,
-                    amount: amt1.toFixed(7),
-                    hash: borrow2Result.hash ?? "",
-                  });
                 } else {
                   // The deposit + first borrow already landed on-chain — don't let
                   // this fall through to the unconditional "Deposit + borrow
@@ -970,7 +954,7 @@ export const LeverageAssetsTab = () => {
 
           for (const item of wbDeposits) {
             stepNum += 1;
-            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}...`);
+            showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}`);
             const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
               marginAccountAddress!,
@@ -1001,19 +985,12 @@ export const LeverageAssetsTab = () => {
             }
 
             if (depositResult.hash) depositHashes.push(depositResult.hash);
-            appendMarginHistory({
-              marginAccountAddress: marginAccountAddress!,
-              type: "deposit",
-              asset: item.asset,
-              amount: item.amount.toFixed(7),
-              hash: depositResult.hash ?? "",
-            });
           }
 
           if (multiplier > 1) {
             for (const bItem of borrowsToExecute) {
               stepNum += 1;
-              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}...`);
+              showStep(`Step ${stepNum}/${totalSteps}: Borrowing ${bItem.amount.toFixed(2)} ${bItem.token}`);
               const borrowResult = await borrowTokens(userAddress, bItem.token, bItem.amount);
               if (!borrowResult.success) {
                 console.error('❌ Borrow failed after successful deposits:', borrowResult.error);
@@ -1033,13 +1010,6 @@ export const LeverageAssetsTab = () => {
                 return;
               }
               borrowHash = borrowResult.hash ?? "";
-              appendMarginHistory({
-                marginAccountAddress: marginAccountAddress!,
-                type: "borrow",
-                asset: bItem.token,
-                amount: bItem.amount.toFixed(7),
-                hash: borrowHash,
-              });
             }
           }
         }
@@ -1117,20 +1087,16 @@ export const LeverageAssetsTab = () => {
     }
 
     try {
+      // createMarginAccount (store) already drives the progress modal and
+      // the final success/error toast — don't fire a second one here.
       const created = await createMarginAccount(userAddress);
 
       if (created) {
         await checkUserMarginAccount(userAddress);
         setActiveDialogue("none");
-        toast.success("Margin account created successfully.");
-      } else {
-        const reason = useMarginAccountInfoStore.getState().accountCreationError || "";
-        toast.error(normalizeCreateAccountError(reason));
       }
     } catch (error) {
       console.error("Failed to create margin account:", error);
-      const msg = error instanceof Error ? error.message : "";
-      toast.error(normalizeCreateAccountError(msg));
     }
   };
 

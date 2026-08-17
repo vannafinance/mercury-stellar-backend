@@ -16,6 +16,7 @@ import {
   mergeFarmTrackingCollateralIntoBalances,
   reconcileMarginRawSacCollateral,
   sumCollateralBalancesUsd,
+  MARGIN_SAC_BALANCE_KEYS,
 } from "@/lib/analytics/stellar/farmTrackingCollateral";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
@@ -134,8 +135,11 @@ export async function computeMarginSnapshot(
   opts?: { onPartial?: (p: PartialSnapshot) => void },
 ): Promise<MarginSnapshot> {
   const [borrowedResult, collateralResult] = await Promise.all([
-    MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress),
-    MarginAccountService.getCollateralBalances(marginAccountAddress),
+    MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress, { includePrices: false }),
+    MarginAccountService.getCollateralBalances(marginAccountAddress, {
+      includeFarm: false,
+      includePrices: false,
+    }),
     fetchTokenPrices([...PRICEABLE_TOKENS]),
   ]);
 
@@ -212,9 +216,10 @@ export async function computeMarginSnapshot(
     }),
   ]);
 
-  // Apply farm tracking keys only — XLM/BLUSDC are owned by the SAC reconcile.
+  // Apply farm tracking keys only — every MARGIN_SAC_BALANCE_KEYS entry is
+  // owned by the SAC reconcile above, not just XLM/BLUSDC.
   for (const [sym, val] of Object.entries(enriched)) {
-    if (sym === "XLM" || sym === "BLUSDC") continue;
+    if (MARGIN_SAC_BALANCE_KEYS.includes(sym)) continue;
     const existingUsd = parseFloat(collateralBalances[sym]?.usdValue ?? "0");
     const newUsd = parseFloat(val.usdValue);
     if (newUsd > existingUsd) collateralBalances[sym] = val;
@@ -225,8 +230,14 @@ export async function computeMarginSnapshot(
     .filter(([sym]) => isTrackingSymbol(sym))
     .reduce((sum, [, bal]) => sum + parseFloat(bal.usdValue), 0);
 
+  // Excludes every SAC-reconciled key (not just XLM/BLUSDC) so AQUSDC/SOUSDC
+  // — already summed into rawAssetValue above — aren't counted a second
+  // time here. The prior XLM/BLUSDC-only exclusion let a margin account's
+  // own AQUSDC/SOUSDC balance (including freshly-borrowed debt sitting in
+  // the account) get double-counted as collateral, artificially propping up
+  // the displayed Net Health Factor as more was borrowed.
   const nonSacCollateralValue = Object.entries(collateralBalances)
-    .filter(([sym]) => sym !== "XLM" && sym !== "BLUSDC" && !isTrackingSymbol(sym))
+    .filter(([sym]) => !MARGIN_SAC_BALANCE_KEYS.includes(sym) && !isTrackingSymbol(sym))
     .reduce((sum, [, bal]) => sum + (parseFloat(bal.usdValue) || 0), 0);
 
   let grossCollateralValue = farmPositionValue + rawAssetValue + nonSacCollateralValue;

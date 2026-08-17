@@ -32,10 +32,12 @@ import {
   resubmitOnTryAgainLater,
   withFootprintRaceRetry,
   describeSendError,
+  describeFailedTx,
 } from './stellar-utils';
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
+import { markTxSubmitted, showTxStep } from './tx-progress';
 
 // Types
 /**
@@ -75,27 +77,11 @@ export interface MarginAccountCreationResult {
  * Read methods simulate transactions (no signature, no fee); write methods
  * prepare → sign via Freighter → submit → poll. Most writes bump the fee well
  * above BASE_FEE (20x–120x) because the chained collateral/borrow/deploy paths
- * are resource-heavy. Account discovery results are cached to localStorage.
+ * are resource-heavy. Account discovery is always authoritative on-chain; the
+ * in-memory map below only avoids duplicate lookups during the current runtime.
  */
 export class MarginAccountService {
-  // Local storage key for margin accounts
-  private static STORAGE_KEY = 'vanna_margin_accounts';
-
-  /**
-   * Whether the localStorage account cache is usable here.
-   *
-   * These read/write helpers are reached from BOTH the browser and the server:
-   * `/api/account/[addr]` calls `discoverExistingAccount` →
-   * `getMarginAccountFromRegistry` → `storeMarginAccount`, and there is no
-   * `localStorage` in a Node route. Without this guard every server-side
-   * discovery threw `ReferenceError: localStorage is not defined` — swallowed by
-   * the local try/catch, so it never broke the response, but it logged an error
-   * per request and buried real problems in the terminal. The cache is a
-   * browser-only convenience; on the server we simply skip it.
-   */
-  private static canUseLocalStorage(): boolean {
-    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
-  }
+  private static marginAccountCache = new Map<string, MarginAccount>();
 
   private static normalizeContractTokenSymbol(tokenSymbol: string): string {
     const normalized = tokenSymbol?.toUpperCase();
@@ -181,9 +167,19 @@ export class MarginAccountService {
     const entry = poolMap[contractBorrowSymbol];
     if (!entry) return { ok: true };
 
+    // Matches lending-pool's own MAX_UTILIZATION_WAD (pool.rs) — 95%. A small
+    // safety margin below the real cap (94% here) absorbs interest accruing
+    // between this read and the transaction actually executing, same
+    // rationale as this file's other pre-execution safety buffers.
+    const MAX_UTILIZATION = 0.94;
+
     try {
-      const poolLiqStr = await ContractService.getPoolLiquidity(entry.assetType);
+      const [poolLiqStr, poolBorrowsStr] = await Promise.all([
+        ContractService.getPoolLiquidity(entry.assetType),
+        ContractService.getPoolBorrows(entry.assetType),
+      ]);
       const poolBalance = parseFloat(poolLiqStr) || 0;
+      const poolBorrows = parseFloat(poolBorrowsStr) || 0;
 
       if (borrowAmountTokens > poolBalance) {
         return {
@@ -194,6 +190,31 @@ export class MarginAccountService {
             `you need: ${borrowAmountTokens.toFixed(2)} ${entry.displayName}. ` +
             `Please reduce your leverage or wait for more liquidity to be supplied to the pool.`,
         };
+      }
+
+      // The pool rejects ANY borrow that would push utilization
+      // (borrows / (liquidity + borrows)) past its hard cap, even when raw
+      // liquidity above is technically enough — confirmed live: a pool at
+      // 94.88% utilization traps on a borrow request that raw liquidity
+      // alone would have allowed, because it pushes utilization to 96.42%.
+      // That trap surfaces as an opaque generic HostError (Soroban strips
+      // panic message text in the release WASM build), so this check must
+      // catch it BEFORE submission — there's no way to give the user a
+      // clear reason after the fact.
+      const totalAssets = poolBalance + poolBorrows;
+      if (totalAssets > 0) {
+        const newUtilization = (poolBorrows + borrowAmountTokens) / totalAssets;
+        if (newUtilization > MAX_UTILIZATION) {
+          const maxAdditionalBorrow = Math.max(0, totalAssets * MAX_UTILIZATION - poolBorrows);
+          return {
+            ok: false,
+            error:
+              `The ${entry.displayName} lending pool is already at ${(poolBorrows / totalAssets * 100).toFixed(1)}% utilization ` +
+              `and can only safely lend ${maxAdditionalBorrow.toFixed(2)} more ${entry.displayName} right now ` +
+              `(you requested ${borrowAmountTokens.toFixed(2)}). Please reduce your leverage/borrow amount, ` +
+              `or wait for more liquidity to be supplied to the pool.`,
+          };
+        }
       }
 
       return { ok: true };
@@ -224,7 +245,7 @@ export class MarginAccountService {
     }
 
     if (text.includes('Budget') || text.includes('ExceededLimit')) {
-      return `Borrow simulation exceeded Soroban resource limits for ${tokenSymbol}. Please retry once; if it persists, reduce borrow size slightly or increase transaction resources.`;
+      return 'Budget exceeded.';
     }
 
     if (text.includes('InvalidAction') || text.includes('UnreachableCodeReached')) {
@@ -238,14 +259,44 @@ export class MarginAccountService {
     const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? {});
     const compact = text.split('\nEvent log')[0]?.trim() || text;
 
+    // The diagnostic clues that actually distinguish WHY a call failed —
+    // collect_from's boolean false, remove_borrowed_token_balance's underflow
+    // trap, ArithDomain/u256_sub panics, Budget/ExceededLimit — live INSIDE
+    // the "Event log" section, which `compact` (used for the short fallback
+    // return at the bottom) deliberately cuts off. Match keyword checks
+    // against the FULL `text` below, never `compact` — checking `compact`
+    // here silently never matches (confirmed live: a genuine insufficient-
+    // margin-account-balance repay fell through every check below straight
+    // to the generic "HostError" fallback, because every distinguishing
+    // keyword was in the truncated-away event log).
+    if (/budget|exceededlimit/i.test(text)) {
+      return 'Budget exceeded.';
+    }
+
     if (action === 'repay') {
+      // collect_from's u256 subtraction underflows (ArithDomain) whenever the
+      // requested amount exceeds what the margin account actually holds —
+      // this fires identically whether the gap is a hair of freshly-accrued
+      // interest or the account genuinely never had enough of this asset.
+      // `remove_borrowed_token_balance` traps the same way when the token's
+      // OWN transfer discovers the shortfall a step later (confirmed live:
+      // collect_from returns false, then AccountManager still calls
+      // remove_borrowed_token_balance, which underflows and panics —
+      // surfacing as a generic `Error(WasmVm, InvalidAction)` with none of
+      // that detail in the headline). Repay only ever pulls from the margin
+      // account (no wallet top-up), so the fix is the same either way: bring
+      // more of this asset into the margin account (Transfer Collateral)
+      // before repaying again.
       if (
-        compact.includes('Error(Object, ArithDomain)') ||
-        compact.includes('ArithDomain') ||
-        compact.includes('collect_from') ||
-        compact.includes('u256_sub')
+        text.includes('Error(Object, ArithDomain)') ||
+        text.includes('ArithDomain') ||
+        text.includes('collect_from') ||
+        text.includes('u256_sub') ||
+        text.includes('remove_borrowed_token_balance') ||
+        text.toLowerCase().includes('insufficient') ||
+        text.toLowerCase().includes('balance is not sufficient')
       ) {
-        return 'Repay amount is slightly above the live outstanding debt (rounding/interest update). Please retry with 100% again or use a slightly lower amount.';
+        return 'Insufficient balance in your margin account to repay this amount. Transfer more funds to your margin account (Transfer Collateral) first, then retry.';
       }
 
       if (compact.includes('HostError')) {
@@ -429,67 +480,35 @@ export class MarginAccountService {
   }
 
   /**
-   * Read the cached margin account for a trader from localStorage.
+   * Read the runtime-cached margin account for a trader.
    *
-   * @param userAddress - Trader's G-address (the localStorage map key).
-   * @returns The cached {@link MarginAccount}, or null if none is stored,
-   *          parsing fails, or the entry was minted by a different (older)
-   *          AccountManager deployment — stale entries are deliberately
-   *          discarded so callers re-discover against the live contract.
+   * @param userAddress - Trader's G-address used for registry discovery.
+   * The cache is deliberately memory-only: financial/account state must never
+   * be restored from browser storage. The layout hydrator first discovers the
+   * account from AccountManager persistent storage and then fills this map.
    */
   static getStoredMarginAccount(userAddress: string): MarginAccount | null {
-    if (!MarginAccountService.canUseLocalStorage()) return null;
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
-      if (!stored) return null;
-      
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      const account = accounts[userAddress] || null;
-      if (!account) return null;
-
-      // Safety: invalidate accounts stored under an older AccountManager deployment.
-      if (account.accountManagerAddress !== CONTRACT_ADDRESSES.ACCOUNT_MANAGER) {
-        return null;
-      }
-      return account;
-    } catch (error) {
-      console.error('Error reading margin account from storage:', error);
-      return null;
-    }
+    return this.marginAccountCache.get(userAddress) ?? null;
   }
 
   /**
-   * Cache a trader's margin account in localStorage, stamping it with the
-   * current AccountManager address so {@link getStoredMarginAccount} can later
-   * invalidate it after a redeploy. Swallows storage errors (logs only).
+   * Cache a chain-resolved margin account for this runtime only.
    *
    * @param userAddress - Trader's G-address (map key).
    * @param marginAccount - Account to persist; its `accountManagerAddress` is
    *                        overwritten with the live deployment.
    */
   static storeMarginAccount(userAddress: string, marginAccount: MarginAccount): void {
-    // Discovery also runs server-side (/api/account/[addr] → getMarginAccountFromRegistry),
-    // where there is no localStorage. Caching is a browser-only nicety, so skip it
-    // rather than throwing a ReferenceError the caller only sees as log noise.
-    if (!MarginAccountService.canUseLocalStorage()) return;
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      
-      accounts[userAddress] = {
-        ...marginAccount,
-        accountManagerAddress: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
-      };
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(accounts));
-    } catch (error) {
-      console.error('Error storing margin account:', error);
-    }
+    this.marginAccountCache.set(userAddress, {
+      ...marginAccount,
+      accountManagerAddress: CONTRACT_ADDRESSES.ACCOUNT_MANAGER,
+    });
   }
 
 
   /**
-   * Whether the trader has an active, locally-cached margin account.
-   * Checks localStorage only — does not hit the chain. Use
+   * Whether the trader has an active runtime-cached margin account.
+   * This is only a synchronous UI convenience. Use
    * {@link discoverExistingAccount} to recover one that isn't cached.
    *
    * @param userAddress - Trader's G-address.
@@ -503,7 +522,7 @@ export class MarginAccountService {
    * Create a margin smart account for a trader via AccountManager
    * `create_account`, enforcing one-account-per-trader.
    *
-   * Idempotent by design: checks localStorage, then the chain
+   * Idempotent by design: checks the runtime cache, then the chain
    * ({@link discoverExistingAccount}), and returns the existing account if
    * found — only signs/submits a creation tx when none exists anywhere. On a
    * successful tx it extracts the new C-address from the result (or re-reads it
@@ -520,13 +539,13 @@ export class MarginAccountService {
   ): Promise<MarginAccountCreationResult> {
     try {
       
-      // STEP 1: Check localStorage first
+      // STEP 1: reuse an account already resolved from chain in this runtime.
       const existingAccount = this.getStoredMarginAccount(userAddress);
       if (existingAccount && existingAccount.isActive) {
         return {
           success: true,
           marginAccountAddress: existingAccount.address,
-          error: 'User already has an active margin account (localStorage)'
+          error: 'User already has an active margin account'
         };
       }
       
@@ -573,6 +592,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -772,9 +795,8 @@ export class MarginAccountService {
    * Stellar SDK delivers contract events with `topic` (array of ScVals) and
    * `value` (the body ScVal) as separate fields — NOT a single ScVal of
    * `[topics, data]`. The previous implementation parsed the wrong shape and
-   * always returned []. This is the only path that recovers a margin account
-   * for a wallet on a fresh origin (no localStorage), e.g. when the user
-   * connects on the deployed URL after creating their account on localhost.
+   * always returned []. This is the bounded fallback when AccountManager's
+   * persistent trader→account registry lookup cannot resolve an account.
    */
   private static async getAccountsFromEvents(userAddress: string, server: StellarSdk.rpc.Server): Promise<string[]> {
     const accounts: string[] = [];
@@ -886,8 +908,8 @@ export class MarginAccountService {
       // days (17280*7) lands ~1 ledger BELOW the retention floor as the chain
       // advances, which makes getEvents throw "startLedger must be within the
       // ledger range". Use ~6 days so startLedger stays comfortably inside the
-      // window. (Accounts older than the retention window are recovered via the
-      // Registry storage read / localStorage, not event scraping.)
+      // window. Accounts older than retention are recovered from AccountManager
+      // persistent registry storage, not browser state or event scraping.
       const lookBackLedgers = 17280 * 6; // ~6 days of ledgers (5s blocks)
       const startLedger = Math.max(1, latestLedger.sequence - lookBackLedgers);
       return startLedger;
@@ -1001,11 +1023,9 @@ export class MarginAccountService {
   }
 
   /**
-   * Discover a trader's existing margin account directly from the chain (used
-   * when localStorage is empty — e.g. a fresh browser or the deployed origin
-   * after creating the account on localhost). Reads AccountManager persistent
-   * storage first, falling back to creation events, and re-caches the resolved
-   * account. Public wrapper over the registry lookup.
+   * Discover a trader's existing margin account directly from the chain. Reads
+   * AccountManager persistent storage first, falling back to creation events,
+   * and stores the resolved address in the runtime cache.
    *
    * @param userAddress - Trader's G-address.
    * @returns The newest active SmartAccount C-address, or null if none found.
@@ -1015,8 +1035,8 @@ export class MarginAccountService {
   }
 
   /**
-   * Summarize the cached margin account for UI display. localStorage-only (no
-   * chain read). Returns `{ hasAccount: false }` when nothing is cached.
+   * Summarize the runtime-cached margin account for UI display. Returns
+   * `{ hasAccount: false }` until authoritative chain discovery completes.
    *
    * @param userAddress - Trader's G-address.
    */
@@ -1051,23 +1071,13 @@ export class MarginAccountService {
   }
 
   /**
-   * Remove a trader's cached margin account from localStorage (testing/reset).
-   * Does not touch the chain — the account still exists on-chain and will be
-   * re-discovered. Swallows storage errors (logs only).
+   * Remove a trader's runtime-cached margin account (testing/reset). Does not
+   * touch the chain; the account will be re-discovered.
    *
    * @param userAddress - Trader's G-address.
    */
   static clearMarginAccount(userAddress: string): void {
-    if (!MarginAccountService.canUseLocalStorage()) return;
-    try {
-      const stored = localStorage.getItem(this.STORAGE_KEY) || '{}';
-      const accounts: Record<string, MarginAccount> = JSON.parse(stored);
-      
-      delete accounts[userAddress];
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(accounts));
-    } catch (error) {
-      console.error('Error clearing margin account:', error);
-    }
+    this.marginAccountCache.delete(userAddress);
   }
 
   static async checkCollateralAllowed(
@@ -1374,6 +1384,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       result = await resubmitOnTryAgainLater(server, signedTx as StellarSdk.Transaction, result, 'Deposit');
 
@@ -1387,7 +1401,7 @@ export class MarginAccountService {
             nextSequence,
           };
         } else {
-          const reason = this.describeFailedTx(finalResult);
+          const reason = describeFailedTx(finalResult);
           return {
             success: false,
             error: `Deposit transaction failed with status: ${finalResult.status}${reason ? `: ${reason}` : ''}`
@@ -1541,6 +1555,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -1599,28 +1617,6 @@ export class MarginAccountService {
    * decoded text (not just `status: 'FAILED'`) to detect that case via
    * {@link isFootprintRaceError} and retry with a fresh simulation.
    */
-  private static describeFailedTx(finalResult: any): string {
-    try {
-      const events: any[] = finalResult?.diagnosticEventsXdr ?? [];
-      const reasons: string[] = [];
-      for (const ev of events) {
-        try {
-          const body = ev.event().body().v0();
-          const topics = body.topics().map((t: any) => StellarSdk.scValToNative(t));
-          if (!topics.includes('error')) continue;
-          const data = StellarSdk.scValToNative(body.data());
-          const errorCode = topics.find((t: any) => typeof t === 'object' && t?.value)?.value;
-          reasons.push([errorCode, ...(Array.isArray(data) ? data : [data])].filter(Boolean).join(': '));
-        } catch {
-          // Skip events that don't decode as a v0 diagnostic event.
-        }
-      }
-      return reasons.join('; ');
-    } catch {
-      return '';
-    }
-  }
-
   static async borrowTokens(
     marginAccountAddress: string,
     tokenSymbol: string,
@@ -1661,6 +1657,18 @@ export class MarginAccountService {
   ): Promise<{ success: boolean; hash?: string; error?: string; nextSequence?: string }> {
     try {
       const contractTokenSymbol = this.normalizeContractTokenSymbol(tokenSymbol);
+
+      // Same pre-flight depositAndBorrow already runs — a borrow this
+      // standalone path issues (dual-borrow's 2nd leg, one-click's b1/b2,
+      // Pro mode's single borrow) is just as capable of pushing the target
+      // pool past its 95% utilization cap, which traps with an opaque
+      // generic HostError (see checkPoolLiquidity's doc comment) instead of
+      // a message a user can act on.
+      const borrowAmountTokens = Number(borrowAmountWad) / 1e18;
+      const liquidityCheck = await this.checkPoolLiquidity(contractTokenSymbol, borrowAmountTokens);
+      if (!liquidityCheck.ok) {
+        return { success: false, error: liquidityCheck.error };
+      }
 
       const userAddress = await getAddress();
       if (userAddress.error) {
@@ -1802,6 +1810,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       let result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -1976,6 +1988,10 @@ export class MarginAccountService {
             NETWORK_PASSPHRASE
           );
 
+          // Wallet just returned a signed tx — switch the progress modal from
+          // "waiting on you" to an animated "confirming on-chain" fill.
+          markTxSubmitted();
+
           const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
           
           if (result.status === 'PENDING') {
@@ -2073,7 +2089,8 @@ export class MarginAccountService {
    *          `{ amount, usdValue }`; an account with no debt yields `{}`.
    */
   static async getCurrentBorrowedBalances(
-    marginAccountAddress: string
+    marginAccountAddress: string,
+    options: { includePrices?: boolean } = {},
   ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
     try {
       // Validate address before making any blockchain calls
@@ -2104,8 +2121,9 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
       
-      const preparedTx = await server.prepareTransaction(getAllBorrowedTokensTx);
-      const simulationResult = await server.simulateTransaction(preparedTx);
+      // prepareTransaction already simulates; doing prepare + simulate doubled
+      // every read RPC. A view call only needs one direct simulation.
+      const simulationResult = await server.simulateTransaction(getAllBorrowedTokensTx);
       
       if ('error' in simulationResult) {
         console.error('❌ Failed to get borrowed tokens:', simulationResult.error);
@@ -2129,11 +2147,13 @@ export class MarginAccountService {
       }
 
       const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
+      const sourceSequence = sourceAccount.sequenceNumber();
 
-      // Read debt only for tokens present in SmartAccount borrowed list.
-      for (const token of borrowedTokens) {
-        try {
-          const getBalanceTx = new StellarSdk.TransactionBuilder(sourceAccount, {
+      // Every token debt is independent. Run the simulations (and optional
+      // price lookups) concurrently instead of one token at a time.
+      const rows = await Promise.allSettled(borrowedTokens.map(async (token) => {
+          const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
+          const getBalanceTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
             networkPassphrase: NETWORK_PASSPHRASE,
           })
@@ -2146,29 +2166,31 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
           
-          const preparedBalanceTx = await server.prepareTransaction(getBalanceTx);
-          const balanceResult = await server.simulateTransaction(preparedBalanceTx);
+          const balanceResult = await server.simulateTransaction(getBalanceTx);
           
           if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
             const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
 
             if (balanceNumber > 0) {
-              // USD value comes straight from the on-chain Reflector oracle so
-              // event-based callers that don't run the store's recompute still
-              // see live prices instead of a 1:1 placeholder.
-              const price = await fetchTokenPrice(token);
+              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
               const usdValue = (balanceNumber * price).toFixed(2);
-              borrowedBalances[token] = {
+              return { token, balance: {
                 amount: balanceNumber.toFixed(6),
                 usdValue
-              };
+              } };
             }
           }
-        } catch (error) {
-          console.warn(`⚠️ Failed to get balance for token ${token}:`, error);
+          return null;
+      }));
+
+      rows.forEach((row, index) => {
+        if (row.status === 'fulfilled' && row.value) {
+          borrowedBalances[row.value.token] = row.value.balance;
+        } else if (row.status === 'rejected') {
+          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
         }
-      }
+      });
       
       return {
         success: true,
@@ -2315,7 +2337,8 @@ export class MarginAccountService {
    *          `{ amount, usdValue }`; empty collateral yields `{}`.
    */
   static async getCollateralBalances(
-    marginAccountAddress: string
+    marginAccountAddress: string,
+    options: { includeFarm?: boolean; includePrices?: boolean } = {},
   ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
     try {
       if (!marginAccountAddress || typeof marginAccountAddress !== 'string' || marginAccountAddress.length < 10) {
@@ -2339,8 +2362,7 @@ export class MarginAccountService {
         .setTimeout(30)
         .build();
 
-      const preparedList = await server.prepareTransaction(listTx);
-      const listSim = await server.simulateTransaction(preparedList);
+      const listSim = await server.simulateTransaction(listTx);
 
       if ('error' in listSim) {
         console.error('❌ Failed to get collateral token list:', listSim.error);
@@ -2364,10 +2386,11 @@ export class MarginAccountService {
       }
 
       const balances: Record<string, { amount: string; usdValue: string }> = {};
+      const sourceSequence = sourceAccount.sequenceNumber();
 
-      for (const token of collateralTokens) {
-        try {
-          const balTx = new StellarSdk.TransactionBuilder(sourceAccount, {
+      const rows = await Promise.allSettled(collateralTokens.map(async (token) => {
+          const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
+          const balTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
             networkPassphrase: NETWORK_PASSPHRASE,
           })
@@ -2380,8 +2403,7 @@ export class MarginAccountService {
             .setTimeout(30)
             .build();
 
-          const preparedBal = await server.prepareTransaction(balTx);
-          const balSim = await server.simulateTransaction(preparedBal);
+          const balSim = await server.simulateTransaction(balTx);
 
           if (!('error' in balSim) && 'result' in balSim && balSim.result) {
             const rawBal = StellarSdk.scValToNative(balSim.result.retval);
@@ -2389,20 +2411,28 @@ export class MarginAccountService {
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
 
             if (balanceNumber > 0) {
-              const price = await fetchTokenPrice(token);
+              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
               const usdValue = (balanceNumber * price).toFixed(2);
-              balances[token] = {
+              return { token, balance: {
                 amount: balanceNumber.toFixed(7),
                 usdValue
-              };
+              } };
             }
           }
-        } catch (err) {
-          console.warn(`⚠️ Failed to read collateral balance for ${token}:`, err);
-        }
-      }
+          return null;
+      }));
 
-      const withFarm = await mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, balances);
+      rows.forEach((row, index) => {
+        if (row.status === 'fulfilled' && row.value) {
+          balances[row.value.token] = row.value.balance;
+        } else if (row.status === 'rejected') {
+          console.warn(`⚠️ Failed to read collateral balance for ${collateralTokens[index]}:`, row.reason);
+        }
+      });
+
+      const withFarm = options.includeFarm === false
+        ? balances
+        : await mergeFarmTrackingCollateralIntoBalances(marginAccountAddress, balances);
       return { success: true, data: this.addUsdcAliases(withFarm) };
     } catch (error: any) {
       console.error('❌ Error getting collateral balances:', error);
@@ -2476,130 +2506,23 @@ export class MarginAccountService {
       }
 
       const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
-      const sourceAccount = await server.getAccount(userAddress.address);
+      const currentAccount = await server.getAccount(userAddress.address);
 
       // Create contract instance for AccountManager
       const contract = new StellarSdk.Contract(CONTRACT_ADDRESSES.ACCOUNT_MANAGER);
 
-      // ── Interest shortfall top-up ─────────────────────────────────────────
-      // Same-asset leverage: the smart account holds borrowed tokens as raw SAC
-      // balances. WAD debt accumulates interest at sub-stroop precision, so by
-      // repay time the required stroop amount can exceed what sits in the account.
-      // Detect the gap; if present, submit a separate single-op top-up transfer
-      // first (Freighter rejects multi-op transactions), then do the repay.
-      const REPAY_TOKEN_CONTRACT: Record<string, string> = {
-        USDC: CONTRACT_ADDRESSES.BLEND_USDC,
-        XLM: CONTRACT_ADDRESSES.BLEND_XLM,
-        AQUSDC: CONTRACT_ADDRESSES.AQUARIUS_USDC,
-        SOUSDC: CONTRACT_ADDRESSES.SOROSWAP_USDC,
-      };
-      const repayTokenContractAddr = REPAY_TOKEN_CONTRACT[contractTokenSymbol];
-      let interestTopUp = BigInt(0);
-      // Set alongside interestTopUp when computable — the fallback below caps
-      // the repay to this exact figure if the top-up transfer turns out to be
-      // impossible, so it needs to survive past the try block that finds it.
-      let smartAcctBalanceStroops: bigint | null = null;
-
-      if (repayTokenContractAddr) {
-        try {
-          const dummyKp = StellarSdk.Keypair.random();
-          const dummyAcct = new StellarSdk.Account(dummyKp.publicKey(), '0');
-          const tokenContract = new StellarSdk.Contract(repayTokenContractAddr);
-          const balanceTx = new StellarSdk.TransactionBuilder(dummyAcct, {
-            fee: StellarSdk.BASE_FEE,
-            networkPassphrase: NETWORK_PASSPHRASE,
-          })
-            .addOperation(
-              tokenContract.call(
-                'balance',
-                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-              ),
-            )
-            .setTimeout(10)
-            .build();
-
-          const balanceSim = await server.simulateTransaction(balanceTx);
-          if (StellarSdk.rpc.Api.isSimulationSuccess(balanceSim) && balanceSim.result?.retval) {
-            const smartAcctBalance = StellarSdk.scValToNative(balanceSim.result.retval) as bigint;
-            smartAcctBalanceStroops = smartAcctBalance;
-            // Convert WAD repay amount → stroops (7-decimal token units)
-            const repayInStroops = (BigInt(repayAmountWad) * BigInt(10 ** 7)) / BigInt(10 ** 18);
-            if (repayInStroops > smartAcctBalance) {
-              interestTopUp = repayInStroops - smartAcctBalance + BigInt(100); // 100-stroop safety buffer
-            }
-          }
-        } catch {
-          // Balance simulation failure is non-fatal — proceed; contract will
-          // surface the real error if tokens are still short.
-        }
-      }
-
-      // ── Tx 1 (conditional): single-op top-up to cover accrued interest gap ──
-      // Freighter only allows one operation per transaction, so we submit the
-      // top-up as a separate transaction and wait for confirmation before repay.
-      let currentAccount = sourceAccount;
-      // Repay amount actually sent below — reduced to what the margin account
-      // already holds if the top-up turns out to be impossible (see catch).
-      let finalRepayAmountWad = repayAmountWad;
-      if (interestTopUp > BigInt(0) && repayTokenContractAddr) {
-        try {
-          const topUpContract = new StellarSdk.Contract(repayTokenContractAddr);
-          const topUpTx = new StellarSdk.TransactionBuilder(currentAccount, {
-            fee: (parseInt(StellarSdk.BASE_FEE) * 10).toString(),
-            networkPassphrase: NETWORK_PASSPHRASE,
-          })
-            .addOperation(
-              topUpContract.call(
-                'transfer',
-                StellarSdk.nativeToScVal(userAddress.address, { type: 'address' }),
-                StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
-                StellarSdk.nativeToScVal(interestTopUp, { type: 'i128' }),
-              ),
-            )
-            .setTimeout(30)
-            .build();
-
-          const preparedTopUp = await server.prepareTransaction(topUpTx);
-          const topUpSignResult = await signTransaction(preparedTopUp.toXDR(), {
-            networkPassphrase: NETWORK_PASSPHRASE,
-          });
-          const signedTopUp = StellarSdk.TransactionBuilder.fromXDR(
-            topUpSignResult.signedTxXdr,
-            NETWORK_PASSPHRASE,
-          );
-          const topUpSubmit = await server.sendTransaction(signedTopUp as StellarSdk.Transaction);
-          if (topUpSubmit.status === 'PENDING') {
-            const topUpFinal = await this.pollTransactionStatus(server, topUpSubmit.hash);
-            if (topUpFinal.status !== 'SUCCESS') {
-              throw new Error(`Top-up failed on-chain with status: ${topUpFinal.status}`);
-            }
-          } else {
-            throw new Error(`Top-up submission failed with status: ${topUpSubmit.status}`);
-          }
-          // Refresh the sequence number for the follow-up repay transaction.
-          currentAccount = await server.getAccount(userAddress.address);
-        } catch (topUpError: any) {
-          // The wallet can't cover the shortfall — most commonly it has no
-          // trustline at all for the underlying classic asset behind this SAC
-          // (same-asset leverage tokens like BLUSDC only ever move through the
-          // margin account, so a wallet that never separately opted into the
-          // asset traps here with "trustline entry is missing for account
-          // <wallet>"). Rather than fail the whole repay outright, cap the
-          // request at what the margin account already holds — a partial
-          // repay the user can act on beats a hard error over a sub-stroop gap.
-          console.warn('⚠️ Interest top-up failed; falling back to a partial repay capped at the margin account balance:', topUpError?.message || topUpError);
-          if (smartAcctBalanceStroops == null || smartAcctBalanceStroops <= BigInt(0)) {
-            return {
-              success: false,
-              error: 'Repay requires a small top-up from your wallet to cover accrued interest, but your wallet has no trustline for this asset. Please repay a smaller amount, or open a trustline for this asset in your wallet first.',
-            };
-          }
-          finalRepayAmountWad = (smartAcctBalanceStroops * BigInt(10 ** 18) / BigInt(10 ** 7)).toString();
-          currentAccount = await server.getAccount(userAddress.address);
-        }
-      }
-
-      // ── Tx 2: repay ──────────────────────────────────────────────────────────
+      // Repay pulls the requested amount directly from the margin account's
+      // own SAC balance — a single transaction, no wallet top-up. If the
+      // margin account doesn't hold enough (interest ticked the debt above
+      // what's actually there, or debt is just bigger than the account's
+      // balance), the token contract's own transfer rejects it and that
+      // surfaces as a clean "insufficient balance" error below — same as any
+      // other DEX (Aave included): you repay what the account has, no
+      // automatic wallet-side rescue. The caller decides whether to bring
+      // more of this asset into the margin account (Transfer Collateral)
+      // first, rather than that decision being made silently for them here.
+      const repayAmountDisplay = (Number(repayAmountWad) / 1e18).toFixed(7);
+      showTxStep(`Repaying ${repayAmountDisplay} ${tokenSymbol}`);
       const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),
         networkPassphrase: NETWORK_PASSPHRASE,
@@ -2607,7 +2530,7 @@ export class MarginAccountService {
         .addOperation(
           contract.call(
             'repay',
-            StellarSdk.nativeToScVal(finalRepayAmountWad, { type: 'u256' }),
+            StellarSdk.nativeToScVal(repayAmountWad, { type: 'u256' }),
             StellarSdk.nativeToScVal(contractTokenSymbol, { type: 'symbol' }),
             StellarSdk.nativeToScVal(marginAccountAddress, { type: 'address' }),
           ),
@@ -2658,6 +2581,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
       if (result.status === 'PENDING') {
@@ -2667,16 +2594,12 @@ export class MarginAccountService {
           return {
             success: true,
             hash: result.hash,
-            // Differs from the requested repayAmountWad only when the
-            // interest top-up above failed and this repay was capped down to
-            // a partial amount instead — callers logging history should
-            // prefer this over their own requested amount.
-            repaidAmountWad: finalRepayAmountWad,
+            repaidAmountWad: repayAmountWad,
           };
         } else {
           // Surface the hash + log the full result (resultMetaXdr/diagnostics) so the
           // real on-chain reason is inspectable instead of a generic "failed".
-          const reason = this.describeFailedTx(finalResult);
+          const reason = describeFailedTx(finalResult);
           console.error('❌ Repay tx did not succeed:', {
             hash: result.hash,
             status: finalResult.status,
@@ -2692,9 +2615,21 @@ export class MarginAccountService {
           };
         }
       } else if (result.status === 'ERROR') {
+        // Bare "ERROR status" with no decoded reason meant a transient
+        // submission-time rejection here — most plausibly `txBadSeq` (a
+        // multi-node RPC sequence-number race, same class of issue documented
+        // on isFootprintRaceError) — never got a chance to retry: the outer
+        // withFootprintRaceRetry wrapper only retries when the error text
+        // matches a known race pattern, and a bare generic string matches
+        // none of them. Decoding the real result code (same pattern as the
+        // borrow/deposit flows above) lets that retry actually fire.
+        const resultCode = describeSendError(result);
+        console.error(`❌ Repay transaction failed immediately with ERROR status (${resultCode})`);
         return {
           success: false,
-          error: 'Repay transaction failed with ERROR status'
+          error: resultCode !== 'unknown'
+            ? `Repay transaction failed with result: ${resultCode}`
+            : 'Repay transaction failed with ERROR status',
         };
       } else {
         return {
@@ -2758,6 +2693,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
 
@@ -3007,6 +2946,10 @@ export class MarginAccountService {
         NETWORK_PASSPHRASE
       );
 
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
+
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status !== 'PENDING') {
         return {
@@ -3180,6 +3123,10 @@ export class MarginAccountService {
         signResult.signedTxXdr,
         NETWORK_PASSPHRASE
       );
+
+      // Wallet just returned a signed tx — switch the progress modal from
+      // "waiting on you" to an animated "confirming on-chain" fill.
+      markTxSubmitted();
 
       const result = await server.sendTransaction(signedTx as StellarSdk.Transaction);
       if (result.status !== 'PENDING') {

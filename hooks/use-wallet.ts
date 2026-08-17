@@ -6,6 +6,69 @@ import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/st
 import { setActiveWalletKind, getPrivyAuthControls, type WalletKind } from '@/lib/wallet-adapter';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
+import { useLedgerTick } from '@/contexts/ledger-subscriber';
+
+const walletRefreshes = new Map<string, Promise<void>>();
+const depositedRefreshes = new Map<string, Promise<void>>();
+
+const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out`)), ms),
+    ),
+  ]);
+
+/**
+ * Refresh the connected wallet from Horizon/Soroban with cross-component
+ * in-flight deduplication. Wallet values are committed only after a real
+ * network read; failures preserve the last verified in-memory values.
+ */
+export const refreshWalletBalancesOnChain = (targetAddress: string): Promise<void> => {
+  const existing = walletRefreshes.get(targetAddress);
+  if (existing) return existing;
+
+  const run = (async () => {
+    const tokenBalances = await withTimeout(
+      ContractService.getAllTokenBalances(targetAddress),
+      12_000,
+      'Wallet balance refresh',
+    );
+    useUserStore.getState().set({
+      balance: tokenBalances.XLM,
+      tokenBalances,
+    });
+
+    // Receipt balances are secondary. Paint wallet balances first, then start
+    // one de-duplicated background batch so ledger ticks cannot pile up RPCs.
+    if (!depositedRefreshes.has(targetAddress)) {
+      const depositedRun = withTimeout(
+        Promise.all([
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
+          ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
+        ]),
+        12_000,
+        'Deposited balance refresh',
+      ).then(([XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC]) => {
+        useUserStore.getState().set({
+          depositedBalances: { XLM, USDC, AQUARIUS_USDC, SOROSWAP_USDC },
+        });
+      }).catch((error) => {
+        console.warn('Deposited balances refresh failed; wallet balances remain current:', error);
+      }).finally(() => {
+        depositedRefreshes.delete(targetAddress);
+      });
+      depositedRefreshes.set(targetAddress, depositedRun);
+    }
+  })().finally(() => {
+    walletRefreshes.delete(targetAddress);
+  });
+
+  walletRefreshes.set(targetAddress, run);
+  return run;
+};
 
 /**
  * Wallet connection lifecycle and balances, backed by `useUserStore`.
@@ -14,8 +77,8 @@ import { clearMarginAccount } from '@/store/margin-account-info-store';
  * disconnected), refreshes wallet + per-pool deposited balances (each guarded by
  * a 15s timeout so a stalled RPC never blocks the UI), and exposes connect/
  * disconnect actions. Disconnect resets in-memory state and clears the cached
- * margin-account stats (via `clearMarginAccount`) but preserves the wallet-keyed
- * localStorage margin mapping. Balance-refresh failures are non-fatal and retried.
+ * margin-account stats (via `clearMarginAccount`). The account is rediscovered
+ * from AccountManager storage on reconnect. Refresh failures are non-fatal.
  *
  * @returns `{ address, isConnected, balance, depositedBalances, isLoading,
  *   connectWallet, disconnectWallet, refreshBalances }`.
@@ -29,6 +92,7 @@ export const useWallet = () => {
   const isLoadingStore = useUserStore((state) => state.isLoading);
   
   const [isLoading, setIsLoading] = useState(false);
+  const { tick } = useLedgerTick();
 
   // Force reset loading state on mount to fix stuck "Connecting..." state
   useEffect(() => {
@@ -43,60 +107,22 @@ export const useWallet = () => {
     if (!targetAddress) return;
 
     try {
-      // Create a promise that rejects after 15 seconds
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Balance refresh timeout')), 15000)
-      );
-
-      // Race between the actual request and the timeout
-      const tokenBalances = await Promise.race([
-        ContractService.getAllTokenBalances(targetAddress),
-        timeoutPromise
-      ]);
-
-      // Update wallet balances immediately so UI is never blocked by deposited-balance calls.
-      useUserStore.getState().set({
-        balance: tokenBalances.XLM,
-        tokenBalances: tokenBalances,
-      });
-      
-      // Get all deposited balances in parallel
-      const depositedBalancesPromise = Promise.all([
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.XLM),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.AQUARIUS_USDC),
-        ContractService.getDepositedBalance(targetAddress, ASSET_TYPES.SOROSWAP_USDC),
-      ]);
-
-      try {
-        const [
-          xlmDeposited,
-          usdcDeposited,
-          aquariusUsdcDeposited,
-          soroswapUsdcDeposited,
-        ] = await Promise.race([
-          depositedBalancesPromise,
-          timeoutPromise
-        ]);
-
-        useUserStore.getState().set({
-          depositedBalances: {
-            XLM: xlmDeposited,
-            USDC: usdcDeposited,
-            AQUARIUS_USDC: aquariusUsdcDeposited,
-            SOROSWAP_USDC: soroswapUsdcDeposited,
-          },
-        });
-      } catch (depositedError) {
-        console.warn('Deposited balances refresh failed; wallet balances still updated:', depositedError);
-      }
-      
+      await refreshWalletBalancesOnChain(targetAddress);
     } catch (error) {
       // Non-fatal: a transient RPC/Horizon failure shouldn't block the wallet or
       // light up the dev error overlay — warn and let the next refresh recover.
       console.warn('Error refreshing balances (non-fatal, will retry):', error);
     }
   }, [address]);
+
+  // Reconcile wallet balances on every closed ledger. The module-level
+  // in-flight map deduplicates multiple useWallet consumers into one read.
+  useEffect(() => {
+    if (!tick || !address || !isConnected) return;
+    refreshWalletBalancesOnChain(address).catch((error) => {
+      console.warn('Ledger balance refresh failed; next ledger will retry:', error);
+    });
+  }, [tick, address, isConnected]);
 
   const checkConnection = useCallback(async () => {
     // Don't auto-reconnect if user manually disconnected
@@ -244,9 +270,7 @@ export const useWallet = () => {
     }
     setActiveWalletKind(null);
 
-    // Don't clear localStorage - margin accounts should persist across wallet
-    // connections (the address-stored mapping is keyed by user pubkey).
-    // But DO reset in-memory state so the UI doesn't keep showing the
+    // Reset in-memory state so the UI doesn't keep showing the
     // previous wallet's totals (HF, collateral, debt, etc.) after disconnect.
     useUserStore.getState().set({
       address: null,
@@ -321,7 +345,8 @@ export const useWithdraw = () => {
       if (!address) throw new Error('Please connect your wallet first');
       if (!amount || amount <= 0) throw new Error('Please enter a valid amount');
 
-      const depositedAmount = parseFloat(depositedBalances[assetType] || '0');
+      const depositedKey = assetType === ASSET_TYPES.BLEND_USDC ? ASSET_TYPES.USDC : assetType;
+      const depositedAmount = parseFloat(depositedBalances[depositedKey] || '0');
       if (amount > depositedAmount) {
         throw new Error('Cannot withdraw more than deposited balance');
       }

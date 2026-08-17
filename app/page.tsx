@@ -13,7 +13,7 @@ import { InfoCard } from "@/components/margin/info-card";
 import { LeverageCollateral } from "@/components/margin/leverage-collateral";
 import { Positionstable } from "@/components/margin/positions-table";
 import { AccountStats } from "@/components/margin/account-stats";
-import { useMarginAccountInfoStore, checkUserMarginAccount, isSnapshotFeedSuppressed } from "@/store/margin-account-info-store";
+import { useMarginAccountInfoStore, checkUserMarginAccount } from "@/store/margin-account-info-store";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import { useUserStore } from "@/store/user";
@@ -114,7 +114,7 @@ export default function Home() {
       // Check for existing margin account whenever wallet connects
       checkUserMarginAccount(userAddress).catch(console.error);
     }
-    // Note: We don't clear margin account on disconnect to preserve localStorage data
+    // Runtime margin state is reset on disconnect and rediscovered from chain.
   }, [userAddress, isConnected]);
 
   // Feed the store from the per-account snapshot — the single source of truth,
@@ -123,7 +123,7 @@ export default function Home() {
   // and is now the ONLY writer of balances here, so the positions table can no
   // longer flip between two independent account-resolution paths.
   useEffect(() => {
-    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    if (!snapshot) return;
     const store = useMarginAccountInfoStore.getState();
     if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
       store.set({

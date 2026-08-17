@@ -70,4 +70,33 @@ export function buildBorrowAttributionFromHistory(
   return { borrowsByCollateral, principalByPair };
 }
 
+/** Net cash borrowed per asset: Σ borrow − Σ repay, derived only from chain events. */
+export function buildNetBorrowCashByToken(
+  history: AttributionHistoryEntry[],
+): Map<string, number> {
+  const netByToken = new Map<string, number>();
+  for (const entry of history) {
+    if (entry.type !== "borrow" && entry.type !== "repay") continue;
+    const amount = parseFloat(entry.amount || "0");
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    const token = canonicalToken(entry.asset);
+    const signed = entry.type === "borrow" ? amount : -amount;
+    netByToken.set(token, (netByToken.get(token) ?? 0) + signed);
+  }
+  return netByToken;
+}
+
+/**
+ * Interest accrued till date = current on-chain debt + repayments − borrows.
+ * Returns null when the original borrow history is unavailable so the UI does
+ * not mislabel the entire live debt as interest.
+ */
+export function calculateAccruedBorrowInterest(
+  currentDebt: number,
+  netBorrowCash: number | undefined,
+): number | null {
+  if (netBorrowCash === undefined || !Number.isFinite(currentDebt)) return null;
+  return Math.max(0, currentDebt - netBorrowCash);
+}
+
 export { canonicalToken as canonicalMarginPositionToken };

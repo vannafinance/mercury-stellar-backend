@@ -32,6 +32,21 @@ function isCancel(text: string): boolean {
   );
 }
 
+/**
+ * Soroban's per-transaction resource/instruction budget was exceeded
+ * (`HostError: Error(Budget, ExceededLimit)`) — a network-level "this
+ * transaction is too complex" failure, completely unrelated to balance,
+ * health factor, or any other business-logic limit. Every normalizer below
+ * checks this FIRST, before any other pattern, so a budget error never gets
+ * mis-labeled as e.g. "max transferable: X" (a real prior bug — the message
+ * that check produces has nothing to do with why the tx actually failed).
+ */
+function isBudgetExceeded(text: string): boolean {
+  return text.includes('budget') || text.includes('exceededlimit');
+}
+
+const BUDGET_EXCEEDED_MESSAGE = 'Budget exceeded.';
+
 function isInsufficientBalance(text: string): boolean {
   return (
     text.includes('insufficient') ||
@@ -52,6 +67,63 @@ function isSorobanRpcError(text: string): boolean {
   );
 }
 
+function contractErrorCode(text: string): number | null {
+  const match = text.match(/error\s*\(\s*contract\s*,\s*#(\d+)\s*\)/i)
+    ?? text.match(/contract(?:error)?[^#\d]{0,12}#?(\d+)/i);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return Number.isInteger(code) ? code : null;
+}
+
+const lendingErrorMessage = (code: number, action: 'supply' | 'withdraw'): string | null => {
+  const messages: Record<number, string> = {
+    1: 'The lending pool is not initialized.',
+    2: 'The lending pool rejected this wallet authorization.',
+    3: action === 'supply' ? 'Insufficient wallet balance for this supply.' : 'Insufficient deposited balance for this withdrawal.',
+    4: 'The requested loan-to-value ratio is invalid.',
+    5: 'The lending pool could not find an on-chain price for this asset.',
+    6: 'The oracle price is stale. Please wait for a fresh price update.',
+    8: 'This account is not eligible for liquidation.',
+    9: 'The lending pool could not find this account.',
+    10: 'This account does not have the required on-chain role.',
+    11: 'The lending pool has not been initialized.',
+    12: 'This address is not registered as a lender in the pool.',
+    13: 'The lending pool does not have enough available liquidity.',
+    14: 'The amount is outside the contract numeric range.',
+  };
+  return messages[code] ?? null;
+};
+
+const marginErrorMessage = (code: number): string | null => {
+  const messages: Record<number, string> = {
+    1: 'The collateral token or balance was not found on this margin account.',
+    2: 'The borrowed token was not found on this margin account.',
+    3: 'The margin account was not found on chain.',
+    4: 'The amount is outside the contract numeric range.',
+    5: 'This margin account does not hold the requested collateral token.',
+  };
+  return messages[code] ?? null;
+};
+
+/**
+ * Pulls a `Tx: <hash>` (or bare 64-char hex hash) out of a raw error string,
+ * if present. `isSorobanRpcError`'s generic fallback below otherwise
+ * discards the ENTIRE raw message — including a hash that was the only
+ * concrete, traceable-on-stellar.expert detail in it — leaving a boilerplate
+ * "Transaction failed. Please try again." with nothing to actually go on.
+ */
+function extractTxHash(text: string): string | null {
+  const labeled = text.match(/tx:\s*([a-f0-9]{64})/i);
+  if (labeled) return labeled[1];
+  const bare = text.match(/\b([a-f0-9]{64})\b/i);
+  return bare ? bare[1] : null;
+}
+
+function appendTxHash(message: string, raw: string): string {
+  const hash = extractTxHash(raw);
+  return hash ? `${message} (Tx: ${hash})` : message;
+}
+
 // ─── public API ──────────────────────────────────────────────────────────────
 
 /**
@@ -67,7 +139,10 @@ export function normalizeContractError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
-  if (isSorobanRpcError(lower)) return fallback;
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(`On-chain contract rejected the transaction (error #${code}).`, text);
+  if (isSorobanRpcError(lower)) return appendTxHash(fallback, text);
 
   return text.length > 200 ? `${text.slice(0, 200)}...` : text || fallback;
 }
@@ -83,10 +158,13 @@ export function normalizeSupplyError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(lendingErrorMessage(code, 'supply') ?? `Supply contract error #${code}.`, text);
   if (isInsufficientBalance(lower))
     return `You cannot supply all your ${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
-    return `Supply failed for ${asset}. Please reduce the amount and try again.`;
+    return appendTxHash(`Supply failed for ${asset}. Please reduce the amount and try again.`, text);
 
   return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 }
@@ -102,10 +180,13 @@ export function normalizeWithdrawError(
   const lower = text.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(text);
+  if (code !== null) return appendTxHash(lendingErrorMessage(code, 'withdraw') ?? `Withdrawal contract error #${code}.`, text);
   if (isInsufficientBalance(lower))
     return `You cannot withdraw all your v${asset}. Keep a small balance and try again.`;
   if (isSorobanRpcError(lower))
-    return `Withdraw failed for ${asset}. Please reduce the amount and try again.`;
+    return appendTxHash(`Withdraw failed for ${asset}. Please reduce the amount and try again.`, text);
 
   return text.length > 180 ? `${text.slice(0, 180)}...` : text;
 }
@@ -116,11 +197,16 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
   ) {
     return 'You cannot deposit 100% of your wallet balance. Please keep at least 1 XLM in your wallet.';
+  }
+  const code = contractErrorCode(compact);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `Margin deposit contract error #${code}.`, compact);
   }
   if (lower.includes('insufficient')) return 'Insufficient wallet balance for this deposit.';
   if (lower.includes('trustline entry is missing')) {
@@ -131,7 +217,7 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
     );
   }
   if (lower.includes('hosterror'))
-    return 'Deposit failed on-chain. Please retry with a slightly smaller amount.';
+    return appendTxHash('Deposit failed on-chain. Please retry with a slightly smaller amount.', compact);
 
   return compact || 'Deposit and borrow failed. Please try again.';
 }
@@ -151,11 +237,16 @@ export function normalizeTransferCollateralError(
   const lower = compact.toLowerCase();
 
   if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(lower)) return BUDGET_EXCEEDED_MESSAGE;
   if (
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
   ) {
     return 'You cannot transfer all your wallet balance. Please keep at least 1 XLM in your wallet.';
+  }
+  const code = contractErrorCode(compact);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `Margin transfer contract error #${code}.`, compact);
   }
 
   if (
@@ -179,16 +270,55 @@ export function normalizeTransferCollateralError(
     }
     if (typeof opts.maxSafe === 'number' && opts.maxSafe > 0)
       return `Withdrawal failed on-chain. Max transferable right now: ${opts.maxSafe.toFixed(2)} ${asset}.`;
-    return 'Withdrawal failed on-chain. Please retry with a slightly smaller amount.';
+    return appendTxHash('Withdrawal failed on-chain. Please retry with a slightly smaller amount.', compact);
   }
 
   if (lower.includes('hosterror')) {
     if (opts.isFullWithdraw && typeof opts.maxExecutableWithdraw === 'number')
       return `Full withdrawal can fail due to on-chain rounding/state dust. Try up to ${opts.maxExecutableWithdraw.toFixed(2)} ${asset}.`;
-    return 'Transfer failed on-chain. Please retry in a moment.';
+    return appendTxHash('Transfer failed on-chain. Please retry in a moment.', compact);
   }
 
   return compact || 'Transfer failed. Please try again.';
+}
+
+/**
+ * Normalize repay errors (from repay-loan-tab). Repay pulls the requested
+ * amount only from the margin account's own balance — no wallet top-up — so
+ * a shortfall (debt outgrew the account's balance, or the account never had
+ * enough of this asset) surfaces as a plain insufficient-balance failure,
+ * not something margin-utils.ts's `formatUserFacingContractError` already
+ * caught (that only covers the exception-thrown path; this also covers the
+ * on-chain-execution-failed path, which builds its own message directly).
+ */
+export function normalizeRepayError(raw: string | undefined, asset: string): string {
+  const compact = (raw ?? '').split('\nEvent log')[0]?.trim() ?? '';
+  // The diagnostic clues that actually distinguish "insufficient balance"
+  // from every other repay failure — collect_from's boolean false return,
+  // remove_borrowed_token_balance's underflow trap, the ArithDomain/u256_sub
+  // panic text — live INSIDE the "Event log" section, which `compact` just
+  // cut off above. Match against the FULL text for these; `compact` is only
+  // for the plain-fallback return at the bottom, where showing the whole
+  // multi-line diagnostic dump would be worse than a short generic message.
+  const full = (raw ?? '').toLowerCase();
+  const lower = compact.toLowerCase();
+
+  if (isCancel(lower)) return 'Transaction cancelled by user.';
+  if (isBudgetExceeded(full)) return BUDGET_EXCEEDED_MESSAGE;
+  if (
+    full.includes('arithdomain') ||
+    full.includes('collect_from') ||
+    full.includes('u256_sub') ||
+    full.includes('remove_borrowed_token_balance') ||
+    isInsufficientBalance(full)
+  ) {
+    return `Insufficient ${asset} balance in your margin account to repay this amount. Transfer more ${asset} to your margin account (Transfer Collateral) first, then retry.`;
+  }
+  if (lower.includes('hosterror') || lower.includes('error(contract')) {
+    return appendTxHash('Repay failed on-chain. Please retry.', compact);
+  }
+
+  return compact || 'Repay failed. Please try again.';
 }
 
 /** Normalize margin account creation errors (from leverage-assets-tab). */
@@ -197,6 +327,11 @@ export function normalizeCreateAccountError(msg: string): string {
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
   if (isUnfundedWalletError(m)) return unfundedWalletMessage('open your margin account');
+  if (isBudgetExceeded(m)) return BUDGET_EXCEEDED_MESSAGE;
+  const code = contractErrorCode(msg);
+  if (code !== null) {
+    return appendTxHash(marginErrorMessage(code) ?? `AccountManager contract error #${code}.`, msg);
+  }
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))
     return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
   return 'Failed to create margin account. Please try again.';

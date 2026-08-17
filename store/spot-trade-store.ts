@@ -15,10 +15,10 @@ const initialState: SpotTradeStateType = {
 };
 
 /**
- * Spot-trade store. Persisted so positions/orders survive reloads.
+ * Runtime-only view state. Real orders/positions must be rebuilt from chain
+ * data; browser persistence can never be their source of truth.
  */
 export const useSpotTradeStore = createNewStore(initialState, {
   name: "spot-trade-store",
   devTools: true,
-  persist: true,
 });

@@ -28,8 +28,7 @@ const badgeFor = (type: string): { cls: string; label: string } => {
   switch (type) {
     case "borrow": return { cls: "bg-red-100 text-red-600", label: "Borrow" };
     case "repay": return { cls: "bg-green-100 text-green-600", label: "Repay" };
-    case "transfer-in": return { cls: "bg-violet-100 text-violet-700", label: "Transfer In" };
-    case "transfer-out": return { cls: "bg-amber-100 text-amber-700", label: "Transfer Out" };
+    case "withdraw": return { cls: "bg-amber-100 text-amber-700", label: "Withdraw" };
     default: return { cls: "bg-blue-100 text-blue-600", label: "Deposit" };
   }
 };

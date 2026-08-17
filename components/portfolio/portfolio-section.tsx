@@ -14,6 +14,7 @@ import { AnimatedTabs } from "../ui/animated-tabs";
 import { PORTFOLIO_STATS_ITEMS } from "@/lib/constants/portfolio";
 import { LenderTab } from "./lender-tab";
 import { TraderTab } from "./trader-tab";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 const PORTFOLIO_TABS = [
   { id: "lender", label: "Lender" },
@@ -119,7 +120,14 @@ export const PortfolioSection = () => {
         }`}
       >
         <div className="flex flex-col gap-0.5">
-          <span className="text-[13px] font-medium text-[#777777]">Net Earnings</span>
+          <span className="flex items-center gap-1 text-[13px] font-medium text-[#777777]">
+            Net Earnings
+            <InfoTooltip
+              label="Net Earnings information"
+              placement="bottom"
+              content="Interest earned from supplied assets."
+            />
+          </span>
           <span className={`text-[22px] font-bold ${isDark ? "text-white" : "text-[#1A1A1A]"}`}>
             {userAddress ? fmtUsd(netEarnings) : "-"}
           </span>

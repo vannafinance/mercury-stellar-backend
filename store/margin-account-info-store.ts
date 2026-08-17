@@ -1,14 +1,13 @@
 // Margin-account store: the connected user's smart margin account (identity +
 // health-factor / collateral / borrowed / derived-risk fields) plus the action
-// functions that discover, create, and mutate it on-chain. Account resolution is
-// cache-then-reconcile (localStorage hint → authoritative on-chain discovery),
-// and all reads share computeMarginSnapshot with the cached /api/account route so
-// the client and server can never diverge.
+// functions that discover, create, and mutate it on-chain. Account identity and
+// balances are runtime-only and always rebuilt from authoritative chain reads.
 
 import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeCreateAccountError } from "@/lib/errors/normalize";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
@@ -114,13 +113,7 @@ const initialState: MarginAccountInfoStateType = {
 
 // Export Store
 //
-// NOT persisted. The account identity has a single cache — MarginAccountService's
-// wallet-keyed, AccountManager-guarded localStorage (STORAGE_KEY). On reload,
-// checkUserMarginAccount reads that cache synchronously for an instant paint, then
-// reconciles against on-chain discovery (the source of truth). Persisting identity
-// here too was a second, wallet-agnostic cache that could rehydrate the previously
-// connected wallet's account and disagree with the chain. Balances are never
-// persisted (they bled across accounts on reload) — they always come fresh.
+// NOT persisted. Identity and balances always come from AccountManager/Soroban.
 export const useMarginAccountInfoStore = createNewStore(initialState, {
   name: "margin-account-info-store",
   devTools: true,
@@ -384,10 +377,9 @@ export const setupContractConfiguration = async (): Promise<{ success: boolean; 
 };
 
 /**
- * Resolve the user's margin account into the store (cache-then-reconcile):
- * applies the localStorage-cached address for an instant paint, then ALWAYS
- * reconciles against authoritative on-chain discovery (adopting the newest active
- * account). Concurrent calls for the same user are deduped, and results are
+ * Resolve the user's margin account into the store from authoritative on-chain
+ * discovery (adopting the newest active account). Concurrent calls for the same
+ * user are deduped, and results are
  * throttled by CACHE_DURATION_MS / MIN_FETCH_INTERVAL_MS unless `forceRefresh`.
  *
  * @param userAddress - Owner wallet to resolve.
@@ -414,16 +406,15 @@ export const checkUserMarginAccount = async (
   const run = (async () => {
     try {
 
-      // Step 1: localStorage gives an instant first paint, but it is only a
-      // hint — a stale entry must never pin an old account. So we apply the
-      // cached address for speed, then ALWAYS reconcile against the chain.
+      // A runtime entry can paint immediately during same-session navigation,
+      // but it was originally resolved from chain and is never persisted.
       const accountInfo = MarginAccountService.getMarginAccountInfo(userAddress);
       const cachedAddress = accountInfo.hasAccount ? accountInfo.accountAddress ?? null : null;
       if (cachedAddress) {
         applyResolvedMarginAccount(cachedAddress);
       }
 
-      // Step 2: on-chain discovery is authoritative — it resolves the NEWEST
+      // On-chain discovery is authoritative — it resolves the NEWEST
       // active account (see getMarginAccountFromRegistry). Adopt it even when a
       // cached account exists, so the cache can't keep showing an older one.
       try {
@@ -462,9 +453,10 @@ export const checkUserMarginAccount = async (
 export const createMarginAccount = async (userAddress: string): Promise<boolean> => {
   try {
     setAccountCreationLoading(true);
-    
+    showTxStep("Creating your Vanna margin account on Stellar");
+
     const result = await MarginAccountService.createMarginAccount(userAddress);
-    
+
     if (result.success && result.marginAccountAddress) {
       const marginAccount: MarginAccount = {
         address: result.marginAccountAddress,
@@ -472,19 +464,24 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
         isActive: true,
         createdAt: Date.now()
       };
-      
+
       setMarginAccount(marginAccount);
+      showTxSuccess("Margin account created!");
       return true;
     } else {
       // Normalized here rather than in the component: `accountCreationError` is
       // rendered verbatim by create-margin-account.tsx, and the most common cause
       // — a wallet with no XLM, so Soroban RPC cannot even load the source account
       // — arrived as a raw "Account not found" dump or the bare fallback string.
-      setAccountCreationError(normalizeCreateAccountError(result.error || ''));
+      const message = normalizeCreateAccountError(result.error || '');
+      setAccountCreationError(message);
+      showTxError(message);
       return false;
     }
   } catch (error: any) {
-    setAccountCreationError(normalizeCreateAccountError(error?.message || ''));
+    const message = normalizeCreateAccountError(error?.message || '');
+    setAccountCreationError(message);
+    showTxError(message);
     return false;
   }
 };
@@ -505,7 +502,7 @@ export const updateAccountData = (data: Partial<MarginAccountInfoStateType>) => 
  * overwrite the fresh post-mutation values.
  *
  * @param marginAccountAddress - Account to refresh (validated for basic shape).
- * @param forceRefresh - Bypass throttle caches and suppress the snapshot feed.
+ * @param forceRefresh - Bypass throttle caches after an on-chain mutation.
  */
 export const refreshBorrowedBalances = async (
   marginAccountAddress: string,
@@ -525,10 +522,6 @@ export const refreshBorrowedBalances = async (
   const age = Date.now() - last;
   if (!forceRefresh && age < CACHE_DURATION_MS) return;
   if (!forceRefresh && age < MIN_FETCH_INTERVAL_MS) return;
-
-  // A forced refresh means a mutation just changed state — protect the result
-  // from the lagging cached snapshot for one TTL window.
-  if (forceRefresh) suppressSnapshotFeed();
 
   const run = (async () => {
   try {

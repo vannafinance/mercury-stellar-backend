@@ -8,7 +8,8 @@ import {
   ACCOUNT_STATS_ITEMS,
 } from "@/lib/constants/margin";
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { Suspense, useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import Image from "next/image";
 import { InfoCard } from "@/components/margin/info-card";
 import { LeverageCollateral } from "@/components/margin/leverage-collateral";
@@ -17,7 +18,6 @@ import { AccountStats } from "@/components/margin/account-stats";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 import {
   useMarginAccountInfoStore,
-  isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import { formatValue } from "@/lib/utils/format-value";
@@ -26,8 +26,14 @@ import { useShallow } from "zustand/shallow";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
 
-const Margin = () => {
+// useSearchParams() opts this page out of static prerendering unless it's
+// isolated behind its own Suspense boundary — everything else on the page
+// is client-only anyway (wallet-gated), so the fallback below never really
+// shows in practice.
+const MarginContent = () => {
   const { isDark } = useTheme();
+  const searchParams = useSearchParams();
+  const router = useRouter();
 
   // State to trigger tab switch to Repay Loan
   const [switchToRepayTab, setSwitchToRepayTab] = useState(false);
@@ -55,6 +61,19 @@ const Margin = () => {
       }, 100);
     }
   }, [switchToRepayTab]);
+
+  // Portfolio's per-asset Repay button hands off here via ?repay=<asset> (it
+  // has no Repay UI of its own) — consume it once on arrival, then strip it
+  // from the URL so a manual refresh doesn't re-trigger the tab switch.
+  useEffect(() => {
+    const repayAsset = searchParams.get("repay");
+    if (repayAsset !== null) {
+      setPrefilledRepayAsset(repayAsset || undefined);
+      setSwitchToRepayTab(true);
+      router.replace("/margin");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Wallet connection state — single shallow-compared read
   const { isWalletConnected, userAddress } = useUserStore(
@@ -103,7 +122,7 @@ const Margin = () => {
   }, [snapshotLoading, snapshot]);
 
   useEffect(() => {
-    if (!snapshot || isSnapshotFeedSuppressed()) return;
+    if (!snapshot) return;
     const store = useMarginAccountInfoStore.getState();
     if (snapshot.hasMarginAccount && snapshot.marginAccountAddress) {
       // Don't let a degraded snapshot (no collateral) overwrite collateral the
@@ -586,5 +605,11 @@ const Margin = () => {
     </main>
   );
 };
+
+const Margin = () => (
+  <Suspense fallback={null}>
+    <MarginContent />
+  </Suspense>
+);
 
 export default Margin;

@@ -8,13 +8,12 @@ import {
 } from '@/store/margin-account-info-store';
 import { getMarginHistoryFromMercury, type MarginTxEntry } from '@/lib/mercury-margin';
 import { getMarginHistoryFromRpc } from '@/lib/margin-history-rpc';
-import { appendMarginHistory, getMarginHistoryByAccount } from '@/lib/margin-history';
 import { MarginAccountService } from '@/lib/margin-utils';
 import { useUserStore } from '@/store/user';
 
-/** Merged history-row shape: real Mercury events plus the local transfer-out overlay. */
+/** Margin history row decoded from AccountManager events. */
 export type MarginHistoryRow = {
-  type: MarginTxEntry['type'] | 'transfer-out';
+  type: MarginTxEntry['type'];
   asset: string;
   amount: string;
   timestamp: number;
@@ -86,19 +85,7 @@ export const useMarginHistory = () => {
       const keyOf = (e: MarginTxEntry) => `${e.hash}:${e.type}:${e.asset}`;
       for (const entry of mercury) if (entry.hash) byKey.set(keyOf(entry), entry);
       for (const entry of rpcFallback) if (entry.hash && !byKey.has(keyOf(entry))) byKey.set(keyOf(entry), entry);
-      const onChain = Array.from(byKey.values());
-
-      // Margin-collateral withdrawals (`withdraw_collateral_balance`) emit no
-      // distinguishing on-chain event Mercury (or RPC) can index — unlike
-      // deposit/borrow/repay, which all have real Trader_* events already
-      // covered above. Overlay the local record for "transfer-out" ONLY: every
-      // other locally-recorded type (deposit/borrow/repay/transfer-in)
-      // duplicates a real on-chain event, so including them here would
-      // double-list the same transaction.
-      const localWithdrawals: MarginHistoryRow[] = getMarginHistoryByAccount(marginAccountAddress)
-        .filter((e): e is typeof e & { type: 'transfer-out' } => e.type === 'transfer-out')
-        .map(({ type, asset, amount, timestamp, hash }) => ({ type, asset, amount, timestamp, hash }));
-      return [...onChain, ...localWithdrawals];
+      return Array.from(byKey.values());
     },
     staleTime: 30_000,
     gcTime: 5 * 60_000,
@@ -197,9 +184,8 @@ export const useDepositCollateral = () => {
  * `is_withdraw_allowed` health check is the actual safety gate; this hook does
  * not pre-compute a safe max (callers should, for UX, mirror
  * `transfer-collateral.tsx`'s health-factor-aware cap before calling this).
- * `withdraw_collateral_balance` emits no distinguishing on-chain event, so on
- * success this records a local "transfer-out" entry that {@link useMarginHistory}
- * overlays onto the real Mercury-sourced history.
+ * Successful withdrawals are emitted by AccountManager as Trader_Withdraw and
+ * appear through Mercury/RPC; no browser-side history is written.
  */
 export const useWithdrawCollateral = () => {
   const qc = useQueryClient();
@@ -222,16 +208,7 @@ export const useWithdrawCollateral = () => {
       if (!result.success) throw new Error(result.error || 'Withdrawal failed');
       return { hash: result.hash, amount, assetType, symbol, marginAccountAddress };
     },
-    onSuccess: async ({ hash, amount, symbol, marginAccountAddress }) => {
-      if (hash) {
-        appendMarginHistory({
-          marginAccountAddress,
-          type: 'transfer-out',
-          asset: symbol,
-          amount: amount.toFixed(7),
-          hash,
-        });
-      }
+    onSuccess: async ({ marginAccountAddress }) => {
       qc.invalidateQueries({ queryKey: ['margin'] });
       try {
         await refreshBorrowedBalances(marginAccountAddress, true);

@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DropdownOptions } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
@@ -12,17 +12,21 @@ import { Popup } from "@/components/ui/popup";
 import { useTheme } from "@/contexts/theme-context";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { MarginAccountService } from "@/lib/margin-utils";
-import { appendMarginHistory } from "@/lib/margin-history";
 import { getAddress } from "@/lib/wallet-adapter";
-import { ContractService } from "@/lib/stellar-utils";
 import { refreshBorrowedBalances as refreshMarginStoreBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 import { useUserStore } from "@/store/user";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { useMutationToast } from "@/hooks/use-mutation-toast";
-import toast from "react-hot-toast";
-import { normalizeContractError } from "@/lib/errors/normalize";
-import { validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+import { normalizeRepayError } from "@/lib/errors/normalize";
+import { decimalAmountToWad, validateAmountChange, AMOUNT_MAX_DECIMALS } from "@/lib/utils/sanitize-amount";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { useMarginHistory } from "@/hooks/use-margin";
+import {
+  buildNetBorrowCashByToken,
+  calculateAccruedBorrowInterest,
+  canonicalMarginPositionToken,
+} from "@/lib/margin-position-attribution";
 
 /** Format a numeric amount for the editable input: clean string, no trailing
  *  zeros, capped at Stellar's 7-decimal precision; empty for non-positive. */
@@ -38,7 +42,10 @@ const formatHF = (hf: number): string =>
 const formatUsd = (n: number): string => formatUsdValue(n);
 
 const REPAY_DUST_EPSILON = 1e-6;
-const WAD = BigInt("1000000000000000000");
+const formatDetailedTokenAmount = (value: number): string =>
+  Number.isFinite(value)
+    ? value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 7 })
+    : "0";
 
 interface RepayLoanTabProps {
   /** Asset to preselect on mount / when changed (e.g. from a positions-row Repay click). */
@@ -55,32 +62,38 @@ const toDropdownAsset = (raw: string | undefined): string | null => {
   return null;
 };
 
+const normalizeContractTokenSymbol = (symbol: string): string =>
+  symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
+    ? "BLUSDC"
+    : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
+      ? "AQUSDC"
+      : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
+        ? "SOUSDC"
+        : symbol;
+
+const clampRepayDust = (value: number): number => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.abs(value) < REPAY_DUST_EPSILON ? 0 : value;
+};
+
 /**
  * Repay tab for paying down an outstanding margin loan in a chosen asset. Shows
- * the net outstanding debt and the wallet's available balance (both in token
- * units with a live USD line), and a form with quick-% chips and a free-text
- * amount. Repayment runs through a React Query mutation that, before signing,
- * re-reads the on-chain debt and caps the WAD amount at that real debt. 100%
- * targets the FULL on-chain debt (not just the smart account's own spendable
- * balance) — {@link MarginAccountService.repayLoan} tops up any shortfall
- * from the connected wallet before repaying, so a same-asset leverage
- * position's accrued-interest sliver gets repaid too instead of being left
- * behind as unrepayable dust. State is reset on wallet disconnect, and the
- * preview (before → after debt / HF / liquidation buffer) is rendered by
+ * the true on-chain debt ("Net Outstanding Amount to Repay") and the margin
+ * account's own balance of that asset ("Available Balance") side by side, both
+ * in token units with a live USD line, plus a form with quick-% chips and a
+ * free-text amount. 100% always requests the FULL debt — never capped to the
+ * margin account's balance — and {@link MarginAccountService.repayLoan} pulls
+ * only from the margin account (no wallet top-up): if the balance can't cover
+ * it, the transfer itself rejects the request and that surfaces as a clean
+ * insufficient-balance message (see {@link normalizeRepayError}) rather than a
+ * silent partial repay. The mutation re-reads the debt fresh right before
+ * signing. State is reset on wallet disconnect, and the preview (before →
+ * after debt / HF / liquidation buffer) is rendered by
  * {@link RepayPreviewSection}.
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const { isDark } = useTheme();
-  const normalizeContractTokenSymbol = (symbol: string) =>
-    symbol === "BLUSDC" || symbol === "BLEND_USDC" || symbol === "USDC"
-      ? "BLUSDC"
-      : symbol === "AqUSDC" || symbol === "AquiresUSDC" || symbol === "AQUARIUS_USDC"
-        ? "AQUSDC"
-        : symbol === "SoUSDC" || symbol === "SoroswapUSDC" || symbol === "SOROSWAP_USDC"
-          ? "SOUSDC"
-          : symbol;
   // Wallet and margin account state
-  const [userAddress, setUserAddress] = useState<string>("");
   const [marginAccount, setMarginAccount] = useState<string>("");
   const qc = useQueryClient();
   
@@ -118,7 +131,6 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const globalAddress = useUserStore((state) => state.address);
   useEffect(() => {
     if (!globalIsConnected || !globalAddress) {
-      setUserAddress("");
       setMarginAccount("");
       setRepayStats({ netOutstandingAmountToPay: 0, availableBalance: 0 });
       setRepayInput("");
@@ -127,40 +139,36 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   }, [globalIsConnected, globalAddress]);
   const [currentDebtWad, setCurrentDebtWad] = useState<string>('0');
-
+  // Margin account's OWN balance of the selected repay currency, in WAD —
+  // purely informational (the "Available Balance" tile, so the user can see
+  // upfront whether they have enough before hitting Pay Now). Repay always
+  // requests the full debt regardless of this — no wallet top-up, no
+  // client-side capping — so a shortfall surfaces as a clean on-chain
+  // "insufficient balance" error instead of a silent partial repay.
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
   const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
   const selectedTokenPrice =
     tokenPrices[normalizeContractTokenSymbol(selectedRepayCurrency)] ?? 1;
   const repayAmountInUsd = repayAmount * selectedTokenPrice;
-
-  // Current margin account state for computing updated values
-  const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
-  const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
+  const { history: marginHistory, isLoading: marginHistoryLoading } = useMarginHistory();
+  const selectedAccruedInterest = useMemo(() => {
+    if (marginHistoryLoading) return null;
+    const netBorrowCash = buildNetBorrowCashByToken(marginHistory);
+    const token = canonicalMarginPositionToken(selectedRepayCurrency);
+    return calculateAccruedBorrowInterest(
+      repayStats.netOutstandingAmountToPay,
+      netBorrowCash.get(token),
+    );
+  }, [marginHistory, marginHistoryLoading, repayStats.netOutstandingAmountToPay, selectedRepayCurrency]);
 
   // Popup visibility states
   const [isPayNowPopupOpen, setIsPayNowPopupOpen] = useState(false);
 
-  const clampRepayDust = (value: number) => {
-    if (!Number.isFinite(value)) return 0;
-    return Math.abs(value) < REPAY_DUST_EPSILON ? 0 : value;
-  };
-
-  const wadToFixed7 = (wad: bigint) => {
-    const whole = wad / WAD;
-    const frac = wad % WAD;
-    const frac7 = (frac / BigInt("100000000000")).toString().padStart(7, "0");
-    return `${whole.toString()}.${frac7}`;
-  };
-
   // Both stat tiles are denominated in tokens of the selected repay currency.
   // Primary line shows the token amount (the actual on-chain debt/balance),
   // secondary line shows the live USD equivalent via the oracle price.
-  const formatStatValue = (
-    value: number,
-    _key: string,
-  ): { token: string; usd: string | null } => {
+  const formatStatValue = (value: number): { token: string; usd: string | null } => {
     const cleaned = clampRepayDust(value);
     // Treat as zero if the USD equivalent is below $0.01 (post-repay dust).
     const usdEquiv = selectedTokenPrice > 0 ? cleaned * selectedTokenPrice : 0;
@@ -170,29 +178,36 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     return { token, usd };
   };
 
-  const getSelectedWalletBalance = async (address: string, selectedToken: string): Promise<number> => {
+  // Debt and margin-account balance for the CURRENT `selectedRepayCurrency`,
+  // fetched together so "Net Outstanding Amount to Repay" never mixes a fresh
+  // debt read with a stale balance from whatever currency was selected a
+  // moment ago. "Net Outstanding Amount to Repay" is always the TRUE full
+  // debt — never capped to what the margin account can actually cover — so
+  // 100% always requests the real amount owed; "Available Balance" (margin
+  // account balance) is shown alongside purely so the user can see upfront
+  // whether they have enough. If they don't, repay fails on-chain with a
+  // clean insufficient-balance message (see normalizeRepayError) instead of
+  // silently repaying a smaller amount — same as any other DEX.
+  const refreshRepayableStats = useCallback(async (marginAccountAddress: string) => {
     try {
-      const balances = await ContractService.getAllTokenBalances(address);
-      const token = normalizeContractTokenSymbol(selectedToken);
+      const normalizedSymbol = normalizeContractTokenSymbol(selectedRepayCurrency);
+      const [debtResult, marginBalWad] = await Promise.all([
+        MarginAccountService.getBorrowedTokenDebtWad(marginAccountAddress, normalizedSymbol),
+        MarginAccountService.getMarginAccountTokenBalanceWad(marginAccountAddress, normalizedSymbol),
+      ]);
 
-      if (token === "BLUSDC") return parseFloat(balances.BLEND_USDC) || 0;
-      if (token === "AQUSDC") return parseFloat(balances.AQUARIUS_USDC) || 0;
-      if (token === "SOUSDC") return parseFloat(balances.SOROSWAP_USDC) || 0;
-
-      return parseFloat(balances.XLM) || 0;
+      const trueDebtTokens = debtResult.success && debtResult.debtWad
+        ? clampRepayDust(parseFloat(debtResult.amount || '0') || 0)
+        : 0;
+      setCurrentDebtWad(debtResult.success && debtResult.debtWad ? debtResult.debtWad : '0');
+      setRepayStats({
+        netOutstandingAmountToPay: trueDebtTokens,
+        availableBalance: marginBalWad != null ? clampRepayDust(parseFloat(marginBalWad) / 1e18) : 0,
+      });
     } catch (error) {
-      console.error("Error fetching selected wallet balance:", error);
-      return 0;
+      console.error("Error refreshing repayable stats:", error);
     }
-  };
-
-  const refreshSelectedWalletBalance = async (address: string, selectedToken: string) => {
-    const walletBalance = await getSelectedWalletBalance(address, selectedToken);
-    setRepayStats(prev => ({
-      ...prev,
-      availableBalance: walletBalance,
-    }));
-  };
+  }, [selectedRepayCurrency]);
 
   // Load user data and borrowed balances on mount
   useEffect(() => {
@@ -200,18 +215,10 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       try {
         const address = await getAddress();
         if (!address.error && address.address) {
-          setUserAddress(address.address);
-
           // Get margin account
           const account = MarginAccountService.getStoredMarginAccount(address.address);
           if (account && account.isActive) {
             setMarginAccount(account.address);
-
-            // Get borrowed balances
-            await refreshSelectedTokenDebt(account.address);
-
-            // Get selected token wallet balance
-            await refreshSelectedWalletBalance(address.address, selectedRepayCurrency);
           }
         }
       } catch (error) {
@@ -222,75 +229,26 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     loadUserData();
   }, []);
 
-  // Refresh borrowed balances for selected currency
-  const refreshSelectedTokenDebt = async (marginAccountAddress: string) => {
-    try {
-      const debtResult = await MarginAccountService.getBorrowedTokenDebtWad(
-        marginAccountAddress,
-        normalizeContractTokenSymbol(selectedRepayCurrency)
-      );
-
-      if (debtResult.success && debtResult.debtWad) {
-        // Show the real residual (even sub-cent dust) — adaptive formatting keeps
-        // it readable and the USD line renders "<$0.01" rather than a fake "$0.00".
-        const outstanding = clampRepayDust(parseFloat(debtResult.amount || '0') || 0);
-        setCurrentDebtWad(debtResult.debtWad);
-        setRepayStats(prev => ({
-          ...prev,
-          netOutstandingAmountToPay: outstanding,
-        }));
-      } else {
-        setCurrentDebtWad('0');
-        setRepayStats(prev => ({
-          ...prev,
-          netOutstandingAmountToPay: 0,
-        }));
-      }
-    } catch (error) {
-      console.error("Error refreshing balances:", error);
-    }
-  };
-
   // Refresh when currency changes
   useEffect(() => {
     if (marginAccount) {
-      refreshSelectedTokenDebt(marginAccount);
+      refreshRepayableStats(marginAccount);
     }
-  }, [selectedRepayCurrency, marginAccount]);
+  }, [marginAccount, refreshRepayableStats]);
 
-  useEffect(() => {
-    if (userAddress) {
-      refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
-    }
-  }, [selectedRepayCurrency, userAddress]);
-
-  // Handler for percentage click
+  // Handler for percentage click. All percentages — including 100% — are
+  // fractions of `repayStats.netOutstandingAmountToPay`, the TRUE full debt
+  // (see {@link refreshRepayableStats}) — never capped to margin-account
+  // balance, so 100% always requests exactly what's owed.
   const handlePercentageClick = (item: number) => {
     setSelectedRepayPercentage(item);
 
-    if (item === 100 && currentDebtWad && currentDebtWad !== '0') {
-      const fullAmount = parseFloat(currentDebtWad) / 1e18;
-      const safeFullAmount = Number.isFinite(fullAmount) ? fullAmount : 0;
-      // 100% fills in the FULL on-chain debt, not just what the smart account
-      // currently holds spendable — repayLoan() tops up any shortfall from
-      // the wallet before repaying (see this file's top doc comment), so
-      // there's no need to pre-cap to spendableInMargin here anymore. Doing
-      // so used to leave accrued-interest dust permanently unrepayable: 100%
-      // would show 0 (or a stale partial figure) once the account's spendable
-      // balance dropped near zero from an earlier repay, even though the
-      // wallet held plenty to cover the tiny remaining gap.
-      //
-      // Below-a-cent dust is still zeroed — same $0.01 threshold the "Net
-      // Outstanding Amount to Repay" stat tile uses — so 100% doesn't fill in
-      // a confusing non-zero amount the stat disagrees with.
-      const usdEquiv = selectedTokenPrice > 0 ? safeFullAmount * selectedTokenPrice : safeFullAmount;
-      const clamped = usdEquiv < 0.01 ? 0 : clampRepayDust(safeFullAmount);
-      setRepayInput(amountToInputString(clamped));
-      return;
-    }
-
-    // Calculate amount based on percentage — keep 7dp so sub-cent debt survives.
-    const calculatedAmount = clampRepayDust((repayStats.netOutstandingAmountToPay * item) / 100);
+    // Below-a-cent dust is zeroed — same $0.01 threshold the "Net Outstanding
+    // Amount to Repay" stat tile uses — so 100% doesn't fill in a confusing
+    // non-zero amount the stat disagrees with.
+    const rawAmount = (repayStats.netOutstandingAmountToPay * item) / 100;
+    const usdEquiv = selectedTokenPrice > 0 ? rawAmount * selectedTokenPrice : rawAmount;
+    const calculatedAmount = usdEquiv < 0.01 ? 0 : clampRepayDust(rawAmount);
     setRepayInput(amountToInputString(calculatedAmount));
   };
 
@@ -298,9 +256,20 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const sanitized = validateAmountChange(e.target.value);
     if (sanitized === null) return; // invalid char — toast already shown
+    // A percentage chip is only a shortcut for filling the field. Once the
+    // user edits that value, the typed amount becomes authoritative; leaving
+    // 100 selected made submit silently replace the manual value with the
+    // entire latest debt.
+    setSelectedRepayPercentage(0);
     // Keep the raw string; `repayAmount` is derived. This is what lets a partial
     // "937." or "0.0000001" be typed without becoming NaN or being truncated.
     setRepayInput(sanitized);
+  };
+
+  const handleCurrencyChange = (currency: string) => {
+    setSelectedRepayCurrency(currency);
+    setRepayInput("");
+    setSelectedRepayPercentage(0);
   };
 
   const repayMutation = useMutation({
@@ -314,59 +283,77 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         throw new Error('Please enter a valid repay amount');
       }
 
-      const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
-        marginAccount,
-        normalizeContractTokenSymbol(selectedRepayCurrency)
-      );
+      try {
+        const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
+          marginAccount,
+          normalizeContractTokenSymbol(selectedRepayCurrency)
+        );
 
-      const inputRepayWad = BigInt(Math.floor(repayAmount * 1_000_000)) * BigInt(1_000_000_000_000);
-      const debtWad = latestDebt.success && latestDebt.debtWad
-        ? BigInt(latestDebt.debtWad)
-        : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-      // "Repay Max" (100%) targets the full on-chain debt; otherwise cap the input
-      // at the debt. NOT further capped to the smart account's spendable token
-      // balance here — MarginAccountService.repayLoan tops up any shortfall
-      // from the connected wallet before repaying, so requesting the full debt
-      // (even when it exceeds what the account currently holds, e.g. accrued
-      // same-asset-leverage interest) is repaid in full instead of being
-      // silently capped down and left as unrepayable dust.
-      const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
-        ? debtWad
-        : debtWad > BigInt(0)
-          ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
-          : inputRepayWad;
+        const inputRepayWad = decimalAmountToWad(repayInput);
+        const debtWad = latestDebt.success && latestDebt.debtWad
+          ? BigInt(latestDebt.debtWad)
+          : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
+        // "Repay Max" (100%) always targets the FULL on-chain debt — never
+        // capped to the margin account's balance. Repay pulls only from the
+        // margin account (no wallet top-up), so if the account can't cover
+        // it, the token transfer itself rejects the request and that's
+        // surfaced as a clean insufficient-balance error (normalizeRepayError)
+        // — never a silent partial repay for less than what was requested.
+        // Non-100% typed amounts are still capped at the debt (never overpay).
+        const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+          ? debtWad
+          : debtWad > BigInt(0)
+            ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
+            : inputRepayWad;
 
-      if (finalRepayWad <= BigInt(0)) {
-        throw new Error('Nothing to repay for this token');
+        if (finalRepayWad <= BigInt(0)) {
+          throw new Error('Nothing to repay for this token');
+        }
+
+        const result = await MarginAccountService.repayLoan(
+          marginAccount,
+          normalizeContractTokenSymbol(selectedRepayCurrency),
+          finalRepayWad.toString()
+        );
+
+        if (!result.success) {
+          // A visible, hard-to-miss console entry regardless of the DevTools
+          // level/context filter — margin-utils.ts already logs its own
+          // failure detail deeper in the call chain, but that log has been
+          // reported as not showing up (likely filtered/hidden by DevTools),
+          // so this is a second, closer-to-the-surface copy of the SAME info,
+          // logged as the raw object (not stringified) so every property is
+          // inspectable even if some field doesn't serialize cleanly.
+          console.error('🔴 REPAY FAILED — raw result:', result);
+          throw new Error(result.error || 'Loan repayment failed (no further detail returned — see "🔴 REPAY FAILED" above in console)');
+        }
+
+        const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
+        return { hash: result.hash, repaidWad };
+      } catch (error: unknown) {
+        // Belt-and-suspenders: catches anything that escapes repayLoan's own
+        // try/catch (e.g. a rejected promise from getBorrowedTokenDebtWad/
+        // getMarginAccountTokenBalanceWad above, or Freighter itself
+        // throwing a non-Error value with no usable .message) and logs it
+        // as the raw object — un-stringified, so every property is
+        // inspectable even if some field doesn't serialize cleanly — before
+        // rethrowing with a message guaranteed to be non-empty, so the toast
+        // is never a bare, contentless fallback.
+        console.error('🔴 REPAY THREW — raw error:', error);
+        const detail =
+          error instanceof Error && error.message
+            ? error.message
+            : (() => {
+                try {
+                  return JSON.stringify(error);
+                } catch {
+                  return String(error);
+                }
+              })();
+        throw new Error(detail || 'Repay threw with no message — see "🔴 REPAY THREW" in console.');
       }
-
-      const result = await MarginAccountService.repayLoan(
-        marginAccount,
-        normalizeContractTokenSymbol(selectedRepayCurrency),
-        finalRepayWad.toString()
-      );
-
-      if (!result.success) {
-        throw new Error(result.error || 'Loan repayment failed');
-      }
-
-      // repaidAmountWad can be LESS than finalRepayWad if the interest
-      // top-up above needed the wallet and the wallet couldn't cover it
-      // (e.g. no trustline for this asset) — repayLoan falls back to a
-      // partial repay capped at what the margin account already held.
-      const repaidWad = result.repaidAmountWad ? BigInt(result.repaidAmountWad) : finalRepayWad;
-      return { hash: result.hash, repaidWad };
     },
-    onSuccess: async ({ hash, repaidWad }) => {
-      if (hash) {
-        appendMarginHistory({
-          marginAccountAddress: marginAccount,
-          type: "repay",
-          asset: normalizeContractTokenSymbol(selectedRepayCurrency),
-          amount: wadToFixed7(repaidWad),
-          hash,
-        });
-      }
+    onSuccess: async () => {
       // Reset form and trigger RQ refresh first so the UI reflects the new
       // state immediately. The imperative Zustand-store refresh calls below
       // can transiently throw when Freighter's getAddress returns undefined
@@ -374,12 +361,12 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       // address). Swallowing the error here keeps the mutation in its success
       // state — the ledger tick will reconcile the store on the next close.
       setRepayInput("");
+      setSelectedRepayPercentage(0);
       qc.invalidateQueries({ queryKey: ['margin'] });
 
       try {
-        await refreshSelectedTokenDebt(marginAccount);
+        await refreshRepayableStats(marginAccount);
         await refreshMarginStoreBorrowedBalances(marginAccount, true);
-        await refreshSelectedWalletBalance(userAddress, selectedRepayCurrency);
       } catch (error) {
         console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
       }
@@ -390,9 +377,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
   });
 
   useMutationToast(repayMutation, {
-    loading: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}...`,
-    success: (d) => `Loan repayment successful! Tx: ${d.hash ? d.hash.slice(0, 16) + '…' : ''}`,
-    error: (e) => normalizeContractError(e.message),
+    loading: `Repaying ${formatTokenAmount(repayAmount)} ${selectedRepayCurrency}`,
+    success: () => `Loan repayment successful!`,
+    error: (e) => normalizeRepayError(e.message, selectedRepayCurrency),
   });
 
   // Handler for pay now click
@@ -407,6 +394,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
 
   // Check if buttons should be disabled (when input is 0 or empty)
   const isInputEmpty = repayAmount === 0 || repayAmount === null || repayAmount === undefined;
+
+  // Repay is margin-account-balance-based only (no wallet top-up) — an amount
+  // above what's actually sitting in the margin account can never succeed
+  // on-chain, so surface that up front instead of letting the user hit Pay
+  // Now and land on the contract's insufficient-balance error. Small epsilon
+  // avoids flagging a 100%-preset amount as "over" due to float rounding.
+  const exceedsAvailableBalance =
+    !isInputEmpty && repayAmount > repayStats.availableBalance + 1e-7;
 
   return (
     <motion.section
@@ -445,12 +440,52 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                   isDark ? "text-[#777777]" : "text-[#A7A7A7]"
                 }`}
               >
-                {key === "netOutstandingAmountToPay"
-                  ? "Net Outstanding Amount to Repay"
-                  : "Available Balance"}
+                {key === "netOutstandingAmountToPay" ? (
+                  <>
+                    Net Outstanding Amount to Repay
+                    <InfoTooltip
+                      placement="bottom"
+                      size="regular"
+                      label={`${selectedRepayCurrency} outstanding loan and accrued interest details`}
+                      content={(
+                        <span className="flex flex-col gap-1">
+                          {selectedAccruedInterest !== null ? (
+                            <>
+                              <span>
+                                Net borrowed amount: {formatDetailedTokenAmount(Math.max(0, repayStats.netOutstandingAmountToPay - selectedAccruedInterest))} {selectedRepayCurrency}
+                              </span>
+                              <span>
+                                Interest accrued till date: {formatDetailedTokenAmount(selectedAccruedInterest)} {selectedRepayCurrency} (≈ {formatUsdValue(selectedAccruedInterest * selectedTokenPrice)})
+                              </span>
+                              <span>
+                                Total outstanding loan: {formatDetailedTokenAmount(repayStats.netOutstandingAmountToPay)} {selectedRepayCurrency}
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span>
+                                Total outstanding loan: {formatDetailedTokenAmount(repayStats.netOutstandingAmountToPay)} {selectedRepayCurrency}
+                              </span>
+                              <span>Principal and interest breakdown is unavailable until the original on-chain borrow is indexed.</span>
+                            </>
+                          )}
+                        </span>
+                      )}
+                    />
+                  </>
+                ) : (
+                  <>
+                    Available Balance in Margin Account
+                    <InfoTooltip
+                      placement="bottom"
+                      label="Available margin account balance information"
+                      content="Selected asset available in your margin account."
+                    />
+                  </>
+                )}
               </span>
               {(() => {
-                const { token, usd } = formatStatValue(value, key);
+                const { token, usd } = formatStatValue(value);
                 return (
                   <>
                     <span
@@ -539,7 +574,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
                 }`}
                 items={DropdownOptions}
                 selectedOption={selectedRepayCurrency}
-                setSelectedOption={setSelectedRepayCurrency}
+                setSelectedOption={handleCurrencyChange}
                 dropdownClassname="text-[13px] gap-2"
               />
             </div>
@@ -605,15 +640,23 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
               damping: 25,
               delay: 0.5,
             }}
-            whileHover={isInputEmpty ? {} : { scale: 1.02 }}
-            whileTap={isInputEmpty ? {} : { scale: 0.98 }}
+            whileHover={isInputEmpty || exceedsAvailableBalance ? {} : { scale: 1.02 }}
+            whileTap={isInputEmpty || exceedsAvailableBalance ? {} : { scale: 0.98 }}
           >
             <Button
-              text={repayMutation.isPending ? "Processing..." : "Pay Now"}
+              text={
+                repayMutation.isPending
+                  ? "Processing..."
+                  : exceedsAvailableBalance
+                    ? "Insufficient Balance"
+                    : "Pay Now"
+              }
               size="large"
               type="gradient"
               onClick={handlePayNowClick}
-              disabled={isInputEmpty || repayMutation.isPending || !marginAccount}
+              disabled={
+                isInputEmpty || repayMutation.isPending || !marginAccount || exceedsAvailableBalance
+              }
             />
           </motion.div>
         </motion.section>
