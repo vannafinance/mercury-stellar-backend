@@ -115,6 +115,14 @@ class MockMCPClient implements MCPClient {
     if (tool === "vanna_get_inactive_accounts") {
       return { accounts: [], count: 0 };
     }
+    if (tool === "vanna_get_wallet_balance") {
+      return {
+        assets: [
+          { symbol: "XLM", balance: 3134.68, status: "ok" },
+          { symbol: "BLUSDC", balance: 0, status: "ok" },
+        ],
+      };
+    }
     // write-shaped mock (unused for execution path)
     return { unsigned_xdr: `AAAA...MOCK_XDR::${tool}`, is_write: true };
   }

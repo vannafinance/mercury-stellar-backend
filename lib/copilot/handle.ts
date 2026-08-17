@@ -4602,10 +4602,31 @@ async function runWrite(
       } catch {
         /* optional context */
       }
+      // Reported live: asked "supply X to earn", the clarify only asked how much the
+      // user WANTS to supply, with no figure to decide against — the real Earn page
+      // shows "Bal: 3134.68 XLM" right next to the same input for exactly this reason.
+      // Best-effort: a failed balance read still falls through to the plain question.
+      let balanceNote = "";
+      if (ctx.trader) {
+        try {
+          const wallet = await getMcpClient().call(
+            "vanna_get_wallet_balance",
+            { g_address: ctx.trader },
+            ctx.userId,
+          );
+          const { balance } = walletBalanceForEarn(wallet as Record<string, unknown>, sym);
+          if (Number.isFinite(balance) && balance > 0) {
+            balanceNote = ` You have ${fmtPosAmount(String(balance))} ${sym} in your wallet.`;
+          }
+        } catch {
+          /* optional context */
+        }
+      }
       return {
         kind: "clarification",
         message:
           `How much ${sym} do you want to supply to the Vanna earn pool?` +
+          balanceNote +
           apyNote +
           ` e.g. “lend 10 ${sym}” or “supply 25 ${sym}”.`,
         intent: { template_id: "lend", slots: { asset: sym, amount: null } },
