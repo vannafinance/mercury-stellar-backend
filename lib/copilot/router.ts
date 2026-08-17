@@ -653,7 +653,19 @@ export function routeMessage(message: string): RoutedIntent {
   const leverage = findLeverage(raw);
 
   // ── restricted ──────────────────────────────────────────────────────────
-  if (any(text, "liquidate", "liquidation of")) {
+  /**
+   * "What is Collateral Left Before Liquidation of my margin account?" was refused
+   * outright as a restricted keeper action — it contains "liquidation of", which the
+   * old bare-substring check could not tell apart from an actual command. A genuine
+   * liquidate instruction ("liquidate my account", "liquidate G...") does not open
+   * with a question word; a question about the user's OWN liquidation threshold
+   * always does. This is a read the margin snapshot already answers
+   * (`collateralLeftBeforeLiquidation`), not a keeper action to refuse.
+   */
+  const asksAboutOwnLiquidationThreshold =
+    /\b(what|how much|how many|show me)\b[\s\S]{0,40}\bliquidat/i.test(text) ||
+    /\b(before|until|left before|distance to|buffer before)\b[\s\S]{0,10}\bliquidat/i.test(text);
+  if (!asksAboutOwnLiquidationThreshold && any(text, "liquidate", "liquidation of")) {
     return {
       kind: "restricted",
       template_id: "liquidate",
@@ -1106,6 +1118,11 @@ export function routeMessage(message: string): RoutedIntent {
       "can i borrow",
       "how much can i borrow",
       "borrow apr",
+      // Reported live: "What is Borrow APY of XLM Lending Pool?" matched none of these
+      // (only "borrow apr" was excluded, not "borrow apy") and fell into the borrow
+      // write branch, which then asked "how much do you want to borrow?" — a market-data
+      // question about the pool's rate, answered as if it were an instruction to borrow.
+      "borrow apy",
       "borrow rate",
       "available to borrow",
       "left to borrow",
@@ -1426,6 +1443,56 @@ export function routeMessage(message: string): RoutedIntent {
   const actsOnPosition = /\b(close|exit|unwind|reduce|increase|hedge|liquidate|rebalance)\b/i.test(
     text,
   );
+
+  /**
+   * Named single-figure margin questions ask for ONE specific number, not the whole
+   * positions card — "if a user wants to see the gross amount of anything it should
+   * return only that, not extra info" (reported live, alongside the fixes below).
+   *
+   * "Net Available Collateral & Net amount Borrowed of my margin account" matched
+   * neither the debt question above (its word-distance window is too short for a
+   * second clause) nor the "net worth/value" pattern (the word after "net" here is
+   * "available"/"amount", not "worth"/"value") and fell all the way to the generic
+   * capabilities blurb. Each figure is checked independently against the whole
+   * message — not proximity to one leading question word — so an "X & Y" compound
+   * question matches every figure it names, in whichever order.
+   *
+   * "Collateral Left Before Liquidation" reuses the same threshold check the
+   * restricted-liquidate gate above already computed, so a question phrased either
+   * way ("collateral left before liquidation" or "how much before liquidation")
+   * resolves to the same figure instead of one of them going unanswered.
+   */
+  if (!hasActionWriteIntent && !actsOnPosition) {
+    const namedMarginFigures: string[] = [];
+    if (
+      asksAboutOwnLiquidationThreshold ||
+      /\bcollateral\s+left\s+before\s+liquidation\b/i.test(text) ||
+      /\b(liquidation\s+buffer|buffer\s+before\s+liquidation|distance\s+to\s+liquidation)\b/i.test(text)
+    ) {
+      namedMarginFigures.push("collateralLeftBeforeLiquidation");
+    }
+    if (/\bnet\s+available\s+collateral\b/i.test(text)) {
+      namedMarginFigures.push("netAvailableCollateral");
+    }
+    if (/\b(gross\s+collateral|total\s+collateral(?:\s+value)?)\b/i.test(text)) {
+      namedMarginFigures.push("grossCollateralValue");
+    }
+    if (/\bnet\s+(?:amount\s+)?borrowed\b/i.test(text) || /\btotal\s+(?:amount\s+)?borrowed\b/i.test(text)) {
+      namedMarginFigures.push("totalBorrowedValue");
+    }
+    if (namedMarginFigures.length > 0) {
+      return {
+        kind: "read",
+        // Nominal tool — runRead resolves the real margin snapshot for query_margin_figure
+        // and reads only the requested field(s) off it, same as query_all_positions does.
+        tool: "vanna_get_account_health",
+        args: { figures: namedMarginFigures },
+        requires_account: true,
+        template_id: "query_margin_figure",
+      };
+    }
+  }
+
   /**
    * "My Blend position" names one venue and already has a route below that answers it with
    * that venue's own numbers. Only the unqualified question — "what are my positions" — wants

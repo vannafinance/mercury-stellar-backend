@@ -901,6 +901,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // Same reasoning: "my Earn positions" must not need a model round-trip either,
           // and must never be re-decided by Vertex into the margin/farm fan-out above.
           "query_earn_position",
+          // Same reasoning: a named single-figure margin question ("net available
+          // collateral", "collateral left before liquidation") must not be re-decided by
+          // Vertex into the whole-account fan-out, nor risk being reread as a liquidate
+          // command if the model ever falls back to a keyword-shaped guess.
+          "query_margin_figure",
           // Same reasoning: "how much credit do I have" is the product's headline
           // question and must not need a model round-trip to be understood.
           "query_available_credit",
@@ -3061,6 +3066,74 @@ async function earnPositionsAnswer(
   };
 }
 
+const MARGIN_FIGURE_LABELS: Record<string, { label: string; get: (p: MarginPositions) => number }> = {
+  collateralLeftBeforeLiquidation: {
+    label: "collateral left before liquidation",
+    get: (p) => p.collateralLeftBeforeLiquidation,
+  },
+  netAvailableCollateral: { label: "net available collateral", get: (p) => p.netAvailableCollateral },
+  grossCollateralValue: { label: "gross collateral", get: (p) => p.grossCollateralValue },
+  totalBorrowedValue: { label: "amount borrowed", get: (p) => p.totalBorrowedValue },
+};
+
+/**
+ * Answers a question that names ONE OR MORE specific margin figures — "net available
+ * collateral", "collateral left before liquidation", "net amount borrowed" — with
+ * exactly those numbers and nothing else.
+ *
+ * Reported live: these questions either fell through to the generic capabilities
+ * blurb, or (worse) "collateral left before liquidation" was refused outright as a
+ * restricted liquidate command. The underlying complaint generalizes beyond any one
+ * phrasing: "if a user wants the gross amount of anything it should return only
+ * that, not extra info" — a single-figure ask should never come back as the full
+ * query_all_positions card just because that card happens to contain the number too.
+ */
+async function marginFigureAnswer(
+  figures: string[],
+  ctx: { smartAccount: string | null; request_id: string },
+): Promise<ChatResponse> {
+  if (!ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message:
+        "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      intent: { template_id: "query_margin_figure" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const pos = await readMarginPositions(ctx.smartAccount);
+  if (!pos) {
+    return {
+      kind: "unavailable",
+      message: "I could not read your margin account just now. Your live figures are on the Margin page.",
+      intent: { template_id: "query_margin_figure" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const defs = figures.map((key) => ({ key, def: MARGIN_FIGURE_LABELS[key] })).filter((x) => x.def != null);
+  const facts: AnswerFact[] = defs.map(({ def }) => ({ label: def.label, value: money(def.get(pos)) }));
+  const headline =
+    facts.length === 1
+      ? `Your ${facts[0].label} is ${facts[0].value}.`
+      : `Here's what you asked for: ${facts.map((f) => `${f.label} ${f.value}`).join(", ")}.`;
+
+  const structured: StructuredAnswer = { headline, facts, venue: "margin" };
+  return {
+    kind: "answer",
+    message: answerToText(structured),
+    answer: structured,
+    // No `data` (raw facts-grid) card — the answer above already names each requested
+    // figure exactly once. A second card repeating the same number(s), unformatted and
+    // with an unspaced camelCase key ("COLLATERALLEFTBEFORELIQUIDATION"), was reported
+    // live as pure clutter on a single-figure answer that has nothing left to add.
+    intent: { template_id: "query_margin_figure", slots: { figures } },
+    mcp: { tool: "vanna_get_account_health", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
 async function runRead(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -3081,6 +3154,14 @@ async function runRead(
   // own doc comment for why this must never fall back to the margin/farm fan-out above.
   if (routed.template_id === "query_earn_position") {
     return earnPositionsAnswer(ctx);
+  }
+
+  // "What is my net available collateral & net amount borrowed" names specific figures —
+  // see marginFigureAnswer's own doc comment for why this must answer with ONLY those,
+  // not the full query_all_positions card.
+  if (routed.template_id === "query_margin_figure") {
+    const figures = Array.isArray(routed.args?.figures) ? (routed.args.figures as string[]) : [];
+    return marginFigureAnswer(figures, ctx);
   }
 
   // Farmable Aquarius pools are Vanna's own pairs, not the full AMM API dump.
