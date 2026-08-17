@@ -2918,43 +2918,78 @@ async function earnPositionsAnswer(
     message: string;
   },
 ): Promise<ChatResponse> {
-  if (!ctx.smartAccount) {
+  if (!ctx.trader && !ctx.smartAccount) {
     return {
       kind: "unavailable",
-      message:
-        "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      message: "Connect your wallet to read your Earn positions.",
       intent: { template_id: "query_earn_position" },
       request_id: ctx.request_id,
     };
   }
 
   const mcp = getMcpClient();
-  const reads = await Promise.all(
-    EARN_ASSETS.map(async (symbol) => {
-      try {
-        const r = await mcp.call(
-          "vanna_get_vtoken_balance",
-          { symbol, smart_account: ctx.smartAccount },
-          ctx.userId,
-        );
-        const amount = Number(r.balance_human ?? r.balance ?? 0);
-        // Not every deployment prices a vToken balance itself; fall back to treating a
-        // stable-value token as its own USD amount rather than showing no figure at all.
-        const usd = Number(r.usd_value ?? r.balance_usd ?? (symbol === "XLM" ? NaN : amount));
-        return {
-          symbol,
-          amount: Number.isFinite(amount) ? amount : 0,
-          usd: Number.isFinite(usd) ? usd : null,
-        };
-      } catch (e) {
-        console.warn(
-          `[copilot] vtoken balance failed for ${symbol} inside query_earn_position -> ` +
-            `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
-        );
-        return null;
+  /**
+   * Sequential on purpose, not Promise.all. Four concurrent `vanna_get_vtoken_balance`
+   * calls against the live MCP session reliably abort with "operation was aborted due to
+   * timeout" well inside the 90s per-call budget, even though any ONE of them alone
+   * resolves in ~10s with the right answer — confirmed live (a single call correctly
+   * returned 20.0183 XLM, matching the Earn page's own number, while the 4-way parallel
+   * version returned nothing for any asset). Whatever the live MCP session is doing
+   * internally, it does not like concurrent calls on this tool. Slower (~10s × up to 4
+   * assets) beats fast-and-silently-wrong — the whole point of this fix was to stop
+   * answering "no active Earn positions" when that is not true.
+   */
+  const reads: Array<{ symbol: string; amount: number; usd: number | null } | null> = [];
+  for (const symbol of EARN_ASSETS) {
+    try {
+      // Earn positions are held by the G-wallet, not the margin account — vanna_lend
+      // deposits from the trader's wallet and the pool mints vTokens back to that same
+      // address. buildToolArgs already encodes this (`holder = trader || smart`, verified
+      // against a live lend that settled on-chain while a smart-account lookup still
+      // reported zero) — reuse it here instead of re-guessing the argument shape.
+      const built = buildToolArgs("vanna_get_vtoken_balance", { symbol }, {
+        trader: ctx.trader,
+        smartAccount: ctx.smartAccount,
+      });
+      if (built.blocker) {
+        reads.push(null);
+        continue;
       }
-    }),
-  );
+      // vanna_get_vtoken_balance does 3-4 sequential Soroban contract calls internally
+      // (balance/total_supply/decimals, then convert_vtoken_to_asset, then symbol) — it
+      // is genuinely slow (~10s) by design, not a simple lookup, and prone to a transient
+      // "aborted due to timeout" under live testnet RPC load even well inside its own 90s
+      // budget. One retry recovers most of these; a real failure still surfaces as null
+      // rather than retrying forever.
+      let r: Record<string, unknown> | null = null;
+      for (let attempt = 0; attempt < 2 && r === null; attempt++) {
+        try {
+          r = await mcp.call("vanna_get_vtoken_balance", built.args, ctx.userId);
+        } catch (e) {
+          if (attempt === 1) throw e;
+          console.warn(
+            `[copilot] vtoken balance attempt 1 failed for ${symbol}, retrying once -> ` +
+              `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
+          );
+        }
+      }
+      const amount = Number(r?.balance_human ?? r?.balance ?? 0);
+      // Not every deployment prices a vToken balance itself; fall back to treating a
+      // stable-value token as its own USD amount rather than showing no figure at all.
+      const usd = Number(r?.usd_value ?? r?.balance_usd ?? (symbol === "XLM" ? NaN : amount));
+      reads.push({
+        symbol,
+        amount: Number.isFinite(amount) ? amount : 0,
+        usd: Number.isFinite(usd) ? usd : null,
+      });
+    } catch (e) {
+      console.warn(
+        `[copilot] vtoken balance failed for ${symbol} inside query_earn_position -> ` +
+          `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
+      );
+      reads.push(null);
+    }
+  }
 
   if (reads.every((r) => r === null)) {
     return {
