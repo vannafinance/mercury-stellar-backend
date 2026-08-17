@@ -801,15 +801,32 @@ export function mapOpToMcpStep(
       if (dep == null || dep <= 0) {
         return { blocker: "How much do you want to supply to Blend? e.g. “supply 10 XLM to Blend”." };
       }
-      // Blend reserves are XLM or USDC only (BLUSDC/AQUSDC/SOUSDC → USDC reserve).
-      const blendSym =
-        symbol === "BLUSDC" ||
-        symbol === "USDC" ||
-        symbol === "AQUSDC" ||
-        symbol === "SOUSDC" ||
-        symbol === "BLEND_USDC"
-          ? "USDC"
-          : "XLM";
+      /**
+       * Blend reserves are XLM or USDC (BLUSDC) ONLY — AQUSDC and SOUSDC are distinct,
+       * non-interchangeable SACs for the Aquarius and Soroswap AMMs, not Blend deposits.
+       *
+       * This used to silently COERCE any of AQUSDC/SOUSDC/anything-unrecognised into
+       * "USDC"/"XLM" and supply THAT to Blend instead — live result: a plan resumed after
+       * a swap-destination clarify with "SOUSDC" (because BLUSDC itself can't be swapped
+       * into) silently supplied real BLUSDC/USDC to Blend, when the user's actual intent
+       * (having just swapped into SOUSDC) could only ever have been Soroswap LP. Refusing
+       * here — the same pattern the swap and add_liquidity branches in this file already
+       * use for exactly this asset confusion — stops money moving into a venue nobody
+       * asked for; asking "how much XLM/USDC to Blend?" cannot fix a wrong-venue deposit
+       * after the fact.
+       */
+      const blendCompatible =
+        symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
+      if (!blendCompatible) {
+        const venue = symbol === "SOUSDC" || symbol === "SOROSWAP_USDC" ? "Soroswap" : "Aquarius";
+        return {
+          blocker:
+            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `cannot be supplied to Blend. Add liquidity on ${venue} instead, or name BLUSDC/USDC/XLM ` +
+            `for Blend.`,
+        };
+      }
+      const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);
       let bor = 0;
       if (params.borrow_amount != null && params.borrow_amount > 0) {
