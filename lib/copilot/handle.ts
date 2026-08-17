@@ -910,6 +910,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // real debt figure every time, not have Vertex invent an interest-specific
           // number no tool in this deployment actually tracks.
           "query_accrued_interest",
+          // Same reasoning: "my Farm position" must not need a model round-trip either,
+          // and must never be re-decided by Vertex into the margin fan-out above.
+          "query_farm_position",
           // Same reasoning: "how much credit do I have" is the product's headline
           // question and must not need a model round-trip to be understood.
           "query_available_credit",
@@ -3100,6 +3103,156 @@ async function earnPositionsAnswer(
   };
 }
 
+/**
+ * "My farm position" answered with a card explicitly badged MARGIN ACCOUNT and a note
+ * admitting "Blend supplies and Aquarius LP shares stay on Farm" — the whole-account
+ * fan-out's farm-overview call only ever contributes a best-effort PROSE sentence, never
+ * structured facts, so a real Blend supply or Aquarius LP position never actually showed
+ * up in this answer at all. Same root cause and same fix shape as the Earn-positions bug:
+ * read the venue's own real state directly instead of relying on a fan-out that only
+ * covers margin.
+ *
+ * An earlier version of this fix reused `getLitePositionsFromChain` (the Lite-mode
+ * leveraged-position tracker), which nets each pool's supply against SmartAccount margin
+ * debt attributed to that asset — the right number for "what's my net exposure on this
+ * leveraged position", the wrong one for "how much do I have in Farm". Live-verified: a
+ * real ~$49.86 Blend BLUSDC supply (confirmed on the Farm page's own Positions tab)
+ * answered "$0.00" here, because unrelated margin debt in the same asset fully netted it
+ * out. This reads the GROSS balance directly instead — the same on-chain calls
+ * `getLitePositionsFromChain` itself makes (`BlendService`/`AquariusService`/
+ * `SoroswapService`), just without the debt-netting step, so it matches what the Farm
+ * page's Positions tab actually shows.
+ */
+async function farmPositionAnswer(ctx: {
+  smartAccount: string | null;
+  request_id: string;
+}): Promise<ChatResponse> {
+  if (!ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message: "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      intent: { template_id: "query_farm_position" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const DUST = 1e-6;
+  const facts: AnswerFact[] = [];
+  let totalUsd = 0;
+
+  try {
+    const [{ BlendService }, { AquariusService, AQUARIUS_POOLS, aquariusLpUnderlyingAmounts }, { SoroswapService }, { fetchTokenPrices, getCachedTokenPrice }] =
+      await Promise.all([
+        import("@/lib/blend-utils"),
+        import("@/lib/aquarius-utils"),
+        import("@/lib/soroswap-utils"),
+        import("@/lib/oracle-price"),
+      ]);
+
+    await fetchTokenPrices(["XLM", "USDC"]);
+    const xlmPrice = getCachedTokenPrice("XLM") || 0;
+    const usdcPrice = getCachedTokenPrice("USDC") || 1;
+
+    const [blendXlm, blendUsdc, soroswapLp, soroswapStats, ...aquariusResults] = await Promise.all([
+      BlendService.getUserBlendBalance(ctx.smartAccount, "XLM"),
+      BlendService.getUserBlendBalance(ctx.smartAccount, "USDC"),
+      SoroswapService.getLpBalance(ctx.smartAccount),
+      SoroswapService.getPoolStats(),
+      ...AQUARIUS_POOLS.flatMap((pool) => [
+        AquariusService.getUserLpBalance(ctx.smartAccount!, pool.poolAddress, pool.tokens[0], pool.tokens[1]),
+        AquariusService.getAquariusPoolStats(pool.poolAddress),
+      ]),
+    ]);
+
+    const xlmUnderlying = Number.parseFloat(blendXlm.underlyingBalance) || 0;
+    if (xlmUnderlying > DUST) {
+      const usd = xlmUnderlying * xlmPrice;
+      facts.push({ label: "Blend · XLM", value: `${fmtPosAmount(String(xlmUnderlying))} XLM (${money(usd)})` });
+      totalUsd += usd;
+    }
+    const usdcUnderlying = Number.parseFloat(blendUsdc.underlyingBalance) || 0;
+    if (usdcUnderlying > DUST) {
+      const usd = usdcUnderlying * usdcPrice;
+      facts.push({ label: "Blend · BLUSDC", value: `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${money(usd)})` });
+      totalUsd += usd;
+    }
+
+    const ssLp = Number.parseFloat(soroswapLp) || 0;
+    const ssShares = Number.parseFloat(soroswapStats?.totalShares ?? "0");
+    if (ssLp > DUST && soroswapStats && ssShares > 0) {
+      const ratio = ssLp / ssShares;
+      const xlm = ratio * (Number.parseFloat(soroswapStats.reserveXLM) || 0);
+      const usdc = ratio * (Number.parseFloat(soroswapStats.reserveUSDC) || 0);
+      const usd = xlm * xlmPrice + usdc * usdcPrice;
+      if (usd > DUST) {
+        facts.push({
+          label: "Soroswap · XLM/USDC LP",
+          value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)})`,
+        });
+        totalUsd += usd;
+      }
+    }
+
+    AQUARIUS_POOLS.forEach((pool, i) => {
+      const lp = Number.parseFloat(String(aquariusResults[i * 2] ?? "0")) || 0;
+      const stats = aquariusResults[i * 2 + 1] as Awaited<ReturnType<typeof AquariusService.getAquariusPoolStats>>;
+      if (!(lp > DUST) || !stats) return;
+      const { amountA, amountB } = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
+      const priceA = pool.tokens[0] === "XLM" ? xlmPrice : usdcPrice;
+      const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
+      const usd = amountA * priceA + amountB * priceB;
+      if (usd <= DUST) return;
+      facts.push({
+        label: `Aquarius · ${pool.tokens.join("/")}`,
+        value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)})`,
+      });
+      totalUsd += usd;
+    });
+  } catch (e) {
+    console.warn(
+      `[copilot] farm position read failed -> ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+    return {
+      kind: "unavailable",
+      message: "I could not read your Farm positions just now. Your live figures are on the Farm page.",
+      intent: { template_id: "query_farm_position" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  if (!facts.length) {
+    const structured: StructuredAnswer = {
+      headline: "You have no active Farm positions right now.",
+      facts: [],
+      venue: "none",
+    };
+    return {
+      kind: "answer",
+      message: structured.headline,
+      answer: structured,
+      intent: { template_id: "query_farm_position", slots: { count: 0 } },
+      mcp: { tool: "blend_aquarius_soroswap_on_chain", has_unsigned_xdr: false },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const headline = `Your Farm positions — ${facts.length} open, ~${money(totalUsd)} total.`;
+  const structured: StructuredAnswer = {
+    headline,
+    facts,
+    venue: "none",
+    note: "Margin collateral/debt and Earn (vToken) supply are separate — this is Blend + Aquarius/Soroswap LP only.",
+  };
+  return {
+    kind: "answer",
+    message: answerToText(structured),
+    answer: structured,
+    intent: { template_id: "query_farm_position", slots: { count: facts.length } },
+    mcp: { tool: "blend_aquarius_soroswap_on_chain", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
 const MARGIN_FIGURE_LABELS: Record<string, { label: string; get: (p: MarginPositions) => number }> = {
   collateralLeftBeforeLiquidation: {
     label: "collateral left before liquidation",
@@ -3255,6 +3408,13 @@ async function runRead(
   // own doc comment for why this must never fall back to the margin/farm fan-out above.
   if (routed.template_id === "query_earn_position") {
     return earnPositionsAnswer(ctx);
+  }
+
+  // "My Farm position" — see farmPositionAnswer's own doc comment for why this reads
+  // on-chain Blend/Aquarius/Soroswap LP state directly instead of the margin/farm
+  // fan-out's best-effort prose sentence.
+  if (routed.template_id === "query_farm_position") {
+    return farmPositionAnswer(ctx);
   }
 
   // "What is my net available collateral & net amount borrowed" names specific figures —

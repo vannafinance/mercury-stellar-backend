@@ -673,6 +673,22 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  /**
+   * "I have to Faucet AQUSDC" (also matches the "Fucet" typo, a plausible dropped-letter
+   * slip) fell through to the generic capabilities blurb — testnet funding is a client-side
+   * action (the "Faucet" button in the top nav), not an MCP tool, so no read/write branch
+   * below ever recognised the word at all.
+   */
+  if (/\bfa?ucet\b/i.test(text)) {
+    return {
+      kind: "clarify",
+      message:
+        "Testnet funding is the Faucet button in the top nav, next to your wallet address — " +
+        "it isn't something I can trigger from here. Click it to fund your wallet with testnet XLM.",
+      template_id: "faucet_guidance",
+    };
+  }
+
   // ── G-wallet create/connect (client-side Privy/Freighter — NOT MCP) ──────
   // Must run before multi-goal / create_account so "create a wallet" never
   // becomes open-margin-account (C-address). MCP has no create_wallet tool.
@@ -1519,14 +1535,16 @@ export function routeMessage(message: string): RoutedIntent {
    * that venue's own numbers. Only the unqualified question — "what are my positions" — wants
    * the whole-account fan-out, so a named venue defers to the specific read.
    *
-   * "earn" belongs in this list too, for the same reason "blend"/"aquarius"/"soroswap" do —
-   * it names ONE specific product feature, not the general "farm" section that spans several.
-   * Without it, "can you provide my Earn positions" fell into the whole-account fan-out below,
-   * which reads collateral/debt off the MARGIN account and — on an account with margin
-   * collateral but no active Earn supply — answered a question about Earn with a card
-   * explicitly labeled "MARGIN ACCOUNT", naming a different product's numbers entirely.
+   * "earn" and "farm" both belong in this list, for the same reason "blend"/"aquarius"/
+   * "soroswap" do — each names a specific thing with its own answer, not the general
+   * "everything I own" question. "farm" used to be treated as the general fan-out's synonym
+   * (the whole account, not one venue), on the theory that the fan-out's farm-overview call
+   * covered it — but that call only ever contributes a best-effort PROSE sentence, never
+   * structured facts, so "my farm position" answered with a MARGIN ACCOUNT card and a note
+   * admitting "Blend supplies and Aquarius LP shares stay on Farm" — the same class of bug
+   * "my Earn positions" had before it got this same treatment.
    */
-  const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken", "earn");
+  const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken", "earn", "farm");
   /**
    * "Can you provide my Earn positions" / "what's my earn position" — same "named one
    * venue" shape as Blend/Aquarius, so it must be checked before the generic fan-out below
@@ -1542,6 +1560,26 @@ export function routeMessage(message: string): RoutedIntent {
       args: {},
       requires_account: true,
       template_id: "query_earn_position",
+    };
+  }
+  /**
+   * "My farm position" / "what am I farming" — see farmPositionAnswer's own doc comment
+   * for why this reads on-chain Blend + Aquarius + Soroswap LP state directly instead of
+   * the margin/farm fan-out's best-effort prose sentence. Excludes a specifically-named
+   * venue, which already has its own more precise answer.
+   */
+  if (
+    asksAboutHoldings &&
+    !actsOnPosition &&
+    any(text, "farm") &&
+    !any(text, "blend", "aquarius", "soroswap", "earn")
+  ) {
+    return {
+      kind: "read",
+      tool: "vanna_get_farm_overview",
+      args: {},
+      requires_account: true,
+      template_id: "query_farm_position",
     };
   }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {

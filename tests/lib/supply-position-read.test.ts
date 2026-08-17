@@ -60,11 +60,14 @@ describe("a personal supply question reads the position, never writes", () => {
  * whack-a-mole against this; the shape is a quantity question word + a first-person
  * marker + a quantity noun + a named venue, in any order.
  *
- * "earn" is checked separately from "farm": "earn" names one specific product
- * feature (like "blend"/"aquarius"), so it gets its own read — see
- * earnPositionsAnswer's doc comment in handle.ts for why "my Earn positions" must
- * never answer with the margin account's numbers. "farm" is the general section
- * spanning several venues, so it keeps the whole-account fan-out.
+ * "earn" and "farm" both get their own read, same reasoning as "blend"/"aquarius" —
+ * each names a specific thing, not "everything I own". "Farm" used to keep the
+ * whole-account fan-out (the theory being its farm-overview call covered it), but
+ * that call only ever contributes a best-effort PROSE sentence, never structured
+ * facts, so "my farm position" answered with a MARGIN ACCOUNT card and a note
+ * admitting Blend/Aquarius LP stay out of it — see farmPositionAnswer's doc comment
+ * in handle.ts for the fix (reads on-chain Blend/Aquarius/Soroswap LP state directly,
+ * the same way earnPositionsAnswer does for Earn's vToken supply).
  */
 describe("everyday phrasings of 'how much do I have in earn' resolve to the Earn-only read", () => {
   const phrasings = [
@@ -84,13 +87,13 @@ describe("everyday phrasings of 'how much do I have in earn' resolve to the Earn
   }
 });
 
-describe("everyday phrasings of 'how much do I have in farm' resolve to the whole-account fan-out", () => {
+describe("everyday phrasings of 'how much do I have in farm' resolve to the Farm-only read", () => {
   const phrasings = ["how much do I have in farm", "what's my farm position", "what's my total in farm"];
   for (const p of phrasings) {
     it(`answers "${p}"`, () => {
       const r = routeMessage(p);
       expect(r.kind, p).toBe("read");
-      if (r.kind === "read") expect(r.template_id, p).toBe("query_all_positions");
+      if (r.kind === "read") expect(r.template_id, p).toBe("query_farm_position");
     });
   }
 

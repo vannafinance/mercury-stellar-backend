@@ -1,0 +1,115 @@
+/**
+ * Reported live, issue #18: "My farm position" answered with a card explicitly badged
+ * MARGIN ACCOUNT and a note admitting "Blend supplies and Aquarius LP shares stay on
+ * Farm" — the whole-account fan-out's farm-overview call only ever contributes a
+ * best-effort PROSE sentence, never structured facts, so a real Blend/Aquarius LP
+ * position never actually showed up. This exercises the actual handler
+ * (`farmPositionAnswer`, dispatched via `handleChat`), not just the router's
+ * classification — the classification-only tests are in supply-position-read.test.ts.
+ *
+ * An earlier version of this fix reused `getLitePositionsFromChain` (nets farm supply
+ * against margin debt in the same asset — right for "net exposure", wrong for "how much
+ * do I have"); live-verified it answered "$0.00" for a real ~$49.86 Blend BLUSDC supply.
+ * These tests pin the corrected version: gross balances straight from
+ * `BlendService`/`AquariusService`/`SoroswapService`, no debt-netting.
+ */
+import { describe, expect, it, vi } from "vitest";
+import { routeMessage } from "@/lib/copilot/router";
+
+describe("'my farm position' routes to the Farm-only read, not the margin fan-out", () => {
+  it("routes without naming a specific venue", () => {
+    const r = routeMessage("my farm position");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_farm_position");
+  });
+
+  it("still defers to Blend's own read when Blend is named", () => {
+    const r = routeMessage("my blend farm position");
+    if (r.kind === "read") expect(r.template_id).not.toBe("query_farm_position");
+  });
+});
+
+const mocks = vi.hoisted(() => ({
+  getUserBlendBalance: vi.fn(),
+  getLpBalance: vi.fn(),
+  getPoolStats: vi.fn(),
+  getUserLpBalance: vi.fn(),
+  getAquariusPoolStats: vi.fn(),
+}));
+vi.mock("@/lib/blend-utils", () => ({
+  BlendService: { getUserBlendBalance: mocks.getUserBlendBalance },
+}));
+vi.mock("@/lib/soroswap-utils", () => ({
+  SoroswapService: { getLpBalance: mocks.getLpBalance, getPoolStats: mocks.getPoolStats },
+}));
+vi.mock("@/lib/aquarius-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/aquarius-utils")>();
+  return {
+    ...actual,
+    AquariusService: {
+      ...actual.AquariusService,
+      getUserLpBalance: mocks.getUserLpBalance,
+      getAquariusPoolStats: mocks.getAquariusPoolStats,
+    },
+  };
+});
+vi.mock("@/lib/oracle-price", () => ({
+  fetchTokenPrices: vi.fn().mockResolvedValue({ XLM: 0.13, USDC: 1 }),
+  getCachedTokenPrice: (token: string) => (token === "XLM" ? 0.13 : 1),
+}));
+
+import { handleChat } from "@/lib/copilot/handle";
+
+const base = {
+  user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
+  smart_account: "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
+  tier: "free" as const,
+  surface: "copilot" as const,
+};
+
+const noBlend = { bTokenBalance: "0", underlyingBalance: "0" };
+
+describe("the farm-position answer never mentions the margin account", () => {
+  it("reports the real GROSS Blend/Aquarius balance, not a debt-netted equity figure", async () => {
+    // Blend XLM: none. Blend USDC (BLUSDC): a real ~$49.86 supply, gross — the exact
+    // figure that a debt-netted computation zeroed out in the reported bug.
+    mocks.getUserBlendBalance.mockImplementation(async (_addr: string, symbol: string) =>
+      symbol === "USDC" ? { bTokenBalance: "47.22", underlyingBalance: "49.8607014" } : noBlend,
+    );
+    mocks.getLpBalance.mockResolvedValue("0");
+    mocks.getPoolStats.mockResolvedValue(null);
+    mocks.getUserLpBalance.mockResolvedValue("0");
+    mocks.getAquariusPoolStats.mockResolvedValue(null);
+
+    const res = await handleChat({ ...base, message: "my farm position" });
+    expect(res.kind).toBe("answer");
+    expect(res.answer?.venue).not.toBe("margin");
+    expect(res.message).not.toMatch(/margin account/i);
+    const facts = res.answer?.facts ?? [];
+    const blendUsdc = facts.find((f) => f.label === "Blend · BLUSDC");
+    expect(blendUsdc?.value).toMatch(/49\.86/);
+    expect(blendUsdc?.value).not.toMatch(/\$0\.00/);
+  });
+
+  it("says plainly when there are no open farm positions", async () => {
+    mocks.getUserBlendBalance.mockResolvedValue(noBlend);
+    mocks.getLpBalance.mockResolvedValue("0");
+    mocks.getPoolStats.mockResolvedValue(null);
+    mocks.getUserLpBalance.mockResolvedValue("0");
+    mocks.getAquariusPoolStats.mockResolvedValue(null);
+
+    const res = await handleChat({ ...base, message: "my farm position" });
+    expect(res.kind).toBe("answer");
+    expect(res.message).toMatch(/no active farm positions/i);
+  });
+});
+
+describe("'faucet' questions get guidance instead of the generic capabilities blurb", () => {
+  it("routes 'faucet' (and the 'fucet' typo) to guidance", () => {
+    for (const ask of ["I have to Faucet AQUSDC", "I have to Fucet AQUSDC", "where is the faucet"]) {
+      const r = routeMessage(ask);
+      expect(r.kind, ask).toBe("clarify");
+      if (r.kind === "clarify") expect(r.message, ask).toMatch(/faucet button/i);
+    }
+  });
+});
