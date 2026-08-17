@@ -1618,8 +1618,17 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
+  /**
+   * "How much collateral do I have?" — one of the product's own suggested prompts —
+   * matched none of "my collateral"/"collateral value"/"how much have i deposited": no
+   * "my", no "deposited", no "value". Same shape-based fix as debt/supply above: a
+   * quantity-question word or "my" near "collateral", not a fixed phrase.
+   */
+  const asksAboutOwnCollateral =
+    /\b(how much|what'?s|what)\b[\s\S]{0,30}\bcollateral\b|\bmy\b[\s\S]{0,20}\bcollateral\b/i.test(text);
   if (
-    any(text, "how much have i deposited", "my collateral", "collateral value", "what have i deposited")
+    asksAboutOwnCollateral ||
+    any(text, "how much have i deposited", "collateral value", "what have i deposited")
   ) {
     return {
       kind: "read",

@@ -249,7 +249,12 @@ const FOLLOW_UP: Record<string, string> = {
   vanna_get_pool_stats: "Lend 5 USDC",
   vanna_get_blend_reserve_stats: "Lend 5 USDC",
   vanna_get_account_health: "Can I borrow 20 USDC?",
-  vanna_get_debt: "Repay 2 USDC",
+  // No canned "Repay N USDC" here on purpose. "How much do I owe?" (no asset named,
+  // several different borrowed assets) suggested "Repay 2 USDC" — a placeholder with no
+  // relation to the real total just shown above it, since a multi-asset debt has no
+  // single figure to repay. `followUpFor` below already builds an accurate "Repay X
+  // SYMBOL" whenever the question narrowed to exactly one asset; a canned fallback here
+  // would only ever fire for the multi-asset case this same placeholder used to mislead.
   vanna_get_collateral: "What's my health factor?",
   vanna_can_borrow: "Borrow 2 USDC",
   vanna_get_max_borrow: "Borrow 2 USDC",
@@ -391,8 +396,24 @@ function prettyVal(v: unknown): string {
   if (typeof v === "number") return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
   const s = String(v);
   const n = Number(s);
-  if (s !== "" && !Number.isNaN(n) && Math.abs(n) < 1e15)
+  if (s !== "" && !Number.isNaN(n) && Math.abs(n) < 1e15) {
+    /**
+     * Group the integer part for readability, but never round away real precision
+     * the source string carried. The readable answer above this card already shows
+     * a rounded figure (see `listPositionRows` in handle.ts) — this facts card is
+     * where the exact on-chain amount belongs, e.g. a position's "1228.8656935"
+     * rather than a lossy "1,228.8657".
+     */
+    const dot = s.indexOf(".");
+    const fracDigits = dot === -1 ? 0 : s.length - dot - 1;
+    if (fracDigits > 4) {
+      const intPart = s.slice(0, dot);
+      const fracPart = s.slice(dot + 1);
+      const groupedInt = Number(intPart).toLocaleString(undefined, { maximumFractionDigits: 0 });
+      return `${groupedInt}.${fracPart}`;
+    }
     return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
   return s;
 }
 /** Health factor → gauge fill. 3.00+ tops the bar, so 1.00 sits at 33.3%. */

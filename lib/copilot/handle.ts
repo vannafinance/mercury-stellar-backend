@@ -2194,8 +2194,14 @@ const positionRowLabel = (symbol: string): string => {
   return u;
 };
 
+/**
+ * Rounded for the readable sentence — "1228.8656935 SOUSDC" (the raw on-chain amount,
+ * verbatim) read as noise next to a clean dollar figure. The exact value still lives
+ * in the facts card underneath (see `prettyVal` in copilot-workspace.tsx), which is
+ * where a user actually checking a precise on-chain amount should look.
+ */
 const listPositionRows = (rows: MarginPositionRow[]): string =>
-  rows.map((r) => `${r.amount} ${positionRowLabel(r.symbol)} (${money(r.usd)})`).join(", ");
+  rows.map((r) => `${fmtPosAmount(r.amount)} ${positionRowLabel(r.symbol)} (${money(r.usd)})`).join(", ");
 
 /**
  * Which asset a position question is ABOUT, when it is about one.
@@ -2545,6 +2551,18 @@ async function snapshotPositionAnswer(
       ? positionAssetFocus(routed, ctx.message)
       : null;
 
+  /**
+   * A real amount + symbol for the follow-up suggestion (`followUpFor` in
+   * copilot-workspace.tsx), populated ONLY when the question narrowed to exactly one
+   * asset. Reported live: "how much do I owe?" (no asset named, 3 different borrowed
+   * assets) suggested "Repay 2 USDC" — a canned example with no relation to the real
+   * $337.21 total just shown, because these slots were never populated at all and the
+   * follow-up always fell back to the static placeholder. A multi-asset total still has
+   * no single figure to suggest, so this stays undefined for that case on purpose —
+   * FOLLOW_UP no longer offers a fabricated one either, see that map's own comment.
+   */
+  let focusedRow: MarginPositionRow | null = null;
+
   let message: string;
   if (routed.tool === "vanna_get_collateral") {
     message = !pos.collateral.length
@@ -2552,12 +2570,20 @@ async function snapshotPositionAnswer(
       : focus
         ? focusedPositionMessage(focus, "collateral", pos.collateral, pos.grossCollateralValue)
         : `Your collateral: ${listPositionRows(pos.collateral)} — ${money(pos.grossCollateralValue)} in total.`;
+    if (focus) {
+      const { matched } = focusPositionRows(pos.collateral, focus);
+      if (matched.length === 1) focusedRow = matched[0];
+    }
   } else if (routed.tool === "vanna_get_debt") {
     message = !pos.borrowed.length
       ? "You have no outstanding debt on your margin account."
       : focus
         ? focusedPositionMessage(focus, "debt", pos.borrowed, pos.totalBorrowedValue)
         : `You owe ${listPositionRows(pos.borrowed)} — ${money(pos.totalBorrowedValue)} in total.`;
+    if (focus) {
+      const { matched } = focusPositionRows(pos.borrowed, focus);
+      if (matched.length === 1) focusedRow = matched[0];
+    }
   } else {
     /**
      * "What's my health factor", "am I safe" and "am I close to liquidation" are three
@@ -2658,7 +2684,11 @@ async function snapshotPositionAnswer(
     }),
     intent: {
       template_id: routed.template_id,
-      slots: { source: "computeMarginSnapshot", ...(focus ? { asset: focus } : {}) },
+      slots: {
+        source: "computeMarginSnapshot",
+        ...(focus ? { asset: focus } : {}),
+        ...(focusedRow ? { amount: fmtPosAmount(focusedRow.amount), symbol: focusedRow.symbol } : {}),
+      },
     },
     mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
     request_id: ctx.request_id,
@@ -5040,9 +5070,45 @@ async function runWrite(
   );
 
   if (mapped.blocker || !mapped.step) {
+    /**
+     * "Add Liquidity in Aquarius Pool" asked how much of each token with no sense of
+     * the right proportion — reported live: "I think we can mention the ratio... so
+     * user can get idea how much it will add." The Aquarius pool page shows exactly
+     * this ("1 XLM ≈ 0.01 AqUSDC · 1 AqUSDC ≈ 71.64 XLM") from a direct on-chain read,
+     * not an MCP tool — `AquariusService.getAquariusPoolStats` is the same function
+     * that page itself calls, so this can never disagree with what the user sees
+     * there. Best-effort and Aquarius-only (the one case this exact clarify names) —
+     * a failed or irrelevant (Soroswap/BLUSDC) read still falls back to the plain ask.
+     */
+    let ratioNote = "";
+    if (
+      action.op === "add_liquidity" &&
+      typeof mapped.blocker === "string" &&
+      mapped.blocker.startsWith("How much of each token")
+    ) {
+      try {
+        const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
+          import("@/lib/aquarius-utils"),
+          import("@/lib/stellar-utils"),
+        ]);
+        const poolAddress =
+          AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
+          CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
+        const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
+        const rXlm = stats ? Number.parseFloat(stats.reserveA) : NaN;
+        const rUsd = stats ? Number.parseFloat(stats.reserveB) : NaN;
+        if (Number.isFinite(rXlm) && Number.isFinite(rUsd) && rXlm > 0 && rUsd > 0) {
+          ratioNote =
+            ` Current pool ratio: 1 XLM ≈ ${(rUsd / rXlm).toFixed(4)} AQUSDC · ` +
+            `1 AQUSDC ≈ ${(rXlm / rUsd).toFixed(2)} XLM.`;
+        }
+      } catch {
+        // Best-effort — the plain question still answers without the ratio.
+      }
+    }
     return {
       kind: "clarification",
-      message: mapped.blocker || "Could not map that write to an MCP tool.",
+      message: (mapped.blocker || "Could not map that write to an MCP tool.") + ratioNote,
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       request_id: ctx.request_id,
     };
