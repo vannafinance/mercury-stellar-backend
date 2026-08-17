@@ -2961,10 +2961,21 @@ async function earnPositionsAnswer(
       // "aborted due to timeout" under live testnet RPC load even well inside its own 90s
       // budget. One retry recovers most of these; a real failure still surfaces as null
       // rather than retrying forever.
+      //
+      // A budget overrun or other soft failure can arrive as a SUCCESSFUL response
+      // carrying an `error` field rather than a thrown exception (the same shape
+      // `fetchHealth` in risk.ts already guards against) — confirmed live: this
+      // silently computed `amount = 0` from a genuine failure response, indistinguishable
+      // from an honest zero balance, and answered "no active Earn positions" for a wallet
+      // with real supply on every single asset. Must be treated as a failure, not a zero.
       let r: Record<string, unknown> | null = null;
       for (let attempt = 0; attempt < 2 && r === null; attempt++) {
         try {
-          r = await mcp.call("vanna_get_vtoken_balance", built.args, ctx.userId);
+          const res = await mcp.call("vanna_get_vtoken_balance", built.args, ctx.userId);
+          if (res?.error) {
+            throw new Error(`vtoken balance returned error=${res.error}: ${String(res.message ?? "")}`);
+          }
+          r = res;
         } catch (e) {
           if (attempt === 1) throw e;
           console.warn(
@@ -2973,14 +2984,30 @@ async function earnPositionsAnswer(
           );
         }
       }
-      const amount = Number(r?.balance_human ?? r?.balance ?? 0);
-      // Not every deployment prices a vToken balance itself; fall back to treating a
-      // stable-value token as its own USD amount rather than showing no figure at all.
-      const usd = Number(r?.usd_value ?? r?.balance_usd ?? (symbol === "XLM" ? NaN : amount));
+      // `redeemable_human` (underlying token, e.g. "20.018337...") is what the Earn
+      // page's own "Your Supply" column shows — NOT `human` (the vToken share count,
+      // e.g. "19.9917264" VXLM for the same position). Confirmed live: reading the
+      // wrong/nonexistent field names here (`balance_human`/`balance`, neither of
+      // which this tool returns) silently computed 0 for every asset on every
+      // account, answering "no active Earn positions" for a wallet with $70+ supplied.
+      const amount = Number(r?.redeemable_human ?? r?.human ?? 0);
+      // The USD variants are pegged 1:1, so their redeemable amount doubles as its own
+      // USD value; XLM needs a real price. One extra call, only when XLM has a balance,
+      // and resilient — a failed price lookup still shows the amount, just no USD.
+      let usd: number | null = symbol === "XLM" ? null : amount;
+      if (symbol === "XLM" && amount > 0.0001) {
+        try {
+          const priceResp = await mcp.call("vanna_get_price", { symbol: "XLM" }, ctx.userId);
+          const price = Number(priceResp?.price_usd ?? priceResp?.price ?? NaN);
+          if (Number.isFinite(price)) usd = amount * price;
+        } catch {
+          // USD estimate is best-effort — the amount itself still answers the question.
+        }
+      }
       reads.push({
         symbol,
         amount: Number.isFinite(amount) ? amount : 0,
-        usd: Number.isFinite(usd) ? usd : null,
+        usd,
       });
     } catch (e) {
       console.warn(

@@ -107,7 +107,10 @@ class MockMCPClient implements MCPClient {
       return { smart_account: null, found: false };
     }
     if (tool === "vanna_get_vtoken_balance") {
-      return { balance_human: "50", symbol: args.symbol ?? "USDC" };
+      // Real shape confirmed live: `human` is the vToken share count, `redeemable_human`
+      // is the underlying amount the Earn page's "Your Supply" column actually shows.
+      // There is no `balance_human`/`balance` field on the real response.
+      return { human: "49.5", redeemable_human: "50", symbol: args.symbol ?? "USDC" };
     }
     if (tool === "vanna_get_inactive_accounts") {
       return { accounts: [], count: 0 };
