@@ -898,6 +898,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // round-trip to be understood. When Vertex is unreachable — an expired
           // `gcloud auth login` is enough — the fallback used to be the capability blurb.
           "query_all_positions",
+          // Same reasoning: "my Earn positions" must not need a model round-trip either,
+          // and must never be re-decided by Vertex into the margin/farm fan-out above.
+          "query_earn_position",
           // Same reasoning: "how much credit do I have" is the product's headline
           // question and must not need a model round-trip to be understood.
           "query_available_credit",
@@ -2893,6 +2896,105 @@ async function allPositionsAnswer(
   };
 }
 
+/** Every asset the Earn pool supports — the vToken-balance equivalent of ASSET_SCAN_ORDER. */
+const EARN_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
+
+/**
+ * "Can you provide my Earn positions" — the vToken (Earn-supplied) balance for every
+ * asset Earn supports. Deliberately never falls back to `computeMarginSnapshot` or
+ * `vanna_get_farm_overview` the way {@link allPositionsAnswer} does: Earn supply and
+ * margin collateral are two different pools that can both hold the same token at once
+ * (deposit some XLM as margin collateral, separately supply other XLM to Earn), so
+ * answering "my Earn positions" with the margin account's numbers names a different
+ * product's figures entirely — confirmed live, where an account with margin collateral
+ * but no Earn supply got back a card plainly labeled MARGIN ACCOUNT.
+ */
+async function earnPositionsAnswer(
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+): Promise<ChatResponse> {
+  if (!ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message:
+        "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      intent: { template_id: "query_earn_position" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const mcp = getMcpClient();
+  const reads = await Promise.all(
+    EARN_ASSETS.map(async (symbol) => {
+      try {
+        const r = await mcp.call(
+          "vanna_get_vtoken_balance",
+          { symbol, smart_account: ctx.smartAccount },
+          ctx.userId,
+        );
+        const amount = Number(r.balance_human ?? r.balance ?? 0);
+        // Not every deployment prices a vToken balance itself; fall back to treating a
+        // stable-value token as its own USD amount rather than showing no figure at all.
+        const usd = Number(r.usd_value ?? r.balance_usd ?? (symbol === "XLM" ? NaN : amount));
+        return {
+          symbol,
+          amount: Number.isFinite(amount) ? amount : 0,
+          usd: Number.isFinite(usd) ? usd : null,
+        };
+      } catch (e) {
+        console.warn(
+          `[copilot] vtoken balance failed for ${symbol} inside query_earn_position -> ` +
+            `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
+        );
+        return null;
+      }
+    }),
+  );
+
+  if (reads.every((r) => r === null)) {
+    return {
+      kind: "unavailable",
+      message: "I could not read your Earn positions just now. Your live figures are on the Earn page.",
+      intent: { template_id: "query_earn_position" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const supplied = reads.filter(
+    (r): r is NonNullable<(typeof reads)[number]> => r != null && r.amount > 0.0001,
+  );
+
+  const facts: AnswerFact[] = supplied.map((r) => ({
+    label: `earn · ${r.symbol}`,
+    value: r.usd != null ? `${fmtPosAmount(String(r.amount))} (${money(r.usd)})` : fmtPosAmount(String(r.amount)),
+  }));
+
+  const totalUsd = supplied.reduce((sum, r) => sum + (r.usd ?? 0), 0);
+  const headline = supplied.length
+    ? `Your Earn positions — ${supplied.length} supplied${totalUsd > 0 ? `, ~${money(totalUsd)} total` : ""}.`
+    : "You have no active Earn positions right now.";
+
+  const structured: StructuredAnswer = { headline, facts, venue: "earn" };
+
+  return {
+    kind: "answer",
+    message: answerToText(structured),
+    answer: structured,
+    data: factsForUi({
+      earn_positions: supplied,
+      source: "mcp_vtoken_balance",
+    }),
+    intent: { template_id: "query_earn_position", slots: { count: supplied.length } },
+    mcp: { tool: "vanna_get_vtoken_balance", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
 async function runRead(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -2907,6 +3009,12 @@ async function runRead(
   // rather than by one tool. See allPositionsAnswer.
   if (routed.template_id === "query_all_positions") {
     return allPositionsAnswer(routed, ctx);
+  }
+
+  // "My Earn positions" names one specific product feature — see earnPositionsAnswer's
+  // own doc comment for why this must never fall back to the margin/farm fan-out above.
+  if (routed.template_id === "query_earn_position") {
+    return earnPositionsAnswer(ctx);
   }
 
   // Farmable Aquarius pools are Vanna's own pairs, not the full AMM API dump.

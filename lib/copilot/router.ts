@@ -1430,8 +1430,32 @@ export function routeMessage(message: string): RoutedIntent {
    * "My Blend position" names one venue and already has a route below that answers it with
    * that venue's own numbers. Only the unqualified question — "what are my positions" — wants
    * the whole-account fan-out, so a named venue defers to the specific read.
+   *
+   * "earn" belongs in this list too, for the same reason "blend"/"aquarius"/"soroswap" do —
+   * it names ONE specific product feature, not the general "farm" section that spans several.
+   * Without it, "can you provide my Earn positions" fell into the whole-account fan-out below,
+   * which reads collateral/debt off the MARGIN account and — on an account with margin
+   * collateral but no active Earn supply — answered a question about Earn with a card
+   * explicitly labeled "MARGIN ACCOUNT", naming a different product's numbers entirely.
    */
-  const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken");
+  const namesOneVenue = any(text, "blend", "aquarius", "soroswap", "btoken", "b-token", "vtoken", "earn");
+  /**
+   * "Can you provide my Earn positions" / "what's my earn position" — same "named one
+   * venue" shape as Blend/Aquarius, so it must be checked before the generic fan-out below
+   * (which `namesOneVenue` now defers on) or the question goes unanswered. Earn has no
+   * per-asset breakdown tool the way Blend does, so this reports the vToken (Earn-supplied)
+   * balance for every asset Earn supports, not the margin account's collateral — a
+   * different pool, even when the underlying token is the same.
+   */
+  if (asksAboutHoldings && !actsOnPosition && any(text, "earn") && !any(text, "blend", "aquarius", "soroswap")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_vtoken_balance",
+      args: {},
+      requires_account: true,
+      template_id: "query_earn_position",
+    };
+  }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
     return {
       kind: "read",

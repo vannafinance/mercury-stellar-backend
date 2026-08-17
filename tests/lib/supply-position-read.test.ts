@@ -16,13 +16,15 @@ describe("a personal supply question reads the position, never writes", () => {
   it("answers 'what is my total supply in earn section'", () => {
     const r = routeMessage("what is my total supply in earn section");
     expect(r.kind).toBe("read");
-    if (r.kind === "read") expect(r.template_id).toBe("query_all_positions");
+    // Names "earn" specifically — the Earn-only read, not the margin/farm fan-out.
+    // See docs/copilot/TEST-RUN-FINDINGS.md on why these must not share an answer.
+    if (r.kind === "read") expect(r.template_id).toBe("query_earn_position");
   });
 
   it("answers 'how much have I supplied to earn'", () => {
     const r = routeMessage("how much have I supplied to earn");
     expect(r.kind).toBe("read");
-    if (r.kind === "read") expect(r.template_id).toBe("query_all_positions");
+    if (r.kind === "read") expect(r.template_id).toBe("query_earn_position");
   });
 
   it("still routes 'supply 10 XLM' as a real write", () => {
@@ -57,19 +59,33 @@ describe("a personal supply question reads the position, never writes", () => {
  * all and fell through to the generic capabilities blurb. A fixed phrase list is
  * whack-a-mole against this; the shape is a quantity question word + a first-person
  * marker + a quantity noun + a named venue, in any order.
+ *
+ * "earn" is checked separately from "farm": "earn" names one specific product
+ * feature (like "blend"/"aquarius"), so it gets its own read — see
+ * earnPositionsAnswer's doc comment in handle.ts for why "my Earn positions" must
+ * never answer with the margin account's numbers. "farm" is the general section
+ * spanning several venues, so it keeps the whole-account fan-out.
  */
-describe("everyday phrasings of 'how much do I have in earn/farm' all resolve", () => {
+describe("everyday phrasings of 'how much do I have in earn' resolve to the Earn-only read", () => {
   const phrasings = [
     "what's my position in earn",
-    "how much do I have in farm",
     "what's in my earn account",
     "how much have I earned in earn section",
-    "what's my farm position",
     "show me my earn balance",
     "my earn holdings",
     "how much am I earning in the earn section",
-    "what's my total in farm",
   ];
+  for (const p of phrasings) {
+    it(`answers "${p}"`, () => {
+      const r = routeMessage(p);
+      expect(r.kind, p).toBe("read");
+      if (r.kind === "read") expect(r.template_id, p).toBe("query_earn_position");
+    });
+  }
+});
+
+describe("everyday phrasings of 'how much do I have in farm' resolve to the whole-account fan-out", () => {
+  const phrasings = ["how much do I have in farm", "what's my farm position", "what's my total in farm"];
   for (const p of phrasings) {
     it(`answers "${p}"`, () => {
       const r = routeMessage(p);
