@@ -8,7 +8,19 @@ import type { MCPClient } from "./mcp-client";
 import type { CopilotAction, RiskResult, Simulation } from "./types";
 
 const LIQ_THRESHOLD = 1.0; // HF < 1.0 = liquidatable
-const DEFAULT_LT = 0.9; // collateral factor used when projecting (conservative)
+/**
+ * The product's own health factor is a plain ratio — `avgHealthFactor =
+ * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
+ * Margin page's own displayed number ("Collateral / Debt", no discount). This constant
+ * used to be 0.9, silently multiplying collateral by 90% in every before→after
+ * projection — since `hf_before` almost always comes straight from a real MCP/snapshot
+ * read (bypassing this), only `hf_after` ever hit the discount, so EVERY write's
+ * projected health factor after a deposit/withdraw/borrow/repay was ~10% off from what
+ * the exact same formula would show once the write actually landed — e.g. a deposit
+ * projected to WORSEN health factor (1.50 → 1.35) when adding collateral can only ever
+ * help or leave it unchanged. No test caught it because this module had zero coverage.
+ */
+const DEFAULT_LT = 1.0;
 
 function n(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
