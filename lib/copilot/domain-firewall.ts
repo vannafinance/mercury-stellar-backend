@@ -219,6 +219,16 @@ const ALLOW_PATTERNS: RegExp[] = [
    */
   /\b(protocol|contract|registry)\s+addresses?\b/i,
   /\blist\s+(the\s+)?(protocol\s+|contract\s+|registry\s+)?addresses?\b/i,
+  /**
+   * "what's my net value" / "what's my net worth" / "what is my net asset value" were
+   * refused as off-domain chat — the generic "I only help with Vanna Finance" message,
+   * for a plain account question. Bare "net"/"worth"/"value"/"asset" are too broad for
+   * `DOMAIN_WORDS` (a standalone-word list without this context would catch genuinely
+   * unrelated chat too), but the compound phrases below only ever mean the account's
+   * equity in this product.
+   */
+  /\bnet\s+(worth|value|assets?|asset\s+value)\b/i,
+  /\b(portfolio|total)\s+value\b/i,
 ];
 
 /**

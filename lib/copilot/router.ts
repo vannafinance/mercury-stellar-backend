@@ -1411,7 +1411,11 @@ export function routeMessage(message: string): RoutedIntent {
     (/\b(how much|what'?s|show me)\b/i.test(text) &&
       /\b(my|i)\b/i.test(text) &&
       /\b(balance|total|earned|earning|have)\b/i.test(text) &&
-      any(text, "earn", "farm", "blend", "aquarius", "soroswap"));
+      any(text, "earn", "farm", "blend", "aquarius", "soroswap")) ||
+    // "what's my net worth" / "what's my net value" / "what is my net asset value" name
+    // no "position"/"holdings"/"supply" word either — same underlying question (equity),
+    // a third everyday phrasing for it.
+    /\bnet\s+(worth|value|assets?|asset\s+value)\b/i.test(text);
   /**
    * "Close my position" is an instruction, not a question, and must not be answered with a
    * summary as though it had been carried out. Every unambiguous write phrasing has already
@@ -1461,7 +1465,20 @@ export function routeMessage(message: string): RoutedIntent {
 
   // (multi-goal handled early via tryMultiGoalPlan)
 
-  if (any(text, "how much do i owe", "my debt", "how much have i borrowed", "what do i owe")) {
+  /**
+   * "how much debt do I have" fell through everything to the generic capabilities
+   * blurb — the fixed phrase list below matched "my debt" and "how much have i
+   * borrowed" but not this word order. Same shape-based fix as the supply/holdings
+   * questions above: a quantity-question word or "my"/"i" near "debt"/"owe"/
+   * "borrowed", not an exact phrase. `any(text, "borrow")` elsewhere in this
+   * function is word-boundaried and never matches "borrowed", so this cannot
+   * steal a real borrow instruction.
+   */
+  const asksAboutOwnDebt =
+    /\b(how much|what'?s|what)\b[\s\S]{0,30}\b(debt|owe|owed|borrowed)\b|\bmy\b[\s\S]{0,20}\b(debt|owed?)\b/i.test(
+      text,
+    );
+  if (asksAboutOwnDebt) {
     return {
       kind: "read",
       tool: "vanna_get_debt",
