@@ -847,12 +847,22 @@ export function routeMessage(message: string): RoutedIntent {
   const swapPair = raw.match(
     /\b(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b\s*(?:to|for|into|->|→)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA)\b/i,
   );
+  /**
+   * "Now Can you Perform Swap From XLM to SoUSDC in Soroswap" named both tokens and a venue
+   * but no size at all, so it matched neither `swapMatch` (needs a number right after
+   * "swap") nor the old fallback below (which also required `amount != null ||
+   * swapShare != null`) and fell through everything to the generic capabilities blurb —
+   * a real swap instruction answered as though it were gibberish. The write branch below
+   * already handles a null amount gracefully (`requires_amount: true`, same as every other
+   * op in this router), so naming the pair is enough to recognise the instruction; the size
+   * is asked for afterward, not required up front to know what was meant.
+   */
   if (
     swapMatch ||
     (any(text, "swap") &&
       !any(text, "liquidity") &&
-      (asset || swapPair) &&
-      (amount != null || swapShare != null))
+      !any(text, "can i swap", "is swap", "swap available", "swap fee", "swap rate") &&
+      (asset || swapPair))
   ) {
     const amountIn = swapMatch ? Number(swapMatch[1]) : amount;
     const tokenIn = (swapMatch?.[2] || swapPair?.[1] || asset || "XLM").toUpperCase();
@@ -1206,10 +1216,16 @@ export function routeMessage(message: string): RoutedIntent {
    * USDC variant for an action they never asked to take. There IS a read for this
    * (`vanna_can_borrow`'s sibling, matched a little further down at "can i withdraw" /
    * "can i pull out"), but it can never be reached while this branch matches first.
+   *
+   * "Transfer Collateral Margin to Wallet 20 XLM" is the same instruction as "withdraw
+   * 20 XLM collateral" — moving margin collateral back to the wallet is what withdrawing
+   * it means — but named none of "withdraw"/"take out"/"pull", so it fell through
+   * everything to the generic capabilities blurb. "transfer"/"move"/"send" are everyday
+   * synonyms for the same verb here, not a new op.
    */
   if (
     !any(text, "can i withdraw", "can i pull out", "withdraw allowed") &&
-    ((any(text, "withdraw") && any(text, "collateral")) ||
+    ((any(text, "withdraw", "transfer", "move", "send") && any(text, "collateral")) ||
       any(text, "take out collateral", "pull collateral"))
   ) {
     const fraction = amount == null ? findBalanceFraction(raw) : null;
@@ -1432,7 +1448,12 @@ export function routeMessage(message: string): RoutedIntent {
     // "what's my net worth" / "what's my net value" / "what is my net asset value" name
     // no "position"/"holdings"/"supply" word either — same underlying question (equity),
     // a third everyday phrasing for it.
-    /\bnet\s+(worth|value|assets?|asset\s+value)\b/i.test(text);
+    /\bnet\s+(worth|value|assets?|asset\s+value)\b/i.test(text) ||
+    // "tell me my margin account details" names none of "position"/"holdings"/"supply"
+    // either and fell through everything to the generic capabilities blurb — the whole
+    // point of the ask ("account details") is the full picture this fan-out already
+    // answers (HF, collateral, debt, net value, per-asset breakdown), not one figure.
+    /\b(margin\s+)?account\s+details?\b/i.test(text);
   /**
    * "Close my position" is an instruction, not a question, and must not be answered with a
    * summary as though it had been carried out. Every unambiguous write phrasing has already
@@ -1555,6 +1576,24 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // (multi-goal handled early via tryMultiGoalPlan)
+
+  /**
+   * "How much Interest accrued till date in BLUSDC" fell through everything to the
+   * generic capabilities blurb — it names neither "debt"/"owe"/"borrowed" (so
+   * `asksAboutOwnDebt` below never saw it) nor any other recognised shape. No tool
+   * in this deployment tracks accrued interest separately from principal — the
+   * debt balance itself is the compounding figure — so this is answered honestly
+   * with the current owed amount and a note, not fabricated.
+   */
+  if (/\b(accrued\s+interest|interest\s+accrued)\b/i.test(text)) {
+    return {
+      kind: "read",
+      tool: "vanna_get_debt",
+      args: { symbol: asset },
+      requires_account: true,
+      template_id: "query_accrued_interest",
+    };
+  }
 
   /**
    * "how much debt do I have" fell through everything to the generic capabilities

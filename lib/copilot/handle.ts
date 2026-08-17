@@ -906,6 +906,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // Vertex into the whole-account fan-out, nor risk being reread as a liquidate
           // command if the model ever falls back to a keyword-shaped guess.
           "query_margin_figure",
+          // Same reasoning: "how much interest accrued" must answer honestly from the
+          // real debt figure every time, not have Vertex invent an interest-specific
+          // number no tool in this deployment actually tracks.
+          "query_accrued_interest",
           // Same reasoning: "how much credit do I have" is the product's headline
           // question and must not need a model round-trip to be understood.
           "query_available_credit",
@@ -3138,6 +3142,69 @@ async function marginFigureAnswer(
   };
 }
 
+/**
+ * "How much interest accrued in BLUSDC" — no tool in this deployment tracks accrued
+ * interest separately from principal; the debt balance itself is the compounding
+ * figure, the same way a vToken's exchange rate bakes in Earn-side accrual. Answered
+ * honestly with the current owed amount for the named asset plus a note explaining
+ * why there is no separate interest figure, rather than fabricating one.
+ */
+async function accruedInterestAnswer(
+  symbol: string | null,
+  ctx: { smartAccount: string | null; request_id: string },
+): Promise<ChatResponse> {
+  if (!ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message:
+        "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      intent: { template_id: "query_accrued_interest" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const pos = await readMarginPositions(ctx.smartAccount);
+  if (!pos) {
+    return {
+      kind: "unavailable",
+      message: "I could not read your margin account just now. Your live figures are on the Margin page.",
+      intent: { template_id: "query_accrued_interest" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const want = symbol ? earnPoolSymbol(symbol) : null;
+  const row = want ? pos.borrowed.find((r) => sameAsset(r.symbol, want)) : pos.borrowed[0];
+  if (!row) {
+    const message = want
+      ? `You have no ${want} debt right now, so there is no interest accruing on it.`
+      : "You have no open debt right now, so there is no interest accruing.";
+    return {
+      kind: "answer",
+      message,
+      answer: { headline: message, facts: [], venue: "margin" },
+      intent: { template_id: "query_accrued_interest" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const structured: StructuredAnswer = {
+    headline: `Your current ${row.symbol} owed is ${money(row.usd)}.`,
+    facts: [{ label: `${row.symbol} owed`, value: `${fmtPosAmount(row.amount)} (${money(row.usd)})` }],
+    note:
+      "This deployment doesn't track accrued interest separately from principal — the amount owed above already includes it, compounding as it accrues.",
+    venue: "margin",
+  };
+  return {
+    kind: "answer",
+    message: answerToText(structured),
+    answer: structured,
+    intent: { template_id: "query_accrued_interest", slots: { symbol: row.symbol } },
+    mcp: { tool: "vanna_get_debt", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
 async function runRead(
   routed: Extract<RoutedIntent, { kind: "read" }>,
   ctx: {
@@ -3166,6 +3233,13 @@ async function runRead(
   if (routed.template_id === "query_margin_figure") {
     const figures = Array.isArray(routed.args?.figures) ? (routed.args.figures as string[]) : [];
     return marginFigureAnswer(figures, ctx);
+  }
+
+  // "How much interest accrued in BLUSDC" — see accruedInterestAnswer's own doc comment
+  // for why this answers honestly from the current debt figure instead of a fabricated one.
+  if (routed.template_id === "query_accrued_interest") {
+    const symbol = typeof routed.args?.symbol === "string" ? routed.args.symbol : null;
+    return accruedInterestAnswer(symbol, ctx);
   }
 
   // Farmable Aquarius pools are Vanna's own pairs, not the full AMM API dump.
