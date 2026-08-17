@@ -1229,7 +1229,7 @@ export function CopilotWorkspace() {
   const storeGrossCollateral = useMarginAccountInfoStore((s) => s.grossCollateralValue);
   const storeCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
-  const storeNetValue = useMarginAccountInfoStore((s) => s.totalValue);
+  const storeNetValue = useMarginAccountInfoStore((s) => s.netAvailableCollateral);
   const storeCollateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
   const storeBorrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
   const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
@@ -1627,7 +1627,12 @@ export function CopilotWorkspace() {
   const healthFactor = derivedHealth.avgHealthFactor;
   const collateralValue = effCollateral;
   const borrowedValue = effBorrowed;
-  const netValue = snapshot?.totalValue ?? storeNetValue ?? derivedHealth.totalValue;
+  // "net value" = equity (collateral minus debt), NOT `totalValue` — that field is
+  // `netAvailableCollateral + totalBorrowedValue`, which algebraically always
+  // collapses back to gross collateral (adding debt back cancels the subtraction
+  // that made it). Labeled "net", it silently showed gross collateral with no debt
+  // netted out — netAvailableCollateral is the figure that's actually net of debt.
+  const netValue = snapshot?.netAvailableCollateral ?? storeNetValue ?? derivedHealth.netAvailableCollateral;
   const liveHf = effHasAccount && healthFactor ? healthFactor : null;
 
   /**

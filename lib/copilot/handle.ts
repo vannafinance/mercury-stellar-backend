@@ -2634,7 +2634,7 @@ async function snapshotPositionAnswer(
       health_factor: pos.hf,
       collateral_usd: pos.grossCollateralValue,
       debt_usd: pos.totalBorrowedValue,
-      net_value_usd: pos.totalValue,
+      net_value_usd: pos.netAvailableCollateral,
       collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
       net_available_collateral: pos.netAvailableCollateral,
       collateral_positions: pos.collateral,
@@ -2680,7 +2680,12 @@ function allPositionsStructured(
     });
     facts.push({ label: "collateral", value: money(pos.grossCollateralValue) });
     facts.push({ label: "borrowed", value: money(pos.totalBorrowedValue) });
-    facts.push({ label: "net value", value: money(pos.totalValue) });
+    // "net value" must mean equity (collateral minus debt), not `pos.totalValue` —
+    // that field is `netAvailableCollateral + totalBorrowedValue`, which algebraically
+    // always collapses back to `grossCollateralValue` (adding debt back cancels the
+    // subtraction that created it). Labeled "net", it silently showed the user their
+    // GROSS collateral with no debt netted out at all.
+    facts.push({ label: "net value", value: money(pos.netAvailableCollateral) });
 
     for (const r of pos.collateral) {
       facts.push({
@@ -2698,7 +2703,7 @@ function allPositionsStructured(
   }
 
   const headline = pos
-    ? `Open positions — HF ${pos.hfText}, net ${money(pos.totalValue)}.`
+    ? `Open positions — HF ${pos.hfText}, net ${money(pos.netAvailableCollateral)}.`
     : "Open positions on your farm venues.";
 
   const noteParts: string[] = [];
@@ -2868,7 +2873,7 @@ async function allPositionsAnswer(
             health_factor: pos.hf,
             collateral_usd: pos.grossCollateralValue,
             debt_usd: pos.totalBorrowedValue,
-            net_value_usd: pos.totalValue,
+            net_value_usd: pos.netAvailableCollateral,
             collateral_positions: pos.collateral,
             borrowed_positions: pos.borrowed,
           }
