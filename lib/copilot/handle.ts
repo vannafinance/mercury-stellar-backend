@@ -3114,10 +3114,14 @@ async function marginFigureAnswer(
 
   const defs = figures.map((key) => ({ key, def: MARGIN_FIGURE_LABELS[key] })).filter((x) => x.def != null);
   const facts: AnswerFact[] = defs.map(({ def }) => ({ label: def.label, value: money(def.get(pos)) }));
+  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  // Reported live: "Here's what you asked for: X, Y" read as vague filler instead of
+  // naming the figures directly. Each requested figure now reads as its own clear
+  // "Label: Value" clause — the same shape as the facts card underneath it.
   const headline =
     facts.length === 1
       ? `Your ${facts[0].label} is ${facts[0].value}.`
-      : `Here's what you asked for: ${facts.map((f) => `${f.label} ${f.value}`).join(", ")}.`;
+      : facts.map((f) => `${capitalize(f.label)}: ${f.value}`).join("  ·  ");
 
   const structured: StructuredAnswer = { headline, facts, venue: "margin" };
   return {

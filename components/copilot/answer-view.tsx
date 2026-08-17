@@ -203,7 +203,18 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         <dl
           className="mt-[18px] grid"
           style={{
-            gridTemplateColumns: figures.length > 1 ? "1fr 1fr" : "1fr",
+            /**
+             * One long label forces EVERY row to single-column, not just its own.
+             *
+             * A per-row override used to decide this alone: "collateral left before
+             * liquidation" (>22 chars) went full-width while "amount borrowed" (under the
+             * threshold) stayed half-width in the same two-fact answer — the short row's
+             * value then landed at the grid's midpoint while the long row's value reached
+             * the far right edge, so the two rows visibly did not line up. A pair grid only
+             * reads as one object when every row shares the same width.
+             */
+            gridTemplateColumns:
+              figures.length > 1 && !figures.some((f) => f.label.length > 22) ? "1fr 1fr" : "1fr",
             gap: "2px 32px",
             borderRadius: 8,
             border: "1px solid var(--cp-g100)",
@@ -219,16 +230,6 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
               style={{
                 borderBottom: "1px solid var(--cp-g100)",
                 padding: "7px 0",
-                /**
-                 * A long label takes the full width instead of half of it.
-                 *
-                 * The design's pair grid assumes labels like "SUPPLY APY". Real ones include
-                 * "COLLATERAL LEFT BEFORE LIQUIDATION", which in a half-width cell left no
-                 * room for its own figure — the label ran into the next column's label and
-                 * the value clipped to "1…". Same failure as the address grid that shattered
-                 * "REGISTRY", one column over: the fix is to stop competing for the width.
-                 */
-                gridColumn: f.label.length > 22 ? "1 / -1" : undefined,
               }}
             >
               <dt style={labelStyle}>{f.label}</dt>
