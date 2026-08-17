@@ -1278,14 +1278,26 @@ export function routeMessage(message: string): RoutedIntent {
     /highest[\s-]*yielding|best[\s-]*yielding|highest[\s-]*apy|best[\s-]*apy|max(?:imum)?\s*yield|best\s*return/i.test(
       text,
     ) && any(text, "supply", "lend", "deposit", "invest", "put", "earn", "farm");
+  /**
+   * "what is my total supply in earn section" executed a lend write asking which
+   * USDC variant, when it was a plain question about the user's own position.
+   * The old exclusion list matched fixed phrases ("my supply", "total supplied")
+   * as exact substrings, so an adjective sitting between the words — "my TOTAL
+   * supply" — broke the match and the message fell straight into isLendWrite.
+   * A shape-based regex ("what"/"how much" near "supply", or "my" near "supply")
+   * survives whatever sits in between.
+   */
+  const asksAboutOwnSupply =
+    /\b(what|how much)\b[\s\S]{0,30}\bsupply\b|\bmy\b[\s\S]{0,20}\bsupply\b|\bsupplied\b/i.test(
+      text,
+    );
   const isLendWrite =
     !isSupplyApyRead &&
     !isBlendOrFarmVenue &&
     (hasLendVerb ||
       any(text, "earn yield", "yield on my", "want to earn", "earn me") ||
       wantsHighestPool ||
-      (any(text, "supply") &&
-        !any(text, "supplied", "have i supplied", "my supply", "total supplied")) ||
+      (any(text, "supply") && !asksAboutOwnSupply) ||
       (any(text, "deposit") &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
@@ -1376,7 +1388,30 @@ export function routeMessage(message: string): RoutedIntent {
   const asksAboutHoldings =
     /\b(position|positions|portfolio|holdings?|exposure)\b/i.test(text) ||
     /\bwhat\s+(?:am\s+i|do\s+i)\s+(?:hold|have|own|farm(?:ing)?)\b/i.test(text) ||
-    /\bwhat'?s\s+in\s+my\s+(?:account|portfolio|wallet)\b/i.test(text);
+    // "what's in my earn account" broke the old exact-adjacency version of this
+    // pattern ("my" then immediately "account") the same way "my total supply"
+    // broke the exclusion list below — "earn" sits in between. Widened to a span.
+    /\bwhat'?s\s+in\s+my\b[\s\S]{0,20}\b(?:account|portfolio|wallet)\b/i.test(text) ||
+    // "what is my total supply in earn section" / "how much have I supplied" name
+    // no "position"/"holdings" word at all, so this branch never saw them — they
+    // fell through everything to the generic capabilities blurb (or, before the
+    // isLendWrite fix above, into a live lend write). Same question, phrased with
+    // "supply" instead of "position". Excludes `isSupplyApyRead` — "what's the
+    // supply APY on XLM" is a pool-stat question, not a "what do I hold" one, and
+    // matches the same "what ... supply" shape.
+    (asksAboutOwnSupply && !isSupplyApyRead) ||
+    /**
+     * "how much do I have in farm", "show me my earn balance", "what's my total
+     * in farm", "how much am I earning in the earn section" — none of these name
+     * "position"/"holdings"/"supply" at all, just some other everyday word for
+     * "how much is there". A fixed phrase list is whack-a-mole against this — the
+     * shape is a personal-quantity question word, a first-person marker, a
+     * quantity noun, and a named venue, in any order, with anything in between.
+     */
+    (/\b(how much|what'?s|show me)\b/i.test(text) &&
+      /\b(my|i)\b/i.test(text) &&
+      /\b(balance|total|earned|earning|have)\b/i.test(text) &&
+      any(text, "earn", "farm", "blend", "aquarius", "soroswap"));
   /**
    * "Close my position" is an instruction, not a question, and must not be answered with a
    * summary as though it had been carried out. Every unambiguous write phrasing has already
