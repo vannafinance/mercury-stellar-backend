@@ -1989,6 +1989,24 @@ export function routeMessage(message: string): RoutedIntent {
     any(text, "pool stats", "pool apr", "pool apy", "utilization", "how is the", "pool doing", "borrow apr", "supply apy", "yield on") ||
     (any(text, "pool") && any(text, "stat", "apr", "apy", "liquidity", "tvl"))
   ) {
+    /**
+     * "USDC pool stats" names bare "USDC" — on this platform that is genuinely
+     * ambiguous among three separate deployments (BLUSDC/AQUSDC/SOUSDC, this session's
+     * recurring "which USDC variant" theme for writes, via `ambiguousUsdcSlot`), yet the
+     * read path picked one silently (the Vanna Earn pool's own wire symbol happens to be
+     * bare "USDC") with no indication three other pools exist. Reported live: "it can
+     * show all the states or it should ask specific which one" — showing every Earn
+     * pool (the same answer `query_all_earn_pools` already gives) is the friendlier of
+     * the two and requires no new backend call.
+     */
+    if (asset === "USDC") {
+      return {
+        kind: "read",
+        tool: "vanna_get_pool_stats",
+        args: { symbol: "__ALL_EARN__" },
+        template_id: "query_all_earn_pools",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_get_pool_stats",

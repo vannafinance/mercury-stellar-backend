@@ -933,6 +933,19 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           // Same reasoning: a direct pool-ratio question must answer from the pool's own
           // live reserves every time, not have Vertex guess a number for an AMM ratio.
           "query_pool_ratio",
+          /**
+           * Reported live: "What is my XLM Balance in Margin account?" (a fixed test
+           * phrasing) answered correctly, but "What is Balance of XLM in my Margin
+           * Account" — the exact same question, different word order — fell to the
+           * generic capabilities blurb. Both keyword-route to `query_collateral`
+           * identically; the difference was that `query_collateral`/`query_debt` were
+           * never on this allowlist, so a correct keyword match was still handed to
+           * Vertex "to confirm," and Vertex's own guess (not this router's) decided the
+           * final answer — non-deterministic by word order, the exact class of bug every
+           * other entry on this list already exists to prevent.
+           */
+          "query_collateral",
+          "query_debt",
         ].includes(kwFast.template_id)));
 
   let routed: RoutedIntent;
@@ -3752,42 +3765,6 @@ async function runRead(
         rows.push({ symbol: p.display, error: shortError(e instanceof Error ? e.message : e) });
       }
     }
-    const ranked = [...rows]
-      .filter((r) => r.supply_apy_pct != null && !r.error)
-      .sort((a, b) => Number(b.supply_apy_pct) - Number(a.supply_apy_pct));
-    const winner = ranked[0];
-    // Pad the symbol so the values line up as a column in the monospace-ish panel,
-    // and round here rather than echoing MCP's 18-decimal strings. No markdown: the
-    // UI renders this as plain text, so "**" would show as literal asterisks.
-    const width = Math.max(...rows.map((r) => String(r.symbol).length));
-    /**
-     * Name the unit, and say WHICH liquidity.
-     *
-     * This row used to end `liquidity 23,676.554` — a bare number with no token and an
-     * ambiguous label. The Earn page shows two separate columns, "Assets Supplied"
-     * (28.71K XLM) and "Available Liquidity" (23.78K XLM), so a reader comparing the two
-     * surfaces could not tell which one the copilot meant, and the figure looked like it
-     * disagreed with the table when it was simply a different column.
-     *
-     * `total_assets` is everything deposited; `total_liquidity` is what is left to borrow.
-     * Both are reported, in the pool's own token, so the row lines up with the page.
-     */
-    const fmtRow = (r: Record<string, unknown>) => {
-      const name = String(r.symbol).padEnd(width);
-      if (r.error) return `• ${name}  unavailable (${shortError(r.error)})`;
-      const sym = String(r.symbol);
-      const supplied = r.total_assets_human != null ? amount(r.total_assets_human) : null;
-      const avail = amount(r.total_liquidity_human);
-      const size = supplied
-        ? `${supplied} ${sym} supplied, ${avail} available`
-        : `${avail} ${sym} available to borrow`;
-      return (
-        `• ${name}  supply ${pct(r.supply_apy_pct)}  ·  borrow ${pct(r.borrow_apr_pct)}` +
-        `  ·  used ${pct(r.utilization_pct)}  ·  ${size}`
-      );
-    };
-    const lines = rows.map(fmtRow);
-
     /**
      * "Compare the XLM and BLUSDC pools" names TWO pools and asks which is better.
      *
@@ -3813,6 +3790,54 @@ async function runRead(
       named.add("AQUSDC");
       named.add("SOUSDC");
     }
+
+    /**
+     * "USDC pool stats" asked about USDC, not XLM — showing XLM alongside it answered a
+     * bigger question than the one asked. Only a bare, unqualified "USDC" narrows the set
+     * this way; a genuine "list all earn pools"/"highest APY" request names no "usdc" at
+     * all and is unaffected, so it still shows every pool including XLM.
+     */
+    const displayRows = bareUsdc ? rows.filter((r) => r.symbol !== "XLM") : rows;
+    const ranked = [...displayRows]
+      .filter((r) => r.supply_apy_pct != null && !r.error)
+      .sort((a, b) => Number(b.supply_apy_pct) - Number(a.supply_apy_pct));
+    const winner = ranked[0];
+    // Pad the symbol so the stat line lines up loosely across pools like a column,
+    // without being an actual table/card component — still one plain-text message.
+    const width = Math.max(...displayRows.map((r) => String(r.symbol).length));
+    /**
+     * Name the unit, and say WHICH liquidity.
+     *
+     * This row used to end `liquidity 23,676.554` — a bare number with no token and an
+     * ambiguous label. The Earn page shows two separate columns, "Assets Supplied"
+     * (28.71K XLM) and "Available Liquidity" (23.78K XLM), so a reader comparing the two
+     * surfaces could not tell which one the copilot meant, and the figure looked like it
+     * disagreed with the table when it was simply a different column.
+     *
+     * `total_assets` is everything deposited; `total_liquidity` is what is left to borrow.
+     * Both are reported, in the pool's own token, so the row lines up with the page.
+     *
+     * Reported live, twice: first that "·"-separated stats crammed onto one line read as
+     * a run-on; then that spreading every figure onto its OWN line (supply/borrow/util
+     * each alone) took too much vertical space. This settles between the two — one line
+     * of stats per pool, no "·", the supplied/available detail on its own line below.
+     */
+    const fmtRow = (r: Record<string, unknown>) => {
+      const name = String(r.symbol).padEnd(width);
+      if (r.error) return `${name}  unavailable (${shortError(r.error)})`;
+      const sym = String(r.symbol);
+      const supplied = r.total_assets_human != null ? amount(r.total_assets_human) : null;
+      const avail = amount(r.total_liquidity_human);
+      const size = supplied
+        ? `${supplied} ${sym} supplied, ${avail} available`
+        : `${avail} ${sym} available to borrow`;
+      return (
+        `${name}  supply ${pct(r.supply_apy_pct)}   borrow ${pct(r.borrow_apr_pct)}   ` +
+        `utilization ${pct(r.utilization_pct)}\n` +
+        `${" ".repeat(width)}  ${size}`
+      );
+    };
+    const lines = displayRows.map(fmtRow);
     const asksCompare = /\bcompare\b|\bvs\.?\b|\bversus\b|\bbetter\b|\bdifference between\b/i.test(
       ctx.message,
     );
@@ -3835,11 +3860,11 @@ async function runRead(
       return {
         kind: "answer",
         message:
-          `${head}\n\n${sel.map(fmtRow).join("\n")}` +
+          `${head}\n\n${sel.map(fmtRow).join("\n\n")}` +
           (bareUsdc
             ? `\n\n“USDC” is three different tokens here, so all three are shown.`
             : ""),
-        data: factsForUi({ compared: [...named], pools: sel, winner: top ?? null }),
+        data: factsForUi({ compared: [...named] }),
         intent: { template_id: "query_all_earn_pools", slots: { compared: [...named] } },
         mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
         request_id: ctx.request_id,
@@ -3878,7 +3903,7 @@ async function runRead(
         /* leave null — the total is then omitted, never guessed */
       }
       let sum = 0;
-      for (const r of rows) {
+      for (const r of displayRows) {
         const raw = r.total_assets_human ?? r.total_liquidity_human;
         const units = Number.parseFloat(String(raw ?? "").replace(/,/g, ""));
         if (!Number.isFinite(units)) {
@@ -3900,14 +3925,14 @@ async function runRead(
     if (wantTotal) {
       const head =
         tvlUsd != null
-          ? `Total value locked across all ${rows.length} Vanna earn pools is ${usd(tvlUsd)}` +
+          ? `Total value locked across all ${displayRows.length} Vanna earn pools is ${usd(tvlUsd)}` +
             (tvlPartial ? " (some pools could not be valued — see below)." : ".")
           : `I couldn't total the pools — the XLM oracle price didn't come back, and I won't ` +
             `quote a TVL built on a guessed price.`;
       return {
         kind: "answer",
-        message: `${head}\n\nBy pool:\n${lines.join("\n")}`,
-        data: factsForUi({ tvl_usd: tvlUsd, pools: rows }),
+        message: `${head}\n\nBy pool:\n${lines.join("\n\n")}`,
+        data: factsForUi({ tvl_usd: tvlUsd }),
         intent: { template_id: "query_all_earn_pools", slots: { pools: [...pools] } },
         mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
         request_id: ctx.request_id,
@@ -3915,13 +3940,14 @@ async function runRead(
     }
     const prose = wantHighest
       ? `${winner?.symbol ?? "n/a"} pays the most right now at ${pct(winner?.supply_apy_pct)} supply APY.\n\n` +
-        `All ${rows.length} Vanna earn pools:\n${lines.join("\n")}`
-      : `Vanna has ${rows.length} earn pools:\n${lines.join("\n")}` +
+        `All ${displayRows.length} Vanna earn pools:\n${lines.join("\n\n")}`
+      : `Vanna has ${displayRows.length} earn pools:\n${lines.join("\n\n")}` +
         (winner ? `\n\n${winner.symbol} currently pays the most, at ${pct(winner.supply_apy_pct)}.` : "");
     return {
       kind: "answer",
+      // No raw facts-card dump here — every figure is already in the prose above, and a
+      // "winner ..." card duplicating it was reported live as unwanted clutter.
       message: prose,
-      data: factsForUi({ pools: rows, winner }),
       intent: { template_id: "query_all_earn_pools", slots: { pools: [...pools] } },
       mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
       request_id: ctx.request_id,
@@ -4008,6 +4034,30 @@ async function runRead(
       // at six facts, so "show me the protocol contract addresses" put six in the answer
       // card and left the other nine to the generic facts dump underneath it.
       if (structured) structured = completeIdentifierFacts(structured, data);
+      /**
+       * "Can I borrow 20 BLUSDC?" answered "You cannot borrow 20 BLUSDC from the Vanna
+       * earn pool because your collateral health is insufficient" — a genuine MARGIN
+       * pre-flight (`vanna_can_borrow`/`vanna_can_withdraw` both map to `vanna_margin_trade`,
+       * mcp-client.ts; `collateral_health` as a limiting factor is a margin risk-engine
+       * concept, meaningless for an Earn deposit), mislabeled by the model as being about
+       * "the Vanna earn pool" — this generic path has no dedicated handler the way
+       * `query_margin_figure`/`query_accrued_interest` do, so `venue` and the venue's NAME
+       * inside the prose sentence are both a free guess from the tool name alone, and
+       * `vanna_can_borrow`'s BLUSDC/AQUSDC/SOUSDC symbols read as Earn-pool-flavoured to
+       * the model with no venue hint otherwise. These two tools only ever check the margin
+       * account, never Earn, so the venue is corrected deterministically here rather than
+       * left to a per-call guess.
+       */
+      if (structured && (routed.tool === "vanna_can_borrow" || routed.tool === "vanna_can_withdraw")) {
+        structured = {
+          ...structured,
+          venue: "margin",
+          headline: structured.headline.replace(
+            /\bthe\s+vanna\s+earn\s+pool\b|\bvanna'?s?\s+earn\s+pool\b|\bthe\s+earn\s+pool\b/gi,
+            "your margin account",
+          ),
+        };
+      }
     }
     // Deliberately not an early return: the HF guardrails and response assembly below
     // must still run, so this only supplies the text and rides along as `answer`.
@@ -4053,13 +4103,30 @@ async function runRead(
       }
     }
 
+    /**
+     * "Can I borrow 20 BLUSDC?" rendered a SECOND card underneath the answer's own
+     * facts — smart account address, duplicate 18-decimal-precision copies of the same
+     * two figures, a `reason` paragraph repeating the note already shown, and bare
+     * `allowed`/`risk engine allowed`/`within pool limits` booleans. The client's own
+     * dedup (`shown`, copilot-workspace.tsx) only matches by exact string value, so a
+     * rounded structured fact ("2,146.0369") never matches its own full-precision raw
+     * twin ("2146.036927200000000000") and both rendered. `vanna_can_borrow`/
+     * `vanna_can_withdraw`'s structured answer already states amount, pool liquidity,
+     * pool headroom and the reason in prose — nothing in the raw payload adds anything
+     * a user acts on, so it is dropped here rather than left to a same-string dedup
+     * that this exact shape defeats.
+     */
+    const suppressRawData =
+      structured != null &&
+      (routed.tool === "vanna_can_borrow" || routed.tool === "vanna_can_withdraw");
+
     return {
       kind: "answer",
       message: prose,
       // Present only when the structured path succeeded. The UI renders this and falls
       // back to `message` when absent, so both paths stay usable.
       ...(structured ? { answer: structured } : {}),
-      data: factsForUi(data),
+      ...(suppressRawData ? {} : { data: factsForUi(data) }),
       intent: { template_id: routed.template_id, slots: built.args },
       mcp: {
         tool: routed.tool,
