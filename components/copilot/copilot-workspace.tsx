@@ -796,6 +796,9 @@ type MultiLegStepUi = {
   tx_hash?: string | null;
   hf_after?: number | null;
   message?: string;
+  /** A swap leg's destination — see RunLeg.tokenOut for why this is carried. */
+  token_in?: string | null;
+  token_out?: string | null;
 };
 
 type ResumeLeg = {
@@ -804,6 +807,9 @@ type ResumeLeg = {
   amount?: number | null;
   leverage?: number | null;
   label?: string;
+  /** A swap leg's destination — carried so a resume replays or corrects it. */
+  token_in?: string | null;
+  token_out?: string | null;
 };
 
 /** Structured multi-leg strategy card (replaces red wall of text + facts dump). */
@@ -3988,6 +3994,8 @@ export function CopilotWorkspace() {
           s.message && toRunLegStatus(s.status) === "failed" ? String(s.message) : null,
         question:
           s.message && toRunLegStatus(s.status) === "needs_input" ? String(s.message) : null,
+        tokenIn: s.token_in ?? null,
+        tokenOut: s.token_out ?? null,
       };
     });
   }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
@@ -4019,6 +4027,8 @@ export function CopilotWorkspace() {
           (l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null),
         leverage: l.leverage ?? null,
         label: l.label,
+        token_in: l.tokenIn ?? null,
+        token_out: l.tokenOut ?? null,
       });
 
       const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
@@ -4029,6 +4039,61 @@ export function CopilotWorkspace() {
     },
     [runLegs, resumeMultiLeg, submitted],
   );
+
+  /**
+   * Resume from a paused SWAP leg once the user names a corrected destination token —
+   * e.g. answering "BLUSDC is Blend USDC — swap to AQUSDC or SOUSDC instead" with just
+   * "SOUSDC". Same pattern as submitLegAmount: the leg goes first with its corrected
+   * `token_out`, then every leg still unstarted after it.
+   *
+   * Reported live: typing the answer into the main composer fired a brand-new, context-
+   * free message ("SOUSDC" alone), which the router could not understand on its own — the
+   * paused strategy was silently abandoned rather than resumed with the correction. The
+   * label is rebuilt too ("Swap 10 XLM → SOUSDC"), not just the underlying token_out — a
+   * stale label showing the OLD (refused) destination while the corrected one executes
+   * would be its own, quieter version of the same lie.
+   */
+  const submitLegTokenAnswer = useCallback(
+    (leg: RunLeg, tokenOut: string) => {
+      const carry = (l: RunLeg, overrideTokenOut?: string) => {
+        const tokenIn = l.tokenIn ?? l.asset ?? "XLM";
+        const finalTokenOut = overrideTokenOut ?? l.tokenOut ?? null;
+        const label =
+          overrideTokenOut && l.op === "swap"
+            ? `Swap ${l.amount ?? ""} ${tokenIn} → ${overrideTokenOut}`.replace(/\s+/g, " ").trim()
+            : l.label;
+        return {
+          op: l.op,
+          asset: l.asset,
+          amount: l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null,
+          leverage: l.leverage ?? null,
+          label,
+          token_in: tokenIn,
+          token_out: finalTokenOut,
+        };
+      };
+
+      const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
+      const summary = String(
+        strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
+      );
+      void resumeMultiLeg([carry(leg, tokenOut), ...rest], summary);
+    },
+    [runLegs, resumeMultiLeg, submitted],
+  );
+
+  /**
+   * Best-effort match of a free-text answer against a known asset symbol — "SOUSDC",
+   * "swap to SOUSDC", "use soroswap (SOUSDC)" all resolve the same way. Longest-first so
+   * "BLUSDC" cannot match as a substring of a longer, hypothetical symbol.
+   */
+  const resolveAssetSymbolFromText = useCallback((text: string): string | null => {
+    const t = text.toUpperCase();
+    for (const sym of ["SOUSDC", "AQUSDC", "BLUSDC", "USDC", "XLM", "AQUA"]) {
+      if (new RegExp(`\\b${sym}\\b`).test(t)) return sym;
+    }
+    return null;
+  }, []);
 
   /**
    * Read after mount, not during render: localStorage does not exist during SSR, and
@@ -4124,6 +4189,22 @@ export function CopilotWorkspace() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            /**
+             * A paused swap answered with just the corrected token ("SOUSDC") used to fire
+             * a brand-new, context-free message through `run()` — the router cannot infer
+             * a whole trade from one word, so the paused strategy was silently abandoned
+             * instead of resumed. When the composer is currently showing a swap leg
+             * waiting on exactly this kind of answer, and the typed text resolves to a
+             * known token, treat it as the answer to THAT leg instead.
+             */
+            const pausedSwap = runLegs.find(
+              (l) => l.status === "needs_input" && l.op === "swap",
+            );
+            const resolvedToken = pausedSwap ? resolveAssetSymbolFromText(intentText) : null;
+            if (pausedSwap && resolvedToken) {
+              submitLegTokenAnswer(pausedSwap, resolvedToken);
+              return;
+            }
             run(intentText);
           }}
         >

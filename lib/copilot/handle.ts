@@ -31,6 +31,7 @@ import {
   USDC_VARIANT_OPTIONS,
   defaultCapUsdFromMcp,
   walletBalanceForEarn,
+  staticStepBlocker,
 } from "./mcp-write";
 import {
   describeLeveragePlan,
@@ -578,14 +579,23 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         summary:
           req.resume_multi_leg.summary ||
           `Resume strategy (${legs.length} remaining step${legs.length === 1 ? "" : "s"})`,
-        steps: legs.map((l) => ({
-          kind: "write" as const,
-          op: l.op,
-          asset: l.asset ?? null,
-          amount: l.amount != null ? Number(l.amount) : null,
-          args: l.leverage != null ? { leverage: l.leverage } : undefined,
-          leverage: l.leverage ?? null,
-        })),
+        // Carry every executable slot the leg had, not just asset/amount/leverage — the
+        // same fix already applied a few lines down for the `pending_write` resume path.
+        // A swap leg answered with a corrected destination token (e.g. "BLUSDC is Blend
+        // USDC, use SOUSDC instead") carries that answer as `token_out`, which the old
+        // three-field pick silently dropped: the resumed swap replayed with its ORIGINAL
+        // (blocked) destination, not the one just answered.
+        steps: legs.map((l) => {
+          const slots = toSlots(l);
+          return {
+            kind: "write" as const,
+            op: l.op,
+            asset: (slots.asset as string) ?? null,
+            amount: typeof slots.amount === "number" ? slots.amount : null,
+            args: slots,
+            leverage: typeof slots.leverage === "number" ? slots.leverage : null,
+          };
+        }),
       };
       return runPlan(plan, {
         userId,
@@ -1307,6 +1317,29 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         message,
       }),
     };
+    /**
+     * Refuse the WHOLE plan upfront if any step is statically impossible, rather than
+     * showing a multi-step "Approve & run" card destined to pause one signature in.
+     *
+     * Reported live: "swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC" showed
+     * the full 4-step plan, the user approved it, and only THEN did leg 1 (the swap)
+     * turn out to be impossible — BLUSDC can never be swapped into, on any AMM, no
+     * matter the amount or balance. That fact is knowable before ever building the
+     * preview. `staticStepBlocker` is the exact same check `mapOpToMcpStep` runs at
+     * execution time, so the upfront refusal and the real one can never disagree.
+     */
+    for (const s of routed.steps) {
+      if (s.kind !== "write" || !s.op) continue;
+      const slots = toSlots(s);
+      const blocked = staticStepBlocker(String(s.op), {
+        asset: (slots.asset as string) ?? s.asset ?? null,
+        token_a: (slots.token_a as string) ?? null,
+        token_b: (slots.token_b as string) ?? null,
+      });
+      if (blocked) {
+        return { kind: "blocked", message: blocked, intent: { template_id: String(s.op) }, request_id };
+      }
+    }
     const frozen = freezePlan(routed, Date.now());
     if (frozen.steps.length) {
       console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval`);
@@ -5981,6 +6014,8 @@ async function runPlan(
             leverage: rest.leverage,
             status: "skipped",
             message: "Skipped — preflight blocked earlier step",
+            token_in: rest.token_in ?? null,
+            token_out: rest.token_out ?? null,
           });
         }
         return {
@@ -6043,6 +6078,8 @@ async function runPlan(
         leverage: w.leverage,
         status: "clarification",
         message: msg,
+        token_in: w.token_in ?? null,
+        token_out: w.token_out ?? null,
       });
       // Mark remaining as skipped
       for (let j = writeCursor; j < totalWriteLegs; j++) {
@@ -6056,6 +6093,8 @@ async function runPlan(
           amount: rest.amount,
           status: "skipped",
           message: "Skipped — earlier leg needs amount",
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
         });
       }
       return {
@@ -6136,6 +6175,10 @@ async function runPlan(
       message: humanizeLegError((writeRes.message || "").slice(0, 400)),
       tx_hash: txHash,
       hf_after: hfAfter,
+      // A swap's destination — carried so a resume can replay it, or (when this leg is
+      // paused on exactly this being the problem) so the client knows what to correct.
+      token_in: w.token_in ?? null,
+      token_out: w.token_out ?? null,
     });
 
     const planSummary = plan.summary || "Multi-step strategy";
@@ -6188,6 +6231,8 @@ async function runPlan(
           message: isAssetSetup
             ? "Waiting for trustline/faucet setup to confirm"
             : "Waiting for signature on the previous step",
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
         });
       }
       // remaining_legs = full rest of plan after this leg (client should resume_multi_leg
@@ -6247,6 +6292,8 @@ async function runPlan(
           amount: rest.amount,
           status: "skipped",
           message: "Skipped — earlier step did not complete",
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
         });
       }
       // Use answer/clarification (not raw error) so the UI shows a strategy card,
@@ -6302,6 +6349,8 @@ async function runPlan(
           amount: rest.amount,
           status: "skipped",
           message: `Skipped — HF floor ${minHf} breached`,
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
         });
       }
       return {
@@ -6347,6 +6396,8 @@ async function runPlan(
           leverage: rest.leverage,
           status: "pending",
           message: "Queued — previous step settled",
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
         });
       }
       const remainingPayload = remaining.map((r) => ({

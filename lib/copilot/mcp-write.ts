@@ -352,6 +352,75 @@ export async function preflightLend(
   }
 }
 
+/**
+ * Static asset/op mismatches that can NEVER succeed — independent of amount, balance,
+ * leverage, or any live chain read. Exported so a proposed multi-leg PLAN can be
+ * checked before it is even shown for approval, not only once execution reaches the
+ * doomed leg — the exact same conditions `mapOpToMcpStep`'s own per-op blockers below
+ * use, factored out here so the two can never disagree.
+ *
+ * Reported live: "swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC" showed a
+ * full 4-step "Approve & run" card, the user approved it, and only then did leg 1 turn
+ * out to be impossible (BLUSDC cannot be swapped into on any AMM). A step whose
+ * asset/op combination is statically impossible should refuse the whole plan upfront,
+ * not offer it and fail one signature in.
+ */
+export function staticStepBlocker(
+  op: string,
+  params: { asset?: string | null; token_a?: string | null; token_b?: string | null },
+): string | null {
+  const norm = (s?: string | null) => (s || "").toUpperCase();
+  if (op === "swap") {
+    // Either side — "swap 10 BLUSDC to XLM" is exactly as impossible as "swap 10 XLM
+    // to BLUSDC". BLEND_USDC is the registry's internal alias for the same token.
+    const a = norm(params.token_a);
+    const b = norm(params.token_b) || norm(params.asset);
+    if (a === "BLUSDC" || a === "BLEND_USDC" || b === "BLUSDC" || b === "BLEND_USDC") {
+      return (
+        "BLUSDC is Blend USDC — it isn't traded on Aquarius or Soroswap, so I can't swap " +
+        "into or out of it. Swap to AQUSDC (Aquarius) or SOUSDC (Soroswap) instead, or " +
+        "say “USDC” and I'll use the venue's own USDC."
+      );
+    }
+  }
+  if (op === "add_liquidity") {
+    const aRaw = norm(params.token_a);
+    const bRaw = norm(params.token_b) || norm(params.asset);
+    if (aRaw === "BLUSDC" || bRaw === "BLUSDC") {
+      return (
+        "BLUSDC is the Blend-side USDC SAC (margin MCP symbol “USDC” — valid collateral). " +
+        "Aquarius AMM LP is a different pool that spends AQUSDC, not BLUSDC. " +
+        "Options:\n" +
+        "  • LP on Aquarius: “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n" +
+        "  • Or swap first: “swap 5 USDC to AQUSDC via aquarius” then add liquidity\n" +
+        "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”"
+      );
+    }
+  }
+  if (op === "remove_liquidity") {
+    const bRaw = norm(params.token_b) || norm(params.asset);
+    if (bRaw === "BLUSDC") {
+      return (
+        "BLUSDC is Blend USDC, not an Aquarius LP token. " +
+        "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
+        "or name AQUSDC/SOUSDC explicitly."
+      );
+    }
+  }
+  if (op === "deploy_to_blend" || op === "supply_to_blend") {
+    const a = norm(params.asset);
+    if (a === "AQUSDC" || a === "SOUSDC") {
+      const venue = a === "SOUSDC" ? "Soroswap" : "Aquarius";
+      return (
+        `Blend only holds XLM and USDC (BLUSDC) reserves — ${a} is a different token and ` +
+        `cannot be supplied to Blend. Add liquidity on ${venue} instead, or name BLUSDC/USDC/XLM ` +
+        `for Blend.`
+      );
+    }
+  }
+  return null;
+}
+
 /** Map high-level op → MCP tool + args (real server schemas). */
 export function mapOpToMcpStep(
   op: string,
@@ -512,16 +581,9 @@ export function mapOpToMcpStep(
         };
       }
       // BLUSDC ≠ AQUSDC ≠ SOUSDC. Never silently map BLUSDC → AQUSDC.
-      if (aRaw === "BLUSDC" || bRaw === "BLUSDC") {
-        return {
-          blocker:
-            "BLUSDC is the Blend-side USDC SAC (margin MCP symbol “USDC” — valid collateral). " +
-            "Aquarius AMM LP is a different pool that spends AQUSDC, not BLUSDC. " +
-            "Options:\n" +
-            "  • LP on Aquarius: “add 15 XLM and 5 AQUSDC to Aquarius XLM/USDC”\n" +
-            "  • Or swap first: “swap 5 USDC to AQUSDC via aquarius” then add liquidity\n" +
-            "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”",
-        };
+      {
+        const blocked = staticStepBlocker("add_liquidity", { token_a: aRaw, token_b: bRaw });
+        if (blocked) return { blocker: blocked };
       }
       const isSouswap =
         aRaw === "SOUSDC" ||
@@ -563,13 +625,9 @@ export function mapOpToMcpStep(
     case "remove_liquidity": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to remove LP." };
       const bRaw = (params.token_b || params.asset || "AQUSDC").toUpperCase();
-      if (bRaw === "BLUSDC") {
-        return {
-          blocker:
-            "BLUSDC is Blend USDC, not an Aquarius LP token. " +
-            "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
-            "or name AQUSDC/SOUSDC explicitly.",
-        };
+      {
+        const blocked = staticStepBlocker("remove_liquidity", { token_b: bRaw });
+        if (blocked) return { blocker: blocked };
       }
       const isSouswap = bRaw === "SOUSDC" || bRaw === "SOROSWAP_USDC";
       const usdSym = isSouswap ? "SOUSDC" : "AQUSDC";
@@ -685,12 +743,8 @@ export function mapOpToMcpStep(
        * are real, rather than quietly substituting one.
        */
       if (stated === "BLUSDC") {
-        return {
-          blocker:
-            "BLUSDC is Blend USDC — it isn't traded on Aquarius or Soroswap, so I can't swap " +
-            "into or out of it. Swap to AQUSDC (Aquarius) or SOUSDC (Soroswap) instead, or " +
-            "say “USDC” and I'll use the venue's own USDC.",
-        };
+        const blocked = staticStepBlocker("swap", { token_a: tokenIn, token_b: tokenOut });
+        if (blocked) return { blocker: blocked };
       }
       if (stated && venueStated) {
         const venueSym = venue === "soroswap" ? "SOUSDC" : "AQUSDC";
@@ -818,13 +872,13 @@ export function mapOpToMcpStep(
       const blendCompatible =
         symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
       if (!blendCompatible) {
-        const venue = symbol === "SOUSDC" || symbol === "SOROSWAP_USDC" ? "Soroswap" : "Aquarius";
-        return {
-          blocker:
-            `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
-            `cannot be supplied to Blend. Add liquidity on ${venue} instead, or name BLUSDC/USDC/XLM ` +
-            `for Blend.`,
-        };
+        const blocked =
+          staticStepBlocker(op, { asset: symbol }) ??
+          // Fallback for any OTHER unrecognised symbol reaching this point (AQUSDC/SOUSDC
+          // are staticStepBlocker's named cases; this only fires for the unexpected rest).
+          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `cannot be supplied to Blend.`;
+        return { blocker: blocked };
       }
       const blendSym = symbol === "XLM" ? "XLM" : "USDC";
       const uiSym = displayUsdcLabel(blendSym, symbol);

@@ -72,6 +72,13 @@ export interface RunLeg {
   maxSafe?: string | null;
   /** Risk gate held this leg pending an acknowledgement. */
   gateReason?: string | null;
+  /**
+   * A swap leg's current destination — what a paused-on-this-leg question is actually
+   * about when the leg is a swap. Lets the composer patch just this field on resume
+   * instead of replaying (or being unable to correct) the original token.
+   */
+  tokenIn?: string | null;
+  tokenOut?: string | null;
 }
 
 export interface RunSummaryRow {

@@ -187,6 +187,14 @@ export interface ChatRequest {
       amount?: number | null;
       leverage?: number | null;
       label?: string;
+      /**
+       * A swap leg's destination. Carried so a resumed run replays it, or — when the
+       * leg is paused because that destination is exactly what's wrong ("BLUSDC is
+       * Blend USDC, use SOUSDC instead") — so the client can send back a CORRECTED
+       * one instead of silently replaying the original (refused) token.
+       */
+      token_in?: string | null;
+      token_out?: string | null;
     }>;
   } | null;
   /**

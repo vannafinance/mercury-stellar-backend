@@ -45,6 +45,15 @@ export type MultiLegStep = {
   message: string;
   tx_hash?: string | null;
   hf_after?: number | null;
+  /**
+   * A swap leg's destination, carried so a resume can replay it — or, when the leg is
+   * paused because that destination is exactly what's wrong ("BLUSDC is Blend USDC,
+   * use SOUSDC instead"), so the client knows what to replace when the user answers.
+   * Dropped once already: this type never had them, so the wire payload for a stopped
+   * swap leg carried no way to tell what its ORIGINAL (blocked) destination even was.
+   */
+  token_in?: string | null;
+  token_out?: string | null;
 };
 
 /**
@@ -677,6 +686,8 @@ export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
   amount?: number | null;
   leverage?: number | null;
   label?: string;
+  token_in?: string | null;
+  token_out?: string | null;
 }> {
   return steps
     .filter((s) =>
@@ -689,6 +700,10 @@ export function resumableLegsFromSteps(steps: MultiLegStep[]): Array<{
       amount: s.amount ?? null,
       leverage: s.leverage ?? null,
       label: s.label,
+      // A swap's destination, so a later resume can carry a CORRECTED token_out instead
+      // of silently replaying the original (possibly just-refused) one.
+      token_in: s.token_in ?? null,
+      token_out: s.token_out ?? null,
     }));
 }
 
