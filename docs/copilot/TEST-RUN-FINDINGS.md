@@ -71,6 +71,8 @@ lists only what remains open, with severity, location, and a proposed fix for ea
 
 | 33 | **Reported live, three fixes plus one flagged server-side item.** (a) "What is Balance of XLM in my Margin Account" — a word-order variant of an already-fixed phrasing — fell to the generic capabilities blurb; both keyword-route to `query_collateral` identically, but `query_collateral`/`query_debt` were never added to handleChat's "keywordConfident" allowlist, so a correct keyword match still went to Vertex "to confirm," and Vertex's own guess (not the router's) decided the final answer — non-deterministic by word order. (b) "USDC pool stats" (bare "USDC") silently defaulted to one pool with no indication that BLUSDC/AQUSDC/SOUSDC are three separate deployments — the exact "which USDC variant" ambiguity this session already resolves for writes, never applied to this read. (c) "Can I borrow 20 BLUSDC?" — one of the product's own suggested prompts — answered "You cannot borrow 20 BLUSDC from the Vanna earn pool because your collateral health is insufficient." `vanna_can_borrow`/`vanna_can_withdraw` are margin-only tools (`collateral_health` is meaningless for an Earn deposit) but have no dedicated answer handler, so `venue` and the venue's name inside the prose were both a free-form guess by the formatting model from the tool name alone — it guessed "Earn" from the BLUSDC/AQUSDC/SOUSDC symbols with no venue hint otherwise. | (a) Added `query_collateral`/`query_debt` to the keywordConfident allowlist. (b) Bare "USDC" in a pool-stats question now redirects to the existing all-earn-pools read instead of picking one pool silently; a named variant (BLUSDC/AQUSDC/SOUSDC) still gets its own single-pool answer, and a venue-named-but-tickerless question (e.g. "the aquarius pool") is unaffected. Also reformatted the all-pools listing per live feedback (twice) — first replacing "·"-separated stats crammed onto one run-on line, then replacing five-lines-per-pool (too tall) with one compact stat line plus an indented supplied/available line below, and dropped a redundant raw "winner ..." facts card duplicating what the prose already said. (c) `vanna_can_borrow`/`vanna_can_withdraw` answers now force `venue: "margin"` and rewrite any "the Vanna earn pool" wording in the headline to "your margin account", deterministically, right after the formatting model runs. | vanna-copilot-orchestrator | ✅ Fixed (a), (b), (c) — tested (13 new unit tests), verified live: both XLM-balance word-order variants now answer identically; "USDC pool stats" now lists BLUSDC/AQUSDC/SOUSDC only (a genuine "list all earn pools" still includes XLM), reformatted twice on live feedback into a compact one-stat-line-plus-detail-line per pool with no "·"; "Can I borrow 20 BLUSDC?" now says "from your margin account" / venue "margin", never "the Vanna earn pool", and no longer shows a second raw-data card underneath duplicating the answer's own facts with full-precision twins, a repeated reason paragraph, and the smart account address (the client's exact-string `shown` dedup never matched a rounded fact against its own unrounded raw twin, so both rendered). **Flagged, not fixable from this repo:** the reported `allowed: false` / "collateral_health" rejection for that exact borrow, on an account the real Margin page projected as safe (HF 1.54→1.49 at 3×), could not be reproduced against the differently-provisioned wallet available this session (a healthier account correctly returned `allowed: true` here) — mock mode always returns `allowed:true` so this can't be exercised locally either. The venue/label bug is fixed regardless of the eligibility verdict; if the underlying `allowed:false` result itself is still wrong on the original account, that is a `vanna_core`/MCP risk-engine question, outside this repo. |
 
+| 34 | **Reported live — the same redundant-card bug as #33(c), now on a different tool.** "AQUSDC pool stats" showed a clean structured card ("The AQUSDC Vanna earn pool has a supply APY of 10.38%...") followed by a second raw-data card duplicating it: pool symbol, `utilization_pct`/`borrow_apr_pct`/`supply_apr_pct` at full precision underneath the already-shown rounded percentages, and a repeated "Supply APR is approximately..." note. #33(c)'s fix only suppressed the raw card for the two tools it was reported on (`vanna_can_borrow`/`vanna_can_withdraw`) — a per-tool allowlist that, predictably, needed the next tool added by hand the next time this exact shape showed up. | Generalized: the generic single-read return path now omits raw `data` whenever the structured `answer` succeeded, for every tool, not just the two originally reported. The one case that legitimately needs more facts than the model's own 6-fact cap (an enumeration like "list every protocol address") is already handled by `completeIdentifierFacts` merging extra items directly into `structured.facts` above this return, not by falling back to the raw dump — so nothing that currently reads from the raw card on a successful structured answer loses information. Multi-leg execution's own use of `response.data` (`prefer_resume_multi_leg`, `can_resume`, `strategy_summary`, `multi_leg_steps`, etc.) is built by an entirely separate return path in `handle.ts` and is untouched. | vanna-copilot-orchestrator | ✅ Fixed, tested (updated the one test that asserted `res.data` truthy against a live structured answer — a smoke check, not a contract, now checks `answer ?? data`), verified live: "AQUSDC pool stats" now shows exactly one card |
+
 **Found in the same investigation, MCP-server-side — fixed.** Calling `vanna_get_vtoken_balance` more than once in quick succession (whether in parallel or sequential) reliably failed with "operation was aborted due to timeout" client-side, even though a single isolated call reliably succeeded in ~10s. Confirmed via `gcloud logging read` on `vanna-mcp-server`'s own Cloud Run logs: `WARNING: Truncated response body. Usually implies that the request timed out or the application exited before the response was finished.`, timestamped at the exact moments the client-side timeouts occurred, alongside bursts of 40+ `POST https://soroban-testnet.stellar.org` calls within a single second. The tool itself does 3-4 sequential Soroban contract calls per invocation (`balance`/`total_supply`/`decimals` in parallel, then `convert_vtoken_to_asset`, then `symbol`) — genuinely expensive by design, and the Cloud Run container was getting overwhelmed under even modest concurrent/repeated load at its prior 512Mi/1 vCPU allocation. Fixed via `gcloud run services update --memory=2Gi --cpu=2` (new revision `vanna-mcp-server-00079-lnp`, confirmed serving 100% traffic) — all 4 sequential calls now complete reliably.
 
 **Verified live, full pass across every Earn pool (issue #7's "haven't gone through every pool's detail page and Supply/Withdraw flow yet").** Walked every asset in both the Vaults tab and the Positions tab, opened each pool's Details page, and ran real Supply Liquidity + Withdraw Liquidity transactions on XLM end-to-end (auto-sign on, real testnet wallet). Every figure matched copilot's `query_earn_position` answer exactly: XLM 20.02 ($3.16-3.18, oracle-price drift), AqUSDC 14.99 ($15.00), SoUSDC 52.00 ($52.04), BLUSDC 0 (correctly absent from both the Positions tab and copilot's answer). Supplying 1 XLM raised "Your Supply" 20.02→21.02 and the pool's Total Supply $11.54K→$11.57K, both without a reload; withdrawing that same 1 XLM (as vXLM) correctly reversed it, though the Withdraw panel's own "Balance: X vXLM" figure and the Details tab's Total Supply stat did not visibly update until a full page reload — **not confidently called a bug**, since `withdraw-liqudity.tsx` already re-syncs on a staggered 0/3/6/10/15s schedule specifically to avoid needing a reload, reads the balance via a direct Soroban RPC simulate call that can lag ledger finality by a few seconds, and this was checked well within that window rather than after it fully elapsed. Worth a second look if a user reports it again with a longer wait.
@@ -105,9 +107,18 @@ live report:
 - **Closed five more instances of the word-order non-determinism bug** (the same root
   cause as `query_collateral`/`query_debt` in #33 above), found by building a coverage
   test rather than waiting for each to be reported separately: `query_can_borrow`,
-  `query_can_withdraw`, `query_inactive`, `query_vtoken`, `query_exchange_rate` are now
-  all on `KEYWORD_CONFIDENT_READ_TEMPLATES` (extracted from an inline literal to an
-  exported constant specifically so a test can check it).
+  `query_can_withdraw`, `query_inactive`, `query_vtoken`, `query_exchange_rate` were all
+  missing from the trusted-read allowlist.
+- **Flipped that allowlist from opt-in to opt-out.** An opt-in list (a template must be
+  added before it's trusted) finds gaps exactly one at a time, forever, because "forgot
+  to add the new route" leaves no trace until someone hits it live — which is what
+  happened five more times in the single pass above. `KEYWORD_CONFIDENT_READ_TEMPLATES`
+  is now `VERTEX_REVIEWED_READ_TEMPLATES`: every deterministic read is trusted by
+  default, the same way every write/clarify/restricted/auto_sign/client result already
+  was, unless a template_id is deliberately named as needing Vertex's review. Empty
+  today. Verified safe by running the full suite unchanged (many existing tests already
+  exercise the "Vertex unreachable, keyword fallback" path extensively) and by live-
+  testing "Can I withdraw 20 XLM?", which now answers deterministically.
 - **Consolidated `withdraw_from_blend`'s asset-compatibility check into the shared
   `staticStepBlocker`** — it had its own inline copy of the exact rule
   `deploy_to_blend`/`supply_to_blend` already centralised, the same "same rule twice"
@@ -122,12 +133,35 @@ live report:
     Blend-family op, asserting each is either accepted correctly or explicitly refused —
     never silently coerced to the wrong venue.
   - `tests/lib/keyword-confident-coverage.test.ts` — a battery of representative read
-    phrases, asserting each resolves to a `template_id` already on the trusted list.
-- **Verified this changed nothing it wasn't meant to**: full suite green before and after
-  every step (982 → 1087 tests, all new), `tsc --noEmit` clean throughout, and the two
-  behaviour-affecting additions (`query_can_withdraw`, `query_can_borrow` becoming
-  keyword-confident) verified live — "Can I withdraw 20 XLM?" now answers deterministically
-  instead of depending on Vertex's mood.
+    phrases, asserting none of them ended up on Vertex's review list by accident.
+- **Audited whether copilot reads share their data source with the equivalent real
+  page**, per the user's explicit ask ("do they call the same function the page calls,
+  or a separate path that could silently drift"), for the five biggest read surfaces:
+  1. Margin health factor/collateral/debt — **same function** (`computeMarginSnapshot`),
+     already unified; this is the fix behind finding #12/#14 earlier in this document.
+  2. Blend reserve stats (supply/borrow APY, utilization) — different code paths (MCP
+     vs. `BlendService.getBlendReserveData`'s own SDK-matching math) but **live-verified
+     identical this pass** (384.51%/644.49%/88.43%, exact match, see #32 above).
+  3. Vanna Earn pool stats — different code paths (MCP vs. `getAllPoolStats`) but
+     **live-verified identical this pass** for AQUSDC (supply 10.38%, borrow 19.06%,
+     utilization 54.45%, exact match on all three).
+  4. Oracle prices — different code paths (MCP `vanna_oracle` vs. `oracle-price.ts`'s
+     own 4s-cached client read) but **live-verified identical this pass** for XLM
+     ($0.1546 both sides, MCP's own `is_stale: false` confirming it wasn't serving a
+     cached figure).
+  5. Margin borrow/withdraw eligibility (`vanna_can_borrow`/`vanna_can_withdraw` vs. the
+     Margin page's own `MarginAccountService.simulateBorrowAllowed`) — different code
+     paths, and this is the **one confirmed, still-open exception**: see #33's flagged
+     item above (`allowed:false` on an account the real page projected as safe). Not
+     reproduced again this pass (different, healthier test wallet available), still
+     believed to be an MCP/`vanna_core` risk-engine question outside this repo.
+  No code changes came out of this audit — three of the four "different path" cases
+  checked out empirically; the fifth was already found, documented, and correctly
+  scoped as out-of-repo before this pass even started.
+- **Verified this changed nothing it wasn't meant to**: full suite green before and
+  after every step (982 → 1089 tests, all new), `tsc --noEmit` clean throughout. (Finding
+  #34 above landed after this section: 1089 tests, one existing test's assertion updated
+  to match the new behavior rather than a net-new count.)
 
 ---
 

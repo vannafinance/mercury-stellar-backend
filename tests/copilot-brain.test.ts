@@ -54,7 +54,10 @@ describe("in-process copilot brain", () => {
     expect(res.kind).toBe("answer");
     expect(res.message.toLowerCase()).toMatch(/xlm|price|\$|usd/);
     expect(res.request_id).toBeTruthy();
-    expect(res.data).toBeTruthy();
+    // Real data reached the user either way: as `answer` when the structured path
+    // succeeds (raw `data` is then deliberately omitted — see handle.ts's `structured`
+    // return path), or as `data` when it doesn't.
+    expect(res.answer ?? res.data).toBeTruthy();
   }, 90_000);
 
   it("write without wallet asks to connect / clarify (no Approve path)", async () => {

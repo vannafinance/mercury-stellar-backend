@@ -354,88 +354,29 @@ function logPlanCoverageShadow(
 }
 
 /**
- * Read `template_id`s the deterministic keyword router is trusted on outright — never
- * re-decided by Vertex, so a route this list already trusts can't become
- * non-deterministic by phrasing or word order.
+ * Read `template_id`s that must NOT be auto-trusted — reviewed by Vertex before the
+ * final answer stands, even though the deterministic router already produced one.
  *
- * Reported live, repeatedly, under different symptoms: "swap 10 XLM to USDC" ignored
- * the router's own correct "which USDC?" clarify because `clarify` wasn't a trusted
- * kind; "What is Balance of XLM in my Margin Account" (a word-order variant of an
- * already-fixed phrasing) fell to the generic capabilities blurb because
- * `query_collateral` wasn't here. Every entry below was added after exactly this
- * shape of bug — a correct keyword match handed to Vertex "to confirm" and overridden.
+ * This used to be the other way round: an opt-IN allowlist, where a read had to be
+ * added here before it was trusted, and every entry was added only after it was
+ * reported live as broken. "Swap 10 XLM to USDC" ignored the router's own correct
+ * "which USDC?" clarify because `clarify` wasn't yet a trusted kind; "What is Balance of
+ * XLM in my Margin Account" (a word-order variant of an already-fixed phrasing) fell to
+ * the generic capabilities blurb because `query_collateral` hadn't been added yet.
+ * Building a coverage test (`tests/lib/keyword-confident-coverage.test.ts`) to check
+ * that allowlist against what the router actually produces found FIVE more reads in the
+ * same broken state in one pass (`query_can_borrow`, `query_can_withdraw`,
+ * `query_inactive`, `query_vtoken`, `query_exchange_rate`) — an opt-IN list will keep
+ * finding new gaps exactly this way, one at a time, forever, because "forgot to add the
+ * new route here" leaves no trace until someone hits it.
  *
- * Exported (not an inline literal) so `tests/lib/keyword-confident-coverage.test.ts`
- * can assert every read `template_id` the router actually produces is on this list —
- * the same class of gap this whole list exists to close, now caught before a live
- * report instead of after one.
+ * Flipped to opt-OUT: every deterministic read is now trusted by default, the same way
+ * every deterministic write/clarify/restricted/auto_sign/client result already is.
+ * Empty today — nothing currently needs Vertex to double-check it — but the escape
+ * hatch stays for a genuinely fuzzy future read where sending it to Vertex anyway is a
+ * deliberate design choice, not a forgotten allowlist entry.
  */
-export const KEYWORD_CONFIDENT_READ_TEMPLATES = [
-  "query_all_earn_pools",
-  "query_blend",
-  "query_account_health",
-  "query_prices_batch",
-  "query_price",
-  "query_pool_stats",
-  "query_wallet_balance",
-  "query_farm_overview",
-  // Deliberately confident: "what are my positions" must never need a model
-  // round-trip to be understood. When Vertex is unreachable — an expired
-  // `gcloud auth login` is enough — the fallback used to be the capability blurb.
-  "query_all_positions",
-  // Same reasoning: "my Earn positions" must not need a model round-trip either,
-  // and must never be re-decided by Vertex into the margin/farm fan-out above.
-  "query_earn_position",
-  // Same reasoning: a named single-figure margin question ("net available
-  // collateral", "collateral left before liquidation") must not be re-decided by
-  // Vertex into the whole-account fan-out, nor risk being reread as a liquidate
-  // command if the model ever falls back to a keyword-shaped guess.
-  "query_margin_figure",
-  // Same reasoning: "how much interest accrued" must answer honestly from the
-  // real debt figure every time, not have Vertex invent an interest-specific
-  // number no tool in this deployment actually tracks.
-  "query_accrued_interest",
-  // Same reasoning: "my Farm position" must not need a model round-trip either,
-  // and must never be re-decided by Vertex into the margin fan-out above.
-  "query_farm_position",
-  // Same reasoning: "how much credit do I have" is the product's headline
-  // question and must not need a model round-trip to be understood.
-  "query_available_credit",
-  "query_blend_position",
-  "query_collateral_config",
-  "query_addresses",
-  "query_resolve",
-  // Same reasoning: a direct pool-ratio question must answer from the pool's own
-  // live reserves every time, not have Vertex guess a number for an AMM ratio.
-  "query_pool_ratio",
-  /**
-   * Reported live: "What is my XLM Balance in Margin account?" (a fixed test
-   * phrasing) answered correctly, but "What is Balance of XLM in my Margin
-   * Account" — the exact same question, different word order — fell to the
-   * generic capabilities blurb. Both keyword-route to `query_collateral`
-   * identically; the difference was that `query_collateral`/`query_debt` were
-   * never on this allowlist, so a correct keyword match was still handed to
-   * Vertex "to confirm," and Vertex's own guess (not this router's) decided the
-   * final answer — non-deterministic by word order, the exact class of bug every
-   * other entry on this list already exists to prevent.
-   */
-  "query_collateral",
-  "query_debt",
-  // Same reasoning, found while building the coverage test this comment points to:
-  // "Can I borrow 20 BLUSDC?" — one of the product's own suggested prompts — keyword-
-  // routes to `query_can_borrow` just as unambiguously as `query_collateral` does, but
-  // was never added here, leaving it exposed to the same word-order non-determinism.
-  "query_can_borrow",
-  "query_can_withdraw",
-  // Same reasoning: "inactive account"/"dormant" is an exact, unambiguous phrase match
-  // with no write-verb ambiguity to hedge against.
-  "query_inactive",
-  // Same reasoning, also found while building the coverage test: bare "vtoken"/"exchange
-  // rate" are exact phrase matches with no ambiguity, yet were exposed to the same
-  // non-determinism as every other entry here.
-  "query_vtoken",
-  "query_exchange_rate",
-] as const;
+export const VERTEX_REVIEWED_READ_TEMPLATES: readonly string[] = [];
 
 export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const request_id = newRequestId();
@@ -977,9 +918,12 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
        * in router.ts too, and were exchanged for Vertex's version for the same reason.
        */
       kwFast.kind === "clarify" ||
+      // Opt-out, not opt-in — see VERTEX_REVIEWED_READ_TEMPLATES's own doc comment for
+      // why: a deterministic read is trusted the same way every other kind here already
+      // is, unless its template_id is deliberately named as needing Vertex's review.
       (kwFast.kind === "read" &&
         !!kwFast.template_id &&
-        (KEYWORD_CONFIDENT_READ_TEMPLATES as readonly string[]).includes(kwFast.template_id)));
+        !VERTEX_REVIEWED_READ_TEMPLATES.includes(kwFast.template_id)));
 
   let routed: RoutedIntent;
   /**
@@ -4137,29 +4081,31 @@ async function runRead(
     }
 
     /**
-     * "Can I borrow 20 BLUSDC?" rendered a SECOND card underneath the answer's own
-     * facts — smart account address, duplicate 18-decimal-precision copies of the same
-     * two figures, a `reason` paragraph repeating the note already shown, and bare
-     * `allowed`/`risk engine allowed`/`within pool limits` booleans. The client's own
-     * dedup (`shown`, copilot-workspace.tsx) only matches by exact string value, so a
-     * rounded structured fact ("2,146.0369") never matches its own full-precision raw
-     * twin ("2146.036927200000000000") and both rendered. `vanna_can_borrow`/
-     * `vanna_can_withdraw`'s structured answer already states amount, pool liquidity,
-     * pool headroom and the reason in prose — nothing in the raw payload adds anything
-     * a user acts on, so it is dropped here rather than left to a same-string dedup
-     * that this exact shape defeats.
+     * "Can I borrow 20 BLUSDC?" and, separately, "AQUSDC pool stats" each rendered a
+     * SECOND card underneath the answer's own facts, duplicating it: a smart account
+     * address / pool symbol nobody asked for, `..._pct`/`..._human` twins of the SAME
+     * figures at raw 18-decimal precision instead of the already-shown rounded ones,
+     * and a `reason`/`note supply apr` paragraph repeating the note already on screen.
+     * The client's own dedup (`shown`, copilot-workspace.tsx) only matches by exact
+     * string value, so a rounded structured fact ("10.38%") never matches its own
+     * full-precision raw twin ("10.375107") and both rendered.
+     *
+     * General fix, not a per-tool one: whenever the structured path succeeds, its
+     * headline/facts/note ARE the curated answer — nothing in the separate raw `data`
+     * dump adds something a user acts on that isn't already there in a readable form.
+     * The one case that legitimately needs more than the model's own facts (an
+     * enumeration like "list every protocol address") is already handled by
+     * `completeIdentifierFacts` merging the extra items directly into `structured.facts`
+     * above, not by falling back to this raw dump — so dropping `data` here whenever
+     * `structured` exists loses nothing, for any tool.
      */
-    const suppressRawData =
-      structured != null &&
-      (routed.tool === "vanna_can_borrow" || routed.tool === "vanna_can_withdraw");
-
     return {
       kind: "answer",
       message: prose,
       // Present only when the structured path succeeded. The UI renders this and falls
       // back to `message` when absent, so both paths stay usable.
       ...(structured ? { answer: structured } : {}),
-      ...(suppressRawData ? {} : { data: factsForUi(data) }),
+      ...(structured ? {} : { data: factsForUi(data) }),
       intent: { template_id: routed.template_id, slots: built.args },
       mcp: {
         tool: routed.tool,
