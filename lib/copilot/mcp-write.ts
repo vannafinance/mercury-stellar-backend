@@ -407,13 +407,20 @@ export function staticStepBlocker(
       );
     }
   }
-  if (op === "deploy_to_blend" || op === "supply_to_blend") {
+  if (op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend") {
+    // Same asset-compatibility check for supply AND withdraw — Blend only ever holds
+    // XLM/USDC reserves either way. This used to be deploy/supply-only; the withdraw op
+    // (added for issue #16's Blend-remove fix) had its own separate inline copy of this
+    // exact check, the same "same rule, reimplemented twice" pattern this function exists
+    // to prevent — consolidated here so a future Blend-family op only needs to be added
+    // to the op list above, not given its own copy of the asset rule.
     const a = norm(params.asset);
     if (a === "AQUSDC" || a === "SOUSDC") {
       const venue = a === "SOUSDC" ? "Soroswap" : "Aquarius";
+      const verb = op === "withdraw_from_blend" ? "withdrawn from" : "supplied to";
       return (
         `Blend only holds XLM and USDC (BLUSDC) reserves — ${a} is a different token and ` +
-        `cannot be supplied to Blend. Add liquidity on ${venue} instead, or name BLUSDC/USDC/XLM ` +
+        `cannot be ${verb} Blend. ${op === "withdraw_from_blend" ? `It was never in Blend to begin with — check ${venue}` : `Add liquidity on ${venue} instead`}, or name BLUSDC/USDC/XLM ` +
         `for Blend.`
       );
     }

@@ -12,6 +12,8 @@
  *  4) Systems prompts still restate domain (defense in depth)
  */
 
+import { ASSET_DOMAIN_WORDS } from "./registry/assets";
+
 export type FirewallResult =
   | { allow: true; reason: string }
   | { allow: false; reason: string; message: string };
@@ -107,13 +109,24 @@ const DOMAIN_WORDS = [
   "vanna", "stellar", "soroban", "freighter", "privy",
   "protocol", "protocols",
   "registry", "registries",
-  // Venues and tickers
-  "blend", "aquarius", "soroswap", "xlm", "aqua", "usdc", "blusdc", "aqusdc", "sousdc",
+  // Venues
+  "blend", "aquarius", "soroswap",
+  /**
+   * Every known asset word (XLM, its bToken "bXLM", BLUSDC/AQUSDC/SOUSDC/USDT, and any
+   * spelling variant), read from the ONE place that defines what an asset is
+   * (`registry/assets.ts`) instead of hand-copied here. Hand-copied is exactly how "What
+   * is Current Rate of bXLM?" got refused as off-topic chat: bXLM was added to the asset
+   * registry's XLM aliases, and this list — a second, independent copy of "which asset
+   * words exist" — was never told. Adding a spelling to the registry now reaches this
+   * list automatically; see `tests/lib/asset-recognition-consistency.test.ts`.
+   */
+  ...ASSET_DOMAIN_WORDS,
+  // Bare "USDC" deliberately has no `AssetId` of its own (see registry/assets.ts's file
+  // header — BLUSDC/AQUSDC/SOUSDC are three separate tokens and naming none of them is
+  // an unresolved question, not an asset) but is still a real product concept this
+  // firewall must recognise, so it is listed explicitly rather than derived.
+  "usdc",
   "btoken", "btokens", "b-token", "vtoken", "vtokens",
-  // Blend's own bToken symbols — "bXLM"/"bUSDC" name the reserve the same way "BLUSDC"
-  // does, just in Blend's own notation. "What is Current Rate of bXLM?" was refused by
-  // this firewall as off-topic chat because the composite symbol matched no word here.
-  "bxlm", "busdc",
   // Actions
   "earn", "earns", "earning", "earnings",
   "farm", "farms", "farmed", "farming",

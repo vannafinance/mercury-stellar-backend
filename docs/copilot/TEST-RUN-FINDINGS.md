@@ -83,6 +83,54 @@ lists only what remains open, with severity, location, and a proposed fix for ea
 
 ---
 
+## 3b. Proactive Hardening (Not From a Live Report — "Prevent This Class of Bug")
+
+Every entry in §3 above traces back to one of a handful of repeating shapes: the same
+"is this a known asset/venue" check reimplemented independently in several files with no
+way to stay in sync; a deterministic router match still handed to Vertex "to confirm,"
+which occasionally disagreed with itself by word order; and a per-op asset-compatibility
+rule that could silently coerce a wrong-venue write instead of refusing it. Asked
+explicitly to prevent the *next* instance of each shape rather than wait for the next
+live report:
+
+- **Single source of truth for asset vocabulary.** `domain-firewall.ts`'s vocabulary and
+  `concept.ts`'s live-data override now import `ASSET_DOMAIN_WORDS`/`ASSET_SYMBOL_PATTERN`
+  from `registry/assets.ts` instead of maintaining their own hand-copied word lists — the
+  exact mechanism behind the "bXLM" bug (added to the registry, then separately forgotten
+  in three other places). Also completed the registry's own missing entry: **USDT** (a
+  real, farmed Aquarius pair per `AQUARIUS_POOLS`/`vertex-tools.ts`) was hardcoded
+  independently in `router.ts`'s dual-amount parser and `concept.ts` but never added to
+  the registry itself — added, with `marginSymbol: null`/`earnSymbol: null` (an
+  LP-pairing token only, same shape as EURC).
+- **Closed five more instances of the word-order non-determinism bug** (the same root
+  cause as `query_collateral`/`query_debt` in #33 above), found by building a coverage
+  test rather than waiting for each to be reported separately: `query_can_borrow`,
+  `query_can_withdraw`, `query_inactive`, `query_vtoken`, `query_exchange_rate` are now
+  all on `KEYWORD_CONFIDENT_READ_TEMPLATES` (extracted from an inline literal to an
+  exported constant specifically so a test can check it).
+- **Consolidated `withdraw_from_blend`'s asset-compatibility check into the shared
+  `staticStepBlocker`** — it had its own inline copy of the exact rule
+  `deploy_to_blend`/`supply_to_blend` already centralised, the same "same rule twice"
+  pattern the whole exercise is about. AQUSDC/SOUSDC now get the specific venue-naming
+  refusal message on a withdraw too, not just a generic one.
+- **Three new regression-proof test suites**, all designed to fail automatically the
+  next time this class of bug is (re)introduced, not just pin today's behaviour:
+  - `tests/lib/asset-recognition-consistency.test.ts` — every alias of every registry
+    asset, checked against the domain firewall, the concept classifier, and the router,
+    so adding an asset/alias to the registry is the *only* step required.
+  - `tests/lib/blend-asset-safety-matrix.test.ts` — every registry asset × every
+    Blend-family op, asserting each is either accepted correctly or explicitly refused —
+    never silently coerced to the wrong venue.
+  - `tests/lib/keyword-confident-coverage.test.ts` — a battery of representative read
+    phrases, asserting each resolves to a `template_id` already on the trusted list.
+- **Verified this changed nothing it wasn't meant to**: full suite green before and after
+  every step (982 → 1087 tests, all new), `tsc --noEmit` clean throughout, and the two
+  behaviour-affecting additions (`query_can_withdraw`, `query_can_borrow` becoming
+  keyword-confident) verified live — "Can I withdraw 20 XLM?" now answers deterministically
+  instead of depending on Vertex's mood.
+
+---
+
 ## 4. Housekeeping (No Urgency)
 
 | # | Item | Action |

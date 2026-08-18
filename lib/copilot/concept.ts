@@ -6,6 +6,7 @@
 import glossaryJson from "@/data/glossary.json";
 import type { ChatResponse, PageDescriptorCtx, PageSnapshotCtx } from "./types";
 import { generateText, VertexError } from "./vertex";
+import { ASSET_SYMBOL_PATTERN } from "./registry/assets";
 
 type GlossaryEntry = {
   term: string;
@@ -93,9 +94,15 @@ const MARKET_NOUN =
  * "What is Current Rate of bXLM?" fell through to the concept explainer instead of the
  * live Blend reserve rate — "rate" satisfies `MARKET_NOUN`, but `\bXLM\b` can never match
  * inside "bXLM" (no word-boundary between "b" and "X"), so this override never fired. Same
- * composite-bToken gap already fixed in the domain firewall and the asset registry.
+ * composite-bToken gap already fixed in the domain firewall and the asset registry —
+ * fixed HERE for good by reading the same registry those two now read, instead of a
+ * third hand-copied list that would silently fall behind again the next time an asset or
+ * spelling is added. Bare "USDC" is added on top: the registry deliberately excludes it
+ * (BLUSDC/AQUSDC/SOUSDC are three separate tokens, and naming none of them is a question,
+ * not an asset — see registry/assets.ts's file header) but "what is the price of USDC" is
+ * still a live-data lookup, not a concept question.
  */
-const ASSET_SYMBOL = /\b(XLM|USDC|BLUSDC|AQUSDC|SOUSDC|USDT|AQUA|EURC|BXLM|BUSDC)\b/i;
+const ASSET_SYMBOL = new RegExp(ASSET_SYMBOL_PATTERN.source + "|\\busdc\\b", "i");
 
 /**
  * True only for genuine concept questions ("what is Blend?").

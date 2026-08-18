@@ -35,7 +35,7 @@
  */
 
 /** Every asset the copilot can name. Bare "USDC" is deliberately not one. */
-export const ASSET_IDS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC", "AQUA", "EURC"] as const;
+export const ASSET_IDS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC", "AQUA", "EURC", "USDT"] as const;
 
 export type AssetId = (typeof ASSET_IDS)[number];
 
@@ -126,6 +126,25 @@ const DEFS: Record<AssetId, AssetDef> = {
     blendReserve: false,
     displayLabel: "EURC",
   },
+  /**
+   * The one asset this registry's own header warned about and then still missed:
+   * `AQUARIUS_POOLS`/`vertex-tools.ts` farm an XLM/USDT pair (`handle.ts`'s own comment:
+   * "Vanna farms XLM/USDC and XLM/USDT only"), but USDT was never added here — so
+   * `router.ts`'s dual-amount parser, `vertex-tools.ts`'s pair symbol list, and
+   * `concept.ts`'s live-data override each hardcoded it independently instead of reading
+   * it from here, the exact "six tables" disease this file exists to cure. Nameable and
+   * priceable like EURC; not valid margin collateral or an Earn pool — an LP-pairing
+   * token only.
+   */
+  USDT: {
+    id: "USDT",
+    aliases: ["USDT"],
+    oracleSymbol: "USDC",
+    marginSymbol: null,
+    earnSymbol: null,
+    blendReserve: false,
+    displayLabel: "USDT",
+  },
 };
 
 /**
@@ -147,6 +166,7 @@ export const ASSET_SCAN_ORDER = [
   "XLM",
   "AQUA",
   "EURC",
+  "USDT",
 ] as const;
 
 /** Enum offered to the model for a write. Order shapes the prompt, so it is fixed. */
@@ -158,6 +178,7 @@ export const WRITE_ASSET_ENUM = [
   "USDC",
   "AQUA",
   "EURC",
+  "USDT",
 ] as const;
 
 export function assetDef(id: AssetId): AssetDef {
@@ -168,6 +189,34 @@ export function assetDef(id: AssetId): AssetDef {
 export function allAssets(): AssetDef[] {
   return ASSET_IDS.map((id) => DEFS[id]);
 }
+
+/**
+ * Single-token asset words, lowercased, for modules that recognise "is this message
+ * about a known asset at all" rather than resolving to one specific `AssetDef`.
+ *
+ * Built from `allAssets()`'s own aliases rather than hand-copied, because hand-copied is
+ * exactly how the same bug happened four times in one week: "bXLM" was added to this
+ * registry's XLM aliases, and had to be separately, manually added to the domain
+ * firewall's vocabulary AND the page-guide classifier's asset pattern before either one
+ * actually recognised it — three lists that were each individually plausible and each
+ * quietly wrong. A multi-word alias ("BLEND USDC") is skipped: firewall/classifier word
+ * lists match single `\b`-bounded tokens, and the single-word spellings ("BLUSDC",
+ * "BLEND_USDC") already cover the same ground.
+ */
+export const ASSET_DOMAIN_WORDS: readonly string[] = allAssets()
+  .flatMap((d) => d.aliases)
+  .filter((a) => !/[\s]/.test(a))
+  .map((a) => a.toLowerCase());
+
+/**
+ * One regex matching any known asset alias as a whole word — the same underlying list as
+ * `ASSET_DOMAIN_WORDS`, shaped for a single `.test()`/`.exec()` call. See that export's
+ * doc comment for why this must be derived, not hand-maintained.
+ */
+export const ASSET_SYMBOL_PATTERN = new RegExp(
+  `\\b(?:${[...ASSET_DOMAIN_WORDS].sort((a, b) => b.length - a.length).join("|")})\\b`,
+  "i",
+);
 
 // ── resolution ──────────────────────────────────────────────────────────────
 
