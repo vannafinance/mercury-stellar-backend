@@ -17,9 +17,15 @@ const planFor = (asset: string) =>
     template_id: "add_liquidity",
     summary: `add liquidity with 5 ${asset}`,
     steps: [
-      { kind: "write", op: "add_liquidity", asset, token_a: "XLM", token_b: asset, amount: 5 },
+      {
+        kind: "write",
+        op: "add_liquidity",
+        asset,
+        amount: 5,
+        args: { token_a: "XLM", token_b: asset },
+      },
     ],
-  }) as Extract<RoutedIntent, { kind: "plan" }>;
+  }) as unknown as Extract<RoutedIntent, { kind: "plan" }>;
 
 describe("an LP leg's label names the real venue, not a shared 'Blend' suffix", () => {
   it("names Soroswap for a SOUSDC leg", () => {

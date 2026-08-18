@@ -536,13 +536,25 @@ function tryMultiGoalPlan(
   }
 
   if (any(text, "farm", "blend", "deploy")) {
+    /**
+     * Scoped to the clause introducing the farm leg, not the whole message.
+     *
+     * "swap 10 XLM to AQUSDC then farm Blend with 5 BLUSDC" names AQUSDC for the swap
+     * and BLUSDC for the farm leg — two different clauses, two different tokens. Scanning
+     * `raw` let whichever variant matched first in the (blusdc, aqusdc, sousdc) checklist
+     * win regardless of which clause it actually appeared in, so a swap destination could
+     * silently become the farm leg's asset too. Same pattern the deposit branch above
+     * already uses (`afterThen`): the farm leg is usually the LAST clause in these
+     * prompts, so the text after the last "then" is what it should read from.
+     */
+    const farmClause = raw.split(/\bthen\b/i).pop() || raw;
     const farmAsset =
-      (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
-      (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
-      (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
+      (/\bblusdc\b/i.test(farmClause) && "BLUSDC") ||
+      (/\baqusdc\b/i.test(farmClause) && "AQUSDC") ||
+      (/\bsousdc\b/i.test(farmClause) && "SOUSDC") ||
       (asset && asset !== "XLM" ? asset : null) ||
       "BLUSDC";
-    const farmAmtM = raw.match(/(\d+(?:\.\d+)?)\s*(?:blusdc|aqusdc|sousdc|usdc)\b/i);
+    const farmAmtM = farmClause.match(/(\d+(?:\.\d+)?)\s*(?:blusdc|aqusdc|sousdc|usdc)\b/i);
     const farmAmt = farmAmtM ? Number(farmAmtM[1]) : null;
     steps.push({
       kind: "write",
