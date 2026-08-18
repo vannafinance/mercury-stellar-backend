@@ -668,6 +668,25 @@ export function routeMessage(message: string): RoutedIntent {
   const amount = findAmount(raw);
   const leverage = findLeverage(raw);
 
+  /**
+   * A bare asset name with no verb at all — "SOUSDC", "XLM" — named a real token in our
+   * domain but said nothing about what to do with it, so it fell through everything to
+   * the generic capabilities blurb. Reported live: answering a swap's "which token did
+   * you mean?" with just the token name landed here. Recognized in-domain input should
+   * always ask what to do with it, never read as gibberish — the blurb is for genuinely
+   * out-of-domain input only.
+   */
+  if (new RegExp(`^(${ASSET_ALT})$`, "i").test(text)) {
+    const sym = text.toUpperCase();
+    return {
+      kind: "clarify",
+      message:
+        `What do you want to do with ${sym}? e.g. “lend 10 ${sym}”, “deposit 10 ${sym} as collateral”, ` +
+        `“swap 10 ${sym} to XLM”, “farm Blend with 10 ${sym}”.`,
+      template_id: "bare_asset_clarify",
+    };
+  }
+
   // ── restricted ──────────────────────────────────────────────────────────
   /**
    * "What is Collateral Left Before Liquidation of my margin account?" was refused
