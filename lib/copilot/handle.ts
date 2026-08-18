@@ -2769,18 +2769,42 @@ export function allPositionsStructured(
     // GROSS collateral with no debt netted out at all.
     facts.push({ label: "net value", value: money(pos.netAvailableCollateral) });
 
+    /**
+     * `BLEND_USDC`/`AQ_XLM_USDC`/`SS_XLM_USDC` are farm-venue LP/receipt tokens, not plain
+     * margin collateral the user deposited — see `isTrackingSymbol`. Reported live: they
+     * were listed as `collateral · BLEND_USDC` alongside real collateral rows, reading as
+     * duplicate or confusing entries. They go in the LP box (`group: "lp"`) instead, with a
+     * human label via `positionRowLabel` rather than the internal key.
+     */
     for (const r of pos.collateral) {
-      facts.push({
-        label: `collateral · ${r.symbol}`,
-        value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
-      });
+      if (isTrackingSymbol(r.symbol)) {
+        facts.push({
+          label: positionRowLabel(r.symbol),
+          value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+          group: "lp",
+        });
+      } else {
+        facts.push({
+          label: `collateral · ${r.symbol}`,
+          value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+        });
+      }
     }
     for (const r of pos.borrowed) {
-      facts.push({
-        label: `borrowed · ${r.symbol}`,
-        value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
-        tone: hfTone === "good" ? undefined : hfTone,
-      });
+      if (isTrackingSymbol(r.symbol)) {
+        facts.push({
+          label: positionRowLabel(r.symbol),
+          value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+          group: "lp",
+          tone: hfTone === "good" ? undefined : hfTone,
+        });
+      } else {
+        facts.push({
+          label: `borrowed · ${r.symbol}`,
+          value: `${fmtPosAmount(r.amount)} (${money(r.usd)})`,
+          tone: hfTone === "good" ? undefined : hfTone,
+        });
+      }
     }
   }
 
@@ -3156,10 +3180,13 @@ async function earnPositionsAnswer(
  * `SoroswapService`), just without the debt-netting step, so it matches what the Farm
  * page's Positions tab actually shows.
  */
-async function farmPositionAnswer(ctx: {
-  smartAccount: string | null;
-  request_id: string;
-}): Promise<ChatResponse> {
+async function farmPositionAnswer(
+  ctx: {
+    smartAccount: string | null;
+    request_id: string;
+  },
+  venue?: "blend" | "aquarius" | "soroswap" | null,
+): Promise<ChatResponse> {
   if (!ctx.smartAccount) {
     return {
       kind: "unavailable",
@@ -3197,50 +3224,56 @@ async function farmPositionAnswer(ctx: {
       ]),
     ]);
 
-    const xlmUnderlying = Number.parseFloat(blendXlm.underlyingBalance) || 0;
-    if (xlmUnderlying > DUST) {
-      const usd = xlmUnderlying * xlmPrice;
-      facts.push({ label: "Blend · XLM", value: `${fmtPosAmount(String(xlmUnderlying))} XLM (${money(usd)})` });
-      totalUsd += usd;
-    }
-    const usdcUnderlying = Number.parseFloat(blendUsdc.underlyingBalance) || 0;
-    if (usdcUnderlying > DUST) {
-      const usd = usdcUnderlying * usdcPrice;
-      facts.push({ label: "Blend · BLUSDC", value: `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${money(usd)})` });
-      totalUsd += usd;
-    }
-
-    const ssLp = Number.parseFloat(soroswapLp) || 0;
-    const ssShares = Number.parseFloat(soroswapStats?.totalShares ?? "0");
-    if (ssLp > DUST && soroswapStats && ssShares > 0) {
-      const ratio = ssLp / ssShares;
-      const xlm = ratio * (Number.parseFloat(soroswapStats.reserveXLM) || 0);
-      const usdc = ratio * (Number.parseFloat(soroswapStats.reserveUSDC) || 0);
-      const usd = xlm * xlmPrice + usdc * usdcPrice;
-      if (usd > DUST) {
-        facts.push({
-          label: "Soroswap · XLM/USDC LP",
-          value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)})`,
-        });
+    if (!venue || venue === "blend") {
+      const xlmUnderlying = Number.parseFloat(blendXlm.underlyingBalance) || 0;
+      if (xlmUnderlying > DUST) {
+        const usd = xlmUnderlying * xlmPrice;
+        facts.push({ label: "Blend · XLM", value: `${fmtPosAmount(String(xlmUnderlying))} XLM (${money(usd)})` });
+        totalUsd += usd;
+      }
+      const usdcUnderlying = Number.parseFloat(blendUsdc.underlyingBalance) || 0;
+      if (usdcUnderlying > DUST) {
+        const usd = usdcUnderlying * usdcPrice;
+        facts.push({ label: "Blend · BLUSDC", value: `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${money(usd)})` });
         totalUsd += usd;
       }
     }
 
-    AQUARIUS_POOLS.forEach((pool, i) => {
-      const lp = Number.parseFloat(String(aquariusResults[i * 2] ?? "0")) || 0;
-      const stats = aquariusResults[i * 2 + 1] as Awaited<ReturnType<typeof AquariusService.getAquariusPoolStats>>;
-      if (!(lp > DUST) || !stats) return;
-      const { amountA, amountB } = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
-      const priceA = pool.tokens[0] === "XLM" ? xlmPrice : usdcPrice;
-      const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
-      const usd = amountA * priceA + amountB * priceB;
-      if (usd <= DUST) return;
-      facts.push({
-        label: `Aquarius · ${pool.tokens.join("/")}`,
-        value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)})`,
+    if (!venue || venue === "soroswap") {
+      const ssLp = Number.parseFloat(soroswapLp) || 0;
+      const ssShares = Number.parseFloat(soroswapStats?.totalShares ?? "0");
+      if (ssLp > DUST && soroswapStats && ssShares > 0) {
+        const ratio = ssLp / ssShares;
+        const xlm = ratio * (Number.parseFloat(soroswapStats.reserveXLM) || 0);
+        const usdc = ratio * (Number.parseFloat(soroswapStats.reserveUSDC) || 0);
+        const usd = xlm * xlmPrice + usdc * usdcPrice;
+        if (usd > DUST) {
+          facts.push({
+            label: "Soroswap · XLM/USDC LP",
+            value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)})`,
+          });
+          totalUsd += usd;
+        }
+      }
+    }
+
+    if (!venue || venue === "aquarius") {
+      AQUARIUS_POOLS.forEach((pool, i) => {
+        const lp = Number.parseFloat(String(aquariusResults[i * 2] ?? "0")) || 0;
+        const stats = aquariusResults[i * 2 + 1] as Awaited<ReturnType<typeof AquariusService.getAquariusPoolStats>>;
+        if (!(lp > DUST) || !stats) return;
+        const { amountA, amountB } = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
+        const priceA = pool.tokens[0] === "XLM" ? xlmPrice : usdcPrice;
+        const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
+        const usd = amountA * priceA + amountB * priceB;
+        if (usd <= DUST) return;
+        facts.push({
+          label: `Aquarius · ${pool.tokens.join("/")}`,
+          value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)})`,
+        });
+        totalUsd += usd;
       });
-      totalUsd += usd;
-    });
+    }
   } catch (e) {
     console.warn(
       `[copilot] farm position read failed -> ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
@@ -3253,9 +3286,10 @@ async function farmPositionAnswer(ctx: {
     };
   }
 
+  const venueLabel = venue ? venue[0].toUpperCase() + venue.slice(1) : "Farm";
   if (!facts.length) {
     const structured: StructuredAnswer = {
-      headline: "You have no active Farm positions right now.",
+      headline: `You have no active ${venueLabel} position${venue ? "" : "s"} right now.`,
       facts: [],
       venue: "none",
     };
@@ -3263,18 +3297,22 @@ async function farmPositionAnswer(ctx: {
       kind: "answer",
       message: structured.headline,
       answer: structured,
-      intent: { template_id: "query_farm_position", slots: { count: 0 } },
+      intent: { template_id: "query_farm_position", slots: { count: 0, ...(venue ? { venue } : {}) } },
       mcp: { tool: "blend_aquarius_soroswap_on_chain", has_unsigned_xdr: false },
       request_id: ctx.request_id,
     };
   }
 
-  const headline = `Your Farm positions — ${facts.length} open, ~${money(totalUsd)} total.`;
+  const headline = venue
+    ? `Your ${venueLabel} Farm position — ${facts.length} open, ~${money(totalUsd)} total.`
+    : `Your Farm positions — ${facts.length} open, ~${money(totalUsd)} total.`;
   const structured: StructuredAnswer = {
     headline,
     facts,
     venue: "none",
-    note: "Margin collateral/debt and Earn (vToken) supply are separate — this is Blend + Aquarius/Soroswap LP only.",
+    note: venue
+      ? undefined
+      : "Margin collateral/debt and Earn (vToken) supply are separate — this is Blend + Aquarius/Soroswap LP only.",
   };
   return {
     kind: "answer",
@@ -3447,7 +3485,11 @@ async function runRead(
   // on-chain Blend/Aquarius/Soroswap LP state directly instead of the margin/farm
   // fan-out's best-effort prose sentence.
   if (routed.template_id === "query_farm_position") {
-    return farmPositionAnswer(ctx);
+    const venue = routed.args?.venue;
+    return farmPositionAnswer(
+      ctx,
+      venue === "blend" || venue === "aquarius" || venue === "soroswap" ? venue : null,
+    );
   }
 
   // "What is my net available collateral & net amount borrowed" names specific figures —
@@ -5809,6 +5851,45 @@ async function sampleApproxHf(
   return null;
 }
 
+/**
+ * Wait for a leg's own transaction to close in a ledger before the NEXT leg's on-chain
+ * pre-flight runs.
+ *
+ * Reported live: "Deposit 100 XLM and Borrow BLUSDC & AQUSDC at 3x leverage" — leg 1
+ * (deposit) settled on-chain (confirmed tx hash), but leg 2 (borrow) was immediately
+ * rejected: "Borrow of 30.602352 USDC rejected by risk engine pre-flight check." The
+ * rejection is real — `is_borrow_allowed` in the account_manager contract reads the
+ * account's CURRENT on-chain collateral at call time — but it ran before the deposit's own
+ * ledger had closed, so it saw the PRE-deposit balance. The same two-step flow succeeds
+ * from the Margin page because a human's manual clicks are never back-to-back the way this
+ * loop's automatic ones are: `MarginAccountService`'s own sequential deposit-then-borrow
+ * (lib/margin-utils.ts) blocks on `pollTransactionStatus` between every leg for exactly
+ * this reason. This mirrors that: poll the same way (`getTransaction` until its status
+ * moves off `NOT_FOUND`) so the next leg's pre-flight sees the same chain state a human's
+ * naturally-paced clicks would have. Best-effort — an RPC hiccup here must never abort an
+ * otherwise-working plan, so any failure just falls through to firing the next leg anyway.
+ */
+export async function waitForLedgerClose(txHash: string): Promise<void> {
+  try {
+    const [StellarSdk, { SOROBAN_RPC_URL }] = await Promise.all([
+      import("@stellar/stellar-sdk"),
+      import("@/lib/stellar-utils"),
+    ]);
+    const server = new StellarSdk.rpc.Server(SOROBAN_RPC_URL);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        const result = await server.getTransaction(txHash);
+        if (result?.status && result.status !== "NOT_FOUND") return;
+      } catch {
+        /* a transient RPC error is not "not found" — keep polling */
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function runPlan(
   plan: Extract<RoutedIntent, { kind: "plan" }>,
   ctx: {
@@ -6160,6 +6241,11 @@ async function runPlan(
     let hfAfter: number | null = null;
 
     if (status === "ok" && affectsHealth(w.op) && smartAccount) {
+      // Only the legs that still have a next step queued need to wait — see
+      // waitForLedgerClose's own doc comment for why this exists at all.
+      if (txHash && writeCursor < totalWriteLegs) {
+        await waitForLedgerClose(txHash);
+      }
       hfAfter = await sampleApproxHf(ctx.userId, smartAccount, ctx.trader);
       if (hfAfter != null) finalHf = hfAfter;
     }

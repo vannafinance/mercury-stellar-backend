@@ -136,8 +136,14 @@ async function aquariusLpCollateralRow(
   poolAddress: string,
   priceForToken?: (token: string) => number,
 ): Promise<{ amount: string; usdValue: string } | null> {
+  // `getLpBalance` only reads the Registry's tracking-token balance, which goes stale
+  // the same way other tracked positions here do. `getUserLpBalance` falls back to the
+  // pool contract's own `get_user_shares()` when the tracking token reads zero/stale —
+  // the same fallback-capable read the Farm page's own Positions tab and this file's
+  // sibling `farmPositionAnswer` (lib/copilot/handle.ts) already use, which is why a
+  // real Aquarius LP position showed there but never here.
   const lp = parseFloat(
-    await AquariusService.getLpBalance(marginAccountAddress, tokenA, tokenB),
+    await AquariusService.getUserLpBalance(marginAccountAddress, poolAddress, tokenA, tokenB),
   );
   if (!(lp > DUST)) return null;
 

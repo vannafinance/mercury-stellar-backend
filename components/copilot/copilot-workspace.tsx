@@ -627,19 +627,37 @@ function shortenValue(v: string): { text: string; full: string | null } {
  * a compact chip (the wallet pill, a tx-hash receipt) pass an already-shortened string via
  * `truncAddr` / `truncHash`, so they are unaffected.
  */
+/**
+ * Would the compact side-by-side layout below clip this value?
+ *
+ * `truncate` (overflow-hidden + ellipsis) was applied to every non-identifier value
+ * unconditionally, so a full sentence like a swap's "Swap 10 XLM for at least 1.234
+ * SOUSDC (min received after slippage)" silently lost everything past the fold —
+ * reported live, more than once, as "half message in summary". A fixed character
+ * count is a real, generalized threshold here (not a per-instance patch): anything
+ * this long cannot fit a value column beside a label and was never going to, whatever
+ * the specific sentence.
+ */
+const ROW_WRAP_THRESHOLD = 40;
+
 function Row({ k, v, color }: { k: string; v: string; color?: string }) {
   const { text, full } = shortenValue(v);
   const ident = isFullIdentifier(text);
+  const longProse = !ident && text.length > ROW_WRAP_THRESHOLD;
 
-  if (ident) {
+  if (ident || longProse) {
     return (
       <div className="border-b border-vgray-100 py-2 last:border-0">
         <span className="block font-mono text-[11px] uppercase tracking-wider text-vgray-400">
           {k}
         </span>
         <span
-          className="mt-1 block select-all font-mono text-[12px] leading-[17px] text-vgray-900"
-          style={{ wordBreak: "break-all", ...(color ? { color } : {}) }}
+          className={
+            ident
+              ? "mt-1 block select-all font-mono text-[12px] leading-[17px] text-vgray-900"
+              : "mt-1 block font-mono text-[12px] leading-[17px] text-vgray-900"
+          }
+          style={{ wordBreak: ident ? "break-all" : "break-word", ...(color ? { color } : {}) }}
         >
           {text}
         </span>
@@ -1119,6 +1137,21 @@ function FactsGrid({
     // where it can be acted on.
     "smart_account",
     "smartAccount",
+    /**
+     * Reported live on an executed receipt: `status` repeated the "02 · Agent run"
+     * timeline's own last step verbatim ("Signed & submitted · signed_and_submitted"),
+     * `amount_stroops` is the same amount the headline already states, just in the raw
+     * on-chain integer unit, and `session_id` is internal bookkeeping nobody acts on.
+     * `final_status`/`tx_hash` are what is left, and are what actually answer "did it
+     * work and what do I check it against". The server (`factsForUi`, explain.ts) sends
+     * keys already humanized to spaces ("tx hash", not "tx_hash") — both spellings are
+     * listed since this grid is also handed raw, un-humanized data on some paths.
+     */
+    "status",
+    "amount_stroops",
+    "amount stroops",
+    "session_id",
+    "session id",
   ]);
   const already = (val: string) => !!shown && shown.has(val.trim());
   const rows: [string, string][] = [];
@@ -4926,21 +4959,16 @@ export function CopilotWorkspace() {
                             <p className="mt-1 text-body-2 text-vgray-500">{response.message}</p>
                           </div>
                         </div>
-                        <div className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2">
-                          <Row k="tx hash" v={truncHash(txHash)} />
-                          <Row k="status" v={response.execution?.status || "submitted"} />
-                          <Row k="mcp tool" v={response.mcp?.tool || "—"} />
-                          <Row
-                            k="signer"
-                            v={
-                              sessionSigning
-                                ? "session key"
-                                : walletKind === "privy"
-                                  ? "privy"
-                                  : "freighter"
-                            }
-                          />
-                        </div>
+                        {/*
+                          Reported live: this card (tx hash / status / mcp tool / signer)
+                          duplicated the "02 · Agent run" timeline above it verbatim —
+                          "Transaction built · vanna_swap" is "mcp tool", "Signed &
+                          submitted · signed_and_submitted" is "status" — while its own tx
+                          hash was truncated, unlike the raw data card below which already
+                          shows it in full. One card said less than the log above it and
+                          less than the card below it, so it added nothing. Removed; the
+                          raw data card immediately below carries tx hash and final status.
+                        */}
                         {response.data && <FactsGrid data={response.data} />}
                       </>
                     )}

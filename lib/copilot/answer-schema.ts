@@ -34,6 +34,15 @@ export interface AnswerFact {
   label: string;
   value: string;
   tone?: FactTone;
+  /**
+   * Renders in its own box, separate from the plain figures grid. Reported live: a margin
+   * account's real collateral (XLM, BLUSDC) and its farm-venue LP/receipt positions
+   * (BLEND_USDC, an Aquarius LP share) were rendered as one undifferentiated list, reading
+   * as duplicate or confusing entries. Set only by this app's own deterministic builders —
+   * Gemini's structured-answer schema never emits it, so an LLM-authored fact always lands
+   * in the plain figures box.
+   */
+  group?: "lp";
 }
 
 export interface StructuredAnswer {

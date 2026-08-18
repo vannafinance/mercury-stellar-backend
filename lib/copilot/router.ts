@@ -1600,19 +1600,27 @@ export function routeMessage(message: string): RoutedIntent {
   /**
    * "My farm position" / "what am I farming" — see farmPositionAnswer's own doc comment
    * for why this reads on-chain Blend + Aquarius + Soroswap LP state directly instead of
-   * the margin/farm fan-out's best-effort prose sentence. Excludes a specifically-named
-   * venue, which already has its own more precise answer.
+   * the margin/farm fan-out's best-effort prose sentence.
+   *
+   * "Give my Soroswap Farm Position Details" / "...Aquarius Farm Position Details" used
+   * to be EXCLUDED here on the theory that a named venue "already has its own more precise
+   * answer" — it didn't; no such per-venue route exists, so naming a venue just fell
+   * through everything to the generic capabilities blurb. A named venue now narrows the
+   * SAME farm-overview read to that one venue instead of deferring to a route that isn't
+   * there. Only "earn" still defers — it has its own vToken-based route above.
    */
-  if (
-    asksAboutHoldings &&
-    !actsOnPosition &&
-    any(text, "farm") &&
-    !any(text, "blend", "aquarius", "soroswap", "earn")
-  ) {
+  const farmVenue: "blend" | "aquarius" | "soroswap" | null = any(text, "blend")
+    ? "blend"
+    : any(text, "aquarius")
+      ? "aquarius"
+      : any(text, "soroswap")
+        ? "soroswap"
+        : null;
+  if (asksAboutHoldings && !actsOnPosition && any(text, "farm") && !any(text, "earn")) {
     return {
       kind: "read",
       tool: "vanna_get_farm_overview",
-      args: {},
+      args: farmVenue ? { venue: farmVenue } : {},
       requires_account: true,
       template_id: "query_farm_position",
     };
@@ -1696,9 +1704,16 @@ export function routeMessage(message: string): RoutedIntent {
    * matched none of "my collateral"/"collateral value"/"how much have i deposited": no
    * "my", no "deposited", no "value". Same shape-based fix as debt/supply above: a
    * quantity-question word or "my" near "collateral", not a fixed phrase.
+   *
+   * "What is my XLM Balance in Margin account?" names no "collateral" at all — it's the
+   * same question in "balance" clothing, scoped to the margin account specifically (not
+   * Earn/Farm, which the generic holdings "balance" shape below already covers). Without
+   * this, "<asset> balance ... margin account" fell through to `query_resolve` below,
+   * whose "what is my" + "margin account" match is broad enough to swallow it.
    */
   const asksAboutOwnCollateral =
-    /\b(how much|what'?s|what)\b[\s\S]{0,30}\bcollateral\b|\bmy\b[\s\S]{0,20}\bcollateral\b/i.test(text);
+    /\b(how much|what'?s|what)\b[\s\S]{0,30}\bcollateral\b|\bmy\b[\s\S]{0,20}\bcollateral\b/i.test(text) ||
+    (/\bbalance\b/i.test(text) && /\bmargin\s+account\b/i.test(text));
   if (
     asksAboutOwnCollateral ||
     any(text, "how much have i deposited", "collateral value", "what have i deposited")

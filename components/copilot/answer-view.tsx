@@ -154,7 +154,8 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
   const token = venue ? VENUE_TOKEN[venue] : null;
 
   const facts = answer.facts ?? [];
-  const figures = facts.filter((f) => !isIdentifier(f.value));
+  const figures = facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp");
+  const lpFacts = facts.filter((f) => !isIdentifier(f.value) && f.group === "lp");
   const identifiers = facts.filter((f) => isIdentifier(f.value));
 
   return (
@@ -256,6 +257,60 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
             </div>
           ))}
         </dl>
+      ) : null}
+
+      {/*
+        LP / farm positions — their own box, one step down in visual weight from the plain
+        figures grid above. These are collateral held THROUGH a venue (a Blend supply, an
+        Aquarius LP share) rather than plain margin collateral, and listing them in the same
+        grid as XLM/BLUSDC read as duplicate or confusing entries.
+      */}
+      {lpFacts.length > 0 ? (
+        <div style={{ maxWidth: 620 }}>
+          <p
+            className="m-0 mt-[18px] mb-2"
+            style={{ ...labelStyle, color: "var(--cp-g400)" }}
+          >
+            LP / farm positions
+          </p>
+          <dl
+            className="m-0 grid"
+            style={{
+              gridTemplateColumns: "1fr",
+              gap: "2px",
+              borderRadius: 8,
+              border: "1px solid var(--cp-g100)",
+              background: "var(--cp-g50)",
+              padding: "10px 18px",
+            }}
+          >
+            {lpFacts.map((f, i) => (
+              <div
+                key={`${f.label}-${i}`}
+                className="flex min-w-0 items-baseline justify-between gap-3"
+                style={{
+                  borderBottom: i === lpFacts.length - 1 ? "none" : "1px solid var(--cp-g100)",
+                  padding: "7px 0",
+                }}
+              >
+                <dt style={{ ...labelStyle, textTransform: "none", letterSpacing: 0 }}>
+                  {f.label}
+                </dt>
+                <dd
+                  className="m-0 text-right"
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 13,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--cp-g900)",
+                  }}
+                >
+                  {f.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
       ) : null}
 
       {/*

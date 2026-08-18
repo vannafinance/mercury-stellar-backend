@@ -23,9 +23,31 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
     if (r.kind === "read") expect(r.template_id).toBe("query_farm_position");
   });
 
-  it("still defers to Blend's own read when Blend is named", () => {
+  it("narrows to just that venue when one is named, on the same route", () => {
+    // No separate per-venue route exists — naming "blend"/"aquarius"/"soroswap" alongside
+    // "farm position" used to fall through the exclusion built for this comment's old
+    // (incorrect) assumption, straight to the generic capabilities blurb. It now narrows
+    // the SAME farm-overview read instead.
     const r = routeMessage("my blend farm position");
-    if (r.kind === "read") expect(r.template_id).not.toBe("query_farm_position");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") {
+      expect(r.template_id).toBe("query_farm_position");
+      expect(r.args).toMatchObject({ venue: "blend" });
+    }
+  });
+
+  it("narrows to Soroswap or Aquarius by name, not just Blend", () => {
+    for (const [ask, venue] of [
+      ["Give my Soroswap Farm Position Details", "soroswap"],
+      ["Give my Aquarius Farm Position Details", "aquarius"],
+    ] as const) {
+      const r = routeMessage(ask);
+      expect(r.kind, ask).toBe("read");
+      if (r.kind === "read") {
+        expect(r.template_id, ask).toBe("query_farm_position");
+        expect(r.args, ask).toMatchObject({ venue });
+      }
+    }
   });
 });
 
