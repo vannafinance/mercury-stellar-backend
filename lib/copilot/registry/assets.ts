@@ -64,7 +64,9 @@ export interface AssetDef {
 const DEFS: Record<AssetId, AssetDef> = {
   XLM: {
     id: "XLM",
-    aliases: ["XLM", "LUMEN", "LUMENS", "STELLAR", "XLM_SAC"],
+    // "BXLM" is Blend's own bToken symbol for a supplied XLM position — not a separate
+    // spendable asset, but a real in-domain concept a rate/stats question can be about.
+    aliases: ["XLM", "LUMEN", "LUMENS", "STELLAR", "XLM_SAC", "BXLM"],
     oracleSymbol: "XLM",
     marginSymbol: "XLM",
     earnSymbol: "XLM",
@@ -75,7 +77,8 @@ const DEFS: Record<AssetId, AssetDef> = {
     id: "BLUSDC",
     // No bare "USDC" here — see the file header. "Blend USDC" is safe because it
     // names the variant.
-    aliases: ["BLUSDC", "BLEND_USDC", "BLENDUSDC", "BLEND USDC"],
+    // "BUSDC" is Blend's own bToken symbol for the USDC reserve, same reasoning as BXLM.
+    aliases: ["BLUSDC", "BLEND_USDC", "BLENDUSDC", "BLEND USDC", "BUSDC"],
     oracleSymbol: "USDC",
     // The contract REJECTS the string "BLUSDC" (chain-facts: allowed=false) and
     // accepts "USDC" for the same token. Verified, not assumed.

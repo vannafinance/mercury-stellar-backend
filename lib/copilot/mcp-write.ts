@@ -934,6 +934,45 @@ export function mapOpToMcpStep(
         },
       };
     }
+    case "withdraw_from_blend": {
+      // Farm write via the same consolidated MCP vanna_farm_blend dispatcher the supply
+      // case above uses, action=withdraw (registered alias `vanna_blend_withdraw`,
+      // mcp-client.ts) — the underlying on-chain capability already exists
+      // (BlendService.withdrawFromBlendPool, used by the Farm page's own Remove panel);
+      // it was simply never reachable from the router before this case existed.
+      if (!trader || !smart) {
+        return { blocker: "Need wallet + smart account to withdraw from Blend. Create a margin account first." };
+      }
+      const amt = params.amount;
+      if (amt == null || amt <= 0) {
+        return { blocker: "How much do you want to withdraw from Blend? e.g. “remove 10 XLM from Blend”." };
+      }
+      // Same asset restriction as supply — Blend only ever holds XLM/USDC reserves, so
+      // AQUSDC/SOUSDC (Aquarius/Soroswap-only tokens) were never in it to withdraw.
+      const blendCompatible =
+        symbol === "BLUSDC" || symbol === "USDC" || symbol === "BLEND_USDC" || symbol === "XLM";
+      if (!blendCompatible) {
+        const blocked =
+          staticStepBlocker(op, { asset: symbol }) ??
+          `Blend only holds XLM and USDC (BLUSDC) reserves — ${symbol} is a different token and ` +
+            `was never supplied to Blend.`;
+        return { blocker: blocked };
+      }
+      const blendSym = symbol === "XLM" ? "XLM" : "USDC";
+      const uiSym = displayUsdcLabel(blendSym, symbol);
+      return {
+        step: {
+          tool: "vanna_blend_withdraw",
+          args: {
+            smart_account: smart,
+            symbol: blendSym,
+            amount: String(amt),
+            trader,
+          },
+          label: `Withdraw ${amt} ${uiSym} from Blend`,
+        },
+      };
+    }
     case "settle_account": {
       if (!trader || !smart) return { blocker: "Need wallet + smart account to settle." };
       return {

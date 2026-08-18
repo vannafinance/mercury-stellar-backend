@@ -110,6 +110,10 @@ const DOMAIN_WORDS = [
   // Venues and tickers
   "blend", "aquarius", "soroswap", "xlm", "aqua", "usdc", "blusdc", "aqusdc", "sousdc",
   "btoken", "btokens", "b-token", "vtoken", "vtokens",
+  // Blend's own bToken symbols — "bXLM"/"bUSDC" name the reserve the same way "BLUSDC"
+  // does, just in Blend's own notation. "What is Current Rate of bXLM?" was refused by
+  // this firewall as off-topic chat because the composite symbol matched no word here.
+  "bxlm", "busdc",
   // Actions
   "earn", "earns", "earning", "earnings",
   "farm", "farms", "farmed", "farming",

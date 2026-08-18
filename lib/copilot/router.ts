@@ -1003,12 +1003,50 @@ export function routeMessage(message: string): RoutedIntent {
   // "5x Blend on 10 BLUSDC" names no verb at all — the leverage multiple plus "Blend"
   // is the only signal. Without this clause it fell through everything to
   // clarify_capabilities, silently dropping a valid leverage request.
+  /**
+   * "Can You Remove 50 BLUSDC fom Farm's Blend Pool" matched `isBlendFarmWrite` (the
+   * literal substring "blend pool") AND the supply verb allowlist below (the possessive
+   * "farm's" contains "farm" as a whole word, since `any()`'s boundary treats the
+   * apostrophe as a word edge) — with no check anywhere for which DIRECTION the money was
+   * supposed to move, it staged "Supply 50 BLUSDC to Blend" for a message asking to take
+   * money OUT. A removal verb here always means withdraw, whatever else the sentence
+   * shares with a supply — checked first so it can never fall through to the supply route.
+   * Declared before `isBlendFarmWrite` so its own venue detection can recognise a bare
+   * "withdraw ... Blend" (no "to"/"into"/"on" preposition a supply would use) too —
+   * "withdraw 20 XLM from Blend" named no supply verb at all and matched neither the
+   * phrase list nor the supply-verb alternative below it, so it fell through everything.
+   */
+  const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/i.test(text);
   const isBlendFarmWrite =
-    any(text, "farm blend", "blend at", "to blend", "into blend", "on blend", "blend reserve", "blend pool") ||
-    (any(text, "blend") && any(text, "farm", "deploy", "supply", "deposit") && !any(text, "position", "stats", "apy")) ||
+    any(
+      text,
+      "farm blend",
+      "blend at",
+      "to blend",
+      "into blend",
+      "on blend",
+      "from blend",
+      "blend reserve",
+      "blend pool",
+    ) ||
+    (any(text, "blend") &&
+      (any(text, "farm", "deploy", "supply", "deposit") || blendRemoveVerb) &&
+      !any(text, "position", "stats", "apy")) ||
     (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
+  if (isBlendFarmWrite && blendRemoveVerb && !any(text, "position", "stats", "apy", "btoken", "which reserve")) {
+    return {
+      kind: "write",
+      op: "withdraw_from_blend",
+      template_id: "withdraw_from_blend",
+      asset: asset ?? "XLM",
+      amount,
+      requires_account: true,
+      requires_amount: true,
+    };
+  }
   if (
     isBlendFarmWrite &&
+    !blendRemoveVerb &&
     (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever") || (leverage != null && leverage > 1)) &&
     !any(text, "supply apy", "borrow apy", "position", "btoken", "pays more", "which reserve")
   ) {
@@ -1300,6 +1338,7 @@ export function routeMessage(message: string): RoutedIntent {
     "to blend",
     "into blend",
     "on blend",
+    "from blend",
     "blend reserve",
     "blend pool",
     "farm blend",
@@ -1336,7 +1375,25 @@ export function routeMessage(message: string): RoutedIntent {
     "leverage",
     "lever",
   );
-  if ((blendVenueNamed || (any(text, "blend") && leverage != null && leverage > 1)) && blendWriteVerb && !blendRateRead) {
+  if (blendVenueNamed && blendRemoveVerb && !blendRateRead) {
+    return {
+      kind: "write",
+      op: "withdraw_from_blend",
+      template_id: "withdraw_from_blend",
+      asset: asset ?? "XLM",
+      amount,
+      requires_account: true,
+      requires_amount: true,
+    };
+  }
+  if (
+    (blendVenueNamed || (any(text, "blend") && leverage != null && leverage > 1)) &&
+    blendWriteVerb &&
+    !blendRateRead &&
+    // Same removal-verb carve-out as the earlier Blend-write block — a second gate here
+    // since this block is reachable independently for phrasing the first one misses.
+    !blendRemoveVerb
+  ) {
     return {
       kind: "write",
       op: "deploy_to_blend",
@@ -1500,6 +1557,12 @@ export function routeMessage(message: string): RoutedIntent {
     // no "position"/"holdings"/"supply" word either — same underlying question (equity),
     // a third everyday phrasing for it.
     /\bnet\s+(worth|value|assets?|asset\s+value)\b/i.test(text) ||
+    // "What is my TVL in Farm Section" — names none of position/holdings/supply/balance
+    // either. TVL is the Farm page's own label for this exact figure (`lib/constants/
+    // farm/index.ts`'s "Your Deposit TVL" stat, computed from the same Blend + Soroswap-LP
+    // + Aquarius-LP gross total `farmPositionAnswer` already answers with) — a fourth
+    // everyday name for "how much is there", not a new question.
+    /\btvl\b|\btotal\s+value\s+locked\b/i.test(text) ||
     // "tell me my margin account details" names none of "position"/"holdings"/"supply"
     // either and fell through everything to the generic capabilities blurb — the whole
     // point of the ask ("account details") is the full picture this fan-out already
@@ -1834,11 +1897,23 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  if (any(text, "blend reserve", "blend apy", "blend pool") || (any(text, "blend") && any(text, "stats", "apr", "apy"))) {
+  /**
+   * "What is Current Rate of bXLM?" names no "blend" word at all — bXLM/bUSDC ARE Blend's
+   * own bToken symbols (a supplied position, Blend's own notation), so naming one already
+   * means "about Blend" without needing the word. `\bxlm\b` alone can never match inside
+   * "bXLM" either (no word-boundary between "b" and "X"), so the symbol has to be read
+   * from the composite token directly, not the plain XLM/USDC check below.
+   */
+  const blendBTokenNamed = /\bbxlm\b/i.test(text) ? "XLM" : /\bbusdc\b/i.test(text) ? "USDC" : null;
+  if (
+    any(text, "blend reserve", "blend apy", "blend pool") ||
+    (any(text, "blend") && any(text, "stats", "apr", "apy")) ||
+    blendBTokenNamed
+  ) {
     // "XLM vs USDC" / "XLM or USDC" is a comparison — list both, never pick one symbol.
     const namedBlend = [
-      /\bxlm\b/i.test(raw) ? "XLM" : null,
-      /\busdc\b/i.test(raw) ? "USDC" : null,
+      /\bxlm\b/i.test(raw) || blendBTokenNamed === "XLM" ? "XLM" : null,
+      /\busdc\b/i.test(raw) || blendBTokenNamed === "USDC" ? "USDC" : null,
     ].filter(Boolean) as string[];
     const compare = namedBlend.length > 1 || any(text, "vs", " versus ", " or ", "compare", "pays more", "better");
     const sym = !compare && namedBlend.length === 1 ? namedBlend[0]! : asset && !compare ? asset : null;
@@ -1847,6 +1922,24 @@ export function routeMessage(message: string): RoutedIntent {
       tool: sym ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
       args: sym ? { symbol: sym === "BLUSDC" ? "USDC" : sym } : {},
       template_id: "query_blend",
+    };
+  }
+
+  /**
+   * "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through to the generic
+   * capabilities blurb — no route asked an AMM pool's live reserve ratio directly
+   * (the only existing ratio math, `handle.ts`'s Aquarius pool-ratio hint, is Aquarius-
+   * only and reachable only as a side note on an add_liquidity clarify, not from a plain
+   * question). Answered live from the same reserve reads that hint and the LP pool pages
+   * themselves use — `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats`
+   * — never a guessed number.
+   */
+  if (any(text, "ratio") && any(text, "soroswap", "aquarius")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_pool_ratio",
+      args: { venue: any(text, "soroswap") ? "soroswap" : "aquarius" },
+      template_id: "query_pool_ratio",
     };
   }
 

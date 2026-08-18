@@ -130,6 +130,7 @@ export const VENUE_BY_OP: Record<string, PlanStepView["venue"]> = {
   create_account: "margin",
   deploy_to_blend: "farm",
   supply_to_blend: "farm",
+  withdraw_from_blend: "farm",
   add_liquidity: "farm",
   remove_liquidity: "farm",
   swap: "other",
@@ -145,6 +146,7 @@ const OP_VERB: Record<string, string> = {
   deposit_and_borrow: "Deposit and borrow against",
   deploy_to_blend: "Supply",
   supply_to_blend: "Supply",
+  withdraw_from_blend: "Withdraw",
   create_account: "Open",
   settle_account: "Settle",
   close_account: "Close",
@@ -191,7 +193,14 @@ function labelFor(
   const qty = amount != null ? `${amount} ` : "";
   const sym = asset ?? "";
   const tail =
-    op === "add_liquidity" || op === "remove_liquidity" ? lpVenueSuffix(asset) : VENUE_SUFFIX[venue];
+    op === "add_liquidity" || op === "remove_liquidity"
+      ? lpVenueSuffix(asset)
+      // VENUE_SUFFIX.farm is "into Blend" — the right direction for a supply, backwards
+      // for a withdrawal ("Withdraw 50 BLUSDC into Blend" reads as moving money the wrong
+      // way). Same fix shape as the LP venue suffix above: the op's own direction wins.
+      : op === "withdraw_from_blend"
+        ? "from Blend"
+        : VENUE_SUFFIX[venue];
   // Leverage changes what the step does, so it belongs in the label. "farm 10 BLUSDC at
   // 2x" was rendering as "Supply 10 BLUSDC into Blend", which reads as an unlevered
   // supply and hides the borrow the leverage implies.

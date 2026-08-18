@@ -87,8 +87,15 @@ const SELF_REFERENTIAL =
 /** A concrete market datum… */
 const MARKET_NOUN =
   /\b(price|prices|apy|apr|yield|tvl|utilization|liquidity|pool|pools|reserve|reserves|stats|rate|rates)\b/i;
-/** …attached to a real asset means "look it up", not "explain it". */
-const ASSET_SYMBOL = /\b(XLM|USDC|BLUSDC|AQUSDC|SOUSDC|USDT|AQUA|EURC)\b/i;
+/**
+ * …attached to a real asset means "look it up", not "explain it".
+ *
+ * "What is Current Rate of bXLM?" fell through to the concept explainer instead of the
+ * live Blend reserve rate — "rate" satisfies `MARKET_NOUN`, but `\bXLM\b` can never match
+ * inside "bXLM" (no word-boundary between "b" and "X"), so this override never fired. Same
+ * composite-bToken gap already fixed in the domain firewall and the asset registry.
+ */
+const ASSET_SYMBOL = /\b(XLM|USDC|BLUSDC|AQUSDC|SOUSDC|USDT|AQUA|EURC|BXLM|BUSDC)\b/i;
 
 /**
  * True only for genuine concept questions ("what is Blend?").

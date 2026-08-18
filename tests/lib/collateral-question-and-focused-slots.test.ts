@@ -89,3 +89,56 @@ describe("the debt/collateral snapshot answer's follow-up slots", () => {
     expect(res.intent?.slots?.amount).toBeTruthy();
   });
 });
+
+/**
+ * Reported live — a follow-up to the fix above: "What is my XLM Balance in Margin
+ * account?" correctly answered "You have 6,975.1535 XLM ($1078.76) of collateral." in
+ * PROSE, but its facts CARD still dumped health factor, debt, net value, both
+ * liquidation figures, and every other asset's amount — the exact "gross amount only"
+ * violation this session already fixed for named single-figure margin questions. A
+ * focused single-asset question must narrow the card the same way it narrows the
+ * sentence.
+ */
+describe("a focused single-asset question narrows the facts card too, not just the prose", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.computeMarginSnapshot.mockResolvedValue({
+      borrowedBalances: {
+        BLUSDC: { amount: "147.71", usdValue: "147.85" },
+      },
+      collateralBalances: {
+        XLM: { amount: "6995.1535", usdValue: "1078.76" },
+        SOUSDC: { amount: "1230.24", usdValue: "1231.23" },
+      },
+      totalBorrowedValue: 147.85,
+      grossCollateralValue: 2309.99,
+      totalValue: 2309.99,
+      avgHealthFactor: 4.74,
+      collateralLeftBeforeLiquidation: 2091.08,
+      netAvailableCollateral: 2148.56,
+      borrowRate: 0,
+      debtLimit: 200,
+    });
+  });
+
+  it("shows only the asked-about asset's amount — no health factor, debt, or other assets", async () => {
+    const res = await handleChat({ ...base, message: "What is my XLM Balance in Margin account?" });
+    expect(res.kind).toBe("answer");
+    const facts = res.data as Record<string, unknown>;
+    const keys = Object.keys(facts).join(" | ").toLowerCase();
+    expect(keys).toContain("xlm");
+    for (const noise of ["health factor", "debt usd", "net value", "liquidation", "sousdc", "blusdc"]) {
+      expect(keys, `unexpected "${noise}" in a focused XLM balance card: ${keys}`).not.toContain(noise);
+    }
+  });
+
+  it("an unfocused whole-account question still gets the full breakdown", async () => {
+    const res = await handleChat({ ...base, message: "how much collateral do I have" });
+    expect(res.kind).toBe("answer");
+    const facts = res.data as Record<string, unknown>;
+    const keys = Object.keys(facts).join(" | ").toLowerCase();
+    expect(keys).toContain("health factor");
+    expect(keys).toContain("xlm");
+    expect(keys).toContain("sousdc");
+  });
+});

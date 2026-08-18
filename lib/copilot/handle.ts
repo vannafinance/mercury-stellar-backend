@@ -930,6 +930,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           "query_collateral_config",
           "query_addresses",
           "query_resolve",
+          // Same reasoning: a direct pool-ratio question must answer from the pool's own
+          // live reserves every time, not have Vertex guess a number for an AMM ratio.
+          "query_pool_ratio",
         ].includes(kwFast.template_id)));
 
   let routed: RoutedIntent;
@@ -985,9 +988,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     }
     const kw = keywordConfident ? kwFast : routeMessage(message);
     const lowerMsg = message.toLowerCase();
+    /**
+     * "Can You Remove 50 BLUSDC fom Farm's Blend Pool" executed a real SUPPLY instead of
+     * a withdrawal — router.ts's own `withdraw_from_blend` route (added for exactly this
+     * report) correctly classified it, but this SEPARATE, independent regex re-derives
+     * "is this a Blend write" from the raw message and force-overrides `routed` to
+     * `deploy_to_blend` a few lines down whenever it fires, clobbering whatever `kw` said.
+     * "farm's" satisfied `\bfarm\b` (the apostrophe is a `\b` word boundary) with no check
+     * for which direction the money should move. Same removal-verb carve-out as router.ts.
+     */
+    const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/.test(lowerMsg);
     const blendWrite =
       /\bblend\b/.test(lowerMsg) &&
       /\b(supply|deposit|deploy|farm)\b/.test(lowerMsg) &&
+      !blendRemoveVerb &&
       !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
     const blendRead =
       /\bblend\b/.test(lowerMsg) &&
@@ -1012,6 +1026,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       routed = kw;
     } else if (kw.kind === "write" && (kw.op === "deploy_to_blend" || kw.op === "supply_to_blend")) {
       // Always honor keyword farm write; fix bare USDC when BLUSDC was named.
+      const named = assetFromMessage();
+      routed = {
+        ...kw,
+        asset:
+          (named && named !== "USDC" ? named : null) ||
+          (kw.asset && kw.asset !== "USDC" ? kw.asset : null) ||
+          named ||
+          kw.asset ||
+          "XLM",
+      };
+    } else if (kw.kind === "write" && kw.op === "withdraw_from_blend") {
+      // Same "always honor the keyword router's own classification" rule as the supply
+      // case above — explicit, not left to fall through the blendWrite/blendRead chain
+      // below, precisely because that chain is what clobbered this router decision before.
       const named = assetFromMessage();
       routed = {
         ...kw,
@@ -2704,20 +2732,37 @@ async function snapshotPositionAnswer(
   return {
     kind: "answer",
     message: withHfGuardrails(message, pos.hf, ctx.message),
-    data: factsForUi({
-      health_factor: pos.hf,
-      collateral_usd: pos.grossCollateralValue,
-      debt_usd: pos.totalBorrowedValue,
-      net_value_usd: pos.netAvailableCollateral,
-      collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
-      net_available_collateral: pos.netAvailableCollateral,
-      collateral_positions: pos.collateral,
-      borrowed_positions: pos.borrowed,
-      // The full table stays in the facts whether or not the prose was narrowed, so the
-      // UI keeps rendering the whole position and only the sentence is focused.
-      ...(focus ? { asked_about: focus } : {}),
-      source: "margin_page_snapshot",
-    }),
+    /**
+     * A question that narrows to ONE asset gets a facts card of ONE asset.
+     *
+     * Reported live: "What is my XLM Balance in Margin account?" correctly answered
+     * "You have 6,975.1535 XLM ($1078.76) of collateral." in prose, but the facts card
+     * underneath it dumped the health factor, debt, net value, both liquidation figures,
+     * AND every other asset's amount — the exact "gross amount only, not everything else"
+     * violation this session already fixed for named single-figure margin questions
+     * (`marginFigureAnswer`). The prose was narrowed; the card never was.
+     */
+    data: factsForUi(
+      focusedRow
+        ? {
+            ...(routed.tool === "vanna_get_collateral" ? { collateral_positions: [focusedRow] } : {}),
+            ...(routed.tool === "vanna_get_debt" ? { borrowed_positions: [focusedRow] } : {}),
+            asked_about: focus,
+            source: "margin_page_snapshot",
+          }
+        : {
+            health_factor: pos.hf,
+            collateral_usd: pos.grossCollateralValue,
+            debt_usd: pos.totalBorrowedValue,
+            net_value_usd: pos.netAvailableCollateral,
+            collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
+            net_available_collateral: pos.netAvailableCollateral,
+            collateral_positions: pos.collateral,
+            borrowed_positions: pos.borrowed,
+            ...(focus ? { asked_about: focus } : {}),
+            source: "margin_page_snapshot",
+          },
+    ),
     intent: {
       template_id: routed.template_id,
       slots: {
@@ -3324,6 +3369,95 @@ async function farmPositionAnswer(
   };
 }
 
+/**
+ * "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through to the generic
+ * capabilities blurb — the only existing ratio math (the Aquarius add_liquidity clarify's
+ * "Current pool ratio" note, a few hundred lines down in this file) is Aquarius-only and
+ * reachable only as a side note on a blocked write, never from a plain question, and
+ * nothing at all answered the same question for Soroswap.
+ *
+ * Reads the SAME live reserves the LP pool pages and that clarify note already use —
+ * `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats` — so this can
+ * never disagree with what the user sees there. Account-agnostic: a pool's ratio is
+ * public, no smart account needed.
+ */
+async function poolRatioAnswer(
+  venue: "soroswap" | "aquarius",
+  ctx: { request_id: string },
+): Promise<ChatResponse> {
+  try {
+    let reserveXlm: number | null = null;
+    let reserveOther: number | null = null;
+    let otherSymbol = "";
+
+    if (venue === "soroswap") {
+      const { SoroswapService } = await import("@/lib/soroswap-utils");
+      const stats = await SoroswapService.getPoolStats();
+      reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : NaN;
+      reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : NaN;
+      otherSymbol = "SOUSDC";
+    } else {
+      const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
+        import("@/lib/aquarius-utils"),
+        import("@/lib/stellar-utils"),
+      ]);
+      const poolAddress =
+        AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
+        CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
+      const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
+      reserveXlm = stats ? Number.parseFloat(stats.reserveA) : NaN;
+      reserveOther = stats ? Number.parseFloat(stats.reserveB) : NaN;
+      otherSymbol = "AQUSDC";
+    }
+
+    if (
+      reserveXlm == null ||
+      reserveOther == null ||
+      !Number.isFinite(reserveXlm) ||
+      !Number.isFinite(reserveOther) ||
+      reserveXlm <= 0 ||
+      reserveOther <= 0
+    ) {
+      return {
+        kind: "unavailable",
+        message: `I could not read the ${venue === "soroswap" ? "Soroswap" : "Aquarius"} XLM/${otherSymbol} pool just now. Its live ratio is on the Farm page.`,
+        intent: { template_id: "query_pool_ratio" },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const xlmToOther = reserveOther / reserveXlm;
+    const otherToXlm = reserveXlm / reserveOther;
+    const venueName = venue === "soroswap" ? "Soroswap" : "Aquarius";
+    const structured: StructuredAnswer = {
+      headline: `${venueName} XLM/${otherSymbol} pool ratio: 1 XLM ≈ ${xlmToOther.toFixed(4)} ${otherSymbol} · 1 ${otherSymbol} ≈ ${otherToXlm.toFixed(4)} XLM.`,
+      facts: [
+        { label: "1 XLM", value: `${xlmToOther.toFixed(4)} ${otherSymbol}` },
+        { label: `1 ${otherSymbol}`, value: `${otherToXlm.toFixed(4)} XLM` },
+      ],
+      venue: "none",
+    };
+    return {
+      kind: "answer",
+      message: answerToText(structured),
+      answer: structured,
+      intent: { template_id: "query_pool_ratio", slots: { venue } },
+      mcp: { tool: venue === "soroswap" ? "soroswap_pool_stats_on_chain" : "aquarius_pool_stats_on_chain", has_unsigned_xdr: false },
+      request_id: ctx.request_id,
+    };
+  } catch (e) {
+    console.warn(
+      `[copilot] pool ratio read failed -> ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+    return {
+      kind: "unavailable",
+      message: `I could not read the ${venue === "soroswap" ? "Soroswap" : "Aquarius"} pool ratio just now.`,
+      intent: { template_id: "query_pool_ratio" },
+      request_id: ctx.request_id,
+    };
+  }
+}
+
 const MARGIN_FIGURE_LABELS: Record<string, { label: string; get: (p: MarginPositions) => number }> = {
   collateralLeftBeforeLiquidation: {
     label: "collateral left before liquidation",
@@ -3490,6 +3624,14 @@ async function runRead(
       ctx,
       venue === "blend" || venue === "aquarius" || venue === "soroswap" ? venue : null,
     );
+  }
+
+  // "What is XLM to SoUSDC Ratio in farm Soroswap pool?" — see poolRatioAnswer's own
+  // doc comment for why this reads live pool reserves directly instead of failing to
+  // a generic capabilities blurb.
+  if (routed.template_id === "query_pool_ratio") {
+    const venue = routed.args?.venue === "soroswap" ? "soroswap" : "aquarius";
+    return poolRatioAnswer(venue, ctx);
   }
 
   // "What is my net available collateral & net amount borrowed" names specific figures —
