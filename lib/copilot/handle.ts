@@ -3295,7 +3295,10 @@ async function farmPositionAnswer(
         if (usd > DUST) {
           facts.push({
             label: "Soroswap · XLM/USDC LP",
-            value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)})`,
+            // The underlying split answers "how much would I get back"; the raw LP
+            // share count answers "how much do I actually hold" — reported live as
+            // missing entirely, with only the underlying split shown.
+            value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)}) · ${fmtPosAmount(String(ssLp))} LP`,
           });
           totalUsd += usd;
         }
@@ -3314,7 +3317,7 @@ async function farmPositionAnswer(
         if (usd <= DUST) return;
         facts.push({
           label: `Aquarius · ${pool.tokens.join("/")}`,
-          value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)})`,
+          value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`,
         });
         totalUsd += usd;
       });
@@ -3429,8 +3432,15 @@ async function poolRatioAnswer(
     const xlmToOther = reserveOther / reserveXlm;
     const otherToXlm = reserveXlm / reserveOther;
     const venueName = venue === "soroswap" ? "Soroswap" : "Aquarius";
+    /**
+     * Reported live: both directions of the ratio crammed into one sentence with a
+     * middle-dot separator ("1 XLM ≈ 0.0680 SOUSDC · 1 SOUSDC ≈ 14.7109 XLM") read as a
+     * run-on and was hard to scan. The headline now leads with just the figure the
+     * question actually asked for (X→Y); the reverse direction lives in its own fact row
+     * below, where it already had one — no reason to also cram it into the headline.
+     */
     const structured: StructuredAnswer = {
-      headline: `${venueName} XLM/${otherSymbol} pool ratio: 1 XLM ≈ ${xlmToOther.toFixed(4)} ${otherSymbol} · 1 ${otherSymbol} ≈ ${otherToXlm.toFixed(4)} XLM.`,
+      headline: `${venueName} XLM/${otherSymbol} pool ratio: 1 XLM ≈ ${xlmToOther.toFixed(4)} ${otherSymbol}.`,
       facts: [
         { label: "1 XLM", value: `${xlmToOther.toFixed(4)} ${otherSymbol}` },
         { label: `1 ${otherSymbol}`, value: `${otherToXlm.toFixed(4)} XLM` },
@@ -5426,6 +5436,70 @@ async function runWrite(
     }
   }
 
+  /**
+   * Add liquidity — a user who names BOTH token amounts explicitly ("add 10 XLM and 10
+   * AqUSDC") almost never states the pool's actual live ratio, and an AMM add-liquidity
+   * call only works at that ratio; the mismatched side is either wasted or the call fails.
+   * The real Aquarius/Soroswap add-liquidity form on this site never lets a user set both
+   * sides independently for exactly this reason — one side is always derived from the
+   * other via the pool's live spot price. This does the same, reusing the identical
+   * reserve reads `poolRatioAnswer` already uses, so it can never disagree with what the
+   * pool ratio question or the LP form itself would show.
+   */
+  let addLiquidityNote: string | null = null;
+  if (
+    action.op === "add_liquidity" &&
+    action.token_a === "XLM" &&
+    action.amount_a != null &&
+    action.amount_a > 0 &&
+    action.amount_b != null &&
+    action.amount_b > 0
+  ) {
+    try {
+      const otherToken = String(action.token_b || "").toUpperCase();
+      let reserveXlm: number | null = null;
+      let reserveOther: number | null = null;
+      if (otherToken === "SOUSDC") {
+        const { SoroswapService } = await import("@/lib/soroswap-utils");
+        const stats = await SoroswapService.getPoolStats();
+        reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : null;
+        reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : null;
+      } else if (otherToken === "AQUSDC") {
+        const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
+          import("@/lib/aquarius-utils"),
+          import("@/lib/stellar-utils"),
+        ]);
+        const poolAddress =
+          AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
+          CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
+        const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
+        reserveXlm = stats ? Number.parseFloat(stats.reserveA) : null;
+        reserveOther = stats ? Number.parseFloat(stats.reserveB) : null;
+      }
+      if (
+        reserveXlm != null &&
+        reserveOther != null &&
+        Number.isFinite(reserveXlm) &&
+        Number.isFinite(reserveOther) &&
+        reserveXlm > 0 &&
+        reserveOther > 0
+      ) {
+        const correctedB = action.amount_a * (reserveOther / reserveXlm);
+        // Only speak up (and only override) when the stated amount is genuinely off the
+        // ratio — a small live-price wobble should not relabel every add as "corrected".
+        if (Math.abs(correctedB - action.amount_b) / action.amount_b > 0.01) {
+          addLiquidityNote =
+            `Sized ${otherToken} to the pool's live ratio: ${action.amount_a} XLM pairs with ` +
+            `~${correctedB.toFixed(4)} ${otherToken} right now, not the ${action.amount_b} stated — ` +
+            `a pool add only works at the current reserve ratio, same as the Farm page's own form.`;
+          action.amount_b = correctedB;
+        }
+      }
+    } catch {
+      /* best-effort — an unreachable pool-stats read must never block the add */
+    }
+  }
+
   const mapped = mapOpToMcpStep(
     action.op,
     {
@@ -5589,7 +5663,8 @@ async function runWrite(
       ? `${String(msg).replace(/\*\*([^*]+)\*\*/g, "$1")}\n\n${explainImpact}`
       : String(msg).replace(/\*\*([^*]+)\*\*/g, "$1");
     const withSizing = sizingNote ? `${sizingNote}\n\n${base}` : base;
-    return blendSupplyNote ? `${blendSupplyNote}\n\n${withSizing}` : withSizing;
+    const withBlend = blendSupplyNote ? `${blendSupplyNote}\n\n${withSizing}` : withSizing;
+    return addLiquidityNote ? `${addLiquidityNote}\n\n${withBlend}` : withBlend;
   };
   const withSizingData = (extra?: Record<string, unknown>) =>
     factsForUi({ ...(sizingFacts || {}), ...(extra || {}) });

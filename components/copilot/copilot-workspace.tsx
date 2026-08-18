@@ -234,7 +234,12 @@ const PROMPTS: Record<string, string[]> = {
     "Borrow 2 USDC",
     "Park 20 XLM for yield then farm 10 BLUSDC at 2x keep HF above 1.4",
     "Repay 5 BLUSDC then deposit 10 XLM as collateral",
-    "Swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC",
+    // Reported live: "Swap 10 XLM to BLUSDC then farm Blend" was one of the product's
+    // own suggested prompts, and BLUSDC trades on no AMM — the suggestion itself was
+    // statically impossible (see staticStepBlocker, mcp-write.ts). Replaced with a
+    // strategy that actually executes: AQUSDC is swappable on Aquarius and Aquarius LP
+    // is what "add liquidity" is for.
+    "Swap 10 XLM to AQUSDC then add liquidity in Aquarius",
     "Enable auto-sign",
   ],
 };

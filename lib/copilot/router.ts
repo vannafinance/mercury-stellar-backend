@@ -1102,14 +1102,32 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     any(text, "remove liquidity", "remove my liquidity", "withdraw liquidity", "withdraw lp") ||
     (any(text, "remove half", "remove 50%", "remove 50 %") &&
-      any(text, "liquidity", "lp", "xlm/usdc", "pool"))
+      any(text, "liquidity", "lp", "xlm/usdc", "pool")) ||
+    /**
+     * "Can you remove 10 LP from farm Aquarius XLM and USDC Pool" named an amount, not
+     * "half"/"50%", and its verb+noun were never adjacent ("remove liquidity") — so this
+     * gate missed it entirely and it fell through everything to an LLM free-generating a
+     * confused "collateral or check your position?" clarify with no deterministic route
+     * to anchor it. `add_liquidity`'s own gate already accepts a bare `"add" + venue/"lp"`
+     * shape for exactly this reason; this mirrors it for the removal verb.
+     */
+    (any(text, "remove", "withdraw", "take out", "pull out") &&
+      any(text, "lp", "liquidity", "aquarius", "soroswap") &&
+      !any(text, "collateral"))
   ) {
     const half = any(text, "half", "50%", "50 %");
-    // Pair default XLM / USDC family from message.
+    /**
+     * Pair default XLM / USDC family from message. A named venue outranks a bare "USDC"
+     * — "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
+     * naming the venue explicitly already answers which USDC it means, same as `farm
+     * Blend`/`add_liquidity`'s own venue-aware asset resolution elsewhere in this file.
+     */
     const token_b =
       (/\baqusdc\b/i.test(raw) && "AQUSDC") ||
       (/\bsousdc\b/i.test(raw) && "SOUSDC") ||
       (/\bblusdc\b/i.test(raw) && "BLUSDC") ||
+      (any(text, "aquarius") && "AQUSDC") ||
+      (any(text, "soroswap") && "SOUSDC") ||
       (/\busdc\b/i.test(raw) && "USDC") ||
       "USDC";
     return {

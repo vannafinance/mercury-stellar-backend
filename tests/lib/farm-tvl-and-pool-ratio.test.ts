@@ -109,8 +109,10 @@ describe("poolRatioAnswer reads live reserves, never guesses", () => {
     mocks.getPoolStats.mockResolvedValue({ reserveXLM: "1000", reserveUSDC: "140" });
     const res = await handleChat({ ...base, message: "What is XLM to SoUSDC Ratio in farm Soroswap pool?" });
     expect(res.kind).toBe("answer");
+    // Headline leads with the direction asked for; the reverse direction lives in its
+    // own fact row, not crammed into the same run-on sentence (reported live).
     expect(res.message).toMatch(/1 XLM ≈ 0\.1400 SOUSDC/);
-    expect(res.message).toMatch(/1 SOUSDC ≈ 7\.1429 XLM/);
+    expect(res.answer?.facts).toContainEqual({ label: "1 SOUSDC", value: "7.1429 XLM" });
   });
 
   it("a pool read failure answers honestly instead of inventing a ratio", async () => {

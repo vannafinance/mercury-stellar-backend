@@ -113,6 +113,22 @@ describe("the farm-position answer never mentions the margin account", () => {
     expect(blendUsdc?.value).not.toMatch(/\$0\.00/);
   });
 
+  it("reports the actual LP share count, not just the underlying token split", async () => {
+    // Reported live: "Soroswap · XLM/USDC LP: 28.904 XLM + 1.9678 USDC ($6.38)" — the
+    // underlying split, correct as far as it went, but never the LP share amount itself.
+    mocks.getUserBlendBalance.mockResolvedValue(noBlend);
+    mocks.getLpBalance.mockResolvedValue("5.5"); // Soroswap LP shares held
+    mocks.getPoolStats.mockResolvedValue({ totalShares: "100", reserveXLM: "1000", reserveUSDC: "20" });
+    mocks.getUserLpBalance.mockResolvedValue("0");
+    mocks.getAquariusPoolStats.mockResolvedValue(null);
+
+    const res = await handleChat({ ...base, message: "my farm position" });
+    expect(res.kind).toBe("answer");
+    const facts = res.answer?.facts ?? [];
+    const ssLp = facts.find((f) => f.label === "Soroswap · XLM/USDC LP");
+    expect(ssLp?.value).toMatch(/5\.5\s*LP/i);
+  });
+
   it("says plainly when there are no open farm positions", async () => {
     mocks.getUserBlendBalance.mockResolvedValue(noBlend);
     mocks.getLpBalance.mockResolvedValue("0");
