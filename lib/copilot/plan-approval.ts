@@ -161,6 +161,23 @@ const VENUE_SUFFIX: Record<PlanStepView["venue"], string> = {
   other: "",
 };
 
+/**
+ * Aquarius and Soroswap LP legs share the "farm" venue bucket with Blend (both are farm
+ * actions, same as the app's own Farm tab covers all three) — but that bucket's suffix is
+ * a flat "into Blend", so every add/remove-liquidity step read "... into Blend" even
+ * though Blend has no AMM/liquidity concept at all. Live result: a real Soroswap LP leg
+ * (added after swapping into SOUSDC, which only trades on Soroswap) rendered as "Add
+ * liquidity with 5 SOUSDC into Blend" — badged FARM like a Blend supply, reading as one.
+ * Which venue actually applies is determined by the USDC variant the step names — SOUSDC
+ * only trades on Soroswap, AQUSDC only on Aquarius.
+ */
+function lpVenueSuffix(asset: string | null): string {
+  const a = (asset ?? "").toUpperCase();
+  if (a === "SOUSDC" || a === "SOROSWAP_USDC") return "on Soroswap";
+  if (a === "AQUSDC" || a === "AQUARIUS_USDC") return "on Aquarius";
+  return "on the LP pool";
+}
+
 function labelFor(
   op: string,
   asset: string | null,
@@ -173,7 +190,8 @@ function labelFor(
   if (op === "create_account") return "Open your margin account";
   const qty = amount != null ? `${amount} ` : "";
   const sym = asset ?? "";
-  const tail = VENUE_SUFFIX[venue];
+  const tail =
+    op === "add_liquidity" || op === "remove_liquidity" ? lpVenueSuffix(asset) : VENUE_SUFFIX[venue];
   // Leverage changes what the step does, so it belongs in the label. "farm 10 BLUSDC at
   // 2x" was rendering as "Supply 10 BLUSDC into Blend", which reads as an unlevered
   // supply and hides the borrow the leverage implies.
