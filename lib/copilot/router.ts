@@ -38,7 +38,11 @@ const UNSUPPORTED_ASSETS = [
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
-const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*x\b/i;
+// `×` (U+00D7) needs no trailing \b the way ascii "x" does — it's never a prefix of a
+// real word, and the app's OWN summaries/labels render leverage as "2×", not "2x" (see
+// step-extractor.ts's PLAN_SUMMARY and plan-approval.ts's labelFor). Matching only ascii
+// "x" meant a resent/rendered summary silently lost its leverage on the round trip.
+const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×)/i;
 
 function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");

@@ -90,8 +90,11 @@ const AMT_ASSET = new RegExp(`(${NUM})\\s*(${ASSET})\\b`, "i");
  * Asset-first is how people write when the asset is the topic ("XLM 500 into the pool"), and
  * it is how the reported prompts were written.
  */
-const ASSET_AMT = new RegExp(`(${ASSET})\\s+(${NUM})(?!\\s*x\\b)`, "i");
-const LEVERAGE = /(\d+(?:\.\d+)?)\s*x\b/i;
+const ASSET_AMT = new RegExp(`(${ASSET})\\s+(${NUM})(?!\\s*(?:x\\b|×))`, "i");
+// `×` (U+00D7) needs no trailing \b the way ascii "x" does — see router.ts's LEVERAGE_RE,
+// which this mirrors. The app's own rendered summaries use "2×", not "2x"; matching only
+// ascii "x" meant a resent/rendered summary silently lost its leverage on the round trip.
+const LEVERAGE = /(\d+(?:\.\d+)?)\s*(?:x\b|×)/i;
 
 /** Parse a matched amount, dropping thousands separators. */
 function toNum(raw: string): number {
