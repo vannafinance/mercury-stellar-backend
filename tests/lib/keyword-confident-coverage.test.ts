@@ -1,24 +1,26 @@
 /**
- * A deterministic read route is only actually deterministic if it is TRUSTED — every
- * bug this test guards against had the router already producing the right answer, with
+ * A deterministic read route is only actually deterministic if it is TRUSTED — every bug
+ * this test guards against had the router already producing the right answer, with
  * Vertex re-deciding the message from scratch anyway and occasionally landing somewhere
  * else ("swap 10 XLM to USDC" losing its own "which USDC?" clarify; "What is Balance of
  * XLM in my Margin Account" falling to the generic blurb while the fixed test phrasing
- * for the identical question worked). The fix each time was adding the template_id to
- * `KEYWORD_CONFIDENT_READ_TEMPLATES` (`lib/copilot/handle.ts`) — and each time, the gap
- * existed because nothing checked that list against what the router can actually
- * produce.
+ * for the identical question worked).
  *
- * This is that check. Every phrase below is a real, working trigger for a real read
- * template (most lifted from this session's own bug reports and the product's own
- * suggested prompts); the assertion is simply that whatever `routeMessage` classifies it
- * as is on the trusted list. Add a new deterministic read route to `router.ts` tomorrow
- * without adding it here and to the trusted list, and — once a representative phrase for
- * it is added below — this test catches the gap before a live report does.
+ * This used to be an opt-IN allowlist (`KEYWORD_CONFIDENT_READ_TEMPLATES`), and this
+ * exact test — checking that list against what the router actually produces — found
+ * five more reads in the same broken state in one pass. An opt-in list finds gaps one
+ * at a time forever, because "forgot to add the new route" leaves no trace. The
+ * allowlist was flipped to an opt-OUT one (`VERTEX_REVIEWED_READ_TEMPLATES`,
+ * `lib/copilot/handle.ts`) — every deterministic read is trusted by default now, so this
+ * test's job changed from "is this template on the list" to "has anyone put this
+ * template back on Vertex's-review list without meaning to."
+ *
+ * Every phrase below is a real, working trigger for a real read template (most lifted
+ * from this session's own bug reports and the product's own suggested prompts).
  */
 import { describe, expect, it } from "vitest";
 import { routeMessage } from "@/lib/copilot/router";
-import { KEYWORD_CONFIDENT_READ_TEMPLATES } from "@/lib/copilot/handle";
+import { VERTEX_REVIEWED_READ_TEMPLATES } from "@/lib/copilot/handle";
 
 const REPRESENTATIVE_READS: Array<[string, string]> = [
   ["what's my health factor?", "query_account_health"],
@@ -36,6 +38,7 @@ const REPRESENTATIVE_READS: Array<[string, string]> = [
   ["how much have I supplied to earn", "query_earn_position"],
   ["what is the exchange rate", "query_exchange_rate"],
   ["my farm position", "query_farm_position"],
+  ["keep my health factor above 1.4", "query_account_health"],
   ["inactive account", "query_inactive"],
   ["net available collateral", "query_margin_figure"],
   ["what is xlm to sousdc ratio in the soroswap pool", "query_pool_ratio"],
@@ -46,18 +49,24 @@ const REPRESENTATIVE_READS: Array<[string, string]> = [
   ["vtoken", "query_vtoken"],
 ];
 
-describe("every representative read phrase resolves to a template on the trusted list", () => {
+describe("every representative read phrase is trusted outright, never silently re-decided", () => {
   for (const [message, expectedTemplate] of REPRESENTATIVE_READS) {
-    it(`"${message}" → ${expectedTemplate}, and it is keyword-confident`, () => {
+    it(`"${message}" → ${expectedTemplate}, and is not on Vertex's review list`, () => {
       const r = routeMessage(message);
       expect(r.kind, message).toBe("read");
       if (r.kind !== "read") return;
       expect(r.template_id, message).toBe(expectedTemplate);
       expect(
-        (KEYWORD_CONFIDENT_READ_TEMPLATES as readonly string[]).includes(r.template_id),
-        `"${message}" routes to "${r.template_id}", which is NOT on KEYWORD_CONFIDENT_READ_TEMPLATES — ` +
+        VERTEX_REVIEWED_READ_TEMPLATES.includes(r.template_id),
+        `"${message}" routes to "${r.template_id}", which is on VERTEX_REVIEWED_READ_TEMPLATES — ` +
           `it can be silently re-decided by Vertex, the exact bug class this test exists to catch.`,
-      ).toBe(true);
+      ).toBe(false);
     });
   }
+
+  it("the opt-out list itself stays empty unless a future read is deliberately marked fuzzy", () => {
+    // Not a ban on ever adding to it — a tripwire. If this fails, it means someone did
+    // add an entry; the failure is a prompt to confirm that was deliberate, not silent.
+    expect(VERTEX_REVIEWED_READ_TEMPLATES).toEqual([]);
+  });
 });
