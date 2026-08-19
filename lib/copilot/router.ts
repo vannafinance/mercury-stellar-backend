@@ -984,9 +984,12 @@ export function routeMessage(message: string): RoutedIntent {
      * transaction for a token nobody named.
      */
     if (tokenOut === "USDC") {
+      // Swap only ever settles in a DEX-traded variant — AQUSDC (Aquarius) or SOUSDC
+      // (Soroswap). BLUSDC is refused a few lines below for the exact same reason, so
+      // it must not appear as a pickable option here either.
       return {
         kind: "clarify",
-        message: usdcVariantClarifyMessage("the swap"),
+        message: usdcVariantClarifyMessage("the swap", ["AQUSDC", "SOUSDC"]),
         template_id: "clarify_usdc_variant",
       };
     }

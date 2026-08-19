@@ -156,7 +156,9 @@ describe("swap — the Trade/Spot 25/50/75/Max meter, in language", () => {
     expect(r.kind).toBe("clarify");
     if (r.kind !== "clarify") return;
     expect(r.message).toMatch(/which usdc/i);
-    expect(r.message).toMatch(/BLUSDC/);
+    // Reported live: BLUSDC used to be listed here even though no swap venue trades it
+    // (Blend USDC is not a DEX token) — a swap can only ever settle in AQUSDC or SOUSDC.
+    expect(r.message).not.toMatch(/BLUSDC/);
     expect(r.message).toMatch(/AQUSDC/);
     expect(r.message).toMatch(/SOUSDC/);
   });
