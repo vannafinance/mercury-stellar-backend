@@ -5611,6 +5611,36 @@ async function runWrite(
   }
 
   /**
+   * A multi-leg resume ("swap 10 XLM to AqUSDC then add liquidity in Aquarius", paused
+   * on leg 2, answered "0.05" for "how much AQUSDC?") reaches here with `token_a`/
+   * `token_b` both null — the original bare "add liquidity in Aquarius" clause never
+   * named a token pair, unlike a fresh "add 10 XLM and AqUSDC" write. Without a pair,
+   * the ratio auto-fill below (which reads `token_a`/`token_b` to know which side is
+   * XLM) never engages, so the answered amount fell straight through to the OLD "how
+   * much of each token?" ask — asking the exact question the user had just answered.
+   * `action.asset` still names the one side that WAS resolved (AQUSDC), so that plus
+   * the assumption every Aquarius/Soroswap LP here pairs with XLM is enough to
+   * reconstruct the pair the same way a fresh two-token write would have arrived with.
+   */
+  if (
+    action.op === "add_liquidity" &&
+    !action.token_a &&
+    !action.token_b &&
+    action.asset &&
+    action.asset.toUpperCase() !== "XLM" &&
+    action.amount != null &&
+    action.amount > 0
+  ) {
+    action = {
+      ...action,
+      token_a: "XLM",
+      token_b: action.asset,
+      amount_a: null,
+      amount_b: action.amount,
+    };
+  }
+
+  /**
    * Add liquidity — an AMM add only works at the pool's live ratio, so one side is
    * always derived from the other, the same way the real Aquarius/Soroswap add-liquidity
    * form on this site does (it never lets a user set both sides independently).
