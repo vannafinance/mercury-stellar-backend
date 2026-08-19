@@ -418,12 +418,17 @@ export function materializeLeverageWrites(
       label: humanWriteLabel("deposit_collateral", legs.deposit.amount, legs.deposit.asset),
       multi_leg: false,
     });
+    // Display leverage is the ORIGINAL total the user asked for (e.g. 3×), not the
+    // internal `effectiveLeverage` used to size a SPLIT leg (e.g. 2× per asset) — a
+    // split's two halves still together make up the one leveraged position the user
+    // named, and a label reading "2× leverage" on it would misstate what was approved.
+    // Equal to `sized.plan.leverage` in the non-split case, so this is a no-op then.
     out.push({
       ...otherSlotsFromExpanded(w),
       op: "borrow",
       asset: legs.borrow.asset,
       amount: legs.borrow.amount,
-      leverage: sized.plan.leverage,
+      leverage: w.leverage,
       borrow_asset: null,
       label: humanWriteLabel("borrow", legs.borrow.amount, legs.borrow.asset),
       multi_leg: false,
@@ -448,7 +453,7 @@ export function materializeLeverageWrites(
         op: "borrow",
         asset: sized2.plan.borrowAsset,
         amount: sized2.plan.borrowAmount,
-        leverage: sized2.plan.leverage,
+        leverage: w.leverage,
         borrow_asset: null,
         label: humanWriteLabel("borrow", sized2.plan.borrowAmount, sized2.plan.borrowAsset),
         multi_leg: false,

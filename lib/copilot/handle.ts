@@ -1346,6 +1346,47 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       }),
     };
     /**
+     * Show the REAL computed amount on the preview card instead of "amount to be
+     * confirmed" — for both a single leveraged borrow and a split across two.
+     *
+     * Reported live: the preview for "deposit 30 XLM and borrow 3x BLUSDC and AqUSDC"
+     * showed step 2 as "amount to be confirmed" even though the amount is fully
+     * computable from live prices — the exact thing this codebase already treats as
+     * wrong ("asking 'how much do you want to borrow?' when the answer is computable
+     * is the copilot refusing to do arithmetic the site does on every render"). The
+     * number WAS already computed correctly once the plan was approved (via this same
+     * `expandPlanWrites` + `materializeLeverageWrites` pipeline, run again at execution
+     * time in `runApprovedPlan`) — it just was not shown before that point. Running the
+     * identical pipeline here means the preview and the execution can never disagree,
+     * since they call the same functions with the same inputs.
+     *
+     * Best-effort: an oracle hiccup falls back to the original coalesced steps (still
+     * showing "amount to be confirmed"), never blocks the preview from rendering.
+     */
+    if (routed.steps.some((s) => s.kind === "write" && s.op === "deposit_and_borrow" && Number(s.leverage) > 1)) {
+      try {
+        const rawExpanded = expandPlanWrites(routed.steps);
+        const priceSymbols = materializeLeveragePriceSymbols(rawExpanded);
+        const prices = priceSymbols.length ? await fetchLeveragePrices(mcp, priceSymbols, userId) : {};
+        const materialized = materializeLeverageWrites(rawExpanded, prices);
+        if (materialized.ok) {
+          routed = {
+            ...routed,
+            steps: materialized.writes.map((w) => ({
+              kind: "write" as const,
+              op: w.op,
+              asset: w.asset ?? null,
+              amount: w.amount ?? null,
+              leverage: w.leverage ?? null,
+              args: toSlots(w),
+            })),
+          };
+        }
+      } catch {
+        /* best-effort — an unreachable oracle must never block the preview */
+      }
+    }
+    /**
      * Refuse the WHOLE plan upfront if any step is statically impossible, rather than
      * showing a multi-step "Approve & run" card destined to pause one signature in.
      *
