@@ -2081,7 +2081,30 @@ export function routeMessage(message: string): RoutedIntent {
    * themselves use — `SoroswapService.getPoolStats` / `AquariusService.getAquariusPoolStats`
    * — never a guessed number.
    */
-  if (any(text, "ratio") && any(text, "soroswap", "aquarius")) {
+  /**
+   * "What are the pool stats of XLM AQUSDC pool in Aquarius" explicitly named the AMM
+   * venue, but fell through to the generic "pool stats" trigger below, which only ever
+   * calls `vanna_get_pool_stats` — the Vanna EARN lending pool's tool (supply APY,
+   * borrow APR, utilization). The answer came back real but mislabeled: lending-market
+   * numbers for the Earn AQUSDC pool, badged "AQUARIUS LP" because the message said
+   * "Aquarius" — not the actual Aquarius AMM pool's reserves/composition the user asked
+   * about. Explicitly naming "aquarius"/"soroswap" alongside a stats-shaped word now
+   * routes to the real on-chain AMM reader (same one "ratio" already used), which
+   * reports both reserves and which two tokens make up the pool — not just the ratio.
+   */
+  /**
+   * Deliberately NOT "liquidity" here — "how much liquidity is in the aquarius pool" is
+   * pinned (tests/lib/collateral-keywordconfident-and-borrow-venue.test.ts,
+   * tests/lib/supply-position-read.test.ts) to the Earn pool-stats read, since "liquidity"
+   * already means something specific there (Earn's own "total liquidity available to
+   * borrow" figure) and is genuinely ambiguous on its own. Only words that unambiguously
+   * ask about the AMM pool itself — its ratio, TVL, reserves, or which tokens it holds —
+   * belong in this list.
+   */
+  if (
+    any(text, "soroswap", "aquarius") &&
+    any(text, "ratio", "pool stat", "pool stats", "tvl", "reserve", "reserves", "composition", "what tokens", "how is the pool", "pool doing")
+  ) {
     return {
       kind: "read",
       tool: "vanna_get_pool_ratio",

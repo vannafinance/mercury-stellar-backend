@@ -14,9 +14,15 @@ function num(v: unknown): number | null {
   return null;
 }
 
+/**
+ * Locale pinned to "en-US", not the server process's OS default — an unpinned
+ * `toLocaleString(undefined, ...)` on a non-US-locale host renders large numbers with
+ * that locale's own digit grouping (e.g. Indian lakh-style "1,11,981" instead of
+ * "111,981"), the same bug fixed in `handle.ts`'s `fmtPosAmount`.
+ */
 function fmt(n: number, digits = 4): string {
-  if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+  if (Math.abs(n) >= 1000) return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return n.toLocaleString("en-US", { maximumFractionDigits: digits });
 }
 
 function pick(data: Record<string, unknown>, keys: string[]): unknown {

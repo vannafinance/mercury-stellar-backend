@@ -2854,11 +2854,19 @@ async function snapshotPositionAnswer(
   };
 }
 
-/** Short amount for a fact value — long wad strings are unreadable in a list. */
+/**
+ * Short amount for a fact value — long wad strings are unreadable in a list.
+ *
+ * Locale pinned to "en-US" like every other formatter in this file (see the two
+ * `toLocaleString("en-US", ...)` calls below) — `undefined` inherits the SERVER
+ * PROCESS's OS locale, not the user's. Reported live: a pool reserve of 111,981 XLM
+ * rendered as "1,11,981.0527", Indian-style lakh grouping, because this was the one
+ * formatter in the file left on the default locale.
+ */
 function fmtPosAmount(amount: string): string {
   const n = Number(amount);
   if (!Number.isFinite(n)) return amount;
-  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 /**
@@ -3548,11 +3556,21 @@ async function poolRatioAnswer(
      * question actually asked for (X→Y); the reverse direction lives in its own fact row
      * below, where it already had one — no reason to also cram it into the headline.
      */
+    /**
+     * "What are the pool stats of XLM AQUSDC pool in Aquarius" is really two questions
+     * in one: what tokens make up this LP, and how much of each is in it right now.
+     * The ratio alone answers neither — added the pool's two real reserve balances and
+     * a composition line naming both tokens, so this doubles as the "what tokens are in
+     * this LP" answer an add/remove-liquidity write also needs.
+     */
     const structured: StructuredAnswer = {
       headline: `${venueName} XLM/${otherSymbol} pool ratio: 1 XLM ≈ ${xlmToOther.toFixed(4)} ${otherSymbol}.`,
       facts: [
+        { label: "pool composition", value: `XLM + ${otherSymbol}` },
         { label: "1 XLM", value: `${xlmToOther.toFixed(4)} ${otherSymbol}` },
         { label: `1 ${otherSymbol}`, value: `${otherToXlm.toFixed(4)} XLM` },
+        { label: "xlm in pool", value: fmtPosAmount(String(reserveXlm)) },
+        { label: `${otherSymbol.toLowerCase()} in pool`, value: fmtPosAmount(String(reserveOther)) },
       ],
       venue: "none",
     };
