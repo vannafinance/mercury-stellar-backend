@@ -1004,10 +1004,18 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       /\b(supply|deposit|deploy|farm)\b/.test(lowerMsg) &&
       !blendRemoveVerb &&
       !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
+    /**
+     * "What is my Holdings in Blend Pool" said "Holdings", not any of the words this
+     * list already knew — `blendRead` was FALSE for it, so this whole override never
+     * ran and the message fell through to router.ts's/Vertex's original pool-wide
+     * `query_blend`/`vanna_list_blend_reserves` pick, answering with the pool's total
+     * supply instead of the user's own position (reported live, reproduced exactly).
+     * "holdings"/"holding" added here and to the personal-position check below.
+     */
     const blendRead =
       /\bblend\b/.test(lowerMsg) &&
       !blendWrite &&
-      /\b(stats|apy|reserve|pays|yield|supplied|position|btoken|how much)\b/.test(lowerMsg);
+      /\b(stats|apy|reserve|pays|yield|supplied|position|btoken|holdings?|how much)\b/.test(lowerMsg);
 
     /** Prefer explicit tickers in the message over nested "USDC" inside BLUSDC. */
     const assetFromMessage = (): string | null => {
@@ -1107,9 +1115,25 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         named.length > 1 ||
         /\b(vs|versus| or |compare|pays more|better than)\b/i.test(message);
       const sym = !compare && named.length === 1 ? named[0]! : null;
-      const vertexOk = isBlendRead(routed) && !compare;
+      const wantsPosition = /\b(supplied|position|btoken|holdings?|how much)\b/i.test(message);
+      /**
+       * "What is my Holdings in Blend Pool" — Vertex/router had already picked
+       * `vanna_list_blend_reserves` (the pool-wide stats tool), and `isBlendRead`
+       * only checks "is this SOME blend-read tool", so it counted that as "Vertex got
+       * it right" and skipped this override entirely, even though the message clearly
+       * asked for the user's OWN position, not the pool's totals (reported live,
+       * reproduced exactly — same root cause the `blendRead` gate above had to fix,
+       * one layer deeper). `vertexOk` must check Vertex picked the SAME category
+       * (personal position vs pool stats) the message actually asks for, not merely
+       * that it picked *a* Blend tool.
+       */
+      const vertexOk =
+        !compare &&
+        (wantsPosition
+          ? routed.kind === "read" && routed.tool === "vanna_get_blend_position"
+          : isBlendRead(routed));
       if (!vertexOk) {
-        if (/\b(supplied|position|btoken|how much)\b/i.test(message)) {
+        if (wantsPosition) {
           routed = {
             kind: "read",
             tool: "vanna_get_blend_position",
@@ -3107,6 +3131,14 @@ async function earnPositionsAnswer(
     request_id: string;
     message: string;
   },
+  /**
+   * "What is my Overall Deposit in XLM Lending Pool" names one Earn asset — router.ts
+   * passes it through as `args.symbol`. Without this, the answer always fanned out
+   * across every Earn asset (reported live: a question about the XLM pool alone came
+   * back listing AQUSDC and SOUSDC too), which is right for the unscoped "my Earn
+   * positions" question but wrong once the user named a specific pool.
+   */
+  onlySymbol: (typeof EARN_ASSETS)[number] | null = null,
 ): Promise<ChatResponse> {
   if (!ctx.trader && !ctx.smartAccount) {
     return {
@@ -3117,6 +3149,7 @@ async function earnPositionsAnswer(
     };
   }
 
+  const assetsToQuery = onlySymbol ? [onlySymbol] : EARN_ASSETS;
   const mcp = getMcpClient();
   /**
    * Sequential on purpose, not Promise.all. Four concurrent `vanna_get_vtoken_balance`
@@ -3130,7 +3163,7 @@ async function earnPositionsAnswer(
    * answering "no active Earn positions" when that is not true.
    */
   const reads: Array<{ symbol: string; amount: number; usd: number | null } | null> = [];
-  for (const symbol of EARN_ASSETS) {
+  for (const symbol of assetsToQuery) {
     try {
       // Earn positions are held by the G-wallet, not the margin account — vanna_lend
       // deposits from the trader's wallet and the pool mints vTokens back to that same
@@ -3211,7 +3244,9 @@ async function earnPositionsAnswer(
   if (reads.every((r) => r === null)) {
     return {
       kind: "unavailable",
-      message: "I could not read your Earn positions just now. Your live figures are on the Earn page.",
+      message: onlySymbol
+        ? `I could not read your ${onlySymbol} Earn position just now. Your live figures are on the Earn page.`
+        : "I could not read your Earn positions just now. Your live figures are on the Earn page.",
       intent: { template_id: "query_earn_position" },
       request_id: ctx.request_id,
     };
@@ -3228,19 +3263,29 @@ async function earnPositionsAnswer(
 
   const totalUsd = supplied.reduce((sum, r) => sum + (r.usd ?? 0), 0);
   const headline = supplied.length
-    ? `Your Earn positions — ${supplied.length} supplied${totalUsd > 0 ? `, ~${money(totalUsd)} total` : ""}.`
-    : "You have no active Earn positions right now.";
+    ? onlySymbol
+      ? `Your ${onlySymbol} Earn position — ${fmtPosAmount(String(supplied[0]!.amount))} ${onlySymbol}${
+          supplied[0]!.usd != null ? ` (~${money(supplied[0]!.usd!)})` : ""
+        }.`
+      : `Your Earn positions — ${supplied.length} supplied${totalUsd > 0 ? `, ~${money(totalUsd)} total` : ""}.`
+    : onlySymbol
+      ? `You have no active ${onlySymbol} Earn position right now.`
+      : "You have no active Earn positions right now.";
 
   const structured: StructuredAnswer = { headline, facts, venue: "earn" };
 
+  /**
+   * `structured.facts` already renders "EARN · XLM: 20.0219 ($3.15)" — the raw `data`
+   * card built from the same `earn_positions` array flattened out to a SECOND card
+   * ("XLM AMOUNT: 20.0219") repeating the identical number, reported live. Same class
+   * of bug as the generic single-read path's `suppressRawData` (see
+   * copilot-redundant-card-generalized): whenever the structured answer already covers
+   * the fact, the raw card is redundant, not additive — dropped rather than deduped.
+   */
   return {
     kind: "answer",
     message: answerToText(structured),
     answer: structured,
-    data: factsForUi({
-      earn_positions: supplied,
-      source: "mcp_vtoken_balance",
-    }),
     intent: { template_id: "query_earn_position", slots: { count: supplied.length } },
     mcp: { tool: "vanna_get_vtoken_balance", has_unsigned_xdr: false },
     request_id: ctx.request_id,
@@ -3674,7 +3719,11 @@ async function runRead(
   // "My Earn positions" names one specific product feature — see earnPositionsAnswer's
   // own doc comment for why this must never fall back to the margin/farm fan-out above.
   if (routed.template_id === "query_earn_position") {
-    return earnPositionsAnswer(ctx);
+    const scopedSymbol = routed.args?.symbol;
+    const onlySymbol = (EARN_ASSETS as readonly string[]).includes(scopedSymbol as string)
+      ? (scopedSymbol as (typeof EARN_ASSETS)[number])
+      : null;
+    return earnPositionsAnswer(ctx, onlySymbol);
   }
 
   // "My Farm position" — see farmPositionAnswer's own doc comment for why this reads

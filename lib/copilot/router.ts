@@ -35,6 +35,9 @@ const UNSUPPORTED_ASSETS = [
   "AVAX",
 ] as const;
 
+/** The four tickers Earn actually supports — see the `query_earn_position` route below. */
+const EARN_POOL_ASSETS = new Set(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]);
+
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
@@ -1476,6 +1479,18 @@ export function routeMessage(message: string): RoutedIntent {
     /\b(what|how much)\b[\s\S]{0,30}\bsupply\b|\bmy\b[\s\S]{0,20}\bsupply\b|\bsupplied\b/i.test(
       text,
     );
+  /**
+   * "What is my Overall Deposit in XLM Lending Pool" hit the exact same failure one
+   * word over, but ONLY for the deposit-write clause below — a BARE "how much have I
+   * deposited?" (no pool/earn/vault word at all) is a MARGIN COLLATERAL question
+   * (`query_collateral` already owns that shape) and must keep routing there, so this
+   * check cannot fold into `asksAboutOwnSupply` itself without also catching that
+   * bare case. Scoped to exactly the deposit-write clause's own condition: a
+   * possessive/question shape naming "deposit" AND a pool/earn/vault word.
+   */
+  const asksAboutOwnPoolDeposit =
+    any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn") &&
+    /\b(what|how much)\b[\s\S]{0,30}\bdeposit\b|\bmy\b[\s\S]{0,20}\bdeposit\b|\bdeposited\b/i.test(text);
   const isLendWrite =
     !isSupplyApyRead &&
     !isBlendOrFarmVenue &&
@@ -1484,6 +1499,7 @@ export function routeMessage(message: string): RoutedIntent {
       wantsHighestPool ||
       (any(text, "supply") && !asksAboutOwnSupply) ||
       (any(text, "deposit") &&
+        !asksAboutOwnPoolDeposit &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
     const minHf = parseMinHealthFactor(raw);
@@ -1505,8 +1521,14 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   // Bare "deposit 5 XLM" (no "collateral" word) still means deposit_collateral in the
-  // production brain router — same as zip direct.py `_ROUTES`.
-  if (any(text, "deposit")) {
+  // production brain router — same as zip direct.py `_ROUTES`. But "What is my Overall
+  // Deposit in XLM Lending Pool" — a QUESTION about an existing pool position, not a
+  // command — has no "collateral" word either, and used to fall into this exact
+  // unconditional catch, asking "How much collateral?" for a question that named
+  // neither collateral nor an amount. Same `asksAboutOwnPoolDeposit` guard the lend-
+  // write clause above uses, so a possessive/question shape naming a pool/earn/vault
+  // deposit never reaches a write trigger at all.
+  if (any(text, "deposit") && !asksAboutOwnPoolDeposit) {
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
@@ -1695,11 +1717,36 @@ export function routeMessage(message: string): RoutedIntent {
    * balance for every asset Earn supports, not the margin account's collateral — a
    * different pool, even when the underlying token is the same.
    */
-  if (asksAboutHoldings && !actsOnPosition && any(text, "earn") && !any(text, "blend", "aquarius", "soroswap")) {
+  /**
+   * "What is my Overall Deposit in XLM Lending Pool" names no "earn" word at all —
+   * "lending pool" is what this question calls the same thing — so it satisfied
+   * neither this check nor `asksAboutHoldings` and fell through to the generic
+   * blurb. `asksAboutOwnPoolDeposit` (checked above, against the write triggers it
+   * needed to be excluded from) already recognises the identical shape and already
+   * requires a pool/earn/vault word, so it doubles as this route's trigger too.
+   */
+  if (
+    (asksAboutHoldings || asksAboutOwnPoolDeposit) &&
+    !actsOnPosition &&
+    (any(text, "earn") || asksAboutOwnPoolDeposit) &&
+    !any(text, "blend", "aquarius", "soroswap")
+  ) {
+    /**
+     * "What is my Overall Deposit in XLM Lending Pool" named exactly one asset
+     * (XLM), but the unscoped `args: {}` this used to send makes the answering
+     * side fan out across every Earn asset (XLM/BLUSDC/AQUSDC/SOUSDC) regardless
+     * — reported live: the reply listed AQUSDC and SOUSDC too, even though the
+     * question named only the XLM pool. Only scope down when the named ticker is
+     * actually one Earn supports; a bare/generic "USDC" or an off-menu asset
+     * (AQUA/EURC/USDT) is ambiguous across three different USDC pools, so those
+     * still get the full unscoped fan-out.
+     */
+    const earnScopedAsset =
+      asset && EARN_POOL_ASSETS.has(asset) ? asset : null;
     return {
       kind: "read",
       tool: "vanna_get_vtoken_balance",
-      args: {},
+      args: earnScopedAsset ? { symbol: earnScopedAsset } : {},
       requires_account: true,
       template_id: "query_earn_position",
     };

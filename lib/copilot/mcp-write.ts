@@ -666,13 +666,15 @@ export function mapOpToMcpStep(
        * server will reject.
        */
       if (frac != null && frac >= 1) {
+        // Same wire-value fix as the partial-remove case below — see its own comment.
+        const wireTokenBFull = usdSym === "AQUSDC" ? "USDC" : usdSym;
         return {
           step: {
             tool: "vanna_remove_liquidity",
             args: {
               smart_account: smart,
               token_a: "XLM",
-              token_b: usdSym,
+              token_b: wireTokenBFull,
               remove_all: true,
               min_a: "0",
               min_b: "0",
@@ -692,13 +694,31 @@ export function mapOpToMcpStep(
             `my XLM/${usdSym} liquidity”.`,
         };
       }
+      /**
+       * Reported live and reproduced exactly: removing from the Aquarius XLM/AQUSDC
+       * pool staged a card reading "LP BALANCE VERIFIED: no — No Aquarius LP tracking
+       * symbol for XLM/AQUSDC (only XLM/USDC is tracked as AQ_XLM_USDC today)", and the
+       * transaction it signed then landed SUCCESSFUL on-chain (confirmed on Stellar
+       * Expert) while the account's real Aquarius LP balance was unchanged before and
+       * after — a hard-reloaded Farm page showed the identical LP count, so this is not
+       * display staleness. That MCP-side warning text is not in this repo, but its own
+       * wording ("only XLM/USDC is tracked") says its tracking-symbol lookup wants the
+       * bare, generic ticker for this leg, not the Aquarius-specific one — the exact
+       * shape of bug this codebase has hit before in its OWN asset tables (see the
+       * registry consolidation history), just on the MCP side this time. Soroswap's
+       * SOUSDC removal does not show this warning, so only Aquarius's wire value is
+       * changed here. `usdSym` still drives the venue pick, the display label, and
+       * `staticStepBlocker` above (BLUSDC still refused) — only the ONE wire field the
+       * suspected lookup reads is affected.
+       */
+      const wireTokenB = usdSym === "AQUSDC" ? "USDC" : usdSym;
       return {
         step: {
           tool: "vanna_remove_liquidity",
           args: {
             smart_account: smart,
             token_a: "XLM",
-            token_b: usdSym,
+            token_b: wireTokenB,
             amount: lpAmt,
             liquidity: lpAmt,
             liquidity_amount: lpAmt,
