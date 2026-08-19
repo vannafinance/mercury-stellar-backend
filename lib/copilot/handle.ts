@@ -4068,10 +4068,21 @@ async function runRead(
     let structured: StructuredAnswer | null = null;
     if (!hinglish) {
       structured = await vertexExplainStructured(ctx.message, routed.tool, data);
-      // An enumeration must arrive whole. See completeIdentifierFacts: the model is capped
-      // at six facts, so "show me the protocol contract addresses" put six in the answer
-      // card and left the other nine to the generic facts dump underneath it.
-      if (structured) structured = completeIdentifierFacts(structured, data);
+      /**
+       * An enumeration must arrive whole — but only when the question WAS one.
+       * `completeIdentifierFacts` exists for "show me the protocol contract addresses":
+       * the model is capped at six facts, so a genuinely broad ask put six of fifteen in
+       * the card and left the rest to the generic facts dump underneath it. Reported
+       * live: "Give me XLM Lending Pool Address" — a question naming exactly ONE
+       * contract — got the SAME unconditional treatment and padded back out to all 9
+       * addresses, defeating the model's own correct one-item answer. A plural
+       * "addresses" (or "all"/"every"/"list") is the actual signal that every identifier
+       * was wanted; a singular, specifically-named ask (one contract, or "the oracle and
+       * account manager") means the model's own narrower answer is the right one to
+       * trust as-is.
+       */
+      const isBroadIdentifierAsk = /\b(all|every|list)\b|\baddresses\b/i.test(ctx.message);
+      if (structured && isBroadIdentifierAsk) structured = completeIdentifierFacts(structured, data);
       /**
        * "Can I borrow 20 BLUSDC?" answered "You cannot borrow 20 BLUSDC from the Vanna
        * earn pool because your collateral health is insufficient" — a genuine MARGIN

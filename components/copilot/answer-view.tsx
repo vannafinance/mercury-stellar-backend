@@ -31,7 +31,7 @@
  * re-themes in dark alongside the rest of the copilot surface.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import type { AnswerFact, AnswerVenue, StructuredAnswer } from "@/lib/copilot/answer-schema";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
@@ -96,6 +96,45 @@ const TONE_MARK: Record<NonNullable<AnswerFact["tone"]>, { glyph: string; say: s
 function isIdentifier(v: string): boolean {
   const s = v.trim();
   return /^[GC][A-Z2-7]{55}$/.test(s) || /^[0-9a-f]{64}$/i.test(s);
+}
+
+/**
+ * A headline that names a contract inline — "the oracle contract is CAYHPE4…" — put a
+ * 56-character address in the middle of a 19px prose sentence with no natural break
+ * point, which wrapped mid-word and read as a wall of text. Reported live for a
+ * two-address answer ("account manager … and the oracle contract is …").
+ *
+ * Same identifier check the facts grid already uses (`isIdentifier`), so an address is
+ * always recognised the same way in this file. Every matched address gets its own line,
+ * sized and weighted to match the identifier row below it EXACTLY (`fontSize: 12.5`,
+ * `fontWeight: 400`) — reported live as visibly inconsistent on the first pass, because
+ * the parent headline `<p>` is `font-medium` (500) and the address inherited that
+ * weight, plus a 13px size that was never checked against the grid's own 12.5. Both are
+ * pinned here explicitly so the two can never drift apart again.
+ */
+function renderHeadlineWithAddresses(headline: string): ReactNode {
+  const parts = headline.split(/(\s+)/);
+  if (!parts.some((p) => isIdentifier(p))) return headline;
+  return parts.map((part, i) =>
+    isIdentifier(part) ? (
+      <span
+        key={i}
+        style={{
+          display: "block",
+          fontFamily: MONO,
+          fontSize: 12.5,
+          fontWeight: 400,
+          color: "var(--cp-g900)",
+          margin: "2px 0",
+          wordBreak: "break-all",
+        }}
+      >
+        {part}
+      </span>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
 }
 
 /** Copy affordance. An address you cannot copy is only marginally better than a truncated one. */
@@ -192,7 +231,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
           maxWidth: 620,
         }}
       >
-        {answer.headline}
+        {renderHeadlineWithAddresses(answer.headline)}
       </p>
 
       {/*

@@ -1923,7 +1923,42 @@ export function routeMessage(message: string): RoutedIntent {
     };
   }
 
-  if (any(text, "contract address", "protocol address", "list addresses", "protocol addresses")) {
+  /**
+   * "Give me XLM Lending Pool Address" and "what is address of account manager and
+   * oracle" both fell through — the first to the generic capabilities blurb (the
+   * trigger only recognised "protocol address"/"contract address", not "pool address" /
+   * "lending pool address"), the second to `query_price` (misreading "oracle" as a
+   * price-feed word instead of a contract name, since it named no phrase this trigger
+   * knew at all). Widened to a bare "address(es)" alongside ANY of the specific things
+   * this tool can actually name — the individual contract roles ("oracle", "account
+   * manager", "registry", "risk engine", "rate model") as well as "pool"/"lending
+   * pool"/"protocol"/"contract" — since a user asking "address of X" for anything this
+   * tool covers means the same thing as "X address" or "X's contract address".
+   */
+  if (
+    any(
+      text,
+      "contract address",
+      "protocol address",
+      "list addresses",
+      "protocol addresses",
+      "pool address",
+      "lending pool address",
+    ) ||
+    (/\baddress(es)?\b/i.test(text) &&
+      any(
+        text,
+        "oracle",
+        "account manager",
+        "registry",
+        "risk engine",
+        "rate model",
+        "lending pool",
+        "pool",
+        "protocol",
+        "contract",
+      ))
+  ) {
     return {
       kind: "read",
       tool: "vanna_list_protocol_addresses",
@@ -1950,9 +1985,17 @@ export function routeMessage(message: string): RoutedIntent {
    */
   const bXlmNamed = /\bbxlm\b/i.test(text);
   const bUsdcNamed = /\bbusdc\b/i.test(text);
+  /**
+   * "What is Statistics of XLM Lending Pool" fell to the generic capabilities blurb —
+   * the trigger required the literal word "blend", but Blend IS the "Lending/Single
+   * Assets" product on the Farm page's own tab label, so a user saying "lending pool"
+   * means the same thing without ever saying "Blend". Same fix shape as the bXLM/bUSDC
+   * gap right above: a real synonym the trigger simply did not know about yet.
+   */
   if (
     any(text, "blend reserve", "blend apy", "blend pool") ||
     (any(text, "blend") && any(text, "stats", "apr", "apy")) ||
+    (any(text, "lending pool", "lending pools") && any(text, "stats", "statistics", "apr", "apy", "rate")) ||
     bXlmNamed ||
     bUsdcNamed
   ) {
