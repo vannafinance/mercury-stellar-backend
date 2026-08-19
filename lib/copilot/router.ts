@@ -322,6 +322,31 @@ function has(text: string, ...words: string[]): boolean {
 }
 
 /**
+ * "Add 10 XLM and AqUSDC" / "Add 0.05 AqUSDC and XLM" — exactly ONE amount is stated,
+ * attached to whichever token it is textually adjacent to; the second token is named
+ * with no amount at all (left for the pool's live ratio to size).
+ *
+ * Reported live: the caller used to assume the lone amount was always XLM's
+ * (`token_a: "XLM"` unconditionally whenever `parseDualAmounts` found only one number),
+ * so "0.05 AqUSDC and XLM" silently attached 0.05 to XLM instead — the wrong token got
+ * the human-stated amount. This mirrors `parseDualAmounts`'s own "read it from the text"
+ * approach for the two-amount case instead of guessing.
+ */
+function parseSingleAmountToken(text: string): { amount: number; token: string; otherToken: string } | null {
+  const cleaned = stripAddresses(text);
+  const tokenAlt = "BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT";
+  const withAmount = cleaned.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${tokenAlt})\\b`, "i"));
+  if (!withAmount) return null;
+  const amount = Number(withAmount[1]);
+  if (!Number.isFinite(amount) || !(amount > 0)) return null;
+  const token = withAmount[2]!.toUpperCase();
+  const allTokens = [...cleaned.matchAll(new RegExp(`\\b(${tokenAlt})\\b`, "gi"))].map((m) => m[1]!.toUpperCase());
+  const otherToken = allTokens.find((t) => t !== token);
+  if (!otherToken) return null;
+  return { amount, token, otherToken };
+}
+
+/**
  * Phrase/word match. Single tokens use word boundaries so “lend” does **not**
  * match inside “blend” (was breaking swap→farm into a fake lend leg).
  * Multi-word phrases still use substring includes.
@@ -1065,22 +1090,23 @@ export function routeMessage(message: string): RoutedIntent {
 
   // Aquarius / Soroswap LP — add liquidity (must beat bare deposit / lend).
   const dual = parseDualAmounts(raw);
+  const single = dual ? null : parseSingleAmountToken(raw);
   if (
     any(text, "add liquidity", "provide liquidity", "add lp") ||
     (any(text, "add") && any(text, "aquarius", "soroswap", "to aquarius", "lp")) ||
     (any(text, "add") && dual && any(text, "xlm") && any(text, "usdc", "blusdc", "aqusdc", "sousdc"))
   ) {
-    const token_a = dual?.token_a ?? "XLM";
-    const token_b = dual?.token_b ?? (asset && asset !== "XLM" ? asset : "BLUSDC");
+    const token_a = dual?.token_a ?? single?.token ?? "XLM";
+    const token_b = dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : "BLUSDC");
     return {
       kind: "write",
       op: "add_liquidity",
       template_id: "add_liquidity",
       asset: token_b,
-      amount: dual?.amount_a ?? amount,
+      amount: dual?.amount_a ?? single?.amount ?? amount,
       token_a,
       token_b,
-      amount_a: dual?.amount_a ?? amount,
+      amount_a: dual?.amount_a ?? single?.amount ?? amount,
       amount_b: dual?.amount_b ?? null,
       multi_leg: true,
       requires_account: true,
@@ -1922,16 +1948,26 @@ export function routeMessage(message: string): RoutedIntent {
    * "bXLM" either (no word-boundary between "b" and "X"), so the symbol has to be read
    * from the composite token directly, not the plain XLM/USDC check below.
    */
-  const blendBTokenNamed = /\bbxlm\b/i.test(text) ? "XLM" : /\bbusdc\b/i.test(text) ? "USDC" : null;
+  const bXlmNamed = /\bbxlm\b/i.test(text);
+  const bUsdcNamed = /\bbusdc\b/i.test(text);
   if (
     any(text, "blend reserve", "blend apy", "blend pool") ||
     (any(text, "blend") && any(text, "stats", "apr", "apy")) ||
-    blendBTokenNamed
+    bXlmNamed ||
+    bUsdcNamed
   ) {
+    /**
+     * "What is Current Rate of bXLM & bUSDC" named BOTH bTokens but only ever answered
+     * with the Blend XLM reserve. Root cause: this used to be one ternary
+     * (`bxlm ? "XLM" : busdc ? "USDC" : null`) that can only ever hold ONE symbol, so
+     * naming bXLM made it structurally impossible to also register bUSDC even though
+     * the regex for it matched fine. Tracking the two bTokens as independent booleans
+     * (like the plain "XLM vs USDC" comparison right below already did) fixes both at once.
+     */
     // "XLM vs USDC" / "XLM or USDC" is a comparison — list both, never pick one symbol.
     const namedBlend = [
-      /\bxlm\b/i.test(raw) || blendBTokenNamed === "XLM" ? "XLM" : null,
-      /\busdc\b/i.test(raw) || blendBTokenNamed === "USDC" ? "USDC" : null,
+      /\bxlm\b/i.test(raw) || bXlmNamed ? "XLM" : null,
+      /\busdc\b/i.test(raw) || bUsdcNamed ? "USDC" : null,
     ].filter(Boolean) as string[];
     const compare = namedBlend.length > 1 || any(text, "vs", " versus ", " or ", "compare", "pays more", "better");
     const sym = !compare && namedBlend.length === 1 ? namedBlend[0]! : asset && !compare ? asset : null;

@@ -1185,7 +1185,16 @@ function FactsGrid({
       // than the raw-data card underneath it.
       style={{ maxWidth: 620 }}
     >
-      {rows.slice(0, 10).map(([k, v], i) => (
+      {/*
+       * Reported live: "give my margin account collateral" on a 6-asset account (6
+       * summary figures + 6 per-asset amounts = 12 rows) silently lost the two
+       * lowest-value assets — this cap cut them with no sign anything was missing, the
+       * same class of silent-drop bug already fixed server-side in `factsForUi`
+       * (lib/copilot/explain.ts). Raised well past any real account's own asset count
+       * (currently ~10 assets, doubled worst-case across collateral + debt) while still
+       * bounding a genuinely oversized/unrelated MCP payload.
+       */}
+      {rows.slice(0, 40).map(([k, v], i) => (
         <Row key={i} k={k} v={v} />
       ))}
     </div>

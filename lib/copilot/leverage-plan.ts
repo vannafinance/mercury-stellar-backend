@@ -217,6 +217,29 @@ export function planLeverage(
   };
 }
 
+/**
+ * A second, distinct borrow asset named alongside the primary one — "borrow 3x BLUSDC
+ * and AqUSDC" / "borrow BLUSDC and AqUSDC at 3x leverage". Returns null when the
+ * message names only one borrow asset, or when the second token it finds turns out to
+ * be the primary borrow asset or the collateral asset again (not a genuine second
+ * target).
+ */
+export function findSecondBorrowAsset(
+  message: string,
+  primaryBorrowAsset: string,
+  collateralAsset: string,
+): string | null {
+  const m = message.match(
+    /\bborrow\b[^.]{0,60}?\b(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b\s*(?:,|and|&|\+)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM|AQUA|EURC|USDT)\b/i,
+  );
+  if (!m) return null;
+  const a = m[1]!.toUpperCase();
+  const b = m[2]!.toUpperCase();
+  const primary = primaryBorrowAsset.toUpperCase();
+  const other = a === primary ? b : b === primary ? a : null;
+  return other && other !== primary && other !== collateralAsset.toUpperCase() ? other : null;
+}
+
 /** Compact number for prose — no trailing zeros, no scientific notation. */
 function num(n: number): string {
   if (!Number.isFinite(n)) return "0";

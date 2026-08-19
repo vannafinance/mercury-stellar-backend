@@ -353,21 +353,52 @@ export function materializeLeverageWrites(
       write: ExpandedWrite;
     } {
   const out: ExpandedWrite[] = [];
-  for (const w of writes) {
+  for (let i = 0; i < writes.length; i += 1) {
+    const w = writes[i]!;
     if (w.op !== "deposit_and_borrow") {
       out.push(w);
       continue;
     }
     const collateralAsset = w.asset || "XLM";
     const borrowAsset = w.borrow_asset || collateralAsset;
+
+    /**
+     * "Deposit X and borrow 3x BLUSDC and AqUSDC" expands into THREE writes: this
+     * `deposit_and_borrow` (collateral + first borrow asset) immediately followed by
+     * a separate, unsized `borrow` for the second asset. Reported live: the second
+     * write was left completely untouched here — no leverage, no amount — so the
+     * first write alone consumed the FULL (L−1) leveraged amount and the second asked
+     * "how much?" with zero sizing context. A user answering with a similarly-sized
+     * number silently doubled the account's real leverage past what was asked for.
+     * Confirmed against the real Margin page's own Dual Borrow control: "Nx" is the
+     * TOTAL leveraged position, split across every named borrow asset, not applied to
+     * each independently.
+     *
+     * Splitting the SAME (L−1) leveraged amount across N assets means each individual
+     * asset sizes as if leverage were only `1 + (L−1)/N` — for N=2 that is exactly
+     * half the original (L−1) total, and the formula generalizes past two without a
+     * special case for "two".
+     */
+    const next = writes[i + 1];
+    const isDualBorrowSplit =
+      next != null &&
+      next.op === "borrow" &&
+      !!next.asset &&
+      !sameAsset(next.asset, borrowAsset) &&
+      !sameAsset(next.asset, collateralAsset) &&
+      (next.amount == null || !(Number(next.amount) > 0));
+    const splitCount = isDualBorrowSplit ? 2 : 1;
+    const effectiveLeverage =
+      splitCount > 1 && w.leverage != null ? 1 + (w.leverage - 1) / splitCount : w.leverage;
+
     const sized = planLeverage(
       {
         collateralAsset,
         collateralAmount: w.amount,
-        leverage: w.leverage,
+        leverage: effectiveLeverage,
         borrowAsset,
         borrowAmount:
-          w.borrow_amount != null && Number.isFinite(Number(w.borrow_amount))
+          !isDualBorrowSplit && w.borrow_amount != null && Number.isFinite(Number(w.borrow_amount))
             ? Number(w.borrow_amount)
             : null,
       },
@@ -397,6 +428,33 @@ export function materializeLeverageWrites(
       label: humanWriteLabel("borrow", legs.borrow.amount, legs.borrow.asset),
       multi_leg: false,
     });
+
+    if (isDualBorrowSplit && next) {
+      const sized2 = planLeverage(
+        {
+          collateralAsset,
+          collateralAmount: w.amount,
+          leverage: effectiveLeverage,
+          borrowAsset: next.asset || collateralAsset,
+          borrowAmount: null,
+        },
+        prices,
+      );
+      if ("gap" in sized2) {
+        return { ok: false, gap: sized2.gap, symbol: sized2.symbol, write: next };
+      }
+      out.push({
+        ...otherSlotsFromExpanded(next),
+        op: "borrow",
+        asset: sized2.plan.borrowAsset,
+        amount: sized2.plan.borrowAmount,
+        leverage: sized2.plan.leverage,
+        borrow_asset: null,
+        label: humanWriteLabel("borrow", sized2.plan.borrowAmount, sized2.plan.borrowAsset),
+        multi_leg: false,
+      });
+      i += 1; // the second borrow write is fully consumed above — do not re-push it plain
+    }
   }
   const cap = copilotConfig.multiLegMaxLegs;
   return { ok: true, writes: out.slice(0, Math.min(12, Math.max(1, cap))) };

@@ -24,6 +24,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeLeveragePlan,
+  findSecondBorrowAsset,
   leverageLegs,
   leveragePriceSymbols,
   planLeverage,
@@ -106,6 +107,44 @@ describe("a stated leverage always produces a borrow size", () => {
     expect(p.borrowAmount).toBe(7);
     expect(p.borrowExplicit).toBe(true);
   });
+
+  it("finds a second borrow asset named alongside the primary one, in either word order", () => {
+    expect(findSecondBorrowAsset("Deposit 50 XLM and Borrow 3x BLUSDC and AqUSDC", "BLUSDC", "XLM")).toBe(
+      "AQUSDC",
+    );
+    expect(
+      findSecondBorrowAsset("Deposit 50 XLM and borrow BLUSDC and AqUSDC at 3x leverage", "BLUSDC", "XLM"),
+    ).toBe("AQUSDC");
+    // Order-agnostic: the primary asset can appear as EITHER captured token.
+    expect(findSecondBorrowAsset("borrow AqUSDC and BLUSDC at 3x", "BLUSDC", "XLM")).toBe("AQUSDC");
+  });
+
+  it("does not invent a second asset when only one is named, or the 'second' is the collateral", () => {
+    expect(findSecondBorrowAsset("Deposit 50 XLM and Borrow 3x BLUSDC", "BLUSDC", "XLM")).toBeNull();
+    // "Borrow BLUSDC and XLM" naming the collateral asset back is not a genuine second
+    // borrow target — it is XLM's own deposit leg restated, not a new leg to split with.
+    expect(findSecondBorrowAsset("Deposit 50 XLM and Borrow 3x BLUSDC and XLM", "BLUSDC", "XLM")).toBeNull();
+  });
+
+  it(
+    "splitting Nx evenly across two borrow assets sums to the SAME total as one asset " +
+      "(handle.ts's dual-borrow-asset leverage split — 1 + (L-1)/2 per asset)",
+    () => {
+      // Reported live: "Deposit 50 XLM and Borrow 3x BLUSDC and AqUSDC" borrowed the
+      // FULL 3x amount in BLUSDC alone, then asked for AQUSDC on top with no leverage
+      // context — a user answering with a similar number silently doubled the
+      // account's real leverage. The real Margin page's own Dual Borrow control splits
+      // the SAME total instead (confirmed live: 50 XLM at 3x -> ~7.82 BLUSDC + ~7.82
+      // AqUSDC, summing to the single-asset 15.64 total, not 15.64 each).
+      const single = plan({ collateralAsset: "XLM", collateralAmount: 20, leverage: 3 });
+      const effectiveLeverage = 1 + (3 - 1) / 2;
+      const half1 = plan({ collateralAsset: "XLM", collateralAmount: 20, leverage: effectiveLeverage, borrowAsset: "BLUSDC" });
+      const half2 = plan({ collateralAsset: "XLM", collateralAmount: 20, leverage: effectiveLeverage, borrowAsset: "AQUSDC" });
+      expect(half1.borrowUsd! + half2.borrowUsd!).toBeCloseTo(single.borrowUsd!, 9);
+      expect(half1.borrowUsd).toBeCloseTo(single.borrowUsd! / 2, 9);
+      expect(half2.borrowUsd).toBeCloseTo(single.borrowUsd! / 2, 9);
+    },
+  );
 
   it("stable-to-stable needs no oracle round-trip at all", () => {
     expect(leveragePriceSymbols({ collateralAsset: "AQUSDC", borrowAsset: "BLUSDC" })).toEqual([]);

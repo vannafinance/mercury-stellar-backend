@@ -265,8 +265,17 @@ function isStatusCode(key: string, value: string): boolean {
   return v.length > 0 && v.length <= 64 && !/\s/.test(v) && /^[a-z0-9_.:-]+$/i.test(v);
 }
 
+/**
+ * Reported live: a facts card showed `SOURCE margin_page_snapshot` under a plain
+ * "what's my collateral" answer — an internal provenance tag (which internal function
+ * computed this, not a fact about the user's money) naming an implementation detail
+ * (`computeMarginSnapshot`, `mcp_farm_overview`, `mcp_vtoken_balance`, ...) the user has
+ * no way to act on. Every `data.source` in this codebase is this same kind of tag, so it
+ * is dropped here once, generally, rather than stripped tool-by-tool as each one is
+ * reported.
+ */
 const PLUMBING_FACT_KEY =
-  /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error)$/i;
+  /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error|source)$/i;
 
 /** Flatten nested objects for the UI facts panel; drop huge wads. */
 export function factsForUi(data: Record<string, unknown>): Record<string, unknown> {
@@ -351,14 +360,38 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
      */
     if (typeof v === "string" && isStatusCode(k, v)) continue;
     if (Array.isArray(v)) {
-      // Flatten first few position rows: "XLM balance", "XLM value_usd"
-      v.slice(0, 6).forEach((item, i) => {
+      /**
+       * Reported live: "what's my collateral" on an 8-position account showed only 4
+       * assets, two of them WRONG. Two independent bugs in this one block:
+       *
+       * 1. `slice(0, 6)` silently dropped the two lowest-value rows entirely (a real
+       *    Soroswap LP position vanished with no trace it was ever cut). A caller like
+       *    `snapshotPositionAnswer` passes the user's own complete, already-bounded
+       *    position list — every row is something they asked to see, so nothing here is
+       *    the "arbitrarily huge MCP array" this cap was written to guard against.
+       * 2. `collateral_positions` and `borrowed_positions` are both real fields on the
+       *    same `data` object and can legitimately share a symbol (held XLM and
+       *    borrowed XLM are different facts about the same token) — with no guard, the
+       *    array processed second silently overwrote the first's `"XLM amount"` key, so
+       *    the card labelled "XLM AMOUNT" under a COLLATERAL question showed the
+       *    BORROWED figure instead.
+       *
+       * Fixed by raising the per-array cap (still bounded — a real account's own
+       * position list is a handful of assets, never unbounded) and refusing to
+       * overwrite an already-claimed key, falling back to a source-qualified one
+       * instead of guessing which array's fact the user actually wanted.
+       */
+      v.slice(0, 20).forEach((item, i) => {
         if (!item || typeof item !== "object") return;
         const o = item as Record<string, unknown>;
         const sym = String(o.symbol ?? o.asset ?? i);
-        if (o.balance != null) out[`${sym} balance`] = o.balance;
-        if (o.amount != null && o.balance == null) out[`${sym} amount`] = o.amount;
-        if (o.value_usd != null) out[`${sym} usd`] = o.value_usd;
+        const keyFor = (suffix: string): string => {
+          const preferred = `${sym} ${suffix}`;
+          return out[preferred] == null ? preferred : `${prettyFactKey(k)} ${sym} ${suffix}`;
+        };
+        if (o.balance != null) out[keyFor("balance")] = o.balance;
+        if (o.amount != null && o.balance == null) out[keyFor("amount")] = o.amount;
+        if (o.value_usd != null) out[keyFor("usd")] = o.value_usd;
       });
       continue;
     }

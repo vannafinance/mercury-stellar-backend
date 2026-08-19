@@ -36,6 +36,7 @@ import {
 import {
   describeLeveragePlan,
   fetchLeveragePrices,
+  findSecondBorrowAsset,
   leverageLegs,
   leveragePriceSymbols,
   planLeverage,
@@ -829,7 +830,16 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // ── Page-aware AI agent (Gemini plan: semantic pageContext + client tools) ─
   // Ahead of MCP write routing so "what is Blend?" never becomes a write.
   // Live "my …" / actions still fall through to MCP.
-  if (isAssistantChat(message)) {
+  //
+  // Reported live: "What is balance of SoUSDC in Margin Account", typed directly into
+  // the dedicated /copilot page, answered "I cannot view or report live account
+  // balances because no page context is active" — `isAssistantChat` has no idea which
+  // surface sent the message, so a personal-balance question the deterministic router
+  // handles perfectly well was instead diverted into the page-guide agent, which (on
+  // this page, correctly) has no page snapshot to summarize. The floating Assistant
+  // widget is the only surface this classifier exists for — the dedicated orchestrator
+  // page has nothing for it to guide about and must always reach normal routing below.
+  if (req.surface !== "copilot" && isAssistantChat(message)) {
     // Prefer structured semantic_page_context; fall back to legacy page_snapshot.
     let semantic = req.semantic_page_context ?? null;
     if (!semantic && req.page_snapshot) {
@@ -3287,8 +3297,11 @@ async function farmPositionAnswer(
             label: "Soroswap · XLM/USDC LP",
             // The underlying split answers "how much would I get back"; the raw LP
             // share count answers "how much do I actually hold" — reported live as
-            // missing entirely, with only the underlying split shown.
-            value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} USDC (${money(usd)}) · ${fmtPosAmount(String(ssLp))} LP`,
+            // missing entirely, with only the underlying split shown. The USDC leg is
+            // named SOUSDC, not bare "USDC" — this pool's own stable is one of three
+            // USDC variants in this app, and "which one" is exactly what a Farm LP
+            // answer needs to say plainly.
+            value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} SOUSDC (${money(usd)}) · ${fmtPosAmount(String(ssLp))} LP`,
           });
           totalUsd += usd;
         }
@@ -3305,9 +3318,16 @@ async function farmPositionAnswer(
         const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
         const usd = amountA * priceA + amountB * priceB;
         if (usd <= DUST) return;
+        // `pool.tokens` is a generic pair key ("XLM"/"USDC") shared with the on-chain
+        // lookup call above — display-only, it should say which USDC this actually is.
+        // Reported live via cross-check against the Farm page, which shows "AqUSDC"
+        // for this exact pool while this answer said bare "USDC" for the same figure.
+        const displayToken = (t: string) => (t === "USDC" ? "AQUSDC" : t);
+        const labelA = displayToken(pool.tokens[0]);
+        const labelB = displayToken(pool.tokens[1]);
         facts.push({
-          label: `Aquarius · ${pool.tokens.join("/")}`,
-          value: `${fmtPosAmount(String(amountA))} ${pool.tokens[0]} + ${fmtPosAmount(String(amountB))} ${pool.tokens[1]} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`,
+          label: `Aquarius · ${labelA}/${labelB}`,
+          value: `${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`,
         });
         totalUsd += usd;
       });
@@ -4966,21 +4986,46 @@ async function runWrite(
     }
     const borrowUserAsset = action.borrow_asset || userAsset;
 
+    /**
+     * "Deposit X and borrow 3x BLUSDC and AqUSDC" names TWO borrow assets for ONE
+     * leverage figure. Confirmed live against the real Margin page's own Dual Borrow
+     * control: "Nx" is the TOTAL leveraged position, split across every named borrow
+     * asset — 50 XLM at 3× split evenly into ~7.82 BLUSDC + ~7.82 AqUSDC there, not
+     * 15.64 of each. Before this fix, `borrowUserAsset` only ever saw the FIRST named
+     * token, so this leg alone borrowed the FULL (L−1) amount, and a second, unrelated
+     * "borrow AQUSDC" leg then asked "how much?" with no leverage context at all — a
+     * user who answered with a similarly-sized number silently doubled the account's
+     * real leverage past what they asked for. Only applies when the split target
+     * itself carries no explicit amount — the user's own two stated sizes always win
+     * (same rule `coalesceLeveragedDepositBorrow` already applies for one asset).
+     */
+    const secondBorrowAsset =
+      action.borrow_amount == null
+        ? findSecondBorrowAsset(ctx.message, borrowUserAsset, userAsset)
+        : null;
+    // Splitting the SAME (L−1) leveraged amount across N assets means each individual
+    // asset is sized as if leverage were only `1 + (L−1)/N` — for N=2, L=3 that's 2×
+    // each, which is exactly half of the original (L−1)=2 total. Symmetric by
+    // construction, so it generalizes past two assets without special-casing "two".
+    const splitCount = secondBorrowAsset ? 2 : 1;
+    const effectiveLeverage =
+      splitCount > 1 && action.leverage != null ? 1 + (action.leverage - 1) / splitCount : action.leverage;
+
     // Size it the way the margin UI does, from the slots the user gave. Asking "how
     // much do you want to borrow?" when collateral, leverage and borrow asset are all
     // known is the copilot refusing to do arithmetic the site does on every render.
     const slots = {
       collateralAsset: userAsset,
       collateralAmount: dep,
-      leverage: action.leverage,
+      leverage: effectiveLeverage,
       borrowAsset: borrowUserAsset,
       borrowAmount: action.borrow_amount,
     };
-    const prices = await fetchLeveragePrices(
-      getMcpClient(),
-      leveragePriceSymbols(slots),
-      ctx.userId,
-    );
+    const priceSymbols = new Set(leveragePriceSymbols(slots));
+    if (secondBorrowAsset) {
+      for (const s of leveragePriceSymbols({ ...slots, borrowAsset: secondBorrowAsset })) priceSymbols.add(s);
+    }
+    const prices = await fetchLeveragePrices(getMcpClient(), [...priceSymbols], ctx.userId);
     const sized = planLeverage(slots, prices);
     if ("gap" in sized) {
       // Each gap has its own honest sentence. The one thing none of them may be is
@@ -5013,6 +5058,33 @@ async function runWrite(
       borrowUserAsset,
     );
     const levLine = describeLeveragePlan(plan, { collateral: uiAsset, borrow: uiBorrowAsset });
+
+    // The second half of the split — same collateral, same effective leverage, the
+    // other named asset. A missing price here falls back to a single-asset plan
+    // rather than blocking the whole position: worse (the old single-leg-only
+    // amount) is still safer than silently dropping the split's own bookkeeping.
+    const secondSized = secondBorrowAsset
+      ? planLeverage({ ...slots, borrowAsset: secondBorrowAsset, borrowAmount: null }, prices)
+      : null;
+    if (secondBorrowAsset && secondSized && "plan" in secondSized) {
+      const plan2 = secondSized.plan;
+      const uiBorrowAsset2 = displayUsdcLabel(marginCollateralSymbol(secondBorrowAsset), secondBorrowAsset);
+      return freezeLeveragedPlanPreview(
+        [
+          { op: legs.deposit.op, asset: userAsset, amount: deposit },
+          { op: legs.borrow.op, asset: borrowUserAsset, amount: borrow, leverage: effectiveLeverage },
+          { op: "borrow", asset: secondBorrowAsset, amount: plan2.borrowAmount, leverage: effectiveLeverage },
+        ],
+        {
+          templateId: "deposit_and_borrow",
+          summary:
+            `${action.leverage}× total on ${amount(deposit)} ${uiAsset} as collateral, split across two borrows — ` +
+            `${amount(borrow)} ${uiBorrowAsset} + ${amount(plan2.borrowAmount)} ${uiBorrowAsset2}`,
+          requestId: ctx.request_id,
+        },
+      );
+    }
+
     return freezeLeveragedPlanPreview(
       [
         { op: legs.deposit.op, asset: userAsset, amount: deposit },
@@ -5483,66 +5555,98 @@ async function runWrite(
   }
 
   /**
-   * Add liquidity — a user who names BOTH token amounts explicitly ("add 10 XLM and 10
-   * AqUSDC") almost never states the pool's actual live ratio, and an AMM add-liquidity
-   * call only works at that ratio; the mismatched side is either wasted or the call fails.
-   * The real Aquarius/Soroswap add-liquidity form on this site never lets a user set both
-   * sides independently for exactly this reason — one side is always derived from the
-   * other via the pool's live spot price. This does the same, reusing the identical
-   * reserve reads `poolRatioAnswer` already uses, so it can never disagree with what the
-   * pool ratio question or the LP form itself would show.
+   * Add liquidity — an AMM add only works at the pool's live ratio, so one side is
+   * always derived from the other, the same way the real Aquarius/Soroswap add-liquidity
+   * form on this site does (it never lets a user set both sides independently).
+   *
+   * Two live reports, same underlying gap:
+   *  - Naming BOTH amounts explicitly ("add 10 XLM and 10 AqUSDC") almost never states
+   *    the pool's actual ratio — the mismatched side is either wasted or the call fails.
+   *  - Naming only ONE amount ("add 10 XLM and AqUSDC in Soroswap Farm Pool" — no number
+   *    on the second token) used to fall straight to `mapOpToMcpStep`'s "how much of
+   *    each token?" blocker, which then appended the live ratio as a NOTE and asked the
+   *    user to do the multiplication and resubmit themselves — the exact confusion this
+   *    session's own pool-ratio answers already do the arithmetic for on a plain
+   *    question. If a human gave ONE real amount, that is enough to size the other side
+   *    and go straight to the approval card, not another round-trip.
+   *
+   * Written to be direction-agnostic (`token_a`/`token_b` can carry XLM in either slot)
+   * since nothing about the parsed order guarantees XLM comes first.
    */
   let addLiquidityNote: string | null = null;
-  if (
-    action.op === "add_liquidity" &&
-    action.token_a === "XLM" &&
-    action.amount_a != null &&
-    action.amount_a > 0 &&
-    action.amount_b != null &&
-    action.amount_b > 0
-  ) {
-    try {
-      const otherToken = String(action.token_b || "").toUpperCase();
-      let reserveXlm: number | null = null;
-      let reserveOther: number | null = null;
-      if (otherToken === "SOUSDC") {
-        const { SoroswapService } = await import("@/lib/soroswap-utils");
-        const stats = await SoroswapService.getPoolStats();
-        reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : null;
-        reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : null;
-      } else if (otherToken === "AQUSDC") {
-        const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
-          import("@/lib/aquarius-utils"),
-          import("@/lib/stellar-utils"),
-        ]);
-        const poolAddress =
-          AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
-          CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
-        const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
-        reserveXlm = stats ? Number.parseFloat(stats.reserveA) : null;
-        reserveOther = stats ? Number.parseFloat(stats.reserveB) : null;
-      }
-      if (
-        reserveXlm != null &&
-        reserveOther != null &&
-        Number.isFinite(reserveXlm) &&
-        Number.isFinite(reserveOther) &&
-        reserveXlm > 0 &&
-        reserveOther > 0
-      ) {
-        const correctedB = action.amount_a * (reserveOther / reserveXlm);
-        // Only speak up (and only override) when the stated amount is genuinely off the
-        // ratio — a small live-price wobble should not relabel every add as "corrected".
-        if (Math.abs(correctedB - action.amount_b) / action.amount_b > 0.01) {
-          addLiquidityNote =
-            `Sized ${otherToken} to the pool's live ratio: ${action.amount_a} XLM pairs with ` +
-            `~${correctedB.toFixed(4)} ${otherToken} right now, not the ${action.amount_b} stated — ` +
-            `a pool add only works at the current reserve ratio, same as the Farm page's own form.`;
-          action.amount_b = correctedB;
+  if (action.op === "add_liquidity") {
+    const aIsXlm = action.token_a === "XLM";
+    const bIsXlm = action.token_b === "XLM";
+    const otherToken = String((aIsXlm ? action.token_b : action.token_a) || "").toUpperCase();
+    const xlmGiven = (aIsXlm ? action.amount_a : bIsXlm ? action.amount_b : null) ?? null;
+    const otherGiven = (aIsXlm ? action.amount_b : bIsXlm ? action.amount_a : null) ?? null;
+    const haveXlm = xlmGiven != null && xlmGiven > 0;
+    const haveOther = otherGiven != null && otherGiven > 0;
+    // At least one side must be XLM and at least one real amount must be stated —
+    // otherwise there is nothing to derive a ratio from, and the plain "how much of
+    // each token?" ask (with its own live-ratio note) below is the correct answer.
+    if ((aIsXlm || bIsXlm) && (haveXlm || haveOther)) {
+      try {
+        let reserveXlm: number | null = null;
+        let reserveOther: number | null = null;
+        if (otherToken === "SOUSDC") {
+          const { SoroswapService } = await import("@/lib/soroswap-utils");
+          const stats = await SoroswapService.getPoolStats();
+          reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : null;
+          reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : null;
+        } else if (otherToken === "AQUSDC") {
+          const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
+            import("@/lib/aquarius-utils"),
+            import("@/lib/stellar-utils"),
+          ]);
+          const poolAddress =
+            AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
+            CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
+          const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
+          reserveXlm = stats ? Number.parseFloat(stats.reserveA) : null;
+          reserveOther = stats ? Number.parseFloat(stats.reserveB) : null;
         }
+        if (
+          reserveXlm != null &&
+          reserveOther != null &&
+          Number.isFinite(reserveXlm) &&
+          Number.isFinite(reserveOther) &&
+          reserveXlm > 0 &&
+          reserveOther > 0
+        ) {
+          const writeBack = (xlmAmount: number, otherAmount: number): void => {
+            if (aIsXlm) {
+              action.amount_a = xlmAmount;
+              action.amount_b = otherAmount;
+            } else {
+              action.amount_b = xlmAmount;
+              action.amount_a = otherAmount;
+            }
+          };
+          if (haveXlm && !haveOther) {
+            const computedOther = xlmGiven! * (reserveOther / reserveXlm);
+            addLiquidityNote = `Sized to the pool's live ratio: ${xlmGiven} XLM ≈ ${computedOther.toFixed(4)} ${otherToken}.`;
+            writeBack(xlmGiven!, computedOther);
+          } else if (haveOther && !haveXlm) {
+            const computedXlm = otherGiven! * (reserveXlm / reserveOther);
+            addLiquidityNote = `Sized to the pool's live ratio: ${otherGiven} ${otherToken} ≈ ${computedXlm.toFixed(4)} XLM.`;
+            writeBack(computedXlm, otherGiven!);
+          } else if (haveXlm && haveOther) {
+            const correctedOther = xlmGiven! * (reserveOther / reserveXlm);
+            // Only speak up (and only override) when the stated amount is genuinely off
+            // the ratio — a small live-price wobble should not relabel every add as
+            // "corrected".
+            if (Math.abs(correctedOther - otherGiven!) / otherGiven! > 0.01) {
+              addLiquidityNote =
+                `Corrected to the pool's live ratio: ${xlmGiven} XLM ≈ ${correctedOther.toFixed(4)} ` +
+                `${otherToken} (not the ${otherGiven} stated).`;
+              writeBack(xlmGiven!, correctedOther);
+            }
+          }
+        }
+      } catch {
+        /* best-effort — an unreachable pool-stats read must never block the add */
       }
-    } catch {
-      /* best-effort — an unreachable pool-stats read must never block the add */
     }
   }
 
