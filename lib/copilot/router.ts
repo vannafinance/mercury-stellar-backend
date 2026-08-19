@@ -1103,7 +1103,21 @@ export function routeMessage(message: string): RoutedIntent {
     (any(text, "add") && dual && any(text, "xlm") && any(text, "usdc", "blusdc", "aqusdc", "sousdc"))
   ) {
     const token_a = dual?.token_a ?? single?.token ?? "XLM";
-    const token_b = dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : "BLUSDC");
+    /**
+     * "Add liquidity 10 XLM in Aquarius" names only ONE ticker — `single` requires a
+     * SECOND ticker in the text to return anything (parseSingleAmountToken), so it comes
+     * back null here and this used to fall straight to the hardcoded "BLUSDC" default —
+     * a token `staticStepBlocker`/every LP tool on this platform refuses outright for
+     * add_liquidity, no matter which venue. Reported live: staged as "how much of each
+     * token?" and never recovered, even though the message plainly named a real venue.
+     * A stated "aquarius"/"soroswap" is a far stronger signal than that blind default —
+     * it names the exact pool the amount belongs to, which is enough on its own for the
+     * ratio auto-fill below (`handle.ts`) to size the other side, the same way the real
+     * Farm add-liquidity form auto-fills the paired amount from one input.
+     */
+    const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
+    const token_b =
+      dual?.token_b ?? single?.otherToken ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : "AQUSDC");
     return {
       kind: "write",
       op: "add_liquidity",
