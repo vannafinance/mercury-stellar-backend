@@ -18,6 +18,7 @@
 import { describe, expect, it } from "vitest";
 import {
   completeIdentifierFacts,
+  dedupeInlineIdentifiers,
   normalizeAnswer,
   type StructuredAnswer,
 } from "@/lib/copilot/answer-schema";
@@ -123,6 +124,63 @@ describe("completeIdentifierFacts", () => {
       "pool optional flag": B,
     });
     expect(out.facts[1].label).toBe("pool optional flag");
+  });
+});
+
+describe("dedupeInlineIdentifiers", () => {
+  it("THE LIVE BUG: rewrites a headline repeating one identifier fact by value", () => {
+    const out = dedupeInlineIdentifiers({
+      headline: `The account manager address is ${B}.`,
+      facts: [{ label: "account manager", value: B }],
+    });
+    expect(out.headline).toBe("Here is the account manager address.");
+  });
+
+  it("THE LIVE BUG: rewrites a headline repeating two identifier facts, joined with 'and'", () => {
+    const out = dedupeInlineIdentifiers({
+      headline: `The account manager address is ${B} and the oracle address is ${C}.`,
+      facts: [
+        { label: "account manager", value: B },
+        { label: "oracle", value: C },
+      ],
+    });
+    expect(out.headline).toBe("Here is the account manager and oracle addresses.");
+  });
+
+  it("joins three or more with an Oxford comma", () => {
+    const out = dedupeInlineIdentifiers({
+      headline: `Registry ${A}, account manager ${B}, oracle ${C}.`,
+      facts: [
+        { label: "registry", value: A },
+        { label: "account manager", value: B },
+        { label: "oracle", value: C },
+      ],
+    });
+    expect(out.headline).toBe("Here is the registry, account manager, and oracle addresses.");
+  });
+
+  it("THE LIVE BUG: never doubles 'address' when the model's own label already ends in it", () => {
+    const out = dedupeInlineIdentifiers({
+      headline: `Here is the xlm lending pool address is ${B}.`,
+      facts: [{ label: "xlm lending pool address", value: B }],
+    });
+    expect(out.headline).toBe("Here is the xlm lending pool address.");
+  });
+
+  it("leaves a headline alone when it names no fact's value", () => {
+    const original: StructuredAnswer = {
+      headline: "Here are all the protocol addresses configured for Vanna Finance.",
+      facts: [{ label: "registry", value: A }],
+    };
+    expect(dedupeInlineIdentifiers(original)).toEqual(original);
+  });
+
+  it("leaves a figure headline alone — no identifier value to match", () => {
+    const original: StructuredAnswer = {
+      headline: "Your health factor is 2.89.",
+      facts: [{ label: "health factor", value: "2.89", tone: "good" }],
+    };
+    expect(dedupeInlineIdentifiers(original)).toEqual(original);
   });
 });
 

@@ -200,6 +200,37 @@ export function completeIdentifierFacts(
   return { ...answer, facts: [...answer.facts, ...missing] };
 }
 
+/**
+ * A headline that repeats a raw identifier the facts card already shows duplicates the
+ * one thing that card exists for. "The account manager address is CAZLR6E… and the
+ * oracle address is CAYHPE4…" put both 56-character values inline in a prose sentence
+ * AND in their own copyable rows two inches below — the same fact rendered twice, once
+ * as unreadable prose. Reported live, once for a single address and again for two.
+ *
+ * Rewritten to name WHAT was found rather than repeat its value, since the value only
+ * needs to live in the one place built to show it in full and let it be copied.
+ * Deliberately general: any headline embedding a value that also appears as an
+ * identifier fact gets this treatment, not just an address-lookup answer specifically.
+ */
+export function dedupeInlineIdentifiers(answer: StructuredAnswer): StructuredAnswer {
+  const named: string[] = [];
+  for (const fact of answer.facts) {
+    if (isIdentifierValue(fact.value) && answer.headline.includes(fact.value)) {
+      // The model's own fact label sometimes already ends in "address" (e.g. "xlm
+      // lending pool address") — stripped here so the noun this function appends below
+      // is never duplicated into "... address address."
+      named.push(fact.label.replace(/\s+address(es)?$/i, "").trim());
+    }
+  }
+  if (!named.length) return answer;
+  const noun = named.length === 1 ? "address" : "addresses";
+  const list =
+    named.length <= 2
+      ? named.join(" and ")
+      : `${named.slice(0, -1).join(", ")}, and ${named[named.length - 1]}`;
+  return { ...answer, headline: `Here is the ${list} ${noun}.` };
+}
+
 /** Normalise a model answer, dropping anything malformed rather than trusting it. */
 export function normalizeAnswer(raw: unknown): StructuredAnswer | null {
   if (!raw || typeof raw !== "object") return null;

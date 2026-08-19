@@ -56,6 +56,7 @@ import { claimOnce, planDedupeKey, writeDedupeKey } from "./write-dedupe";
 import {
   answerToText,
   completeIdentifierFacts,
+  dedupeInlineIdentifiers,
   type AnswerFact,
   type AnswerVenue,
   type StructuredAnswer,
@@ -4083,6 +4084,9 @@ async function runRead(
        */
       const isBroadIdentifierAsk = /\b(all|every|list)\b|\baddresses\b/i.test(ctx.message);
       if (structured && isBroadIdentifierAsk) structured = completeIdentifierFacts(structured, data);
+      // The value only needs to live once — in its own copyable row below, not also
+      // spelled out in the prose above it. See dedupeInlineIdentifiers's own comment.
+      if (structured) structured = dedupeInlineIdentifiers(structured);
       /**
        * "Can I borrow 20 BLUSDC?" answered "You cannot borrow 20 BLUSDC from the Vanna
        * earn pool because your collateral health is insufficient" — a genuine MARGIN
