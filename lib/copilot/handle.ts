@@ -927,8 +927,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
        * question independently and never saw the clarify at all. Same root cause as the
        * bare "vtoken"/"supply balance" reads answering with no chips: those routes exist
        * in router.ts too, and were exchanged for Vertex's version for the same reason.
+       *
+       * `clarify_capabilities` is a DIFFERENT kind of clarify from the one this comment
+       * defends, and must not ride along with it — it is router.ts's own last-resort
+       * "nothing matched" catch-all, not a deliberate disambiguation. Treating it as
+       * confident meant Vertex was never even asked for any phrasing router.ts's regex
+       * net had not yet special-cased, no matter how ordinary — "What is my AQUSDC
+       * balance" / "How much AQUSDC do I have" both hit this exact fallback and got the
+       * generic capability blurb, even though Vertex already has a working
+       * `vanna_get_wallet_balance` tool for exactly this question (confirmed live: once
+       * this fallback stopped short-circuiting to Vertex, it answered correctly). Every
+       * other unmatched-by-router.ts message already defers to Vertex; this fallback
+       * should not be the one exception that gives up before asking.
        */
-      kwFast.kind === "clarify" ||
+      (kwFast.kind === "clarify" && kwFast.template_id !== "clarify_capabilities") ||
       // Opt-out, not opt-in — see VERTEX_REVIEWED_READ_TEMPLATES's own doc comment for
       // why: a deterministic read is trusted the same way every other kind here already
       // is, unless its template_id is deliberately named as needing Vertex's review.
