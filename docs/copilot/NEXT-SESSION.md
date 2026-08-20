@@ -2,6 +2,149 @@
 
 ---
 
+## Session 2026-08-20 — 12 bugs fixed and pushed, 3 open items handed off mid-investigation
+
+**Everything below in this block supersedes older content on conflict — read this one first.**
+
+Branch `copilot-ui-rewire`, all pushed to `origin/copilot-ui-rewire`. Latest commit at
+handoff: `08c7414`. Test wallet unchanged: **`GDW3B2…VJ52`**, smart account
+**`CAHLZM…GLLJ`** (same account used throughout — real testnet writes execute live, this
+account is pre-authorised for that). `npx tsc --noEmit` clean, `npx vitest run` = **1098
+passing** as of the last commit — always re-run both before committing anything new.
+
+**Full per-bug detail for everything fixed this session is in
+[TEST-RUN-FINDINGS.md](./TEST-RUN-FINDINGS.md), findings #45 through #52** — this block only
+summarizes and points at what's still open. Don't re-derive root causes already written up
+there; read the finding first.
+
+### Fixed and pushed this session (commits `2019227` .. `08c7414`)
+
+- Earn/Blend position questions now scope to the named pool, not a fan-out of all of them
+  (#45), and a duplicate raw fact card was dropped from the Earn answer.
+- **Architectural fix**: `handle.ts`'s `keywordConfident` gate used to treat ANY deterministic
+  `kind:"clarify"` as trustworthy enough to skip Vertex — including the generic "nothing
+  matched" `clarify_capabilities` fallback. That meant any phrasing router.ts hadn't
+  specifically special-cased was a permanent dead end. Now only a genuinely deliberate
+  clarify (USDC variant, etc.) short-circuits; the generic fallback defers to Vertex first
+  (#46). This is very likely the root cause behind most of this session's one-off "it can't
+  answer X" reports going forward — if something still can't be answered, check whether
+  `needsSemanticIntent` (see below) is wrongly forcing Vertex OFF the correct deterministic
+  answer, not whether router.ts needs a new regex.
+- Swap's "which USDC?" clarify no longer offers BLUSDC (no swap venue trades it) (#47).
+- Real Aquarius/Soroswap AMM pool-stats questions ("what tokens are in the pool", "pool
+  ratio") now route to the actual on-chain reader instead of Earn's lending-pool stats tool,
+  and a locale bug made large numbers render as "1,11,981" (Indian digit grouping) instead of
+  "111,981" — both fixed (#48).
+- `add_liquidity` with only ONE ticker named ("add liquidity 10 XLM in Aquarius") used to
+  default the missing pair token to the literal string "BLUSDC" — invalid for every LP venue
+  — now infers it from the stated venue (Aquarius→AQUSDC, Soroswap→SOUSDC) so the existing
+  ratio auto-fill can size the other side, matching the real Farm add-liquidity form's own
+  one-sided-input behaviour. Verified with a REAL on-chain tx (#49).
+- `can i borrow 20 USDC?` / `can i withdraw 20 USDC?` used to silently answer for one
+  resolved token instead of asking which USDC variant, the same ambiguity every WRITE already
+  guards against (#50).
+- "what is the current swap price of X to Y" now answers instead of asking "how much do you
+  want to swap?"; a possessive noun ("farm's bXLM") was wrongly forcing Vertex off a correct
+  deterministic Blend answer; **swap quotes were computed from ORACLE price instead of the
+  real AMM pool ratio** — confirmed live, a real swap under-quoted by ~2× versus what actually
+  settled on-chain, and the slippage floor (`min_out`) inherited the same error, meaning the
+  real price protection was much weaker than the stated 0.5% (#51). Fixed for XLM↔AQUSDC/
+  SOUSDC by reading the same on-chain reserves `poolRatioAnswer` already uses.
+- Raw "SUMMARY"/"NOTE" fact cards (MCP's own developer caveats, not user-facing facts)
+  dropped from the farm/margin-overview answer, top-level and nested (#52).
+
+### Reverted, do not redo without a real design (documented in TEST-RUN-FINDINGS.md, right
+after #52)
+
+Tried turning the plain-text "which USDC?" clarify into pickable chips. Every existing
+`clarify_options` usage in this codebase pairs it with a `pending_write`, and the client's
+chip-click handler resumes ONLY through the write-execution path — there is no "resume a
+read" mechanism. `can_borrow`/`can_withdraw` are reads; wiring chips onto them risked a click
+silently placing a real borrow/withdraw transaction instead of just answering. The swap case's
+`pending_write` shape also has no `token_a`/`token_b`/`venue` fields, so it would fall to a
+context-losing fallback (resubmits just the bare ticker as a new message). **Needs a real
+"resume this router-level clarify by substituting the variant into the original message"
+mechanism (client + server) before this is safe** — the user re-asked for it this session
+("maybe better give option to select... then user can select out of three"), so it's wanted,
+just not safely buildable in the time available this pass.
+
+### Open, investigated but NOT yet fixed — pick these up first
+
+**1. Margin/farm "all positions" answer shows inflated collateral for XLM/BLUSDC/AQUSDC —
+very likely root-caused, not yet fixed.** Reported live with side-by-side screenshots: the
+`query_all_positions` answer card said `COLLATERAL · XLM: 7,179.4083`, while the SAME
+screenshot's "OPEN POSITIONS" side-rail (and the real Margin page) showed `XLM: 4,711.466906`
+for the identical account at the identical moment. The gap (7,179.4083 − 4,711.466906 =
+2,467.94…) matches the account's `BORROWED · XLM` figure (2,467.9409) almost to the decimal.
+Same exact pattern independently for BLUSDC and AQUSDC — each answer-card "collateral" figure
+equals true-collateral + that-asset's-own-debt. This is NOT a coincidence three times over.
+
+Hypothesis, not yet confirmed by reading the actual runtime values: `reconcileMarginRawSacCollateral`
+(`lib/analytics/stellar/farmTrackingCollateral.ts:50`) overlays the smart account's RAW
+on-chain token balance onto `collateralBalances[sym]` (to fix a real, separate staleness
+problem — the on-chain `CollateralBalanceWAD` ledger doesn't update after an AMM swap/LP op).
+But a freshly-BORROWED token also sits as raw balance in the smart account until the user
+does something else with it — so this overlay likely can't distinguish "raw balance that is
+genuinely free collateral" from "raw balance that is actually just-borrowed debt sitting
+there," and reports the sum as if it were all collateral. This function is called from
+`computeMarginSnapshot` (`lib/account-snapshot.ts:213`), which `lib/copilot/handle.ts`'s
+`readMarginPositions` (line ~2495) uses for the `query_all_positions` answer — but the
+side-rail widget and the real Margin page apparently do NOT go through this same overlay (or
+go through it differently), which is why only the copilot's OWN answer shows the inflated
+number. Next step: read `BlendService.getMarginAccountTokenBalance` and compare its return
+against what the side-rail's own data source uses for the same account, to confirm whether
+raw balance really does include just-borrowed-and-unmoved debt, then either net out matching
+debt before display or find whatever the side-rail does differently and match it. This
+function is shared outside `lib/copilot/` — check for other callers before changing its
+return shape.
+
+**2. `query_all_positions` doesn't include Earn (vToken) positions at all.** User asked for
+this explicitly: "add earn positions as well... asset supplied i have xlm, aqusdc and sousdc
+so it should all be properly represented." `allPositionsAnswer`'s own docstring says this is
+deliberate ("Margin collateral/debt and Earn (vToken) supply are separate... this is Blend +
+Aquarius/Soroswap LP only") — that was a considered decision (different product, different
+pool) but the user now wants Earn folded into the "all my positions" answer too. Should reuse
+`earnPositionsAnswer`'s existing read (same file, `handle.ts`) as a third concurrent fetch
+inside `allPositionsAnswer`, added as its own facts group — do not duplicate the sequential-call
+logic there (`earnPositionsAnswer`'s own comment explains why it's sequential, not
+`Promise.all`: concurrent `vanna_get_vtoken_balance` calls reliably time out on the live MCP
+session).
+
+**3. Multi-leg "swap X to Y and add liquidity in `<venue>`" only executes the swap leg, no
+follow-up, no error — not yet root-caused.** `needsSemanticIntent` correctly identifies this
+as a 2-verb plan ("swap" + "add") and defers to Vertex; the multi-leg-resume reconstruction
+fix (`handle.ts` ~line 5704, finding #43 in TEST-RUN-FINDINGS.md) is asset-agnostic and
+should apply the same for SOUSDC as AQUSDC. The drop is somewhere between Vertex's plan
+construction and the multi-leg execution/resume loop — not yet isolated to a specific
+function. Get a fresh repro with the FULL "show all turns" session-log detail, or better, the
+raw JSON response (`remaining_legs`/`prefer_resume_multi_leg` fields) to see whether Vertex
+ever built a 2-step plan at all, or whether the second leg was queued and silently dropped
+during execution.
+
+  Related design point from the user, not yet implemented: when a multi-leg command names ONE
+  venue for the LP leg ("...and Add Liquidity in Soroswap"), the SWAP leg that feeds it should
+  use the SAME venue, not whatever the swap step defaults to on its own — "so swap bhi via
+  soroswap hi hoga, that is obvious" (the swap should obviously go via Soroswap too). Check
+  `expandPlanWrites`/`materializeLeverageWrites` (or wherever a multi-leg plan's individual
+  step venues get resolved) for whether a later step's venue is ever propagated backward to
+  an earlier step that shares the same token pair.
+
+### Working-style notes for whoever picks this up
+
+- **Always test on `/copilot`, never the "Ask about this page" sidebar** — that's a separate,
+  info-only surface (see memory `copilot-assistant-vs-copilot-page.md`).
+- The user has been running some prompts themselves and pasting screenshots back — when a
+  live repro is needed and you don't have one, it is fine (and token-cheaper) to ask for a
+  specific prompt to be run and the resulting screenshot/session-log detail, rather than
+  redoing the whole browser-automation loop yourself.
+- Keep end-of-turn chat summaries to 1-2 plain sentences — this was called out explicitly
+  this session (memory `feedback-keep-turn-summaries-short.md`).
+- Standing convention, unchanged from every prior session: `tsc --noEmit` + full `vitest run`
+  clean before every commit, live-verify on `/copilot` after, keep TEST-RUN-FINDINGS.md in
+  sync, single-line commit messages with no AI attribution, push after each logical batch.
+
+---
+
 ## Session 2 (2026-08-10, later) — 19 bugs fixed, 26 transactions executed
 
 Everything below in "Work queue" is superseded where it conflicts with this block.
