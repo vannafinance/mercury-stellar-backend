@@ -9,7 +9,7 @@
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
-import { usdcVariantClarifyMessage } from "./mcp-write";
+import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -1257,6 +1257,20 @@ export function routeMessage(message: string): RoutedIntent {
    */
   const asksIfSafe = /\b(is|would|will|should)\b[\s\S]{0,60}\bsafe\b/i.test(text);
   if (asksIfSafe && any(text, "borrow")) {
+    /**
+     * Only the EXPLICIT bare "USDC" mention is ambiguous here — an assetless "is it
+     * safe to borrow more?" has never named any USDC variant and stays on its existing
+     * silent default, same as every other unscoped read in this file. `needsUsdcVariant`
+     * already returns false for a null asset, so this only fires when the user actually
+     * typed the ambiguous word.
+     */
+    if (needsUsdcVariant(asset)) {
+      return {
+        kind: "clarify",
+        message: usdcVariantClarifyMessage("the borrow"),
+        template_id: "clarify_usdc_variant",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_borrow",
@@ -1942,6 +1956,23 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   if (any(text, "can i borrow", "how much can i borrow", "max borrow", "borrow allowed")) {
+    /**
+     * "Can I borrow 20 USDC?" answered "Yes, you can borrow 20 USDC" as if bare USDC
+     * were a real, resolvable token — reported live. There is no generic "USDC" a user
+     * can actually hold or borrow on this platform, only BLUSDC/AQUSDC/SOUSDC; this read
+     * silently picked one (the margin contract's own wire symbol for BLUSDC happens to
+     * be literally "USDC") with no indication three other tokens exist, the exact write-
+     * side ambiguity `ambiguousUsdcSlot` already guards against, never applied here.
+     * Scoped to an EXPLICIT "USDC" mention — a fully assetless "how much can I borrow?"
+     * keeps its existing behaviour.
+     */
+    if (needsUsdcVariant(asset)) {
+      return {
+        kind: "clarify",
+        message: usdcVariantClarifyMessage("the borrow"),
+        template_id: "clarify_usdc_variant",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_borrow",
@@ -1955,6 +1986,14 @@ export function routeMessage(message: string): RoutedIntent {
   }
 
   if (any(text, "can i withdraw", "can i pull out", "withdraw allowed")) {
+    // Same explicit-bare-USDC ambiguity as the borrow check above.
+    if (needsUsdcVariant(asset)) {
+      return {
+        kind: "clarify",
+        message: usdcVariantClarifyMessage("the withdrawal"),
+        template_id: "clarify_usdc_variant",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_withdraw",
