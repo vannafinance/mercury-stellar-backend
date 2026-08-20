@@ -2512,11 +2512,37 @@ async function readMarginPositions(smartAccount: string): Promise<MarginPosition
         .filter((p) => p.usd > 0.01)
         .sort((a, b) => b.usd - a.usd);
 
+    const borrowedRows = rows(snap.borrowedBalances);
+    /**
+     * `snap.collateralBalances[sym]` is a GROSS figure by design —
+     * `reconcileMarginRawSacCollateral` (`farmTrackingCollateral.ts`) overlays the smart
+     * account's raw on-chain token balance to fix a real staleness problem (the
+     * on-chain collateral ledger doesn't update after an AMM swap/LP op), but a
+     * freshly-BORROWED token also sits as raw balance until the user moves it, so this
+     * gross figure silently includes debt that hasn't gone anywhere yet. Reported live
+     * with side-by-side screenshots: this answer's own "collateral · XLM" was inflated
+     * by exactly the account's "borrowed · XLM" figure, and same again for BLUSDC and
+     * AQUSDC. The client rail (`copilot-workspace.tsx`'s `positionRows`) already nets
+     * same-symbol debt out of collateral before display — this mirrors that exact rule,
+     * so the copilot's own answer can never disagree with what the rail/Margin page show.
+     */
+    const borrowedBySymbol = new Map(borrowedRows.map((r) => [r.symbol, r]));
+    const collateralRows = rows(snap.collateralBalances)
+      .map((r) => {
+        if (isTrackingSymbol(r.symbol)) return r;
+        const debt = borrowedBySymbol.get(r.symbol);
+        if (!debt) return r;
+        const netAmount = Math.max(0, Number.parseFloat(r.amount) - Number.parseFloat(debt.amount));
+        const netUsd = Math.max(0, r.usd - debt.usd);
+        return { ...r, amount: fmtPosAmount(String(netAmount)), usd: netUsd };
+      })
+      .filter((p) => p.usd > 0.01);
+
     return {
       hf,
       hfText: hf >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞ (no debt)" : hf.toFixed(2),
-      collateral: rows(snap.collateralBalances),
-      borrowed: rows(snap.borrowedBalances),
+      collateral: collateralRows,
+      borrowed: borrowedRows,
       grossCollateralValue: snap.grossCollateralValue,
       totalBorrowedValue: snap.totalBorrowedValue,
       totalValue: snap.totalValue,
