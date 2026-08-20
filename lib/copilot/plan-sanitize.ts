@@ -3,7 +3,7 @@
  * multi-goal plans when Vertex collapses a strategy to a single write.
  */
 
-import { findLeverage, parseMinHealthFactor } from "./router";
+import { findLeverage, hasAmmLpIntent, parseMinHealthFactor } from "./router";
 import { coalesceLeveragedDepositBorrow } from "./step-extractor";
 import type { RoutedIntent } from "./types";
 
@@ -175,14 +175,22 @@ export function preferMultiGoalPlan(
 }
 
 /** True when the user message is a multi-domain strategy (for routing preference). */
+/** Write-verb unique-count, with AMM LP phrases as their own verb. */
+function distinctActionCount(t: string): number {
+  const verbs =
+    t.match(
+      /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|park|deploy)\b/gi,
+    ) || [];
+  const unique = new Set(verbs.map((v) => v.toLowerCase()));
+  if (hasAmmLpIntent(t)) unique.add("amm_lp");
+  return unique.size;
+}
+
 export function looksLikeMultiGoal(message: string): boolean {
   const t = message.trim();
+  if (explicitAssetAmounts(message).length >= 2 && /\b(lend|supply|liquidity)\b/i.test(t)) return true;
   if (t.length > 90) {
-    const verbs =
-      t.match(
-        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|park|deploy)\b/gi,
-      ) || [];
-    if (new Set(verbs.map((v) => v.toLowerCase())).size >= 2) return true;
+    if (distinctActionCount(t) >= 2) return true;
   }
   if (/\b(park|lend|earn|yield)\b/i.test(t) && /\b(farm|blend|deploy)\b/i.test(t)) return true;
   /**
@@ -194,18 +202,16 @@ export function looksLikeMultiGoal(message: string): boolean {
    * was never called and the whole list collapsed to whichever single op
    * `clauseToStep` matched first. The comma is doing the same work "then" does; it
    * just was not being read that way.
+   *
+   * AMM LP is the same class: "swap 10 XLM to AQUSDC and add liquidity in Aquarius"
+   * has two actions joined by "and", but "add liquidity" is not in the bare-verb
+   * list (deliberately — bare "add" would steal deposits). Counted via hasAmmLpIntent.
    */
   if (/,|\band\b/i.test(t)) {
-    const verbs =
-      t.match(
-        /\b(swap|lend|borrow|deposit|repay|farm|invest|supply|withdraw|redeem|park|deploy)\b/gi,
-      ) || [];
-    if (new Set(verbs.map((v) => v.toLowerCase())).size >= 2) return true;
+    if (distinctActionCount(t) >= 2) return true;
   }
   if (/\bthen\b/i.test(t)) {
-    const n = (t.match(/\b(lend|borrow|deposit|farm|supply|swap|invest|park|repay)\b/gi) || [])
-      .length;
-    if (n >= 2) return true;
+    if (distinctActionCount(t) >= 2) return true;
   }
   if (/\b(and|then)\b/i.test(t) && /\b(health|liquidat|farm|earn|hf)\b/i.test(t)) return true;
   /**

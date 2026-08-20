@@ -13,7 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
-import { cleanExecutionCopy, stripAutoSignPlumbing } from "./execution-copy";
+import { cleanExecutionCopy, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
@@ -95,6 +95,9 @@ import { logCopilotEvent } from "./log";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { evaluateDomainFirewall } from "./domain-firewall";
 import { findLeverage, findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
+import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
+import { quoteDexSwap } from "./swap-quote";
+import { readFarmAmmLpShares } from "./farm-lp";
 import { resolveAsset, resolveAssetDef, USDC_VARIANTS } from "./registry/assets";
 import { isTrackingSymbol } from "@/lib/account-snapshot";
 import { buildToolArgs, needsSmartAccount } from "./tool-args";
@@ -527,7 +530,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     console.warn(
       `[copilot] executing approved plan ${req.approved_plan.plan_id} (${check.plan.steps.length} steps)`,
     );
-    return runPlan(check.plan, {
+    const filled =
+      req.lp_fill && Number(req.lp_fill.amount) > 0
+        ? { ...check.plan, steps: applyLpFillToSteps(check.plan.steps, req.lp_fill) }
+        : check.plan;
+    return runPlan(filled, {
       userId,
       trader,
       smartAccount: req.smart_account ?? null,
@@ -873,6 +880,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const kwFast = routeMessage(message);
   const needsSemanticIntent = (() => {
     const t = message.trim();
+    // A keyword PLAN already lists every leg. Length > 90 used to force Vertex, which
+    // collapsed "lend 1000 XLM, 100 BLUSDC, 100 SOUSDC, 100 AQUSDC" to one lend.
+    if (kwFast.kind === "plan") return false;
     if (t.length > 90) return true;
     const actionVerbs =
       t.match(
@@ -927,6 +937,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const keywordConfident =
     !needsSemanticIntent &&
     (kwFast.kind === "write" ||
+      kwFast.kind === "plan" ||
       kwFast.kind === "restricted" ||
       kwFast.kind === "auto_sign" ||
       // G-wallet create/connect is always client-side — never let Vertex map it to create_account
@@ -1029,7 +1040,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/.test(lowerMsg);
     const blendWrite =
       /\bblend\b/.test(lowerMsg) &&
-      /\b(supply|deposit|deploy|farm)\b/.test(lowerMsg) &&
+      /\b(supply|deposit|deploy|farm|add|liquidity)\b/.test(lowerMsg) &&
       !blendRemoveVerb &&
       !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
     /**
@@ -1056,7 +1067,26 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
     if (kw.kind === "read" && kw.template_id === "query_all_earn_pools") {
       routed = kw;
-    } else if (kw.kind === "write" && (kw.op === "add_liquidity" || kw.op === "remove_liquidity" || kw.op === "swap")) {
+    } else if (
+      kw.kind === "write" &&
+      (kw.op === "add_liquidity" || kw.op === "remove_liquidity" || kw.op === "swap") &&
+      routed.kind !== "plan"
+    ) {
+      /**
+       * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap —
+       * the add_liquidity clause never even reached a "how much?" follow-up, it was
+       * silently discarded at intent-parsing time. Root cause: this override exists so
+       * Vertex misclassifying a single LP/swap write as `deposit_collateral` gets
+       * corrected back — but `routeMessage` (the deterministic router `kw` comes from)
+       * can only ever see ONE clause of a multi-clause sentence, since it returns at
+       * the FIRST matching `if` block; for this message it returns just the swap half.
+       * Without this guard, that partial single-op guess unconditionally overwrote
+       * `routed` even when `routed` was ALREADY a correct, complete multi-step PLAN
+       * from Vertex that covered both clauses — throwing away the second leg. A plan
+       * was never the failure mode this override was written for (Vertex recognising
+       * 2 steps is not "misclassified as deposit_collateral"), so it no longer fires
+       * once `routed` is already one.
+       */
       // LP / swap must never become deposit_collateral.
       routed = kw;
     } else if (kw.kind === "write" && kw.template_id === "invest_max_yield") {
@@ -1108,6 +1138,12 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       };
     } else if (
       // Vertex sometimes plans LP as deposit_collateral — override when Aquarius/LP named.
+      // Never fire on a swap+LP sentence: this rewrite is a SINGLE add_liquidity write,
+      // which is exactly how "Swap 10 XLM to AQUSDC and add liquidity in Aquarius"
+      // lost the swap (or, after the plan-builder landed, clobbered a 2-step plan).
+      !/\bswap\b/i.test(message) &&
+      kw.kind !== "plan" &&
+      routed.kind !== "plan" &&
       /\b(aquarius|add liquidity|provide liquidity)\b/i.test(message) &&
       /\b(add|provide)\b/i.test(message) &&
       (routed.kind !== "write" || routed.op !== "add_liquidity")
@@ -1464,6 +1500,20 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     }
     const frozen = freezePlan(routed, Date.now());
     if (frozen.steps.length) {
+      const unsizedLp = routed.steps.find(
+        (s) => s.kind === "write" && s.op === "add_liquidity" && !(typeof s.amount === "number" && s.amount > 0),
+      );
+      if (unsizedLp && unsizedLp.kind === "write") {
+        const sides = lpSides(
+          unsizedLp.asset,
+          typeof unsizedLp.args?.token_b === "string" ? unsizedLp.args.token_b : null,
+          typeof unsizedLp.args?.venue === "string" ? unsizedLp.args.venue : null,
+        );
+        frozen.lp_input = {
+          sides,
+          other_per_xlm: await readAmmOtherPerXlm(sides[1]),
+        };
+      }
       console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval`);
       const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
       return {
@@ -2549,7 +2599,12 @@ async function readMarginPositions(smartAccount: string): Promise<MarginPosition
 
     return {
       hf,
-      hfText: hf >= HEALTH_FACTOR_INFINITY_SENTINEL ? "∞ (no debt)" : hf.toFixed(2),
+      hfText:
+        hf >= HEALTH_FACTOR_INFINITY_SENTINEL
+          ? "∞ (no debt)"
+          : !(snap.totalBorrowedValue > 0) && !(snap.grossCollateralValue > 0)
+            ? "n/a (no position)"
+            : hf.toFixed(2),
       collateral: collateralRows,
       borrowed: borrowedRows,
       grossCollateralValue: snap.grossCollateralValue,
@@ -2573,11 +2628,23 @@ async function readMarginPositions(smartAccount: string): Promise<MarginPosition
  * Kept separate so the warning is identical whether the answer came from the snapshot or
  * from MCP — "am I about to be liquidated" must not depend on which source replied.
  */
-function withHfGuardrails(message: string, hf: number, userMessage: string): string {
+export function withHfGuardrails(
+  message: string,
+  hf: number,
+  userMessage: string,
+  debtUsd?: number | null,
+): string {
   const userFloor = parseMinHealthFactor(userMessage);
   const floor = userFloor ?? copilotConfig.minHealthFactor;
   // 1e9-ish sentinel means no debt; a floor warning on an undebted account is noise.
   if (!Number.isFinite(hf) || hf > 1e6) return message;
+  /**
+   * Liquidation requires debt. HF 0 on a brand-new account (collateral $0, debt $0) is
+   * "no position" — `deriveMarginHealth` returns 0 there, not the ∞ sentinel (that is
+   * collateral-with-no-debt). Treating HF < 1 as liquidatable without checking debt
+   * is how a fresh account got "URGENT: this account is liquidatable".
+   */
+  if (!(Number(debtUsd) > 0.01)) return message;
   if (hf < 1.0) {
     return (
       `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is ` +
@@ -2808,6 +2875,7 @@ async function snapshotPositionAnswer(
     const { LIQUIDATION_THRESHOLD, HEALTH_FACTOR_INFINITY_SENTINEL: INF } = await import(
       "@/lib/margin-health"
     );
+    const empty = !(pos.grossCollateralValue > 0.01) && !(pos.totalBorrowedValue > 0.01);
     const infinite = pos.hf >= INF;
     const askedDistance = /\bclose\s+to\s+liquidat|\bdistance\s+to\s+liquidat|\bhow\s+far\b.*\bliquidat/i.test(
       ctx.message,
@@ -2816,7 +2884,9 @@ async function snapshotPositionAnswer(
       ctx.message,
     );
     let lead: string;
-    if (askedDistance) {
+    if (empty) {
+      lead = "No margin position yet — nothing to liquidate";
+    } else if (askedDistance) {
       lead = infinite
         ? "No debt, so there is nothing to liquidate"
         : `Health factor ${pos.hfText} is ${(pos.hf - LIQUIDATION_THRESHOLD).toFixed(2)} above the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
@@ -2831,10 +2901,11 @@ async function snapshotPositionAnswer(
     } else {
       lead = `Health factor ${pos.hfText}`;
     }
-    message =
-      `${lead} · collateral ${money(pos.grossCollateralValue)} · ` +
-      `borrowed ${money(pos.totalBorrowedValue)} · ` +
-      `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
+    message = empty
+      ? `${lead} · collateral ${money(pos.grossCollateralValue)} · borrowed ${money(pos.totalBorrowedValue)}.`
+      : `${lead} · collateral ${money(pos.grossCollateralValue)} · ` +
+        `borrowed ${money(pos.totalBorrowedValue)} · ` +
+        `${money(pos.collateralLeftBeforeLiquidation)} of collateral left before liquidation.`;
 
     /**
      * "Simulate borrowing 10 BLUSDC — what happens to my health factor?" asks what the
@@ -2873,7 +2944,7 @@ async function snapshotPositionAnswer(
 
   return {
     kind: "answer",
-    message: withHfGuardrails(message, pos.hf, ctx.message),
+    message: withHfGuardrails(message, pos.hf, ctx.message, pos.totalBorrowedValue),
     /**
      * A question that narrows to ONE asset gets a facts card of ONE asset.
      *
@@ -2953,7 +3024,14 @@ export function allPositionsStructured(
     // at a comfortable HF ~4.8, reading as "something is wrong here" when nothing
     // was — reported live as "what is this box representing?". A genuinely
     // stressed account (HF < 1.4) still shows it; a healthy one no longer does.
-    const hfTone: AnswerFact["tone"] = pos.hf < 1.1 ? "bad" : pos.hf < 1.4 ? "warn" : "good";
+    const hfTone: AnswerFact["tone"] =
+      !(pos.totalBorrowedValue > 0.01)
+        ? "neutral"
+        : pos.hf < 1.1
+          ? "bad"
+          : pos.hf < 1.4
+            ? "warn"
+            : "good";
     facts.push({ label: "health factor", value: pos.hfText, tone: hfTone });
     facts.push({ label: "collateral", value: money(pos.grossCollateralValue) });
     facts.push({ label: "borrowed", value: money(pos.totalBorrowedValue) });
@@ -3179,7 +3257,7 @@ async function allPositionsAnswer(
   }
   let message = answerToText(structured);
   if (pos) {
-    message = withHfGuardrails(message, pos.hf, ctx.message);
+    message = withHfGuardrails(message, pos.hf, ctx.message, pos.totalBorrowedValue);
   }
 
   /**
@@ -3513,22 +3591,26 @@ async function farmPositionAnswer(
       AQUARIUS_POOLS.forEach((pool, i) => {
         const lp = Number.parseFloat(String(aquariusResults[i * 2] ?? "0")) || 0;
         const stats = aquariusResults[i * 2 + 1] as Awaited<ReturnType<typeof AquariusService.getAquariusPoolStats>>;
-        if (!(lp > DUST) || !stats) return;
-        const { amountA, amountB } = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
-        const priceA = pool.tokens[0] === "XLM" ? xlmPrice : usdcPrice;
-        const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
-        const usd = amountA * priceA + amountB * priceB;
-        if (usd <= DUST) return;
-        // `pool.tokens` is a generic pair key ("XLM"/"USDC") shared with the on-chain
-        // lookup call above — display-only, it should say which USDC this actually is.
-        // Reported live via cross-check against the Farm page, which shows "AqUSDC"
-        // for this exact pool while this answer said bare "USDC" for the same figure.
+        if (!(lp > DUST)) return;
         const displayToken = (t: string) => (t === "USDC" ? "AQUSDC" : t);
         const labelA = displayToken(pool.tokens[0]);
         const labelB = displayToken(pool.tokens[1]);
+        let amountA = 0;
+        let amountB = 0;
+        let usd = 0;
+        if (stats) {
+          const under = aquariusLpUnderlyingAmounts(lp, stats, pool.tokens[0], pool.tokens[1]);
+          amountA = under.amountA;
+          amountB = under.amountB;
+          const priceA = pool.tokens[0] === "XLM" ? xlmPrice : usdcPrice;
+          const priceB = pool.tokens[1] === "XLM" ? xlmPrice : usdcPrice;
+          usd = amountA * priceA + amountB * priceB;
+        }
         facts.push({
           label: `Aquarius · ${labelA}/${labelB}`,
-          value: `${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`,
+          value: stats
+            ? `${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`
+            : `${fmtPosAmount(String(lp))} LP`,
         });
         totalUsd += usd;
       });
@@ -3548,7 +3630,7 @@ async function farmPositionAnswer(
   const venueLabel = venue ? venue[0].toUpperCase() + venue.slice(1) : "Farm";
   if (!facts.length) {
     const structured: StructuredAnswer = {
-      headline: `You have no active ${venueLabel} position${venue ? "" : "s"} right now.`,
+      headline: `Your ${venueLabel} Deposit TVL is $0.00 — no active positions.`,
       facts: [],
       venue: "none",
     };
@@ -3562,16 +3644,14 @@ async function farmPositionAnswer(
     };
   }
 
-  const headline = venue
-    ? `Your ${venueLabel} Farm position — ${facts.length} open, ~${money(totalUsd)} total.`
-    : `Your Farm positions — ${facts.length} open, ~${money(totalUsd)} total.`;
+  const headline = `Your ${venueLabel} Deposit TVL is ${money(totalUsd)}.`;
   const structured: StructuredAnswer = {
     headline,
     facts,
     venue: "none",
     note: venue
       ? undefined
-      : "Margin collateral/debt and Earn (vToken) supply are separate — this is Blend + Aquarius/Soroswap LP only.",
+      : "Blend lending plus Aquarius/Soroswap LP — same total as Farm → Your Deposit TVL. Earn (vTokens) is separate.",
   };
   return {
     kind: "answer",
@@ -3850,10 +3930,15 @@ async function runRead(
     return earnPositionsAnswer(ctx, onlySymbol);
   }
 
-  // "My Farm position" — see farmPositionAnswer's own doc comment for why this reads
-  // on-chain Blend/Aquarius/Soroswap LP state directly instead of the margin/farm
-  // fan-out's best-effort prose sentence.
-  if (routed.template_id === "query_farm_position") {
+  // Farm Deposit TVL / "what am I farming" — same Blend + Aquarius + Soroswap snapshot
+  // as the Farm page. Vertex maps these questions onto `vanna_get_farm_overview`, which
+  // reads Registry tracking tokens (Aquarius LP = 0 while Farm shows 1.64 LP). Never
+  // let that MCP path answer a holdings question.
+  if (
+    routed.template_id === "query_farm_position" ||
+    routed.tool === "vanna_get_farm_overview" ||
+    routed.tool === "vanna_get_farm_lp_position"
+  ) {
     const venue = routed.args?.venue;
     return farmPositionAnswer(
       ctx,
@@ -4311,9 +4396,14 @@ async function runRead(
           (data as Record<string, unknown>).hf ??
           (data as Record<string, unknown>).avg_health_factor,
       );
+      const debt = Number(
+        (data as Record<string, unknown>).debt_usd ??
+          (data as Record<string, unknown>).total_debt_usd ??
+          (data as Record<string, unknown>).debt,
+      );
       const userFloor = parseMinHealthFactor(ctx.message);
       const floor = userFloor ?? 1.3;
-      if (Number.isFinite(hf)) {
+      if (Number.isFinite(hf) && Number(debt) > 0.01) {
         if (hf < 1.0) {
           prose +=
             `\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is liquidatable. ` +
@@ -5660,87 +5750,39 @@ async function runWrite(
     const tokenIn = (action.token_a || action.asset || "XLM").toUpperCase();
     const tokenOut = (action.token_b || "USDC").toUpperCase();
     /**
-     * "Swap 100 XLM to SOUSDC" quoted "at least 16.61 SOUSDC" and executed for real —
-     * the account's own SOUSDC margin balance grew by 28.35, not 16.61. Root cause: this
-     * used ORACLE prices (`vanna_get_prices_batch`, XLM's USD price ÷ SOUSDC's USD
-     * price) to estimate a DEX swap's output, silently assuming the AMM pool trades at
-     * the oracle price. It does not have to — the testnet Soroswap XLM/SOUSDC pool's own
-     * live ratio (confirmed via `SoroswapService.getPoolStats`, the same read
-     * `poolRatioAnswer`/"what is the current swap price" already uses) was ~0.29
-     * SOUSDC per XLM, nearly double the oracle-implied ~0.167, and the REAL settled
-     * amount matched the POOL's ratio, not the oracle's. Worse than a wrong headline
-     * number: `min_out` is derived from this same `expected`, so understating it also
-     * understated the slippage floor — the trade was far LESS protected against an
-     * adverse price move than the stated "0.5%" implied. An AMM swap must be quoted from
-     * the pool it will actually execute against, not a proxy price.
+     * Quote from the same router Trade/Spot uses (`getSwapQuote`). Oracle USD and
+     * reserve-ratio both produced "at least 16.61 SOUSDC" for 100 XLM while Spot
+     * received ~28.35 — do not fall back to those numbers; omit the quote instead.
      */
-    let quotedFromPool = false;
-    const otherToken = tokenIn === "XLM" ? tokenOut : tokenIn === tokenOut ? null : tokenIn;
-    if (otherToken && (otherToken === "AQUSDC" || otherToken === "SOUSDC")) {
+    const quoteVenue: "aquarius" | "soroswap" =
+      venue === "soroswap" || tokenIn === "SOUSDC" || tokenOut === "SOUSDC"
+        ? "soroswap"
+        : "aquarius";
+    const simulator = ctx.trader || smartAccount || "";
+    if (simulator) {
       try {
-        let reserveXlm: number | null = null;
-        let reserveOther: number | null = null;
-        if (otherToken === "SOUSDC") {
-          const { SoroswapService } = await import("@/lib/soroswap-utils");
-          const stats = await SoroswapService.getPoolStats();
-          reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : null;
-          reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : null;
-        } else {
-          const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
-            import("@/lib/aquarius-utils"),
-            import("@/lib/stellar-utils"),
-          ]);
-          const poolAddress =
-            AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
-            CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
-          const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
-          reserveXlm = stats ? Number.parseFloat(stats.reserveA) : null;
-          reserveOther = stats ? Number.parseFloat(stats.reserveB) : null;
-        }
-        if (
-          reserveXlm != null &&
-          reserveOther != null &&
-          Number.isFinite(reserveXlm) &&
-          Number.isFinite(reserveOther) &&
-          reserveXlm > 0 &&
-          reserveOther > 0
-        ) {
-          const expected =
-            tokenIn === "XLM"
-              ? swapAmount * (reserveOther / reserveXlm)
-              : swapAmount * (reserveXlm / reserveOther);
+        const q = await quoteDexSwap({
+          amountIn: swapAmount,
+          tokenIn,
+          tokenOut,
+          venue: quoteVenue,
+          simulator,
+        });
+        if (q) {
           const slip = 0.5;
-          swapExpectedOut = expected.toFixed(7);
-          swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
+          swapExpectedOut = q.expected.toFixed(7);
+          swapMinOut = (q.expected * (1 - slip / 100)).toFixed(7);
           swapSlippagePct = String(slip);
-          quotedFromPool = true;
+          action = {
+            ...action,
+            token_a: tokenIn,
+            token_b: tokenOut,
+            expected_out: q.expected,
+            venue: action.venue ?? quoteVenue,
+          };
         }
       } catch {
-        /* falls through to the oracle-price estimate below */
-      }
-    }
-    if (!quotedFromPool) {
-      const oracleIn = tokenIn === "XLM" || tokenIn === "AQUA" ? tokenIn : "USDC";
-      const oracleOut = tokenOut === "XLM" || tokenOut === "AQUA" ? tokenOut : "USDC";
-      try {
-        const batch = await getMcpClient().call(
-          "vanna_get_prices_batch",
-          { symbols: [oracleIn, oracleOut] },
-          ctx.userId,
-        );
-        const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
-        const pin = Number(prices[oracleIn]?.price_usd ?? prices[oracleIn.toLowerCase()]?.price_usd);
-        const pout = Number(prices[oracleOut]?.price_usd ?? prices[oracleOut.toLowerCase()]?.price_usd);
-        if (Number.isFinite(pin) && Number.isFinite(pout) && pout > 0) {
-          // Use local swapAmount — spreading action widens amount to number | null again.
-          const expected = (swapAmount * pin) / pout;
-          const slip = 0.5;
-          swapExpectedOut = expected.toFixed(7);
-          swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
-          swapSlippagePct = String(slip);
-        }
-      } catch {
-        /* MCP auto-quote or retry path */
+        /* MCP may still auto-quote at execute */
       }
     }
   }
@@ -5862,16 +5904,17 @@ async function runWrite(
     !action.token_a &&
     !action.token_b &&
     action.asset &&
-    action.asset.toUpperCase() !== "XLM" &&
     action.amount != null &&
     action.amount > 0
   ) {
+    const sides = lpSides(action.asset, null, action.venue != null ? String(action.venue) : null);
+    const selected = action.asset.toUpperCase();
     action = {
       ...action,
-      token_a: "XLM",
-      token_b: action.asset,
-      amount_a: null,
-      amount_b: action.amount,
+      token_a: sides[0],
+      token_b: sides[1],
+      amount_a: selected === "XLM" ? action.amount : null,
+      amount_b: selected !== "XLM" ? action.amount : null,
     };
   }
 
@@ -5968,6 +6011,113 @@ async function runWrite(
       } catch {
         /* best-effort — an unreachable pool-stats read must never block the add */
       }
+    }
+  }
+
+  /**
+   * AMM add/remove must execute the way Farm does — `AquariusService` /
+   * `SoroswapService` — not MCP's tracking-token path.
+   *
+   * Live: Farm /farm/aquarius-xlm-usdc showed 12.64 LP (pool `get_user_shares`).
+   * Copilot "remove 10 LP from aquarius" went through `vanna_farm_lp`, which looks
+   * up Registry `AQ_XLM_USDC`. That tracker can be empty while the pool still
+   * holds shares, so MCP either said there was no position or signed a no-op.
+   * Stage without an MCP envelope; the client `executeAction` calls the same
+   * service as Farm's Remove Liquidity button.
+   */
+  if (
+    (action.op === "remove_liquidity" || action.op === "add_liquidity") &&
+    smartAccount &&
+    ctx.trader
+  ) {
+    if (action.op === "remove_liquidity") {
+      const live = await readFarmAmmLpShares({
+        smartAccount,
+        tokenB: action.token_b || action.asset,
+        venue: action.venue,
+      });
+      if (!(live.shares > 1e-6)) {
+        return {
+          kind: "blocked",
+          message:
+            `Farm's ${live.label} pool shows 0 LP on this account — nothing to remove. ` +
+            `Open Farm → ${live.venue === "soroswap" ? "Soroswap" : "Aquarius"} to confirm the position.`,
+          intent: { template_id: "remove_liquidity", slots: { venue: live.venue, lp: 0 } },
+          request_id: ctx.request_id,
+        };
+      }
+      if (action.fraction != null && action.fraction > 0 && action.fraction < 1 && !(action.amount != null && action.amount > 0)) {
+        action = { ...action, amount: live.shares * action.fraction };
+      }
+      const want = action.amount;
+      if (want != null && want > 0 && want > live.shares + 1e-4) {
+        return {
+          kind: "blocked",
+          message:
+            `You asked to remove ${want} LP but Farm shows ${live.shares.toFixed(4)} LP on ${live.label}. ` +
+            `Remove ${live.shares.toFixed(2)} or less.`,
+          intent: {
+            template_id: "remove_liquidity",
+            slots: { venue: live.venue, lp: live.shares, asked: want },
+          },
+          request_id: ctx.request_id,
+        };
+      }
+      const amt = want != null && want > 0 ? want : live.shares;
+      action = {
+        ...action,
+        amount: amt,
+        token_a: "XLM",
+        token_b: live.venue === "soroswap" ? "SOUSDC" : "AQUSDC",
+        venue: live.venue,
+      };
+      const label = `Remove ${amt} ${live.label} LP`;
+      return {
+        kind: "needs_wallet_sign",
+        message: label,
+        mcp: { tool: "farm_lp_local", has_unsigned_xdr: false },
+        intent: { template_id: "remove_liquidity", slots: { amount: amt, venue: live.venue } },
+        preview: {
+          template_id: "remove_liquidity",
+          human_summary: label,
+          slots: { amount: amt, asset: "LP", venue: live.venue, lp_held: live.shares },
+          risk: { decision: "allow", reasons: [] },
+          requires_signature: true,
+          action: { ...action, asset: "LP", smart_account: smartAccount },
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    if (
+      action.op === "add_liquidity" &&
+      action.amount_a != null &&
+      action.amount_a > 0 &&
+      action.amount_b != null &&
+      action.amount_b > 0
+    ) {
+      const usd = String(action.token_b === "XLM" ? action.token_a : action.token_b || "AQUSDC").toUpperCase();
+      const venue = usd === "SOUSDC" ? "soroswap" : "aquarius";
+      const xlm = action.token_a === "XLM" ? action.amount_a : action.amount_b;
+      const other = action.token_a === "XLM" ? action.amount_b : action.amount_a;
+      const label = `Add ${xlm} XLM + ${other} ${usd} LP`;
+      return {
+        kind: "needs_wallet_sign",
+        message: label,
+        mcp: { tool: "farm_lp_local", has_unsigned_xdr: false },
+        intent: { template_id: "add_liquidity", slots: { venue } },
+        preview: {
+          template_id: "add_liquidity",
+          human_summary: label,
+          slots: { amount_a: xlm, amount_b: other, venue },
+          risk: {
+            decision: "allow",
+            reasons: addLiquidityNote ? [addLiquidityNote] : [],
+          },
+          requires_signature: true,
+          action: { ...action, venue, smart_account: smartAccount },
+        },
+        request_id: ctx.request_id,
+      };
     }
   }
 
@@ -6152,14 +6302,8 @@ async function runWrite(
    * Only applied on the staged and settled paths; a genuine error card still shows both.
    */
   const withoutSupersededDiagnostic = (b: Record<string, unknown>) => {
-    const { error: _error, message: _message, summary, ...rest } = b;
-    return {
-      ...rest,
-      // MCP appends its own "| unsigned_xdr present (4316 chars)" trailer to the summary.
-      ...(typeof summary === "string"
-        ? { summary: summary.replace(/\s*\|\s*unsigned_xdr present[^|]*$/i, "").trim() }
-        : {}),
-    };
+    const { error: _error, message: _message, summary: _summary, ...rest } = b;
+    return rest;
   };
 
   const mcpMeta = {
@@ -6241,9 +6385,15 @@ async function runWrite(
       : "";
     // Put the comparison first in human_summary so the staged-action title
     // shows the winner (UI uses human_summary as the H6 headline).
-    const stagedTitle = pickSummary
-      ? `${pickSummary} → ${mapped.step.label}`
-      : mapped.step.label;
+    const oneLine = shortWriteLabel({
+      op: action.op,
+      amount: action.amount,
+      asset: action.asset,
+      token_a: action.token_a,
+      token_b: action.token_b,
+      venue: action.venue,
+    });
+    const stagedTitle = pickSummary ? `${pickSummary} → ${oneLine}` : oneLine;
     const xdr = xdrForSign;
     /**
      * Say nothing when the transaction is ready — the Approve & sign button IS the
@@ -6348,7 +6498,14 @@ async function runWrite(
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       preview: {
         template_id: action.op,
-        human_summary: mapped.step.label,
+        human_summary: shortWriteLabel({
+          op: action.op,
+          amount: action.amount,
+          asset: action.asset,
+          token_a: action.token_a,
+          token_b: action.token_b,
+          venue: action.venue,
+        }),
         slots: { asset: action.asset, amount: action.amount },
         risk: {
           decision: "needs_confirmation",
@@ -6373,7 +6530,14 @@ async function runWrite(
       intent: { template_id: action.op },
       preview: {
         template_id: action.op,
-        human_summary: mapped.step.label,
+        human_summary: shortWriteLabel({
+          op: action.op,
+          amount: action.amount,
+          asset: action.asset,
+          token_a: action.token_a,
+          token_b: action.token_b,
+          venue: action.venue,
+        }),
         slots: { asset: action.asset, amount: action.amount },
         risk: { decision: "block", reasons: reasonsWith([result.message]) },
         requires_signature: false,
@@ -6432,7 +6596,14 @@ async function runWrite(
       intent: { template_id: action.op, slots: { fallback: "local_executor" } },
       preview: {
         template_id: action.op,
-        human_summary: mapped.step.label,
+        human_summary: shortWriteLabel({
+          op: action.op,
+          amount: action.amount,
+          asset: action.asset,
+          token_a: action.token_a,
+          token_b: action.token_b,
+          venue: action.venue,
+        }),
         slots: { asset: action.asset, amount: action.amount },
         risk: {
           decision: "allow",
@@ -6832,12 +7003,17 @@ async function runPlan(
       const uiAsset = w.asset
         ? displayUsdcLabel(marginCollateralSymbol(w.asset), w.asset)
         : null;
+      const lpPair =
+        w.op === "add_liquidity" ? lpSides(w.asset, String(w.token_b ?? ""), String(w.venue ?? "")) : null;
+      const lpOtherPerXlm = lpPair ? await readAmmOtherPerXlm(lpPair[1]) : null;
       const msg =
         w.op === "lend" || w.op === "supply"
           ? `How much do you want to ${w.op === "lend" ? "lend / park" : "supply"}? e.g. “park 20 XLM for yield”.`
-          : uiAsset
-            ? `How much ${uiAsset} to ${w.op.replace(/_/g, " ")}? Enter an amount in ${uiAsset}.`
-            : `Amount missing for “${w.label}”. Include a size like “10 BLUSDC” or “20 XLM”.`;
+          : lpPair
+            ? `How much to add? Pick ${lpPair[0]} or ${lpPair[1]} — the other side fills from the live pool ratio, same as Farm.`
+            : uiAsset
+              ? `How much ${uiAsset} to ${w.op.replace(/_/g, " ")}? Enter an amount in ${uiAsset}.`
+              : `Amount missing for “${w.label}”. Include a size like “10 BLUSDC” or “20 XLM”.`;
       multiSteps.push({
         index: stepIndex,
         op: w.op,
@@ -6849,6 +7025,8 @@ async function runPlan(
         message: msg,
         token_in: w.token_in ?? null,
         token_out: w.token_out ?? null,
+        token_a: lpPair ? lpPair[0] : null,
+        token_b: lpPair ? lpPair[1] : null,
       });
       // Mark remaining as skipped
       for (let j = writeCursor; j < totalWriteLegs; j++) {
@@ -6875,6 +7053,9 @@ async function runPlan(
           minHf,
           finalHf,
           smartAccount,
+          extra: lpPair
+            ? { lp_input: { sides: lpPair, other_per_xlm: lpOtherPerXlm } }
+            : undefined,
         }),
         intent: { template_id: plan.template_id, slots: { stopped_at: w.op } },
         execution: { status: "stopped", steps: multiSteps.map(toExecutionStep) },

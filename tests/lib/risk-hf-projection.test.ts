@@ -12,10 +12,23 @@
  * post-action health factor was ~10% off from what the same formula would show once the
  * write actually landed.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { evaluateWriteRisk } from "@/lib/copilot/risk";
 import type { MCPClient } from "@/lib/copilot/mcp-client";
 import type { CopilotAction } from "@/lib/copilot/types";
+
+vi.mock("@/lib/account-snapshot", () => ({
+  computeMarginSnapshot: vi.fn().mockResolvedValue({
+    collateralBalances: {},
+    borrowedBalances: {},
+    totalBorrowedValue: 315.67,
+    grossCollateralValue: 473.4,
+    totalValue: 473.4,
+    avgHealthFactor: 473.4 / 315.67,
+    collateralLeftBeforeLiquidation: 0,
+    netAvailableCollateral: 473.4 - 315.67,
+  }),
+}));
 
 const XLM_PRICE = 0.1578;
 const COLLATERAL_BEFORE = 473.40;

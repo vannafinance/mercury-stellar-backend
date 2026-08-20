@@ -190,7 +190,6 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
           lineHeight: "28px",
           color: "var(--cp-g900)",
           textWrap: "pretty",
-          maxWidth: 620,
         }}
       >
         {answer.headline}
@@ -215,14 +214,23 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
              * the far right edge, so the two rows visibly did not line up. A pair grid only
              * reads as one object when every row shares the same width.
              */
+            /**
+             * Pair columns only when every label AND value fits a half-row.
+             * Farm Deposit TVL: "13.9801 XLM + 0.1945 AQUSDC ($2.73) · 1.6416 LP"
+             * in a 620px two-col cell wrapped "LP" onto its own line. A long
+             * value (or label) forces the whole panel to one column, full width.
+             */
             gridTemplateColumns:
-              figures.length > 1 && !figures.some((f) => f.label.length > 22) ? "1fr 1fr" : "1fr",
+              figures.length > 1 &&
+              !figures.some((f) => f.label.length > 22 || f.value.length > 36)
+                ? "1fr 1fr"
+                : "1fr",
             gap: "2px 32px",
             borderRadius: 8,
             border: "1px solid var(--cp-g100)",
             background: "var(--cp-g50)",
             padding: "16px 18px",
-            maxWidth: 620,
+            width: "100%",
           }}
         >
           {figures.map((f, i) => (
@@ -234,7 +242,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
                 padding: "7px 0",
               }}
             >
-              <dt style={labelStyle}>{f.label}</dt>
+              <dt style={{ ...labelStyle, whiteSpace: "nowrap" }}>{f.label}</dt>
               <dd
                 className="m-0 flex min-w-0 items-baseline justify-end gap-1.5 text-right"
                 style={{
@@ -242,8 +250,9 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
                   fontSize: 13,
                   fontVariantNumeric: "tabular-nums",
                   color: toneColor(f.tone),
-                  overflowWrap: "anywhere",
+                  whiteSpace: "nowrap",
                 }}
+                title={f.value}
               >
                 {f.tone && TONE_MARK[f.tone] ? (
                   <>
@@ -267,7 +276,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         grid as XLM/BLUSDC read as duplicate or confusing entries.
       */}
       {lpFacts.length > 0 ? (
-        <div style={{ maxWidth: 620 }}>
+        <div>
           <p
             className="m-0 mt-[18px] mb-2"
             style={{ ...labelStyle, color: "var(--cp-g400)" }}
@@ -320,7 +329,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         token can be held in more than one of these three at once.
       */}
       {earnFacts.length > 0 ? (
-        <div style={{ maxWidth: 620 }}>
+        <div>
           <p
             className="m-0 mt-[18px] mb-2"
             style={{ ...labelStyle, color: "var(--cp-g400)" }}
@@ -382,7 +391,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         56-character address wraps inside its own cell and never widens the row.
       */}
       {identifiers.length > 0 ? (
-        <div style={{ maxWidth: 620 }}>
+        <div>
           <div
             className="mt-[18px] overflow-y-auto"
             style={{ border: "1px solid var(--cp-g100)", borderRadius: 8, maxHeight: 340 }}

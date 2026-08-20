@@ -39,6 +39,7 @@ import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
+import { liveUsdLabel, swapFillRateLabel } from "@/lib/copilot/swap-quote";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -822,6 +823,8 @@ type MultiLegStepUi = {
   /** A swap leg's destination — see RunLeg.tokenOut for why this is carried. */
   token_in?: string | null;
   token_out?: string | null;
+  token_a?: string | null;
+  token_b?: string | null;
 };
 
 type ResumeLeg = {
@@ -833,6 +836,10 @@ type ResumeLeg = {
   /** A swap leg's destination — carried so a resume replays or corrects it. */
   token_in?: string | null;
   token_out?: string | null;
+  token_a?: string | null;
+  token_b?: string | null;
+  amount_a?: number | null;
+  amount_b?: number | null;
 };
 
 /** Structured multi-leg strategy card (replaces red wall of text + facts dump). */
@@ -1096,6 +1103,62 @@ function isChainableHopResponse(
 }
 
 /**
+ * Executed write receipt: live fill rate when we have one (DEX swap) + full tx hash.
+ * Shown for every on-chain write — not only swaps — so remove-LP etc. are checkable.
+ */
+function ExecutedTxReceipt({
+  action,
+  txHash,
+}: {
+  action?: CopilotAction | null;
+  txHash: string | null;
+}) {
+  const [usdLabel, setUsdLabel] = useState<string | null>(null);
+  const swapRate =
+    action?.op === "swap"
+      ? swapFillRateLabel(
+          Number(action.amount),
+          Number(action.expected_out),
+          String(action.asset || action.token_a || "XLM"),
+          String(action.token_b || ""),
+        )
+      : null;
+
+  useEffect(() => {
+    const amount = Number(action?.amount);
+    const asset = String(action?.asset || action?.token_b || "").trim();
+    if (!(amount > 0) || !asset) {
+      setUsdLabel(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [{ fetchTokenPrices, getCachedTokenPrice }, { oraclePriceSymbol }] = await Promise.all([
+        import("@/lib/oracle-price"),
+        import("@/lib/copilot/leverage-plan"),
+      ]);
+      const feed = oraclePriceSymbol(asset);
+      await fetchTokenPrices([feed]);
+      if (cancelled) return;
+      const price = getCachedTokenPrice(feed);
+      setUsdLabel(liveUsdLabel(amount, asset, price));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [action?.amount, action?.asset, action?.token_b]);
+
+  const priceRow = swapRate || usdLabel;
+  if (!priceRow && !txHash) return null;
+  return (
+    <div className="mt-[18px] grid w-full grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4">
+      {priceRow ? <Row k="live price" v={priceRow} /> : null}
+      {txHash ? <Row k="tx hash" v={txHash} /> : null}
+    </div>
+  );
+}
+
+/**
  * Supporting figures for a response.
  *
  * `shown` carries the values the structured answer above has ALREADY rendered. Without it
@@ -1157,6 +1220,8 @@ function FactsGrid({
     "amount stroops",
     "session_id",
     "session id",
+    "summary",
+    "note",
   ]);
   const already = (val: string) => !!shown && shown.has(val.trim());
   const rows: [string, string][] = [];
@@ -1179,11 +1244,7 @@ function FactsGrid({
   if (!rows.length) return null;
   return (
     <div
-      className="mt-[18px] grid grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2"
-      // Matches AnswerView's figures grid (answer-view.tsx) so the two answer cards
-      // read as one consistent width instead of the readable card sitting narrower
-      // than the raw-data card underneath it.
-      style={{ maxWidth: 620 }}
+      className="mt-[18px] grid w-full grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4 sm:grid-cols-2"
     >
       {/*
        * Reported live: "give my margin account collateral" on a 6-asset account (6
@@ -2360,11 +2421,8 @@ export function CopilotWorkspace() {
    * this must not normalise, reorder or "tidy" the payload on the way out.
    */
   const approvePlan = useCallback(
-    async (plan: PlanPreview) => {
+    async (plan: PlanPreview, lpFill?: { asset: string; amount: number; token_b?: string | null }) => {
       if (loading) return;
-      // Keep the user's original wording as the log label and adopt the plan as the
-      // strategy parent, so approval and every leg after it update one row rather than
-      // opening a second "Approved plan" entry beside the prompt that created it.
       const label = submitted || plan.summary || `Approve ${plan.steps.length} steps`;
       strategyParentRef.current = { id: `plan-${plan.plan_id}`, prompt: label };
       setPaletteOpen(false);
@@ -2374,30 +2432,21 @@ export function CopilotWorkspace() {
           approved_plan: {
             plan_id: plan.plan_id,
             created_at: plan.created_at,
-            // Echoed back VERBATIM — the whole slot record, unread. The client does not
-            // decide which parts of an approved trade matter: picking fields here is
-            // what dropped `leverage`, then `borrow_asset`, then `token_out`, each
-            // silently changing the trade AND passing the fingerprint that was supposed
-            // to prove it had not changed.
             steps: plan.steps.map((s) => ({
-              // Carried so a read leg survives the round-trip. Without it the server sees
-              // a step with no slots and treats it as a write with nothing to do — the
-              // reporting step the user approved would be dropped on the way back.
               kind: s.kind,
               tool: s.tool ?? null,
               op: s.op,
               slots: s.slots,
-              // Legacy spellings, kept so a server that predates `slots` still validates.
               asset: s.asset,
               amount: s.amount,
               leverage: s.leverage,
               borrow_asset: s.borrow_asset ?? null,
             })),
-            // Carried so a stated HF floor ("...keep HF above 1.4") survives the round
-            // trip — this call sends `message: "approve plan"`, not the original text,
-            // so the server's fallback of re-parsing the message finds nothing.
             constraints: plan.constraints ?? null,
           },
+          lp_fill: lpFill
+            ? { asset: lpFill.asset, amount: lpFill.amount, token_b: lpFill.token_b ?? null }
+            : null,
         },
         label,
         // chainHop so the strategy row merges into the parent set just above rather
@@ -4058,6 +4107,16 @@ export function CopilotWorkspace() {
           s.message && toRunLegStatus(s.status) === "needs_input" ? String(s.message) : null,
         tokenIn: s.token_in ?? null,
         tokenOut: s.token_out ?? null,
+        lpSides:
+          op === "add_liquidity" && Array.isArray((response?.data as { lp_input?: { sides?: string[] } })?.lp_input?.sides)
+            ? ((response!.data as { lp_input: { sides: [string, string] } }).lp_input.sides)
+            : s.token_a && s.token_b
+              ? [String(s.token_a), String(s.token_b)]
+              : null,
+        lpOtherPerXlm:
+          op === "add_liquidity"
+            ? ((response?.data as { lp_input?: { other_per_xlm?: number | null } })?.lp_input?.other_per_xlm ?? null)
+            : null,
       };
     });
   }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
@@ -4068,7 +4127,7 @@ export function CopilotWorkspace() {
    * the server runs them in order, so the rest of the strategy continues untouched.
    */
   const submitLegAmount = useCallback(
-    (leg: RunLeg, amount: number) => {
+    (leg: RunLeg, amount: number, selectedAsset?: string) => {
       /**
        * Everything still outstanding, not just the leg being answered.
        *
@@ -4081,23 +4140,33 @@ export function CopilotWorkspace() {
        * supply — the same class of failure as an approved 2× plan replaying unlevered, and
        * just as invisible, because the amount looks right.
        */
-      const carry = (l: RunLeg, overrideAmount?: number) => ({
-        op: l.op,
-        asset: l.asset,
-        amount:
-          overrideAmount ??
-          (l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null),
-        leverage: l.leverage ?? null,
-        label: l.label,
-        token_in: l.tokenIn ?? null,
-        token_out: l.tokenOut ?? null,
-      });
+      const carry = (l: RunLeg, overrideAmount?: number, overrideAsset?: string) => {
+        const asset = overrideAsset || l.asset;
+        const sides = l.lpSides;
+        const selected = (overrideAsset || asset || "").toUpperCase();
+        const isLp = l.op === "add_liquidity" && sides && sides.length === 2;
+        return {
+          op: l.op,
+          asset,
+          amount:
+            overrideAmount ??
+            (l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null),
+          leverage: l.leverage ?? null,
+          label: l.label,
+          token_in: l.tokenIn ?? null,
+          token_out: l.tokenOut ?? null,
+          token_a: isLp ? sides[0] : null,
+          token_b: isLp ? sides[1] : null,
+          amount_a: isLp && overrideAmount != null && selected === "XLM" ? overrideAmount : null,
+          amount_b: isLp && overrideAmount != null && selected !== "XLM" ? overrideAmount : null,
+        };
+      };
 
       const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
       const summary = String(
         strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
       );
-      void resumeMultiLeg([carry(leg, amount), ...rest], summary);
+      void resumeMultiLeg([carry(leg, amount, selectedAsset), ...rest], summary);
     },
     [runLegs, resumeMultiLeg, submitted],
   );
@@ -4181,7 +4250,13 @@ export function CopilotWorkspace() {
     autoSubmitBlocked,
     hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
   });
-  const txHash = response?.execution?.tx_hash ?? null;
+  const txHash =
+    response?.execution?.tx_hash ??
+    (typeof (response?.data as { tx_hash?: unknown } | undefined)?.tx_hash === "string"
+      ? String((response?.data as { tx_hash: string }).tx_hash)
+      : typeof (response?.data as { "tx hash"?: unknown } | undefined)?.["tx hash"] === "string"
+        ? String((response?.data as { "tx hash": string })["tx hash"])
+        : null);
 
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
@@ -4617,14 +4692,6 @@ export function CopilotWorkspace() {
                             </p>
                           )}
                       </div>
-                      {action?.op && (
-                        <div className="shrink-0 text-right">
-                          <p className="font-mono text-[13px] text-vgray-900">{action.op}</p>
-                          <p className="mt-[3px] font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
-                            mcp op
-                          </p>
-                        </div>
-                      )}
                     </div>
 
                     {action?.multi_leg && (
@@ -4655,15 +4722,56 @@ export function CopilotWorkspace() {
                     )}
 
                     {action?.amount != null && (
-                      <div className="mt-5 flex items-baseline gap-2.5">
-                        <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-vgray-400">amount</span>
-                        <span className="font-mono text-h7 text-vgray-900">
-                          {action.amount} {action.asset ?? ""}
-                        </span>
+                      <div className="mt-5 flex flex-col gap-1.5">
+                        <div className="flex items-baseline gap-2.5">
+                          <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-vgray-400">
+                            {action.op === "swap"
+                              ? "you pay"
+                              : action.op === "remove_liquidity"
+                                ? "removing"
+                                : "amount"}
+                          </span>
+                          <span className="font-mono text-h7 text-vgray-900">
+                            {action.op === "remove_liquidity"
+                              ? `${action.amount} LP`
+                              : `${action.amount} ${action.asset ?? ""}`}
+                          </span>
+                        </div>
+                        {action.op === "remove_liquidity" && (action.token_a || action.token_b) ? (
+                          <p className="m-0 font-mono text-[12px] text-vgray-500">
+                            {action.token_a}/{action.token_b}
+                            {action.venue ? ` · ${action.venue}` : ""}
+                          </p>
+                        ) : null}
+                        {action.op === "swap" &&
+                          action.expected_out != null &&
+                          action.expected_out > 0 && (
+                            <>
+                              <div className="flex items-baseline gap-2.5">
+                                <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-vgray-400">
+                                  you receive
+                                </span>
+                                <span className="font-mono text-h7 text-vgray-900">
+                                  ~{Number(action.expected_out).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
+                                  {action.token_b || ""}
+                                </span>
+                              </div>
+                              {action.amount > 0 ? (
+                                <p className="m-0 font-mono text-[12px] text-vgray-500">
+                                  1 {action.asset} ≈{" "}
+                                  {(action.expected_out / action.amount).toLocaleString(undefined, {
+                                    maximumFractionDigits: 6,
+                                  })}{" "}
+                                  {action.token_b}
+                                </p>
+                              ) : null}
+                            </>
+                          )}
                       </div>
                     )}
 
-                    {response.data && <FactsGrid data={response.data} />}
+                    {/* Staged writes use the one-line title (shortWriteLabel). MCP's
+                        SUMMARY paragraph is not a fact the user needs before signing. */}
 
                     {sessionSigning && !willAutoSubmit && (
                       <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: WARN_INK }}>
@@ -4986,20 +5094,18 @@ export function CopilotWorkspace() {
                             <p className="text-h6 font-semibold text-vgray-900">
                               {response.preview?.human_summary || "Submitted on-chain"}
                             </p>
-                            <p className="mt-1 text-body-2 text-vgray-500">{response.message}</p>
+                            <p className="mt-1 text-body-2 text-vgray-500">
+                              {action?.op
+                                ? "Signed and submitted on-chain."
+                                : response.message}
+                            </p>
                           </div>
                         </div>
-                        {/*
-                          Reported live: this card (tx hash / status / mcp tool / signer)
-                          duplicated the "02 · Agent run" timeline above it verbatim —
-                          "Transaction built · vanna_swap" is "mcp tool", "Signed &
-                          submitted · signed_and_submitted" is "status" — while its own tx
-                          hash was truncated, unlike the raw data card below which already
-                          shows it in full. One card said less than the log above it and
-                          less than the card below it, so it added nothing. Removed; the
-                          raw data card immediately below carries tx hash and final status.
-                        */}
-                        {response.data && <FactsGrid data={response.data} />}
+                        {action?.op ? (
+                          <ExecutedTxReceipt action={action} txHash={txHash} />
+                        ) : (
+                          response.data && <FactsGrid data={response.data} />
+                        )}
                       </>
                     )}
                     <div className="mt-[22px] flex flex-wrap gap-2.5">

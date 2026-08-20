@@ -57,4 +57,11 @@ describe("swap — a named USDC variant is honoured, never substituted", () => {
     expect(r.step?.label).toContain("AQUSDC");
     expect(r.step?.label).not.toMatch(/→ USDC\b/);
   });
+
+  it("puts the router quote in the label when expected_out is known", () => {
+    const r = swap({ token_b: "SOUSDC", expected_out: 28.35 });
+    expect(r.step?.label).toMatch(/28\.35/);
+    expect(r.step?.label).toContain("SOUSDC");
+    expect(r.step?.args.expected_out).toBe("28.35");
+  });
 });

@@ -366,6 +366,88 @@ function any(text: string, ...words: string[]): boolean {
 }
 
 /**
+ * AMM LP as its own action, not a synonym of "add"/"remove".
+ *
+ * "add 10 XLM as collateral" is a deposit; "add liquidity in Aquarius" is an LP write.
+ * Every multi-goal gate that only counted `swap|lend|borrow|…` silently dropped the
+ * second clause of "swap … and add liquidity in <venue>" and executed the swap alone.
+ * One matcher, used by the plan-builder and `looksLikeMultiGoal`, so they cannot drift.
+ */
+export function hasAmmLpIntent(text: string): boolean {
+  return any(text, "add liquidity", "provide liquidity", "add lp", "remove liquidity");
+}
+
+/** Every "N ASSET" pair in the message, longest-ticker first via ASSET_ALT. */
+export function sizedAssetLegs(message: string): Array<{ amount: number; asset: string }> {
+  const out: Array<{ amount: number; asset: string }> = [];
+  const re = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "gi");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(message)) !== null) {
+    const amount = Number(m[1]);
+    const asset = m[2].toUpperCase();
+    if (Number.isFinite(amount) && amount > 0) out.push({ amount, asset });
+  }
+  return out;
+}
+
+/**
+ * "lend 1000 XLM, 100 BLUSDC, 100 SOUSDC, 100 AQUSDC" / "supply liquidity …" across
+ * Earn's four pools is four lend legs, not one lend and not Aquarius AMM LP.
+ */
+function trySizedEarnLendPlan(raw: string, text: string): RoutedIntent | null {
+  const seen = new Set<string>();
+  const legs = sizedAssetLegs(raw).filter((e) => {
+    if (!EARN_POOL_ASSETS.has(e.asset) || seen.has(e.asset)) return false;
+    seen.add(e.asset);
+    return true;
+  });
+  if (legs.length < 2) return null;
+
+  const supplyVerb =
+    /\blend\b/.test(text) ||
+    any(text, "supply liquidity", "provide liquidity", "add liquidity") ||
+    (any(text, "supply") && !any(text, "supply apy", "supply apr"));
+  if (!supplyVerb) return null;
+
+  // Two tokens + a named AMM is add_liquidity, not two Earn deposits.
+  if (
+    legs.length === 2 &&
+    (any(text, "aquarius") || any(text, "soroswap")) &&
+    any(text, "add liquidity", "provide liquidity", "add lp")
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "plan",
+    template_id: "lend_each_earn_pool",
+    summary: `Lend ${legs.map((l) => `${l.amount} ${l.asset}`).join(", ")}`,
+    steps: legs.map((l) => ({
+      kind: "write" as const,
+      op: "lend",
+      asset: l.asset,
+      amount: l.amount,
+      args: { asset: l.asset, amount: l.amount },
+    })),
+  };
+}
+
+export type AmmVenue = "aquarius" | "soroswap";
+
+/** Named AMM, else the venue that actually trades the token (AQUSDC / SOUSDC). */
+export function inferAmmVenue(text: string, token?: string | null): AmmVenue {
+  if (any(text.toLowerCase(), "soroswap")) return "soroswap";
+  if (any(text.toLowerCase(), "aquarius")) return "aquarius";
+  const u = (token || "").toUpperCase();
+  if (u === "SOUSDC") return "soroswap";
+  return "aquarius";
+}
+
+export function ammLpStable(venue: AmmVenue): "AQUSDC" | "SOUSDC" {
+  return venue === "soroswap" ? "SOUSDC" : "AQUSDC";
+}
+
+/**
  * The floor with the character range it was read from.
  *
  * Span accounting (plan-ir.ts) needs to know which part of the message the floor
@@ -442,6 +524,12 @@ function tryMultiGoalPlan(
   leverage: number | null,
 ): RoutedIntent | null {
   /**
+   * Farm page "Your Deposit TVL" is a holdings figure, not two write verbs.
+   * "What is My Deposit TVL in Farm Section" matched farm+deposit → a deposit_collateral
+   * then deploy_to_blend plan. TVL is never a strategy to execute.
+   */
+  if (/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) return null;
+  /**
    * "post 200 XLM and borrow BLUSDC" executed a bare `borrow 200 BLUSDC` — no deposit
    * leg at all, and "200" attached to the wrong noun. "post" is a plain synonym for
    * "deposit" (the note's own X-02 uses it), and it was in neither this count nor the
@@ -465,7 +553,15 @@ function tryMultiGoalPlan(
     (any(text, "park", "lend", "earn", "yield") && any(text, "farm", "blend", "deploy")) ||
     (any(text, "deposit", "post") && any(text, "borrow") && any(text, "blend", "farm", "supply")) ||
     (any(text, "repay") && any(text, "deposit", "lend", "borrow", "farm")) ||
-    (any(text, "swap") && any(text, "lend", "farm", "deposit", "supply", "borrow")) ||
+    /**
+     * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap —
+     * this whole function bailed out at the very first gate, `multiGoalShape`, which
+     * checked "swap" alongside lend/farm/deposit/supply/borrow but never alongside
+     * "add liquidity"/"lp", so a swap-then-LP sentence never looked like a plan-worthy
+     * shape at all and fell to the single-action swap branch instead. Added here, and
+     * the matching step-builder added below.
+     */
+    (any(text, "swap") && (any(text, "lend", "farm", "deposit", "supply", "borrow") || hasAmmLpIntent(text))) ||
     (any(text, "farm", "blend") && any(text, "lend", "park", "swap", "repay", "deposit")) ||
     (/\b(then|and then|after that|;)\b/i.test(text) && multiVerbCount >= 2) ||
     (/\band\b/i.test(text) &&
@@ -523,21 +619,85 @@ function tryMultiGoalPlan(
     }
   }
 
-  if (any(text, "swap") && multiVerbCount >= 2) {
+  /**
+   * "swap" alone never satisfies `multiVerbCount` (it does not count "add liquidity"
+   * as a verb). Pair it with `hasAmmLpIntent` so swap-then-LP is a plan, not a
+   * single swap that silently drops the Farm LP leg.
+   */
+  const wantsLp = hasAmmLpIntent(text) && any(text, "add liquidity", "provide liquidity", "add lp");
+  const swapMultiStep = multiVerbCount >= 2 || wantsLp;
+  let swapStepTokenIn: string | null = null;
+  let swapStepTokenOut: string | null = null;
+  let swapStepAmount: number | null = null;
+  if (any(text, "swap") && swapMultiStep) {
     const swapM = raw.match(
       /(\d+(?:\.\d+)?)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
     );
     if (swapM) {
-      const tokenIn = swapM[2].toUpperCase();
-      const tokenOut = swapM[3].toUpperCase();
-      steps.push({
-        kind: "write",
-        op: "swap",
-        asset: tokenIn,
-        amount: Number(swapM[1]),
-        args: { token_in: tokenIn, token_out: tokenOut, token_a: tokenIn, token_b: tokenOut },
-      });
+      swapStepTokenIn = swapM[2].toUpperCase();
+      swapStepTokenOut = swapM[3].toUpperCase();
+      swapStepAmount = Number(swapM[1]);
     }
+  }
+
+  /**
+   * "...and add liquidity in Aquarius" — Farm LP/Multiple is XLM + the venue's
+   * USDC. Venue is the named AMM (LP clause first — "so swap bhi via soroswap hi
+   * hoga"), else the token's own venue. Bare USDC follows that venue. Amount on
+   * the LP leg is left unsized: resume + pool-ratio auto-fill sizes it the same
+   * way the Farm add-liquidity form does for a one-sided input.
+   */
+  let lpVenue: AmmVenue | null = null;
+  let lpToken: string | null = null;
+  if (wantsLp) {
+    const lpClause = raw.split(/\band\b|\bthen\b/i).pop() || raw;
+    const namedLpToken =
+      (/\baqusdc\b/i.test(lpClause) && "AQUSDC") ||
+      (/\bsousdc\b/i.test(lpClause) && "SOUSDC") ||
+      null;
+    lpVenue = inferAmmVenue(`${lpClause} ${raw}`, namedLpToken || swapStepTokenOut);
+    const mappedOut =
+      swapStepTokenOut === "USDC" || swapStepTokenOut === "BLUSDC" || !swapStepTokenOut
+        ? ammLpStable(lpVenue)
+        : swapStepTokenOut;
+    lpToken = namedLpToken || (mappedOut === "XLM" ? ammLpStable(lpVenue) : mappedOut);
+  } else if (swapStepTokenOut) {
+    lpVenue = inferAmmVenue(raw, swapStepTokenOut);
+  }
+
+  if (swapStepTokenIn && swapStepTokenOut && swapStepAmount != null && Number.isFinite(swapStepAmount)) {
+    const venue = lpVenue ?? inferAmmVenue(raw, swapStepTokenOut);
+    // Only rewrite a dollar ticker onto the AMM's own USDC when this plan is
+    // actually going to LP. "swap to BLUSDC then farm Blend" must keep BLUSDC
+    // (and the existing static blocker) — that is not an Aquarius swap.
+    const tokenOut =
+      wantsLp && (swapStepTokenOut === "USDC" || swapStepTokenOut === "BLUSDC")
+        ? ammLpStable(venue)
+        : swapStepTokenOut;
+    steps.push({
+      kind: "write",
+      op: "swap",
+      asset: swapStepTokenIn,
+      amount: swapStepAmount,
+      args: {
+        token_in: swapStepTokenIn,
+        token_out: tokenOut,
+        token_a: swapStepTokenIn,
+        token_b: tokenOut,
+        ...(wantsLp ? { venue } : {}),
+      },
+    });
+  }
+
+  if (wantsLp && lpVenue && lpToken) {
+    const tokenA = swapStepTokenIn && swapStepTokenIn !== lpToken ? swapStepTokenIn : "XLM";
+    steps.push({
+      kind: "write",
+      op: "add_liquidity",
+      asset: lpToken,
+      amount: null,
+      args: { token_a: tokenA, token_b: lpToken, venue: lpVenue },
+    });
   }
 
   if (
@@ -824,6 +984,8 @@ export function routeMessage(message: string): RoutedIntent {
   // Multi-goal BEFORE single-op writes (repay/deposit/lend/swap alone)
   const multiGoal = tryMultiGoalPlan(raw, text, asset, amount, leverage);
   if (multiGoal) return multiGoal;
+  const earnLends = trySizedEarnLendPlan(raw, text);
+  if (earnLends) return earnLends;
 
   // ── writes (checked before reads that share words like "borrow") ────────
   // C-account / margin smart account only — not G-wallet create (see client path above).
@@ -1066,7 +1228,7 @@ export function routeMessage(message: string): RoutedIntent {
       "blend pool",
     ) ||
     (any(text, "blend") &&
-      (any(text, "farm", "deploy", "supply", "deposit") || blendRemoveVerb) &&
+      (any(text, "farm", "deploy", "supply", "deposit", "add", "liquidity") || blendRemoveVerb) &&
       !any(text, "position", "stats", "apy")) ||
     (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
   if (isBlendFarmWrite && blendRemoveVerb && !any(text, "position", "stats", "apy", "btoken", "which reserve")) {
@@ -1083,7 +1245,8 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     isBlendFarmWrite &&
     !blendRemoveVerb &&
-    (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever") || (leverage != null && leverage > 1)) &&
+    (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever", "add", "liquidity") ||
+      (leverage != null && leverage > 1)) &&
     !any(text, "supply apy", "borrow apy", "position", "btoken", "pays more", "which reserve")
   ) {
     return {
@@ -1565,7 +1728,7 @@ export function routeMessage(message: string): RoutedIntent {
   // neither collateral nor an amount. Same `asksAboutOwnPoolDeposit` guard the lend-
   // write clause above uses, so a possessive/question shape naming a pool/earn/vault
   // deposit never reaches a write trigger at all.
-  if (any(text, "deposit") && !asksAboutOwnPoolDeposit) {
+  if (any(text, "deposit") && !asksAboutOwnPoolDeposit && !/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) {
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",

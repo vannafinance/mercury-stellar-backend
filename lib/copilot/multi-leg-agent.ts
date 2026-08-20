@@ -54,6 +54,9 @@ export type MultiLegStep = {
    */
   token_in?: string | null;
   token_out?: string | null;
+  /** AMM LP pair — pause UI lets the user size either side. */
+  token_a?: string | null;
+  token_b?: string | null;
 };
 
 /**

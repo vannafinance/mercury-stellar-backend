@@ -26,6 +26,15 @@ describe("'remove <amount> LP from <venue>' routes to remove_liquidity", () => {
     expect(r.amount).toBe(10);
   });
 
+  it("glued '10lp' and 'aquarius position' still route to remove_liquidity", () => {
+    const r = routeMessage("remove 10lp from aquarius position");
+    expect(r.kind).toBe("write");
+    if (r.kind !== "write") return;
+    expect(r.op).toBe("remove_liquidity");
+    expect(r.token_b).toBe("AQUSDC");
+    expect(r.amount).toBe(10);
+  });
+
   it("still recognises the existing 'remove liquidity' / half phrasings", () => {
     for (const ask of ["remove liquidity from aquarius", "remove half my soroswap lp"]) {
       const r = routeMessage(ask);

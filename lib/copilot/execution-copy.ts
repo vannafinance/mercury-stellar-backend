@@ -118,3 +118,52 @@ export function sanitizeExecutionProse(text: string): string {
   if (s.length > 320) return "";
   return s;
 }
+
+/**
+ * One-line staged/executed title. The MCP receipt paragraph is not a summary.
+ * Live: “Deposit 100 AQUSDC in Lending Pool” — not a 6-line dump.
+ */
+export function shortWriteLabel(opts: {
+  op: string;
+  amount?: number | null;
+  asset?: string | null;
+  token_a?: string | null;
+  token_b?: string | null;
+  venue?: string | null;
+}): string {
+  const asset = String(opts.asset || "").trim();
+  const amt = opts.amount != null && Number.isFinite(Number(opts.amount)) ? String(opts.amount) : "";
+  const sized = [amt, asset].filter(Boolean).join(" ");
+  const venue = opts.venue ? String(opts.venue) : "";
+  switch (opts.op) {
+    case "lend":
+    case "supply":
+      return sized ? `Deposit ${sized} in Lending Pool` : "Deposit in Lending Pool";
+    case "borrow":
+      return sized ? `Borrow ${sized}` : "Borrow";
+    case "repay":
+      return sized ? `Repay ${sized}` : "Repay";
+    case "deposit_collateral":
+      return sized ? `Deposit ${sized} as collateral` : "Deposit collateral";
+    case "withdraw_collateral":
+      return sized ? `Withdraw ${sized} collateral` : "Withdraw collateral";
+    case "deploy_to_blend":
+    case "supply_to_blend":
+      return sized ? `Supply ${sized} to Blend` : "Supply to Blend";
+    case "withdraw_from_blend":
+      return sized ? `Withdraw ${sized} from Blend` : "Withdraw from Blend";
+    case "add_liquidity": {
+      const pair = [opts.token_a, opts.token_b].filter(Boolean).join("/");
+      const where = venue ? ` in ${venue}` : "";
+      if (sized && pair) return `Add ${sized} (${pair}) liquidity${where}`;
+      if (sized) return `Add ${sized} liquidity${where}`;
+      return `Add liquidity${where}`;
+    }
+    case "remove_liquidity":
+      return `${amt ? `Remove ${amt} LP` : "Remove LP"}${venue ? ` from ${venue}` : ""}`;
+    case "swap":
+      return sized ? `Swap ${sized}` : "Swap";
+    default:
+      return sized ? `${opts.op.replace(/_/g, " ")} ${sized}` : opts.op.replace(/_/g, " ");
+  }
+}

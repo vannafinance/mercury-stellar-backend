@@ -138,7 +138,22 @@ describe("the farm-position answer never mentions the margin account", () => {
 
     const res = await handleChat({ ...base, message: "my farm position" });
     expect(res.kind).toBe("answer");
-    expect(res.message).toMatch(/no active farm positions/i);
+    expect(res.message).toMatch(/Deposit TVL is \$0\.00/i);
+  });
+
+  it("includes Aquarius LP shares even when pool stats are missing (never report 0 while Farm shows LP)", async () => {
+    mocks.getUserBlendBalance.mockResolvedValue(noBlend);
+    mocks.getLpBalance.mockResolvedValue("0");
+    mocks.getPoolStats.mockResolvedValue(null);
+    mocks.getUserLpBalance.mockResolvedValue("1.64");
+    mocks.getAquariusPoolStats.mockResolvedValue(null);
+
+    const res = await handleChat({ ...base, message: "my farm position" });
+    expect(res.kind).toBe("answer");
+    const facts = res.answer?.facts ?? [];
+    const aq = facts.find((f) => /aquarius/i.test(f.label));
+    expect(aq?.value).toMatch(/1\.64\s*LP/i);
+    expect(res.message).not.toMatch(/aquarius lp shares["\s:]*0/i);
   });
 });
 

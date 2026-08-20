@@ -142,4 +142,18 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
       expect(r.status).toBe("rejected");
     },
   );
+
+  it("XDR with no auto_sign field stages — never calls vanna_sign_and_submit", async () => {
+    const calls: string[] = [];
+    const mcp = {
+      call: async (tool: string) => {
+        calls.push(tool);
+        return { unsigned_xdr: XDR };
+      },
+    } as unknown as Parameters<typeof executeMcpWrite>[0];
+    const r = await executeMcpWrite(mcp, STEP, CTX);
+    expect(r.status).toBe("needs_wallet_sign");
+    expect(r.unsigned_xdr).toBe(XDR);
+    expect(calls).not.toContain("vanna_sign_and_submit");
+  });
 });

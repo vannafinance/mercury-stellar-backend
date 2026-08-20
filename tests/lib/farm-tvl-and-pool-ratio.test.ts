@@ -28,6 +28,12 @@ describe("'What is my TVL in Farm Section' routes to the farm-position read", ()
     expect(r.kind).toBe("read");
     if (r.kind === "read") expect(r.template_id).toBe("query_farm_position");
   });
+
+  it("THE LIVE BUG: 'What is My Deposit TVL in Farm Section' is a read, not a deposit plan", () => {
+    const r = routeMessage("What is My Deposit TVL in Farm Section");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_farm_position");
+  });
 });
 
 describe("a direct pool-ratio question routes to a live reserve read", () => {

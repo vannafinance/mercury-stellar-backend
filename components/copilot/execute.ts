@@ -48,6 +48,8 @@ export const EXECUTABLE_OPS = new Set([
   "repay",
   "deposit_and_borrow",
   "create_account",
+  "add_liquidity",
+  "remove_liquidity",
 ]);
 
 export function isExecutable(action: CopilotAction | null | undefined): boolean {
@@ -159,6 +161,49 @@ export async function executeAction(action: CopilotAction, ctx: ExecuteContext):
       // multiplier defaults to 2x when the user didn't state one; the preview
       // labels this a multi-leg strategy requiring explicit confirmation.
       return norm(await MarginAccountService.depositAndBorrow(smartAccount!, amount, 2, asset));
+    }
+
+    case "remove_liquidity": {
+      const w = needsWallet() || needsAccount() || needsAmount();
+      if (w) return w;
+      const sous =
+        String(action.token_b || "").toUpperCase() === "SOUSDC" ||
+        String(action.venue || "").toLowerCase().includes("soro");
+      if (sous) {
+        const { SoroswapService } = await import("@/lib/soroswap-utils");
+        return norm(
+          await SoroswapService.removeLiquidity(walletAddress!, smartAccount!, amount, "XLM", "USDC"),
+        );
+      }
+      const { AquariusService } = await import("@/lib/aquarius-utils");
+      return norm(
+        await AquariusService.removeLiquidity(walletAddress!, smartAccount!, "XLM", "USDC", amount),
+      );
+    }
+
+    case "add_liquidity": {
+      const w = needsWallet() || needsAccount();
+      if (w) return w;
+      const amountA = Number(action.amount_a);
+      const amountB = Number(action.amount_b);
+      if (!(amountA > 0) || !(amountB > 0)) {
+        return { ok: false, error: "Both sides of the LP pair need an amount." };
+      }
+      const xlmAmt = String(action.token_a || "").toUpperCase() === "XLM" ? amountA : amountB;
+      const otherAmt = String(action.token_a || "").toUpperCase() === "XLM" ? amountB : amountA;
+      const sous =
+        String(action.token_b || action.token_a || "").toUpperCase() === "SOUSDC" ||
+        String(action.venue || "").toLowerCase().includes("soro");
+      if (sous) {
+        const { SoroswapService } = await import("@/lib/soroswap-utils");
+        return norm(
+          await SoroswapService.addLiquidity(walletAddress!, smartAccount!, xlmAmt, otherAmt, "XLM", "USDC"),
+        );
+      }
+      const { AquariusService } = await import("@/lib/aquarius-utils");
+      return norm(
+        await AquariusService.addLiquidity(walletAddress!, smartAccount!, "XLM", "USDC", xlmAmt, otherAmt),
+      );
     }
 
     default:

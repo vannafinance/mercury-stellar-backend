@@ -176,6 +176,16 @@ export interface ChatRequest {
     constraints?: PlanConstraints | null;
   } | null;
   /**
+   * Sized on the plan card for an unsized add_liquidity leg. Applied AFTER the
+   * fingerprint check so filling the hole cannot be confused with rewriting the plan.
+   */
+  lp_fill?: {
+    asset: string;
+    amount: number;
+    venue?: string | null;
+    token_b?: string | null;
+  } | null;
+  /**
    * Resume a multi-leg strategy from remaining / failed legs (client button).
    * Server builds a plan from these legs and runs MultiLegAgent.
    */
@@ -195,6 +205,10 @@ export interface ChatRequest {
        */
       token_in?: string | null;
       token_out?: string | null;
+      token_a?: string | null;
+      token_b?: string | null;
+      amount_a?: number | null;
+      amount_b?: number | null;
     }>;
   } | null;
   /**
@@ -256,6 +270,11 @@ export interface CopilotAction {
   prefer_max_yield?: boolean | null;
   /** DEX venue: aquarius | soroswap */
   venue?: string | null;
+  /**
+   * Router quote for a swap (same number Trade/Spot shows as You Receive).
+   * Not an oracle USD conversion.
+   */
+  expected_out?: number | null;
 }
 
 export interface RiskResult {

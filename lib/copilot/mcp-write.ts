@@ -518,7 +518,7 @@ export function mapOpToMcpStep(
         step: {
           tool: "vanna_lend",
           args: { symbol: toolSymbol, amount, lender: trader },
-          label: `Lend ${amount} ${uiLabel}`,
+          label: `Deposit ${amount} ${uiLabel} in Lending Pool`,
         },
       };
     }
@@ -863,7 +863,9 @@ export function mapOpToMcpStep(
             venue,
             protocol: venue,
           },
-          label: `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`,
+          label: expectedOut
+            ? `Swap ${amount} ${uiIn} → ${Number(expectedOut).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${uiOut} (${venue})`
+            : `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`,
         },
       };
     }
@@ -1662,92 +1664,18 @@ export async function executeMcpWrite(
     };
   }
 
-  // No auto_sign field — try explicit sign_and_submit once
-  const wallet = looksG(ctx.trader) ? ctx.trader : ctx.userId;
-  try {
-    const submitted = await mcp.call(
-      "vanna_sign_and_submit",
-      {
-        unsigned_xdr: xdr,
-        user_id: ctx.userId || wallet,
-        wallet_address: wallet,
-      },
-      ctx.userId,
-    );
-
-    const st = String(submitted.status || "");
-    if (st === "signed_and_submitted" || submitted.tx_hash) {
-      const hash =
-        typeof submitted.tx_hash === "string" ? submitted.tx_hash : null;
-      return {
-        tool: step.tool,
-        label: step.label,
-        build,
-        unsigned_xdr: xdr,
-        submitted,
-        status: "signed_and_submitted",
-        message: cleanExecutionCopy({
-          label: step.label,
-          status: "signed_and_submitted",
-          rawMessage: (submitted.summary as string) || (submitted.message as string) || null,
-          txHash: hash,
-        }).body,
-        mcp_trace: { ...baseTrace, auto_sign: "signed_and_submitted" },
-      };
-    }
-
-    const reason = String(submitted.reason || submitted.detail || submitted.message || st);
-    if (/invalid_user_assertion|invalid token audience|user assertion/i.test(reason)) {
-      return {
-        tool: step.tool,
-        label: step.label,
-        build,
-        unsigned_xdr: xdr,
-        submitted,
-        status: "needs_wallet_sign",
-        message:
-          "Transaction built by MCP. The Sign Service needs a user-scoped token (not the server's " +
-          "M2M key), so approve to sign this transaction with your connected wallet.",
-        mcp_trace: { ...baseTrace, auto_sign_error: reason },
-      };
-    }
-    if (/no_active_session|auto_sign.*disabled|wallet_not_bound|not.?enabled|no.?session/i.test(reason)) {
-      // XDR is present — prefer client/wallet sign so multi-leg auto-approve can
-      // continue without the Sign Service enable gate interrupting mid-strategy.
-      return {
-        tool: step.tool,
-        label: step.label,
-        build,
-        unsigned_xdr: xdr,
-        submitted,
-        status: "needs_wallet_sign",
-        message: readyToSignMessage(step.label),
-        mcp_trace: { ...baseTrace, auto_sign_error: reason },
-      };
-    }
-
-    return {
-      tool: step.tool,
-      label: step.label,
-      build,
-      unsigned_xdr: xdr,
-      submitted,
-      status: "needs_wallet_sign",
-      message: readyToSignMessage(step.label),
-      mcp_trace: { ...baseTrace, auto_sign_error: reason },
-    };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      tool: step.tool,
-      label: step.label,
-      build,
-      unsigned_xdr: xdr,
-      status: "needs_wallet_sign",
-      message: readyToSignMessage(step.label),
-      mcp_trace: { ...baseTrace, auto_sign_error: msg },
-    };
-  }
+  // Manual signing is the default. Never call vanna_sign_and_submit from the
+  // brain — that submitted single-leg writes while in-app auto-approve was OFF.
+  // Auto-approve ON is client session-signing of this XDR, not a server submit.
+  return {
+    tool: step.tool,
+    label: step.label,
+    build,
+    unsigned_xdr: xdr,
+    status: "needs_wallet_sign",
+    message: readyToSignMessage(step.label),
+    mcp_trace: { ...baseTrace, auto_sign: "disabled" },
+  };
 }
 
 /**

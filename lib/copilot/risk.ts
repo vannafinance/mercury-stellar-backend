@@ -69,6 +69,10 @@ async function fetchHealth(
   smartAccount: string | null | undefined,
   trader: string | null | undefined,
 ): Promise<{ hf: number | null; collateral: number; debt: number }> {
+  if (smartAccount) {
+    const viaSnapshot = await healthFromSnapshot(smartAccount);
+    if (viaSnapshot) return viaSnapshot;
+  }
   if (!smartAccount && !trader) {
     return { hf: null, collateral: 0, debt: 0 };
   }

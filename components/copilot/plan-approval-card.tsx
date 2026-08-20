@@ -90,6 +90,10 @@ export interface PlanPreview {
    * only has to carry it back verbatim on approve, not act on it.
    */
   constraints?: { minHf?: number | null } | null;
+  lp_input?: {
+    sides: [string, string];
+    other_per_xlm: number | null;
+  } | null;
 }
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";

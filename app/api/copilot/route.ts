@@ -180,6 +180,24 @@ export async function POST(req: NextRequest) {
     auto_sign: autoSign,
     pending_write: pendingWrite,
     approved_plan: approvedPlan,
+    lp_fill:
+      body.lp_fill &&
+      typeof body.lp_fill === "object" &&
+      typeof (body.lp_fill as { asset?: unknown }).asset === "string" &&
+      Number((body.lp_fill as { amount?: unknown }).amount) > 0
+        ? {
+            asset: String((body.lp_fill as { asset: string }).asset),
+            amount: Number((body.lp_fill as { amount: number }).amount),
+            venue:
+              typeof (body.lp_fill as { venue?: unknown }).venue === "string"
+                ? String((body.lp_fill as { venue: string }).venue)
+                : null,
+            token_b:
+              typeof (body.lp_fill as { token_b?: unknown }).token_b === "string"
+                ? String((body.lp_fill as { token_b: string }).token_b)
+                : null,
+          }
+        : null,
     resume_multi_leg:
       resumeMultiLeg?.legs?.length
         ? {

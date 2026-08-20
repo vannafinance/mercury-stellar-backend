@@ -29,6 +29,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LEDGER_CONFIRM_HINT } from "./resume-policy";
+import { pairedFromSelected } from "@/lib/copilot/lp-pair";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
@@ -79,6 +80,9 @@ export interface RunLeg {
    */
   tokenIn?: string | null;
   tokenOut?: string | null;
+  /** AMM LP pause: size either side; the other fills from the live pool ratio. */
+  lpSides?: [string, string] | null;
+  lpOtherPerXlm?: number | null;
 }
 
 export interface RunSummaryRow {
@@ -110,7 +114,7 @@ export interface RunExecutionCardProps {
   onNewIntent?: () => void;
   onViewTx?: () => void;
   /** needs_input: the user supplied the missing amount; resume from this leg. */
-  onSubmitAmount?: (leg: RunLeg, amount: number) => void;
+  onSubmitAmount?: (leg: RunLeg, amount: number, selectedAsset?: string) => void;
   onConfirmGate?: (leg: RunLeg) => void;
 }
 
@@ -386,6 +390,7 @@ export function RunExecutionCard({
 
   const [elapsed, setElapsed] = useState(0);
   const [draft, setDraft] = useState("");
+  const [lpPick, setLpPick] = useState<string | null>(null);
   const [keys, setKeys] = useState<{ running: number | null; input: number | null }>({
     running: runningKey,
     input: inputKey,
@@ -393,7 +398,10 @@ export function RunExecutionCard({
   if (keys.running !== runningKey || keys.input !== inputKey) {
     setKeys({ running: runningKey, input: inputKey });
     if (keys.running !== runningKey) setElapsed(0);
-    if (keys.input !== inputKey) setDraft("");
+    if (keys.input !== inputKey) {
+      setDraft("");
+      setLpPick(null);
+    }
   }
 
   useEffect(() => {
@@ -418,8 +426,13 @@ export function RunExecutionCard({
     if (!leg || !onSubmitAmount) return;
     const n = Number(draft);
     if (!Number.isFinite(n) || n <= 0) return;
-    onSubmitAmount(leg, n);
-  }, [draft, onSubmitAmount, shape.needsInput]);
+    const sides = leg.lpSides;
+    const selected =
+      lpPick ||
+      (sides && leg.asset && sides.includes(leg.asset) ? leg.asset : sides?.[1]) ||
+      undefined;
+    onSubmitAmount(leg, n, selected);
+  }, [draft, lpPick, onSubmitAmount, shape.needsInput]);
 
   const draftValid = Number.isFinite(Number(draft)) && Number(draft) > 0;
 
@@ -687,6 +700,22 @@ export function RunExecutionCard({
           const showInput = l.status === "needs_input" && missing && isPausedHere;
           const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
+          const lpSelected =
+            l.lpSides && l.lpSides.length === 2
+              ? lpPick ||
+                (l.asset && l.lpSides.includes(l.asset) ? l.asset : l.lpSides[1])
+              : null;
+          const lpDraftN = Number(draft);
+          const lpPairPreview =
+            showInput &&
+            lpSelected &&
+            l.lpSides &&
+            l.lpOtherPerXlm != null &&
+            l.lpOtherPerXlm > 0 &&
+            Number.isFinite(lpDraftN) &&
+            lpDraftN > 0
+              ? pairedFromSelected(lpSelected, lpDraftN, l.lpOtherPerXlm)
+              : null;
 
           return (
             <div
@@ -929,6 +958,35 @@ export function RunExecutionCard({
                         : "Nothing has settled yet, so cancelling here costs you nothing."}
                     </p>
 
+                    {l.lpSides && l.lpSides.length === 2 ? (
+                      <div className="mt-[11px] flex flex-wrap gap-2">
+                        {l.lpSides.map((side) => {
+                          const on = lpSelected === side;
+                          return (
+                            <button
+                              key={side}
+                              type="button"
+                              onClick={() => setLpPick(side)}
+                              style={{
+                                border: on ? "1px solid transparent" : "1px solid var(--rc-accent-bd)",
+                                background: on ? "var(--rc-btn-fill)" : "transparent",
+                                color: on ? "var(--rc-btn-fg)" : "var(--rc-heading)",
+                                borderRadius: 8,
+                                padding: "7px 12px",
+                                fontFamily: MONO,
+                                fontSize: 12,
+                                fontWeight: 700,
+                                letterSpacing: ".08em",
+                                cursor: "pointer",
+                              }}
+                            >
+                              {side}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+
                     <div className="mt-[11px] flex items-stretch gap-[9px]">
                       <label
                         className="rc-field relative flex flex-1 items-center overflow-hidden"
@@ -969,7 +1027,7 @@ export function RunExecutionCard({
                             color: "var(--rc-heading)",
                           }}
                         />
-                        {l.asset ? (
+                        {lpSelected || l.asset ? (
                           <span
                             aria-hidden="true"
                             style={{
@@ -980,7 +1038,7 @@ export function RunExecutionCard({
                               color: "var(--rc-muted)",
                             }}
                           >
-                            {l.asset}
+                            {lpSelected || l.asset}
                           </span>
                         ) : null}
                       </label>
@@ -1004,6 +1062,22 @@ export function RunExecutionCard({
                         Continue
                       </button>
                     </div>
+
+                    {lpPairPreview && l.lpSides ? (
+                      <p
+                        className="m-0 mt-2"
+                        style={{
+                          fontFamily: MONO,
+                          fontSize: 12,
+                          lineHeight: "18px",
+                          color: "var(--rc-heading)",
+                        }}
+                      >
+                        {lpSelected === "XLM"
+                          ? `≈ ${lpPairPreview.other.toFixed(4)} ${l.lpSides[1]} at the live pool ratio`
+                          : `≈ ${lpPairPreview.xlm.toFixed(4)} XLM at the live pool ratio`}
+                      </p>
+                    ) : null}
 
                     <div className="mt-[9px] flex flex-wrap items-center justify-between gap-3">
                       <p

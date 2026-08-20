@@ -7,9 +7,26 @@
  * `leverage` through, dropping `token_in`/`token_out` entirely. A swap resumed with a
  * corrected destination must actually USE that correction, not the one it paused on.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { handleChat } from "@/lib/copilot/handle";
 import { resetMcpClient } from "@/lib/copilot/mcp-client";
+
+vi.mock("@/lib/account-snapshot", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/account-snapshot")>();
+  return {
+    ...actual,
+    computeMarginSnapshot: vi.fn().mockResolvedValue({
+      collateralBalances: {},
+      borrowedBalances: {},
+      totalBorrowedValue: 0,
+      grossCollateralValue: 0,
+      totalValue: 0,
+      avgHealthFactor: 0,
+      collateralLeftBeforeLiquidation: 0,
+      netAvailableCollateral: 0,
+    }),
+  };
+});
 
 const base = {
   user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",

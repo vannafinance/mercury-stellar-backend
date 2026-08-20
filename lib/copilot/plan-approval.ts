@@ -108,6 +108,14 @@ export interface FrozenPlan {
    * fallback of re-parsing `ctx.message` finds nothing in that generic string.
    */
   constraints?: PlanConstraints | null;
+  /**
+   * AMM LP sizer for an unsized add_liquidity leg. Shown on the plan card so the
+   * user picks XLM or the venue stable BEFORE anything signs.
+   */
+  lp_input?: {
+    sides: [string, string];
+    other_per_xlm: number | null;
+  } | null;
 }
 
 type PlanIntent = Extract<RoutedIntent, { kind: "plan" }>;
