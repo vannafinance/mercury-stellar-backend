@@ -3114,7 +3114,7 @@ async function allPositionsAnswer(
   },
 ): Promise<ChatResponse> {
   const mcp = getMcpClient();
-  const [pos, farm] = await Promise.all([
+  const [pos, farm, earnReads] = await Promise.all([
     ctx.smartAccount ? readMarginPositions(ctx.smartAccount) : Promise.resolve(null),
     ctx.smartAccount
       ? mcp
@@ -3127,6 +3127,14 @@ async function allPositionsAnswer(
             return null;
           })
       : Promise.resolve(null),
+    // "add earn positions as well... asset supplied i have xlm, aqusdc and sousdc so it
+    // should all be properly represented" — reported live: this answer covered margin
+    // collateral/debt and Blend/LP, but never Earn (vToken) supply at all, even though a
+    // token can be held in Earn AND margin AND a farm LP at once, three genuinely
+    // different pools. Runs alongside the other two reads, not sequenced after them —
+    // the "must be sequential" rule (see readEarnPositions) is about its OWN four calls
+    // to each other, not about racing an unrelated tool.
+    ctx.trader || ctx.smartAccount ? readEarnPositions(ctx, EARN_ASSETS) : Promise.resolve([]),
   ]);
 
   if (!pos && !farm) {
@@ -3150,6 +3158,16 @@ async function allPositionsAnswer(
       : "";
 
   const structured = allPositionsStructured(pos, farmProse);
+  const earnSupplied = earnReads.filter(
+    (r): r is NonNullable<(typeof earnReads)[number]> => r != null && r.amount > 0.0001,
+  );
+  for (const r of earnSupplied) {
+    structured.facts.push({
+      label: `earn · ${r.symbol}`,
+      value: r.usd != null ? `${fmtPosAmount(String(r.amount))} (${money(r.usd)})` : fmtPosAmount(String(r.amount)),
+      group: "earn",
+    });
+  }
   let message = answerToText(structured);
   if (pos) {
     message = withHfGuardrails(message, pos.hf, ctx.message);
@@ -3175,7 +3193,7 @@ async function allPositionsAnswer(
     }),
     intent: {
       template_id: "query_all_positions",
-      slots: { margin: Boolean(pos), farm: Boolean(farm) },
+      slots: { margin: Boolean(pos), farm: Boolean(farm), earn: earnSupplied.length > 0 },
     },
     mcp: {
       tool: farm ? "vanna_get_farm_overview" : "computeMarginSnapshot",
@@ -3189,42 +3207,15 @@ async function allPositionsAnswer(
 const EARN_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
 
 /**
- * "Can you provide my Earn positions" — the vToken (Earn-supplied) balance for every
- * asset Earn supports. Deliberately never falls back to `computeMarginSnapshot` or
- * `vanna_get_farm_overview` the way {@link allPositionsAnswer} does: Earn supply and
- * margin collateral are two different pools that can both hold the same token at once
- * (deposit some XLM as margin collateral, separately supply other XLM to Earn), so
- * answering "my Earn positions" with the margin account's numbers names a different
- * product's figures entirely — confirmed live, where an account with margin collateral
- * but no Earn supply got back a card plainly labeled MARGIN ACCOUNT.
+ * Read the vToken (Earn-supplied) balance for each of `assetsToQuery`. Extracted out of
+ * {@link earnPositionsAnswer} so {@link allPositionsAnswer} can fold Earn into "all my
+ * positions" too (reported live: the user has real supply in XLM/AQUSDC/SOUSDC Earn pools
+ * and none of it showed up in that answer, which only ever covered margin + Blend/LP).
  */
-async function earnPositionsAnswer(
-  ctx: {
-    userId: string;
-    trader: string | null;
-    smartAccount: string | null;
-    request_id: string;
-    message: string;
-  },
-  /**
-   * "What is my Overall Deposit in XLM Lending Pool" names one Earn asset — router.ts
-   * passes it through as `args.symbol`. Without this, the answer always fanned out
-   * across every Earn asset (reported live: a question about the XLM pool alone came
-   * back listing AQUSDC and SOUSDC too), which is right for the unscoped "my Earn
-   * positions" question but wrong once the user named a specific pool.
-   */
-  onlySymbol: (typeof EARN_ASSETS)[number] | null = null,
-): Promise<ChatResponse> {
-  if (!ctx.trader && !ctx.smartAccount) {
-    return {
-      kind: "unavailable",
-      message: "Connect your wallet to read your Earn positions.",
-      intent: { template_id: "query_earn_position" },
-      request_id: ctx.request_id,
-    };
-  }
-
-  const assetsToQuery = onlySymbol ? [onlySymbol] : EARN_ASSETS;
+async function readEarnPositions(
+  ctx: { userId: string; trader: string | null; smartAccount: string | null },
+  assetsToQuery: readonly (typeof EARN_ASSETS)[number][],
+): Promise<Array<{ symbol: string; amount: number; usd: number | null } | null>> {
   const mcp = getMcpClient();
   /**
    * Sequential on purpose, not Promise.all. Four concurrent `vanna_get_vtoken_balance`
@@ -3309,12 +3300,53 @@ async function earnPositionsAnswer(
       });
     } catch (e) {
       console.warn(
-        `[copilot] vtoken balance failed for ${symbol} inside query_earn_position -> ` +
+        `[copilot] vtoken balance failed for ${symbol} inside readEarnPositions -> ` +
           `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
       );
       reads.push(null);
     }
   }
+  return reads;
+}
+
+/**
+ * "Can you provide my Earn positions" — the vToken (Earn-supplied) balance for every
+ * asset Earn supports. Deliberately never falls back to `computeMarginSnapshot` or
+ * `vanna_get_farm_overview` the way {@link allPositionsAnswer} does: Earn supply and
+ * margin collateral are two different pools that can both hold the same token at once
+ * (deposit some XLM as margin collateral, separately supply other XLM to Earn), so
+ * answering "my Earn positions" with the margin account's numbers names a different
+ * product's figures entirely — confirmed live, where an account with margin collateral
+ * but no Earn supply got back a card plainly labeled MARGIN ACCOUNT.
+ */
+async function earnPositionsAnswer(
+  ctx: {
+    userId: string;
+    trader: string | null;
+    smartAccount: string | null;
+    request_id: string;
+    message: string;
+  },
+  /**
+   * "What is my Overall Deposit in XLM Lending Pool" names one Earn asset — router.ts
+   * passes it through as `args.symbol`. Without this, the answer always fanned out
+   * across every Earn asset (reported live: a question about the XLM pool alone came
+   * back listing AQUSDC and SOUSDC too), which is right for the unscoped "my Earn
+   * positions" question but wrong once the user named a specific pool.
+   */
+  onlySymbol: (typeof EARN_ASSETS)[number] | null = null,
+): Promise<ChatResponse> {
+  if (!ctx.trader && !ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message: "Connect your wallet to read your Earn positions.",
+      intent: { template_id: "query_earn_position" },
+      request_id: ctx.request_id,
+    };
+  }
+
+  const assetsToQuery = onlySymbol ? [onlySymbol] : EARN_ASSETS;
+  const reads = await readEarnPositions(ctx, assetsToQuery);
 
   if (reads.every((r) => r === null)) {
     return {

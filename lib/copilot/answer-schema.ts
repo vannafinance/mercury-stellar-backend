@@ -41,8 +41,12 @@ export interface AnswerFact {
    * as duplicate or confusing entries. Set only by this app's own deterministic builders —
    * Gemini's structured-answer schema never emits it, so an LLM-authored fact always lands
    * in the plain figures box.
+   *
+   * "earn" added so "what are all my positions" can fold in Earn (vToken) supply as its
+   * own section — a third, genuinely different pool from margin collateral and farm/LP,
+   * previously left out of this answer entirely (user asked for it explicitly).
    */
-  group?: "lp";
+  group?: "lp" | "earn";
 }
 
 export interface StructuredAnswer {

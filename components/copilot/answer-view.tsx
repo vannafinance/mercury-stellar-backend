@@ -154,8 +154,9 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
   const token = venue ? VENUE_TOKEN[venue] : null;
 
   const facts = answer.facts ?? [];
-  const figures = facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp");
+  const figures = facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp" && f.group !== "earn");
   const lpFacts = facts.filter((f) => !isIdentifier(f.value) && f.group === "lp");
+  const earnFacts = facts.filter((f) => !isIdentifier(f.value) && f.group === "earn");
   const identifiers = facts.filter((f) => isIdentifier(f.value));
 
   return (
@@ -290,6 +291,59 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
                 className="flex min-w-0 items-baseline justify-between gap-3"
                 style={{
                   borderBottom: i === lpFacts.length - 1 ? "none" : "1px solid var(--cp-g100)",
+                  padding: "7px 0",
+                }}
+              >
+                <dt style={{ ...labelStyle, textTransform: "none", letterSpacing: 0 }}>
+                  {f.label}
+                </dt>
+                <dd
+                  className="m-0 text-right"
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 13,
+                    fontVariantNumeric: "tabular-nums",
+                    color: "var(--cp-g900)",
+                  }}
+                >
+                  {f.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
+
+      {/*
+        Earn positions — same box treatment as LP/farm, its own section: vToken supply is
+        a genuinely different pool from margin collateral or a farm-venue LP share, and a
+        token can be held in more than one of these three at once.
+      */}
+      {earnFacts.length > 0 ? (
+        <div style={{ maxWidth: 620 }}>
+          <p
+            className="m-0 mt-[18px] mb-2"
+            style={{ ...labelStyle, color: "var(--cp-g400)" }}
+          >
+            Earn positions
+          </p>
+          <dl
+            className="m-0 grid"
+            style={{
+              gridTemplateColumns: "1fr",
+              gap: "2px",
+              borderRadius: 8,
+              border: "1px solid var(--cp-g100)",
+              background: "var(--cp-g50)",
+              padding: "10px 18px",
+            }}
+          >
+            {earnFacts.map((f, i) => (
+              <div
+                key={`${f.label}-${i}`}
+                className="flex min-w-0 items-baseline justify-between gap-3"
+                style={{
+                  borderBottom: i === earnFacts.length - 1 ? "none" : "1px solid var(--cp-g100)",
                   padding: "7px 0",
                 }}
               >
