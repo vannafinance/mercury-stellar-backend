@@ -3173,24 +3173,22 @@ async function allPositionsAnswer(
     message = withHfGuardrails(message, pos.hf, ctx.message);
   }
 
+  /**
+   * Reported live: a second, raw-fact card duplicated every number the three structured
+   * sections above it already show (health factor, collateral/debt USD, each asset's
+   * amount, plus internal fields like "AQUARIUS LP TOKEN A"/"TRACKING SYMBOL" that mean
+   * nothing to a user) — "already sare farm/margin card m dikha rahi h, combine kyu
+   * dikha rahi h isko remove karo, upar k 3 kaafi h" (already shown in the farm/margin
+   * cards, why show it combined again, remove it, the three above are enough). Same
+   * class of bug as `copilot-redundant-card-generalized`: whenever the structured
+   * answer already covers a fact, the raw dump is noise, not a second source of truth.
+   * `structured.facts` (margin + LP/farm + earn, all three sections) is authoritative;
+   * dropped here entirely rather than deduped.
+   */
   return {
     kind: "answer",
     message,
     answer: structured,
-    data: factsForUi({
-      ...(pos
-        ? {
-            health_factor: pos.hf,
-            collateral_usd: pos.grossCollateralValue,
-            debt_usd: pos.totalBorrowedValue,
-            net_value_usd: pos.netAvailableCollateral,
-            collateral_positions: pos.collateral,
-            borrowed_positions: pos.borrowed,
-          }
-        : {}),
-      ...(farm && typeof farm === "object" ? farm : {}),
-      source: pos && farm ? "margin_snapshot + mcp_farm_overview" : pos ? "margin_snapshot" : "mcp_farm_overview",
-    }),
     intent: {
       template_id: "query_all_positions",
       slots: { margin: Boolean(pos), farm: Boolean(farm), earn: earnSupplied.length > 0 },
