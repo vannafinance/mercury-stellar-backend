@@ -9,7 +9,7 @@ import {
   classifyTrustlineFailure,
   isTrustlineMissingError,
 } from "./asset-readiness";
-import { cleanExecutionCopy } from "./execution-copy";
+import { cleanExecutionCopy, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
@@ -48,6 +48,8 @@ export interface McpWriteResult {
     | "error"
     | "done";
   message: string;
+  /** SS spend-cap: stage for wallet, but in-app auto-approve must not silent-sign. */
+  forbid_session_sign?: boolean;
   /** Always set so the UI can prove MCP was used */
   mcp_trace: {
     tool: string;
@@ -1123,7 +1125,11 @@ export function humanizeMcpWriteError(
   ctx?: { asset?: string | null; trader?: string | null },
 ): string {
   const code = String(build.error ?? build.reason ?? "").toLowerCase();
-  const raw = humanizeWadAmounts(String(build.message || build.error || build.reason || "MCP write failed"));
+  const asset = ctx?.asset ?? null;
+  const raw = humanizeStroopCounts(
+    humanizeWadAmounts(String(build.message || build.error || build.reason || "MCP write failed")),
+    asset,
+  );
 
   // Checked before everything else: an unfunded wallet fails inside the RPC's
   // account lookup, so MCP reports it as `contract_error` / `simulation_failed`
@@ -1495,6 +1501,29 @@ export async function executeMcpWrite(
       policyReason,
     );
   if (isGenuinePolicyRejection) {
+    const asset = String(step.args?.symbol ?? step.args?.asset ?? "");
+    const detail = humanizeStroopCounts(
+      String(build.detail ?? build.auto_sign_error ?? build.message ?? ""),
+      asset || null,
+    );
+    const spendCap = policyReason === "over_daily_cap" || policyReason === "over_per_tx_cap";
+    if (spendCap && xdr) {
+      return {
+        tool: step.tool,
+        label: step.label,
+        build,
+        unsigned_xdr: xdr,
+        status: "needs_wallet_sign",
+        forbid_session_sign: true,
+        message:
+          (policyReason === "over_daily_cap"
+            ? "Daily auto-sign cap reached. "
+            : "Per-transaction auto-sign cap reached. ") +
+          detail +
+          " Approve & sign in your wallet to submit this step — wallet signing is not limited by that cap.",
+        mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
+      };
+    }
     return {
       tool: step.tool,
       label: step.label,
@@ -1502,9 +1531,7 @@ export async function executeMcpWrite(
       status: "rejected",
       message:
         `The Sign Service refused to sign this (policy: ${policyReason}). Nothing was signed. ` +
-        (build.detail
-          ? String(build.detail)
-          : String(build.auto_sign_error || build.message || "Lower the size, or check the account's spend caps.")),
+        (detail || "Lower the size, or check the account's spend caps."),
       mcp_trace: { ...baseTrace, auto_sign_error: policyReason },
     };
   }

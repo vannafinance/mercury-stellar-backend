@@ -111,6 +111,16 @@ describe("shouldSessionAutoSubmit", () => {
     ).toBe(false);
   });
 
+  it("off when Sign Service spend-cap forbids session sign", () => {
+    expect(
+      shouldSessionAutoSubmit({
+        kind: "needs_wallet_sign",
+        sessionSigning: true,
+        allowSessionSign: false,
+      }),
+    ).toBe(false);
+  });
+
   it("off when auto-approve / session signing is off", () => {
     expect(
       shouldSessionAutoSubmit({

@@ -47,8 +47,10 @@ export function shouldSessionAutoSubmit(opts: {
   riskDecision?: string | null;
   autoSubmitBlocked?: boolean;
   hasSignableXdr?: boolean;
+  allowSessionSign?: boolean;
 }): boolean {
   if (!opts.sessionSigning) return false;
+  if (opts.allowSessionSign === false) return false;
   if (opts.autoSubmitBlocked) return false;
   // "needs_confirmation" is the normal staged risk label — do NOT treat as click gate.
   if (opts.riskDecision === "block") return false;

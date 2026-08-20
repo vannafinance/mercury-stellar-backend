@@ -540,6 +540,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       smartAccount: req.smart_account ?? null,
       request_id,
       message,
+      sessionSigning: req.session_signing === true,
     });
   }
 
@@ -637,6 +638,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         smartAccount,
         request_id,
         message: message || plan.summary || "resume multi-leg",
+        sessionSigning: req.session_signing === true,
       });
     }
   }
@@ -694,6 +696,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
           smartAccount,
           request_id,
           message: message || "continue multi-leg",
+          sessionSigning: req.session_signing === true,
         },
       );
     }
@@ -1538,7 +1541,14 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 
   // Normalize plan → MultiLegAgent (expand → execute → HF stop → report)
   if (routed.kind === "plan") {
-    return runPlan(routed, { userId, trader, smartAccount, request_id, message });
+    return runPlan(routed, {
+      userId,
+      trader,
+      smartAccount,
+      request_id,
+      message,
+      sessionSigning: req.session_signing === true,
+    });
   }
 
   if (routed.kind === "clarify") {
@@ -6462,6 +6472,7 @@ async function runWrite(
         action: { ...action, smart_account: smartAccount },
         simulation,
         mcp: { tool: result.tool, status: "needs_wallet_sign", needs_auto_sign: false },
+        allow_session_sign: result.forbid_session_sign ? false : undefined,
       },
       request_id: ctx.request_id,
     };
@@ -6757,6 +6768,7 @@ async function runPlan(
     smartAccount: string | null;
     request_id: string;
     message: string;
+    sessionSigning?: boolean;
   },
 ): Promise<ChatResponse> {
   const mcp = getMcpClient();
@@ -7225,6 +7237,54 @@ async function runPlan(
         // Still attach next_step for first remaining hop (compat), but UI should prefer resume
         next_step:
           writeRes.next_step || remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
+        execution: {
+          status: writeRes.kind,
+          tx_hash: txHash,
+          steps: multiSteps.map(toExecutionStep),
+        },
+        request_id: ctx.request_id,
+      };
+    }
+
+    // Auto-approve OFF: one write per hop. Remaining legs wait for Approve & sign.
+    if (!ctx.sessionSigning && writeCursor < totalWriteLegs && status === "ok") {
+      const remaining = expanded.slice(writeCursor);
+      for (const rest of remaining) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: rest.op,
+          label: rest.label,
+          asset: rest.asset,
+          amount: rest.amount,
+          status: "pending",
+          message: "Waiting for Approve & sign on this step",
+          token_in: rest.token_in ?? null,
+          token_out: rest.token_out ?? null,
+        });
+      }
+      const remainingPayload = remaining.map((r) => ({
+        op: r.op,
+        asset: r.asset ?? null,
+        amount: r.amount ?? null,
+        leverage: r.leverage ?? null,
+        label: r.label,
+        token_in: r.token_in ?? null,
+        token_out: r.token_out ?? null,
+      }));
+      return {
+        ...writeRes,
+        message: multiLegHeadline(multiSteps),
+        data: packUi({
+          remaining_legs: remainingPayload,
+          prefer_resume_multi_leg: false,
+          can_resume: remainingPayload.length > 0,
+        }),
+        intent: {
+          template_id: plan.template_id,
+          slots: { stopped_at: w.op, step: writeCursor, total: totalWriteLegs },
+        },
+        next_step: remainingNextStep(remaining, writeCursor + 1, totalWriteLegs),
         execution: {
           status: writeRes.kind,
           tx_hash: txHash,

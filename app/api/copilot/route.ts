@@ -173,6 +173,7 @@ export async function POST(req: NextRequest) {
     tier: body.tier === "paid" ? ("paid" as const) : ("free" as const),
     smart_account: typeof body.smart_account === "string" ? body.smart_account : null,
     surface: body.surface === "assistant" ? ("assistant" as const) : body.surface === "copilot" ? ("copilot" as const) : null,
+    session_signing: body.session_signing === true,
     page_context: pageContext,
     page_snapshot: pageSnapshot,
     semantic_page_context: semanticPageContext,

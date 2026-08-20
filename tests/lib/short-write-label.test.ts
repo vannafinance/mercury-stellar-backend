@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shortWriteLabel } from "@/lib/copilot/execution-copy";
+import { humanizeStroopCounts, shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { routeMessage } from "@/lib/copilot/router";
 
 describe("shortWriteLabel — one sentence on every staged write", () => {
@@ -32,5 +32,16 @@ describe("add liquidity in Blend is a Blend supply write, not pool stats", () =>
     expect(r.kind).toBe("write");
     if (r.kind !== "write") return;
     expect(r.op).toBe("add_liquidity");
+  });
+});
+
+describe("humanizeStroopCounts — Sign Service errors in tokens, not stroops", () => {
+  it("rewrites spent_today / amount / max_per_day as XLM", () => {
+    const raw =
+      "spent_today 752883225 + amount 10000000000 > max_per_day 10000000000";
+    const out = humanizeStroopCounts(raw, "XLM");
+    expect(out).not.toMatch(/10000000000/);
+    expect(out).toContain("75.2883225 XLM");
+    expect(out).toContain("1000 XLM");
   });
 });

@@ -134,6 +134,7 @@ interface ChatResponse {
     action?: CopilotAction | null;
     risk?: { decision: "allow" | "block" | "needs_confirmation"; reasons?: string[] } | null;
     simulation?: Simulation | null;
+    allow_session_sign?: boolean;
   } | null;
   data?: Record<string, unknown> | null;
   intent?: { template_id?: string | null } | null;
@@ -2236,6 +2237,7 @@ export function CopilotWorkspace() {
             tier: "paid",
             smart_account: smartAccount ?? null,
             surface: "copilot",
+            session_signing: autoApprove,
             ...body,
           }),
           signal: ac.signal,
@@ -2382,7 +2384,7 @@ export function CopilotWorkspace() {
         setLoading(false);
       }
     },
-    [address, smartAccount, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
+    [address, smartAccount, autoApprove, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
   );
 
   const cancelInFlight = useCallback(() => {
@@ -3083,6 +3085,7 @@ export function CopilotWorkspace() {
           complete ? [] : cardUnsettled,
         );
         const preferResume =
+          !!autoApprove &&
           !complete &&
           (shouldAutoResume({
             complete: false,
@@ -3507,6 +3510,7 @@ export function CopilotWorkspace() {
         riskDecision: response.preview?.risk?.decision,
         autoSubmitBlocked,
         hasSignableXdr: isSignableXdr(response.unsigned_xdr),
+        allowSessionSign: response.preview?.allow_session_sign,
       })
     ) {
       return;
@@ -3587,6 +3591,7 @@ export function CopilotWorkspace() {
     // remaining was the old shortcut that killed the queue mid-run).
     const done = cardComplete && remaining.length === 0;
     const preferResume =
+      !!autoApprove &&
       !cardComplete &&
       (shouldAutoResume({
         complete: false,

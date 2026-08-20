@@ -77,6 +77,11 @@ export interface ChatRequest {
    * than "assistant") keeps today's full read+write behaviour, so no other caller is affected.
    */
   surface?: "assistant" | "copilot" | null;
+  /**
+   * In-app auto-approve toggle. When false, multi-leg runPlan executes one write
+   * then waits for Approve & sign — Sign Service must not run the rest of the plan.
+   */
+  session_signing?: boolean;
   /** @deprecated Prefer semantic_page_context. */
   page_context?: PageDescriptorCtx | null;
   /** @deprecated Prefer semantic_page_context. */
@@ -318,6 +323,8 @@ export interface Preview {
   requires_signature: boolean;
   action?: CopilotAction | null;
   simulation?: Simulation | null;
+  /** False = in-app auto-approve must not silent-sign (Sign Service spend cap). */
+  allow_session_sign?: boolean;
   /** MCP execution path metadata */
   mcp?: {
     tool?: string;

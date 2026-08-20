@@ -7,6 +7,8 @@
  * prompt look like a wall of text (and often duplicates the same blob twice).
  */
 
+import { stroopsToAmountString } from "@/lib/utils/swap-amount";
+
 export function cleanExecutionCopy(opts: {
   /** Step label, e.g. "Borrow 5 XLM". */
   label: string;
@@ -117,6 +119,20 @@ export function sanitizeExecutionProse(text: string): string {
   // Still a dump? Prefer empty so the caller uses the short default.
   if (s.length > 320) return "";
   return s;
+}
+
+/**
+ * Sign Service policy dumps stroops (`10000000000`). Show tokens instead.
+ */
+export function humanizeStroopCounts(text: string, asset?: string | null): string {
+  const unit = String(asset || "tokens").trim() || "tokens";
+  return String(text || "").replace(/\b(\d{7,})\b/g, (raw) => {
+    try {
+      return `${stroopsToAmountString(BigInt(raw))} ${unit}`;
+    } catch {
+      return raw;
+    }
+  });
 }
 
 /**

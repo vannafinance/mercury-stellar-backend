@@ -119,19 +119,35 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     auto_sign_error: null,
   };
 
-  it("a genuine Sign Service policy rejection is blocked, never staged for signature", async () => {
+  it("a spend-cap refusal with XDR stages for wallet sign (not silent auto-sign)", async () => {
     const r = await executeMcpWrite(fakeMcp(overCapRejection), STEP, CTX);
-    expect(r.status).toBe("rejected");
-    expect(r.status).not.toBe("needs_wallet_sign");
+    expect(r.status).toBe("needs_wallet_sign");
+    expect(r.forbid_session_sign).toBe(true);
+    expect(r.unsigned_xdr).toBe(XDR);
+    expect(r.message).not.toMatch(/80000000000/);
+    expect(r.message).toMatch(/8,?000/);
   });
 
-  it("carries the policy reason for the UI, and the message says nothing was signed", async () => {
+  it("carries a human-readable cap reason", async () => {
     const r = await executeMcpWrite(fakeMcp(overCapRejection), STEP, CTX);
-    expect(r.message).toMatch(/over_per_tx_cap/i);
-    expect(r.message).toMatch(/nothing was signed/i);
+    expect(r.message).toMatch(/cap/i);
+    expect(r.message).toMatch(/wallet/i);
   });
 
-  it.each(["over_daily_cap", "contract_not_allowlisted", "function_not_allowlisted", "session_expired"])(
+  it.each(["over_daily_cap", "over_per_tx_cap"])(
+    "%s with XDR stages for wallet sign",
+    async (reason) => {
+      const r = await executeMcpWrite(
+        fakeMcp({ ...overCapRejection, reason, detail: undefined }),
+        STEP,
+        CTX,
+      );
+      expect(r.status).toBe("needs_wallet_sign");
+      expect(r.forbid_session_sign).toBe(true);
+    },
+  );
+
+  it.each(["contract_not_allowlisted", "function_not_allowlisted", "session_expired"])(
     "also blocks the %s policy reason",
     async (reason) => {
       const r = await executeMcpWrite(
