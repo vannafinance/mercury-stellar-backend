@@ -995,6 +995,7 @@ export function routeMessage(message: string): RoutedIntent {
         kind: "clarify",
         message: usdcVariantClarifyMessage("the swap", ["AQUSDC", "SOUSDC"]),
         template_id: "clarify_usdc_variant",
+        usdc_variants: ["AQUSDC", "SOUSDC"],
       };
     }
 
@@ -1273,6 +1274,7 @@ export function routeMessage(message: string): RoutedIntent {
         kind: "clarify",
         message: usdcVariantClarifyMessage("the borrow"),
         template_id: "clarify_usdc_variant",
+        usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
     return {
@@ -1975,6 +1977,7 @@ export function routeMessage(message: string): RoutedIntent {
         kind: "clarify",
         message: usdcVariantClarifyMessage("the borrow"),
         template_id: "clarify_usdc_variant",
+        usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
     return {
@@ -1996,6 +1999,7 @@ export function routeMessage(message: string): RoutedIntent {
         kind: "clarify",
         message: usdcVariantClarifyMessage("the withdrawal"),
         template_id: "clarify_usdc_variant",
+        usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
     return {

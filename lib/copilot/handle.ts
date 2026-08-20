@@ -1510,22 +1510,31 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       };
     }
     /**
-     * A `clarify_options` chip click resumes ONLY through the `pending_write` write-
-     * execution path (see `req.pending_write?.op` resumption above) — there is no
-     * equivalent "resume a read" mechanism. Wiring chips onto this router-level clarify
-     * was tried and reverted: `can_borrow`/`can_withdraw` are READS, and forcing them
-     * through that resumption path would have silently placed a real borrow/withdraw
-     * transaction instead of just answering the question the user actually asked. The
-     * swap case is a write but its `pending_write` shape has no token_a/token_b/venue
-     * fields either, so it would fall into the generic no-context fallback (`run(opt.id)`
-     * — resubmits just the bare ticker, losing the amount and everything else). Text-only
-     * for now; a real fix needs a client-side "resume this router clarify" path that
-     * substitutes the chosen variant back into the ORIGINAL message, not a bare token.
+     * "Which USDC do you mean?" now gets pickable chips like the write-side `usdcOps`
+     * gate already has — reported live, asked for twice. This does NOT reuse the
+     * `pending_write` resume path: `can_borrow`/`can_withdraw` are READS, and
+     * resuming through the write-execution path would risk a "can I?" question
+     * silently placing a real transaction. The client instead substitutes the chosen
+     * variant into the ORIGINAL message text and resubmits it fresh, through the
+     * exact same routing a typed message would get — safe for a read or a write.
      */
+    const usdcVariants =
+      routed.template_id === "clarify_usdc_variant"
+        ? (routed.usdc_variants ?? USDC_VARIANT_OPTIONS.map((o) => o.id))
+        : null;
     return {
       kind: "clarification",
       message: routed.message,
       intent: { template_id: routed.template_id ?? null },
+      ...(usdcVariants
+        ? {
+            clarify_options: USDC_VARIANT_OPTIONS.filter((o) => usdcVariants.includes(o.id)).map((o) => ({
+              id: o.id,
+              label: o.label,
+              description: o.description,
+            })),
+          }
+        : {}),
       request_id,
     };
   }

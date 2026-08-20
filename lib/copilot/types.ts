@@ -594,6 +594,18 @@ export type RoutedIntent =
       kind: "clarify";
       message: string;
       template_id?: string | null;
+      /**
+       * Which USDC variants a `clarify_usdc_variant` result is actually offering — a
+       * swap only ever accepts AQUSDC/SOUSDC, while lend/deposit/borrow/repay/reads
+       * accept all three. `handleChat` reads this to render the SAME pickable chips
+       * the write-side `usdcOps` gate already shows. The client resumes by
+       * substituting the chosen variant into the ORIGINAL message text and
+       * resubmitting it fresh (not via `pending_write` — this clarify can originate
+       * from a READ, e.g. `can_borrow`, and `pending_write` only ever resumes a
+       * WRITE, so reusing it here would risk a "can I?" question executing a real
+       * transaction).
+       */
+      usdc_variants?: readonly string[];
     }
   | {
       kind: "auto_sign";

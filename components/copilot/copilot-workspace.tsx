@@ -2777,6 +2777,21 @@ export function CopilotWorkspace() {
         return;
       }
       if (!pw?.op) {
+        /**
+         * "Which USDC do you mean?" can originate from a READ (`can_borrow`/
+         * `can_withdraw`), not just a write — there is no `pending_write` to resume
+         * here at all, so this must never fall into the pending-write resumption
+         * path below. Substitute the chosen variant into the ORIGINAL message text
+         * ("Can i borrow 20 USDC?" → "Can i borrow 20 AQUSDC?") and resubmit it as a
+         * fresh message, through the exact same routing a typed message gets — a
+         * bare `run(opt.id)` used to submit just the ticker alone, losing the amount
+         * and the verb, and answering something unrelated.
+         */
+        if (response?.intent?.template_id === "clarify_usdc_variant" && submitted) {
+          const substituted = submitted.replace(/\busdc\b/i, opt.id);
+          await run(substituted !== submitted ? substituted : opt.id);
+          return;
+        }
         // Fallback: rephrase as a full message
         await run(`${opt.id}`);
         return;
@@ -4490,7 +4505,8 @@ export function CopilotWorkspace() {
                             {response.pending_write?.clarify_slot === "fraction"
                               ? "how much to repay"
                               : response.pending_write?.clarify_slot === "borrow" ||
-                                  response.pending_write?.clarify_slot === "collateral"
+                                  response.pending_write?.clarify_slot === "collateral" ||
+                                  response.intent?.template_id === "clarify_usdc_variant"
                                 ? "choose usdc type"
                                 : "choose an option"}
                           </p>
