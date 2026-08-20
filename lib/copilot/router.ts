@@ -940,7 +940,11 @@ export function routeMessage(message: string): RoutedIntent {
     swapMatch ||
     (any(text, "swap") &&
       !any(text, "liquidity") &&
-      !any(text, "can i swap", "is swap", "swap available", "swap fee", "swap rate") &&
+      // "What is the current swap price of XLM to AQUSDC" (issue 11) named no amount at
+      // all and asked a plain market-data question — "swap price"/"spot price" belong
+      // here alongside the existing "swap rate" exclusion, for the same reason: a price
+      // question must never be treated as a command to actually execute a swap.
+      !any(text, "can i swap", "is swap", "swap available", "swap fee", "swap rate", "swap price", "spot price") &&
       (asset || swapPair))
   ) {
     const amountIn = swapMatch ? Number(swapMatch[1]) : amount;
@@ -2162,6 +2166,28 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "read",
       tool: "vanna_get_pool_ratio",
       args: { venue: any(text, "soroswap") ? "soroswap" : "aquarius" },
+      template_id: "query_pool_ratio",
+    };
+  }
+
+  /**
+   * Issue 11: "What is the current swap price of XLM to AQUSDC" — a plain market-data
+   * question, not a command — used to fall into the swap-WRITE branch above, which then
+   * asked "How much do you want to swap?" as if the question were an instruction. The
+   * write branch now excludes "swap price"/"spot price" phrasing (see its own comment),
+   * but nothing on the read side ever answered it: the AMM pool's live ratio IS the spot
+   * swap price (before fees/slippage) for whichever two tokens it holds, so this reuses
+   * the exact same on-chain reader as "pool ratio"/"pool stats" just above — inferring
+   * the venue from either an explicit venue name or the named USD variant (AQUSDC →
+   * Aquarius, SOUSDC → Soroswap), the same inference the swap-write path itself already
+   * does for its own `venue` field. Deliberately NOT "exchange rate" — that phrase is
+   * already claimed a few lines down for Earn's vToken exchange rate, a different thing.
+   */
+  if (any(text, "swap price", "swap rate", "spot price", "spot swap")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_pool_ratio",
+      args: { venue: any(text, "soroswap", "sousdc") ? "soroswap" : "aquarius" },
       template_id: "query_pool_ratio",
     };
   }

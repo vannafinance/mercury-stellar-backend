@@ -901,8 +901,24 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     ) {
       return true;
     }
+    /**
+     * "what is the current rate of farm's bXLM and bUSDC" — a plain comparison
+     * QUESTION naming two tickers, not a plan — tripped this check anyway: "and" joins
+     * "bXLM and bUSDC" (a noun list, not two clauses) and "farm's" satisfies `\bfarm\b`
+     * with no way for the regex to tell the possessive NOUN ("the farm's X") from the
+     * imperative VERB ("farm 20 XLM"). Reported live: forced this off the deterministic
+     * router.ts answer (which correctly resolves it to the Blend read) and onto Vertex,
+     * which guessed a different, wrong tool. A possessive "farm's"/"blend's"/"earn's"
+     * right before the noun it modifies is never the action verb this check means to
+     * catch — real plans say "farm 20 XLM", never "farm's XLM".
+     */
+    const possessiveVenueNoun = /\b(farm|blend|earn)'s\b/i.test(t);
     // Two independent clauses joined by and/then with risk language
-    if (/\b(and|then)\b/i.test(t) && /\b(health|liquidat|profit|yield|farm|earn|hf)\b/i.test(t)) {
+    if (
+      !possessiveVenueNoun &&
+      /\b(and|then)\b/i.test(t) &&
+      /\b(health|liquidat|profit|yield|farm|earn|hf)\b/i.test(t)
+    ) {
       return true;
     }
     return false;
@@ -1493,6 +1509,19 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         request_id,
       };
     }
+    /**
+     * A `clarify_options` chip click resumes ONLY through the `pending_write` write-
+     * execution path (see `req.pending_write?.op` resumption above) — there is no
+     * equivalent "resume a read" mechanism. Wiring chips onto this router-level clarify
+     * was tried and reverted: `can_borrow`/`can_withdraw` are READS, and forcing them
+     * through that resumption path would have silently placed a real borrow/withdraw
+     * transaction instead of just answering the question the user actually asked. The
+     * swap case is a write but its `pending_write` shape has no token_a/token_b/venue
+     * fields either, so it would fall into the generic no-context fallback (`run(opt.id)`
+     * — resubmits just the bare ticker, losing the amount and everything else). Text-only
+     * for now; a real fix needs a client-side "resume this router clarify" path that
+     * substitutes the chosen variant back into the ORIGINAL message, not a bare token.
+     */
     return {
       kind: "clarification",
       message: routed.message,
@@ -5565,27 +5594,89 @@ async function runWrite(
     // swap and MCP may auto-quote after redeploy.
     const tokenIn = (action.token_a || action.asset || "XLM").toUpperCase();
     const tokenOut = (action.token_b || "USDC").toUpperCase();
-    const oracleIn = tokenIn === "XLM" || tokenIn === "AQUA" ? tokenIn : "USDC";
-    const oracleOut = tokenOut === "XLM" || tokenOut === "AQUA" ? tokenOut : "USDC";
-    try {
-      const batch = await getMcpClient().call(
-        "vanna_get_prices_batch",
-        { symbols: [oracleIn, oracleOut] },
-        ctx.userId,
-      );
-      const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
-      const pin = Number(prices[oracleIn]?.price_usd ?? prices[oracleIn.toLowerCase()]?.price_usd);
-      const pout = Number(prices[oracleOut]?.price_usd ?? prices[oracleOut.toLowerCase()]?.price_usd);
-      if (Number.isFinite(pin) && Number.isFinite(pout) && pout > 0) {
-        // Use local swapAmount — spreading action widens amount to number | null again.
-        const expected = (swapAmount * pin) / pout;
-        const slip = 0.5;
-        swapExpectedOut = expected.toFixed(7);
-        swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
-        swapSlippagePct = String(slip);
+    /**
+     * "Swap 100 XLM to SOUSDC" quoted "at least 16.61 SOUSDC" and executed for real —
+     * the account's own SOUSDC margin balance grew by 28.35, not 16.61. Root cause: this
+     * used ORACLE prices (`vanna_get_prices_batch`, XLM's USD price ÷ SOUSDC's USD
+     * price) to estimate a DEX swap's output, silently assuming the AMM pool trades at
+     * the oracle price. It does not have to — the testnet Soroswap XLM/SOUSDC pool's own
+     * live ratio (confirmed via `SoroswapService.getPoolStats`, the same read
+     * `poolRatioAnswer`/"what is the current swap price" already uses) was ~0.29
+     * SOUSDC per XLM, nearly double the oracle-implied ~0.167, and the REAL settled
+     * amount matched the POOL's ratio, not the oracle's. Worse than a wrong headline
+     * number: `min_out` is derived from this same `expected`, so understating it also
+     * understated the slippage floor — the trade was far LESS protected against an
+     * adverse price move than the stated "0.5%" implied. An AMM swap must be quoted from
+     * the pool it will actually execute against, not a proxy price.
+     */
+    let quotedFromPool = false;
+    const otherToken = tokenIn === "XLM" ? tokenOut : tokenIn === tokenOut ? null : tokenIn;
+    if (otherToken && (otherToken === "AQUSDC" || otherToken === "SOUSDC")) {
+      try {
+        let reserveXlm: number | null = null;
+        let reserveOther: number | null = null;
+        if (otherToken === "SOUSDC") {
+          const { SoroswapService } = await import("@/lib/soroswap-utils");
+          const stats = await SoroswapService.getPoolStats();
+          reserveXlm = stats ? Number.parseFloat(stats.reserveXLM) : null;
+          reserveOther = stats ? Number.parseFloat(stats.reserveUSDC) : null;
+        } else {
+          const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
+            import("@/lib/aquarius-utils"),
+            import("@/lib/stellar-utils"),
+          ]);
+          const poolAddress =
+            AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
+            CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
+          const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
+          reserveXlm = stats ? Number.parseFloat(stats.reserveA) : null;
+          reserveOther = stats ? Number.parseFloat(stats.reserveB) : null;
+        }
+        if (
+          reserveXlm != null &&
+          reserveOther != null &&
+          Number.isFinite(reserveXlm) &&
+          Number.isFinite(reserveOther) &&
+          reserveXlm > 0 &&
+          reserveOther > 0
+        ) {
+          const expected =
+            tokenIn === "XLM"
+              ? swapAmount * (reserveOther / reserveXlm)
+              : swapAmount * (reserveXlm / reserveOther);
+          const slip = 0.5;
+          swapExpectedOut = expected.toFixed(7);
+          swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
+          swapSlippagePct = String(slip);
+          quotedFromPool = true;
+        }
+      } catch {
+        /* falls through to the oracle-price estimate below */
       }
-    } catch {
-      /* MCP auto-quote or retry path */
+    }
+    if (!quotedFromPool) {
+      const oracleIn = tokenIn === "XLM" || tokenIn === "AQUA" ? tokenIn : "USDC";
+      const oracleOut = tokenOut === "XLM" || tokenOut === "AQUA" ? tokenOut : "USDC";
+      try {
+        const batch = await getMcpClient().call(
+          "vanna_get_prices_batch",
+          { symbols: [oracleIn, oracleOut] },
+          ctx.userId,
+        );
+        const prices = (batch.prices || batch) as Record<string, { price_usd?: string | number }>;
+        const pin = Number(prices[oracleIn]?.price_usd ?? prices[oracleIn.toLowerCase()]?.price_usd);
+        const pout = Number(prices[oracleOut]?.price_usd ?? prices[oracleOut.toLowerCase()]?.price_usd);
+        if (Number.isFinite(pin) && Number.isFinite(pout) && pout > 0) {
+          // Use local swapAmount — spreading action widens amount to number | null again.
+          const expected = (swapAmount * pin) / pout;
+          const slip = 0.5;
+          swapExpectedOut = expected.toFixed(7);
+          swapMinOut = (expected * (1 - slip / 100)).toFixed(7);
+          swapSlippagePct = String(slip);
+        }
+      } catch {
+        /* MCP auto-quote or retry path */
+      }
     }
   }
 

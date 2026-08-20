@@ -280,8 +280,17 @@ function isStatusCode(key: string, value: string): boolean {
  * is dropped here once, generally, rather than stripped tool-by-tool as each one is
  * reported.
  */
+/**
+ * "summary"/"note" added after a live report: the farm-overview read showed
+ * "AQUARIUS LP SUMMARY" / "AQUARIUS LP NOTE" / "SUMMARY" / "NOTE" cards reading "Farm
+ * overview for CATLUT04… — Blend positions + Aquarius XLM/USDC LP + live Blend rates.
+ * Earn (vTokens) is separate — not included here." and "History/time-series not
+ * available via MCP. Zero balances mean no tracked farm position, not an RPC invent." —
+ * MCP's own developer caveats about what the payload does and doesn't cover, not facts
+ * about the user's money. Same class of noise as the rest of this list.
+ */
 const PLUMBING_FACT_KEY =
-  /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error|source)$/i;
+  /^(auto[_ ]?sign|auto[_ ]?sign[_ ]?error|signing[_ ]?status|simulation[_ ]?success|function|contract|fee[_ ]?estimate|is[_ ]?write|has[_ ]?unsigned[_ ]?xdr|unsigned[_ ]?xdr[_ ]?chars|promoted[_ ]?from[_ ]?auto[_ ]?sign|local[_ ]?executor[_ ]?fallback|code|contract[_ ]?diagnostic|host[_ ]?error|source|summary|note)$/i;
 
 /** Flatten nested objects for the UI facts panel; drop huge wads. */
 export function factsForUi(data: Record<string, unknown>): Record<string, unknown> {
@@ -406,6 +415,10 @@ export function factsForUi(data: Record<string, unknown>): Record<string, unknow
       for (const [sk, sv] of Object.entries(nested)) {
         if (sv == null || typeof sv === "object") continue;
         if (/_wad$|_raw$/i.test(sk)) continue;
+        // A nested "summary"/"note" (e.g. `aquarius_lp.summary`) is the same MCP
+        // developer-caveat noise as a top-level one — PLUMBING_FACT_KEY only ever
+        // checked the outer key before, so this composite field slipped through.
+        if (PLUMBING_FACT_KEY.test(sk)) continue;
         if (out[`${k}.${sk}`] == null && out[prettyFactKey(sk)] == null) {
           out[`${prettyFactKey(k)} ${prettyFactKey(sk)}`] = sv;
         }
