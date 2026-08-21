@@ -140,5 +140,7 @@ describe("a focused single-asset question narrows the facts card too, not just t
     expect(keys).toContain("health factor");
     expect(keys).toContain("xlm");
     expect(keys).toContain("sousdc");
+    expect(res.answer?.headline).toMatch(/Total Collateral/i);
+    expect(res.answer?.kicker).toMatch(/detailed stats/i);
   });
 });

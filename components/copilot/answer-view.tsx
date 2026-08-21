@@ -198,6 +198,22 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         {answer.headline}
       </p>
 
+      {answer.kicker ? (
+        <p
+          className="m-0 mt-3"
+          style={{
+            fontSize: 14,
+            lineHeight: "22px",
+            color: "var(--cp-g400)",
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            fontFamily: MONO,
+          }}
+        >
+          {answer.kicker}
+        </p>
+      ) : null}
+
       {(answer.sections ?? []).map((section, i) => (
         <div key={`${section.body}-${i}`} className="mt-4">
           <p

@@ -2424,7 +2424,8 @@ const LOCAL_FALLBACK_OPS = new Set([
   "repay",
 ]);
 
-const money = (n: number) => `$${n.toFixed(2)}`;
+const money = (n: number) =>
+  `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /**
  * Name a farm TRACKING position for a human, not by its internal key.
@@ -2853,6 +2854,7 @@ async function snapshotPositionAnswer(
    * FOLLOW_UP no longer offers a fabricated one either, see that map's own comment.
    */
   let focusedRow: MarginPositionRow | null = null;
+  let structured: StructuredAnswer | null = null;
 
   let message: string;
   if (routed.tool === "vanna_get_collateral") {
@@ -2864,6 +2866,14 @@ async function snapshotPositionAnswer(
     if (focus) {
       const { matched } = focusPositionRows(pos.collateral, focus);
       if (matched.length === 1) focusedRow = matched[0];
+    } else if (pos.collateral.length) {
+      structured = {
+        headline: `Your Total Collateral is ${money(pos.grossCollateralValue)}`,
+        kicker: "Your detailed stats are:",
+        facts: [],
+        venue: "margin",
+      };
+      message = answerToText(structured);
     }
   } else if (routed.tool === "vanna_get_debt") {
     message = !pos.borrowed.length
@@ -2874,6 +2884,14 @@ async function snapshotPositionAnswer(
     if (focus) {
       const { matched } = focusPositionRows(pos.borrowed, focus);
       if (matched.length === 1) focusedRow = matched[0];
+    } else if (pos.borrowed.length) {
+      structured = {
+        headline: `Your Total Debt is ${money(pos.totalBorrowedValue)}`,
+        kicker: "Your detailed stats are:",
+        facts: [],
+        venue: "margin",
+      };
+      message = answerToText(structured);
     }
   } else {
     /**
@@ -2963,6 +2981,7 @@ async function snapshotPositionAnswer(
   return {
     kind: "answer",
     message: withHfGuardrails(message, pos.hf, ctx.message, pos.totalBorrowedValue),
+    ...(structured ? { answer: structured } : {}),
     /**
      * A question that narrows to ONE asset gets a facts card of ONE asset.
      *
@@ -3726,6 +3745,7 @@ async function farmPositionAnswer(
     headline,
     facts,
     venue: "none",
+    kicker: displayRows.length ? "Your detailed stats are:" : undefined,
     table: { columns: ["Protocol", "Holdings", "APY"], rows: displayRows },
     note: missingScoped
       ? `Your other ${venueLabel} positions are below.`

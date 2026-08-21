@@ -54,6 +54,8 @@ export interface StructuredAnswer {
   headline: string;
   /** Supporting figures. Empty is valid — not every answer has a table in it. */
   facts: AnswerFact[];
+  /** Line between the total and the card, e.g. "Your detailed stats are:" */
+  kicker?: string;
   /** At most two sentences of context. Optional. */
   note?: string;
   /** Which product the numbers came from, so the UI can label it. */
@@ -293,6 +295,10 @@ export function normalizeAnswer(raw: unknown): StructuredAnswer | null {
 /** Flatten to plain text — the message field, and any surface without the renderer. */
 export function answerToText(a: StructuredAnswer): string {
   const lines = [a.headline];
+  if (a.kicker) {
+    lines.push("");
+    lines.push(a.kicker);
+  }
   if (a.sections?.length) {
     for (const s of a.sections) {
       lines.push("");
