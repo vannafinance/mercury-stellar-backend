@@ -6423,35 +6423,74 @@ async function runWrite(
      * there. Best-effort and Aquarius-only (the one case this exact clarify names) —
      * a failed or irrelevant (Soroswap/BLUSDC) read still falls back to the plain ask.
      */
-    let ratioNote = "";
     if (
       action.op === "add_liquidity" &&
       typeof mapped.blocker === "string" &&
       mapped.blocker.startsWith("How much of each token")
     ) {
-      try {
-        const [{ AquariusService, AQUARIUS_POOLS }, { CONTRACT_ADDRESSES }] = await Promise.all([
-          import("@/lib/aquarius-utils"),
-          import("@/lib/stellar-utils"),
-        ]);
-        const poolAddress =
-          AQUARIUS_POOLS.find((p) => p.id === "aquarius-xlm-usdc")?.poolAddress ??
-          CONTRACT_ADDRESSES.AQUARIUS_XLM_USDC_POOL;
-        const stats = poolAddress ? await AquariusService.getAquariusPoolStats(poolAddress) : null;
-        const rXlm = stats ? Number.parseFloat(stats.reserveA) : NaN;
-        const rUsd = stats ? Number.parseFloat(stats.reserveB) : NaN;
-        if (Number.isFinite(rXlm) && Number.isFinite(rUsd) && rXlm > 0 && rUsd > 0) {
-          ratioNote =
-            ` Current pool ratio: 1 XLM ≈ ${(rUsd / rXlm).toFixed(4)} AQUSDC · ` +
-            `1 AQUSDC ≈ ${(rXlm / rUsd).toFixed(2)} XLM.`;
-        }
-      } catch {
-        // Best-effort — the plain question still answers without the ratio.
-      }
+      const sides = lpSides(
+        action.asset,
+        action.token_b,
+        action.venue != null ? String(action.venue) : null,
+      );
+      const otherPerXlm = await readAmmOtherPerXlm(sides[1]);
+      return {
+        kind: "clarification",
+        message: `How much ${sides[0]} or ${sides[1]} should I add?`,
+        intent: { template_id: "add_liquidity", slots: { token_a: sides[0], token_b: sides[1] } },
+        data: {
+          multi_leg: true,
+          strategy_summary: `Add liquidity ${sides[0]}/${sides[1]}`,
+          lp_input: { sides, other_per_xlm: otherPerXlm },
+          multi_leg_steps: [
+            {
+              op: "add_liquidity",
+              status: "clarification",
+              asset: sides[1],
+              amount: null,
+              label: `Add liquidity ${sides[0]}/${sides[1]}`,
+              token_a: sides[0],
+              token_b: sides[1],
+              message: `How much ${sides[0]} or ${sides[1]} should I add?`,
+            },
+          ],
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    if (
+      (action.op === "deploy_to_blend" || action.op === "supply_to_blend") &&
+      typeof mapped.blocker === "string" &&
+      /how much do you want to supply to blend/i.test(mapped.blocker)
+    ) {
+      const sides: [string, string] = ["XLM", "BLUSDC"];
+      return {
+        kind: "clarification",
+        message: "How much XLM or BLUSDC should I supply to Blend?",
+        intent: { template_id: action.op, slots: {} },
+        data: {
+          multi_leg: true,
+          strategy_summary: "Supply to Blend",
+          lp_input: { sides, other_per_xlm: null },
+          multi_leg_steps: [
+            {
+              op: action.op,
+              status: "clarification",
+              asset: "BLUSDC",
+              amount: null,
+              label: "Supply to Blend",
+              token_a: "XLM",
+              token_b: "BLUSDC",
+              message: "How much XLM or BLUSDC should I supply to Blend?",
+            },
+          ],
+        },
+        request_id: ctx.request_id,
+      };
     }
     return {
       kind: "clarification",
-      message: (mapped.blocker || "Could not map that write to an MCP tool.") + ratioNote,
+      message: mapped.blocker || "Could not map that write to an MCP tool.",
       intent: { template_id: action.op, slots: { asset: action.asset, amount: action.amount } },
       request_id: ctx.request_id,
     };

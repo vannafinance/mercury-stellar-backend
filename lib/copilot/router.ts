@@ -1255,7 +1255,7 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "deploy_to_blend",
       asset: asset ?? "XLM",
       amount,
-      multi_leg: true,
+      multi_leg: false,
       requires_account: true,
       requires_amount: true,
       leverage: leverage ?? null,
@@ -1296,7 +1296,7 @@ export function routeMessage(message: string): RoutedIntent {
       token_b,
       amount_a: dual?.amount_a ?? single?.amount ?? amount,
       amount_b: dual?.amount_b ?? null,
-      multi_leg: true,
+      multi_leg: false,
       requires_account: true,
       requires_amount: true,
     };

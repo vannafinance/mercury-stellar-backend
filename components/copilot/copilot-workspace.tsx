@@ -4134,15 +4134,25 @@ export function CopilotWorkspace() {
       const op = String(s.op ?? "step");
       const amt = s.amount;
       const hasAmt = amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0;
-      const pauseLp = op === "add_liquidity" && !hasAmt && i === firstOpen && !loading;
+      const pauseLp =
+        (op === "add_liquidity" || op === "deploy_to_blend" || op === "supply_to_blend") &&
+        !hasAmt &&
+        i === firstOpen &&
+        !loading;
+      const fromInput = Array.isArray(
+        (response?.data as { lp_input?: { sides?: string[] } })?.lp_input?.sides,
+      )
+        ? ((response!.data as { lp_input: { sides: [string, string] } }).lp_input.sides)
+        : null;
       const sides =
         op === "add_liquidity"
-          ? Array.isArray((response?.data as { lp_input?: { sides?: string[] } })?.lp_input?.sides)
-            ? ((response!.data as { lp_input: { sides: [string, string] } }).lp_input.sides)
-            : s.token_a && s.token_b
+          ? fromInput ??
+            (s.token_a && s.token_b
               ? ([String(s.token_a), String(s.token_b)] as [string, string])
-              : lpSides(s.asset, s.token_b || s.token_out, null)
-          : null;
+              : lpSides(s.asset, s.token_b || s.token_out, null))
+          : op === "deploy_to_blend" || op === "supply_to_blend"
+            ? fromInput ?? (["XLM", "BLUSDC"] as [string, string])
+            : null;
       return {
         // Position, not the server's index. A resumed run restarts its step counter, so a
         // returned index can collide with one already on screen — which showed two
@@ -4165,7 +4175,11 @@ export function CopilotWorkspace() {
           s.message && toRunLegStatus(s.status) === "failed" ? String(s.message) : null,
         question:
           pauseLp
-            ? `How much ${sides ? sides.join(" or ") : "XLM or AQUSDC"} should I add?`
+            ? s.message
+              ? String(s.message)
+              : `How much ${sides ? sides.join(" or ") : "XLM or AQUSDC"} should I ${
+                  op === "add_liquidity" ? "add" : "supply"
+                }?`
             : s.message && toRunLegStatus(s.status) === "needs_input"
               ? String(s.message)
               : null,

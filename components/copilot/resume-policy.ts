@@ -149,7 +149,11 @@ export function isUnsizedAddLiquidity(leg: {
   amount?: number | null;
 } | null | undefined): boolean {
   if (!leg) return false;
-  return String(leg.op) === "add_liquidity" && !(leg.amount != null && Number(leg.amount) > 0);
+  return (
+    String(leg.op) === "add_liquidity" ||
+    String(leg.op) === "deploy_to_blend" ||
+    String(leg.op) === "supply_to_blend"
+  ) && !(leg.amount != null && Number(leg.amount) > 0);
 }
 
 export function shouldAutoResume(opts: {
