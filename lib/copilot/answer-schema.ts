@@ -63,6 +63,8 @@ export interface StructuredAnswer {
    * supplied/available strip — not one big facts card for the whole answer.
    */
   sections?: Array<{ body: string; facts: AnswerFact[] }>;
+  /** Farm Positions-style table. Prefer this over a facts dump for holdings. */
+  table?: { columns: string[]; rows: string[][] };
 }
 
 /**
@@ -301,6 +303,11 @@ export function answerToText(a: StructuredAnswer): string {
   if (a.facts.length) {
     lines.push("");
     for (const f of a.facts) lines.push(`• ${f.label}: ${f.value}`);
+  }
+  if (a.table?.rows.length) {
+    lines.push("");
+    lines.push(a.table.columns.join(" | "));
+    for (const row of a.table.rows) lines.push(row.join(" | "));
   }
   if (a.note) {
     lines.push("");

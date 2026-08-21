@@ -154,7 +154,10 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
   const token = venue ? VENUE_TOKEN[venue] : null;
 
   const facts = answer.facts ?? [];
-  const figures = facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp" && f.group !== "earn");
+  const hasTable = (answer.table?.rows.length ?? 0) > 0;
+  const figures = hasTable
+    ? []
+    : facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp" && f.group !== "earn");
   const lpFacts = facts.filter((f) => !isIdentifier(f.value) && f.group === "lp");
   const earnFacts = facts.filter((f) => !isIdentifier(f.value) && f.group === "earn");
   const identifiers = facts.filter((f) => isIdentifier(f.value));
@@ -247,6 +250,63 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
           ) : null}
         </div>
       ))}
+
+      {hasTable ? (
+        <div
+          className="mt-4 overflow-x-auto"
+          style={{
+            borderRadius: 8,
+            border: "1px solid var(--cp-g100)",
+            background: "var(--cp-g50)",
+          }}
+        >
+          <table className="w-full border-collapse text-left" style={{ fontSize: 13 }}>
+            <thead>
+              <tr>
+                {answer.table!.columns.map((c) => (
+                  <th
+                    key={c}
+                    className="px-3 py-2"
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 10.5,
+                      letterSpacing: "0.12em",
+                      textTransform: "uppercase",
+                      color: "var(--cp-g400)",
+                      fontWeight: 600,
+                      borderBottom: "1px solid var(--cp-g100)",
+                    }}
+                  >
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {answer.table!.rows.map((row, i) => (
+                <tr key={i}>
+                  {row.map((cell, j) => (
+                    <td
+                      key={j}
+                      className="px-3 py-2.5"
+                      style={{
+                        fontFamily: j === 0 ? "inherit" : MONO,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--cp-g900)",
+                        borderBottom:
+                          i === answer.table!.rows.length - 1 ? "none" : "1px solid var(--cp-g100)",
+                        whiteSpace: j === 1 ? "normal" : "nowrap",
+                      }}
+                    >
+                      {cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       {/*
         Figures — the design's two-column pair grid inside one hairline panel, so a set of

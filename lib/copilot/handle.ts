@@ -1183,7 +1183,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         named.length > 1 ||
         /\b(vs|versus| or |compare|pays more|better than)\b/i.test(message);
       const sym = !compare && named.length === 1 ? named[0]! : null;
-      const wantsPosition = /\b(supplied|position|btoken|holdings?|how much)\b/i.test(message);
+      const wantsPosition = /\b(supplied|positions?|btoken|holdings?|how much)\b/i.test(message);
       /**
        * "What is my Holdings in Blend Pool" — Vertex/router had already picked
        * `vanna_list_blend_reserves` (the pool-wide stats tool), and `isBlendRead`
@@ -1204,10 +1204,13 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         if (wantsPosition) {
           routed = {
             kind: "read",
-            tool: "vanna_get_blend_position",
-            args: sym ? { symbol: sym } : {},
+            tool: "vanna_get_farm_overview",
+            args: {
+              venue: "blend",
+              ...(sym ? { asset: sym === "USDC" ? "BLUSDC" : sym } : {}),
+            },
             requires_account: true,
-            template_id: "query_blend_position",
+            template_id: "query_farm_position",
           };
         } else {
           routed = {
@@ -3525,6 +3528,7 @@ async function farmPositionAnswer(
     request_id: string;
   },
   venue?: "blend" | "aquarius" | "soroswap" | null,
+  asset?: string | null,
 ): Promise<ChatResponse> {
   if (!ctx.smartAccount) {
     return {
@@ -3537,7 +3541,14 @@ async function farmPositionAnswer(
 
   const DUST = 1e-6;
   const facts: AnswerFact[] = [];
+  const tableRows: string[][] = [];
   let totalUsd = 0;
+  const fmtApy = (raw: unknown): string => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    const pct = n > 0 && n < 1 ? n * 100 : n;
+    return `${pct.toFixed(2)}%`;
+  };
 
   try {
     const [{ BlendService }, { AquariusService, AQUARIUS_POOLS, aquariusLpUnderlyingAmounts }, { SoroswapService }, { fetchTokenPrices, getCachedTokenPrice }] =
@@ -3552,11 +3563,17 @@ async function farmPositionAnswer(
     const xlmPrice = getCachedTokenPrice("XLM") || 0;
     const usdcPrice = getCachedTokenPrice("USDC") || 1;
 
-    const [blendXlm, blendUsdc, soroswapLp, soroswapStats, ...aquariusResults] = await Promise.all([
+    const [blendXlm, blendUsdc, soroswapLp, soroswapStats, blendXlmReserve, blendUsdcReserve, ...aquariusResults] = await Promise.all([
       BlendService.getUserBlendBalance(ctx.smartAccount, "XLM"),
       BlendService.getUserBlendBalance(ctx.smartAccount, "USDC"),
       SoroswapService.getLpBalance(ctx.smartAccount),
       SoroswapService.getPoolStats(),
+      typeof BlendService.getBlendReserveData === "function"
+        ? BlendService.getBlendReserveData("XLM").catch(() => null)
+        : Promise.resolve(null),
+      typeof BlendService.getBlendReserveData === "function"
+        ? BlendService.getBlendReserveData("USDC").catch(() => null)
+        : Promise.resolve(null),
       ...AQUARIUS_POOLS.flatMap((pool) => [
         AquariusService.getUserLpBalance(ctx.smartAccount!, pool.poolAddress, pool.tokens[0], pool.tokens[1]),
         AquariusService.getAquariusPoolStats(pool.poolAddress),
@@ -3567,13 +3584,25 @@ async function farmPositionAnswer(
       const xlmUnderlying = Number.parseFloat(blendXlm.underlyingBalance) || 0;
       if (xlmUnderlying > DUST) {
         const usd = xlmUnderlying * xlmPrice;
+        const bTok = fmtPosAmount(blendXlm.bTokenBalance);
         facts.push({ label: "Blend · XLM", value: `${fmtPosAmount(String(xlmUnderlying))} XLM (${money(usd)})` });
+        tableRows.push([
+          "Blend",
+          `${fmtPosAmount(String(xlmUnderlying))} XLM (${bTok} bXLM)`,
+          fmtApy((blendXlmReserve as { supplyApy?: string } | null)?.supplyApy),
+        ]);
         totalUsd += usd;
       }
       const usdcUnderlying = Number.parseFloat(blendUsdc.underlyingBalance) || 0;
       if (usdcUnderlying > DUST) {
         const usd = usdcUnderlying * usdcPrice;
+        const bTok = fmtPosAmount(blendUsdc.bTokenBalance);
         facts.push({ label: "Blend · BLUSDC", value: `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${money(usd)})` });
+        tableRows.push([
+          "Blend",
+          `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${bTok} bUSDC)`,
+          fmtApy((blendUsdcReserve as { supplyApy?: string } | null)?.supplyApy),
+        ]);
         totalUsd += usd;
       }
     }
@@ -3597,6 +3626,11 @@ async function farmPositionAnswer(
             // answer needs to say plainly.
             value: `${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} SOUSDC (${money(usd)}) · ${fmtPosAmount(String(ssLp))} LP`,
           });
+          tableRows.push([
+            "Soroswap",
+            `${fmtPosAmount(String(ssLp))} LP · ${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} SOUSDC`,
+            "—",
+          ]);
           totalUsd += usd;
         }
       }
@@ -3627,6 +3661,13 @@ async function farmPositionAnswer(
             ? `${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB} (${money(usd)}) · ${fmtPosAmount(String(lp))} LP`
             : `${fmtPosAmount(String(lp))} LP`,
         });
+        tableRows.push([
+          "Aquarius",
+          stats
+            ? `${fmtPosAmount(String(lp))} LP · ${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB}`
+            : `${fmtPosAmount(String(lp))} LP`,
+          fmtApy((stats as { totalApy?: string; apy?: string } | null)?.totalApy ?? (stats as { apy?: string } | null)?.apy),
+        ]);
         totalUsd += usd;
       });
     }
@@ -3643,7 +3684,20 @@ async function farmPositionAnswer(
   }
 
   const venueLabel = venue ? venue[0].toUpperCase() + venue.slice(1) : "Farm";
-  if (!facts.length) {
+  const want = (asset || "").toUpperCase();
+  const rowHits = (row: string[]) => {
+    if (!want) return true;
+    const blob = row.join(" ").toUpperCase();
+    if (want === "BLUSDC" || want === "USDC") return blob.includes("BLUSDC") || blob.includes("BUSDC");
+    if (want === "AQUSDC") return blob.includes("AQUSDC") || blob.includes("AQUARIUS");
+    if (want === "SOUSDC") return blob.includes("SOUSDC") || blob.includes("SOROSWAP");
+    if (want === "XLM") return /\bXLM\b/.test(row[1] ?? "") || (row[0] === "Blend" && /\bXLM\b/.test(blob));
+    return blob.includes(want);
+  };
+  const scopedRows = want ? tableRows.filter(rowHits) : tableRows;
+  const missingScoped = Boolean(want && tableRows.length && !scopedRows.length);
+
+  if (!tableRows.length) {
     const structured: StructuredAnswer = {
       headline: `Your ${venueLabel} Deposit TVL is $0.00 — no active positions.`,
       facts: [],
@@ -3659,14 +3713,20 @@ async function farmPositionAnswer(
     };
   }
 
-  const headline = `Your ${venueLabel} Deposit TVL is ${money(totalUsd)}.`;
+  const displayRows = missingScoped ? tableRows : scopedRows.length ? scopedRows : tableRows;
+  const headline = missingScoped
+    ? `You don't have a ${venueLabel} ${want} supply.`
+    : `Your ${venueLabel} Deposit TVL is ${money(totalUsd)}.`;
   const structured: StructuredAnswer = {
     headline,
     facts,
     venue: "none",
-    note: venue
-      ? undefined
-      : "Blend lending plus Aquarius/Soroswap LP — same total as Farm → Your Deposit TVL. Earn (vTokens) is separate.",
+    table: { columns: ["Protocol", "Holdings", "APY"], rows: displayRows },
+    note: missingScoped
+      ? `Your other ${venueLabel} positions are below.`
+      : venue
+        ? undefined
+        : "Blend lending plus Aquarius/Soroswap LP — same total as Farm → Your Deposit TVL. Earn (vTokens) is separate.",
   };
   return {
     kind: "answer",
@@ -3955,9 +4015,11 @@ async function runRead(
     routed.tool === "vanna_get_farm_lp_position"
   ) {
     const venue = routed.args?.venue;
+    const scopedAsset = typeof routed.args?.asset === "string" ? routed.args.asset : null;
     return farmPositionAnswer(
       ctx,
       venue === "blend" || venue === "aquarius" || venue === "soroswap" ? venue : null,
+      scopedAsset,
     );
   }
 

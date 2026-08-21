@@ -88,7 +88,7 @@ describe("the position route does not steal other intents", () => {
     const routed = routeMessage("blend apy for my position");
     expect(routed.kind).toBe("read");
     if (routed.kind !== "read") return;
-    expect(routed.template_id).toBe("query_blend");
+    expect(routed.template_id).toBe("query_farm_position");
   });
 
   it("does not answer an instruction with a summary", () => {

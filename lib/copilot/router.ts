@@ -1970,11 +1970,14 @@ export function routeMessage(message: string): RoutedIntent {
       : any(text, "soroswap")
         ? "soroswap"
         : null;
-  if (asksAboutHoldings && !actsOnPosition && any(text, "farm") && !any(text, "earn")) {
+  if (asksAboutHoldings && !actsOnPosition && any(text, "farm", "blend", "aquarius", "soroswap") && !any(text, "earn")) {
     return {
       kind: "read",
       tool: "vanna_get_farm_overview",
-      args: farmVenue ? { venue: farmVenue } : {},
+      args: {
+        ...(farmVenue ? { venue: farmVenue } : {}),
+        ...(asset && /^(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)$/i.test(asset) ? { asset } : {}),
+      },
       requires_account: true,
       template_id: "query_farm_position",
     };

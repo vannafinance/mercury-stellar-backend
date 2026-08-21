@@ -49,6 +49,21 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
       }
     }
   });
+
+  it("my Blend/XLM position stats is holdings, not pool-wide reserve APY", () => {
+    const r = routeMessage("what is my xlm blend pool positions stats?");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") {
+      expect(r.template_id).toBe("query_farm_position");
+      expect(r.args).toMatchObject({ venue: "blend" });
+    }
+  });
+
+  it("how is the blend pool doing stays pool stats", () => {
+    const r = routeMessage("how is my blend pool doing");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_blend");
+  });
 });
 
 const mocks = vi.hoisted(() => ({
