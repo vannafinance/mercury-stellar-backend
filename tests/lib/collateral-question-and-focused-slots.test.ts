@@ -141,8 +141,11 @@ describe("a focused single-asset question narrows the facts card too, not just t
     const labels = (res.answer?.facts ?? []).map((f) => f.label.toLowerCase()).join(" | ");
     expect(labels).toContain("xlm");
     expect(labels).toContain("sousdc");
-    expect(labels).not.toMatch(/health/);
+    expect(labels).toContain("health factor");
+    expect(labels).toContain("net available collateral");
+    expect(labels).toContain("collateral left before liquidation");
     expect(labels).not.toMatch(/borrow/);
+    expect(labels).not.toContain("debt");
     expect(res.answer?.facts?.some((f) => /\.\d{3,}/.test(f.value))).toBe(false);
   });
 

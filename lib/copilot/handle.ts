@@ -2450,6 +2450,21 @@ function snapshotRowFacts(rows: MarginPositionRow[]): AnswerFact[] {
   }));
 }
 
+function collateralSummaryFacts(pos: {
+  hf: number;
+  hfText: string;
+  grossCollateralValue: number;
+  netAvailableCollateral: number;
+  collateralLeftBeforeLiquidation: number;
+}): AnswerFact[] {
+  return [
+    { label: "health factor", value: fmt2(pos.hf) },
+    { label: "collateral", value: money(pos.grossCollateralValue) },
+    { label: "net available collateral", value: money(pos.netAvailableCollateral) },
+    { label: "collateral left before liquidation", value: money(pos.collateralLeftBeforeLiquidation) },
+  ];
+}
+
 /**
  * Name a farm TRACKING position for a human, not by its internal key.
  *
@@ -2893,7 +2908,7 @@ async function snapshotPositionAnswer(
       structured = {
         headline: `Your Total Collateral is ${money(pos.grossCollateralValue)}`,
         kicker: "Your detailed stats are:",
-        facts: snapshotRowFacts(pos.collateral),
+        facts: [...collateralSummaryFacts(pos), ...snapshotRowFacts(pos.collateral)],
         venue: "margin",
       };
       message = answerToText(structured);
