@@ -1031,7 +1031,7 @@ export function RunExecutionCard({
                           return (
                             <div
                               key={side}
-                              className="mt-[11px]"
+                              className="lp-dual-field rc-field mt-[11px]"
                               style={{
                                 border: "1px solid var(--rc-field-bd)",
                                 borderRadius: 12,
@@ -1071,18 +1071,14 @@ export function RunExecutionCard({
                                 value={val}
                                 onChange={(e) => {
                                   const raw = e.target.value;
+                                  const n = Number(raw);
+                                  const live = ratio != null && ratio > 0 && Number.isFinite(n) && n > 0;
                                   if (isXlm) {
                                     setXlmDraft(raw);
-                                    const n = Number(raw);
-                                    if (ratio != null && ratio > 0 && n > 0) {
-                                      setOtherDraft((n * ratio).toFixed(4).replace(/\.?0+$/, ""));
-                                    }
+                                    setOtherDraft(live ? (n * ratio).toFixed(4).replace(/\.?0+$/, "") : "");
                                   } else {
                                     setOtherDraft(raw);
-                                    const n = Number(raw);
-                                    if (ratio != null && ratio > 0 && n > 0) {
-                                      setXlmDraft((n / ratio).toFixed(4).replace(/\.?0+$/, ""));
-                                    }
+                                    setXlmDraft(live ? (n / ratio).toFixed(4).replace(/\.?0+$/, "") : "");
                                   }
                                 }}
                                 onKeyDown={(e) => {
@@ -1091,15 +1087,18 @@ export function RunExecutionCard({
                                     submitAmount();
                                   }
                                 }}
-                                className="mt-1 w-full"
+                                className="mt-1 w-full outline-none ring-0 focus:outline-none focus:ring-0"
                                 style={{
                                   border: 0,
+                                  outline: "none",
+                                  boxShadow: "none",
                                   background: "transparent",
                                   fontFamily: MONO,
                                   fontSize: 26,
                                   fontWeight: 600,
                                   fontVariantNumeric: "tabular-nums",
                                   color: "var(--rc-heading)",
+                                  WebkitAppearance: "none",
                                 }}
                               />
                             </div>

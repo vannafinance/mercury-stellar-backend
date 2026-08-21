@@ -1078,6 +1078,14 @@ html.dark .run-card,
 .run-card .rc-field input:focus {
   outline: none;
 }
+.run-card .lp-dual-field:focus-within {
+  border-color: var(--rc-field-bd);
+}
+.run-card .lp-dual-field input:focus,
+.run-card .lp-dual-field input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 
 @keyframes rc-spin {
   to {
