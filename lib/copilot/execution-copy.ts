@@ -135,6 +135,13 @@ export function humanizeStroopCounts(text: string, asset?: string | null): strin
   });
 }
 
+export function fmtLpAmt(n: number | string | null | undefined): string {
+  const v = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(v)) return String(n ?? "");
+  if (Number.isInteger(v) || Math.abs(v - Math.round(v)) < 1e-9) return String(Math.round(v));
+  return v.toFixed(4).replace(/\.?0+$/, "");
+}
+
 /**
  * One-line staged/executed title. The MCP receipt paragraph is not a summary.
  * Live: “Deposit 100 AQUSDC in Lending Pool” — not a 6-line dump.
@@ -171,8 +178,10 @@ export function shortWriteLabel(opts: {
     case "add_liquidity": {
       const pair = [opts.token_a, opts.token_b].filter(Boolean).join("/");
       const where = venue ? ` in ${venue}` : "";
-      if (sized && pair) return `Add ${sized} (${pair}) liquidity${where}`;
-      if (sized) return `Add ${sized} liquidity${where}`;
+      const pretty = amt ? fmtLpAmt(opts.amount) : "";
+      const sizedPretty = [pretty, asset].filter(Boolean).join(" ");
+      if (sizedPretty && pair) return `Add ${sizedPretty} (${pair}) liquidity${where}`;
+      if (sizedPretty) return `Add ${sizedPretty} liquidity${where}`;
       return `Add liquidity${where}`;
     }
     case "remove_liquidity":

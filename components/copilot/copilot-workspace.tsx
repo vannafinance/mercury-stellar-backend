@@ -4727,8 +4727,8 @@ export function CopilotWorkspace() {
                     </div>
 
                     <div className="mt-3.5 flex flex-wrap items-start justify-between gap-6">
-                      <div className="max-w-[560px]">
-                        <p className="whitespace-pre-wrap text-h6 font-semibold text-vgray-900">
+                      <div className="max-w-full min-w-0">
+                        <p className="whitespace-nowrap text-h6 font-semibold text-vgray-900">
                           {response.preview?.human_summary || response.message}
                         </p>
                         {/* Full agent note (e.g. the 2-step plan). Suppressed while
@@ -4771,7 +4771,7 @@ export function CopilotWorkspace() {
                       </div>
                     )}
 
-                    {action?.amount != null && (
+                    {action?.amount != null && action.op !== "add_liquidity" && (
                       <div className="mt-5">
                         {action.op === "swap" && action.expected_out != null && action.expected_out > 0 ? (
                           <>

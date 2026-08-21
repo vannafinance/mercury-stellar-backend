@@ -13,7 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
-import { cleanExecutionCopy, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
+import { cleanExecutionCopy, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
@@ -6370,7 +6370,7 @@ async function runWrite(
       const venue = usd === "SOUSDC" ? "soroswap" : "aquarius";
       const xlm = action.token_a === "XLM" ? action.amount_a : action.amount_b;
       const other = action.token_a === "XLM" ? action.amount_b : action.amount_a;
-      const label = `Add ${xlm} XLM + ${other} ${usd} LP`;
+      const label = `Add ${fmtLpAmt(xlm)} XLM + ${fmtLpAmt(other)} ${usd} LP`;
       return {
         kind: "needs_wallet_sign",
         message: label,

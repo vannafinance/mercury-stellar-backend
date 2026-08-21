@@ -9,7 +9,7 @@ import {
   classifyTrustlineFailure,
   isTrustlineMissingError,
 } from "./asset-readiness";
-import { cleanExecutionCopy, humanizeStroopCounts } from "./execution-copy";
+import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
@@ -634,7 +634,7 @@ export function mapOpToMcpStep(
             trader,
             venue: usdSym === "SOUSDC" ? "soroswap" : "aquarius",
           },
-          label: `Add ${amountXlm} XLM + ${amountUsd} ${usdSym} LP`,
+          label: `Add ${fmtLpAmt(amountXlm)} XLM + ${fmtLpAmt(amountUsd)} ${usdSym} LP`,
         },
       };
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeStroopCounts, shortWriteLabel } from "@/lib/copilot/execution-copy";
+import { humanizeStroopCounts, fmtLpAmt, shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { routeMessage } from "@/lib/copilot/router";
 
 describe("shortWriteLabel — one sentence on every staged write", () => {
@@ -19,6 +19,16 @@ describe("shortWriteLabel — one sentence on every staged write", () => {
   it("swap names both legs", () => {
     expect(shortWriteLabel({ op: "swap", amount: 10, asset: "XLM", token_b: "AQUSDC" })).toBe(
       "Swap 10 XLM → AQUSDC",
+    );
+  });
+});
+
+describe("fmtLpAmt — pair titles stay one line", () => {
+  it("rounds the derived XLM side and keeps a whole 10 as 10", () => {
+    expect(fmtLpAmt(719.0883528077677)).toBe("719.0884");
+    expect(fmtLpAmt(10)).toBe("10");
+    expect(`Add ${fmtLpAmt(719.0883528077677)} XLM + ${fmtLpAmt(10)} AQUSDC LP`).toBe(
+      "Add 719.0884 XLM + 10 AQUSDC LP",
     );
   });
 });
