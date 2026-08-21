@@ -405,6 +405,8 @@ export function RunExecutionCard({
   const [elapsed, setElapsed] = useState(0);
   const [draft, setDraft] = useState("");
   const [lpPick, setLpPick] = useState<string | null>(null);
+  const [lpLocked, setLpLocked] = useState(false);
+  const lockedAmtRef = useRef("");
   const [keys, setKeys] = useState<{ running: number | null; input: number | null }>({
     running: runningKey,
     input: inputKey,
@@ -412,7 +414,7 @@ export function RunExecutionCard({
   if (keys.running !== runningKey || keys.input !== inputKey) {
     setKeys({ running: runningKey, input: inputKey });
     if (keys.running !== runningKey) setElapsed(0);
-    if (keys.input !== inputKey) {
+    if (keys.input !== inputKey && !lpLocked) {
       setDraft("");
       setLpPick(null);
     }
@@ -438,7 +440,6 @@ export function RunExecutionCard({
   const [liveRatio, setLiveRatio] = useState<number | null>(null);
   const [xlmDraft, setXlmDraft] = useState("");
   const [otherDraft, setOtherDraft] = useState("");
-  const [lpLocked, setLpLocked] = useState(false);
   useEffect(() => {
     const leg = shape.needsInput;
     if (leg?.op === "remove_liquidity" && leg.lpPrefillXlm != null && leg.lpPrefillXlm > 0) {
@@ -491,6 +492,7 @@ export function RunExecutionCard({
       const xlmN = Number(xlmDraft);
       const otherN = Number(otherDraft);
       if (!(xlmN > 0) || !(otherN > 0)) return;
+      lockedAmtRef.current = `${xlmN} XLM + ${otherN} ${leg.lpSides[1]}`;
       setLpLocked(true);
       onSubmitAmount(leg, xlmN, "XLM", { amount_a: xlmN, amount_b: otherN });
       onLpEntered?.();
@@ -498,6 +500,7 @@ export function RunExecutionCard({
     }
     const n = Number(draft);
     if (!Number.isFinite(n) || n <= 0) return;
+    lockedAmtRef.current = `${n} LP`;
     setLpLocked(true);
     const sides = leg.lpSides;
     const selected =
@@ -1108,14 +1111,14 @@ export function RunExecutionCard({
                                   color: "var(--rc-heading)",
                                 }}
                               >
-                                {draft} LP
+                                {lockedAmtRef.current || `${draft} LP`}
                               </span>
                             </div>
+                            {!busy ? (
                             <button
                               type="button"
                               className="rc-btn-s mt-[11px]"
                               onClick={() => setLpLocked(false)}
-                              disabled={busy}
                               style={{
                                 ...btnBase,
                                 border: "1px solid var(--rc-btn-2-bd)",
@@ -1129,6 +1132,7 @@ export function RunExecutionCard({
                             >
                               Modify
                             </button>
+                            ) : null}
                           </>
                         ) : (
                           <div className="mt-[11px] flex items-stretch gap-[9px]">
@@ -1264,11 +1268,11 @@ export function RunExecutionCard({
                                 Approve & sign
                               </button>
                             ) : null}
+                            {!busy ? (
                             <button
                               type="button"
                               className="rc-btn-s"
                               onClick={() => setLpLocked(false)}
-                              disabled={busy}
                               style={{
                                 ...btnBase,
                                 border: "1px solid var(--rc-btn-2-bd)",
@@ -1282,6 +1286,7 @@ export function RunExecutionCard({
                             >
                               Modify
                             </button>
+                            ) : null}
                           </div>
                         </>
                       ) : (

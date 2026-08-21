@@ -4929,20 +4929,19 @@ export function CopilotWorkspace() {
                                 ? "Confirm all legs & sign"
                                 : "Approve & sign"}
                         </button>
-                        {/* Modify is re-prompting, not inline editing — the original wording
-                            goes back in the composer so it can be reworded and re-run. */}
+                        {!signing && (
                         <button
                           type="button"
-                          disabled={signing}
                           onClick={() => {
                             setIntentText(submitted || "");
                             setResponse(null);
                             inputRef.current?.focus();
                           }}
-                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:pointer-events-none disabled:opacity-40"
+                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
                         >
                           Modify
                         </button>
+                        )}
                         <button
                           type="button"
                           onClick={reset}
