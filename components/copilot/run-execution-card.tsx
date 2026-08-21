@@ -29,7 +29,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LEDGER_CONFIRM_HINT } from "./resume-policy";
-import { pairedFromSelected } from "@/lib/copilot/lp-pair";
+import { pairedFromSelected, readAmmOtherPerXlm } from "@/lib/copilot/lp-pair";
 
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
@@ -421,6 +421,28 @@ export function RunExecutionCard({
     if (inputKey != null) fieldRef.current?.focus();
   }, [inputKey]);
 
+  const [liveRatio, setLiveRatio] = useState<number | null>(null);
+  useEffect(() => {
+    const leg = shape.needsInput;
+    if (!leg || leg.op !== "add_liquidity") {
+      setLiveRatio(null);
+      return;
+    }
+    if (leg.lpOtherPerXlm != null && leg.lpOtherPerXlm > 0) {
+      setLiveRatio(leg.lpOtherPerXlm);
+      return;
+    }
+    const other = leg.lpSides?.[1] || "AQUSDC";
+    let cancelled = false;
+    void (async () => {
+      const r = await readAmmOtherPerXlm(other);
+      if (!cancelled && r != null && r > 0) setLiveRatio(r);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [shape.needsInput]);
+
   const submitAmount = useCallback(() => {
     const leg = shape.needsInput;
     if (!leg || !onSubmitAmount) return;
@@ -706,15 +728,16 @@ export function RunExecutionCard({
                 (l.asset && l.lpSides.includes(l.asset) ? l.asset : l.lpSides[1])
               : null;
           const lpDraftN = Number(draft);
+          const lpRatio = liveRatio ?? l.lpOtherPerXlm;
           const lpPairPreview =
             showInput &&
             lpSelected &&
             l.lpSides &&
-            l.lpOtherPerXlm != null &&
-            l.lpOtherPerXlm > 0 &&
+            lpRatio != null &&
+            lpRatio > 0 &&
             Number.isFinite(lpDraftN) &&
             lpDraftN > 0
-              ? pairedFromSelected(lpSelected, lpDraftN, l.lpOtherPerXlm)
+              ? pairedFromSelected(lpSelected, lpDraftN, lpRatio)
               : null;
 
           return (

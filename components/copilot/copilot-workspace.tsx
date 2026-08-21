@@ -57,6 +57,7 @@ import {
   claimFirstAwaitingLeg,
   ledgerWaitCopy,
   hasMoreLegs,
+  isUnsizedAddLiquidity,
   legsFromUnsettledSteps,
   pickRemainingLegs,
   shouldAutoResume,
@@ -70,6 +71,7 @@ import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-c
 import { HealthDial } from "./health-dial";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
+import { lpSides } from "@/lib/copilot/lp-pair";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
@@ -3123,9 +3125,11 @@ export function CopilotWorkspace() {
           strategyTailRef.current,
           complete ? [] : cardUnsettled,
         );
+        const pauseForLp = isUnsizedAddLiquidity(remainingFromData[0]);
         const preferResume =
           !!autoApprove &&
           !complete &&
+          !pauseForLp &&
           (shouldAutoResume({
             complete: false,
             serverRemaining,
@@ -3625,6 +3629,7 @@ export function CopilotWorkspace() {
       strategyTailRef.current,
       cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
     );
+    const pauseForLp = isUnsizedAddLiquidity(remaining[0]);
     // Hard-stop only when the full card is terminal AND nothing is still queued.
     // Prefer-resume alone must not decide completion (false complete + empty
     // remaining was the old shortcut that killed the queue mid-run).
@@ -3632,6 +3637,7 @@ export function CopilotWorkspace() {
     const preferResume =
       !!autoApprove &&
       !cardComplete &&
+      !pauseForLp &&
       (shouldAutoResume({
         complete: false,
         serverRemaining,
@@ -4123,10 +4129,20 @@ export function CopilotWorkspace() {
     const inFlightIdx = loading
       ? src.findIndex((s) => !TERMINAL_LEG.has(String(s.status ?? "")))
       : -1;
+    const firstOpen = src.findIndex((s) => !TERMINAL_LEG.has(String(s.status ?? "")));
     return src.map((s, i) => {
       const op = String(s.op ?? "step");
       const amt = s.amount;
       const hasAmt = amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0;
+      const pauseLp = op === "add_liquidity" && !hasAmt && i === firstOpen && !loading;
+      const sides =
+        op === "add_liquidity"
+          ? Array.isArray((response?.data as { lp_input?: { sides?: string[] } })?.lp_input?.sides)
+            ? ((response!.data as { lp_input: { sides: [string, string] } }).lp_input.sides)
+            : s.token_a && s.token_b
+              ? ([String(s.token_a), String(s.token_b)] as [string, string])
+              : lpSides(s.asset, s.token_b || s.token_out, null)
+          : null;
       return {
         // Position, not the server's index. A resumed run restarts its step counter, so a
         // returned index can collide with one already on screen — which showed two
@@ -4141,22 +4157,21 @@ export function CopilotWorkspace() {
           : null,
         asset: s.asset ?? null,
         leverage: s.leverage ?? null,
-        status: toRunLegStatus(s.status, i === inFlightIdx),
+        status: pauseLp ? "needs_input" : toRunLegStatus(s.status, i === inFlightIdx),
         txHash: s.tx_hash ? truncHash(String(s.tx_hash)) : null,
         // The server's `message` is a humanized reason. Only surface it where it is one:
         // on a leg that failed or is asking for something, never on a settled leg.
         error:
           s.message && toRunLegStatus(s.status) === "failed" ? String(s.message) : null,
         question:
-          s.message && toRunLegStatus(s.status) === "needs_input" ? String(s.message) : null,
+          pauseLp
+            ? `How much ${sides ? sides.join(" or ") : "XLM or AQUSDC"} should I add?`
+            : s.message && toRunLegStatus(s.status) === "needs_input"
+              ? String(s.message)
+              : null,
         tokenIn: s.token_in ?? null,
         tokenOut: s.token_out ?? null,
-        lpSides:
-          op === "add_liquidity" && Array.isArray((response?.data as { lp_input?: { sides?: string[] } })?.lp_input?.sides)
-            ? ((response!.data as { lp_input: { sides: [string, string] } }).lp_input.sides)
-            : s.token_a && s.token_b
-              ? [String(s.token_a), String(s.token_b)]
-              : null,
+        lpSides: sides,
         lpOtherPerXlm:
           op === "add_liquidity"
             ? ((response?.data as { lp_input?: { other_per_xlm?: number | null } })?.lp_input?.other_per_xlm ?? null)

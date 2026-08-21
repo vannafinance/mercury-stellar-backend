@@ -144,6 +144,14 @@ export function isStrategyRunComplete(
  * drive resume — not orphan unsettled card rows alone (those can be a previous
  * STAGED plan merged into the accumulator).
  */
+export function isUnsizedAddLiquidity(leg: {
+  op?: string | null;
+  amount?: number | null;
+} | null | undefined): boolean {
+  if (!leg) return false;
+  return String(leg.op) === "add_liquidity" && !(leg.amount != null && Number(leg.amount) > 0);
+}
+
 export function shouldAutoResume(opts: {
   complete: boolean;
   serverRemaining?: readonly unknown[] | null;
@@ -153,6 +161,10 @@ export function shouldAutoResume(opts: {
   canResumeWithAutoApprove?: boolean;
 }): boolean {
   if (opts.complete) return false;
+  const first = (opts.serverRemaining?.[0] ?? opts.clientTail?.[0]) as
+    | { op?: string; amount?: number | null }
+    | undefined;
+  if (isUnsizedAddLiquidity(first)) return false;
   if (opts.preferFlag) return true;
   if (opts.canResumeWithAutoApprove) return true;
   if (opts.serverRemaining?.length) return true;

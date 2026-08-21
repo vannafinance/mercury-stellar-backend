@@ -451,4 +451,28 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
       }),
     ).toBe(true);
   });
+
+  it("unsized add_liquidity after swap never auto-resumes — wait for XLM|AQUSDC amount", () => {
+    expect(
+      shouldAutoResume({
+        complete: false,
+        clientTail: [{ op: "add_liquidity", asset: "AQUSDC", amount: null }],
+        preferFlag: true,
+        canResumeWithAutoApprove: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoResume({
+        complete: false,
+        serverRemaining: [{ op: "add_liquidity", amount: 0 }],
+        clientTail: [{ op: "add_liquidity", amount: 0 }],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoResume({
+        complete: false,
+        clientTail: [{ op: "add_liquidity", amount: 1.64 }],
+      }),
+    ).toBe(true);
+  });
 });
