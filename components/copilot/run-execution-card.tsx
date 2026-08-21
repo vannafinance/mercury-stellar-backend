@@ -1003,8 +1003,24 @@ export function RunExecutionCard({
                       className="m-0 font-bold"
                       style={{ fontSize: 14.5, lineHeight: "21px", color: "var(--rc-warn-fg)" }}
                     >
-                      {l.question ||
-                        `How much ${l.asset || "of it"} should I ${l.op.replace(/_/g, " ")}?`}
+                      {l.op === "add_liquidity" && l.lpSides && l.lpSides.length === 2
+                        ? (() => {
+                            const pretty = (raw: string) => {
+                              const n = Number(raw);
+                              if (!Number.isFinite(n) || n <= 0) return null;
+                              if (Number.isInteger(n) || Math.abs(n - Math.round(n)) < 1e-9) {
+                                return String(Math.round(n));
+                              }
+                              return n.toFixed(4).replace(/\.?0+$/, "");
+                            };
+                            const x = pretty(xlmDraft);
+                            const o = pretty(otherDraft);
+                            return x && o
+                              ? `Add ${x} XLM + ${o} ${l.lpSides[1]} — edit either box or sign as-is.`
+                              : `How much XLM or ${l.lpSides[1]} should I add?`;
+                          })()
+                        : l.question ||
+                          `How much ${l.asset || "of it"} should I ${l.op.replace(/_/g, " ")}?`}
                     </p>
                     {/* The stakes, stated from the real legs — abandoning here is the
                         expensive move, and it must not be a surprise. */}
