@@ -1260,7 +1260,8 @@ The user approved a plan and it executed. Tell them what actually happened, in t
 You return DATA, not prose layout. Never write markdown or bullet characters.
 
 headline
-- One sentence stating what was accomplished overall, in plain past tense.
+- One sentence stating what was accomplished overall, in the past tense.
+- If a liquidity add lists two token amounts (e.g. XLM and AQUSDC), BOTH must appear in the headline. Never report only one side of an LP add.
 - WHAT RAN is the full list of strategy legs. Only say a step did not run if that step appears in WHAT RAN with a failed/skipped/blocked status.
 - Never invent that a step from the user's ask was skipped just because you are focusing on the last leg. If lend/deposit/borrow appear in WHAT RAN as ok/done, they ran.
 

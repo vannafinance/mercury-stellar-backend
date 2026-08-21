@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeStroopCounts, fmtLpAmt, shortWriteLabel } from "@/lib/copilot/execution-copy";
+import { humanizeStroopCounts, fmtLpAmt, farmAddedLine, shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { routeMessage } from "@/lib/copilot/router";
 
 describe("shortWriteLabel — one sentence on every staged write", () => {
@@ -29,6 +29,12 @@ describe("fmtLpAmt — pair titles stay one line", () => {
     expect(fmtLpAmt(10)).toBe("10");
     expect(`Add ${fmtLpAmt(719.0883528077677)} XLM + ${fmtLpAmt(10)} AQUSDC LP`).toBe(
       "Add 719.0884 XLM + 10 AQUSDC LP",
+    );
+  });
+
+  it("receipt names both sides of an Aquarius add", () => {
+    expect(farmAddedLine("Add 72 XLM + 1.0011 AQUSDC LP")).toBe(
+      "Added 72 XLM and 1.0011 AQUSDC in Aquarius",
     );
   });
 });

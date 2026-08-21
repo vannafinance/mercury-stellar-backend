@@ -142,6 +142,16 @@ export function fmtLpAmt(n: number | string | null | undefined): string {
   return v.toFixed(4).replace(/\.?0+$/, "");
 }
 
+/** `Add 72 XLM + 1.0011 AQUSDC LP` → `Added 72 XLM and 1.0011 AQUSDC in Aquarius`. */
+export function farmAddedLine(summary?: string | null): string | null {
+  const s = String(summary || "").trim();
+  const m = s.match(/Add\s+(.+?)\s+XLM\s+\+\s+(.+?)\s+(AQUSDC|SOUSDC|BLUSDC)/i);
+  if (!m) return null;
+  const usd = m[3].toUpperCase();
+  const where = usd === "SOUSDC" ? "Soroswap" : usd === "BLUSDC" ? "Blend" : "Aquarius";
+  return `Added ${m[1]} XLM and ${m[2]} ${usd} in ${where}`;
+}
+
 /**
  * One-line staged/executed title. The MCP receipt paragraph is not a summary.
  * Live: “Deposit 100 AQUSDC in Lending Pool” — not a 6-line dump.

@@ -1115,6 +1115,7 @@ export function RunExecutionCard({
                               type="button"
                               className="rc-btn-s mt-[11px]"
                               onClick={() => setLpLocked(false)}
+                              disabled={busy}
                               style={{
                                 ...btnBase,
                                 border: "1px solid var(--rc-btn-2-bd)",
@@ -1148,6 +1149,7 @@ export function RunExecutionCard({
                                 step="any"
                                 placeholder="0.00"
                                 value={draft}
+                                disabled={busy}
                                 onChange={(e) => setDraft(e.target.value)}
                                 onKeyDown={(e) => {
                                   if (e.key === "Enter") {
@@ -1329,6 +1331,7 @@ export function RunExecutionCard({
                                 step="any"
                                 placeholder="0.00"
                                 value={val}
+                                disabled={busy}
                                 onChange={(e) => {
                                   const raw = e.target.value;
                                   const n = Number(raw);
@@ -1450,6 +1453,7 @@ export function RunExecutionCard({
                           step="any"
                           placeholder="0.00"
                           value={draft}
+                          disabled={busy}
                           onChange={(e) => setDraft(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") {

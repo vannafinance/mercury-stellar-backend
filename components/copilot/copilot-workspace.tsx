@@ -40,6 +40,7 @@ import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
+import { farmAddedLine } from "@/lib/copilot/execution-copy";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -1395,18 +1396,6 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
       </div>
     </div>
   );
-}
-
-function farmAddedLine(summary?: string | null): string {
-  const s = String(summary || "").trim();
-  const m = s.match(/Add\s+(.+?)\s+XLM\s+\+\s+(.+?)\s+(AQUSDC|SOUSDC|BLUSDC)\s+LP/i);
-  if (m) {
-    const usd = m[3].toUpperCase();
-    const where = usd === "SOUSDC" ? "Soroswap" : usd === "BLUSDC" ? "Blend" : "Aquarius";
-    return `Added ${m[1]} XLM and ${m[2]} ${usd} in ${where}`;
-  }
-  if (s) return s.replace(/^Add /, "Added ");
-  return "Submitted on-chain";
 }
 
 export function CopilotWorkspace() {
@@ -3419,7 +3408,10 @@ export function CopilotWorkspace() {
               await postCopilot(
                 {
                   message: intent,
-                  summarize_execution: { intent, legs: ranLegs },
+                  summarize_execution: {
+                    intent: response?.preview?.human_summary || intent,
+                    legs: ranLegs,
+                  },
                 },
                 intent,
                 { chainHop: true },
@@ -3823,7 +3815,7 @@ export function CopilotWorkspace() {
             {
               message: intent,
               summarize_execution: {
-                intent,
+                intent: response.preview?.human_summary || intent,
                 legs: ranLegs,
                 final_health_factor: finalHf,
                 health_factor_floor: floorHf,
@@ -4616,7 +4608,7 @@ export function CopilotWorkspace() {
                         ? Number(strategyMetaRef.current.min_hf)
                         : guardianFloor
                     }
-                    busy={loading}
+                    busy={loading || signing}
                     signerLive={sessionSigning}
                     signerText={
                       sessionSigning
@@ -4941,12 +4933,13 @@ export function CopilotWorkspace() {
                             goes back in the composer so it can be reworded and re-run. */}
                         <button
                           type="button"
+                          disabled={signing}
                           onClick={() => {
                             setIntentText(submitted || "");
                             setResponse(null);
                             inputRef.current?.focus();
                           }}
-                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
+                          className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500 disabled:pointer-events-none disabled:opacity-40"
                         >
                           Modify
                         </button>
@@ -5192,7 +5185,15 @@ export function CopilotWorkspace() {
                           padding: "18px 20px 20px",
                         }}
                       >
-                        <AnswerView answer={response.answer} />
+                        <AnswerView
+                          answer={{
+                            ...response.answer,
+                            headline:
+                              farmAddedLine(response.preview?.human_summary) ||
+                              farmAddedLine(response.answer.headline) ||
+                              response.answer.headline,
+                          }}
+                        />
                       </div>
                     )}
                     {!response.answer && (
@@ -5206,7 +5207,9 @@ export function CopilotWorkspace() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="text-h6 font-semibold text-vgray-900">
-                              {farmAddedLine(response.preview?.human_summary)}
+                              {farmAddedLine(response.preview?.human_summary) ||
+                                response.preview?.human_summary ||
+                                "Submitted on-chain"}
                             </p>
                             <p className="mt-1 text-body-2 text-vgray-500">
                               Signed and submitted on-chain.
