@@ -54,9 +54,10 @@ async function healthFromSnapshot(
     const snap = await computeMarginSnapshot(smartAccount);
     if (!(snap.grossCollateralValue > 0) && !(snap.totalBorrowedValue > 0)) return null;
     return {
-      // `hfFrom` treats no-debt as ∞ by returning null; match that convention.
       hf: snap.totalBorrowedValue > 0 ? snap.avgHealthFactor : null,
-      collateral: snap.grossCollateralValue,
+      // Margin page "Margin Collateral" is totalCollateralValue, not gross.
+      collateral:
+        snap.totalCollateralValue > 0 ? snap.totalCollateralValue : snap.grossCollateralValue,
       debt: snap.totalBorrowedValue,
     };
   } catch {

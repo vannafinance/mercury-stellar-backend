@@ -22,6 +22,7 @@ vi.mock("@/lib/account-snapshot", () => ({
     collateralBalances: {},
     borrowedBalances: {},
     totalBorrowedValue: 315.67,
+    totalCollateralValue: 473.4,
     grossCollateralValue: 473.4,
     totalValue: 473.4,
     avgHealthFactor: 473.4 / 315.67,

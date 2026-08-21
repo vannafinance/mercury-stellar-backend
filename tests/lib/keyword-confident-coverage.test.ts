@@ -42,7 +42,7 @@ const REPRESENTATIVE_READS: Array<[string, string]> = [
   ["inactive account", "query_inactive"],
   ["net available collateral", "query_margin_figure"],
   ["what is xlm to sousdc ratio in the soroswap pool", "query_pool_ratio"],
-  ["AQUSDC pool stats", "query_pool_stats"],
+  ["AQUSDC earn pool stats", "query_pool_stats"],
   ["price of xlm", "query_price"],
   ["prices of xlm and usdc", "query_prices_batch"],
   ["what is my smart account address", "query_resolve"],

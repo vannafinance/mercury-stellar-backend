@@ -58,6 +58,11 @@ export interface StructuredAnswer {
   note?: string;
   /** Which product the numbers came from, so the UI can label it. */
   venue?: AnswerVenue;
+  /**
+   * Optional per-pool (or per-clause) blocks. Each is a sentence plus a compact
+   * supplied/available strip — not one big facts card for the whole answer.
+   */
+  sections?: Array<{ body: string; facts: AnswerFact[] }>;
 }
 
 /**
@@ -286,6 +291,13 @@ export function normalizeAnswer(raw: unknown): StructuredAnswer | null {
 /** Flatten to plain text — the message field, and any surface without the renderer. */
 export function answerToText(a: StructuredAnswer): string {
   const lines = [a.headline];
+  if (a.sections?.length) {
+    for (const s of a.sections) {
+      lines.push("");
+      lines.push(s.body);
+      for (const f of s.facts) lines.push(`${f.label}  ${f.value}`);
+    }
+  }
   if (a.facts.length) {
     lines.push("");
     for (const f of a.facts) lines.push(`• ${f.label}: ${f.value}`);

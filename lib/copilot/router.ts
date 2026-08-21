@@ -2372,6 +2372,10 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     any(text, "all earn pools", "list all vanna earn", "earn pools with", "list earn pools") ||
     (any(text, "earn pool") && any(text, "list", "all", "every")) ||
+    // "How is the earn pool doing?" names no ticker — that is all four pools, not USDC.
+    (any(text, "earn pool", "earn pools") &&
+      any(text, "how is", "how are", "doing", "how's") &&
+      !any(text, "blusdc", "aqusdc", "sousdc", "xlm")) ||
     (any(text, "highest supply apy", "best supply apy", "highest apy") &&
       !any(text, "blend", "farm", "aquarius"))
   ) {
@@ -2397,7 +2401,42 @@ export function routeMessage(message: string): RoutedIntent {
      * pool (the same answer `query_all_earn_pools` already gives) is the friendlier of
      * the two and requires no new backend call.
      */
-    if (asset === "USDC") {
+    /**
+     * "How is my XLM pool doing?" names a ticker but not Earn vs Farm · Blend.
+     * Ask rather than guessing the Earn lending pool (or the Blend reserve).
+     */
+    const venueNamed = any(text, "earn", "blend", "farm", "aquarius", "soroswap", "lending");
+    if (
+      asset &&
+      /^(XLM|BLUSDC|AQUSDC|SOUSDC)$/i.test(asset) &&
+      !venueNamed
+    ) {
+      const venues =
+        asset === "AQUSDC"
+          ? [
+              { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+              { id: "aquarius", label: "Farm · Aquarius", description: "LP (XLM / AQUSDC)" },
+            ]
+          : asset === "SOUSDC"
+            ? [
+                { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+                { id: "soroswap", label: "Farm · Soroswap", description: "LP (XLM / SOUSDC)" },
+              ]
+            : [
+                { id: "earn", label: "Earn", description: "Lending pool — supply / borrow" },
+                { id: "blend", label: "Farm · Blend", description: "Single-asset supply on Farm" },
+              ];
+      return {
+        kind: "clarify",
+        template_id: "clarify_pool_venue",
+        message: `${asset} is on more than one surface. Earn is the lending pool; Farm is Blend / LP. Which one?`,
+        pool_venues: venues,
+      };
+    }
+    if (
+      (asset === "USDC" || !asset) &&
+      !any(text, "aquarius", "soroswap", "blend", "farm")
+    ) {
       return {
         kind: "read",
         tool: "vanna_get_pool_stats",

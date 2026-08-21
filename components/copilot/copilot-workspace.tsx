@@ -215,7 +215,7 @@ const CAPABILITIES: Array<{ tag: string; tone: "read" | "write" | "multi"; label
   {
     tag: "write · multi-leg",
     tone: "multi",
-    label: "Park 20 XLM then farm 10 BLUSDC at 2×",
+    label: "Swap 10 XLM to AQUSDC then add liquidity in Aquarius",
     tool: "multi_leg_agent",
   },
 ];
@@ -1274,12 +1274,6 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
   const rows: Array<{ k: string; before: string; after: string }> = [
     { k: "collateral", before: usd(sim.collateral_before), after: usd(sim.collateral_after) },
     { k: "debt", before: usd(sim.debt_before), after: usd(sim.debt_after) },
-    {
-      k: "ltv",
-      before: `${(sim.ltv_before * 100).toFixed(1)}%`,
-      after: `${(sim.ltv_after * 100).toFixed(1)}%`,
-    },
-    { k: "size", before: "—", after: usd(sim.amount_usd) },
   ];
 
   // A zeroed baseline means the account read failed, not that the position is empty —
@@ -2841,6 +2835,13 @@ export function CopilotWorkspace() {
         if (response?.intent?.template_id === "clarify_usdc_variant" && submitted) {
           const substituted = submitted.replace(/\busdc\b/i, opt.id);
           await run(substituted !== submitted ? substituted : opt.id);
+          return;
+        }
+        if (response?.intent?.template_id === "clarify_pool_venue" && submitted) {
+          const withVenue = /\bpool\b/i.test(submitted)
+            ? submitted.replace(/\bpool\b/i, `${opt.id} pool`)
+            : `${submitted} ${opt.id}`;
+          await run(withVenue);
           return;
         }
         // Fallback: rephrase as a full message
@@ -4708,16 +4709,16 @@ export function CopilotWorkspace() {
                     {sim && <ImpactPanel sim={sim} />}
 
                     {reasons.length > 0 && (
-                      <div className="mt-4 flex flex-col gap-[7px]">
+                      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
                         {reasons.map((r, i) => {
                           const bad = decision === "block";
                           const color = bad ? BAD_INK : action?.multi_leg ? WARN_INK : OK_INK;
                           return (
-                            <span key={i} className="flex items-start gap-2.5 text-body-2 text-vgray-500">
+                            <span key={i} className="inline-flex items-center gap-2 text-body-2 text-vgray-500">
                               {bad || action?.multi_leg ? (
-                                <CircleAlert size={14} className="mt-[3px] shrink-0" style={{ color }} />
+                                <CircleAlert size={14} className="shrink-0" style={{ color }} />
                               ) : (
-                                <ShieldCheck size={14} className="mt-[3px] shrink-0" style={{ color }} />
+                                <ShieldCheck size={14} className="shrink-0" style={{ color }} />
                               )}
                               {r}
                             </span>

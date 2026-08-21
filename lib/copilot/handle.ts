@@ -61,6 +61,7 @@ import {
   type AnswerVenue,
   type StructuredAnswer,
 } from "./answer-schema";
+import { earnPoolStructuredAnswer } from "./earn-pool-copy";
 import { runPageAgent } from "./page-agent";
 import {
   actionFromExpanded,
@@ -1582,6 +1583,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       routed.template_id === "clarify_usdc_variant"
         ? (routed.usdc_variants ?? USDC_VARIANT_OPTIONS.map((o) => o.id))
         : null;
+    const poolVenues =
+      routed.template_id === "clarify_pool_venue" ? routed.pool_venues : null;
     return {
       kind: "clarification",
       message: routed.message,
@@ -1594,7 +1597,9 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
               description: o.description,
             })),
           }
-        : {}),
+        : poolVenues
+          ? { clarify_options: poolVenues }
+          : {}),
       request_id,
     };
   }
@@ -4105,46 +4110,16 @@ async function runRead(
      * all and is unaffected, so it still shows every pool including XLM.
      */
     const displayRows = bareUsdc ? rows.filter((r) => r.symbol !== "XLM") : rows;
-    const ranked = [...displayRows]
-      .filter((r) => r.supply_apy_pct != null && !r.error)
-      .sort((a, b) => Number(b.supply_apy_pct) - Number(a.supply_apy_pct));
-    const winner = ranked[0];
-    // Pad the symbol so the stat line lines up loosely across pools like a column,
-    // without being an actual table/card component — still one plain-text message.
-    const width = Math.max(...displayRows.map((r) => String(r.symbol).length));
-    /**
-     * Name the unit, and say WHICH liquidity.
-     *
-     * This row used to end `liquidity 23,676.554` — a bare number with no token and an
-     * ambiguous label. The Earn page shows two separate columns, "Assets Supplied"
-     * (28.71K XLM) and "Available Liquidity" (23.78K XLM), so a reader comparing the two
-     * surfaces could not tell which one the copilot meant, and the figure looked like it
-     * disagreed with the table when it was simply a different column.
-     *
-     * `total_assets` is everything deposited; `total_liquidity` is what is left to borrow.
-     * Both are reported, in the pool's own token, so the row lines up with the page.
-     *
-     * Reported live, twice: first that "·"-separated stats crammed onto one line read as
-     * a run-on; then that spreading every figure onto its OWN line (supply/borrow/util
-     * each alone) took too much vertical space. This settles between the two — one line
-     * of stats per pool, no "·", the supplied/available detail on its own line below.
-     */
-    const fmtRow = (r: Record<string, unknown>) => {
-      const name = String(r.symbol).padEnd(width);
-      if (r.error) return `${name}  unavailable (${shortError(r.error)})`;
-      const sym = String(r.symbol);
-      const supplied = r.total_assets_human != null ? amount(r.total_assets_human) : null;
-      const avail = amount(r.total_liquidity_human);
-      const size = supplied
-        ? `${supplied} ${sym} supplied, ${avail} available`
-        : `${avail} ${sym} available to borrow`;
-      return (
-        `${name}  supply ${pct(r.supply_apy_pct)}   borrow ${pct(r.borrow_apr_pct)}   ` +
-        `utilization ${pct(r.utilization_pct)}\n` +
-        `${" ".repeat(width)}  ${size}`
-      );
-    };
-    const lines = displayRows.map(fmtRow);
+    const asPoolRows = (list: Array<Record<string, unknown>>) =>
+      list.map((r) => ({
+        symbol: String(r.symbol),
+        supply_apy_pct: r.supply_apy_pct,
+        borrow_apr_pct: r.borrow_apr_pct,
+        utilization_pct: r.utilization_pct,
+        total_assets_human: r.total_assets_human,
+        total_liquidity_human: r.total_liquidity_human,
+        error: r.error,
+      }));
     const asksCompare = /\bcompare\b|\bvs\.?\b|\bversus\b|\bbetter\b|\bdifference between\b/i.test(
       ctx.message,
     );
@@ -4164,13 +4139,17 @@ async function runRead(
               ? ` Note ${top.symbol} is ${pct(top.utilization_pct)} utilised, so withdrawal liquidity is thin.`
               : "")
           : `Only one of those pools returned live stats, so there is nothing to compare it against.`;
+      const structured = earnPoolStructuredAnswer({
+        rows: asPoolRows(sel),
+        usdcOnly: bareUsdc,
+        compareHead:
+          head +
+          (bareUsdc ? ` “USDC” is three different tokens here, so all three are shown.` : ""),
+      });
       return {
         kind: "answer",
-        message:
-          `${head}\n\n${sel.map(fmtRow).join("\n\n")}` +
-          (bareUsdc
-            ? `\n\n“USDC” is three different tokens here, so all three are shown.`
-            : ""),
+        message: answerToText(structured),
+        answer: structured,
         data: factsForUi({ compared: [...named] }),
         intent: { template_id: "query_all_earn_pools", slots: { compared: [...named] } },
         mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
@@ -4236,25 +4215,30 @@ async function runRead(
             (tvlPartial ? " (some pools could not be valued — see below)." : ".")
           : `I couldn't total the pools — the XLM oracle price didn't come back, and I won't ` +
             `quote a TVL built on a guessed price.`;
+      const structured = earnPoolStructuredAnswer({
+        rows: asPoolRows(displayRows),
+        usdcOnly: bareUsdc,
+        compareHead: head,
+      });
       return {
         kind: "answer",
-        message: `${head}\n\nBy pool:\n${lines.join("\n\n")}`,
+        message: answerToText(structured),
+        answer: structured,
         data: factsForUi({ tvl_usd: tvlUsd }),
         intent: { template_id: "query_all_earn_pools", slots: { pools: [...pools] } },
         mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
         request_id: ctx.request_id,
       };
     }
-    const prose = wantHighest
-      ? `${winner?.symbol ?? "n/a"} pays the most right now at ${pct(winner?.supply_apy_pct)} supply APY.\n\n` +
-        `All ${displayRows.length} Vanna earn pools:\n${lines.join("\n\n")}`
-      : `Vanna has ${displayRows.length} earn pools:\n${lines.join("\n\n")}` +
-        (winner ? `\n\n${winner.symbol} currently pays the most, at ${pct(winner.supply_apy_pct)}.` : "");
+    const structured = earnPoolStructuredAnswer({
+      rows: asPoolRows(displayRows),
+      usdcOnly: bareUsdc,
+      wantHighest,
+    });
     return {
       kind: "answer",
-      // No raw facts-card dump here — every figure is already in the prose above, and a
-      // "winner ..." card duplicating it was reported live as unwanted clutter.
-      message: prose,
+      message: answerToText(structured),
+      answer: structured,
       intent: { template_id: "query_all_earn_pools", slots: { pools: [...pools] } },
       mcp: { tool: "vanna_get_pool_stats", has_unsigned_xdr: false },
       request_id: ctx.request_id,
@@ -4336,7 +4320,27 @@ async function runRead(
 
     let structured: StructuredAnswer | null = null;
     if (!hinglish) {
-      structured = await vertexExplainStructured(ctx.message, routed.tool, data);
+      if (routed.tool === "vanna_get_pool_stats" && routed.template_id === "query_pool_stats") {
+        const display =
+          typeof resolvedSymbol === "string" && resolvedSymbol.toUpperCase() === "USDC"
+            ? "BLUSDC"
+            : String(resolvedSymbol || data.symbol || "XLM").toUpperCase();
+        structured = earnPoolStructuredAnswer({
+          rows: [
+            {
+              symbol: display,
+              supply_apy_pct: data.supply_apy_pct ?? data.supply_apr_pct,
+              borrow_apr_pct: data.borrow_apr_pct,
+              utilization_pct: data.utilization_pct,
+              total_assets_human: data.total_assets_human ?? data.total_assets,
+              total_liquidity_human: data.total_liquidity_human ?? data.total_liquidity,
+              error: data.error,
+            },
+          ],
+        });
+      } else {
+        structured = await vertexExplainStructured(ctx.message, routed.tool, data);
+      }
       /**
        * An enumeration must arrive whole — but only when the question WAS one.
        * `completeIdentifierFacts` exists for "show me the protocol contract addresses":

@@ -46,8 +46,8 @@ describe("bare 'USDC pool stats' shows every Earn pool, not one silent guess", (
 
   it("a named variant still gets its own single-pool read", () => {
     for (const [ask, expectedSymbol] of [
-      ["BLUSDC pool stats", "BLUSDC"],
-      ["AQUSDC pool stats", "AQUSDC"],
+      ["BLUSDC earn pool stats", "BLUSDC"],
+      ["AQUSDC earn pool stats", "AQUSDC"],
     ] as const) {
       const r = routeMessage(ask);
       expect(r.kind, ask).toBe("read");
@@ -58,10 +58,31 @@ describe("bare 'USDC pool stats' shows every Earn pool, not one silent guess", (
     }
   });
 
+  it("ticker + pool with no Earn/Farm venue asks which surface", () => {
+    const r = routeMessage("How is my XLM pool doing?");
+    expect(r.kind).toBe("clarify");
+    if (r.kind === "clarify") expect(r.template_id).toBe("clarify_pool_venue");
+  });
+
   it("a venue-named question with no ticker is unaffected (existing behaviour)", () => {
     const r = routeMessage("how much liquidity is in the aquarius pool");
     expect(r.kind).toBe("read");
     if (r.kind === "read") expect(r.template_id).toBe("query_pool_stats");
+  });
+
+  it("unnamed 'how is the earn pool doing' is all four Earn pools, not silent USDC", () => {
+    for (const ask of [
+      "How is the earn pool doing?",
+      "How are the earn pools doing?",
+      "how is the earn pool",
+    ]) {
+      const r = routeMessage(ask);
+      expect(r.kind, ask).toBe("read");
+      if (r.kind === "read") {
+        expect(r.template_id, ask).toBe("query_all_earn_pools");
+        expect(r.args, ask).toMatchObject({ symbol: "__ALL_EARN__" });
+      }
+    }
   });
 });
 

@@ -632,6 +632,7 @@ export type RoutedIntent =
        * transaction).
        */
       usdc_variants?: readonly string[];
+      pool_venues?: Array<{ id: string; label: string; description?: string }>;
     }
   | {
       kind: "auto_sign";

@@ -46,7 +46,7 @@ describe("a personal supply question reads the position, never writes", () => {
   });
 
   it("does not steal a supply-APY pool-stat question", () => {
-    const r = routeMessage("what's the supply APY on XLM");
+    const r = routeMessage("what's the supply APY on XLM earn");
     expect(r.kind).toBe("read");
     if (r.kind === "read") expect(r.template_id).toBe("query_pool_stats");
   });

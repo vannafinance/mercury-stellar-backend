@@ -195,6 +195,59 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         {answer.headline}
       </p>
 
+      {(answer.sections ?? []).map((section, i) => (
+        <div key={`${section.body}-${i}`} className="mt-4">
+          <p
+            className="m-0"
+            style={{
+              fontSize: 19,
+              lineHeight: "28px",
+              color: "var(--cp-g900)",
+              textWrap: "pretty",
+            }}
+          >
+            {section.body}
+          </p>
+          {section.facts.length > 0 ? (
+            <div
+              className="mt-2 grid"
+              style={{
+                gridTemplateColumns: section.facts.length > 1 ? "1fr 1fr" : "1fr",
+                gap: 8,
+                borderRadius: 8,
+                border: "1px solid var(--cp-g100)",
+                background: "var(--cp-g50)",
+                padding: "8px 12px",
+              }}
+            >
+              {section.facts.map((f, j) => (
+                <div key={`${f.label}-${j}`} className="min-w-0">
+                  <div
+                    style={{
+                      ...labelStyle,
+                      marginBottom: 2,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {f.label}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: MONO,
+                      fontSize: 13,
+                      fontVariantNumeric: "tabular-nums",
+                      color: "var(--cp-g900)",
+                    }}
+                  >
+                    {f.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ))}
+
       {/*
         Figures — the design's two-column pair grid inside one hairline panel, so a set of
         numbers aligns down a column and the whole set reads as one object rather than as a
