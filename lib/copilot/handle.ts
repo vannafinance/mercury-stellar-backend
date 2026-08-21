@@ -3543,11 +3543,13 @@ async function farmPositionAnswer(
   const facts: AnswerFact[] = [];
   const tableRows: string[][] = [];
   let totalUsd = 0;
-  const fmtApy = (raw: unknown): string => {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return "—";
-    const pct = n > 0 && n < 1 ? n * 100 : n;
-    return `${pct.toFixed(2)}%`;
+  const farmApy = (raw: unknown, fallback = "—"): string => {
+    if (raw == null || raw === "") return fallback;
+    const s = String(raw).trim();
+    if (/%$/.test(s)) return s;
+    const n = Number(s);
+    if (!Number.isFinite(n)) return fallback;
+    return `${n.toFixed(2)}%`;
   };
 
   try {
@@ -3589,7 +3591,7 @@ async function farmPositionAnswer(
         tableRows.push([
           "Blend",
           `${fmtPosAmount(String(xlmUnderlying))} XLM (${bTok} bXLM)`,
-          fmtApy((blendXlmReserve as { supplyApy?: string } | null)?.supplyApy),
+          farmApy((blendXlmReserve as { supplyAPY?: string } | null)?.supplyAPY),
         ]);
         totalUsd += usd;
       }
@@ -3601,7 +3603,7 @@ async function farmPositionAnswer(
         tableRows.push([
           "Blend",
           `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${bTok} bUSDC)`,
-          fmtApy((blendUsdcReserve as { supplyApy?: string } | null)?.supplyApy),
+          farmApy((blendUsdcReserve as { supplyAPY?: string } | null)?.supplyAPY),
         ]);
         totalUsd += usd;
       }
@@ -3629,7 +3631,7 @@ async function farmPositionAnswer(
           tableRows.push([
             "Soroswap",
             `${fmtPosAmount(String(ssLp))} LP · ${fmtPosAmount(String(xlm))} XLM + ${fmtPosAmount(String(usdc))} SOUSDC`,
-            "—",
+            farmApy((soroswapStats as { feeFraction?: string } | null)?.feeFraction, "0.30%"),
           ]);
           totalUsd += usd;
         }
@@ -3666,7 +3668,10 @@ async function farmPositionAnswer(
           stats
             ? `${fmtPosAmount(String(lp))} LP · ${fmtPosAmount(String(amountA))} ${labelA} + ${fmtPosAmount(String(amountB))} ${labelB}`
             : `${fmtPosAmount(String(lp))} LP`,
-          fmtApy((stats as { totalApy?: string; apy?: string } | null)?.totalApy ?? (stats as { apy?: string } | null)?.apy),
+          farmApy(
+            (stats as { feeFraction?: string } | null)?.feeFraction,
+            "0.30%",
+          ),
         ]);
         totalUsd += usd;
       });

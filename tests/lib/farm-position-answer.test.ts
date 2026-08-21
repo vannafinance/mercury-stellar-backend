@@ -68,13 +68,17 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
 
 const mocks = vi.hoisted(() => ({
   getUserBlendBalance: vi.fn(),
+  getBlendReserveData: vi.fn(),
   getLpBalance: vi.fn(),
   getPoolStats: vi.fn(),
   getUserLpBalance: vi.fn(),
   getAquariusPoolStats: vi.fn(),
 }));
 vi.mock("@/lib/blend-utils", () => ({
-  BlendService: { getUserBlendBalance: mocks.getUserBlendBalance },
+  BlendService: {
+    getUserBlendBalance: mocks.getUserBlendBalance,
+    getBlendReserveData: mocks.getBlendReserveData,
+  },
 }));
 vi.mock("@/lib/soroswap-utils", () => ({
   SoroswapService: { getLpBalance: mocks.getLpBalance, getPoolStats: mocks.getPoolStats },
@@ -113,6 +117,9 @@ describe("the farm-position answer never mentions the margin account", () => {
     mocks.getUserBlendBalance.mockImplementation(async (_addr: string, symbol: string) =>
       symbol === "USDC" ? { bTokenBalance: "47.22", underlyingBalance: "49.8607014" } : noBlend,
     );
+    mocks.getBlendReserveData.mockImplementation(async (symbol: string) =>
+      symbol === "USDC" ? { supplyAPY: "0.07" } : { supplyAPY: "0.00" },
+    );
     mocks.getLpBalance.mockResolvedValue("0");
     mocks.getPoolStats.mockResolvedValue(null);
     mocks.getUserLpBalance.mockResolvedValue("0");
@@ -126,6 +133,7 @@ describe("the farm-position answer never mentions the margin account", () => {
     const blendUsdc = facts.find((f) => f.label === "Blend · BLUSDC");
     expect(blendUsdc?.value).toMatch(/49\.86/);
     expect(blendUsdc?.value).not.toMatch(/\$0\.00/);
+    expect(res.answer?.table?.rows.some((r) => r.includes("0.07%"))).toBe(true);
   });
 
   it("reports the actual LP share count, not just the underlying token split", async () => {

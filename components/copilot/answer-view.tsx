@@ -260,16 +260,16 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
             background: "var(--cp-g50)",
           }}
         >
-          <table className="w-full border-collapse text-left" style={{ fontSize: 13 }}>
+          <table className="w-full border-collapse text-left" style={{ fontSize: 15 }}>
             <thead>
               <tr>
                 {answer.table!.columns.map((c) => (
                   <th
                     key={c}
-                    className="px-3 py-2"
+                    className="px-3.5 py-2.5"
                     style={{
                       fontFamily: MONO,
-                      fontSize: 10.5,
+                      fontSize: 12,
                       letterSpacing: "0.12em",
                       textTransform: "uppercase",
                       color: "var(--cp-g400)",
@@ -288,7 +288,7 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
                   {row.map((cell, j) => (
                     <td
                       key={j}
-                      className="px-3 py-2.5"
+                      className="px-3.5 py-3"
                       style={{
                         fontFamily: j === 0 ? "inherit" : MONO,
                         fontVariantNumeric: "tabular-nums",
