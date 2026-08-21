@@ -58,10 +58,25 @@ export function swapFillRateLabel(
 ): string | null {
   if (!(amountIn > 0) || !(expectedOut > 0) || !tokenIn || !tokenOut) return null;
   const rate = expectedOut / amountIn;
-  return `1 ${tokenIn} ≈ ${rate.toLocaleString(undefined, {
-    maximumFractionDigits: rate >= 1 ? 4 : 6,
-    minimumFractionDigits: 2,
-  })} ${tokenOut}`;
+  return `1 ${tokenIn} ≈ ${formatCrossRate(rate)} ${tokenOut}`;
+}
+
+/** Trade/Spot header rate: oracle XLM/$ ÷ out/$, not the thin-pool fill. */
+export function oracleSwapRateLabel(
+  tokenIn: string,
+  tokenOut: string,
+  priceInUsd: number,
+  priceOutUsd: number,
+): string | null {
+  if (!tokenIn || !tokenOut || !(priceInUsd > 0) || !(priceOutUsd > 0)) return null;
+  return `1 ${tokenIn} ≈ ${formatCrossRate(priceInUsd / priceOutUsd)} ${tokenOut}`;
+}
+
+function formatCrossRate(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return "0";
+  if (rate >= 100) return rate.toFixed(2);
+  if (rate >= 1) return rate.toFixed(4);
+  return rate.toFixed(6);
 }
 
 /** Farm-style `30 BLUSDC ≈ $30.01` — live oracle USD next to the tx hash. */

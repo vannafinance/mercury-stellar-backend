@@ -39,7 +39,7 @@ import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
-import { liveUsdLabel, swapFillRateLabel } from "@/lib/copilot/swap-quote";
+import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -1113,15 +1113,6 @@ function ExecutedTxReceipt({
   txHash: string | null;
 }) {
   const [usdLabel, setUsdLabel] = useState<string | null>(null);
-  const swapRate =
-    action?.op === "swap"
-      ? swapFillRateLabel(
-          Number(action.amount),
-          Number(action.expected_out),
-          String(action.asset || action.token_a || "XLM"),
-          String(action.token_b || ""),
-        )
-      : null;
 
   useEffect(() => {
     const amount = Number(action?.amount);
@@ -1136,24 +1127,73 @@ function ExecutedTxReceipt({
         import("@/lib/oracle-price"),
         import("@/lib/copilot/leverage-plan"),
       ]);
+      if (action?.op === "swap") {
+        const tokenIn = String(action.asset || action.token_a || "XLM");
+        const tokenOut = String(action.token_b || "");
+        const feeds = [oraclePriceSymbol(tokenIn), oraclePriceSymbol(tokenOut)];
+        await fetchTokenPrices(feeds);
+        if (cancelled) return;
+        setUsdLabel(
+          oracleSwapRateLabel(
+            tokenIn,
+            tokenOut,
+            getCachedTokenPrice(feeds[0]),
+            getCachedTokenPrice(feeds[1]),
+          ),
+        );
+        return;
+      }
       const feed = oraclePriceSymbol(asset);
       await fetchTokenPrices([feed]);
       if (cancelled) return;
-      const price = getCachedTokenPrice(feed);
-      setUsdLabel(liveUsdLabel(amount, asset, price));
+      setUsdLabel(liveUsdLabel(amount, asset, getCachedTokenPrice(feed)));
     })();
     return () => {
       cancelled = true;
     };
-  }, [action?.amount, action?.asset, action?.token_b]);
+  }, [action?.amount, action?.asset, action?.token_a, action?.token_b, action?.op]);
 
-  const priceRow = swapRate || usdLabel;
-  if (!priceRow && !txHash) return null;
+  if (!usdLabel && !txHash) return null;
   return (
     <div className="mt-[18px] grid w-full grid-cols-1 gap-x-8 rounded-2xl border border-vgray-100 bg-vgray-50 px-5 py-4">
-      {priceRow ? <Row k="live price" v={priceRow} /> : null}
+      {usdLabel ? <Row k="live price" v={usdLabel} /> : null}
       {txHash ? <Row k="tx hash" v={txHash} /> : null}
     </div>
+  );
+}
+
+function SwapOracleRateLine({ tokenIn, tokenOut }: { tokenIn: string; tokenOut: string }) {
+  const [label, setLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!tokenIn || !tokenOut) {
+      setLabel(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [{ fetchTokenPrices, getCachedTokenPrice }, { oraclePriceSymbol }] = await Promise.all([
+        import("@/lib/oracle-price"),
+        import("@/lib/copilot/leverage-plan"),
+      ]);
+      const feeds = [oraclePriceSymbol(tokenIn), oraclePriceSymbol(tokenOut)];
+      await fetchTokenPrices(feeds);
+      if (cancelled) return;
+      setLabel(
+        oracleSwapRateLabel(
+          tokenIn,
+          tokenOut,
+          getCachedTokenPrice(feeds[0]),
+          getCachedTokenPrice(feeds[1]),
+        ),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenIn, tokenOut]);
+  if (!label) return null;
+  return (
+    <p className="m-0 mt-2 font-mono text-[15px] leading-6 text-vgray-800">{label}</p>
   );
 }
 
@@ -4558,7 +4598,7 @@ export function CopilotWorkspace() {
                               {response.message}
                             </p>
                           )}
-                          {sim && !multiLeg && <ImpactPanel sim={sim} />}
+                          {sim && !multiLeg && action?.op !== "swap" && <ImpactPanel sim={sim} />}
                           {response?.data && !multiLeg && !response.answer && (
                             <FactsGrid data={response.data} />
                           )}
@@ -4695,7 +4735,7 @@ export function CopilotWorkspace() {
                       </p>
                     )}
 
-                    {sim && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && <ImpactPanel sim={sim} />}
 
                     {reasons.length > 0 && (
                       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -4717,51 +4757,29 @@ export function CopilotWorkspace() {
                     )}
 
                     {action?.amount != null && (
-                      <div className="mt-5 flex flex-col gap-1.5">
-                        <div className="flex items-baseline gap-2.5">
-                          <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-vgray-400">
-                            {action.op === "swap"
-                              ? "you pay"
-                              : action.op === "remove_liquidity"
-                                ? "removing"
-                                : "amount"}
-                          </span>
-                          <span className="font-mono text-h7 text-vgray-900">
+                      <div className="mt-5">
+                        {action.op === "swap" && action.expected_out != null && action.expected_out > 0 ? (
+                          <>
+                            <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
+                              You pay {action.amount} {action.asset ?? ""} → you receive ~
+                              {Number(action.expected_out).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
+                              {action.token_b || ""}
+                            </p>
+                            <SwapOracleRateLine
+                              tokenIn={String(action.asset || action.token_a || "XLM")}
+                              tokenOut={String(action.token_b || "")}
+                            />
+                          </>
+                        ) : (
+                          <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
                             {action.op === "remove_liquidity"
-                              ? `${action.amount} LP`
+                              ? `Removing ${action.amount} LP`
                               : `${action.amount} ${action.asset ?? ""}`}
-                          </span>
-                        </div>
-                        {action.op === "remove_liquidity" && (action.token_a || action.token_b) ? (
-                          <p className="m-0 font-mono text-[12px] text-vgray-500">
-                            {action.token_a}/{action.token_b}
-                            {action.venue ? ` · ${action.venue}` : ""}
+                            {action.op === "remove_liquidity" && (action.token_a || action.token_b)
+                              ? ` · ${action.token_a}/${action.token_b}${action.venue ? ` · ${action.venue}` : ""}`
+                              : ""}
                           </p>
-                        ) : null}
-                        {action.op === "swap" &&
-                          action.expected_out != null &&
-                          action.expected_out > 0 && (
-                            <>
-                              <div className="flex items-baseline gap-2.5">
-                                <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-vgray-400">
-                                  you receive
-                                </span>
-                                <span className="font-mono text-h7 text-vgray-900">
-                                  ~{Number(action.expected_out).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
-                                  {action.token_b || ""}
-                                </span>
-                              </div>
-                              {action.amount > 0 ? (
-                                <p className="m-0 font-mono text-[12px] text-vgray-500">
-                                  1 {action.asset} ≈{" "}
-                                  {(action.expected_out / action.amount).toLocaleString(undefined, {
-                                    maximumFractionDigits: 6,
-                                  })}{" "}
-                                  {action.token_b}
-                                </p>
-                              ) : null}
-                            </>
-                          )}
+                        )}
                       </div>
                     )}
 
@@ -4971,7 +4989,7 @@ export function CopilotWorkspace() {
                       {decision && <RiskChip decision={decision} />}
                     </div>
                     <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-                    {sim && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && <ImpactPanel sim={sim} />}
                     <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                       <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                         <ShieldCheck size={14} /> enable auto-sign

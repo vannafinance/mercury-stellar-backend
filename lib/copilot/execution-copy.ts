@@ -177,8 +177,10 @@ export function shortWriteLabel(opts: {
     }
     case "remove_liquidity":
       return `${amt ? `Remove ${amt} LP` : "Remove LP"}${venue ? ` from ${venue}` : ""}`;
-    case "swap":
-      return sized ? `Swap ${sized}` : "Swap";
+    case "swap": {
+      const out = String(opts.token_b || "").trim();
+      return sized && out ? `Swap ${sized} → ${out}` : sized ? `Swap ${sized}` : "Swap";
+    }
     default:
       return sized ? `${opts.op.replace(/_/g, " ")} ${sized}` : opts.op.replace(/_/g, " ");
   }

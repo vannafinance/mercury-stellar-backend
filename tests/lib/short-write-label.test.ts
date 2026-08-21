@@ -15,6 +15,12 @@ describe("shortWriteLabel — one sentence on every staged write", () => {
       "Supply 30 BLUSDC to Blend",
     );
   });
+
+  it("swap names both legs", () => {
+    expect(shortWriteLabel({ op: "swap", amount: 10, asset: "XLM", token_b: "AQUSDC" })).toBe(
+      "Swap 10 XLM → AQUSDC",
+    );
+  });
 });
 
 describe("add liquidity in Blend is a Blend supply write, not pool stats", () => {

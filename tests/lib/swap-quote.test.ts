@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { dexWireSymbol, liveUsdLabel, quoteDexSwap, swapFillRateLabel } from "@/lib/copilot/swap-quote";
+import { dexWireSymbol, liveUsdLabel, oracleSwapRateLabel, quoteDexSwap, swapFillRateLabel } from "@/lib/copilot/swap-quote";
 
 vi.mock("@/lib/soroswap-utils", () => ({
   SoroswapService: {
@@ -29,8 +29,13 @@ describe("DEX swap quotes match Trade/Spot (router, not oracle)", () => {
 
   it("formats the live 1-in → out rate for Aquarius and Soroswap fills", () => {
     expect(swapFillRateLabel(100, 26.1694, "XLM", "SOUSDC")).toBe("1 XLM ≈ 0.261694 SOUSDC");
-    expect(swapFillRateLabel(10, 0.142, "XLM", "AQUSDC")).toBe("1 XLM ≈ 0.0142 AQUSDC");
+    expect(swapFillRateLabel(10, 0.142, "XLM", "AQUSDC")).toBe("1 XLM ≈ 0.014200 AQUSDC");
     expect(swapFillRateLabel(0, 1, "XLM", "SOUSDC")).toBeNull();
+  });
+
+  it("oracle cross-rate matches Trade/Spot header (not the thin-pool fill)", () => {
+    expect(oracleSwapRateLabel("XLM", "AQUSDC", 0.18994, 1)).toBe("1 XLM ≈ 0.189940 AQUSDC");
+    expect(oracleSwapRateLabel("XLM", "SOUSDC", 0.19, 1)).toBe("1 XLM ≈ 0.190000 SOUSDC");
   });
 
   it("formats Farm-style live USD next to the tx hash", () => {
