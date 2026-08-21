@@ -1397,6 +1397,18 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
   );
 }
 
+function farmAddedLine(summary?: string | null): string {
+  const s = String(summary || "").trim();
+  const m = s.match(/Add\s+(.+?)\s+XLM\s+\+\s+(.+?)\s+(AQUSDC|SOUSDC|BLUSDC)\s+LP/i);
+  if (m) {
+    const usd = m[3].toUpperCase();
+    const where = usd === "SOUSDC" ? "Soroswap" : usd === "BLUSDC" ? "Blend" : "Aquarius";
+    return `Added ${m[1]} XLM and ${m[2]} ${usd} in ${where}`;
+  }
+  if (s) return s.replace(/^Add /, "Added ");
+  return "Submitted on-chain";
+}
+
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   const walletKind = useUserStore((s) => s.walletKind);
@@ -4565,7 +4577,7 @@ export function CopilotWorkspace() {
                 {/* A multi-leg run gets the live execution card — one card that advances
                     in place, narrating each leg as it settles. The plain step list stays
                     for single-turn work, where there is no chain to narrate. */}
-                {multiLeg && runLegs.length > 0 ? (
+                {multiLeg && runLegs.length > 0 && phase !== "done" ? (
                   <RunExecutionCard
                     eyebrow="02"
                     legs={runLegs}
@@ -4588,8 +4600,15 @@ export function CopilotWorkspace() {
                     }
                     onCancel={loading ? cancelInFlight : undefined}
                     onSubmitAmount={submitLegAmount}
+                    onApproveSign={
+                      runLegs.length === 1 &&
+                      runLegs[0]?.op === "add_liquidity" &&
+                      stagedForSessionSign
+                        ? signWithWallet
+                        : undefined
+                    }
                     onLpEntered={() => {
-                      lpScrollPendingRef.current = true;
+                      if (runLegs.length > 1) lpScrollPendingRef.current = true;
                     }}
                   />
                 ) : (
@@ -4764,7 +4783,9 @@ export function CopilotWorkspace() {
                 )}
 
                 {/* Staged write — MCP built the XDR, wallet signs once */}
-                {phase === "staged" && response && (
+                {phase === "staged" &&
+                  response &&
+                  !(runLegs.length === 1 && runLegs[0]?.op === "add_liquidity") && (
                   <div
                     ref={stagedSectionRef}
                     className="mt-[26px]"
@@ -5156,12 +5177,7 @@ export function CopilotWorkspace() {
                         <AnswerView answer={response.answer} />
                       </div>
                     )}
-                    {multiLeg || response.answer ? (
-                      /* Multi-leg: "02 Agent run" already lists legs. Structured answer
-                         (e.g. create_account): AnswerView above is the receipt — do not
-                         repeat the same text as a giant H6 + gray duplicate. */
-                      null
-                    ) : (
+                    {!response.answer && (
                       <>
                         <div className="mt-4 flex items-center gap-4">
                           <span
@@ -5172,12 +5188,10 @@ export function CopilotWorkspace() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="text-h6 font-semibold text-vgray-900">
-                              {response.preview?.human_summary || "Submitted on-chain"}
+                              {farmAddedLine(response.preview?.human_summary)}
                             </p>
                             <p className="mt-1 text-body-2 text-vgray-500">
-                              {action?.op
-                                ? "Signed and submitted on-chain."
-                                : response.message}
+                              Signed and submitted on-chain.
                             </p>
                           </div>
                         </div>

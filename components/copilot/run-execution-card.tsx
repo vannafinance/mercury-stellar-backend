@@ -124,6 +124,7 @@ export interface RunExecutionCardProps {
   ) => void;
   /** After LP amounts are confirmed — scroll to the staged Approve & sign card. */
   onLpEntered?: () => void;
+  onApproveSign?: () => void;
   onConfirmGate?: (leg: RunLeg) => void;
 }
 
@@ -370,6 +371,7 @@ export function RunExecutionCard({
   onViewTx,
   onSubmitAmount,
   onLpEntered,
+  onApproveSign,
   onConfirmGate,
 }: RunExecutionCardProps) {
   const total = legs.length;
@@ -767,7 +769,11 @@ export function RunExecutionCard({
             (l.status === "needs_input" &&
               isPausedHere &&
               (missing || (l.op === "add_liquidity" && !!l.lpSides))) ||
-            (lpLocked && l.op === "add_liquidity" && !!l.lpSides);
+            (lpLocked &&
+              l.op === "add_liquidity" &&
+              !!l.lpSides &&
+              l.status !== "ok" &&
+              l.status !== "failed");
           const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
           const lpSelected =
@@ -1085,23 +1091,47 @@ export function RunExecutionCard({
                               </div>
                             );
                           })}
-                          <button
-                            type="button"
-                            className="rc-btn-s mt-[11px]"
-                            onClick={() => setLpLocked(false)}
-                            style={{
-                              ...btnBase,
-                              border: "1px solid var(--rc-btn-2-bd)",
-                              background: "transparent",
-                              color: "var(--rc-heading)",
-                              borderRadius: 9,
-                              padding: "8px 16px",
-                              fontSize: 14,
-                              fontWeight: 600,
-                            }}
-                          >
-                            Modify
-                          </button>
+                          <div className="mt-[11px] flex flex-wrap items-center gap-2">
+                            {onApproveSign ? (
+                              <button
+                                type="button"
+                                className="rc-btn-p"
+                                onClick={onApproveSign}
+                                disabled={busy}
+                                style={{
+                                  ...btnBase,
+                                  border: "1px solid transparent",
+                                  background: "var(--rc-btn-fill)",
+                                  color: "var(--rc-btn-fg)",
+                                  borderRadius: 9,
+                                  padding: "11px 20px",
+                                  fontSize: 14,
+                                  fontWeight: 700,
+                                  cursor: busy ? "progress" : "pointer",
+                                }}
+                              >
+                                Approve & sign
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="rc-btn-s"
+                              onClick={() => setLpLocked(false)}
+                              disabled={busy}
+                              style={{
+                                ...btnBase,
+                                border: "1px solid var(--rc-btn-2-bd)",
+                                background: "transparent",
+                                color: "var(--rc-heading)",
+                                borderRadius: 9,
+                                padding: "8px 16px",
+                                fontSize: 14,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Modify
+                            </button>
+                          </div>
                         </>
                       ) : (
                       <>
