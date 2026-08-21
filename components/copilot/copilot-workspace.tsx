@@ -5194,6 +5194,7 @@ export function CopilotWorkspace() {
                               ) || response.answer.headline,
                           }}
                         />
+                        {txHash ? <ExecutedTxReceipt action={action} txHash={txHash} /> : null}
                       </div>
                     )}
                     {!response.answer && (
@@ -5216,11 +5217,7 @@ export function CopilotWorkspace() {
                             </p>
                           </div>
                         </div>
-                        {action?.op ? (
-                          <ExecutedTxReceipt action={action} txHash={txHash} />
-                        ) : (
-                          response.data && <FactsGrid data={response.data} />
-                        )}
+                        <ExecutedTxReceipt action={action} txHash={txHash} />
                       </>
                     )}
                     <div className="mt-[22px] flex flex-wrap gap-2.5">
