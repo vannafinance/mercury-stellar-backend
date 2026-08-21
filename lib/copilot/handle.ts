@@ -2427,6 +2427,29 @@ const LOCAL_FALLBACK_OPS = new Set([
 const money = (n: number) =>
   `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const fmt2 = (n: number | string): string => {
+  const v = typeof n === "number" ? n : Number(n);
+  if (!Number.isFinite(v)) return String(n);
+  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+function snapshotRowLabel(symbol: string): string {
+  const u = String(symbol).toUpperCase();
+  if (u.startsWith("AQ_")) return "Aquarius LP";
+  if (u.startsWith("SS_")) return "Soroswap LP";
+  if (u === "BLEND_USDC") return "Blend USDC";
+  if (u === "BLEND_XLM") return "Blend XLM";
+  if (u.startsWith("BLEND_")) return `${u.slice(6)} in Blend`;
+  return u;
+}
+
+function snapshotRowFacts(rows: MarginPositionRow[]): AnswerFact[] {
+  return rows.map((r) => ({
+    label: snapshotRowLabel(r.symbol),
+    value: `${fmt2(r.amount)} (${money(r.usd)})`,
+  }));
+}
+
 /**
  * Name a farm TRACKING position for a human, not by its internal key.
  *
@@ -2870,7 +2893,7 @@ async function snapshotPositionAnswer(
       structured = {
         headline: `Your Total Collateral is ${money(pos.grossCollateralValue)}`,
         kicker: "Your detailed stats are:",
-        facts: [],
+        facts: snapshotRowFacts(pos.collateral),
         venue: "margin",
       };
       message = answerToText(structured);
@@ -2888,7 +2911,7 @@ async function snapshotPositionAnswer(
       structured = {
         headline: `Your Total Debt is ${money(pos.totalBorrowedValue)}`,
         kicker: "Your detailed stats are:",
-        facts: [],
+        facts: snapshotRowFacts(pos.borrowed),
         venue: "margin",
       };
       message = answerToText(structured);
@@ -2992,27 +3015,31 @@ async function snapshotPositionAnswer(
      * violation this session already fixed for named single-figure margin questions
      * (`marginFigureAnswer`). The prose was narrowed; the card never was.
      */
-    data: factsForUi(
-      focusedRow
-        ? {
-            ...(routed.tool === "vanna_get_collateral" ? { collateral_positions: [focusedRow] } : {}),
-            ...(routed.tool === "vanna_get_debt" ? { borrowed_positions: [focusedRow] } : {}),
-            asked_about: focus,
-            source: "margin_page_snapshot",
-          }
-        : {
-            health_factor: pos.hf,
-            collateral_usd: pos.grossCollateralValue,
-            debt_usd: pos.totalBorrowedValue,
-            net_value_usd: pos.netAvailableCollateral,
-            collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
-            net_available_collateral: pos.netAvailableCollateral,
-            collateral_positions: pos.collateral,
-            borrowed_positions: pos.borrowed,
-            ...(focus ? { asked_about: focus } : {}),
-            source: "margin_page_snapshot",
-          },
-    ),
+    ...(structured
+      ? {}
+      : {
+          data: factsForUi(
+            focusedRow
+              ? {
+                  ...(routed.tool === "vanna_get_collateral" ? { collateral_positions: [focusedRow] } : {}),
+                  ...(routed.tool === "vanna_get_debt" ? { borrowed_positions: [focusedRow] } : {}),
+                  asked_about: focus,
+                  source: "margin_page_snapshot",
+                }
+              : {
+                  health_factor: pos.hf,
+                  collateral_usd: pos.grossCollateralValue,
+                  debt_usd: pos.totalBorrowedValue,
+                  net_value_usd: pos.netAvailableCollateral,
+                  collateral_left_before_liquidation: pos.collateralLeftBeforeLiquidation,
+                  net_available_collateral: pos.netAvailableCollateral,
+                  collateral_positions: pos.collateral,
+                  borrowed_positions: pos.borrowed,
+                  ...(focus ? { asked_about: focus } : {}),
+                  source: "margin_page_snapshot",
+                },
+          ),
+        }),
     intent: {
       template_id: routed.template_id,
       slots: {
@@ -3763,6 +3790,68 @@ async function farmPositionAnswer(
   };
 }
 
+async function farmStatsAnswer(
+  ctx: { smartAccount: string | null; request_id: string },
+  scope: "blend" | "farm",
+): Promise<ChatResponse> {
+  const pct = (raw: unknown): string => {
+    if (raw == null || raw === "") return "—";
+    const s = String(raw).trim();
+    if (/%$/.test(s)) return s;
+    const n = Number(s);
+    return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+  };
+  let statsTable: { columns: string[]; rows: string[][] } = {
+    columns: ["", "XLM", "USDC"],
+    rows: [
+      ["Supply APY", "—", "—"],
+      ["Borrow APY", "—", "—"],
+      ["Utilization", "—", "—"],
+    ],
+  };
+  try {
+    const { BlendService } = await import("@/lib/blend-utils");
+    const [xlm, usdc] = await Promise.all([
+      BlendService.getBlendReserveData("XLM"),
+      BlendService.getBlendReserveData("USDC"),
+    ]);
+    statsTable = {
+      columns: ["", "XLM", "USDC"],
+      rows: [
+        ["Supply APY", pct(xlm?.supplyAPY), pct(usdc?.supplyAPY)],
+        ["Borrow APY", pct(xlm?.borrowAPY), pct(usdc?.borrowAPY)],
+        ["Utilization", pct(xlm?.utilizationRate), pct(usdc?.utilizationRate)],
+      ],
+    };
+  } catch (e) {
+    console.warn(
+      `[copilot] blend reserve stats failed -> ${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+    );
+  }
+  const pos = await farmPositionAnswer(ctx, null, null);
+  const posTable = pos.kind === "answer" ? pos.answer?.table : undefined;
+  const tables: NonNullable<StructuredAnswer["tables"]> = [statsTable];
+  tables.push({
+    caption: scope === "blend" ? "Your Blend positions" : "Your Farm positions",
+    columns: posTable?.columns ?? ["Protocol", "Holdings", "APY"],
+    rows: posTable?.rows ?? [],
+  });
+  const structured: StructuredAnswer = {
+    headline: scope === "blend" ? "Your Blend pool stats" : "Your Farm pool stats",
+    facts: [],
+    venue: "blend",
+    tables,
+  };
+  return {
+    kind: "answer",
+    message: answerToText(structured),
+    answer: structured,
+    intent: { template_id: scope === "blend" ? "query_blend" : "query_farm_stats" },
+    mcp: { tool: "blend_aquarius_soroswap_on_chain", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
 /**
  * "What is XLM to SoUSDC Ratio in farm Soroswap pool?" fell through to the generic
  * capabilities blurb — the only existing ratio math (the Aquarius add_liquidity clarify's
@@ -4034,11 +4123,18 @@ async function runRead(
   // as the Farm page. Vertex maps these questions onto `vanna_get_farm_overview`, which
   // reads Registry tracking tokens (Aquarius LP = 0 while Farm shows 1.64 LP). Never
   // let that MCP path answer a holdings question.
+  if (routed.template_id === "query_blend") {
+    return farmStatsAnswer(ctx, "blend");
+  }
+
   if (
     routed.template_id === "query_farm_position" ||
     routed.tool === "vanna_get_farm_overview" ||
     routed.tool === "vanna_get_farm_lp_position"
   ) {
+    if (routed.template_id === "query_farm_stats") {
+      return farmStatsAnswer(ctx, "farm");
+    }
     const venue = routed.args?.venue;
     const scopedAsset = typeof routed.args?.asset === "string" ? routed.args.asset : null;
     return farmPositionAnswer(
@@ -5677,10 +5773,6 @@ async function runWrite(
       intent: {
         template_id: "clarify_usdc_variant",
         slots: { op: action.op, amount: action.amount, asset: "USDC", slot: ambiguousSlot },
-      },
-      data: {
-        usdc_variants: USDC_VARIANT_OPTIONS.map((o) => o.id),
-        note: "Pick BLUSDC, AQUSDC, or SOUSDC — they are not interchangeable.",
       },
       request_id: ctx.request_id,
     };

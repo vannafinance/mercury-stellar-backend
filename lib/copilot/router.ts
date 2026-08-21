@@ -1982,6 +1982,20 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "query_farm_position",
     };
   }
+  if (
+    !actsOnPosition &&
+    any(text, "farm") &&
+    /\bstats?\b|\bstatistics\b/i.test(text) &&
+    !any(text, "earn", "blend")
+  ) {
+    return {
+      kind: "read",
+      tool: "vanna_get_farm_overview",
+      args: {},
+      requires_account: true,
+      template_id: "query_farm_stats",
+    };
+  }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
     return {
       kind: "read",

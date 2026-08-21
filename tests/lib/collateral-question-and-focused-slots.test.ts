@@ -135,12 +135,26 @@ describe("a focused single-asset question narrows the facts card too, not just t
   it("an unfocused whole-account question still gets the full breakdown", async () => {
     const res = await handleChat({ ...base, message: "how much collateral do I have" });
     expect(res.kind).toBe("answer");
-    const facts = res.data as Record<string, unknown>;
-    const keys = Object.keys(facts).join(" | ").toLowerCase();
-    expect(keys).toContain("health factor");
-    expect(keys).toContain("xlm");
-    expect(keys).toContain("sousdc");
+    expect(res.data).toBeUndefined();
     expect(res.answer?.headline).toMatch(/Total Collateral/i);
     expect(res.answer?.kicker).toMatch(/detailed stats/i);
+    const labels = (res.answer?.facts ?? []).map((f) => f.label.toLowerCase()).join(" | ");
+    expect(labels).toContain("xlm");
+    expect(labels).toContain("sousdc");
+    expect(labels).not.toMatch(/health/);
+    expect(labels).not.toMatch(/borrow/);
+    expect(res.answer?.facts?.some((f) => /\.\d{3,}/.test(f.value))).toBe(false);
+  });
+
+  it("debt questions list debt only, rounded to two decimals", async () => {
+    const res = await handleChat({ ...base, message: "how much do I owe" });
+    expect(res.kind).toBe("answer");
+    expect(res.data).toBeUndefined();
+    expect(res.answer?.headline).toMatch(/Total Debt/i);
+    const labels = (res.answer?.facts ?? []).map((f) => f.label.toLowerCase()).join(" | ");
+    expect(labels).toContain("blusdc");
+    expect(labels).not.toContain("xlm");
+    expect(labels).not.toMatch(/collateral/);
+    expect(labels).not.toMatch(/health/);
   });
 });

@@ -67,6 +67,8 @@ export interface StructuredAnswer {
   sections?: Array<{ body: string; facts: AnswerFact[] }>;
   /** Farm Positions-style table. Prefer this over a facts dump for holdings. */
   table?: { columns: string[]; rows: string[][] };
+  /** Multiple cards (pool stats, then positions). */
+  tables?: Array<{ caption?: string; columns: string[]; rows: string[][] }>;
 }
 
 /**
@@ -314,6 +316,14 @@ export function answerToText(a: StructuredAnswer): string {
     lines.push("");
     lines.push(a.table.columns.join(" | "));
     for (const row of a.table.rows) lines.push(row.join(" | "));
+  }
+  if (a.tables?.length) {
+    for (const t of a.tables) {
+      lines.push("");
+      if (t.caption) lines.push(t.caption);
+      lines.push(t.columns.join(" | "));
+      for (const row of t.rows) lines.push(row.join(" | "));
+    }
   }
   if (a.note) {
     lines.push("");

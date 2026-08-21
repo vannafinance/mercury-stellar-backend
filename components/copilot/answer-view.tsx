@@ -154,7 +154,13 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
   const token = venue ? VENUE_TOKEN[venue] : null;
 
   const facts = answer.facts ?? [];
-  const hasTable = (answer.table?.rows.length ?? 0) > 0;
+  const tables: Array<{ caption?: string; columns: string[]; rows: string[][] }> =
+    answer.tables?.length
+      ? answer.tables
+      : answer.table?.rows.length
+        ? [answer.table]
+        : [];
+  const hasTable = tables.some((t) => t.rows.length > 0);
   const figures = hasTable
     ? []
     : facts.filter((f) => !isIdentifier(f.value) && f.group !== "lp" && f.group !== "earn");
@@ -267,62 +273,80 @@ export function AnswerView({ answer }: { answer: StructuredAnswer }) {
         </div>
       ))}
 
-      {hasTable ? (
-        <div
-          className="mt-4 overflow-x-auto"
-          style={{
-            borderRadius: 8,
-            border: "1px solid var(--cp-g100)",
-            background: "var(--cp-g50)",
-          }}
-        >
-          <table className="w-full border-collapse text-left" style={{ fontSize: 15 }}>
-            <thead>
-              <tr>
-                {answer.table!.columns.map((c) => (
-                  <th
-                    key={c}
-                    className="px-3.5 py-2.5"
-                    style={{
-                      fontFamily: MONO,
-                      fontSize: 12,
-                      letterSpacing: "0.12em",
-                      textTransform: "uppercase",
-                      color: "var(--cp-g400)",
-                      fontWeight: 600,
-                      borderBottom: "1px solid var(--cp-g100)",
-                    }}
-                  >
-                    {c}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {answer.table!.rows.map((row, i) => (
-                <tr key={i}>
-                  {row.map((cell, j) => (
-                    <td
-                      key={j}
-                      className="px-3.5 py-3"
-                      style={{
-                        fontFamily: j === 0 ? "inherit" : MONO,
-                        fontVariantNumeric: "tabular-nums",
-                        color: "var(--cp-g900)",
-                        borderBottom:
-                          i === answer.table!.rows.length - 1 ? "none" : "1px solid var(--cp-g100)",
-                        whiteSpace: j === 1 ? "normal" : "nowrap",
-                      }}
-                    >
-                      {cell}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
+      {hasTable
+        ? tables.map((tbl, ti) => (
+            <div key={`tbl-${ti}`} className="mt-4">
+              {tbl.caption ? (
+                <p
+                  className="m-0 mb-2"
+                  style={{
+                    fontSize: 14,
+                    lineHeight: "22px",
+                    color: "var(--cp-g400)",
+                    letterSpacing: "0.04em",
+                    textTransform: "uppercase",
+                    fontFamily: MONO,
+                  }}
+                >
+                  {tbl.caption}
+                </p>
+              ) : null}
+              <div
+                className="overflow-x-auto"
+                style={{
+                  borderRadius: 8,
+                  border: "1px solid var(--cp-g100)",
+                  background: "var(--cp-g50)",
+                }}
+              >
+                <table className="w-full border-collapse text-left" style={{ fontSize: 15 }}>
+                  <thead>
+                    <tr>
+                      {tbl.columns.map((c) => (
+                        <th
+                          key={c || "metric"}
+                          className="px-3.5 py-2.5"
+                          style={{
+                            fontFamily: MONO,
+                            fontSize: 12,
+                            letterSpacing: "0.12em",
+                            textTransform: "uppercase",
+                            color: "var(--cp-g400)",
+                            fontWeight: 600,
+                            borderBottom: "1px solid var(--cp-g100)",
+                          }}
+                        >
+                          {c}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tbl.rows.map((row, i) => (
+                      <tr key={i}>
+                        {row.map((cell, j) => (
+                          <td
+                            key={j}
+                            className="px-3.5 py-3"
+                            style={{
+                              fontFamily: j === 0 ? "inherit" : MONO,
+                              fontVariantNumeric: "tabular-nums",
+                              color: "var(--cp-g900)",
+                              borderBottom: i === tbl.rows.length - 1 ? "none" : "1px solid var(--cp-g100)",
+                              whiteSpace: j === 1 ? "normal" : "nowrap",
+                            }}
+                          >
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))
+        : null}
 
       {/*
         Figures — the design's two-column pair grid inside one hairline panel, so a set of

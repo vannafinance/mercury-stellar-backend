@@ -4560,17 +4560,8 @@ export function CopilotWorkspace() {
                             </p>
                           )}
                           {sim && !multiLeg && <ImpactPanel sim={sim} />}
-                          {response?.data && !multiLeg && (
-                            <FactsGrid
-                              data={response.data}
-                              shown={
-                                new Set(
-                                  (response.answer?.facts ?? []).map((f) =>
-                                    String(f.value).trim(),
-                                  ),
-                                )
-                              }
-                            />
+                          {response?.data && !multiLeg && !response.answer && (
+                            <FactsGrid data={response.data} />
                           )}
                         </div>
                       </div>
@@ -4581,15 +4572,16 @@ export function CopilotWorkspace() {
                       response.clarify_options &&
                       response.clarify_options.length > 0 && (
                         <div className="mt-5 flex flex-col gap-2.5">
+                          {response.intent?.template_id === "clarify_usdc_variant" ? null : (
                           <p className="font-mono text-[10.5px] uppercase tracking-[0.15em] text-vgray-400">
                             {response.pending_write?.clarify_slot === "fraction"
                               ? "how much to repay"
                               : response.pending_write?.clarify_slot === "borrow" ||
-                                  response.pending_write?.clarify_slot === "collateral" ||
-                                  response.intent?.template_id === "clarify_usdc_variant"
+                                  response.pending_write?.clarify_slot === "collateral"
                                 ? "choose usdc type"
                                 : "choose an option"}
                           </p>
+                          )}
                           <div className="flex flex-wrap gap-2.5">
                             {response.clarify_options.map((opt) => (
                               <button
@@ -4597,14 +4589,13 @@ export function CopilotWorkspace() {
                                 type="button"
                                 disabled={loading}
                                 onClick={() => void pickClarifyOption(opt)}
-                                title={opt.description}
                                 className="rounded-r3 border border-violet-100 bg-violet-50 px-4 py-3 text-left transition-colors hover:border-violet-400 disabled:opacity-50"
                               >
                                 <span className="block font-mono text-[13px] font-semibold text-violet-600">
                                   {opt.label}
                                 </span>
                                 {opt.description && (
-                                  <span className="mt-0.5 block max-w-[220px] text-[12px] leading-snug text-vgray-500">
+                                  <span className="mt-0.5 block text-[12px] leading-snug text-vgray-500">
                                     {opt.description}
                                   </span>
                                 )}

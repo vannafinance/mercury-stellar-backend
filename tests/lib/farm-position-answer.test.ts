@@ -64,6 +64,18 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
     expect(r.kind).toBe("read");
     if (r.kind === "read") expect(r.template_id).toBe("query_blend");
   });
+
+  it("what is my blend pool stats is the two-column Blend read", () => {
+    const r = routeMessage("what is my blend pool stats?");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_blend");
+  });
+
+  it("give me my farm stats is farm stats, not earn", () => {
+    const r = routeMessage("give me my farm stats");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_farm_stats");
+  });
 });
 
 const mocks = vi.hoisted(() => ({
@@ -177,6 +189,32 @@ describe("the farm-position answer never mentions the margin account", () => {
     const aq = facts.find((f) => /aquarius/i.test(f.label));
     expect(aq?.value).toMatch(/1\.64\s*LP/i);
     expect(res.message).not.toMatch(/aquarius lp shares["\s:]*0/i);
+  });
+
+  it("blend pool stats is XLM|USDC rates plus a holdings table", async () => {
+    mocks.getUserBlendBalance.mockImplementation(async (_addr: string, symbol: string) =>
+      symbol === "USDC" ? { bTokenBalance: "85.10", underlyingBalance: "89.86" } : noBlend,
+    );
+    mocks.getBlendReserveData.mockImplementation(async (symbol: string) =>
+      symbol === "USDC"
+        ? { supplyAPY: "0.07", borrowAPY: "0.19", utilizationRate: "43.28" }
+        : { supplyAPY: "391.12", borrowAPY: "653.11", utilizationRate: "88.69" },
+    );
+    mocks.getLpBalance.mockResolvedValue("0");
+    mocks.getPoolStats.mockResolvedValue(null);
+    mocks.getUserLpBalance.mockResolvedValue("1.64");
+    mocks.getAquariusPoolStats.mockResolvedValue({ feeFraction: "0.30%" });
+
+    const res = await handleChat({ ...base, message: "what is my blend pool stats?" });
+    expect(res.kind).toBe("answer");
+    expect(res.answer?.headline).toMatch(/Blend pool stats/i);
+    const rates = res.answer?.tables?.[0];
+    expect(rates?.columns).toEqual(["", "XLM", "USDC"]);
+    expect(rates?.rows.some((r) => r.includes("391.12%") && r.includes("0.07%"))).toBe(true);
+    const holdings = res.answer?.tables?.[1];
+    expect(holdings?.caption).toMatch(/positions/i);
+    expect(holdings?.rows.some((r) => r[0] === "Blend")).toBe(true);
+    expect(holdings?.rows.some((r) => r[0] === "Aquarius")).toBe(true);
   });
 });
 

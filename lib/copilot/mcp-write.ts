@@ -82,19 +82,18 @@ function looksC(a?: string | null): a is string {
 export const USDC_VARIANT_OPTIONS = [
   {
     id: "BLUSDC",
-    label: "BLUSDC (Blend USDC)",
-    description:
-      "Blend-side USDC — earn Blend USDC pool; margin uses MCP symbol USDC for this token",
+    label: "BLUSDC",
+    description: "Blend USDC",
   },
   {
     id: "AQUSDC",
     label: "AQUSDC",
-    description: "Aquarius USDC — earn AqUSDC pool + Aquarius margin collateral",
+    description: "Aquarius USDC",
   },
   {
     id: "SOUSDC",
     label: "SOUSDC",
-    description: "Soroswap USDC — earn SoUSDC pool + Soroswap margin collateral",
+    description: "Soroswap USDC",
   },
 ] as const;
 
@@ -136,34 +135,23 @@ export function ambiguousUsdcSlot(action: {
   return null;
 }
 
-const USDC_VARIANT_BULLETS: Record<UsdcVariantId, string> = {
-  BLUSDC: "• BLUSDC — Blend USDC (most common for Vanna earn / Blend farm)",
-  AQUSDC: "• AQUSDC — Aquarius USDC",
-  SOUSDC: "• SOUSDC — Soroswap USDC",
-};
-
-/**
- * Every USDC-naming write used to get the same three-way list regardless of what it
- * actually supports. Reported live: "swap 10 XLM to USDC" offered BLUSDC as one of the
- * three choices, even though `mapOpToMcpStep`'s own swap case (above) explicitly
- * refuses BLUSDC — "Blend USDC is not a DEX token. Neither venue trades it" — so picking
- * it would only bounce back with a second, contradicting message. A swap can only ever
- * settle in whichever variant its venue trades: AQUSDC on Aquarius, SOUSDC on Soroswap.
- * `variants` narrows the list to what the calling write can actually accept; every
- * non-swap caller keeps the full three.
- */
 export function usdcVariantClarifyMessage(
   context: string,
-  variants: readonly UsdcVariantId[] = USDC_VARIANT_OPTIONS.map((o) => o.id),
+  _variants: readonly UsdcVariantId[] = USDC_VARIANT_OPTIONS.map((o) => o.id),
 ): string {
-  const count = variants.length === 3 ? "three separate tokens" : `${variants.length} separate tokens`;
-  return (
-    `Which USDC do you mean for ${context}? On this testnet there are ${count} ` +
-    `(not interchangeable):\n` +
-    variants.map((v) => USDC_VARIANT_BULLETS[v]).join("\n") +
-    `\n` +
-    `Pick one below (or type e.g. “${context === "the swap" ? "swap 10 XLM to " + variants[0] : "lend 10 " + variants[0]}”).`
-  );
+  const c = context.toLowerCase();
+  const verb = /\bborrow\b/.test(c)
+    ? "borrow"
+    : /\bswap\b/.test(c)
+      ? "swap"
+      : /\blend\b/.test(c)
+        ? "lend"
+        : /\bwithdraw\b/.test(c)
+          ? "withdraw"
+          : /\bdeposit\b/.test(c)
+            ? "deposit"
+            : "use";
+  return `Which USDC do you want to ${verb}?`;
 }
 
 /**
