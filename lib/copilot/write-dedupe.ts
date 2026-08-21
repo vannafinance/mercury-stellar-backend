@@ -27,15 +27,19 @@ function sweep(now: number): void {
 }
 
 /**
- * Claim a key for `DEDUPE_WINDOW_MS`. Returns `true` the first time a key is claimed
+ * Claim a key for `windowMs` (defaults to `DEDUPE_WINDOW_MS`). Returns `true` the first time a key is claimed
  * (caller should proceed), `false` if the same key was already claimed inside the
  * window (caller should refuse — this is a repeat of a request already in flight or
  * just completed).
  */
-export function claimOnce(key: string, now: number = Date.now()): boolean {
+export function claimOnce(
+  key: string,
+  now: number = Date.now(),
+  windowMs: number = DEDUPE_WINDOW_MS,
+): boolean {
   sweep(now);
   const last = seen.get(key);
-  if (last != null && now - last < DEDUPE_WINDOW_MS) {
+  if (last != null && now - last < windowMs) {
     return false;
   }
   seen.set(key, now);

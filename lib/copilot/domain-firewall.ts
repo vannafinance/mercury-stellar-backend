@@ -44,24 +44,26 @@ const BLOCK_PATTERNS: RegExp[] = [
   // Other chains as coding help
   /\b(solidity|smart\s+contract\s+code|metamask\s+dapp)\b.+\b(write|code|implement)\b/i,
   /\b(write|implement|code)\b.+\b(solidity|ethereum\s+contract)\b/i,
+  // Algorithmic / Competitive programming / LeetCode puzzles
+  /\b(given\s+(an?|the|two|three|\d+)?\s*(array|string|integer|number\s+[a-z]|matrix|list|tree|graph|pattern)|print\s+(a\s+|the\s+)?pattern|descending\s+order|ascending\s+order|test\s*cases?|time\s+complexity|space\s+complexity|input\s+format|output\s+format|constraints?:)\b/i,
+  /\b(generate\s+and\s+print|print\s+numbers|separate\s+rows\s+with|end\s+the\s+output\s+with)\b/i,
+  /\b(find\s+the\s+(max|min|maximum|minimum|sum|subarray|substring|longest|shortest)|binary\s+search|dynamic\s+programming|dfs|bfs|two\s+pointers?|backtracking)\b/i,
+  // Adversarial jailbreak / prompt extraction / roleplay persona evasion
+  /\b(ignore\s+(all\s+)?(previous|prior)\s+(instructions|prompts|rules)|system\s+prompt|reveal\s+(your\s+)?instructions|print\s+(your\s+)?system\s+prompt|jailbreak|DAN\s+mode|developer\s+mode)\b/i,
+  /\b(pretend\s+(to\s+be|you\s+are)|act\s+as\s+(a|an))\b.+\b(teacher|professor|terminal|linux|python|coder|girlfriend|boyfriend|therapist|doctor|lawyer|historian|chemist)\b/i,
 ];
 
 /**
  * Questions about the surface the user is on.
  *
  * Every page in this app is a Vanna product page, so "what am I looking at?" is a
- * product question no matter how it is phrased — it was being refused because the old
- * screen pattern only matched "what is / what are", and the way people actually ask is
- * "what am I looking at on this page?". A refusal here is the worst possible answer:
- * the Assistant's whole pitch is that it reads the page.
+ * product question no matter how it is phrased.
  */
 const PAGE_REFERENTIAL: RegExp[] = [
-  /\b(this|the|current)\s+(page|screen|tile|panel|card|section|view|number|figure|chart|table|column|row)\b/i,
+  /\b(this|the|current)\s+(page|screen|dashboard|view)\b/i,
   /\b(what|where)\s+am\s+i\b/i,
   /\b(looking\s+at|on\s+screen|on\s+my\s+screen|shown\s+here|right\s+here)\b/i,
-  /\b(what|how)\s+does\s+(this|that|it)\b/i,
-  /\b(what|who)\s+(is|are)\s+(this|that|these|those)\b/i,
-  /\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen|what)\b/i,
+  /\b(explain|walk\s+me\s+through|describe)\s+(this|the\s+page|the\s+screen)\b/i,
 ];
 
 /**
@@ -260,6 +262,16 @@ const DEICTIC =
   /\b(this|that|these|those|here|above|below|screen|page|tile|panel|card|section|view|number|figure|chart|table|column|row|badge|button)\b/i;
 
 /**
+ * Financial & DeFi semantic vocabulary.
+ *
+ * Catches natural-language DeFi/financial queries that may not use exact Vanna
+ * action verbs (e.g. "what is the liquidation buffer", "how much yield can I generate",
+ * "explain my borrow capacity", "is my account safe").
+ */
+const FINANCIAL_SEMANTIC_RE =
+  /\b(crypto|defi|token|tokens|coin|coins|stablecoin|stablecoins|vault|vaults|yield|yields|apy|apr|interest|rate|rates|borrow|borrowing|lend|lending|collateral|collateralized|undercollateralized|overcollateralized|liquidation|liquidate|health|hf|leverage|multiplier|solvency|headroom|cushion|buffer|threshold|safety|safe|slippage|utilization|pnl|profit|loss|returns?|roi|gain|gains|gas|fee|fees|cost|costs|transaction|transactions|tx|ledger|hash|wallet|smart\s+account|deposit|withdraw|swap|stake|staking|farming)\b/i;
+
+/**
  * Evaluate whether we should call the LLM / MCP path at all.
  * Call this at the top of handleChat before Vertex.
  */
@@ -276,14 +288,14 @@ export function evaluateDomainFirewall(
     };
   }
 
-  // 1) Hard block first
+  // 1) Hard block first (blatant abuse, coding, homework, jailbreaks)
   for (const re of BLOCK_PATTERNS) {
     if (re.test(m)) {
       return { allow: false, reason: `block:${re.source.slice(0, 40)}`, message: BLOCK_MESSAGE };
     }
   }
 
-  // 2) Explicit allow
+  // 2) Explicit product allow (exact domain vocabulary, assets, actions, protocol addresses)
   for (const re of ALLOW_PATTERNS) {
     if (re.test(m)) {
       return { allow: true, reason: `allow:${re.source.slice(0, 40)}` };
@@ -295,7 +307,7 @@ export function evaluateDomainFirewall(
     return { allow: true, reason: "allow:page_context" };
   }
 
-  // 3) Very short product-ish tokens
+  // 3) Very short product-ish tokens / greetings
   if (m.length <= 40 && /^(hi|hello|hey|help|thanks|thank you|ok|yes|no)\.?$/i.test(m)) {
     return {
       allow: true,
@@ -303,19 +315,17 @@ export function evaluateDomainFirewall(
     };
   }
 
-  // 4) Ambiguous long text with no domain signal → refuse (saves billing)
+  // 4) Semantic financial/DeFi query check
+  if (FINANCIAL_SEMANTIC_RE.test(m)) {
+    return { allow: true, reason: "allow:financial_semantic" };
+  }
+
+  // 5) Ambiguous long text with no domain signal → refuse (saves billing)
   if (m.length > 80) {
     return { allow: false, reason: "block:no_domain_signal", message: BLOCK_MESSAGE };
   }
 
-  // 5) A question with no product noun anywhere in it. Step 2 has already tried every
-  //    allow pattern and none matched, so re-testing them here decided nothing — the
-  //    second clause was always true. Dropping it changes no outcome and stops the code
-  //    implying there is a further chance to be allowed.
-  //    "who" was missing, so "who won the world cup" slipped past to the lenient
-  //    short-token default below and spent a model call — the exact thing this file is for.
-  //    In-domain "who" questions ("who are you", "who is Vanna") are already allowed at
-  //    step 2 by SELF_REFERENTIAL and the product vocabulary.
+  // 6) A question with no product/financial noun anywhere in it.
   if (/\b(what|how|why|who|when|where|explain|show|list|help|can\s+i|do\s+i)\b/i.test(m)) {
     return { allow: false, reason: "block:off_domain_question", message: BLOCK_MESSAGE };
   }

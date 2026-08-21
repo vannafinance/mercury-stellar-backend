@@ -208,7 +208,7 @@ export const copilotConfig = {
     return (env("GOOGLE_CLOUD_LOCATION", "global") || "global").trim();
   },
   get vertexModel(): string {
-    return env("VERTEX_MODEL", "gemini-3.6-flash");
+    return env("VERTEX_MODEL", "gemini-3.7-flash");
   },
   /**
    * Fallback models when primary Vertex model returns 404/unavailable.

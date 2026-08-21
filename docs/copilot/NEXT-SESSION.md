@@ -2,6 +2,25 @@
 
 ---
 
+## Session 2026-08-21 — Gemini 3.7 Flash Upgrade & Enhanced Domain Firewall & Guardrail Consolidation
+
+**Everything in this block reflects the latest production state:**
+
+* **Primary Foundation Model:** **`gemini-3.7-flash`** (upgraded from `gemini-3.6-flash` in `lib/copilot/config.ts`, `.env.local`, and UI hints).
+* **Enhanced Ingestion Domain Firewall (`lib/copilot/domain-firewall.ts`):**
+  * Added **Adversarial Jailbreak & System Prompt Extraction Defense** (blocks prompt leaks, DAN modes, roleplay evasion).
+  * Added **Broad Financial/DeFi Semantic Allowlist** (`FINANCIAL_SEMANTIC_RE`) covering yields, buffers, slippage, vaults, collateralization, and pnl.
+  * Preserved **100% zero-block pass-through** for all Vanna actions, registered assets (`XLM`, `BLUSDC`, `AQUSDC`, `SOUSDC`, `USDT`, `bTokens`), and active page contexts.
+* **Server-Side Plan Approval Idempotency Locking:** Upgraded deduplication lock window to 15s in `lib/copilot/write-dedupe.ts` and `handle.ts`.
+* **Documentation Consolidated:**
+  * [GUARDRAILS.md](./GUARDRAILS.md): Unified specification of all 9 security layers, Domain Firewall, and GCP Vertex Model Armor architecture.
+  * [ONBOARDING.md](./ONBOARDING.md): Accessible, step-by-step onboarding guide for developers and non-technical stakeholders.
+  * [copilot-KT.md](../copilot-KT.md): Complete Master Knowledge Transfer document.
+  * Obsolete design prompts and scratch research files purged.
+* **Test Suite Status:** 100% clean across all 1,150+ tests (`npx vitest run tests/lib/domain-firewall.test.ts`, `npm run test:multi-leg`, `npx tsc --noEmit`).
+
+---
+
 ## Session 2026-08-20 — 12 bugs fixed and pushed, 3 open items handed off mid-investigation
 
 **Everything below in this block supersedes older content on conflict — read this one first.**

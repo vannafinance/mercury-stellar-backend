@@ -517,7 +517,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     // Server-side idempotency (§16 Z-07): the same plan_id posted twice — a retry, a
     // second tab, a replayed request — must not execute twice. Client-side button
     // disabling already prevents an ordinary double-click; this is the second gate.
-    if (!claimOnce(planDedupeKey(req.approved_plan.plan_id))) {
+    if (!claimOnce(planDedupeKey(req.approved_plan.plan_id), Date.now(), 15_000)) {
       console.warn(`[copilot] approved plan ${req.approved_plan.plan_id} already running/ran — refusing duplicate`);
       return {
         kind: "blocked",
