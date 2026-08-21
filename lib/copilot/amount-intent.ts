@@ -6,16 +6,20 @@
  * when leverage already implied it.
  */
 
+function parsePercentShare(text: string): number | null {
+  const pct = text.match(/\b(\d+(?:\.\d+)?)\s*(?:%|percent(?:age)?s?\b)/);
+  if (!pct) return null;
+  const n = Number(pct[1]);
+  if (!Number.isFinite(n) || n <= 0 || n > 100) return null;
+  return n / 100;
+}
+
 /** Explicit numeric size wins; this only fires when the user named a share of a balance. */
 export function findAmountFraction(text: string): number | null {
   const t = text.toLowerCase();
 
-  // Percentages first so "repay 25% of my XLM" is not flattened into "all".
-  const pct = t.match(/\b(\d+(?:\.\d+)?)\s*%/);
-  if (pct) {
-    const n = Number(pct[1]);
-    if (Number.isFinite(n) && n > 0 && n <= 100) return n / 100;
-  }
+  const fromPct = parsePercentShare(t);
+  if (fromPct != null) return fromPct;
 
   if (/\b(half|one\s*half)\b/.test(t)) return 0.5;
   if (/\b(quarter|one\s*quarter)\b/.test(t)) return 0.25;
@@ -50,12 +54,8 @@ export function findAmountFraction(text: string): number | null {
 export function findBalanceFraction(text: string): number | null {
   const t = (text || "").toLowerCase();
 
-  // An explicit share is unambiguous, so it is read before anything else.
-  const pct = t.match(/\b(\d+(?:\.\d+)?)\s*%/);
-  if (pct) {
-    const n = Number(pct[1]);
-    if (Number.isFinite(n) && n > 0 && n <= 100) return n / 100;
-  }
+  const fromPct = parsePercentShare(t);
+  if (fromPct != null) return fromPct;
   if (/\b(?:one\s*)?half\b/.test(t)) return 0.5;
   if (/\b(?:a\s+)?quarter\b/.test(t)) return 0.25;
 

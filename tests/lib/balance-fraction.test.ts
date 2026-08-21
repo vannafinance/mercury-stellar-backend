@@ -10,6 +10,8 @@ describe("findBalanceFraction — a share of a balance is a size", () => {
     expect(findBalanceFraction("deposit 50% of the XLM in my wallet")).toBe(0.5);
     expect(findBalanceFraction("supply 10% of my BLUSDC")).toBe(0.1);
     expect(findBalanceFraction("supply 100% of my BLUSDC")).toBe(1);
+    expect(findBalanceFraction("deposit 44% of my XLM")).toBe(0.44);
+    expect(findBalanceFraction("deposit 7.5 percent of my AQUSDC")).toBe(0.075);
   });
 
   it("reads half and quarter", () => {
@@ -86,6 +88,16 @@ describe("routeMessage — a stated share survives as a fraction slot", () => {
     expect(r.amount).toBeNull();
     expect(r.fraction).toBe(0.1);
     expect(r.requires_amount).toBe(false);
+  });
+
+  it("any named % of a named USDC variant is that asset, not XLM", () => {
+    const r = routeMessage("deposit 44% of my AQUSDC");
+    expect(r.kind).toBe("write");
+    if (r.kind !== "write") return;
+    expect(r.op).toBe("deposit_collateral");
+    expect(r.asset).toBe("AQUSDC");
+    expect(r.fraction).toBe(0.44);
+    expect(r.amount).toBeNull();
   });
 
   it("deposit 25% of my XLM as collateral → deposit_collateral with a fraction", () => {
