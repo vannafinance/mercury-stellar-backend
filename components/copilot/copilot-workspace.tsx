@@ -233,7 +233,6 @@ const PROMPTS: Record<string, string[]> = {
     "Deposit 5 XLM",
     "Lend 5 USDC",
     "Borrow 2 USDC",
-    "Park 20 XLM for yield then farm 10 BLUSDC at 2x keep HF above 1.4",
     "Repay 5 BLUSDC then deposit 10 XLM as collateral",
     // Reported live: "Swap 10 XLM to BLUSDC then farm Blend" was one of the product's
     // own suggested prompts, and BLUSDC trades on no AMM — the suggestion itself was
