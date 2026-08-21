@@ -1687,11 +1687,11 @@ export function CopilotWorkspace() {
         );
       }
 
-      if (at < 0 && String(leg.op) === "add_liquidity") {
+      if (at < 0 && ["add_liquidity", "remove_liquidity", "deploy_to_blend", "supply_to_blend", "withdraw_from_blend"].includes(String(leg.op))) {
         at = merged.findIndex((m) => {
           const st = String(m.status || "");
           return (
-            String(m.op) === "add_liquidity" &&
+            String(m.op) === String(leg.op) &&
             st !== "ok" &&
             st !== "done" &&
             st !== "failed" &&
@@ -4173,7 +4173,11 @@ export function CopilotWorkspace() {
       const amt = s.amount;
       const hasAmt = amt != null && Number.isFinite(Number(amt)) && Number(amt) > 0;
       const pauseLp =
-        (op === "add_liquidity" || op === "deploy_to_blend" || op === "supply_to_blend") &&
+        (op === "add_liquidity" ||
+          op === "deploy_to_blend" ||
+          op === "supply_to_blend" ||
+          op === "remove_liquidity" ||
+          op === "withdraw_from_blend") &&
         !hasAmt &&
         i === firstOpen &&
         !loading;
@@ -4188,7 +4192,7 @@ export function CopilotWorkspace() {
             (s.token_a && s.token_b
               ? ([String(s.token_a), String(s.token_b)] as [string, string])
               : lpSides(s.asset, s.token_b || s.token_out, null))
-          : op === "deploy_to_blend" || op === "supply_to_blend"
+          : op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend"
             ? fromInput ?? (["XLM", "BLUSDC"] as [string, string])
             : null;
       return {
@@ -4231,10 +4235,20 @@ export function CopilotWorkspace() {
         lpPrefillXlm:
           op === "add_liquidity"
             ? ((response?.data as { lp_input?: { amount_xlm?: number | null } })?.lp_input?.amount_xlm ?? null)
-            : null,
+            : op === "remove_liquidity"
+              ? ((response?.data as { lp_input?: { amount?: number | null } })?.lp_input?.amount ?? null)
+              : null,
         lpPrefillOther:
           op === "add_liquidity"
             ? ((response?.data as { lp_input?: { amount_other?: number | null } })?.lp_input?.amount_other ?? null)
+            : null,
+        lpHeld:
+          op === "remove_liquidity" || op === "withdraw_from_blend"
+            ? ((response?.data as { lp_input?: { held?: number | null } })?.lp_input?.held ?? null)
+            : null,
+        lpHeldLabel:
+          op === "remove_liquidity" || op === "withdraw_from_blend"
+            ? ((response?.data as { lp_input?: { label?: string | null } })?.lp_input?.label ?? null)
             : null,
       };
     });
@@ -4827,7 +4841,7 @@ export function CopilotWorkspace() {
                       </p>
                     )}
 
-                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
 
                     {reasons.length > 0 && (
                       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -5081,7 +5095,7 @@ export function CopilotWorkspace() {
                       {decision && <RiskChip decision={decision} />}
                     </div>
                     <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
                     <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                       <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                         <ShieldCheck size={14} /> enable auto-sign

@@ -85,6 +85,8 @@ export interface RunLeg {
   lpOtherPerXlm?: number | null;
   lpPrefillXlm?: number | null;
   lpPrefillOther?: number | null;
+  lpHeld?: number | null;
+  lpHeldLabel?: string | null;
 }
 
 export interface RunSummaryRow {
@@ -439,8 +441,16 @@ export function RunExecutionCard({
   const [lpLocked, setLpLocked] = useState(false);
   useEffect(() => {
     const leg = shape.needsInput;
+    if (leg?.op === "remove_liquidity" && leg.lpPrefillXlm != null && leg.lpPrefillXlm > 0) {
+      const n = leg.lpPrefillXlm;
+      setDraft(
+        Number.isInteger(n) || Math.abs(n - Math.round(n)) < 1e-9
+          ? String(Math.round(n))
+          : n.toFixed(4).replace(/\.?0+$/, ""),
+      );
+    }
     if (!leg || leg.op !== "add_liquidity") {
-      setLiveRatio(null);
+      if (leg?.op !== "remove_liquidity") setLiveRatio(null);
       return;
     }
     if (leg.lpPrefillXlm != null && leg.lpPrefillXlm > 0) {
@@ -488,6 +498,7 @@ export function RunExecutionCard({
     }
     const n = Number(draft);
     if (!Number.isFinite(n) || n <= 0) return;
+    setLpLocked(true);
     const sides = leg.lpSides;
     const selected =
       lpPick ||
@@ -644,7 +655,11 @@ export function RunExecutionCard({
 
   if (total === 0) return null;
 
-  const compactLp = total === 1 && legs[0]?.op === "add_liquidity";
+  const compactLp =
+    total === 1 &&
+    ["add_liquidity", "remove_liquidity", "deploy_to_blend", "supply_to_blend", "withdraw_from_blend"].includes(
+      String(legs[0]?.op),
+    );
 
   const btnBase = {
     borderRadius: 10,
@@ -780,8 +795,7 @@ export function RunExecutionCard({
               isPausedHere &&
               (missing || (l.op === "add_liquidity" && !!l.lpSides))) ||
             (lpLocked &&
-              l.op === "add_liquidity" &&
-              !!l.lpSides &&
+              (l.op === "add_liquidity" || l.op === "remove_liquidity") &&
               l.status !== "ok" &&
               l.status !== "failed");
           const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
@@ -1061,7 +1075,132 @@ export function RunExecutionCard({
                         : "Nothing has settled yet, so cancelling here costs you nothing."}
                     </p>
 
-                    {l.op === "add_liquidity" && l.lpSides && l.lpSides.length === 2 ? (
+                    {l.op === "remove_liquidity" ? (
+                      <>
+                        {l.lpHeld != null && l.lpHeld > 0 ? (
+                          <p
+                            className="m-0 mt-[11px]"
+                            style={{ fontSize: 13, color: "var(--rc-heading)" }}
+                          >
+                            You hold{" "}
+                            <span style={{ fontFamily: MONO, fontWeight: 700 }}>
+                              {l.lpHeld.toFixed(4).replace(/\.?0+$/, "")} LP
+                            </span>
+                            {l.lpHeldLabel ? ` in ${l.lpHeldLabel}` : ""}.
+                          </p>
+                        ) : null}
+                        {lpLocked ? (
+                          <>
+                            <div
+                              className="mt-[11px] flex items-baseline justify-between"
+                              style={{
+                                border: "1px solid var(--rc-field-bd)",
+                                borderRadius: 12,
+                                background: "var(--rc-field-bg)",
+                                padding: "12px 14px",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontFamily: MONO,
+                                  fontSize: 22,
+                                  fontWeight: 600,
+                                  color: "var(--rc-heading)",
+                                }}
+                              >
+                                {draft} LP
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="rc-btn-s mt-[11px]"
+                              onClick={() => setLpLocked(false)}
+                              style={{
+                                ...btnBase,
+                                border: "1px solid var(--rc-btn-2-bd)",
+                                background: "transparent",
+                                color: "var(--rc-heading)",
+                                borderRadius: 9,
+                                padding: "8px 16px",
+                                fontSize: 14,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Modify
+                            </button>
+                          </>
+                        ) : (
+                          <div className="mt-[11px] flex items-stretch gap-[9px]">
+                            <label
+                              className="lp-dual-field rc-field relative flex flex-1 items-center overflow-hidden"
+                              style={{
+                                border: "1px solid var(--rc-field-bd)",
+                                borderRadius: 9,
+                                background: "var(--rc-field-bg)",
+                                padding: "0 12px",
+                              }}
+                            >
+                              <input
+                                ref={fieldRef}
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="any"
+                                placeholder="0.00"
+                                value={draft}
+                                onChange={(e) => setDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    submitAmount();
+                                  }
+                                }}
+                                className="min-w-0 flex-1 outline-none"
+                                style={{
+                                  border: 0,
+                                  outline: "none",
+                                  background: "transparent",
+                                  padding: "11px 0",
+                                  fontFamily: MONO,
+                                  fontSize: 19,
+                                  fontWeight: 600,
+                                  color: "var(--rc-heading)",
+                                }}
+                              />
+                              <span
+                                style={{
+                                  fontFamily: MONO,
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                  color: "var(--rc-muted)",
+                                }}
+                              >
+                                LP
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              className="rc-btn-p"
+                              onClick={submitAmount}
+                              disabled={!draftValid || busy}
+                              style={{
+                                ...btnBase,
+                                border: "1px solid transparent",
+                                borderRadius: 9,
+                                background: "var(--rc-btn-fill)",
+                                color: "var(--rc-btn-fg)",
+                                padding: "11px 20px",
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: !draftValid || busy ? "not-allowed" : "pointer",
+                              }}
+                            >
+                              Enter
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    ) : l.op === "add_liquidity" && l.lpSides && l.lpSides.length === 2 ? (
                       lpLocked ? (
                         <>
                           {(["XLM", l.lpSides[1]] as const).map((side) => {
@@ -1384,7 +1523,7 @@ export function RunExecutionCard({
                     </>
                     )}
 
-                    {l.op === "add_liquidity" ? null : (
+                    {l.op === "add_liquidity" || l.op === "remove_liquidity" ? null : (
                     <div className="mt-[9px] flex flex-wrap items-center justify-between gap-3">
                       <p
                         className="m-0"

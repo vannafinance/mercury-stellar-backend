@@ -6385,7 +6385,41 @@ async function runWrite(
           request_id: ctx.request_id,
         };
       }
-      const amt = want != null && want > 0 ? want : live.shares;
+      const fromResume = /multi-leg step/i.test(ctx.message || "");
+      if (!(fromResume && want != null && want > 0)) {
+        const held = fmtLpAmt(live.shares);
+        const prefill = want != null && want > 0 ? want : null;
+        const question = `You hold ${held} LP in ${live.label}. How much should I remove?`;
+        return {
+          kind: "clarification",
+          message: question,
+          intent: { template_id: "remove_liquidity", slots: { venue: live.venue, lp: live.shares } },
+          data: {
+            multi_leg: true,
+            strategy_summary: `Remove LP ${live.label}`,
+            lp_input: {
+              held: live.shares,
+              label: live.label,
+              venue: live.venue,
+              amount: prefill,
+            },
+            multi_leg_steps: [
+              {
+                op: "remove_liquidity",
+                status: "clarification",
+                asset: "LP",
+                amount: null,
+                label: `Remove LP ${live.label}`,
+                token_a: "XLM",
+                token_b: live.venue === "soroswap" ? "SOUSDC" : "AQUSDC",
+                message: question,
+              },
+            ],
+          },
+          request_id: ctx.request_id,
+        };
+      }
+      const amt = want;
       action = {
         ...action,
         amount: amt,
@@ -6533,6 +6567,57 @@ async function runWrite(
               token_a: "XLM",
               token_b: "BLUSDC",
               message: "How much XLM or BLUSDC should I supply to Blend?",
+            },
+          ],
+        },
+        request_id: ctx.request_id,
+      };
+    }
+    if (
+      action.op === "withdraw_from_blend" &&
+      typeof mapped.blocker === "string" &&
+      /how much do you want to withdraw from blend/i.test(mapped.blocker)
+    ) {
+      let heldXlm = 0;
+      let heldUsdc = 0;
+      try {
+        const { BlendService } = await import("@/lib/blend-utils");
+        if (smartAccount) {
+          const [x, u] = await Promise.all([
+            BlendService.getUserBlendBalance(smartAccount, "XLM"),
+            BlendService.getUserBlendBalance(smartAccount, "USDC"),
+          ]);
+          heldXlm = Number.parseFloat(x.underlyingBalance) || 0;
+          heldUsdc = Number.parseFloat(u.underlyingBalance) || 0;
+        }
+      } catch {
+        /* still ask */
+      }
+      const sides: [string, string] = ["XLM", "BLUSDC"];
+      const question =
+        `You hold ${fmtLpAmt(heldXlm)} XLM and ${fmtLpAmt(heldUsdc)} BLUSDC in Blend. How much should I withdraw?`;
+      return {
+        kind: "clarification",
+        message: question,
+        intent: { template_id: "withdraw_from_blend", slots: {} },
+        data: {
+          multi_leg: true,
+          strategy_summary: "Withdraw from Blend",
+          lp_input: {
+            sides,
+            held: heldUsdc > 0 ? heldUsdc : heldXlm,
+            label: "Blend",
+          },
+          multi_leg_steps: [
+            {
+              op: "withdraw_from_blend",
+              status: "clarification",
+              asset: heldUsdc > 0 ? "BLUSDC" : "XLM",
+              amount: null,
+              label: "Withdraw from Blend",
+              token_a: "XLM",
+              token_b: "BLUSDC",
+              message: question,
             },
           ],
         },
