@@ -229,7 +229,6 @@ const PROMPTS: Record<string, string[]> = {
     "Can I borrow 20 USDC?",
   ],
   actions: [
-    "Create Vanna wallet",
     "Open a margin account",
     "Deposit 5 XLM",
     "Lend 5 USDC",
