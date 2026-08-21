@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeStroopCounts, fmtLpAmt, farmAddedLine, shortWriteLabel } from "@/lib/copilot/execution-copy";
+import { humanizeStroopCounts, fmtLpAmt, farmAddedLine, farmRemovedLine, shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { routeMessage } from "@/lib/copilot/router";
 
 describe("shortWriteLabel — one sentence on every staged write", () => {
@@ -35,6 +35,15 @@ describe("fmtLpAmt — pair titles stay one line", () => {
   it("receipt names both sides of an Aquarius add", () => {
     expect(farmAddedLine("Add 72 XLM + 1.0011 AQUSDC LP")).toBe(
       "Added 72 XLM and 1.0011 AQUSDC in Aquarius",
+    );
+  });
+
+  it("receipt names LP amount and pool on remove", () => {
+    expect(farmRemovedLine("Remove 10 XLM/AQUSDC LP")).toBe(
+      "Removed 10 LP from XLM/AQUSDC pool",
+    );
+    expect(farmRemovedLine("Remove 1.64 XLM/SOUSDC LP")).toBe(
+      "Removed 1.64 LP from XLM/SOUSDC pool",
     );
   });
 });

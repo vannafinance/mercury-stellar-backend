@@ -13,7 +13,7 @@
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
-import { cleanExecutionCopy, farmAddedLine, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
+import { cleanExecutionCopy, farmReceiptLine, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
 import {
   enableAutoSign,
@@ -467,8 +467,8 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       // legs say which that was. The client sends labels, so the ops are read from those.
       if (receipt) {
         const both =
-          farmAddedLine(intent) ||
-          farmAddedLine(legs.map((l) => l.action).join(" | "));
+          farmReceiptLine(intent) ||
+          farmReceiptLine(legs.map((l) => l.action).join(" | "));
         if (both) receipt = { ...receipt, headline: both };
         const v = receiptVenueFromOps(legs.map((l) => l.action));
         if (v) receipt = { ...receipt, venue: v };

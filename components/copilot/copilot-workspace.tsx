@@ -40,7 +40,7 @@ import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
-import { farmAddedLine } from "@/lib/copilot/execution-copy";
+import { farmReceiptLine } from "@/lib/copilot/execution-copy";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -5188,9 +5188,10 @@ export function CopilotWorkspace() {
                           answer={{
                             ...response.answer,
                             headline:
-                              farmAddedLine(response.preview?.human_summary) ||
-                              farmAddedLine(response.answer.headline) ||
-                              response.answer.headline,
+                              farmReceiptLine(
+                                response.preview?.human_summary,
+                                response.answer.headline,
+                              ) || response.answer.headline,
                           }}
                         />
                       </div>
@@ -5206,7 +5207,7 @@ export function CopilotWorkspace() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="text-h6 font-semibold text-vgray-900">
-                              {farmAddedLine(response.preview?.human_summary) ||
+                              {farmReceiptLine(response.preview?.human_summary) ||
                                 response.preview?.human_summary ||
                                 "Submitted on-chain"}
                             </p>

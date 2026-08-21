@@ -152,6 +152,29 @@ export function farmAddedLine(summary?: string | null): string | null {
   return `Added ${m[1]} XLM and ${m[2]} ${usd} in ${where}`;
 }
 
+/** `Remove 10 XLM/AQUSDC LP` → `Removed 10 LP from XLM/AQUSDC pool`. */
+export function farmRemovedLine(summary?: string | null): string | null {
+  const s = String(summary || "").trim();
+  const withPair = s.match(
+    /Remove(?:d|ing)?\s+([\d.]+)\s+(?:LP\s+(?:from\s+)?)?([A-Z]{2,10}\/[A-Z]{2,10})(?:\s+LP)?/i,
+  );
+  if (withPair) {
+    return `Removed ${withPair[1]} LP from ${withPair[2].toUpperCase()} pool`;
+  }
+  const amt = s.match(/Remove(?:d|ing)?\s+([\d.]+)\s+LP/i);
+  const pair = s.match(/\b(XLM\/(?:AQUSDC|SOUSDC|USDC)|AQUSDC\/XLM|SOUSDC\/XLM)\b/i);
+  if (amt && pair) {
+    const p = pair[1].toUpperCase().replace("XLM/USDC", "XLM/AQUSDC");
+    return `Removed ${amt[1]} LP from ${p} pool`;
+  }
+  return null;
+}
+
+export function farmReceiptLine(...parts: Array<string | null | undefined>): string | null {
+  const blob = parts.filter((p) => p != null && String(p).trim()).join(" | ");
+  return farmAddedLine(blob) || farmRemovedLine(blob);
+}
+
 /**
  * One-line staged/executed title. The MCP receipt paragraph is not a summary.
  * Live: “Deposit 100 AQUSDC in Lending Pool” — not a 6-line dump.
