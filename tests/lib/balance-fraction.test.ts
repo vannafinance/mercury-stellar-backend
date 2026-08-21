@@ -77,6 +77,17 @@ describe("routeMessage — a stated share survives as a fraction slot", () => {
     expect(r.requires_amount).toBe(false);
   });
 
+  it("deposit 10% of my XLM is a sized margin deposit, not an amount of 10", () => {
+    const r = routeMessage("deposit 10% of my XLM");
+    expect(r.kind).toBe("write");
+    if (r.kind !== "write") return;
+    expect(r.op).toBe("deposit_collateral");
+    expect(r.asset).toBe("XLM");
+    expect(r.amount).toBeNull();
+    expect(r.fraction).toBe(0.1);
+    expect(r.requires_amount).toBe(false);
+  });
+
   it("deposit 25% of my XLM as collateral → deposit_collateral with a fraction", () => {
     const r = routeMessage("deposit 25% of my XLM in my wallet as collateral");
     expect(r.kind).toBe("write");

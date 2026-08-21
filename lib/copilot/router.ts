@@ -1996,6 +1996,21 @@ export function routeMessage(message: string): RoutedIntent {
       template_id: "query_farm_stats",
     };
   }
+  if (
+    !actsOnPosition &&
+    /\bmargin\b/i.test(text) &&
+    /\b(side|pos\w*|holdings?|overview)\b/i.test(text) &&
+    !any(text, "farm", "earn", "blend", "aquarius", "soroswap") &&
+    !/\bcollateral\b/i.test(text)
+  ) {
+    return {
+      kind: "read",
+      tool: "vanna_get_account_health",
+      args: {},
+      requires_account: true,
+      template_id: "query_margin_positions",
+    };
+  }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
     return {
       kind: "read",

@@ -161,3 +161,39 @@ describe("a focused single-asset question narrows the facts card too, not just t
     expect(labels).not.toMatch(/health/);
   });
 });
+
+describe("margin side positions is the full Margin page, not collateral-only", () => {
+  it("routes typos like postion to query_margin_positions", () => {
+    for (const ask of [
+      "what is my margin side postion",
+      "What is my margin side positions",
+      "show my margin positions",
+    ]) {
+      const r = routeMessage(ask);
+      expect(r.kind, ask).toBe("read");
+      if (r.kind === "read") expect(r.template_id, ask).toBe("query_margin_positions");
+    }
+  });
+
+  it("still keeps 'how much collateral' on the collateral-only card", () => {
+    const r = routeMessage("how much collateral do I have");
+    expect(r.kind).toBe("read");
+    if (r.kind === "read") expect(r.template_id).toBe("query_collateral");
+  });
+
+  it("answers with collateral AND debt, including net borrow rate", async () => {
+    mocks.computeMarginSnapshot.mockResolvedValue({
+      ...multiAssetDebtSnapshot(),
+      borrowRate: 3.6,
+    });
+    const res = await handleChat({ ...base, message: "what is my margin side postion" });
+    expect(res.kind).toBe("answer");
+    expect(res.answer?.headline).toMatch(/margin positions/i);
+    expect(res.answer?.sections?.length).toBe(2);
+    expect(res.answer?.sections?.[0].body).toMatch(/Collateral/i);
+    expect(res.answer?.sections?.[1].body).toMatch(/Debt/i);
+    expect(res.answer?.sections?.[1].facts.some((f) => f.label === "net borrow rate" && f.value === "3.60%")).toBe(
+      true,
+    );
+  });
+});

@@ -2360,6 +2360,7 @@ type MarginPositions = {
   totalValue: number;
   collateralLeftBeforeLiquidation: number;
   netAvailableCollateral: number;
+  borrowRate?: number;
 };
 
 /**
@@ -2669,6 +2670,7 @@ async function readMarginPositions(smartAccount: string): Promise<MarginPosition
       totalValue: snap.totalValue,
       collateralLeftBeforeLiquidation: snap.collateralLeftBeforeLiquidation,
       netAvailableCollateral: snap.netAvailableCollateral,
+      borrowRate: snap.borrowRate,
     };
   } catch (e) {
     console.warn(
@@ -2926,7 +2928,12 @@ async function snapshotPositionAnswer(
       structured = {
         headline: `Your Total Debt is ${money(pos.totalBorrowedValue)}`,
         kicker: "Your detailed stats are:",
-        facts: snapshotRowFacts(pos.borrowed),
+        facts: [
+          ...(typeof pos.borrowRate === "number" && Number.isFinite(pos.borrowRate)
+            ? [{ label: "net borrow rate", value: `${fmt2(pos.borrowRate)}%` }]
+            : []),
+          ...snapshotRowFacts(pos.borrowed),
+        ],
         venue: "margin",
       };
       message = answerToText(structured);
@@ -3063,6 +3070,60 @@ async function snapshotPositionAnswer(
         ...(focusedRow ? { amount: fmtPosAmount(focusedRow.amount), symbol: focusedRow.symbol } : {}),
       },
     },
+    mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
+    request_id: ctx.request_id,
+  };
+}
+
+async function marginSideAnswer(ctx: {
+  smartAccount: string | null;
+  request_id: string;
+  message: string;
+}): Promise<ChatResponse> {
+  if (!ctx.smartAccount) {
+    return {
+      kind: "unavailable",
+      message:
+        "That needs your Vanna smart account (C-address). Open a margin account, or connect the wallet that owns one.",
+      intent: { template_id: "query_margin_positions" },
+      request_id: ctx.request_id,
+    };
+  }
+  const pos = await readMarginPositions(ctx.smartAccount);
+  if (!pos) {
+    return {
+      kind: "unavailable",
+      message: "I could not read your margin account just now. Your live figures are on the Margin page.",
+      intent: { template_id: "query_margin_positions" },
+      request_id: ctx.request_id,
+    };
+  }
+  const structured: StructuredAnswer = {
+    headline: "Your margin positions",
+    kicker: "Your detailed stats are:",
+    facts: [],
+    venue: "margin",
+    sections: [
+      {
+        body: `Your Total Collateral is ${money(pos.grossCollateralValue)}`,
+        facts: [...collateralSummaryFacts(pos), ...snapshotRowFacts(pos.collateral)],
+      },
+      {
+        body: `Your Total Debt is ${money(pos.totalBorrowedValue)}`,
+        facts: [
+          ...(typeof pos.borrowRate === "number" && Number.isFinite(pos.borrowRate)
+            ? [{ label: "net borrow rate", value: `${fmt2(pos.borrowRate)}%` }]
+            : []),
+          ...snapshotRowFacts(pos.borrowed),
+        ],
+      },
+    ],
+  };
+  return {
+    kind: "answer",
+    message: withHfGuardrails(answerToText(structured), pos.hf, ctx.message, pos.totalBorrowedValue),
+    answer: structured,
+    intent: { template_id: "query_margin_positions" },
     mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
     request_id: ctx.request_id,
   };
@@ -4122,6 +4183,9 @@ async function runRead(
   // rather than by one tool. See allPositionsAnswer.
   if (routed.template_id === "query_all_positions") {
     return allPositionsAnswer(routed, ctx);
+  }
+  if (routed.template_id === "query_margin_positions") {
+    return marginSideAnswer(ctx);
   }
 
   // "My Earn positions" names one specific product feature — see earnPositionsAnswer's
