@@ -1687,6 +1687,19 @@ export function CopilotWorkspace() {
         );
       }
 
+      if (at < 0 && String(leg.op) === "add_liquidity") {
+        at = merged.findIndex((m) => {
+          const st = String(m.status || "");
+          return (
+            String(m.op) === "add_liquidity" &&
+            st !== "ok" &&
+            st !== "done" &&
+            st !== "failed" &&
+            st !== "error"
+          );
+        });
+      }
+
       if (at >= 0) {
         merged[at] = {
           ...merged[at],
@@ -4600,13 +4613,6 @@ export function CopilotWorkspace() {
                     }
                     onCancel={loading ? cancelInFlight : undefined}
                     onSubmitAmount={submitLegAmount}
-                    onApproveSign={
-                      runLegs.length === 1 &&
-                      runLegs[0]?.op === "add_liquidity" &&
-                      stagedForSessionSign
-                        ? signWithWallet
-                        : undefined
-                    }
                     onLpEntered={() => {
                       if (runLegs.length > 1) lpScrollPendingRef.current = true;
                     }}
@@ -4680,7 +4686,7 @@ export function CopilotWorkspace() {
                               {response.message}
                             </p>
                           )}
-                          {sim && !multiLeg && action?.op !== "swap" && <ImpactPanel sim={sim} />}
+                          {sim && !multiLeg && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
                           {response?.data && !multiLeg && !response.answer && (
                             <FactsGrid data={response.data} />
                           )}
@@ -4783,9 +4789,7 @@ export function CopilotWorkspace() {
                 )}
 
                 {/* Staged write — MCP built the XDR, wallet signs once */}
-                {phase === "staged" &&
-                  response &&
-                  !(runLegs.length === 1 && runLegs[0]?.op === "add_liquidity") && (
+                {phase === "staged" && response && (
                   <div
                     ref={stagedSectionRef}
                     className="mt-[26px]"
@@ -4823,7 +4827,7 @@ export function CopilotWorkspace() {
                       </p>
                     )}
 
-                    {sim && action?.op !== "swap" && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
 
                     {reasons.length > 0 && (
                       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -5077,7 +5081,7 @@ export function CopilotWorkspace() {
                       {decision && <RiskChip decision={decision} />}
                     </div>
                     <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-                    {sim && action?.op !== "swap" && <ImpactPanel sim={sim} />}
+                    {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
                     <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                       <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                         <ShieldCheck size={14} /> enable auto-sign

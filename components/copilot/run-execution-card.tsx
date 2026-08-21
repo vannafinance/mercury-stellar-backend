@@ -644,6 +644,8 @@ export function RunExecutionCard({
 
   if (total === 0) return null;
 
+  const compactLp = total === 1 && legs[0]?.op === "add_liquidity";
+
   const btnBase = {
     borderRadius: 10,
     fontFamily: "inherit",
@@ -656,12 +658,14 @@ export function RunExecutionCard({
       role="group"
       aria-label="Strategy run"
       style={{
-        border: "1px solid var(--rc-line)",
+        border: compactLp ? "none" : "1px solid var(--rc-line)",
         borderRadius: 14,
-        background: "var(--rc-surface)",
-        padding: "20px 22px 18px",
+        background: compactLp ? "transparent" : "var(--rc-surface)",
+        padding: compactLp ? 0 : "20px 22px 18px",
       }}
     >
+      {!compactLp && (
+      <>
       {/* header: stage label, settled count, one pip per leg */}
       <div className="flex items-center justify-between gap-5">
         <p
@@ -728,16 +732,22 @@ export function RunExecutionCard({
           {narration.beatSub}
         </p>
       ) : null}
+      </>
+      )}
 
       {/* the legs */}
       <div
-        className="mt-3.5"
-        style={{
-          border: "1px solid var(--rc-line-soft)",
-          borderRadius: 12,
-          background: "var(--rc-inset)",
-          padding: "5px 14px",
-        }}
+        className={compactLp ? "" : "mt-3.5"}
+        style={
+          compactLp
+            ? undefined
+            : {
+                border: "1px solid var(--rc-line-soft)",
+                borderRadius: 12,
+                background: "var(--rc-inset)",
+                padding: "5px 14px",
+              }
+        }
       >
         {legs.map((l, i) => {
           const meta = STATUS[l.status];
@@ -1532,7 +1542,7 @@ export function RunExecutionCard({
         })}
       </div>
 
-      {/* health factor — a meter, because the number alone does not say how close this is */}
+      {!compactLp && (
       <div className="mt-3.5">
         <div className="flex items-baseline justify-between gap-3">
           <span
@@ -1629,6 +1639,7 @@ export function RunExecutionCard({
           </p>
         ) : null}
       </div>
+      )}
 
       {summaryRows && summaryRows.length > 0 ? (
         <div
