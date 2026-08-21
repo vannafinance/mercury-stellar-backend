@@ -1619,6 +1619,19 @@ export function CopilotWorkspace() {
   const cancelledRef = useRef(false);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const stagedSectionRef = useRef<HTMLDivElement>(null);
+  const lpScrollPendingRef = useRef(false);
+  useEffect(() => {
+    if (!lpScrollPendingRef.current) return;
+    const staged =
+      response?.kind === "needs_wallet_sign" ||
+      (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr));
+    if (!staged) return;
+    lpScrollPendingRef.current = false;
+    requestAnimationFrame(() => {
+      stagedSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [response?.kind, response?.unsigned_xdr]);
 
   /** Merge hop legs into strategySteps with the same legKey rule as pushLog. */
   const absorbStrategySteps = useCallback((incoming: MultiLegStepUi[]) => {
@@ -4575,6 +4588,9 @@ export function CopilotWorkspace() {
                     }
                     onCancel={loading ? cancelInFlight : undefined}
                     onSubmitAmount={submitLegAmount}
+                    onLpEntered={() => {
+                      lpScrollPendingRef.current = true;
+                    }}
                   />
                 ) : (
                   <>
@@ -4749,7 +4765,11 @@ export function CopilotWorkspace() {
 
                 {/* Staged write — MCP built the XDR, wallet signs once */}
                 {phase === "staged" && response && (
-                  <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
+                  <div
+                    ref={stagedSectionRef}
+                    className="mt-[26px]"
+                    style={{ animation: "cp-in 300ms ease-out forwards" }}
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       {/* With auto-approve on this never waits for a click, so calling it
                           "Staged action" and showing a signature request — then submitting

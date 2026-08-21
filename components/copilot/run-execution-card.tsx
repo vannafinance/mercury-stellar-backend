@@ -122,6 +122,8 @@ export interface RunExecutionCardProps {
     selectedAsset?: string,
     pair?: { amount_a: number; amount_b: number },
   ) => void;
+  /** After LP amounts are confirmed — scroll to the staged Approve & sign card. */
+  onLpEntered?: () => void;
   onConfirmGate?: (leg: RunLeg) => void;
 }
 
@@ -367,6 +369,7 @@ export function RunExecutionCard({
   onNewIntent,
   onViewTx,
   onSubmitAmount,
+  onLpEntered,
   onConfirmGate,
 }: RunExecutionCardProps) {
   const total = legs.length;
@@ -431,6 +434,7 @@ export function RunExecutionCard({
   const [liveRatio, setLiveRatio] = useState<number | null>(null);
   const [xlmDraft, setXlmDraft] = useState("");
   const [otherDraft, setOtherDraft] = useState("");
+  const [lpLocked, setLpLocked] = useState(false);
   useEffect(() => {
     const leg = shape.needsInput;
     if (!leg || leg.op !== "add_liquidity") {
@@ -475,7 +479,9 @@ export function RunExecutionCard({
       const xlmN = Number(xlmDraft);
       const otherN = Number(otherDraft);
       if (!(xlmN > 0) || !(otherN > 0)) return;
+      setLpLocked(true);
       onSubmitAmount(leg, xlmN, "XLM", { amount_a: xlmN, amount_b: otherN });
+      onLpEntered?.();
       return;
     }
     const n = Number(draft);
@@ -758,9 +764,10 @@ export function RunExecutionCard({
            */
           const isPausedHere = inputKey != null && l.n === inputKey;
           const showInput =
-            l.status === "needs_input" &&
-            isPausedHere &&
-            (missing || (l.op === "add_liquidity" && !!l.lpSides));
+            (l.status === "needs_input" &&
+              isPausedHere &&
+              (missing || (l.op === "add_liquidity" && !!l.lpSides))) ||
+            (lpLocked && l.op === "add_liquidity" && !!l.lpSides);
           const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
           const lpSelected =
@@ -1039,6 +1046,64 @@ export function RunExecutionCard({
                     </p>
 
                     {l.op === "add_liquidity" && l.lpSides && l.lpSides.length === 2 ? (
+                      lpLocked ? (
+                        <>
+                          {(["XLM", l.lpSides[1]] as const).map((side) => {
+                            const isXlm = side === "XLM";
+                            const val = isXlm ? xlmDraft : otherDraft;
+                            return (
+                              <div
+                                key={side}
+                                className="mt-[11px] flex items-baseline justify-between"
+                                style={{
+                                  border: "1px solid var(--rc-field-bd)",
+                                  borderRadius: 12,
+                                  background: "var(--rc-field-bg)",
+                                  padding: "12px 14px",
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    fontFamily: MONO,
+                                    fontSize: 22,
+                                    fontWeight: 600,
+                                    color: "var(--rc-heading)",
+                                  }}
+                                >
+                                  {val} {side}
+                                </span>
+                                <span
+                                  style={{
+                                    fontFamily: MONO,
+                                    fontSize: 11,
+                                    letterSpacing: ".08em",
+                                    color: "var(--rc-muted)",
+                                  }}
+                                >
+                                  YOU ADD
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <button
+                            type="button"
+                            className="rc-btn-s mt-[11px]"
+                            onClick={() => setLpLocked(false)}
+                            style={{
+                              ...btnBase,
+                              border: "1px solid var(--rc-btn-2-bd)",
+                              background: "transparent",
+                              color: "var(--rc-heading)",
+                              borderRadius: 9,
+                              padding: "8px 16px",
+                              fontSize: 14,
+                              fontWeight: 600,
+                            }}
+                          >
+                            Modify
+                          </button>
+                        </>
+                      ) : (
                       <>
                         {(["XLM", l.lpSides[1]] as const).map((side) => {
                           const isXlm = side === "XLM";
@@ -1150,9 +1215,10 @@ export function RunExecutionCard({
                             cursor: !draftValid || busy ? "not-allowed" : "pointer",
                           }}
                         >
-                          Approve & sign
+                          Enter
                         </button>
                       </>
+                      )
                     ) : (
                     <>
                     {l.lpSides && l.lpSides.length === 2 ? (
@@ -1278,6 +1344,7 @@ export function RunExecutionCard({
                     </>
                     )}
 
+                    {l.op === "add_liquidity" ? null : (
                     <div className="mt-[9px] flex flex-wrap items-center justify-between gap-3">
                       <p
                         className="m-0"
@@ -1309,6 +1376,7 @@ export function RunExecutionCard({
                         </button>
                       ) : null}
                     </div>
+                    )}
                   </div>
                 ) : null}
 
