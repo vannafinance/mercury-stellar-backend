@@ -188,7 +188,8 @@ describe("margin side positions is the full Margin page, not collateral-only", (
     });
     const res = await handleChat({ ...base, message: "what is my margin side postion" });
     expect(res.kind).toBe("answer");
-    expect(res.answer?.headline).toMatch(/margin positions/i);
+    expect(res.answer?.headline).toMatch(/here is your margin positions/i);
+    expect(res.answer?.kicker).toBeUndefined();
     expect(res.answer?.sections?.length).toBe(2);
     expect(res.answer?.sections?.[0].body).toMatch(/Collateral/i);
     expect(res.answer?.sections?.[1].body).toMatch(/Debt/i);

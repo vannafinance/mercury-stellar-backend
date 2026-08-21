@@ -3099,8 +3099,7 @@ async function marginSideAnswer(ctx: {
     };
   }
   const structured: StructuredAnswer = {
-    headline: "Your margin positions",
-    kicker: "Your detailed stats are:",
+    headline: "Here is your margin positions:",
     facts: [],
     venue: "margin",
     sections: [
