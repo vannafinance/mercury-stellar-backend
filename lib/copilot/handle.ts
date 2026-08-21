@@ -6209,6 +6209,7 @@ async function runWrite(
    * since nothing about the parsed order guarantees XLM comes first.
    */
   let addLiquidityNote: string | null = null;
+  let inboundLpPair = false;
   if (action.op === "add_liquidity") {
     const aIsXlm = action.token_a === "XLM";
     const bIsXlm = action.token_b === "XLM";
@@ -6217,6 +6218,7 @@ async function runWrite(
     const otherGiven = (aIsXlm ? action.amount_b : bIsXlm ? action.amount_a : null) ?? null;
     const haveXlm = xlmGiven != null && xlmGiven > 0;
     const haveOther = otherGiven != null && otherGiven > 0;
+    inboundLpPair = haveXlm && haveOther;
     // At least one side must be XLM and at least one real amount must be stated —
     // otherwise there is nothing to derive a ratio from, and the plain "how much of
     // each token?" ask (with its own live-ratio note) below is the correct answer.
@@ -6283,6 +6285,55 @@ async function runWrite(
         /* best-effort — an unreachable pool-stats read must never block the add */
       }
     }
+  }
+
+  /**
+   * One named side (e.g. “Add 100 XLM in Aquarius”) is sized to the live ratio,
+   * then shown as two Farm-style boxes so the user can edit either side or sign as-is.
+   * A resume that already carries both amounts skips this and stages.
+   */
+  if (
+    action.op === "add_liquidity" &&
+    !inboundLpPair &&
+    action.amount_a != null &&
+    action.amount_a > 0 &&
+    action.amount_b != null &&
+    action.amount_b > 0
+  ) {
+    const usd = String(action.token_b === "XLM" ? action.token_a : action.token_b || "AQUSDC").toUpperCase();
+    const xlm = action.token_a === "XLM" ? action.amount_a : action.amount_b;
+    const other = action.token_a === "XLM" ? action.amount_b : action.amount_a;
+    const sides: [string, string] = ["XLM", usd === "SOUSDC" ? "SOUSDC" : "AQUSDC"];
+    const otherPerXlm = xlm > 0 ? other / xlm : null;
+    const question = `Add ${fmtLpAmt(xlm)} XLM + ${fmtLpAmt(other)} ${sides[1]} — edit either box or sign as-is.`;
+    return {
+      kind: "clarification",
+      message: question,
+      intent: { template_id: "add_liquidity", slots: { amount_a: xlm, amount_b: other } },
+      data: {
+        multi_leg: true,
+        strategy_summary: `Add ${fmtLpAmt(xlm)} XLM + ${fmtLpAmt(other)} ${sides[1]} LP`,
+        lp_input: {
+          sides,
+          other_per_xlm: otherPerXlm,
+          amount_xlm: xlm,
+          amount_other: other,
+        },
+        multi_leg_steps: [
+          {
+            op: "add_liquidity",
+            status: "clarification",
+            asset: sides[1],
+            amount: null,
+            label: `Add liquidity ${sides[0]}/${sides[1]}`,
+            token_a: sides[0],
+            token_b: sides[1],
+            message: question,
+          },
+        ],
+      },
+      request_id: ctx.request_id,
+    };
   }
 
   /**

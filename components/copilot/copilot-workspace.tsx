@@ -4190,6 +4190,14 @@ export function CopilotWorkspace() {
           op === "add_liquidity"
             ? ((response?.data as { lp_input?: { other_per_xlm?: number | null } })?.lp_input?.other_per_xlm ?? null)
             : null,
+        lpPrefillXlm:
+          op === "add_liquidity"
+            ? ((response?.data as { lp_input?: { amount_xlm?: number | null } })?.lp_input?.amount_xlm ?? null)
+            : null,
+        lpPrefillOther:
+          op === "add_liquidity"
+            ? ((response?.data as { lp_input?: { amount_other?: number | null } })?.lp_input?.amount_other ?? null)
+            : null,
       };
     });
   }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
@@ -4200,7 +4208,7 @@ export function CopilotWorkspace() {
    * the server runs them in order, so the rest of the strategy continues untouched.
    */
   const submitLegAmount = useCallback(
-    (leg: RunLeg, amount: number, selectedAsset?: string) => {
+    (leg: RunLeg, amount: number, selectedAsset?: string, pair?: { amount_a: number; amount_b: number }) => {
       /**
        * Everything still outstanding, not just the leg being answered.
        *
@@ -4230,8 +4238,18 @@ export function CopilotWorkspace() {
           token_out: l.tokenOut ?? null,
           token_a: isLp ? sides[0] : null,
           token_b: isLp ? sides[1] : null,
-          amount_a: isLp && overrideAmount != null && selected === "XLM" ? overrideAmount : null,
-          amount_b: isLp && overrideAmount != null && selected !== "XLM" ? overrideAmount : null,
+          amount_a:
+            pair && l.n === leg.n
+              ? pair.amount_a
+              : isLp && overrideAmount != null && selected === "XLM"
+                ? overrideAmount
+                : null,
+          amount_b:
+            pair && l.n === leg.n
+              ? pair.amount_b
+              : isLp && overrideAmount != null && selected !== "XLM"
+                ? overrideAmount
+                : null,
         };
       };
 

@@ -83,6 +83,8 @@ export interface RunLeg {
   /** AMM LP pause: size either side; the other fills from the live pool ratio. */
   lpSides?: [string, string] | null;
   lpOtherPerXlm?: number | null;
+  lpPrefillXlm?: number | null;
+  lpPrefillOther?: number | null;
 }
 
 export interface RunSummaryRow {
@@ -114,7 +116,12 @@ export interface RunExecutionCardProps {
   onNewIntent?: () => void;
   onViewTx?: () => void;
   /** needs_input: the user supplied the missing amount; resume from this leg. */
-  onSubmitAmount?: (leg: RunLeg, amount: number, selectedAsset?: string) => void;
+  onSubmitAmount?: (
+    leg: RunLeg,
+    amount: number,
+    selectedAsset?: string,
+    pair?: { amount_a: number; amount_b: number },
+  ) => void;
   onConfirmGate?: (leg: RunLeg) => void;
 }
 
@@ -422,11 +429,29 @@ export function RunExecutionCard({
   }, [inputKey]);
 
   const [liveRatio, setLiveRatio] = useState<number | null>(null);
+  const [xlmDraft, setXlmDraft] = useState("");
+  const [otherDraft, setOtherDraft] = useState("");
   useEffect(() => {
     const leg = shape.needsInput;
     if (!leg || leg.op !== "add_liquidity") {
       setLiveRatio(null);
       return;
+    }
+    if (leg.lpPrefillXlm != null && leg.lpPrefillXlm > 0) {
+      const n = leg.lpPrefillXlm;
+      setXlmDraft(
+        Number.isInteger(n) || Math.abs(n - Math.round(n)) < 1e-9
+          ? String(Math.round(n))
+          : n.toFixed(4).replace(/\.?0+$/, ""),
+      );
+    }
+    if (leg.lpPrefillOther != null && leg.lpPrefillOther > 0) {
+      const n = leg.lpPrefillOther;
+      setOtherDraft(
+        Number.isInteger(n) || Math.abs(n - Math.round(n)) < 1e-9
+          ? String(Math.round(n))
+          : n.toFixed(4).replace(/\.?0+$/, ""),
+      );
     }
     if (leg.lpOtherPerXlm != null && leg.lpOtherPerXlm > 0) {
       setLiveRatio(leg.lpOtherPerXlm);
@@ -446,6 +471,13 @@ export function RunExecutionCard({
   const submitAmount = useCallback(() => {
     const leg = shape.needsInput;
     if (!leg || !onSubmitAmount) return;
+    if (leg.op === "add_liquidity" && leg.lpSides && leg.lpSides.length === 2) {
+      const xlmN = Number(xlmDraft);
+      const otherN = Number(otherDraft);
+      if (!(xlmN > 0) || !(otherN > 0)) return;
+      onSubmitAmount(leg, xlmN, "XLM", { amount_a: xlmN, amount_b: otherN });
+      return;
+    }
     const n = Number(draft);
     if (!Number.isFinite(n) || n <= 0) return;
     const sides = leg.lpSides;
@@ -454,9 +486,15 @@ export function RunExecutionCard({
       (sides && leg.asset && sides.includes(leg.asset) ? leg.asset : sides?.[1]) ||
       undefined;
     onSubmitAmount(leg, n, selected);
-  }, [draft, lpPick, onSubmitAmount, shape.needsInput]);
+  }, [draft, lpPick, onSubmitAmount, shape.needsInput, xlmDraft, otherDraft]);
 
-  const draftValid = Number.isFinite(Number(draft)) && Number(draft) > 0;
+  const dualLp =
+    shape.needsInput?.op === "add_liquidity" &&
+    !!shape.needsInput.lpSides &&
+    shape.needsInput.lpSides.length === 2;
+  const draftValid = dualLp
+    ? Number(xlmDraft) > 0 && Number(otherDraft) > 0
+    : Number.isFinite(Number(draft)) && Number(draft) > 0;
 
   const band = hfBand(hf, floor, liquidation);
   const hfUnavailable = hf == null || !Number.isFinite(hf);
@@ -719,7 +757,10 @@ export function RunExecutionCard({
            * reaches them.
            */
           const isPausedHere = inputKey != null && l.n === inputKey;
-          const showInput = l.status === "needs_input" && missing && isPausedHere;
+          const showInput =
+            l.status === "needs_input" &&
+            isPausedHere &&
+            (missing || (l.op === "add_liquidity" && !!l.lpSides));
           const showQuestionOnly = l.status === "needs_input" && (!missing || !isPausedHere);
           const showGate = !!l.gateReason && !TERMINAL.has(l.status);
           const lpSelected =
@@ -981,6 +1022,124 @@ export function RunExecutionCard({
                         : "Nothing has settled yet, so cancelling here costs you nothing."}
                     </p>
 
+                    {l.op === "add_liquidity" && l.lpSides && l.lpSides.length === 2 ? (
+                      <>
+                        {(["XLM", l.lpSides[1]] as const).map((side) => {
+                          const isXlm = side === "XLM";
+                          const val = isXlm ? xlmDraft : otherDraft;
+                          const ratio = liveRatio ?? l.lpOtherPerXlm;
+                          return (
+                            <div
+                              key={side}
+                              className="mt-[11px]"
+                              style={{
+                                border: "1px solid var(--rc-field-bd)",
+                                borderRadius: 12,
+                                background: "var(--rc-field-bg)",
+                                padding: "10px 12px",
+                              }}
+                            >
+                              <div className="flex items-center justify-between">
+                                <span
+                                  style={{
+                                    fontFamily: MONO,
+                                    fontSize: 11,
+                                    letterSpacing: ".08em",
+                                    color: "var(--rc-muted)",
+                                  }}
+                                >
+                                  YOU ADD
+                                </span>
+                                <span
+                                  style={{
+                                    fontFamily: MONO,
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    letterSpacing: ".08em",
+                                    color: "var(--rc-heading)",
+                                  }}
+                                >
+                                  {side}
+                                </span>
+                              </div>
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="any"
+                                placeholder="0.00"
+                                value={val}
+                                onChange={(e) => {
+                                  const raw = e.target.value;
+                                  if (isXlm) {
+                                    setXlmDraft(raw);
+                                    const n = Number(raw);
+                                    if (ratio != null && ratio > 0 && n > 0) {
+                                      setOtherDraft((n * ratio).toFixed(4).replace(/\.?0+$/, ""));
+                                    }
+                                  } else {
+                                    setOtherDraft(raw);
+                                    const n = Number(raw);
+                                    if (ratio != null && ratio > 0 && n > 0) {
+                                      setXlmDraft((n / ratio).toFixed(4).replace(/\.?0+$/, ""));
+                                    }
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    submitAmount();
+                                  }
+                                }}
+                                className="mt-1 w-full"
+                                style={{
+                                  border: 0,
+                                  background: "transparent",
+                                  fontFamily: MONO,
+                                  fontSize: 26,
+                                  fontWeight: 600,
+                                  fontVariantNumeric: "tabular-nums",
+                                  color: "var(--rc-heading)",
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                        {liveRatio != null && liveRatio > 0 ? (
+                          <p
+                            className="m-0 mt-2"
+                            style={{
+                              fontFamily: MONO,
+                              fontSize: 12,
+                              color: "var(--rc-muted)",
+                            }}
+                          >
+                            1 XLM ≈ {liveRatio.toFixed(4)} {l.lpSides[1]} · 1 {l.lpSides[1]} ≈{" "}
+                            {(1 / liveRatio).toFixed(2)} XLM
+                          </p>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="rc-btn-p mt-[11px] w-full"
+                          onClick={submitAmount}
+                          disabled={!draftValid || busy}
+                          style={{
+                            ...btnBase,
+                            border: "1px solid transparent",
+                            borderRadius: 9,
+                            background: "var(--rc-btn-fill)",
+                            color: "var(--rc-btn-fg)",
+                            padding: "12px 20px",
+                            fontSize: 14,
+                            fontWeight: 700,
+                            cursor: !draftValid || busy ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          Approve & sign
+                        </button>
+                      </>
+                    ) : (
+                    <>
                     {l.lpSides && l.lpSides.length === 2 ? (
                       <div className="mt-[11px] flex flex-wrap gap-2">
                         {l.lpSides.map((side) => {
@@ -1101,6 +1260,8 @@ export function RunExecutionCard({
                           : `≈ ${lpPairPreview.xlm.toFixed(4)} XLM at the live pool ratio`}
                       </p>
                     ) : null}
+                    </>
+                    )}
 
                     <div className="mt-[9px] flex flex-wrap items-center justify-between gap-3">
                       <p
