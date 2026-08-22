@@ -4212,7 +4212,7 @@ export function CopilotWorkspace() {
       ]),
     [],
   );
-  const runLegs = useMemo<RunLeg[]>(() => {
+  const execLegs = useMemo<RunLeg[]>(() => {
     const raw: MultiLegStepUi[] = strategySteps.length
       ? strategySteps
       : Array.isArray((response?.data as { multi_leg_steps?: unknown })?.multi_leg_steps)
@@ -4377,13 +4377,13 @@ export function CopilotWorkspace() {
         };
       };
 
-      const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
+      const rest = execLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
       const summary = String(
         strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
       );
       void resumeMultiLeg([carry(leg, amount, selectedAsset), ...rest], summary);
     },
-    [runLegs, resumeMultiLeg, submitted],
+    [execLegs, resumeMultiLeg, submitted],
   );
 
   /**
@@ -4419,13 +4419,13 @@ export function CopilotWorkspace() {
         };
       };
 
-      const rest = runLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
+      const rest = execLegs.filter((l) => l.n > leg.n && l.status !== "ok").map((l) => carry(l));
       const summary = String(
         strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
       );
       void resumeMultiLeg([carry(leg, tokenOut), ...rest], summary);
     },
-    [runLegs, resumeMultiLeg, submitted],
+    [execLegs, resumeMultiLeg, submitted],
   );
 
   /**
@@ -4549,7 +4549,7 @@ export function CopilotWorkspace() {
              * waiting on exactly this kind of answer, and the typed text resolves to a
              * known token, treat it as the answer to THAT leg instead.
              */
-            const pausedSwap = runLegs.find(
+            const pausedSwap = execLegs.find(
               (l) => l.status === "needs_input" && l.op === "swap",
             );
             const resolvedToken = pausedSwap ? resolveAssetSymbolFromText(intentText) : null;
@@ -4676,10 +4676,10 @@ export function CopilotWorkspace() {
                 {/* A multi-leg run gets the live execution card — one card that advances
                     in place, narrating each leg as it settles. The plain step list stays
                     for single-turn work, where there is no chain to narrate. */}
-                {multiLeg && runLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
+                {multiLeg && execLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
                   <RunExecutionCard
                     eyebrow="02"
-                    legs={runLegs}
+                    legs={execLegs}
                     hf={liveHf}
                     floor={
                       // "keep me above 1.4" in the prompt wins over the stored default.
@@ -4700,7 +4700,7 @@ export function CopilotWorkspace() {
                     onCancel={loading ? cancelInFlight : undefined}
                     onSubmitAmount={submitLegAmount}
                     onLpEntered={() => {
-                      if (runLegs.length > 1) lpScrollPendingRef.current = true;
+                      if (execLegs.length > 1) lpScrollPendingRef.current = true;
                     }}
                   />
                 ) : (
@@ -4712,7 +4712,7 @@ export function CopilotWorkspace() {
 
                 {/* The run card carries its own in-flight indicator; a second spinner
                     underneath read as a separate thing still loading. */}
-                {loading && !(multiLeg && runLegs.length > 0) && (
+                {loading && !(multiLeg && execLegs.length > 0) && (
                   <div className="mt-5 flex items-center gap-2 text-body-2 text-violet-500">
                     <Loader2 size={15} className="animate-spin" /> working…
                   </div>
