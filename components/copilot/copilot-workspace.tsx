@@ -60,6 +60,7 @@ import {
   hasMoreLegs,
   isUnsizedAddLiquidity,
   legsFromUnsettledSteps,
+  pendingLpStepFromResume,
   pickRemainingLegs,
   shouldAutoResume,
   splitResumeBatch,
@@ -3153,6 +3154,42 @@ export function CopilotWorkspace() {
           complete ? [] : cardUnsettled,
         );
         const pauseForLp = isUnsizedAddLiquidity(remainingFromData[0]);
+        if (pauseForLp) {
+          absorbStrategySteps(
+            remainingFromData.filter(isUnsizedAddLiquidity).map(pendingLpStepFromResume),
+          );
+          strategyTailRef.current = remainingFromData;
+          setResponse({
+            kind: "executed",
+            message: "Swap settled. How much liquidity should I add?",
+            mcp: response?.mcp ?? null,
+            preview: response?.preview ?? null,
+            execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
+            request_id: response?.request_id,
+            data: {
+              ...strategyMetaRef.current,
+              ...(response?.data || {}),
+              multi_leg: true,
+              multi_leg_steps: strategyStepsRef.current,
+              remaining_legs: remainingFromData,
+              prefer_resume_multi_leg: false,
+              strategy_complete: false,
+              lp_input: (() => {
+                const r0 = remainingFromData[0] as {
+                  token_a?: string | null;
+                  token_b?: string | null;
+                  token_in?: string | null;
+                  token_out?: string | null;
+                  asset?: string | null;
+                } | undefined;
+                const a = String(r0?.token_a || r0?.token_in || "").toUpperCase();
+                const b = String(r0?.token_b || r0?.token_out || r0?.asset || "").toUpperCase();
+                return a && b ? { sides: [a, b] } : undefined;
+              })(),
+            },
+          });
+          return;
+        }
         const preferResume =
           !!autoApprove &&
           !complete &&
@@ -3660,6 +3697,12 @@ export function CopilotWorkspace() {
       cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
     );
     const pauseForLp = isUnsizedAddLiquidity(remaining[0]);
+    if (pauseForLp) {
+      absorbStrategySteps(remaining.filter(isUnsizedAddLiquidity).map(pendingLpStepFromResume));
+      strategyTailRef.current = remaining;
+      strategyCompleteRef.current = false;
+      return;
+    }
     // Hard-stop only when the full card is terminal AND nothing is still queued.
     // Prefer-resume alone must not decide completion (false complete + empty
     // remaining was the old shortcut that killed the queue mid-run).
@@ -3863,7 +3906,7 @@ export function CopilotWorkspace() {
         { chainHop: true },
       );
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).

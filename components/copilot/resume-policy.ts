@@ -156,6 +156,42 @@ export function isUnsizedAddLiquidity(leg: {
   ) && !(leg.amount != null && Number(leg.amount) > 0);
 }
 
+/** Card row for a queued unsized Farm add so the amount UI can attach after swap. */
+export function pendingLpStepFromResume(leg: ResumeLegLike): {
+  op: string;
+  label: string;
+  asset: string | null;
+  amount: null;
+  status: "pending";
+  token_a: string | null;
+  token_b: string | null;
+} {
+  const op = String(leg.op || "add_liquidity");
+  const asset = leg.asset ?? null;
+  const tokenB =
+    (leg as { token_b?: string | null }).token_b ??
+    leg.token_out ??
+    asset;
+  const tokenA =
+    (leg as { token_a?: string | null }).token_a ??
+    leg.token_in ??
+    (op === "add_liquidity" ? "XLM" : null);
+  const label =
+    String(leg.label || "").trim() ||
+    (op === "add_liquidity"
+      ? `add liquidity ${tokenA && tokenB ? `${tokenA}/${tokenB}` : asset || ""}`.trim()
+      : `${op.replace(/_/g, " ")} ${asset || ""}`.trim());
+  return {
+    op,
+    label,
+    asset,
+    amount: null,
+    status: "pending",
+    token_a: tokenA,
+    token_b: tokenB,
+  };
+}
+
 export function shouldAutoResume(opts: {
   complete: boolean;
   serverRemaining?: readonly unknown[] | null;

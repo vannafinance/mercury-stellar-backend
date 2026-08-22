@@ -7652,6 +7652,9 @@ async function runPlan(
         label: r.label,
         token_in: r.token_in ?? null,
         token_out: r.token_out ?? null,
+        token_a: r.token_a ?? r.token_in ?? null,
+        token_b: r.token_b ?? r.token_out ?? null,
+        venue: r.venue ?? null,
       }));
       return {
         ...writeRes,
@@ -7711,6 +7714,9 @@ async function runPlan(
         label: r.label,
         token_in: r.token_in ?? null,
         token_out: r.token_out ?? null,
+        token_a: r.token_a ?? r.token_in ?? null,
+        token_b: r.token_b ?? r.token_out ?? null,
+        venue: r.venue ?? null,
       }));
       return {
         ...writeRes,
@@ -7863,6 +7869,9 @@ async function runPlan(
         label: r.label,
         token_in: r.token_in ?? null,
         token_out: r.token_out ?? null,
+        token_a: r.token_a ?? r.token_in ?? null,
+        token_b: r.token_b ?? r.token_out ?? null,
+        venue: r.venue ?? null,
       }));
       return {
         kind: "executed",

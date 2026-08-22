@@ -17,6 +17,7 @@ import {
   ledgerWaitCopy,
   legsFromUnsettledSteps,
   pickRemainingLegs,
+  pendingLpStepFromResume,
   shouldAutoResume,
   splitResumeBatch,
   strategyIsComplete,
@@ -474,5 +475,21 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
         clientTail: [{ op: "add_liquidity", amount: 1.64 }],
       }),
     ).toBe(true);
+  });
+
+  it("pins a queued unsized LP so the amount card can attach after swap", () => {
+    const row = pendingLpStepFromResume({
+      op: "add_liquidity",
+      asset: "AQUSDC",
+      amount: null,
+      token_in: "XLM",
+      token_out: "AQUSDC",
+    });
+    expect(row.status).toBe("pending");
+    expect(row.amount).toBeNull();
+    expect(row.token_a).toBe("XLM");
+    expect(row.token_b).toBe("AQUSDC");
+    expect(row.label.toLowerCase()).toContain("liquidity");
+    expect(strategyIsComplete([{ status: "ok" }, row])).toBe(false);
   });
 });
