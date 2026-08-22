@@ -18,6 +18,8 @@ import {
   legsFromUnsettledSteps,
   pickRemainingLegs,
   pendingLpStepFromResume,
+  farmWriteAlreadySettled,
+  pruneDuplicateFarmAdds,
   shouldAutoResume,
   splitResumeBatch,
   strategyIsComplete,
@@ -491,5 +493,20 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
     expect(row.token_b).toBe("AQUSDC");
     expect(row.label.toLowerCase()).toContain("liquidity");
     expect(strategyIsComplete([{ status: "ok" }, row])).toBe(false);
+  });
+
+  it("drops a leftover unsized add once the sized add has settled", () => {
+    const card = [
+      { op: "swap", status: "ok" },
+      { op: "add_liquidity", status: "ok", label: "add liquidity 2 XLM" },
+      { op: "add_liquidity", status: "pending", label: "add liquidity SOUSDC" },
+    ];
+    expect(farmWriteAlreadySettled("add_liquidity", card)).toBe(true);
+    const pruned = pruneDuplicateFarmAdds(card);
+    expect(pruned.map((s) => `${s.op}:${s.status}`)).toEqual([
+      "swap:ok",
+      "add_liquidity:ok",
+    ]);
+    expect(strategyIsComplete(pruned)).toBe(true);
   });
 });

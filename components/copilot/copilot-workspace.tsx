@@ -61,6 +61,8 @@ import {
   isUnsizedAddLiquidity,
   legsFromUnsettledSteps,
   pendingLpStepFromResume,
+  farmWriteAlreadySettled,
+  pruneDuplicateFarmAdds,
   pickRemainingLegs,
   shouldAutoResume,
   splitResumeBatch,
@@ -1725,11 +1727,12 @@ export function CopilotWorkspace() {
     }
     // Preserve first-seen order (append-only merge); stable sort by index for display.
     merged.sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+    const pruned = pruneDuplicateFarmAdds(merged);
     const prev = strategyStepsRef.current;
     const unchanged =
-      prev.length === merged.length &&
+      prev.length === pruned.length &&
       prev.every((p, i) => {
-        const m = merged[i];
+        const m = pruned[i];
         return (
           String(p.op || "") === String(m.op || "") &&
           String(p.status || "") === String(m.status || "") &&
@@ -1738,9 +1741,9 @@ export function CopilotWorkspace() {
         );
       });
     if (unchanged) return prev;
-    strategyStepsRef.current = merged;
-    setStrategySteps(merged);
-    return merged;
+    strategyStepsRef.current = pruned;
+    setStrategySteps(pruned);
+    return pruned;
   }, []);
 
   const resetStrategyAccumulator = useCallback(() => {
@@ -3165,8 +3168,10 @@ export function CopilotWorkspace() {
           serverRemaining,
           strategyTailRef.current,
           complete ? [] : cardUnsettled,
-        );
-        const pauseForLp = isUnsizedAddLiquidity(remainingFromData[0]);
+        ).filter((r) => !farmWriteAlreadySettled(r.op, strategyStepsRef.current));
+        const pauseForLp =
+          isUnsizedAddLiquidity(remainingFromData[0]) &&
+          !farmWriteAlreadySettled(remainingFromData[0]?.op, strategyStepsRef.current);
         if (pauseForLp) {
           absorbStrategySteps(
             remainingFromData.filter(isUnsizedAddLiquidity).map(pendingLpStepFromResume),
@@ -3701,6 +3706,11 @@ export function CopilotWorkspace() {
     // after deposit and locked strategyCompleteRef while borrow/supply stayed PENDING
     // (same trap as patched.every on the wallet-sign path).
     const serverRemaining = legsFrom("remaining_legs") ?? legsFrom("resume_legs");
+    const prunedNow = pruneDuplicateFarmAdds(strategyStepsRef.current);
+    if (prunedNow.length !== strategyStepsRef.current.length) {
+      strategyStepsRef.current = prunedNow;
+      setStrategySteps(prunedNow);
+    }
     const cardComplete =
       strategyCompleteRef.current ||
       strategyIsComplete(strategyStepsRef.current);
@@ -3708,8 +3718,10 @@ export function CopilotWorkspace() {
       serverRemaining,
       strategyTailRef.current,
       cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
-    );
-    const pauseForLp = isUnsizedAddLiquidity(remaining[0]);
+    ).filter((r) => !farmWriteAlreadySettled(r.op, strategyStepsRef.current));
+    const pauseForLp =
+      isUnsizedAddLiquidity(remaining[0]) &&
+      !farmWriteAlreadySettled(remaining[0]?.op, strategyStepsRef.current);
     if (pauseForLp) {
       const alreadyPinned = strategyStepsRef.current.some(
         (s) =>

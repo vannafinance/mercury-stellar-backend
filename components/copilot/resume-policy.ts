@@ -192,6 +192,45 @@ export function pendingLpStepFromResume(leg: ResumeLegLike): {
   };
 }
 
+const FARM_WRITE_OPS = new Set([
+  "add_liquidity",
+  "remove_liquidity",
+  "deploy_to_blend",
+  "supply_to_blend",
+  "withdraw_from_blend",
+]);
+
+/** True when the card already has this Farm write settled — leftover unsized twin is not a new hop. */
+export function farmWriteAlreadySettled(
+  op: string | null | undefined,
+  card: readonly { op?: string | null; status?: unknown }[] | null | undefined,
+): boolean {
+  const want = String(op || "");
+  if (!FARM_WRITE_OPS.has(want) || !card?.length) return false;
+  return card.some(
+    (s) =>
+      String(s.op) === want &&
+      (String(s.status) === "ok" || String(s.status) === "done"),
+  );
+}
+
+/** Drop pending Farm rows once a same-op row has settled (swap-then-LP used to pin a 3rd add). */
+export function pruneDuplicateFarmAdds<T extends { op?: string | null; status?: unknown }>(
+  steps: readonly T[],
+): T[] {
+  const settled = new Set(
+    steps
+      .filter((s) => FARM_WRITE_OPS.has(String(s.op)) && ["ok", "done"].includes(String(s.status)))
+      .map((s) => String(s.op)),
+  );
+  if (!settled.size) return [...steps];
+  return steps.filter((s) => {
+    if (!settled.has(String(s.op))) return true;
+    const st = String(s.status || "");
+    return st === "ok" || st === "done";
+  });
+}
+
 export function shouldAutoResume(opts: {
   complete: boolean;
   serverRemaining?: readonly unknown[] | null;
