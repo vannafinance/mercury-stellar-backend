@@ -414,7 +414,9 @@ export function RunExecutionCard({
   if (keys.running !== runningKey || keys.input !== inputKey) {
     setKeys({ running: runningKey, input: inputKey });
     if (keys.running !== runningKey) setElapsed(0);
-    if (keys.input !== inputKey && !lpLocked) {
+    if (keys.input !== inputKey) {
+      setLpLocked(false);
+      lockedAmtRef.current = "";
       setDraft("");
       setLpPick(null);
     }
@@ -440,6 +442,12 @@ export function RunExecutionCard({
   const [liveRatio, setLiveRatio] = useState<number | null>(null);
   const [xlmDraft, setXlmDraft] = useState("");
   const [otherDraft, setOtherDraft] = useState("");
+  useEffect(() => {
+    setXlmDraft("");
+    setOtherDraft("");
+    setLpLocked(false);
+    lockedAmtRef.current = "";
+  }, [inputKey]);
   useEffect(() => {
     const leg = shape.needsInput;
     if (leg?.op === "remove_liquidity" && leg.lpPrefillXlm != null && leg.lpPrefillXlm > 0) {

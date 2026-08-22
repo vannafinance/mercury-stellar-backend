@@ -1725,6 +1725,19 @@ export function CopilotWorkspace() {
     }
     // Preserve first-seen order (append-only merge); stable sort by index for display.
     merged.sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
+    const prev = strategyStepsRef.current;
+    const unchanged =
+      prev.length === merged.length &&
+      prev.every((p, i) => {
+        const m = merged[i];
+        return (
+          String(p.op || "") === String(m.op || "") &&
+          String(p.status || "") === String(m.status || "") &&
+          String(p.label || "") === String(m.label || "") &&
+          p.amount === m.amount
+        );
+      });
+    if (unchanged) return prev;
     strategyStepsRef.current = merged;
     setStrategySteps(merged);
     return merged;
@@ -3698,7 +3711,15 @@ export function CopilotWorkspace() {
     );
     const pauseForLp = isUnsizedAddLiquidity(remaining[0]);
     if (pauseForLp) {
-      absorbStrategySteps(remaining.filter(isUnsizedAddLiquidity).map(pendingLpStepFromResume));
+      const alreadyPinned = strategyStepsRef.current.some(
+        (s) =>
+          isUnsizedAddLiquidity(s) &&
+          String(s.status) !== "ok" &&
+          String(s.status) !== "done",
+      );
+      if (!alreadyPinned) {
+        absorbStrategySteps(remaining.filter(isUnsizedAddLiquidity).map(pendingLpStepFromResume));
+      }
       strategyTailRef.current = remaining;
       strategyCompleteRef.current = false;
       return;
