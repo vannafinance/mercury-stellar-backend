@@ -4246,6 +4246,8 @@ export function CopilotWorkspace() {
     });
   }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
 
+  const strategyOpen = runLegs.some((l) => !TERMINAL_LEG.has(String(l.status || "")));
+
   /**
    * Resume from a paused leg once the user supplies the amount the plan never carried.
    * The leg goes first with its new amount, then every leg still unstarted after it —
@@ -4596,7 +4598,7 @@ export function CopilotWorkspace() {
                 {/* A multi-leg run gets the live execution card — one card that advances
                     in place, narrating each leg as it settles. The plain step list stays
                     for single-turn work, where there is no chain to narrate. */}
-                {multiLeg && runLegs.length > 0 && phase !== "done" ? (
+                {multiLeg && runLegs.length > 0 && (phase !== "done" || strategyOpen) ? (
                   <RunExecutionCard
                     eyebrow="02"
                     legs={runLegs}
@@ -5164,7 +5166,7 @@ export function CopilotWorkspace() {
                 )}
 
                 {/* Executed */}
-                {phase === "done" && response && (
+                {phase === "done" && response && !strategyOpen && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <Eyebrow n="04">{multiLeg ? "Response" : "Executed"}</Eyebrow>
                     {/* Closing summary of what actually ran. Server-side when the brain

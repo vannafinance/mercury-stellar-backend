@@ -125,6 +125,28 @@ describe("swap then add liquidity is a two-leg farm LP plan", () => {
     if (lp.kind === "write") expect(lp.op).toBe("add_liquidity");
   });
 
+  it("Swap 100 XLM into SOUSDC and Add Liquidity in Soroswap Pool is still swap then LP", () => {
+    const r = routeMessage("Swap 100 XLM into SOUSDC and Add Liquidity in Soroswap Pool");
+    expect(r.kind).toBe("plan");
+    if (r.kind !== "plan") return;
+    const writes = r.steps.filter((s) => s.kind === "write");
+    expect(writes.map((s) => s.op)).toEqual(["swap", "add_liquidity"]);
+    expect(writes[0].amount).toBe(100);
+    expect(writes[0].args?.token_out ?? writes[0].args?.token_b).toBe("SOUSDC");
+    expect(writes[1].args?.venue).toBe("soroswap");
+    expect(writes[1].args?.token_b).toBe("SOUSDC");
+  });
+
+  it("Swap XLM to SOUSDC & Add Liquidity in Soroswap Position is a 2-leg plan even without a size", () => {
+    const r = routeMessage("Swap XLM to SOUSDC & Add Liquidity in Soroswap Position");
+    expect(r.kind).toBe("plan");
+    if (r.kind !== "plan") return;
+    expect(r.steps.filter((s) => s.kind === "write").map((s) => s.op)).toEqual([
+      "swap",
+      "add_liquidity",
+    ]);
+  });
+
   it("handleChat still returns a 2-step plan_preview when Vertex answers with only the swap", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();

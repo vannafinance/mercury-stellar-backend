@@ -38,6 +38,15 @@ describe("unsized farm add → amount card, not a prose ask", () => {
     expect(r.amount == null || !(r.amount > 0)).toBe(true);
   });
 
+  it("add liquidity 30 BLUSDC in Blend Position is Blend supply, not Aquarius LP", () => {
+    const r = routeMessage("Can You add liquidity 30 BLUSDC in Blend Position");
+    expect(r.kind).toBe("write");
+    if (r.kind !== "write") return;
+    expect(r.op).toBe("deploy_to_blend");
+    expect(r.amount).toBe(30);
+    expect(String(r.asset).toUpperCase()).toBe("BLUSDC");
+  });
+
   it("unsized blend supply does not auto-resume", () => {
     expect(
       shouldAutoResume({

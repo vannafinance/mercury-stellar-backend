@@ -637,6 +637,14 @@ function tryMultiGoalPlan(
       swapStepTokenIn = swapM[2].toUpperCase();
       swapStepTokenOut = swapM[3].toUpperCase();
       swapStepAmount = Number(swapM[1]);
+    } else {
+      const unsized = raw.match(
+        /\b(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b.*?\b(?:to|for|into)\s*(XLM|BLUSDC|AQUSDC|SOUSDC|USDC)\b/i,
+      );
+      if (unsized) {
+        swapStepTokenIn = unsized[1].toUpperCase();
+        swapStepTokenOut = unsized[2].toUpperCase();
+      }
     }
   }
 
@@ -650,7 +658,7 @@ function tryMultiGoalPlan(
   let lpVenue: AmmVenue | null = null;
   let lpToken: string | null = null;
   if (wantsLp) {
-    const lpClause = raw.split(/\band\b|\bthen\b/i).pop() || raw;
+    const lpClause = raw.split(/\band\b|\bthen\b|&/i).pop() || raw;
     const namedLpToken =
       (/\baqusdc\b/i.test(lpClause) && "AQUSDC") ||
       (/\bsousdc\b/i.test(lpClause) && "SOUSDC") ||
@@ -665,7 +673,7 @@ function tryMultiGoalPlan(
     lpVenue = inferAmmVenue(raw, swapStepTokenOut);
   }
 
-  if (swapStepTokenIn && swapStepTokenOut && swapStepAmount != null && Number.isFinite(swapStepAmount)) {
+  if (swapStepTokenIn && swapStepTokenOut) {
     const venue = lpVenue ?? inferAmmVenue(raw, swapStepTokenOut);
     // Only rewrite a dollar ticker onto the AMM's own USDC when this plan is
     // actually going to LP. "swap to BLUSDC then farm Blend" must keep BLUSDC
@@ -1227,6 +1235,7 @@ export function routeMessage(message: string): RoutedIntent {
       "blend reserve",
       "blend pool",
     ) ||
+    (any(text, "blend") && any(text, "add", "liquidity") && !any(text, "stats", "apy")) ||
     (any(text, "blend") &&
       (any(text, "farm", "deploy", "supply", "deposit", "add", "liquidity") || blendRemoveVerb) &&
       !any(text, "position", "stats", "apy")) ||
@@ -1247,7 +1256,8 @@ export function routeMessage(message: string): RoutedIntent {
     !blendRemoveVerb &&
     (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever", "add", "liquidity") ||
       (leverage != null && leverage > 1)) &&
-    !any(text, "supply apy", "borrow apy", "position", "btoken", "pays more", "which reserve")
+    (!any(text, "supply apy", "borrow apy", "btoken", "pays more", "which reserve") &&
+      (!any(text, "position") || any(text, "add", "liquidity")))
   ) {
     return {
       kind: "write",

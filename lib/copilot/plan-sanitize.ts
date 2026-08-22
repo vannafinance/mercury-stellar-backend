@@ -207,7 +207,7 @@ export function looksLikeMultiGoal(message: string): boolean {
    * has two actions joined by "and", but "add liquidity" is not in the bare-verb
    * list (deliberately — bare "add" would steal deposits). Counted via hasAmmLpIntent.
    */
-  if (/,|\band\b/i.test(t)) {
+  if (/,|\band\b|&/i.test(t)) {
     if (distinctActionCount(t) >= 2) return true;
   }
   if (/\bthen\b/i.test(t)) {
