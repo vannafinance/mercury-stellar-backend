@@ -4040,6 +4040,22 @@ export function CopilotWorkspace() {
   const brainOnline = health?.status === "ok";
   const multiLeg =
     isMultiLegResponse(response?.data ?? null) || strategySteps.length > 0;
+  const strategyOpen = (() => {
+    const src = strategySteps.length
+      ? strategySteps
+      : Array.isArray((response?.data as { multi_leg_steps?: unknown })?.multi_leg_steps)
+        ? ((response!.data as { multi_leg_steps: Array<{ status?: unknown; op?: string }> }).multi_leg_steps)
+        : [];
+    const cardOpen = src.some((s) => {
+      const st = String(s?.status ?? "").toLowerCase();
+      return !["ok", "done", "skipped", "error", "blocked", "failed", "stopped", "stopped_hf", "signed_and_submitted"].includes(st);
+    });
+    const remaining = (response?.data as { remaining_legs?: unknown })?.remaining_legs;
+    const queuedLp =
+      Array.isArray(remaining) &&
+      remaining.some((l) => isUnsizedAddLiquidity(l as { op?: string; amount?: number | null }));
+    return cardOpen || queuedLp;
+  })();
   const strategyCardData: Record<string, unknown> = {
     ...strategyMetaRef.current,
     ...(response?.data && typeof response.data === "object" ? response.data : {}),
@@ -4288,8 +4304,6 @@ export function CopilotWorkspace() {
       };
     });
   }, [strategySteps, response, loading, TERMINAL_LEG, submitted]);
-
-  const strategyOpen = runLegs.some((l) => !TERMINAL_LEG.has(String(l.status || "")));
 
   /**
    * Resume from a paused leg once the user supplies the amount the plan never carried.
