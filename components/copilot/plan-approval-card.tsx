@@ -123,6 +123,35 @@ export interface PlanApprovalCardProps {
   busy?: boolean;
   /** Auto-approve is on and will submit this without a click. */
   autoPending?: boolean;
+  /** Session signing state used only to explain expected wallet prompts. */
+  sessionSigning?: boolean;
+}
+
+export function planExecutionSummary(
+  plan: {
+    steps: ReadonlyArray<{ kind?: "write" | "read" }>;
+    signature_count: number;
+  },
+  sessionSigning = false,
+): {
+  stepCount: number;
+  writeCount: number;
+  readCount: number;
+  signatureCount: number;
+  autoSignEligible: number;
+  manualPrompts: number;
+} {
+  const writeCount = plan.steps.filter((s) => s.kind !== "read").length;
+  const readCount = plan.steps.filter((s) => s.kind === "read").length;
+  const signatureCount = plan.signature_count || writeCount;
+  return {
+    stepCount: plan.steps.length,
+    writeCount,
+    readCount,
+    signatureCount,
+    autoSignEligible: sessionSigning ? signatureCount : 0,
+    manualPrompts: sessionSigning ? 0 : signatureCount,
+  };
 }
 
 export function PlanApprovalCard({
@@ -132,6 +161,7 @@ export function PlanApprovalCard({
   onCancel,
   busy = false,
   autoPending = false,
+  sessionSigning = false,
 }: PlanApprovalCardProps) {
   // Tick once a second so the validity clock counts down live.
   const [now, setNow] = useState(() => Date.now());
@@ -165,6 +195,11 @@ export function PlanApprovalCard({
       venueText: venues.join(" → "),
     };
   }, [plan.steps, plan.signature_count]);
+
+  const execution = useMemo(
+    () => planExecutionSummary(plan, sessionSigning),
+    [plan, sessionSigning],
+  );
 
   // Styling is driven by `unusable`, never by `busy`. A running plan keeps its full
   // gradient and says "Running…" — greying it out while the quote is still valid is what
@@ -454,6 +489,37 @@ export function PlanApprovalCard({
         {meta.sigNote}
         {meta.venueText ? ` · ${meta.venueText}` : ""}
       </p>
+
+      <div
+        className="mt-3 flex flex-wrap gap-x-5 gap-y-1.5"
+        role="note"
+        aria-label="Execution preview"
+        style={{
+          border: "1px solid var(--pc-line-soft)",
+          borderRadius: 9,
+          background: "var(--pc-inset)",
+          padding: "9px 12px",
+          fontFamily: MONO,
+          fontSize: 10.5,
+          lineHeight: "17px",
+          color: "var(--pc-muted)",
+        }}
+      >
+        <span style={{ color: "var(--pc-body)", fontWeight: 700 }}>execution preview</span>
+        <span>{execution.stepCount} planned {execution.stepCount === 1 ? "step" : "steps"}</span>
+        <span>{execution.signatureCount} possible {execution.signatureCount === 1 ? "signature" : "signatures"}</span>
+        {execution.readCount > 0 ? <span>{execution.readCount} read-only</span> : null}
+        {sessionSigning ? (
+          <span style={{ color: "var(--pc-accent)" }}>
+            {execution.autoSignEligible} write {execution.autoSignEligible === 1 ? "leg" : "legs"} eligible for auto-approve
+          </span>
+        ) : (
+          <span>{execution.manualPrompts} manual {execution.manualPrompts === 1 ? "confirmation" : "confirmations"}</span>
+        )}
+        {sessionSigning && execution.signatureCount > 0 ? (
+          <span>risk limits and spend caps can still pause a leg</span>
+        ) : null}
+      </div>
 
       {/* Warnings — never dismissable, always above the buttons. One tinted block holding
           compact rows rather than a stack of full-size panels: boxed panels each the

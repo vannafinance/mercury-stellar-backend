@@ -89,6 +89,13 @@ export type MarginSnapshot = {
   debtLimit: number;
 };
 
+// Multiple mounted surfaces can request the same account snapshot at once
+// (Copilot, the right rail, Margin, and Portfolio). Share the active read by
+// address so those surfaces do not launch overlapping Soroban scans. This is
+// in-flight deduplication only; completed snapshots are not retained here, so
+// mutation-driven refreshes still get fresh chain data.
+const snapshotInflight = new Map<string, Promise<MarginSnapshot>>();
+
 /**
  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
  * debt/collateral totals are known, before the heavier farm/SAC/rate reads —
@@ -131,6 +138,26 @@ async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: n
  * rate work — the client store uses it for progressive render; the route ignores it.
  */
 export async function computeMarginSnapshot(
+  marginAccountAddress: string,
+  opts?: { onPartial?: (p: PartialSnapshot) => void },
+): Promise<MarginSnapshot> {
+  // Progressive callers need their own onPartial callback. The route and
+  // Copilot all use the no-callback form and can safely share one read.
+  if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
+  const existing = snapshotInflight.get(marginAccountAddress);
+  if (existing) return existing;
+  const run = computeMarginSnapshotUncached(marginAccountAddress);
+  snapshotInflight.set(marginAccountAddress, run);
+  try {
+    return await run;
+  } finally {
+    if (snapshotInflight.get(marginAccountAddress) === run) {
+      snapshotInflight.delete(marginAccountAddress);
+    }
+  }
+}
+
+async function computeMarginSnapshotUncached(
   marginAccountAddress: string,
   opts?: { onPartial?: (p: PartialSnapshot) => void },
 ): Promise<MarginSnapshot> {
@@ -210,7 +237,12 @@ export async function computeMarginSnapshot(
         return {};
       },
     ),
-    reconcileMarginRawSacCollateral(marginAccountAddress, collateralBalances, tokenPrice).catch((e) => {
+    reconcileMarginRawSacCollateral(
+      marginAccountAddress,
+      collateralBalances,
+      tokenPrice,
+      borrowedBalances,
+    ).catch((e) => {
       console.warn("[account-snapshot] raw SAC reconcile failed:", e);
       return 0;
     }),

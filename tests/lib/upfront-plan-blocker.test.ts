@@ -18,6 +18,7 @@ vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
 });
 import { handleChat } from "@/lib/copilot/handle";
 import { resetMcpClient } from "@/lib/copilot/mcp-client";
+import { staticStepBlocker } from "@/lib/copilot/mcp-write";
 
 const base = {
   user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
@@ -27,6 +28,11 @@ const base = {
 };
 
 describe("a plan with a statically impossible first step is refused upfront", () => {
+  it("exposes the same static blocker used by single-write execution", () => {
+    const message = staticStepBlocker("swap", { token_a: "XLM", token_b: "BLUSDC" });
+    expect(message).toMatch(/BLUSDC.*traded/i);
+  });
+
   it("refuses 'swap to BLUSDC then farm Blend' before ever showing the plan preview", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();

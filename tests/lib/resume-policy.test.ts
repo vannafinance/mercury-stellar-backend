@@ -95,6 +95,17 @@ describe("pickRemainingLegs — the server stops knowing, the client keeps knowi
     expect(pickRemainingLegs(server, [FOUR_LEGS[3]])).toEqual(server);
   });
 
+  it("does not drop a client-held LP leg when the server reports only part of the tail", () => {
+    const server = [{ op: "add_liquidity", asset: "AQUSDC", amount: 5, venue: "aquarius" }];
+    const clientTail = [
+      server[0],
+      { op: "add_liquidity", asset: "AQUSDC", amount: 5, venue: "aquarius", token_b: "AQUSDC" },
+    ];
+    const remaining = pickRemainingLegs(server, clientTail);
+    expect(remaining).toHaveLength(2);
+    expect(remaining[1]).toMatchObject({ op: "add_liquidity", token_b: "AQUSDC" });
+  });
+
   it("THE FIX: falls back to the client tail when the server reports none", () => {
     // Hand the server one leg and it plans one leg, so remaining_legs comes back
     // empty and it declares the strategy finished. Without this fallback the run

@@ -4875,6 +4875,7 @@ export function CopilotWorkspace() {
                   <PlanApprovalCard
                     plan={response.plan}
                     busy={loading}
+                    sessionSigning={autoApprove}
                     onApprove={approvePlan}
                     onModify={() => {
                       // Put the original wording back in the composer so it can be

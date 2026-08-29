@@ -38,6 +38,9 @@ export interface ResumeLegLike {
   label?: string;
   token_in?: string | null;
   token_out?: string | null;
+  token_a?: string | null;
+  token_b?: string | null;
+  venue?: string | null;
 }
 
 /**
@@ -72,10 +75,47 @@ export function pickRemainingLegs<T>(
   clientTail: readonly T[] | null | undefined,
   cardUnsettled?: readonly T[] | null | undefined,
 ): T[] {
-  if (serverRemaining?.length) return [...serverRemaining];
+  if (serverRemaining?.length) {
+    // The server may have seen only the current one-leg hop and return a partial
+    // remaining list. The client still owns the tail it held back, so trusting a
+    // non-empty server list blindly can drop the final LP/supply leg. Keep the
+    // server's order, then append only client-tail occurrences it did not report.
+    const out = [...serverRemaining];
+    const serverCounts = new Map<string, number>();
+    for (const leg of serverRemaining) {
+      const key = resumeLegKey(leg);
+      serverCounts.set(key, (serverCounts.get(key) ?? 0) + 1);
+    }
+    for (const leg of clientTail ?? []) {
+      const key = resumeLegKey(leg);
+      const count = serverCounts.get(key) ?? 0;
+      if (count > 0) {
+        serverCounts.set(key, count - 1);
+      } else {
+        out.push(leg);
+      }
+    }
+    return out;
+  }
   if (clientTail?.length) return [...clientTail];
   if (cardUnsettled?.length) return [...cardUnsettled];
   return [];
+}
+
+/** Identity for queue reconciliation; labels are presentation and do not identify a leg. */
+function resumeLegKey(value: unknown): string {
+  const leg = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return JSON.stringify([
+    leg.op ?? null,
+    leg.asset ?? null,
+    leg.amount ?? null,
+    leg.leverage ?? null,
+    leg.token_in ?? null,
+    leg.token_out ?? null,
+    leg.token_a ?? null,
+    leg.token_b ?? null,
+    leg.venue ?? null,
+  ]);
 }
 
 /**

@@ -51,6 +51,7 @@ export async function reconcileMarginRawSacCollateral(
   marginAccountAddress: string,
   balances: Record<string, { amount: string; usdValue: string }>,
   priceForToken: (token: string) => number,
+  borrowedBalances?: Record<string, { amount: string; usdValue: string }>,
 ): Promise<number> {
   let rawUsdTotal = 0;
   try {
@@ -60,7 +61,16 @@ export async function reconcileMarginRawSacCollateral(
       ),
     );
     MARGIN_SAC_TOKENS.forEach(({ balanceKey }, i) => {
-      const amount = parseFloat(amounts[i]) || 0;
+      const rawAmount = parseFloat(amounts[i]) || 0;
+      const borrowedAmount = borrowedBalances?.[balanceKey]
+        ? parseFloat(borrowedBalances[balanceKey]!.amount) || 0
+        : 0;
+      // The SAC balance is the total token balance held by the smart account. When
+      // borrowed cash is still sitting there, it is included in that number but is
+      // not additional collateral. Keep the old raw overlay for callers that do not
+      // have debt available, while the margin snapshot passes its authoritative debt
+      // map and anchors collateral on the net amount.
+      const amount = Math.max(0, rawAmount - borrowedAmount);
       const price = priceForToken(balanceKey);
       const usd = amount * price;
       rawUsdTotal += usd;

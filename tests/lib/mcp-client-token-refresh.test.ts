@@ -36,7 +36,7 @@ interface Recorded {
 
 let recorded: Recorded[] = [];
 /** tools/call responses to serve, in order; a number means "fail with that status". */
-let toolCallScript: Array<number | "ok"> = [];
+let toolCallScript: Array<number | "ok" | "structured_error"> = [];
 let realFetch: typeof fetch;
 let sessionCounter = 0;
 
@@ -91,6 +91,24 @@ function installFakeMcp() {
             JSON.stringify({ error: "unauthorized", detail: "Token has expired" }),
             { status: next, headers: { "content-type": "application/json" } },
           );
+        }
+        if (next === "structured_error") {
+          return jsonResponse({
+            jsonrpc: "2.0",
+            id: 2,
+            result: {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "invalid_user_assertion",
+                    message: "user assertion rejected",
+                  }),
+                },
+              ],
+            },
+          });
         }
         return jsonResponse({
           jsonrpc: "2.0",
@@ -241,6 +259,16 @@ describe("reads and signed-out writes", () => {
 });
 
 describe("401 recovery", () => {
+  it("preserves a structured MCP error code from result.isError", async () => {
+    const { getMcpClient } = await libs();
+    toolCallScript = ["structured_error"];
+
+    await expect(getMcpClient().call("vanna_lend", {})).rejects.toMatchObject({
+      code: "invalid_user_assertion",
+      name: "MCPCallError",
+    });
+  });
+
   it("re-mints the M2M token and re-handshakes, then retries", async () => {
     const { getMcpClient, withBoundUser, MCPAuthError } = await libs();
     const client = getMcpClient();

@@ -18,23 +18,38 @@
 import { copilotConfig } from "./config";
 import { callNeedsUserToken, currentUser } from "./user-context";
 
+export type MCPErrorCode = string;
+
+export interface MCPErrorMeta {
+  code?: MCPErrorCode | null;
+  httpStatus?: number | null;
+  retryable?: boolean;
+}
+
 export class MCPError extends Error {
-  constructor(message: string) {
+  readonly code: MCPErrorCode | null;
+  readonly httpStatus: number | null;
+  readonly retryable: boolean;
+
+  constructor(message: string, meta: MCPErrorMeta = {}) {
     super(message);
     this.name = "MCPError";
+    this.code = meta.code ?? null;
+    this.httpStatus = meta.httpStatus ?? null;
+    this.retryable = meta.retryable ?? false;
   }
 }
 
 export class MCPAuthError extends MCPError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, meta: MCPErrorMeta = {}) {
+    super(message, meta);
     this.name = "MCPAuthError";
   }
 }
 
 export class MCPCallError extends MCPError {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, meta: MCPErrorMeta = {}) {
+    super(message, meta);
     this.name = "MCPCallError";
   }
 }
@@ -533,7 +548,15 @@ class LiveMCPClient implements MCPClient {
         // Force token refresh next time.
         this.tokens.invalidate();
         this.resetSession(); // the session was opened with the rejected token
-        throw new MCPAuthError(`MCP rejected the token (${callRes.status}): ${text.slice(0, 300)}`);
+        const parsed = parseErrorObject(text);
+        throw new MCPAuthError(
+          `MCP rejected the token (${callRes.status}): ${errorMessage(parsed) || text.slice(0, 300)}`,
+          {
+            code: errorCode(parsed),
+            httpStatus: callRes.status,
+            retryable: true,
+          },
+        );
       }
       // A cached session the server has since dropped: 404 (unknown session) or a
       // 400 naming the session. Re-handshake once and replay — invisible to callers.
@@ -548,8 +571,10 @@ class LiveMCPClient implements MCPClient {
 
     const payload = await consumeSseJson(callRes);
     if (payload?.error) {
+      const error = parseErrorObject(payload.error);
       throw new MCPCallError(
-        `MCP call '${tool}' error: ${payload.error.message ?? JSON.stringify(payload.error).slice(0, 300)}`,
+        `MCP call '${tool}' error: ${errorMessage(error) || JSON.stringify(payload.error).slice(0, 300)}`,
+        { code: errorCode(error), retryable: false },
       );
     }
     const result = payload?.result;
@@ -558,7 +583,11 @@ class LiveMCPClient implements MCPClient {
     }
     if (result.isError) {
       const msg = extractText(result).slice(0, 300);
-      throw new MCPCallError(`MCP tool '${tool}' reported an error: ${msg}`);
+      const error = parseErrorObject(msg);
+      throw new MCPCallError(
+        `MCP tool '${tool}' reported an error: ${errorMessage(error) || msg}`,
+        { code: errorCode(error), retryable: false },
+      );
     }
     return shapeToolResult(result);
   }
@@ -597,6 +626,35 @@ function extractText(result: any): string {
     if (typeof block?.text === "string") parts.push(block.text);
   }
   return parts.join("\n");
+}
+
+/** Parse structured or text-wrapped MCP errors without exposing provider internals. */
+function parseErrorObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object") return value as Record<string, unknown>;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+      /* plain provider text */
+    }
+    return { message: value };
+  }
+  return {};
+}
+
+function errorCode(value: Record<string, unknown>): string | null {
+  const candidate = value.code ?? value.error_code ?? value.reason ?? value.error;
+  if (typeof candidate !== "string" || !candidate.trim()) return null;
+  return candidate.trim().toLowerCase();
+}
+
+function errorMessage(value: Record<string, unknown>): string | null {
+  for (const key of ["message", "detail", "description"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return null;
 }
 
 function shapeToolResult(result: any): Record<string, unknown> {

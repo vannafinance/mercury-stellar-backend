@@ -11,9 +11,9 @@ import { describe, it, expect, vi } from "vitest";
  * reconcileMarginRawSacCollateral was extended to also overlay AQUSDC/SOUSDC.
  * That let a margin account's own AQUSDC balance (including freshly-borrowed
  * debt sitting in the account, exactly what happens mid a rapid borrow
- * sequence) get summed into gross collateral TWICE — once via rawAssetValue,
- * once via nonSacCollateralValue — silently propping up the displayed Net
- * Health Factor as more was borrowed instead of it degrading.
+ * sequence) get summed into gross collateral — and, before the SAC-key filter,
+ * sometimes twice — silently propping up the displayed Net Health Factor as
+ * more was borrowed instead of it degrading.
  */
 const mocks = vi.hoisted(() => ({
   getCurrentBorrowedBalances: vi.fn(),
@@ -51,7 +51,7 @@ vi.mock("@/lib/analytics/stellar/farmTrackingCollateral", () => ({
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 
 describe("computeMarginSnapshot — gross collateral must not double-count SAC-reconciled tokens", () => {
-  it("does not sum a borrowed AQUSDC balance sitting in the account as collateral twice", async () => {
+  it("does not treat a borrowed AQUSDC balance sitting in the account as collateral", async () => {
     mocks.getCollateralBalances.mockResolvedValue({
       success: true,
       data: { XLM: { amount: "995.54", usdValue: "0" } },
@@ -65,25 +65,38 @@ describe("computeMarginSnapshot — gross collateral must not double-count SAC-r
     mocks.getPoolStats.mockResolvedValue({ utilizationRate: "0" });
     mocks.mergeFarmTrackingCollateralIntoBalances.mockResolvedValue({});
 
-    // Mirrors the real reconcileMarginRawSacCollateral: overlays the margin
-    // account's live SAC balances (XLM untouched, plus the freshly-borrowed
-    // AQUSDC sitting in the account) into the shared `balances` object.
+    // Mirrors the real reconcileMarginRawSacCollateral: raw AQUSDC includes the
+    // freshly-borrowed debt, but the snapshot passes the debt map so that cash is
+    // removed before it contributes to collateral.
     mocks.reconcileMarginRawSacCollateral.mockImplementation(
-      async (_addr: string, balances: Record<string, { amount: string; usdValue: string }>) => {
+      async (
+        _addr: string,
+        balances: Record<string, { amount: string; usdValue: string }>,
+        _price: (token: string) => number,
+        borrowed: Record<string, { amount: string; usdValue: string }>,
+      ) => {
         balances.XLM = { amount: "995.54", usdValue: "100.00" };
         balances.BLUSDC = { amount: "0", usdValue: "0.00" };
-        balances.AQUSDC = { amount: "50", usdValue: "50.00" };
+        const rawAq = 50;
+        const netAq = Math.max(0, rawAq - parseFloat(borrowed.AQUSDC?.amount || "0"));
+        balances.AQUSDC = { amount: String(netAq), usdValue: netAq.toFixed(2) };
         balances.SOUSDC = { amount: "0", usdValue: "0.00" };
-        return 150; // 100 (XLM) + 0 (BLUSDC) + 50 (AQUSDC) + 0 (SOUSDC)
+        return 100 + netAq; // 100 XLM + 0 net AQUSDC collateral
       },
     );
 
     const snap = await computeMarginSnapshot("CMARGIN");
 
-    // Debt is $50 (AQUSDC). Collateral is $100 XLM + $50 AQUSDC = $150 total —
-    // NOT $200, which is what you get if AQUSDC's $50 is summed twice.
-    expect(snap.grossCollateralValue).toBeCloseTo(150, 2);
-    expect(snap.totalValue).toBeCloseTo(150, 2);
-    expect(snap.avgHealthFactor).toBeCloseTo(150 / 50, 5);
+    // Debt is $50 (AQUSDC). The raw AQUSDC is entirely borrowed cash, so only
+    // the $100 XLM remains as collateral — not $150 or $200.
+    expect(snap.grossCollateralValue).toBeCloseTo(100, 2);
+    expect(snap.totalValue).toBeCloseTo(100, 2);
+    expect(snap.avgHealthFactor).toBeCloseTo(100 / 50, 5);
+    expect(mocks.reconcileMarginRawSacCollateral).toHaveBeenCalledWith(
+      "CMARGIN",
+      expect.any(Object),
+      expect.any(Function),
+      expect.objectContaining({ AQUSDC: { amount: "50", usdValue: "50.00" } }),
+    );
   });
 });

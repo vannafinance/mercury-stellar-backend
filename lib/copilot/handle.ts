@@ -1252,6 +1252,15 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     }
   }
 
+  // Prefer a richer deterministic keyword plan over a shorter intermediate route.
+  // This prevents the planner from being called just to rediscover a dropped LP leg.
+  if (
+    kwFast.kind === "plan" &&
+    (routed.kind !== "plan" || kwFast.steps.length > routed.steps.length)
+  ) {
+    routed = kwFast;
+  }
+
   // Late catch: long multi-verb messages that still arrived as a single write
   if (routed.kind === "write" && looksLikeMultiGoal(message)) {
     const upgraded = preferExtractedPlan(routed, message);
@@ -1299,13 +1308,34 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const deterministicPlanIsComplete = (() => {
     if (routed.kind !== "plan") return false;
     if (routed.steps.filter((s) => s.kind === "write").length < 2) return false;
-    // Every write leg must be fully sized — an open amount is exactly the gap the model
-    // is useful for.
-    if (routed.steps.some((s) => s.kind === "write" && s.amount == null)) return false;
+    // Most missing amounts are exactly the gap the model is useful for. An unsized
+    // add_liquidity leg is different: the user intentionally supplied only the swap
+    // amount and the executor already knows to pause for the LP side after the swap.
+    // Calling Vertex here only adds latency and risks replacing a correct venue-aware
+    // plan with a collapsed single swap.
+    if (
+      routed.steps.some(
+        (s) =>
+          s.kind === "write" &&
+          s.amount == null &&
+          s.op !== "add_liquidity",
+      )
+    ) return false;
     try {
       const ir = extractPlanIR(message);
       if (ir.steps.length < 2) return false;
-      return !residueIsMaterial(classifyCoverage(ir.coverage));
+      const residue = classifyCoverage(ir.coverage);
+      if (!residueIsMaterial(residue)) return true;
+      // The extractor may leave the natural-language LP clause as residue because
+      // its amount is intentionally deferred to the pool-ratio/input card. If the
+      // deterministic plan already contains that LP leg, there is no semantic gap
+      // for Vertex to resolve and another model call only adds latency.
+      return (
+        routed.steps.some((s) => s.kind === "write" && s.op === "add_liquidity") &&
+        residue.every((r) =>
+          /add\s+liquidity|provide\s+liquidity|add\s+lp|aquarius|soroswap/i.test(r.span.text),
+        )
+      );
     } catch {
       return false; // never let the optimisation decide a turn it failed to measure
     }
@@ -3158,6 +3188,10 @@ export function allPositionsStructured(
   farmProse: string,
 ): StructuredAnswer {
   const facts: AnswerFact[] = [];
+  const hasFarmRows = Boolean(
+    pos?.collateral.some((r) => isTrackingSymbol(r.symbol)) ||
+      pos?.borrowed.some((r) => isTrackingSymbol(r.symbol)),
+  );
 
   if (pos) {
     // Reused below on every `borrowed · X` row instead of a flat "warn" — a debt
@@ -3230,7 +3264,7 @@ export function allPositionsStructured(
 
   const noteParts: string[] = [];
   if (farmProse) noteParts.push(farmProse);
-  if (pos && !farmProse) {
+  if (pos && !farmProse && !hasFarmRows) {
     noteParts.push("Farm venues could not be read just now; the Farm page has the live figures.");
   }
   if (!pos && farmProse) {
@@ -3344,19 +3378,13 @@ async function allPositionsAnswer(
   },
 ): Promise<ChatResponse> {
   const mcp = getMcpClient();
-  const [pos, farm, earnReads] = await Promise.all([
+  const startedAt = Date.now();
+  // computeMarginSnapshot already enriches the same account with Blend/Aquarius/
+  // Soroswap tracking rows. Do not launch a second Farm overview read on the
+  // normal path; it duplicated the slowest data source and made this answer wait
+  // for two independent representations of the same Farm positions.
+  const [pos, earnReads] = await Promise.all([
     ctx.smartAccount ? readMarginPositions(ctx.smartAccount) : Promise.resolve(null),
-    ctx.smartAccount
-      ? mcp
-          .call("vanna_get_farm_overview", { smart_account: ctx.smartAccount }, ctx.userId)
-          .catch((e: unknown) => {
-            console.warn(
-              `[copilot] farm overview failed inside query_all_positions -> ` +
-                `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
-            );
-            return null;
-          })
-      : Promise.resolve(null),
     // "add earn positions as well... asset supplied i have xlm, aqusdc and sousdc so it
     // should all be properly represented" — reported live: this answer covered margin
     // collateral/debt and Blend/LP, but never Earn (vToken) supply at all, even though a
@@ -3364,10 +3392,43 @@ async function allPositionsAnswer(
     // different pools. Runs alongside the other two reads, not sequenced after them —
     // the "must be sequential" rule (see readEarnPositions) is about its OWN four calls
     // to each other, not about racing an unrelated tool.
-    ctx.trader || ctx.smartAccount ? readEarnPositions(ctx, EARN_ASSETS) : Promise.resolve([]),
+    // Earn is required for this view; successful reads are cached inside
+    // readEarnPositions so repeat prompts return quickly without presenting a partial
+    // portfolio as complete.
+    ctx.trader || ctx.smartAccount
+      ? readEarnPositions(ctx, EARN_ASSETS)
+      : Promise.resolve([]),
   ]);
 
-  if (!pos && !farm) {
+  // Keep the MCP Farm overview as a bounded fallback only when the shared
+  // snapshot failed completely. A healthy snapshot already contains Farm rows.
+  const farm =
+    pos || !ctx.smartAccount
+      ? null
+      : await Promise.race([
+          mcp.call("vanna_get_farm_overview", { smart_account: ctx.smartAccount }, ctx.userId),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+        ]).catch((e: unknown) => {
+          console.warn(
+            `[copilot] farm overview fallback failed inside query_all_positions -> ` +
+              `${e instanceof Error ? e.message.slice(0, 160) : String(e)}`,
+          );
+          return null;
+        });
+
+  logCopilotEvent("all_positions_sources", {
+    request_id: ctx.request_id,
+    elapsed_ms: Date.now() - startedAt,
+    margin: Boolean(pos),
+    farm: Boolean(farm) || Boolean(
+      pos?.collateral.some((r) => isTrackingSymbol(r.symbol)) ||
+        pos?.borrowed.some((r) => isTrackingSymbol(r.symbol)),
+    ),
+    earn: earnReads.filter(Boolean).length,
+  });
+
+  const earnSucceeded = earnReads.some((r) => r !== null);
+  if (!pos && !farm && !earnSucceeded) {
     return {
       kind: "unavailable",
       message: ctx.smartAccount
@@ -3398,6 +3459,20 @@ async function allPositionsAnswer(
       group: "earn",
     });
   }
+  if (earnReads.length > 0 && !earnSucceeded) {
+    structured.note = [
+      structured.note,
+      "Earn positions could not be read for this refresh; the Earn page has the live figures.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (!pos && !farm && earnSucceeded) {
+    structured.headline = earnSupplied.length
+      ? `Open positions — ${earnSupplied.length} Earn position${earnSupplied.length === 1 ? "" : "s"}.`
+      : "Open positions — no non-zero Earn balances found.";
+    structured.venue = "earn";
+  }
   let message = answerToText(structured);
   if (pos) {
     message = withHfGuardrails(message, pos.hf, ctx.message, pos.totalBorrowedValue);
@@ -3421,7 +3496,14 @@ async function allPositionsAnswer(
     answer: structured,
     intent: {
       template_id: "query_all_positions",
-      slots: { margin: Boolean(pos), farm: Boolean(farm), earn: earnSupplied.length > 0 },
+      slots: {
+        margin: Boolean(pos),
+        farm: Boolean(farm) || Boolean(
+          pos?.collateral.some((r) => isTrackingSymbol(r.symbol)) ||
+            pos?.borrowed.some((r) => isTrackingSymbol(r.symbol)),
+        ),
+        earn: earnSupplied.length > 0,
+      },
     },
     mcp: {
       tool: farm ? "vanna_get_farm_overview" : "computeMarginSnapshot",
@@ -3433,6 +3515,11 @@ async function allPositionsAnswer(
 
 /** Every asset the Earn pool supports — the vToken-balance equivalent of ASSET_SCAN_ORDER. */
 const EARN_ASSETS = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] as const;
+const EARN_POSITION_CACHE_TTL_MS = 60_000;
+const earnPositionCache = new Map<string, {
+  at: number;
+  reads: Array<{ symbol: string; amount: number; usd: number | null } | null>;
+}>();
 
 /**
  * Read the vToken (Earn-supplied) balance for each of `assetsToQuery`. Extracted out of
@@ -3445,6 +3532,9 @@ async function readEarnPositions(
   assetsToQuery: readonly (typeof EARN_ASSETS)[number][],
 ): Promise<Array<{ symbol: string; amount: number; usd: number | null } | null>> {
   const mcp = getMcpClient();
+  const cacheKey = `${ctx.trader ?? ""}|${ctx.smartAccount ?? ""}|${assetsToQuery.join(",")}`;
+  const cached = earnPositionCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < EARN_POSITION_CACHE_TTL_MS) return cached.reads;
   /**
    * Sequential on purpose, not Promise.all. Four concurrent `vanna_get_vtoken_balance`
    * calls against the live MCP session reliably abort with "operation was aborted due to
@@ -3456,8 +3546,10 @@ async function readEarnPositions(
    * assets) beats fast-and-silently-wrong — the whole point of this fix was to stop
    * answering "no active Earn positions" when that is not true.
    */
-  const reads: Array<{ symbol: string; amount: number; usd: number | null } | null> = [];
-  for (const symbol of assetsToQuery) {
+
+  // The MCP session does not tolerate four simultaneous vToken calls; keep the read order stable
+  // so a transient timeout cannot make a partial result look like an empty Earn portfolio.
+  const readOne = async (symbol: (typeof EARN_ASSETS)[number]) => {
     try {
       // Earn positions are held by the G-wallet, not the margin account — vanna_lend
       // deposits from the trader's wallet and the pool mints vTokens back to that same
@@ -3469,8 +3561,7 @@ async function readEarnPositions(
         smartAccount: ctx.smartAccount,
       });
       if (built.blocker) {
-        reads.push(null);
-        continue;
+        return null;
       }
       // vanna_get_vtoken_balance does 3-4 sequential Soroban contract calls internally
       // (balance/total_supply/decimals, then convert_vtoken_to_asset, then symbol) — it
@@ -3521,20 +3612,29 @@ async function readEarnPositions(
           // USD estimate is best-effort — the amount itself still answers the question.
         }
       }
-      reads.push({
+      return {
         symbol,
         amount: Number.isFinite(amount) ? amount : 0,
         usd,
-      });
+      };
     } catch (e) {
       console.warn(
         `[copilot] vtoken balance failed for ${symbol} inside readEarnPositions -> ` +
           `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
       );
-      reads.push(null);
+      return null;
     }
+  };
+
+  // StellarClient/MCP vToken reads are not safe to overlap on the live session.
+  // Sequential calls avoid the timeout/retry cascade seen with two workers and
+  // keep the result aligned with the requested asset order.
+  const out: Array<{ symbol: string; amount: number; usd: number | null } | null> = [];
+  for (const symbol of assetsToQuery) {
+    out.push(await readOne(symbol));
   }
-  return reads;
+  if (out.some(Boolean)) earnPositionCache.set(cacheKey, { at: Date.now(), reads: out });
+  return out;
 }
 
 /**
@@ -5444,6 +5544,30 @@ async function runWrite(
     return {
       kind: "blocked",
       message: "Writes are disabled (COPILOT_READS_ONLY).",
+      request_id: ctx.request_id,
+    };
+  }
+
+  // Reject statically impossible asset/venue combinations before resolving a wallet or
+  // smart account. A malformed request cannot become valid because a wallet connects,
+  // and asking for a wallet first hides the actionable reason from the user.
+  const staticBlock = staticStepBlocker(action.op, {
+    asset: action.asset,
+    token_a: action.token_a,
+    token_b: action.token_b,
+  });
+  if (staticBlock) {
+    return {
+      kind: "blocked",
+      message: staticBlock,
+      intent: {
+        template_id: action.op,
+        slots: {
+          asset: action.asset,
+          token_a: action.token_a,
+          token_b: action.token_b,
+        },
+      },
       request_id: ctx.request_id,
     };
   }
@@ -8385,18 +8509,43 @@ async function resolveSmartAccount(
 }
 
 function mcpErrorResponse(e: unknown, request_id: string, template_id?: string): ChatResponse {
+  const code = e instanceof MCPError ? e.code : null;
+  const diagnostic =
+    code || (e instanceof MCPError && e.httpStatus != null)
+      ? {
+          mcp_error_code: code,
+          http_status: e instanceof MCPError ? e.httpStatus : null,
+          retryable: e instanceof MCPError ? e.retryable : false,
+        }
+      : undefined;
   if (e instanceof MCPAuthError) {
+    const authMessage =
+      code === "invalid_user_assertion"
+        ? "MCP could not verify your user session. Sign in again, then retry."
+        : code === "missing_user_assertion"
+          ? "This write needs an authenticated user session. Sign in, then retry."
+          : "MCP authentication failed. Check the current wallet session and try again.";
     return {
       kind: "error",
-      message: "MCP auth failed (WorkOS M2M). Check WORKOS_M2M_* in .env.local.",
+      message: `${authMessage}${code ? ` Code: ${code}.` : ""}`,
+      data: diagnostic,
       intent: { template_id: template_id ?? null },
       request_id,
     };
   }
   if (e instanceof MCPCallError || e instanceof MCPError) {
+    const codeMessage =
+      code === "wallet_not_bound"
+        ? "Authorize Vanna as an additional signer for this wallet, then retry."
+        : code === "over_per_tx_cap" || code === "over_per_day_cap"
+          ? "The configured auto-sign spend cap rejected this request. Reduce the amount or change the cap."
+          : code === "simulation_failed" || code === "budget_exceeded"
+            ? "MCP could not simulate this transaction. Check the amount and account state, then retry."
+            : null;
     return {
       kind: "error",
-      message: `MCP error: ${e.message}`,
+      message: `${codeMessage ?? `MCP error: ${e.message}`}${code ? ` Code: ${code}.` : ""}`,
+      data: diagnostic,
       intent: { template_id: template_id ?? null },
       request_id,
     };
