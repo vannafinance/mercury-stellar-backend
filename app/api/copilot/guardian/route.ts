@@ -160,7 +160,8 @@ async function runOneCheck(opts: {
     bestAmt = Math.max(1, debt * 0.15);
     asset = "AQUSDC";
   }
-  const repayAmt = Math.max(1, Math.min(bestAmt, bestAmt * 0.2));
+  const desiredRepay = Math.max(1, bestAmt * 0.2);
+  const repayAmt = Math.min(bestAmt, desiredRepay);
 
   if (dryRun) {
     return {
