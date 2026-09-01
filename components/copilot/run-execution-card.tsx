@@ -113,6 +113,7 @@ export interface RunExecutionCardProps {
   footerNote?: string | null;
   footerTone?: "warn" | "danger";
   onCancel?: () => void;
+  onContinue?: () => void;
   onRetry?: (leg: RunLeg) => void;
   onStop?: () => void;
   onNewIntent?: () => void;
@@ -367,6 +368,7 @@ export function RunExecutionCard({
   footerNote,
   footerTone = "warn",
   onCancel,
+  onContinue,
   onRetry,
   onStop,
   onNewIntent,
@@ -1941,6 +1943,24 @@ export function RunExecutionCard({
           </>
         ) : (
           <>
+            {!busy && onContinue && shape.doneCount > 0 && !shape.complete ? (
+              <button
+                type="button"
+                className="rc-btn-p"
+                onClick={onContinue}
+                style={{
+                  ...btnBase,
+                  border: "1px solid transparent",
+                  background: "var(--rc-btn-fill)",
+                  color: "var(--rc-btn-fg)",
+                  padding: "13px 22px",
+                  fontSize: 15,
+                  fontWeight: 700,
+                }}
+              >
+                Continue leg {shape.focus + 1}
+              </button>
+            ) : null}
             {/* Busy keeps the full fill and just changes its label. Greying it out here
                 is what previously made a live run look broken. */}
             {busy ? (
@@ -1962,7 +1982,23 @@ export function RunExecutionCard({
                 Running…
               </button>
             ) : null}
-            {onCancel && !shape.gate ? (
+            {onStop && !busy && shape.doneCount > 0 ? (
+              <button
+                type="button"
+                className="rc-btn-s transition-colors"
+                onClick={onStop}
+                style={{
+                  ...btnBase,
+                  background: "transparent",
+                  padding: "13px 18px",
+                  fontSize: 14,
+                  fontWeight: 600,
+                }}
+              >
+                Stop here
+              </button>
+            ) : null}
+            {onCancel && !shape.gate && shape.doneCount === 0 ? (
               <button
                 type="button"
                 className={busy ? "rc-btn-q transition-colors" : "rc-btn-s transition-colors"}

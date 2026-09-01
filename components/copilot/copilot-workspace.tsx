@@ -4440,6 +4440,30 @@ export function CopilotWorkspace() {
     [execLegs, resumeMultiLeg, submitted],
   );
 
+  const continueRemainingLegs = useCallback(() => {
+    const remaining = execLegs.filter((l) => l.status !== "ok");
+    if (!remaining.length) return;
+    const carry = (l: RunLeg) => {
+      const sides = l.lpSides;
+      const isLp = l.op === "add_liquidity" && sides && sides.length === 2;
+      return {
+        op: l.op,
+        asset: l.asset,
+        amount: l.amount != null ? Number(String(l.amount).replace(/,/g, "")) : null,
+        leverage: l.leverage ?? null,
+        label: l.label,
+        token_in: l.tokenIn ?? null,
+        token_out: l.tokenOut ?? null,
+        token_a: isLp ? sides[0] : null,
+        token_b: isLp ? sides[1] : null,
+      };
+    };
+    const summary = String(
+      strategyMetaRef.current.strategy_summary || submitted || "Continue strategy",
+    );
+    void resumeMultiLeg(remaining.map(carry), summary);
+  }, [execLegs, resumeMultiLeg, submitted]);
+
   /**
    * Best-effort match of a free-text answer against a known asset symbol — "SOUSDC",
    * "swap to SOUSDC", "use soroswap (SOUSDC)" all resolve the same way. Longest-first so
@@ -4710,6 +4734,8 @@ export function CopilotWorkspace() {
                           : "freighter wallet"
                     }
                     onCancel={loading ? cancelInFlight : undefined}
+                    onContinue={continueRemainingLegs}
+                    onStop={reset}
                     onSubmitAmount={submitLegAmount}
                     onLpEntered={() => {
                       if (execLegs.length > 1) lpScrollPendingRef.current = true;
