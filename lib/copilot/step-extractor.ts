@@ -239,7 +239,7 @@ function kwSpans(clause: string, re: RegExp, offset: number): Span[] {
 
 const SPAN_VERB_SWAP = /\bswap\b/i;
 const SPAN_VERB_FARM = /\b(?:farm|blend|deploy)\b/i;
-const SPAN_VERB_LEND = /\b(?:park|lend|earn\s+yield|for\s+yield|supply\s+to\s+earn)\b/i;
+const SPAN_VERB_LEND = /\b(?:park|lend|earn\s+yield|for\s+yield|supply\s+to\s+earn|earn\s+pool|into\s+earn|into\s+the\s+earn\s+pool|in\s+earn)\b/i;
 const SPAN_VERB_DEPOSIT = /\bdeposit\b/i;
 const SPAN_VERB_BORROW = /\bborrow\b/i;
 const SPAN_VERB_REPAY = /\brepay\b/i;
@@ -359,17 +359,25 @@ function clauseToStepSpannedRaw(
     };
   }
 
-  // Park / lend / earn
-  if (SPAN_VERB_LEND.test(t)) {
-    const xlm = pairs.find((p) => p.asset === "XLM") || first;
+  // Park / lend / earn pool deposit
+  if (
+    SPAN_VERB_LEND.test(t) ||
+    (SPAN_VERB_DEPOSIT.test(t) && /\b(?:earn|earn\s+pool|vault)\b/i.test(t) && !/\b(?:margin|collateral)\b/i.test(t))
+  ) {
+    const p = pairs.find((x) => x.asset === "XLM") || pairs[0] || first;
     return {
       step: {
         kind: "write",
         op: "lend",
-        asset: xlm?.asset || "XLM",
-        amount: xlm?.amount ?? null,
+        asset: p?.asset || "XLM",
+        amount: p?.amount ?? null,
       },
-      spans: [...kwSpans(clause, SPAN_VERB_LEND, offset), ...pairSpan(xlm)],
+      spans: [
+        ...kwSpans(clause, SPAN_VERB_LEND, offset),
+        ...kwSpans(clause, SPAN_VERB_DEPOSIT, offset),
+        ...kwSpans(clause, /\b(?:earn|earn\s+pool|vault|into\s+earn)\b/i, offset),
+        ...pairSpan(p),
+      ],
     };
   }
 
@@ -400,7 +408,7 @@ function clauseToStepSpannedRaw(
     };
   }
 
-  if (SPAN_VERB_DEPOSIT.test(t) && !/\bpool|earn|vault\b/i.test(t)) {
+  if (SPAN_VERB_DEPOSIT.test(t)) {
     return {
       step: {
         kind: "write",

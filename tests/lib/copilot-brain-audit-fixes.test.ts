@@ -107,4 +107,13 @@ describe("Copilot Brain Audit Fixes Verification", () => {
     expect(claimOnce(key1, now)).toBe(true);
     expect(claimOnce(key2, now)).toBe(true); // both succeed because keys differ by stepIndex
   });
+
+  it("BRAIN-010: extractPlanIR correctly extracts earn deposit, margin borrow, and report health factor", async () => {
+    const { extractPlanIR } = await import("@/lib/copilot/step-extractor");
+    const plan = extractPlanIR("deposit 5 XLM into earn pool, borrow 10 XLM on margin, then report my health factor");
+    expect(plan.steps.length).toBe(3);
+    expect(plan.steps[0]).toMatchObject({ kind: "write", op: "lend", asset: "XLM", amount: 5 });
+    expect(plan.steps[1]).toMatchObject({ kind: "write", op: "borrow", asset: "XLM", amount: 10 });
+    expect(plan.steps[2]).toMatchObject({ kind: "read", tool: "vanna_get_account_health" });
+  });
 });
