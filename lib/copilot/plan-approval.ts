@@ -309,7 +309,18 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       const leverage = typeof slots.leverage === "number" ? slots.leverage : null;
       const borrow_asset =
         typeof slots.borrow_asset === "string" && slots.borrow_asset ? slots.borrow_asset : null;
-      const min_hf = typeof slots.min_hf === "number" ? slots.min_hf : null;
+      const min_hf =
+        typeof slots.min_hf === "number"
+          ? slots.min_hf
+          : typeof plan.min_hf === "number"
+            ? plan.min_hf
+            : typeof plan.constraints?.minHf === "number"
+              ? plan.constraints.minHf
+              : null;
+      const stepSlots = {
+        ...slots,
+        ...(min_hf != null ? { min_hf } : {}),
+      };
       return {
         n: i + 1,
         kind: "write" as const,
@@ -322,7 +333,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         leverage,
         borrow_asset,
         min_hf,
-        slots,
+        slots: stepSlots,
         label: labelFor(op, (slots.asset as string) ?? asset, amount, venue, leverage, borrow_asset, min_hf),
         venue,
       };
