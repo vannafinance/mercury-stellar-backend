@@ -71,6 +71,8 @@ export interface PlanStepView {
    * that was approved, which is precisely what this module exists to prevent.
    */
   borrow_asset: string | null;
+  /** Stated health-factor floor (e.g. min_hf: 2.0). */
+  min_hf?: number | null;
   /**
    * EVERY executable slot for this step, as one record.
    *
@@ -195,6 +197,7 @@ function labelFor(
   venue: PlanStepView["venue"],
   leverage: number | null,
   borrowAsset: string | null = null,
+  minHf: number | null = null,
 ): string {
   const verb = OP_VERB[op] ?? op.replace(/_/g, " ");
   if (op === "create_account") return "Open your margin account";
@@ -221,7 +224,8 @@ function labelFor(
     borrowAsset && asset && borrowAsset.toUpperCase() !== asset.toUpperCase()
       ? `borrowing ${borrowAsset}`
       : "";
-  return [verb, `${qty}${sym}`.trim(), tail, loan, lev].filter(Boolean).join(" ");
+  const hfFloor = minHf != null && minHf > 0 ? `(Max keeping HF ≥ ${minHf.toFixed(1)})` : "";
+  return [verb, `${qty}${sym}`.trim(), tail, loan, lev, hfFloor].filter(Boolean).join(" ");
 }
 
 /**
@@ -305,6 +309,7 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       const leverage = typeof slots.leverage === "number" ? slots.leverage : null;
       const borrow_asset =
         typeof slots.borrow_asset === "string" && slots.borrow_asset ? slots.borrow_asset : null;
+      const min_hf = typeof slots.min_hf === "number" ? slots.min_hf : null;
       return {
         n: i + 1,
         kind: "write" as const,
@@ -316,8 +321,9 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
         fraction: typeof slots.fraction === "number" ? slots.fraction : null,
         leverage,
         borrow_asset,
+        min_hf,
         slots,
-        label: labelFor(op, (slots.asset as string) ?? asset, amount, venue, leverage, borrow_asset),
+        label: labelFor(op, (slots.asset as string) ?? asset, amount, venue, leverage, borrow_asset, min_hf),
         venue,
       };
     });

@@ -426,16 +426,26 @@ function clauseToStepSpannedRaw(
      * not to read "borrow against my XLM" as borrowing XLM.
      */
     const named = first?.asset || findBorrowAsset(clause);
+    const isMax = /\b(max(?:imum)?|all)\b/i.test(clause);
+    const stepMinHf = matchMinHealthFactor(clause) ?? global.minHf ?? null;
     return {
       step: {
         kind: "write",
         op: "borrow",
         asset: named || "USDC",
         amount: first?.amount ?? null,
+        leverage: L != null && L > 1 ? L : null,
+        fraction: isMax ? 1 : null,
+        args: {
+          ...(L != null && L > 1 ? { leverage: L } : {}),
+          ...(stepMinHf != null ? { min_hf: stepMinHf } : {}),
+          ...(isMax ? { fraction: 1 } : {}),
+        },
       },
       spans: [
         ...kwSpans(clause, SPAN_VERB_BORROW, offset),
         ...pairSpan(first),
+        ...levSpans,
         // Claim the bare asset word too, or coverage reports the token the step was
         // built from as unread text.
         ...(!first && named ? kwSpans(clause, new RegExp(`\\b${named}\\b`, "i"), offset) : []),

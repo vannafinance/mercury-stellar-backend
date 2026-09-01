@@ -64,6 +64,8 @@ export interface PlanStepView {
    * both replays the wrong trade and fails the hash. The label already renders it.
    */
   borrow_asset?: string | null;
+  /** Stated health-factor floor (e.g. min_hf: 2.0). */
+  min_hf?: number | null;
   /**
    * Every executable slot for this step, opaque to the card.
    *
@@ -412,6 +414,34 @@ export function PlanApprovalCard({
                     >
                       {amount}
                     </p>
+                  ) : s.min_hf != null ? (
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 16,
+                        lineHeight: "26px",
+                        fontWeight: 700,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--pc-accent)",
+                      }}
+                    >
+                      MAX SAFE
+                    </p>
+                  ) : s.leverage != null && s.leverage > 1 ? (
+                    <p
+                      className="m-0"
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 16,
+                        lineHeight: "26px",
+                        fontWeight: 700,
+                        fontVariantNumeric: "tabular-nums",
+                        color: "var(--pc-heading)",
+                      }}
+                    >
+                      {`${s.leverage}× AUTO`}
+                    </p>
                   ) : s.fraction != null ? (
                     /* A share IS a size. Shown in the amount slot, in the heading colour
                        rather than the warning colour, because nothing is outstanding —
@@ -428,7 +458,7 @@ export function PlanApprovalCard({
                         color: "var(--pc-heading)",
                       }}
                     >
-                      {`${Number((s.fraction * 100).toFixed(2))}%`}
+                      {s.fraction === 1 ? "100% MAX" : `${Number((s.fraction * 100).toFixed(2))}%`}
                     </p>
                   ) : (
                     <p
@@ -456,7 +486,11 @@ export function PlanApprovalCard({
                         color: "var(--pc-muted)",
                       }}
                     >
-                      {s.asset}
+                      {s.min_hf != null
+                        ? `HF ≥ ${s.min_hf.toFixed(1)} · ${s.asset}`
+                        : s.leverage != null && s.leverage > 1
+                          ? `AUTO-SIZED · ${s.asset}`
+                          : s.asset}
                     </p>
                   ) : null}
                 </div>
