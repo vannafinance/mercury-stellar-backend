@@ -732,7 +732,16 @@ export function RunExecutionCard({
           style={{ fontFamily: MONO, fontSize: 11, color: "var(--rc-muted)" }}
         >
           <span>
-            {shape.doneCount} of {total} settled
+            {(() => {
+              const writeTotal = legs.filter(
+                (l) => l.venue !== "other" && l.op !== "report" && !/^vanna_(get|list|can|resolve)_/.test(l.op),
+              ).length;
+              const readTotal = total - writeTotal;
+              if (readTotal > 0 && writeTotal > 0) {
+                return `${shape.doneCount} of ${writeTotal} txs · ${readTotal} read`;
+              }
+              return `${shape.doneCount} of ${total} settled`;
+            })()}
           </span>
           <span className="flex gap-[3px]">
             {legs.map((l, i) => (
@@ -810,7 +819,11 @@ export function RunExecutionCard({
            * step look like a write the run would stop and ask about. MCP read tools are
            * named `vanna_get_*` / `vanna_list_*`, which is what distinguishes them here.
            */
-          const isReadLeg = /^vanna_(get|list|can|resolve)_/.test(String(l.op ?? ""));
+          const isReadLeg =
+            /^vanna_(get|list|can|resolve)_/.test(String(l.op ?? "")) ||
+            l.op === "report" ||
+            l.venue === "other" ||
+            /report|health|position|stats/i.test(l.label);
           const missing = l.amount == null && !isReadLeg;
           /**
            * One field at a time, and only on the leg the run is actually waiting on.
@@ -980,7 +993,21 @@ export function RunExecutionCard({
                   </div>
 
                   <div className="flex-shrink-0 text-right">
-                    {missing ? (
+                    {isReadLeg ? (
+                      <p
+                        className="m-0 uppercase"
+                        style={{
+                          fontFamily: MONO,
+                          fontSize: 10,
+                          lineHeight: "24px",
+                          fontWeight: 600,
+                          letterSpacing: ".14em",
+                          color: "var(--rc-muted)",
+                        }}
+                      >
+                        no signature
+                      </p>
+                    ) : missing ? (
                       <p
                         className="m-0"
                         style={{

@@ -7797,6 +7797,18 @@ async function runPlan(
           token_out: rest.token_out ?? null,
         });
       }
+      for (const dr of deferredReads) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: dr.tool || "report",
+          label: (dr as { label?: string }).label || (dr.tool === "vanna_get_account_health" ? "Report account health" : "Read state"),
+          asset: null,
+          amount: null,
+          status: "pending",
+          message: "Runs automatically after writes settle (no signature)",
+        });
+      }
       // remaining_legs = full rest of plan after this leg (client should resume_multi_leg
       // so deposit→borrow→supply is not truncated by 2-deep follow_up).
       const remainingPayload = remaining.map((r) => ({
@@ -7859,6 +7871,18 @@ async function runPlan(
           message: "Waiting for Approve & sign on this step",
           token_in: rest.token_in ?? null,
           token_out: rest.token_out ?? null,
+        });
+      }
+      for (const dr of deferredReads) {
+        stepIndex += 1;
+        multiSteps.push({
+          index: stepIndex,
+          op: dr.tool || "report",
+          label: (dr as { label?: string }).label || (dr.tool === "vanna_get_account_health" ? "Report account health" : "Read state"),
+          asset: null,
+          amount: null,
+          status: "pending",
+          message: "Runs automatically after writes settle (no signature)",
         });
       }
       const remainingPayload = remaining.map((r) => ({
