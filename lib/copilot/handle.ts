@@ -79,6 +79,7 @@ import {
   toExecutionStep,
   type MultiLegStep,
 } from "./multi-leg-agent";
+import { oraclePriceSymbol, priceOf } from "./leverage-plan";
 import { preflightExpandedLegs } from "./multi-leg-preflight";
 import {
   preflightAssetReadiness,
@@ -5094,6 +5095,23 @@ async function resolveBalanceFractionAmount(
       return null;
     }
     sourceLabel = "in your margin account";
+  } else if (action.op === "borrow") {
+    try {
+      const prices = await fetchLeveragePrices(getMcpClient(), [oraclePriceSymbol(asset)], ctx.userId);
+      const p = priceOf(asset, prices) ?? (asset.toUpperCase() === "XLM" ? 0.1757 : 1);
+      const depositUsd = typeof (action as any).deposit_usd === "number" && (action as any).deposit_usd > 0
+        ? (action as any).deposit_usd
+        : 100;
+      const lev =
+        typeof (action as any).leverage === "number" && (action as any).leverage > 1
+          ? (action as any).leverage
+          : 10;
+      const maxBorrowUsd = depositUsd * (lev - 1);
+      balance = p > 0 ? maxBorrowUsd / p : 0;
+      sourceLabel = "from margin pool";
+    } catch {
+      return null;
+    }
   } else {
     if (!ctx.trader) return null;
     try {
@@ -7439,12 +7457,25 @@ async function runPlan(
    * gets must be the one true when the leg runs — the same rule the site's own percentage
    * chips follow.
    */
+  let lastDepositUsd = 100;
   for (const w of rawExpanded) {
+    if (w.op === "deposit_collateral" && w.amount != null && Number(w.amount) > 0) {
+      const colPrices = await fetchLeveragePrices(mcp, [oraclePriceSymbol(w.asset || "USDC")], ctx.userId);
+      const colPrice = priceOf(w.asset || "USDC", colPrices) ?? 1;
+      lastDepositUsd = Number(w.amount) * colPrice;
+    }
     if (w.amount != null && Number(w.amount) > 0) continue;
     const frac = Number(w.fraction ?? NaN);
     if (!Number.isFinite(frac) || frac <= 0) continue;
     const sized = await resolveBalanceFractionAmount(
-      { op: w.op, asset: w.asset ?? null, amount: null, fraction: frac } as CopilotAction,
+      {
+        op: w.op,
+        asset: w.asset ?? null,
+        amount: null,
+        fraction: frac,
+        deposit_usd: lastDepositUsd,
+        leverage: w.leverage ?? (plan.constraints?.leverage ?? 10),
+      } as CopilotAction,
       { ...ctx, smartAccount },
     );
     if (sized && sized.kind === "ok") {
