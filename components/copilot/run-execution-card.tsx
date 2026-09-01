@@ -45,7 +45,8 @@ export type RunLegStatus =
   | "ok"
   | "needs_input"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "stopped";
 
 export type RunVenue = "margin" | "earn" | "farm" | "wallet" | "other";
 
@@ -149,9 +150,10 @@ export function toRunLegStatus(raw: string | null | undefined, inFlight = false)
     case "error":
     case "blocked":
     case "preflight_blocked":
+      return "failed";
     case "stopped":
     case "stopped_hf":
-      return "failed";
+      return "stopped";
     case "skipped":
       return "skipped";
     case "needs_sign":
@@ -203,10 +205,11 @@ const STATUS: Record<RunLegStatus, StatusMeta> = {
   ok: { text: "settled", color: "var(--rc-ok-fg)", mark: "check" },
   needs_input: { text: "paused · needs input", color: "var(--rc-warn-fg)", mark: "pause" },
   failed: { text: "failed", color: "var(--rc-danger-fg)", mark: "fail" },
+  stopped: { text: "stopped", color: "var(--rc-danger-fg)", mark: "fail" },
   skipped: { text: "skipped", color: "var(--rc-quiet)", mark: "hollow" },
 };
 
-const TERMINAL: ReadonlySet<RunLegStatus> = new Set(["ok", "failed", "skipped"]);
+const TERMINAL: ReadonlySet<RunLegStatus> = new Set(["ok", "failed", "skipped", "stopped"]);
 
 const TONE: Record<string, string> = {
   ok: "var(--rc-ok-fg)",
@@ -386,6 +389,7 @@ export function RunExecutionCard({
     return {
       focus: firstOpen === -1 ? Math.max(0, total - 1) : firstOpen,
       complete,
+      stopped: legs.find((l) => l.status === "stopped") ?? null,
       doneCount: legs.filter((l) => l.status === "ok").length,
       failed: legs.find((l) => l.status === "failed") ?? null,
       needsInput: legs.find((l) => l.status === "needs_input") ?? null,
@@ -533,7 +537,7 @@ export function RunExecutionCard({
 
   /** Headline, beat and the actions row all follow from the leg statuses. */
   const narration = useMemo(() => {
-    const { complete, failed, needsInput, gate, needsSign, running, doneCount, focus } = shape;
+    const { complete, stopped, failed, needsInput, gate, needsSign, running, doneCount, focus } = shape;
     const nth = (i: number) => `leg ${i + 1} of ${total}`;
 
     if (complete) {
@@ -563,6 +567,22 @@ export function RunExecutionCard({
           }
           return `${onChain} transaction${onChain === 1 ? "" : "s"} on chain. Nothing is left in flight.`;
         })(),
+      };
+    }
+    if (stopped) {
+      const settled = legs.filter((l) => l.status === "ok");
+      return {
+        headline: "stopped · safety floor",
+        headDanger: true,
+        beat: `Leg ${doneCount} settled · further legs stopped`,
+        beatTone: "danger" as const,
+        beatSub:
+          stopped.error ||
+          (hf != null && hf < floor
+            ? `HF ${hf.toFixed(2)} is below your safety floor (${floor.toFixed(2)}). Further transactions stopped.`
+            : settled.length
+              ? `What is on chain right now: ${settled.map((l) => l.label.toLowerCase()).join(", ")}. Further borrows/supplies stopped.`
+              : "Further transactions stopped to protect your account."),
       };
     }
     if (failed) {
@@ -1865,7 +1885,7 @@ export function RunExecutionCard({
       {/* actions — which ones exist follows from the state, so a finished run cannot
           still be offering "Cancel" and a stopped one cannot be offering "Running…" */}
       <div className="mt-3.5 flex flex-wrap items-center gap-2.5">
-        {shape.complete ? (
+        {shape.complete || shape.stopped ? (
           <>
             {onNewIntent ? (
               <button

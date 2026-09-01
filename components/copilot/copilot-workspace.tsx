@@ -3169,6 +3169,63 @@ export function CopilotWorkspace() {
           strategyTailRef.current,
           complete ? [] : cardUnsettled,
         ).filter((r) => !farmWriteAlreadySettled(r.op, strategyStepsRef.current));
+
+        const targetFloor =
+          strategyMetaRef.current.min_hf != null &&
+          Number.isFinite(Number(strategyMetaRef.current.min_hf))
+            ? Number(strategyMetaRef.current.min_hf)
+            : null;
+
+        // Check if HF dropped below floor after this leg settled
+        const currentHf = liveHf != null && Number.isFinite(liveHf) ? liveHf : null;
+        const hfBreached =
+          targetFloor != null &&
+          currentHf != null &&
+          currentHf < targetFloor &&
+          remainingFromData.length > 0;
+
+        if (hfBreached) {
+          strategyTailRef.current = [];
+          strategyCompleteRef.current = true;
+          const stoppedSteps = strategyStepsRef.current.map((s, idx) =>
+            idx === 0
+              ? { ...s, status: "ok" }
+              : {
+                  ...s,
+                  status: "stopped_hf",
+                  message: `Stopped — HF ${currentHf.toFixed(2)} is below your safety floor (${targetFloor.toFixed(2)})`,
+                },
+          );
+          strategyStepsRef.current = stoppedSteps;
+          setResponse({
+            kind: "executed",
+            message: `HF ≈ ${currentHf.toFixed(2)} is below your floor of ${targetFloor.toFixed(2)}. Further transactions stopped to protect your account.`,
+            answer: {
+              headline: `Stopped — Health Factor Below Floor (${targetFloor.toFixed(2)})`,
+              facts: [
+                { label: "Floor Required", value: `≥ ${targetFloor.toFixed(2)}` },
+                { label: "Account HF", value: currentHf.toFixed(2) },
+                { label: "Leg 1 Status", value: "Settled on-chain" },
+                { label: "Leg 2 Status", value: "Stopped" },
+              ],
+              note: `Your margin account Health Factor is currently ${currentHf.toFixed(2)}, which is below your safety floor of ${targetFloor.toFixed(2)} ("keep health factor above ${targetFloor}"). Leg 1 settled on-chain (${result.hash ? result.hash.slice(0, 10) + "…" : "confirmed"}), but further transactions have been stopped to protect your account from liquidation.`,
+            },
+            preview: response?.preview ?? null,
+            execution: { status: "stopped_hf", tx_hash: result.hash ?? null },
+            request_id: response?.request_id,
+            data: {
+              ...(response?.data || {}),
+              multi_leg: true,
+              multi_leg_steps: stoppedSteps,
+              headline: `Stopped — HF ${currentHf.toFixed(2)} below floor ${targetFloor.toFixed(2)}`,
+              strategy_complete: true,
+              can_resume: false,
+              remaining_legs: null,
+              prefer_resume_multi_leg: false,
+            },
+          });
+          return;
+        }
         const pauseForLp =
           isUnsizedAddLiquidity(remainingFromData[0]) &&
           !farmWriteAlreadySettled(remainingFromData[0]?.op, strategyStepsRef.current);
@@ -4736,6 +4793,8 @@ export function CopilotWorkspace() {
                     onCancel={loading ? cancelInFlight : undefined}
                     onContinue={continueRemainingLegs}
                     onStop={reset}
+                    onNewIntent={reset}
+                    onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
                     onSubmitAmount={submitLegAmount}
                     onLpEntered={() => {
                       if (execLegs.length > 1) lpScrollPendingRef.current = true;
