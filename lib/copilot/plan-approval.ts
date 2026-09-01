@@ -312,8 +312,8 @@ export function freezePlan(plan: PlanIntent, nowMs: number): FrozenPlan {
       const min_hf =
         typeof slots.min_hf === "number"
           ? slots.min_hf
-          : typeof plan.min_hf === "number"
-            ? plan.min_hf
+          : typeof (plan as any).min_hf === "number"
+            ? (plan as any).min_hf
             : typeof plan.constraints?.minHf === "number"
               ? plan.constraints.minHf
               : null;

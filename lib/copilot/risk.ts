@@ -55,9 +55,11 @@ async function healthFromSnapshot(
     if (!(snap.grossCollateralValue > 0) && !(snap.totalBorrowedValue > 0)) return null;
     return {
       hf: snap.totalBorrowedValue > 0 ? snap.avgHealthFactor : null,
-      // Margin page "Margin Collateral" is totalCollateralValue, not gross.
+      // Health factor on Vanna is derived from grossCollateralValue = pure collateral + debt assets held
       collateral:
-        snap.totalCollateralValue > 0 ? snap.totalCollateralValue : snap.grossCollateralValue,
+        snap.grossCollateralValue > 0
+          ? snap.grossCollateralValue
+          : snap.totalCollateralValue + snap.totalBorrowedValue,
       debt: snap.totalBorrowedValue,
     };
   } catch {
@@ -240,6 +242,8 @@ export async function evaluateWriteRisk(
       : amount;
   const borrowAmountUsd = (borrowAmount ?? 0) * borrowPrice;
 
+  const effectiveBorrowUsd = borrowAmountUsd > 0 ? borrowAmountUsd : amountUsd;
+
   switch (action.op) {
     case "deposit_collateral":
       colAfter = before.collateral + amountUsd;
@@ -248,18 +252,24 @@ export async function evaluateWriteRisk(
       colAfter = Math.max(0, before.collateral - amountUsd);
       break;
     case "borrow":
-      debtAfter = before.debt + (borrowAmountUsd > 0 ? borrowAmountUsd : amountUsd);
+      // Borrowed assets held in smart margin account increase gross collateral alongside debt
+      colAfter = before.collateral + effectiveBorrowUsd;
+      debtAfter = before.debt + effectiveBorrowUsd;
       break;
     case "repay":
-      debtAfter = Math.max(0, before.debt - (borrowAmountUsd > 0 ? borrowAmountUsd : amountUsd));
+      colAfter = Math.max(0, before.collateral - effectiveBorrowUsd);
+      debtAfter = Math.max(0, before.debt - effectiveBorrowUsd);
       break;
     case "deposit_and_borrow": {
-      // Deposit full amount; borrow min(D*(L-1), 0.8*D) so projected LTV stays sane.
       const lev = (action as CopilotAction & { leverage?: number }).leverage;
-      const safeBorrowUsd =
-        lev != null && lev > 1 ? Math.min(amountUsd * (lev - 1), amountUsd * 0.8) : amountUsd * 0.8;
-      colAfter = before.collateral + amountUsd;
-      debtAfter = before.debt + safeBorrowUsd;
+      const borrowUsd =
+        borrowAmountUsd > 0
+          ? borrowAmountUsd
+          : lev != null && lev > 1
+            ? amountUsd * (lev - 1)
+            : amountUsd * 0.8;
+      colAfter = before.collateral + amountUsd + borrowUsd;
+      debtAfter = before.debt + borrowUsd;
       break;
     }
     default:

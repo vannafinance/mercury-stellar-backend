@@ -82,9 +82,9 @@ describe("Copilot Brain Audit Fixes Verification", () => {
     });
 
     expect(res.simulation).toBeDefined();
-    // 1000 XLM * $0.10 = $100 debt -> HF = 1000 collateral / 100 debt = 10.0
+    // 1000 XLM * $0.10 = $100 debt -> Gross Assets = $1000 + $100 = $1100 -> HF = $1100 / $100 debt = 11.0
     expect(res.simulation?.debt_after).toBe(100);
-    expect(res.simulation?.hf_after).toBe(10.0);
+    expect(res.simulation?.hf_after).toBe(11.0);
   });
 
   it("BRAIN-003: rememberConnectOrigin allows Vanna domains and rejects unknown origins", () => {
