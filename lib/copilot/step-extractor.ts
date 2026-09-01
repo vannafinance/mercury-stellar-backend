@@ -1106,17 +1106,22 @@ function appendTrailingReads(
    * extractor had already recovered it.
    */
   if (routed.kind === "plan") {
-    const have = new Set(
-      routed.steps.filter((s) => s.kind === "read").map((s) => String(s.tool ?? "")),
-    );
-    const missing = reads.filter((r) => !have.has(String(r.tool)));
-    if (!missing.length) return null;
+    const updatedSteps = [...routed.steps];
+    let changed = false;
+    for (const r of reads) {
+      const existing = updatedSteps.find((s) => s.kind === "read" && s.tool === r.tool);
+      if (!existing) {
+        updatedSteps.push({ kind: "read" as const, tool: r.tool!, args: r.args ?? {} });
+        changed = true;
+      } else if (r.args && Object.keys(r.args).length > 0) {
+        existing.args = { ...(existing.args || {}), ...r.args };
+        changed = true;
+      }
+    }
+    if (!changed) return null;
     return {
       ...routed,
-      steps: [
-        ...routed.steps,
-        ...missing.map((r) => ({ kind: "read" as const, tool: r.tool!, args: r.args ?? {} })),
-      ],
+      steps: updatedSteps,
     };
   }
 

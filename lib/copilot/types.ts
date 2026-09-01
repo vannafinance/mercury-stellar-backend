@@ -601,6 +601,15 @@ export type RoutedIntent =
         amount?: number | null;
         /** Optional; usually carried in args.leverage for expandPlanWrites. */
         leverage?: number | null;
+        borrow_asset?: string | null;
+        fraction?: number | null;
+        token_a?: string | null;
+        token_b?: string | null;
+        amount_a?: number | null;
+        amount_b?: number | null;
+        venue?: string | null;
+        min_hf?: number | null;
+        prefer_max_yield?: boolean | null;
       }>;
       template_id: string;
       summary?: string;

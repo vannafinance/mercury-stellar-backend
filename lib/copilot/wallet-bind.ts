@@ -75,6 +75,20 @@ export function rememberConnectOrigin(requestId: string, connectUrl: string): vo
     if (u.protocol !== "https:" && u.hostname !== "localhost" && u.hostname !== "127.0.0.1") {
       return;
     }
+    const isTest = u.hostname.endsWith(".test") || u.hostname.endsWith(".invalid");
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    const isVanna = u.hostname === "vanna.finance" || u.hostname.endsWith(".vanna.finance");
+    const configuredHost =
+      process.env.SIGN_CONNECT_BASE_URL || process.env.SIGN_SERVICE_URL || copilotConfig.mcpBaseUrl;
+    let isConfigured = false;
+    if (configuredHost) {
+      try {
+        isConfigured = new URL(configuredHost).hostname === u.hostname;
+      } catch {}
+    }
+    if (!isTest && !isLocal && !isVanna && !isConfigured) {
+      return;
+    }
     origin = u.origin;
   } catch {
     return;

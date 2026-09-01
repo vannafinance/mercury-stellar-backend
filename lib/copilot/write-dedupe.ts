@@ -19,8 +19,12 @@ const MAX_ENTRIES = 2_000;
 
 const seen = new Map<string, number>();
 
+let lastSweep = 0;
+const SWEEP_INTERVAL_MS = 30_000;
+
 function sweep(now: number): void {
-  if (seen.size < MAX_ENTRIES) return;
+  if (seen.size < MAX_ENTRIES && now - lastSweep < SWEEP_INTERVAL_MS) return;
+  lastSweep = now;
   for (const [key, ts] of seen) {
     if (now - ts > DEDUPE_WINDOW_MS) seen.delete(key);
   }
@@ -62,6 +66,7 @@ export function writeDedupeKey(opts: {
   op?: string | null;
   asset?: string | null;
   amount?: number | null;
+  stepIndex?: number | null;
 }): string {
   return [
     "write",
@@ -69,5 +74,6 @@ export function writeDedupeKey(opts: {
     opts.op ?? "",
     opts.asset ?? "",
     opts.amount ?? "",
+    opts.stepIndex != null ? String(opts.stepIndex) : "",
   ].join(":");
 }

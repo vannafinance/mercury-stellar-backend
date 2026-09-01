@@ -376,9 +376,8 @@ function sealKey(): Buffer {
       `COPILOT_SESSION_SECRET is ${secret.length} characters; use at least 32.`,
     );
   }
-  // Fixed salt: the secret is already high-entropy, and a per-cookie salt would
-  // have to be stored alongside the cookie anyway.
-  return crypto.scryptSync(secret, "vanna-copilot-session", 32);
+  const salt = process.env.COPILOT_SESSION_SALT?.trim() || "vanna-copilot-session";
+  return crypto.scryptSync(secret, salt, 32);
 }
 
 /** Largest sealed payload we will emit. Browsers cap a cookie at ~4096 bytes. */

@@ -231,9 +231,8 @@ export async function llmPlanStrategy(
       "[copilot:llm-planner]",
       e instanceof VertexError ? e.message : e instanceof Error ? e.message : e,
     );
-    // A failure is memoised too. Retrying the same prompt inside one turn produced the
-    // same failure and a second bill; the caller already treats null as "keep what I had".
-    return remember(null);
+    // Do not memoize transient connection/auth drops so subsequent turns can retry.
+    return null;
   }
 }
 

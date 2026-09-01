@@ -712,7 +712,14 @@ function liveClientFor(tokens: TokenSource): LiveMCPClient {
       liveClients.set(m2mTokens.key, m2m);
       continue;
     }
-    liveClients.delete(oldest.value);
+    const evictedKey = oldest.value;
+    const evictedClient = liveClients.get(evictedKey);
+    if (evictedClient && typeof (evictedClient as any).close === "function") {
+      try {
+        (evictedClient as any).close();
+      } catch {}
+    }
+    liveClients.delete(evictedKey);
   }
   return created;
 }

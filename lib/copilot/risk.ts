@@ -229,6 +229,17 @@ export async function evaluateWriteRisk(
   let colAfter = before.collateral;
   let debtAfter = before.debt;
 
+  const borrowAsset = ((action as any).borrow_asset as string | undefined) || asset;
+  const borrowPrice =
+    borrowAsset.toUpperCase() === asset.toUpperCase()
+      ? price
+      : await fetchPriceUsd(mcp, borrowAsset);
+  const borrowAmount =
+    typeof (action as any).borrow_amount === "number" && (action as any).borrow_amount > 0
+      ? ((action as any).borrow_amount as number)
+      : amount;
+  const borrowAmountUsd = (borrowAmount ?? 0) * borrowPrice;
+
   switch (action.op) {
     case "deposit_collateral":
       colAfter = before.collateral + amountUsd;
@@ -237,10 +248,10 @@ export async function evaluateWriteRisk(
       colAfter = Math.max(0, before.collateral - amountUsd);
       break;
     case "borrow":
-      debtAfter = before.debt + amountUsd;
+      debtAfter = before.debt + (borrowAmountUsd > 0 ? borrowAmountUsd : amountUsd);
       break;
     case "repay":
-      debtAfter = Math.max(0, before.debt - amountUsd);
+      debtAfter = Math.max(0, before.debt - (borrowAmountUsd > 0 ? borrowAmountUsd : amountUsd));
       break;
     case "deposit_and_borrow": {
       // Deposit full amount; borrow min(D*(L-1), 0.8*D) so projected LTV stays sane.
