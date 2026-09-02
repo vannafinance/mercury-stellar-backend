@@ -35,6 +35,30 @@ MCP Sign Service (sibling `vanna_mcp`, uncommitted there — **does not undo** t
 - `close_account` / `settle_account` / `liquidate` stay unsigned on the Sign Service side
   (unpriced). Copilot will still client-sign those if in-app auto-approve is on.
 
+**Live 2026-09-02 (later, `/copilot`, real terminal logs traced):** "Swap 10 XLM to
+AQUSDC then add liquidity in Aquarius" staged a proper 2-step plan (deterministic router
+only covers the swap leg — `plan_coverage_shadow` logs `steps:1, verdict:"partial",
+residue:["add liquidity in Aquarius"]` — so `llm-planner: using model plan (2 steps)`
+fills the LP leg; this is expected, not a bug) but leg 1 failed showing "MCP auth failed —
+refresh the page or check WorkOS credentials". Traced via the dev-server log to the REAL
+underlying message: `mcp-write.ts`'s `isGenuinePolicyRejection` already builds a specific,
+correct one — *"The Sign Service refused to sign this (policy: unauthorized). Nothing was
+signed. session_user_mismatch: session was created by a different user"* — but
+`humanizeLegError` (`multi-leg-agent.ts`) then re-scanned that ALREADY-humanized text for
+generic keywords, matched the literal word "unauthorized" (a genuine, named Sign Service
+POLICY CODE — spend cap / allowlist / **session identity** — unrelated to the WorkOS M2M
+credential the rewritten message blamed), and overwrote a correct, specific message with a
+misleading one. **Fixed:** a message matching `mcp-write.ts`'s own `"The Sign Service
+refused to sign this (policy: …)"` prefix now passes through `humanizeLegError` unchanged,
+before the generic keyword net gets a chance to reinterpret words inside it out of
+context. Verified live: the leg 1 card now shows the real `session_user_mismatch` reason.
+**Still open, external:** the `session_user_mismatch` itself — the active Sign Service
+session was created under a different identity than the one now trying to sign — is a
+genuine Sign-Service-side session-scoping question, likely from auto-approve being
+enabled/re-enabled across multiple browser sessions in the same testing window. Try
+disabling and re-enabling auto-approve from the SAME browser session doing the write; if
+it recurs from one single, consistent session, that narrows it to a real Sign Service bug.
+
 ---
 
 ## 0b. Still open — reviewer checklist (2026-09-02)

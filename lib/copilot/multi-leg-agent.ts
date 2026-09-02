@@ -687,13 +687,30 @@ export function toExecutionStep(s: MultiLegStep): {
 export function humanizeLegError(raw: string | null | undefined): string {
   const m = (raw || "").trim();
   if (!m) return "Something went wrong on this step.";
+  /**
+   * "Swap 10 XLM to AQUSDC then add liquidity in Aquarius" failed leg 1 with "MCP auth
+   * failed — refresh the page or check WorkOS credentials" — reported live, traced to
+   * the actual server log. The REAL message, already built by `mcp-write.ts`'s
+   * `isGenuinePolicyRejection` block, was "The Sign Service refused to sign this
+   * (policy: unauthorized). Nothing was signed. Lower the size, or check the account's
+   * spend caps." — specific and correct. This function's own keyword classifiers below
+   * then re-scanned that ALREADY-humanized text, matched the literal word "unauthorized"
+   * (a genuine, named Sign Service POLICY CODE — spend cap / allowlist / session
+   * identity — completely unrelated to the WorkOS M2M credential the rewritten message
+   * blamed), and overwrote a correct, actionable message with a misleading one that sent
+   * the wrong signal entirely (an infra/credentials problem, not a policy refusal).
+   * A message this codebase already built deliberately (identified by its own unique
+   * prefix) is passed through as-is, before the generic net below gets a chance to
+   * misread words inside it out of context.
+   */
+  if (/^The Sign Service refused to sign this \(policy: /i.test(m)) return m.slice(0, 220);
   // Same wallet-has-no-XLM case as the single-write path — a strategy leg must not
   // report it as a bare RPC dump when the single-write path explains it.
   if (isUnfundedWalletError(m)) return unfundedWalletMessage();
   if (/fetch failed|failed to fetch|networkerror|econnrefused|enotfound|etimedout|abort(ed)?|timeout/i.test(m)) {
     return "Could not reach the Vanna MCP server (network). Check you’re online, MCP URL is up, then retry.";
   }
-  if (/401|403|unauthorized|rejected the token|workos/i.test(m)) {
+  if (/\b401\b|\b403\b|unauthorized|rejected the token|workos/i.test(m)) {
     return "MCP auth failed — refresh the page or check WorkOS credentials.";
   }
   if (/Budget|ExceededLimit/i.test(m)) {
