@@ -96,6 +96,24 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     expect(r.unsigned_xdr).toBe(XDR);
   });
 
+  it("MCP Sign-Service auto-sign (auto_sign: on + hash) is already executed", async () => {
+    const r = await executeMcpWrite(
+      fakeMcp({
+        status: "signed_and_submitted",
+        tx_hash: "dep123",
+        auto_sign: "on",
+        has_unsigned_xdr: false,
+        signing_status: "submitted",
+        message: "Signed and submitted.",
+      }),
+      STEP,
+      CTX,
+    );
+    expect(r.status).toBe("signed_and_submitted");
+    expect(r.build.tx_hash).toBe("dep123");
+    expect(r.unsigned_xdr).toBeFalsy();
+  });
+
   /**
    * The Sign Service's policy engine is "THE security boundary" (its own docs) — spend
    * caps, allowlists, session checks. Live on 2026-08-12: "borrow 8000 XLM" against a

@@ -1384,14 +1384,18 @@ export async function executeMcpWrite(
   const xdr = pickXdr(build);
   const baseTrace = traceOf(step.tool, build, xdr);
 
-  // Tool already finished on-chain (e.g. open_account with Sign Service)
+  // Tool already finished on-chain. MCP write tools may Sign-Service-submit when
+  // a session is active (`auto_sign: "on"`, `signing_status: "submitted"`).
+  // Copilot must treat that as executed — never stage the same hop for a second sign.
   if (
     build.status === "signed_and_submitted" ||
     build.tx_hash ||
     build.submitted === true ||
     build.on_chain === true ||
+    build.auto_sign === "on" ||
     build.auto_sign === "submitted" ||
-    build.auto_sign === "signed_and_submitted"
+    build.auto_sign === "signed_and_submitted" ||
+    build.signing_status === "submitted"
   ) {
     const hash = (build.tx_hash as string) || null;
     // Prefer short chat copy — MCP often returns a Sign Service paragraph with
@@ -1679,9 +1683,10 @@ export async function executeMcpWrite(
     };
   }
 
-  // Manual signing is the default. Never call vanna_sign_and_submit from the
-  // brain — that submitted single-leg writes while in-app auto-approve was OFF.
-  // Auto-approve ON is client session-signing of this XDR, not a server submit.
+  // Never call vanna_sign_and_submit from the brain. If a Sign Service session
+  // is active, MCP write tools submit themselves (`auto_sign: "on"`) and we
+  // already returned above. If not, unsigned XDR is the contract: in-app
+  // auto-approve is client session-signing of this XDR, not a server submit.
   return {
     tool: step.tool,
     label: step.label,

@@ -2,7 +2,7 @@
  * Copilot brain settings — resolved from process env (.env.local in Next.js).
  * Server-only. Never import from client components.
  *
- * Production defaults for this app: Vertex (gemini-3.6-flash) + live MCP.
+ * Production defaults for this app: Vertex (gemini-3.7-flash) + live MCP.
  */
 
 function env(key: string, fallback = ""): string {

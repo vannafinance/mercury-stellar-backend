@@ -639,6 +639,10 @@ export function RunExecutionCard({
     // while a hop request is on the wire (busy). Without that gate the card said
     // "Leg 2 settled · advancing to leg 3 of 4" forever after the client queue
     // was cleared — UI spinning, no POST.
+    //
+    // Continue/Stop is an HF-floor decision, not an every-hop prompt. The parent
+    // only passes `onContinue` when health dropped below the stated floor on a
+    // collateral/debt tail.
     if (doneCount > 0) {
       if (busy) {
         return {
@@ -649,14 +653,23 @@ export function RunExecutionCard({
           beatSub: legs[focus] ? `Next: ${legs[focus].label.toLowerCase()}.` : undefined,
         };
       }
+      if (onContinue) {
+        return {
+          headline: "paused · health floor",
+          headDanger: false,
+          beat: `Leg ${doneCount} settled · health factor below your floor`,
+          beatTone: "warn" as const,
+          beatSub: legs[focus]
+            ? `Next: ${legs[focus].label.toLowerCase()}. Continue or stop here.`
+            : "Continue the remaining collateral/debt steps, or stop here.",
+        };
+      }
       return {
-        headline: "paused · continue",
+        headline: "waiting to advance",
         headDanger: false,
         beat: `Leg ${doneCount} settled · ${nth(focus)} still pending`,
-        beatTone: "warn" as const,
-        beatSub: legs[focus]
-          ? `Next: ${legs[focus].label.toLowerCase()}. Waiting for auto-resume or Continue.`
-          : "Waiting for auto-resume or Continue.",
+        beatTone: "ok" as const,
+        beatSub: legs[focus] ? `Next: ${legs[focus].label.toLowerCase()}.` : undefined,
       };
     }
     if (busy) {
@@ -669,13 +682,13 @@ export function RunExecutionCard({
       };
     }
     return {
-      headline: "paused · continue",
+      headline: onContinue ? "paused · health floor" : "ready",
       headDanger: false,
       beat: `Ready on ${nth(focus)}`,
-      beatTone: "warn" as const,
+      beatTone: onContinue ? ("warn" as const) : ("plain" as const),
       beatSub: legs[focus] ? legs[focus].label : undefined,
     };
-  }, [shape, legs, total, signerLive, busy]);
+  }, [shape, legs, total, signerLive, busy, onContinue]);
 
   const beatColor =
     narration.beatTone === "danger"
@@ -2045,7 +2058,11 @@ export function RunExecutionCard({
                 Stop here
               </button>
             ) : null}
-            {onCancel && !shape.gate && shape.doneCount === 0 ? (
+            {onCancel &&
+            !shape.gate &&
+            !shape.complete &&
+            !shape.failed &&
+            (busy || shape.doneCount === 0) ? (
               <button
                 type="button"
                 className={busy ? "rc-btn-q transition-colors" : "rc-btn-s transition-colors"}
@@ -2058,7 +2075,7 @@ export function RunExecutionCard({
                   fontWeight: 600,
                 }}
               >
-                Cancel run
+                Cancel
               </button>
             ) : null}
           </>

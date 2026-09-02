@@ -87,6 +87,7 @@ import {
 } from "./asset-readiness";
 import { capToFreeBalance, netOfOriginationFee } from "@/lib/borrow-fee";
 import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
+import { shouldPauseForHealthFloor } from "./hf-pause";
 import {
   coalesceLeveragedDepositBorrow,
   extractPlanIR,
@@ -7963,22 +7964,20 @@ async function runPlan(
       };
     }
 
-    // ── Stop: HF floor breached after a successful margin leg ─────────────
+    // ── Pause: HF floor breached after a successful margin leg ────────────
+    // Do not auto-skip the tail. Collateral/debt strategies pause so the user
+    // can Continue or Stop; swap→LP never pauses just because a floor is painted
+    // on the health dial.
     if (
       status === "ok" &&
-      minHf != null &&
-      hfAfter != null &&
-      hfAfter < minHf &&
-      writeCursor < totalWriteLegs
+      shouldPauseForHealthFloor({
+        floor: minHf,
+        hf: hfAfter,
+        remainingOps: expanded.slice(writeCursor).map((r) => r.op),
+        settledOps: multiSteps.map((s) => s.op),
+      })
     ) {
       const remaining = expanded.slice(writeCursor);
-      multiSteps[multiSteps.length - 1] = {
-        ...multiSteps[multiSteps.length - 1],
-        status: "stopped_hf",
-        message:
-          `HF ≈ ${hfAfter.toFixed(2)} fell below floor ${minHf} after this leg. ` +
-          `Further borrows/supplies stopped. Earlier txs above are real.`,
-      };
       for (const rest of remaining) {
         stepIndex += 1;
         multiSteps.push({
@@ -7987,29 +7986,37 @@ async function runPlan(
           label: rest.label,
           asset: rest.asset,
           amount: rest.amount,
-          status: "skipped",
-          message: `Skipped — HF floor ${minHf} breached`,
+          leverage: rest.leverage,
+          status: "pending",
+          message:
+            `Paused — HF ≈ ${hfAfter!.toFixed(2)} is below your floor of ${minHf}. ` +
+            `Continue or stop here.`,
           token_in: rest.token_in ?? null,
           token_out: rest.token_out ?? null,
         });
       }
       return {
         kind: "executed",
-        message: multiLegHeadline(multiSteps),
+        message:
+          `HF ≈ ${hfAfter!.toFixed(2)} is below your floor of ${minHf}. ` +
+          `Further collateral/debt steps are paused — continue or stop here.`,
         data: multiLegUiData({
           steps: multiSteps,
           summary: plan.summary || "Multi-step strategy",
           minHf,
           finalHf: hfAfter,
           smartAccount,
-          extra: { hf_stopped: true },
+          extra: {
+            hf_paused: true,
+            prefer_resume_multi_leg: false,
+          },
         }),
         intent: {
           template_id: plan.template_id,
-          slots: { stopped_hf: true, hf_after: hfAfter, min_hf: minHf },
+          slots: { hf_paused: true, hf_after: hfAfter, min_hf: minHf },
         },
         execution: {
-          status: "stopped_hf",
+          status: "paused_hf",
           tx_hash: txHash,
           steps: multiSteps.map(toExecutionStep),
         },

@@ -1,5 +1,19 @@
 # Copilot — next session brief
 
+## Session 2026-09-02 — Execution UX (Cancel / HF Continue / instant receipt)
+
+- During a running hop: Strategy + Ask another hidden; **Cancel** only. Cancel refuses
+  submit if the envelope has not gone out; remaining hops are dropped.
+- Continue/Stop only when `shouldPauseForHealthFloor` (stated HF floor breached on a
+  collateral/debt strategy). Swap → LP never gets that prompt.
+- Response card paints from `localExecutionAnswer` as soon as the last hop settles;
+  `summarize_execution` is background. Intent box restores the original prompt.
+- **MCP (sibling `vanna_mcp`, uncommitted):** write tools restore Sign Service
+  sign+submit when a session is active (`auto_sign: "on"`). Copilot treats that as
+  already executed — no second client sign. `close_account` / `settle_account` /
+  `liquidate` stay unsigned (unpriced). Does not conflict with Cancel / HF pause /
+  instant receipt. In-app auto-approve remains the path when SS has no session.
+
 ---
 
 ## Session 2026-08-21 — Gemini 3.7 Flash Upgrade & Enhanced Domain Firewall & Guardrail Consolidation

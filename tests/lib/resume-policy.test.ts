@@ -490,6 +490,18 @@ describe("strategyIsComplete + shouldAutoResume — hard stop after final", () =
     ).toBe(true);
   });
 
+  it("does not auto-resume when the HF floor pause is up", () => {
+    expect(
+      shouldAutoResume({
+        complete: false,
+        clientTail: [{ op: "borrow", amount: 10 }],
+        preferFlag: true,
+        canResumeWithAutoApprove: true,
+        hfPaused: true,
+      }),
+    ).toBe(false);
+  });
+
   it("pins a queued unsized LP so the amount card can attach after swap", () => {
     const row = pendingLpStepFromResume({
       op: "add_liquidity",

@@ -68,6 +68,8 @@ import {
   splitResumeBatch,
   strategyIsComplete,
 } from "./resume-policy";
+import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
+import { localExecutionAnswer } from "@/lib/copilot/execution-receipt";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { getPrivyAuthControls } from "@/lib/wallet-adapter";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
@@ -709,6 +711,21 @@ function Row({ k, v, color }: { k: string; v: string; color?: string }) {
  * Sequence wait does the real work; this is just a small buffer for MCP/Horizon.
  */
 const CHAIN_DELAY_MS = 1200;
+
+/** Fresh HF from the margin store after a rail refresh — not a React-closure snapshot. */
+function readLiveHfFromStore(): number | null {
+  const store = useMarginAccountInfoStore.getState();
+  if (!store.hasMarginAccount) return null;
+  const gross = store.grossCollateralValue ?? 0;
+  const debt = store.totalBorrowedValue ?? 0;
+  const derived = deriveMarginHealth({
+    grossCollateralValue: gross,
+    effectiveDebtValue: debt > 0.01 ? debt : 0,
+    totalBorrowedValue: debt,
+  });
+  const hf = derived.avgHealthFactor;
+  return Number.isFinite(hf) && hf > 0 ? hf : null;
+}
 
 /**
  * Button surfaces from the design: 8px for inline actions, 12px for the commit row.
@@ -1420,6 +1437,10 @@ export function CopilotWorkspace() {
 
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
+  /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
+  const originalIntentRef = useRef("");
+  /** Collateral/debt tail paused because HF dropped below the stated floor. */
+  const [hfPaused, setHfPaused] = useState(false);
   const [loading, setLoading] = useState(false);
   const [signing, setSigning] = useState(false);
   /**
@@ -1752,6 +1773,7 @@ export function CopilotWorkspace() {
     strategyCompleteRef.current = false;
     setStrategySteps([]);
     strategyMetaRef.current = {};
+    setHfPaused(false);
   }, []);
 
   // Session signing only applies to Privy embedded wallets — Freighter always
@@ -2287,17 +2309,18 @@ export function CopilotWorkspace() {
     async (
       body: Record<string, unknown>,
       promptLabel: string,
-      opts?: { chainHop?: boolean },
+      opts?: { chainHop?: boolean; background?: boolean },
     ) => {
-      if (cancelledRef.current && opts?.chainHop) {
+      if (cancelledRef.current && (opts?.chainHop || opts?.background)) {
         return null;
       }
 
+      const silent = !!opts?.background;
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
 
-      setLoading(true);
+      if (!silent) setLoading(true);
       // Keep last response on chain hops so the strategy card doesn't flash empty;
       // full new prompts still clear.
       if (!opts?.chainHop && !body.summarize_execution) {
@@ -2422,7 +2445,23 @@ export function CopilotWorkspace() {
           }
         }
 
-        setResponse(data);
+        if (silent && body.summarize_execution) {
+          setResponse((prev) => {
+            if (!prev) return data;
+            return {
+              ...prev,
+              ...data,
+              answer: data.answer ?? prev.answer,
+              data: {
+                ...(typeof prev.data === "object" && prev.data ? prev.data : {}),
+                ...(typeof data.data === "object" && data.data ? data.data : {}),
+                multi_leg_steps: strategyStepsRef.current,
+              },
+            };
+          });
+        } else {
+          setResponse(data);
+        }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
         // Do not log pure summarize receipts as a new turn noise — still fold if multi.
@@ -2454,12 +2493,14 @@ export function CopilotWorkspace() {
           return null;
         }
         const failed: ChatResponse = { kind: "error", message: "Copilot request failed." };
-        setResponse(failed);
-        pushLog(promptLabel, failed);
-        return failed;
+        if (!silent) {
+          setResponse(failed);
+          pushLog(promptLabel, failed);
+        }
+        return silent ? null : failed;
       } finally {
         if (abortRef.current === ac) abortRef.current = null;
-        setLoading(false);
+        if (!silent) setLoading(false);
       }
     },
     [address, smartAccount, autoApprove, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
@@ -2476,7 +2517,11 @@ export function CopilotWorkspace() {
     // explicitly stopped — these legs move funds, so they die with the cancel.
     // Settled legs stay on screen; only the unsent queue is discarded.
     strategyTailRef.current = [];
-    toast("Request cancelled — completed steps stay in the log.", { duration: 3500 });
+    setHfPaused(false);
+    if (originalIntentRef.current) setIntentText(originalIntentRef.current);
+    toast("Request cancelled — completed steps stay in the log. Nothing further will be submitted.", {
+      duration: 3500,
+    });
   }, []);
 
   const run = useCallback(
@@ -2485,6 +2530,7 @@ export function CopilotWorkspace() {
       if (!t || loading) return;
       cancelledRef.current = false;
       resetStrategyAccumulator();
+      originalIntentRef.current = t;
       setSubmitted(t);
       setIntentText(t);
       setPaletteOpen(false);
@@ -2540,9 +2586,8 @@ export function CopilotWorkspace() {
   const resumeMultiLeg = useCallback(
     async (legs: ResumeLeg[], summary: string) => {
       if (!legs.length || loading) return;
-      const label = summary || `Resume ${legs.length} steps`;
-      setSubmitted(label);
-      setIntentText(label);
+      const label = originalIntentRef.current || submitted || summary || `Resume ${legs.length} steps`;
+      setHfPaused(false);
       setPaletteOpen(false);
       await postCopilot(
         {
@@ -2550,6 +2595,7 @@ export function CopilotWorkspace() {
           resume_multi_leg: { summary: label, legs },
         },
         label,
+        { chainHop: true },
       );
     },
     [loading, postCopilot],
@@ -3028,6 +3074,9 @@ export function CopilotWorkspace() {
       markHopAutoFailed();
       return;
     }
+    if (cancelledRef.current) {
+      return;
+    }
     if (!address) {
       toast.error("Connect your wallet first.");
       markHopAutoFailed();
@@ -3037,7 +3086,10 @@ export function CopilotWorkspace() {
     try {
       const amount = typeof action?.amount === "number" && action.amount > 0 ? action.amount : 0;
       const result: ExecuteResult | SignXdrResult = xdr
-        ? await signAndSubmitMcpXdr(xdr, address, (hash) => {
+        ? await signAndSubmitMcpXdr(
+            xdr,
+            address,
+            (hash) => {
             // Submitted, not yet confirmed. Stamp the hash on the leg that is
             // awaiting signature so the card shows something checkable during
             // the 30–60s ledger wait instead of a bare spinner. Status stays
@@ -3052,12 +3104,18 @@ export function CopilotWorkspace() {
               setStrategySteps(withHash);
             }
             toast(ledgerWaitCopy(hash), { duration: 6000 });
-          })
+            },
+            () => cancelledRef.current,
+          )
         : await executeAction(action!, {
             amount,
             walletAddress: address,
             smartAccount,
           });
+      if (cancelledRef.current && !(result.ok && result.hash)) {
+        setSigning(false);
+        return;
+      }
       if (result.ok) {
         // This hop signed — only THIS key was blocked, if any.
         badSeqRebuildRef.current = false;
@@ -3176,51 +3234,45 @@ export function CopilotWorkspace() {
             ? Number(strategyMetaRef.current.min_hf)
             : null;
 
-        // Check if HF dropped below floor after this leg settled
-        const currentHf = liveHf != null && Number.isFinite(liveHf) ? liveHf : null;
-        const hfBreached =
-          targetFloor != null &&
-          currentHf != null &&
-          currentHf < targetFloor &&
-          remainingFromData.length > 0;
+        const currentHf = readLiveHfFromStore() ?? (liveHf != null && Number.isFinite(liveHf) ? liveHf : null);
+        const hfFloorPause = shouldPauseForHealthFloor({
+          floor: targetFloor,
+          hf: currentHf,
+          remainingOps: remainingFromData.map((r) => r.op),
+          settledOps: strategyStepsRef.current.map((s) => s.op),
+        });
 
-        if (hfBreached) {
-          strategyTailRef.current = [];
-          strategyCompleteRef.current = true;
-          const stoppedSteps = strategyStepsRef.current.map((s, idx) =>
-            idx === 0
-              ? { ...s, status: "ok" }
-              : {
-                  ...s,
-                  status: "stopped_hf",
-                  message: `Stopped — HF ${currentHf.toFixed(2)} is below your safety floor (${targetFloor.toFixed(2)})`,
-                },
-          );
-          strategyStepsRef.current = stoppedSteps;
+        if (hfFloorPause) {
+          strategyTailRef.current = remainingFromData;
+          strategyCompleteRef.current = false;
+          setHfPaused(true);
+          if (originalIntentRef.current) setIntentText(originalIntentRef.current);
+          const floor = targetFloor as number;
+          const hf = currentHf as number;
           setResponse({
             kind: "executed",
-            message: `HF ≈ ${currentHf.toFixed(2)} is below your floor of ${targetFloor.toFixed(2)}. Further transactions stopped to protect your account.`,
-            answer: {
-              headline: `Stopped — Health Factor Below Floor (${targetFloor.toFixed(2)})`,
-              facts: [
-                { label: "Floor Required", value: `≥ ${targetFloor.toFixed(2)}` },
-                { label: "Account HF", value: currentHf.toFixed(2) },
-                { label: "Leg 1 Status", value: "Settled on-chain" },
-                { label: "Leg 2 Status", value: "Stopped" },
-              ],
-              note: `Your margin account Health Factor is currently ${currentHf.toFixed(2)}, which is below your safety floor of ${targetFloor.toFixed(2)} ("keep health factor above ${targetFloor}"). Leg 1 settled on-chain (${result.hash ? result.hash.slice(0, 10) + "…" : "confirmed"}), but further transactions have been stopped to protect your account from liquidation.`,
-            },
+            message:
+              `HF ≈ ${hf.toFixed(2)} is below your floor of ${floor.toFixed(2)}. ` +
+              `Further collateral/debt steps are paused — continue or stop here.`,
+            answer: localExecutionAnswer({
+              intent: originalIntentRef.current || submitted,
+              legs: strategyStepsRef.current,
+              hf,
+              floor,
+              pausedHf: true,
+            }),
             preview: response?.preview ?? null,
-            execution: { status: "stopped_hf", tx_hash: result.hash ?? null },
+            execution: { status: "paused_hf", tx_hash: result.hash ?? null },
             request_id: response?.request_id,
             data: {
               ...(response?.data || {}),
               multi_leg: true,
-              multi_leg_steps: stoppedSteps,
-              headline: `Stopped — HF ${currentHf.toFixed(2)} below floor ${targetFloor.toFixed(2)}`,
-              strategy_complete: true,
-              can_resume: false,
-              remaining_legs: null,
+              multi_leg_steps: strategyStepsRef.current,
+              headline: `Paused — HF ${hf.toFixed(2)} below floor ${floor.toFixed(2)}`,
+              strategy_complete: false,
+              hf_paused: true,
+              can_resume: true,
+              remaining_legs: remainingFromData,
               prefer_resume_multi_leg: false,
             },
           });
@@ -3318,8 +3370,10 @@ export function CopilotWorkspace() {
         if (preferResume && remainingFromData.length > 0) {
           if (cancelledRef.current) return;
           const parentPrompt =
+            originalIntentRef.current ||
             strategyParentRef.current?.prompt ||
-            String((response?.data as any)?.strategy_summary || submitted || "Continue strategy");
+            submitted ||
+            "Continue strategy";
           if (!strategyParentRef.current) {
             strategyParentRef.current = {
               id: response?.request_id || `strat-${Date.now()}`,
@@ -3340,26 +3394,10 @@ export function CopilotWorkspace() {
               (tail.length ? ` (${tail.length} more after this)…` : "…"),
             { duration: 3500 },
           );
-          // Strip remaining_legs so interim executed response does not re-trigger resume
-          setResponse({
-            kind: "executed",
-            message: `Step done${result.hash ? ` · ${result.hash.slice(0, 12)}…` : ""}. Continuing strategy…`,
-            mcp: response?.mcp ?? null,
-            preview: response?.preview ?? null,
-            execution: { status: "signed_and_submitted", tx_hash: result.hash ?? null },
-            request_id: response?.request_id,
-            data: {
-              ...(response?.data || {}),
-              multi_leg: true,
-              multi_leg_steps: strategyStepsRef.current,
-              remaining_legs: null,
-              prefer_resume_multi_leg: false,
-            },
-          });
+          setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
-          setSubmitted(parentPrompt);
           const hop = await postCopilot(
             {
               message: parentPrompt,
@@ -3412,10 +3450,10 @@ export function CopilotWorkspace() {
               multi_leg_steps: strategyStepsRef.current,
             },
           });
+          setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
-          setSubmitted(strategyParentRef.current?.prompt || submitted || label);
           await postCopilot(
             {
               message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
@@ -3455,8 +3493,10 @@ export function CopilotWorkspace() {
             tx_hash: s.tx_hash != null ? String(s.tx_hash) : null,
           }));
         const intent =
+          originalIntentRef.current ||
           strategyParentRef.current?.prompt ||
-          String(strategyMetaRef.current.strategy_summary || submitted || summary);
+          submitted ||
+          summary;
 
         if (hasStrategy && ranLegs.some((l) => l.status === "ok" || l.status === "done")) {
           /**
@@ -3486,6 +3526,18 @@ export function CopilotWorkspace() {
             message: `Submitted with your wallet${result.hash ? ` · ${result.hash}` : ""}.`,
             mcp: response?.mcp ?? null,
             preview: response?.preview ?? null,
+            answer:
+              settled && !stillQueued
+                ? localExecutionAnswer({
+                    intent,
+                    legs: strategyStepsRef.current,
+                    hf: readLiveHfFromStore() ?? liveHf,
+                    floor:
+                      strategyMetaRef.current.min_hf != null
+                        ? Number(strategyMetaRef.current.min_hf)
+                        : null,
+                  })
+                : undefined,
             execution: {
               status: settled && !stillQueued ? "completed" : "signed_and_submitted",
               tx_hash: result.hash ?? null,
@@ -3510,23 +3562,31 @@ export function CopilotWorkspace() {
                 : {}),
             },
           });
-          // Never summarize a half-finished strategy — the model then says "1 of 1
-          // deposited" and the run card is replaced while borrow/supply are still due.
+          if (settled && !stillQueued && originalIntentRef.current) {
+            setIntentText(originalIntentRef.current);
+          }
+          // Receipt is already on screen. Vertex may enrich the headline in the
+          // background — do not keep the run in "Running…" while it thinks.
           if (!cancelledRef.current && settled && !stillQueued) {
             const stratId = strategyParentRef.current?.id || response?.request_id || "exec";
             const sumKey = `${stratId}:summarize:${finalLegs.length}`;
             if (nextStepFiredRef.current !== sumKey) {
               nextStepFiredRef.current = sumKey;
-              await postCopilot(
+              void postCopilot(
                 {
                   message: intent,
                   summarize_execution: {
-                    intent: response?.preview?.human_summary || intent,
+                    intent: originalIntentRef.current || response?.preview?.human_summary || intent,
                     legs: ranLegs,
+                    final_health_factor: readLiveHfFromStore() ?? liveHf,
+                    health_factor_floor:
+                      strategyMetaRef.current.min_hf != null
+                        ? Number(strategyMetaRef.current.min_hf)
+                        : null,
                   },
                 },
                 intent,
-                { chainHop: true },
+                { chainHop: true, background: true },
               );
             }
           }
@@ -3776,6 +3836,57 @@ export function CopilotWorkspace() {
       strategyTailRef.current,
       cardComplete ? [] : legsFromUnsettledSteps(strategyStepsRef.current),
     ).filter((r) => !farmWriteAlreadySettled(r.op, strategyStepsRef.current));
+    const targetFloor =
+      strategyMetaRef.current.min_hf != null &&
+      Number.isFinite(Number(strategyMetaRef.current.min_hf))
+        ? Number(strategyMetaRef.current.min_hf)
+        : null;
+    const liveNow = readLiveHfFromStore() ?? liveHf;
+    const hfFloorPause =
+      hfPaused ||
+      shouldPauseForHealthFloor({
+        floor: targetFloor,
+        hf: liveNow,
+        remainingOps: remaining.map((r) => r.op),
+        settledOps: strategyStepsRef.current.map((s) => s.op),
+      });
+    if (hfFloorPause && remaining.length > 0 && !cardComplete) {
+      strategyTailRef.current = remaining;
+      strategyCompleteRef.current = false;
+      if (!hfPaused) {
+        setHfPaused(true);
+        if (originalIntentRef.current) setIntentText(originalIntentRef.current);
+        setResponse((prev) => {
+          if (!prev) return prev;
+          const d = (prev.data ?? {}) as Record<string, unknown>;
+          const hf = liveNow;
+          const floor = targetFloor;
+          return {
+            ...prev,
+            message:
+              hf != null && floor != null
+                ? `HF ≈ ${hf.toFixed(2)} is below your floor of ${floor.toFixed(2)}. Further collateral/debt steps are paused — continue or stop here.`
+                : prev.message,
+            answer: localExecutionAnswer({
+              intent: originalIntentRef.current || submitted,
+              legs: strategyStepsRef.current,
+              hf: liveNow,
+              floor: targetFloor,
+              pausedHf: true,
+            }),
+            data: {
+              ...d,
+              hf_paused: true,
+              prefer_resume_multi_leg: false,
+              can_resume: true,
+              remaining_legs: remaining,
+              strategy_complete: false,
+            },
+          } as ChatResponse;
+        });
+      }
+      return;
+    }
     const pauseForLp =
       isUnsizedAddLiquidity(remaining[0]) &&
       !farmWriteAlreadySettled(remaining[0]?.op, strategyStepsRef.current);
@@ -3801,6 +3912,7 @@ export function CopilotWorkspace() {
       !!autoApprove &&
       !cardComplete &&
       !pauseForLp &&
+      !hfFloorPause &&
       (shouldAutoResume({
         complete: false,
         serverRemaining,
@@ -3808,6 +3920,7 @@ export function CopilotWorkspace() {
         preferFlag: (response.data as any)?.prefer_resume_multi_leg === true,
         canResumeWithAutoApprove:
           (response.data as any)?.can_resume === true && autoApprove,
+        hfPaused: hfFloorPause,
       }) ||
         remaining.length > 0);
 
@@ -3855,8 +3968,10 @@ export function CopilotWorkspace() {
       if (nextStepFiredRef.current === key) return;
       nextStepFiredRef.current = key;
       const parentPrompt =
+        originalIntentRef.current ||
         strategyParentRef.current?.prompt ||
-        String((response.data as any)?.strategy_summary || submitted || "Continue strategy");
+        submitted ||
+        "Continue strategy";
       if (!strategyParentRef.current) {
         strategyParentRef.current = {
           id: response.request_id || `strat-${Date.now()}`,
@@ -3874,11 +3989,11 @@ export function CopilotWorkspace() {
         { duration: 3000 },
       );
       void (async () => {
+        setLoading(true);
         await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
         if (cancelledRef.current) return;
         await refreshRailStats({ force: true });
         if (cancelledRef.current) return;
-        setSubmitted(parentPrompt);
         const hop = await postCopilot(
           {
             message: parentPrompt,
@@ -3923,13 +4038,10 @@ export function CopilotWorkspace() {
         if (nextStepFiredRef.current === sumKey) return;
         nextStepFiredRef.current = sumKey;
         const intent =
+          originalIntentRef.current ||
           strategyParentRef.current?.prompt ||
-          String(
-            (response.data as any)?.strategy_summary ||
-              strategyMetaRef.current.strategy_summary ||
-              submitted ||
-              "strategy",
-          );
+          submitted ||
+          "strategy";
         const ranLegs = card.map((s) => ({
           action: String(s.label || `Step ${s.index ?? ""}`),
           status: String(s.status || "unknown"),
@@ -3939,23 +4051,39 @@ export function CopilotWorkspace() {
         const floorRaw =
           (response.data as any)?.min_hf ?? strategyMetaRef.current.min_hf;
         const finalHf =
-          hfRaw != null && Number.isFinite(Number(hfRaw)) ? Number(hfRaw) : null;
+          hfRaw != null && Number.isFinite(Number(hfRaw))
+            ? Number(hfRaw)
+            : readLiveHfFromStore() ?? liveHf;
         const floorHf =
           floorRaw != null && Number.isFinite(Number(floorRaw)) ? Number(floorRaw) : null;
+        if (originalIntentRef.current) setIntentText(originalIntentRef.current);
+        setResponse((prev) => {
+          if (!prev) return prev;
+          if (prev.answer) return prev;
+          return {
+            ...prev,
+            answer: localExecutionAnswer({
+              intent,
+              legs: card,
+              hf: finalHf,
+              floor: floorHf,
+            }),
+          } as ChatResponse;
+        });
         void (async () => {
           if (cancelledRef.current) return;
           await postCopilot(
             {
               message: intent,
               summarize_execution: {
-                intent: response.preview?.human_summary || intent,
+                intent: originalIntentRef.current || response.preview?.human_summary || intent,
                 legs: ranLegs,
                 final_health_factor: finalHf,
                 health_factor_floor: floorHf,
               },
             },
             intent,
-            { chainHop: true },
+            { chainHop: true, background: true },
           );
         })();
       }
@@ -3970,6 +4098,7 @@ export function CopilotWorkspace() {
       `Auto step ${next.step ?? 2}: ${next.op} ${next.amount} ${next.asset || ""}`.trim();
     toast.success("Step confirmed — next leg in ~2s…", { duration: 3000 });
     void (async () => {
+      setLoading(true);
       await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
       if (cancelledRef.current) return;
       await refreshRailStats({ force: true });
@@ -3980,7 +4109,6 @@ export function CopilotWorkspace() {
           prompt: submitted,
         };
       }
-      setSubmitted(strategyParentRef.current?.prompt || submitted || label);
       await postCopilot(
         {
           message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
@@ -3996,7 +4124,7 @@ export function CopilotWorkspace() {
         { chainHop: true },
       );
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -4118,7 +4246,9 @@ export function CopilotWorkspace() {
     badSeqRebuildRef.current = false;
     setSubmitted(null);
     setResponse(null);
+    originalIntentRef.current = "";
     setIntentText("");
+    setHfPaused(false);
     setShowCustom(false);
     autoSubmittedRef.current = null;
     nextStepFiredRef.current = null;
@@ -4126,6 +4256,47 @@ export function CopilotWorkspace() {
     resetStrategyAccumulator();
     inputRef.current?.focus();
   };
+
+  const stopRemainingLegs = useCallback(() => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setSigning(false);
+    setHfPaused(false);
+    strategyTailRef.current = [];
+    strategyCompleteRef.current = true;
+    const stopped = strategyStepsRef.current.map((s) => {
+      const st = String(s.status ?? "").toLowerCase();
+      if (["ok", "done", "signed_and_submitted", "error", "blocked", "failed"].includes(st)) {
+        return s;
+      }
+      return { ...s, status: "skipped", message: "Stopped here" };
+    });
+    strategyStepsRef.current = stopped;
+    setStrategySteps(stopped);
+    const floor =
+      strategyMetaRef.current.min_hf != null ? Number(strategyMetaRef.current.min_hf) : null;
+    const hf = readLiveHfFromStore() ?? liveHf;
+    const intent = originalIntentRef.current || submitted;
+    if (originalIntentRef.current) setIntentText(originalIntentRef.current);
+    setResponse({
+      kind: "executed",
+      message: "Stopped here. Settled legs stay on-chain; nothing further will be submitted.",
+      answer: localExecutionAnswer({ intent, legs: stopped, hf, floor }),
+      execution: { status: "stopped", tx_hash: null },
+      data: {
+        ...strategyMetaRef.current,
+        multi_leg: true,
+        multi_leg_steps: stopped,
+        strategy_complete: true,
+        can_resume: false,
+        remaining_legs: null,
+        prefer_resume_multi_leg: false,
+        hf_paused: false,
+      },
+    });
+  }, [liveHf, submitted]);
 
   const brainOnline = health?.status === "ok";
   const multiLeg =
@@ -4666,21 +4837,29 @@ export function CopilotWorkspace() {
             <button
               type="button"
               onClick={() => setPaletteOpen((o) => !o)}
+              disabled={loading || signing}
               className={`hidden shrink-0 items-center gap-1.5 px-3 py-2 text-[12px] sm:flex ${BTN_QUIET}`}
             >
               <LayoutTemplate size={12} /> Prompts
             </button>
             <button
-              type={loading ? "button" : "submit"}
-              disabled={!loading && !intentText.trim()}
-              onClick={loading ? (e) => { e.preventDefault(); cancelInFlight(); } : undefined}
+              type={loading || signing ? "button" : "submit"}
+              disabled={!loading && !signing && !intentText.trim()}
+              onClick={
+                loading || signing
+                  ? (e) => {
+                      e.preventDefault();
+                      cancelInFlight();
+                    }
+                  : undefined
+              }
               className={
-                loading
+                loading || signing
                   ? `shrink-0 px-6 py-2.5 ${BTN_QUIET}`
                   : `shrink-0 px-6 py-2.5 ${BTN_GRADIENT}`
               }
             >
-              {loading ? "Cancel" : "Run"}
+              {loading || signing ? "Cancel" : "Run"}
             </button>
           </div>
         </form>
@@ -4790,9 +4969,21 @@ export function CopilotWorkspace() {
                           ? "privy wallet"
                           : "freighter wallet"
                     }
-                    onCancel={loading ? cancelInFlight : undefined}
-                    onContinue={continueRemainingLegs}
-                    onStop={reset}
+                    footerNote={
+                      hfPaused
+                        ? "Health factor dropped below the floor you asked for. Continue the remaining collateral/debt steps, or stop here. Settled legs stay on-chain."
+                        : undefined
+                    }
+                    footerTone={hfPaused ? "warn" : undefined}
+                    onCancel={loading || signing ? cancelInFlight : undefined}
+                    onContinue={hfPaused ? continueRemainingLegs : undefined}
+                    onStop={
+                      hfPaused
+                        ? stopRemainingLegs
+                        : execLegs.some((l) => l.status === "failed")
+                          ? reset
+                          : undefined
+                    }
                     onNewIntent={reset}
                     onViewTx={txHash ? () => window.open(txUrl(txHash), "_blank") : undefined}
                     onSubmitAmount={submitLegAmount}
@@ -4815,8 +5006,9 @@ export function CopilotWorkspace() {
                   </div>
                 )}
 
-                {/* Answer / note — also keep strategy card while a hop is in flight */}
-                {(phase === "answer" || (phase === "running" && multiLeg)) && (response || multiLeg) && (
+                {/* Answer / note. Hidden while a hop is in flight so Strategy /
+                    Ask another cannot sit under a live Cancel. */}
+                {phase === "answer" && (response || multiLeg) && (
                   <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <Eyebrow n="03">
@@ -4915,6 +5107,7 @@ export function CopilotWorkspace() {
                         </div>
                       )}
 
+                    {!(loading || signing || hfPaused || (multiLeg && strategyOpen)) && (
                     <div className="mt-[22px] flex flex-wrap gap-2.5">
                       <button
                         type="button"
@@ -4950,6 +5143,7 @@ export function CopilotWorkspace() {
                         </button>
                       )}
                     </div>
+                    )}
                   </div>
                 )}
 

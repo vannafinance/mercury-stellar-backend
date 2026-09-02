@@ -1,9 +1,71 @@
-# Copilot Test Run — Open Items
+# Copilot Test Run — Findings log
+
+**Updated:** 2026-09-02
+
+PR [#57](https://github.com/vannafinance/mercury-stellar-backend/pull/57) points here for
+open items. **§0** is current behaviour. **§0b** is what is still open *now* (reviewer
+checklist). From §1 down is the 2026-08-12 session archive — keep it for traceability;
+do not treat those tables as the live punch list.
+
+---
+
+## 0. Current product behaviour (2026-09-02)
+
+Execution UX (this session):
+
+- While a hop is signing, submitting, or confirming, the run card shows **Cancel** only
+  (no Strategy section, no Ask another, no Continue/Stop). Cancel aborts the in-flight
+  request and will not submit a signed envelope that has not gone out; legs already
+  accepted by the network stay on-chain and the remaining queue is dropped.
+- **Continue leg N / Stop here** appear only when a stated health-factor floor is
+  breached on a collateral/debt strategy. Swap → LP (and other non-margin tails) never
+  get that prompt. Auto-sign still chains hops without asking.
+- After the last hop settles, the Response card paints immediately from the legs
+  (`localExecutionAnswer`). Vertex may enrich the headline in the background; it no
+  longer blocks the receipt. The intent box keeps the original prompt, not "Approved plan".
+
+MCP Sign Service (sibling `vanna_mcp`, uncommitted there — **does not undo** the UX above):
+
+- Write tools restore Sign Service sign+submit when a session is active (`auto_sign: "on"`).
+  Copilot treats that as already executed — no second client sign.
+- Cancel / hide Strategy / instant receipt / original prompt still apply. Cancel still
+  cannot unsubmit a hop that MCP (or the wallet) already sent.
+- Continue/Stop still only appears on a real HF-floor breach for collateral/debt strategies.
+- In-app auto-approve is still the path when there is no Sign Service session.
+- `close_account` / `settle_account` / `liquidate` stay unsigned on the Sign Service side
+  (unpriced). Copilot will still client-sign those if in-app auto-approve is on.
+
+---
+
+## 0b. Still open — reviewer checklist (2026-09-02)
+
+| # | Item | Owner | Notes |
+|---|------|-------|-------|
+| 1 | Live browser re-check of Cancel / HF Continue / instant receipt / original prompt | Copilot | Code + unit tests landed this session; no live browser pass yet. Swap → LP with auto-sign should show Cancel only, then the original prompt + receipt as soon as the last hop settles. Deposit/borrow with “keep HF above 2” should show Continue/Stop **only** if HF actually breaches. |
+| 2 | Auto-sign **OFF** sweep of test-script sections 1–9 | Copilot / reviewer | Same checkbox as the PR test plan. This pass (and the original archive) ran almost entirely with auto-sign ON. |
+| 3 | Session log can stay “in progress” after a hop has completed | Copilot | Owner-reported; not root-caused. `NEXT-SESSION.md` Task 2. |
+| 4 | Success card still shows an `ERROR wallet_not_bound` row (and model-facing “Use Approve & sign / Freighter…” copy) after a completed create-account | Copilot | Cosmetic. Account creation itself is fixed and verified on-chain. |
+| 5 | `close` / `settle` / `liquidate` are not Sign-Service auto-signed (unpriced) | MCP + Copilot | Intended on the Sign Service. In-app auto-approve will still client-sign them. Product call if that should match SS. |
+| 6 | “when XLM hits $0.50 sell everything” falls to the capabilities blurb | Product | No `sell` / liquidate-everything op exists. Not a routing typo. |
+| 7 | “Swap 100 XLM to SoUSDC and Add Liquidity in Soroswap” executed only the swap | Copilot | Second leg dropped; not isolated. Needs a fresh repro with session-log / `remaining_legs`. |
+| 8 | Aquarius LP remove: Registry tracking-token never minted for copilot-added LP | MCP / Registry | Copilot no longer lands a silent no-op (honest error instead). Real removal still blocked. Archive #44. |
+| 9 | `vanna_borrow` BLUSDC above a low threshold → `HostError: Error(Contract, #13)` | MCP / `vanna_core` | Not a copilot risk-gate miss. Archive §2 #1. |
+| 10 | `vanna_can_borrow` `allowed: false` vs Margin page “safe” on one wallet | MCP / `vanna_core` | Not reproduced on the healthier test wallet this session. Archive #33. |
+| 11 | Earn page APY is a utilisation model; copilot shows chain APY | Product | Both surfaces are self-consistent. Decision: publish RateModel params or have the page read MCP. |
+| 12 | Coverage gaps: K-01–K-04 (near-liquidation wallet), Z-01/Z-03–Z-06 (network/wallet/env), S-08 (reject Freighter prompt) | QA | Need wallets / env this session did not have. Archive §5. |
+
+MCP sibling work (not this PR): Sign Service auto-sign restore is still **uncommitted** in
+`vanna_mcp`. Copilot already recognises `auto_sign: "on"` as executed so the two do not
+double-sign.
+
+---
+
+## Archive — 2026-08-12 session log
 
 **Branch:** `copilot-ui-rewire` · **Date:** 2026-08-12
 
-Everything already fixed, verified, or passed this run has been dropped. This document
-lists only what remains open, with severity, location, and a proposed fix for each.
+The tables below are the original test-run log. If a row is still true, it is restated in
+§0b. Do not treat this archive as the current punch list.
 
 ---
 

@@ -153,9 +153,14 @@ async function pollTransaction(
   // faster also shortens the gap between confirmation and the UI showing it.
   // This strengthens confirmation: nothing is accepted earlier, we just stop
   // abandoning it sooner than the network answers.
-  { attempts = 60, delayMs = 1000 } = {},
+  { attempts = 60, delayMs = 1000, shouldAbort }: {
+    attempts?: number;
+    delayMs?: number;
+    shouldAbort?: () => boolean;
+  } = {},
 ): Promise<{ status: string; reason?: string }> {
   for (let i = 0; i < attempts; i += 1) {
+    if (shouldAbort?.()) return { status: "ABORTED" };
     try {
       const res = await server.getTransaction(hash);
       if (res.status === StellarSdk.rpc.Api.GetTransactionStatus.SUCCESS) {
@@ -201,9 +206,14 @@ export async function signAndSubmitMcpXdr(
    * even if they close the tab.
    */
   onSubmitted?: (hash: string) => void,
+  /** Return true to skip submit (or stop waiting on a hash that already went out). */
+  shouldAbort?: () => boolean,
 ): Promise<SignXdrResult> {
   if (!unsignedXdr || unsignedXdr.length < 20) {
     return { ok: false, error: "No transaction to sign — re-run the request." };
+  }
+  if (shouldAbort?.()) {
+    return { ok: false, error: "Cancelled — transaction was not submitted." };
   }
 
   const submitKey = xdrSubmitKey(unsignedXdr);
@@ -274,6 +284,10 @@ export async function signAndSubmitMcpXdr(
     };
   }
 
+  if (shouldAbort?.()) {
+    return { ok: false, error: "Cancelled — transaction was not submitted." };
+  }
+
   // 3. Sign via whichever wallet is active (Freighter extension or Privy raw-hash).
   const signed = await signTransaction(tx.toXDR(), {
     networkPassphrase: NETWORK_PASSPHRASE,
@@ -282,6 +296,9 @@ export async function signAndSubmitMcpXdr(
   if (signed.error || !signed.signedTxXdr) {
     const detail = typeof signed.error === "string" ? signed.error : signed.error?.message;
     return { ok: false, error: detail || "Signing was cancelled." };
+  }
+  if (shouldAbort?.()) {
+    return { ok: false, error: "Cancelled — transaction was not submitted." };
   }
 
   // 4. Submit + poll. MCP already simulated, so we do NOT re-prepare (that would
@@ -371,8 +388,8 @@ export async function signAndSubmitMcpXdr(
       /* a UI callback must never take down the submit path */
     }
 
-    const final = await pollTransaction(server, sent.hash);
-    if (final.status === "SUCCESS") return { ok: true, hash: sent.hash };
+    const final = await pollTransaction(server, sent.hash, { shouldAbort });
+    if (final.status === "SUCCESS" || final.status === "ABORTED") return { ok: true, hash: sent.hash };
     if (final.status === "TIMEOUT") {
       return {
         ok: false,

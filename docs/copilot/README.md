@@ -53,13 +53,13 @@ surface. `isAssistantChat()` is the gate, and it defaults to routing to the copi
 
 | Call | Model | Thinking | Why |
 |---|---|---|---|
-| Intent routing (`route:fc`) | `gemini-3.6-flash` via Vertex, function-calling | **default (on)** | Picks the tool/op. A wrong choice here is a wrong *action* |
+| Intent routing (`route:fc`) | `gemini-3.7-flash` via Vertex, function-calling | **default (on)** | Picks the tool/op. A wrong choice here is a wrong *action* |
 | Strategy planning (`llm-planner`) | same | default | Decomposes free-form multi-leg prompts |
 | Answer formatting (`answer`, `explain`) | same | **low** (`thinkingLevel: "low"`) | Only formats figures MCP already returned |
 | Execution receipt (`receipt`) | same | default | Narrates what settled |
 | Page assistant / guide | same | default | Grounded in page DOM |
 
-Model id: `VERTEX_MODEL`, default `gemini-3.6-flash`, project `vanna-mcp`, `location=global`.
+Model id: `VERTEX_MODEL`, default `gemini-3.7-flash`, project `vanna-mcp`, `location=global`.
 Fallbacks: `gemini-2.5-flash,gemini-2.0-flash-001,gemini-2.0-flash`.
 
 **Why thinking is tuned per call, not globally.** Gemini 3.x thinks by default. Measured on
@@ -151,7 +151,9 @@ Two independent things, never conflated:
   signature.
 
 Outcomes of a write:
-- `executed` — MCP auto-signed via the Sign Service (needs an active session).
+- `executed` — already on-chain. Either MCP Sign-Service-submitted (`auto_sign: "on"`,
+  needs an active SS session) or the browser session-signed MCP's XDR (in-app auto-approve
+  when there is no SS session). Copilot must not stage that hop for a second sign.
 - `needs_wallet_sign` — the browser signs the XDR **MCP built** (`sign-xdr.ts`). It does not
   rebuild locally; rebuilding produced bogus "XLM not set in the Registry" errors.
 - `needs_wallet_bind` — Privy "connect wallet" is *not* signing authority. The binding is a
@@ -165,6 +167,12 @@ Outcomes of a write:
 
 **Auto-sign executes single-leg writes with no preview and no approval click.** That is the
 documented design, and it is the thing to know before running any write test.
+
+Multi-leg with auto-sign still chains hops without Continue/Stop. Those buttons appear only
+when a stated health-factor floor is breached on a collateral/debt strategy. While a hop is
+in flight the only action is **Cancel** (stops further submits; already-accepted txs stay
+on-chain). The Response card is built from settled legs immediately; Vertex summarization
+does not block it. The intent box keeps the original prompt, not "Approved plan".
 
 ## 6. Assets
 

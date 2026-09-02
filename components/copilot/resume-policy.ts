@@ -278,8 +278,11 @@ export function shouldAutoResume(opts: {
   /** Prefer / can_resume flags from the server for this hop. */
   preferFlag?: boolean;
   canResumeWithAutoApprove?: boolean;
+  /** Stated HF floor breached — wait for Continue / Stop, do not auto-chain. */
+  hfPaused?: boolean;
 }): boolean {
   if (opts.complete) return false;
+  if (opts.hfPaused) return false;
   const first = (opts.serverRemaining?.[0] ?? opts.clientTail?.[0]) as
     | { op?: string; amount?: number | null }
     | undefined;

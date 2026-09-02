@@ -32,7 +32,7 @@ flowchart LR
   MCP["Vanna MCP<br/>mcp.vanna.finance/mcp<br/>14 dispatchers"]
   SIGN["Sign Service<br/>auto-sign policy + bindings"]
   CHAIN["Stellar / Soroban<br/>testnet"]
-  VTX["Vertex AI<br/>gemini-3.6-flash"]
+  VTX["Vertex AI<br/>gemini-3.7-flash"]
 
   UI -->|"message"| API --> BRAIN
   BRAIN <-->|"language only"| VTX
@@ -129,7 +129,8 @@ flowchart TD
   RISK -->|block| B2["blocked with reason"]
   RISK --> BUILD["MCP builds + simulates → XDR"]
   BUILD --> OUT{"outcome"}
-  OUT -->|"auto-sign session active"| EXEC["executed on chain"]
+  OUT -->|"Sign Service session active"| EXEC["MCP signs+submits (auto_sign: on)"]
+  OUT -->|"in-app auto-approve, no SS session"| EXEC2["browser session-signs MCP XDR"]
   OUT -->|"refusal WITH usable XDR"| SIGNW["needs_wallet_sign<br/>browser signs MCP's XDR"]
   OUT -->|"no binding"| BIND["needs_wallet_bind"]
   OUT -->|"budget error in simulation"| LOCAL["local executor fallback<br/>same service the Margin page uses"]
@@ -209,6 +210,15 @@ flowchart LR
 - Exactly one leg is settled per signature (`claimFirstAwaitingLeg`). Stamping every
   matching leg with one hash once marked legs 3 and 4 "done" against leg 2's transaction —
   claiming transactions that never happened.
+- While a hop is in flight the workspace shows **Cancel** only. Continue/Stop is an
+  HF-floor decision on collateral/debt tails (`shouldPauseForHealthFloor`), not an
+  every-hop prompt.
+- The Response card is built from the settled legs as soon as the last hop returns.
+  `summarize_execution` may refine the headline in the background; it must not keep the
+  UI in "Running…".
+- Cancel cannot unsubmit a hop MCP or the wallet already sent. `close_account` /
+  `settle_account` / `liquidate` stay unsigned on the Sign Service (unpriced); in-app
+  auto-approve can still client-sign them.
 
 ---
 
