@@ -62,10 +62,9 @@ const notify = () => {
   }
 };
 
-// We need a funded G-account to source simulation transactions. We use the
-// connected wallet when available and fall back to the testnet deployer key
-// for unauthenticated reads (e.g. landing-page price probes before connect).
-const FALLBACK_SOURCE = 'GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D';
+// Fee/sequence source for oracle sims only. Does not need to be funded —
+// simulateTransaction accepts Account(addr, "0") when Horizon has no entry.
+const FALLBACK_SOURCE = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 
 async function buildSimulationTx(
   server: StellarSdk.rpc.Server,
@@ -79,7 +78,12 @@ async function buildSimulationTx(
   } catch {
     // Freighter unavailable in SSR / non-browser — use the fallback source.
   }
-  const src = await server.getAccount(sourceAddr);
+  let src: StellarSdk.Account;
+  try {
+    src = await server.getAccount(sourceAddr);
+  } catch {
+    src = new StellarSdk.Account(sourceAddr, "0");
+  }
   const c = new StellarSdk.Contract(CONTRACT_ADDRESSES.ORACLE);
   return new StellarSdk.TransactionBuilder(src, {
     fee: '100',

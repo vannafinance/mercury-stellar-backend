@@ -24,6 +24,16 @@ substitutions:
   # Hubble is PUBNET-only data and this environment runs against Stellar
   # testnet, so /stats stays gated off. See lib/hubble/gate.ts.
   _STATS_ENABLED: "false"
+  # Copilot ships reads-only. Writes move real money, and the auto-sign-OFF
+  # sweep has only ever been run against a Vercel preview, never against this
+  # container. A substitution rather than a hardcoded env var so flipping it
+  # is a deploy flag, not a code change:
+  #   gcloud builds submit --substitutions=...,_COPILOT_READS_ONLY=false
+  _COPILOT_READS_ONLY: "true"
+  # Pinned deliberately. All of the copilot's live QA was done on this model,
+  # and routing accuracy is the feature — a silent model change is a silent
+  # behaviour change. Fallbacks live in lib/copilot/config.ts.
+  _VERTEX_MODEL: gemini-3.7-flash
   _TAG: latest
 
 options:
@@ -77,5 +87,18 @@ steps:
       # GOOGLE_CLOUD_PROJECT alone puts lib/hubble/client.ts on the
       # Application Default Credentials path — the attached service account.
       # No GOOGLE_CREDS_JSON key needs to exist anywhere.
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED}
-      - --set-secrets=MERCURY_URL=MERCURY_URL:latest,MERCURY_KEY=MERCURY_KEY:latest
+      #
+      # Copilot config. GOOGLE_CLOUD_PROJECT is deliberately NOT vanna-mcp:
+      # lib/copilot/config.ts reads it as the Vertex project and lib/hubble/
+      # client.ts reads it as the BigQuery project, so the two consumers share
+      # one key. Enabling Vertex on vanna-main and granting the runtime SA
+      # roles/aiplatform.user there keeps a single consistent value instead of
+      # splitting them. COPILOT_PUBLIC_ORIGIN/_AUTH_REDIRECT_URI derive from
+      # _SITE_URL so dev and prod each get their own origin automatically.
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_READS_ONLY=${_COPILOT_READS_ONLY},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback
+      # WorkOS M2M is what every copilot READ authenticates with; the Connect
+      # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) is only exercised once
+      # _COPILOT_READS_ONLY flips to false, but is mounted now so enabling
+      # writes needs no secret work. Cloud Run resolves `:latest` at deploy
+      # time, so a new secret VERSION needs a new revision to take effect.
+      - --set-secrets=MERCURY_URL=MERCURY_URL:latest,MERCURY_KEY=MERCURY_KEY:latest,WORKOS_M2M_CLIENT_ID=WORKOS_M2M_CLIENT_ID:latest,WORKOS_M2M_CLIENT_SECRET=WORKOS_M2M_CLIENT_SECRET:latest,WORKOS_M2M_TOKEN_URL=WORKOS_M2M_TOKEN_URL:latest,COPILOT_SESSION_SECRET=COPILOT_SESSION_SECRET:latest,WORKOS_CLIENT_ID=WORKOS_CLIENT_ID:latest,WORKOS_CLIENT_SECRET=WORKOS_CLIENT_SECRET:latest,WORKOS_ENV_CLIENT_ID=WORKOS_ENV_CLIENT_ID:latest

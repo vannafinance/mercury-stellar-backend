@@ -1,0 +1,19 @@
+name: release-please
+
+# Maintains a rolling "release" PR from Conventional Commits on main. Merging
+# that PR bumps the version, updates CHANGELOG.md, and cuts a GitHub Release + tag.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

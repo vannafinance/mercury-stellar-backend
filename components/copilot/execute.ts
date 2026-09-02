@@ -1,0 +1,212 @@
+// Copilot write executor (Phase 2).
+//
+// The orchestrator "brain" classifies a write and returns a structured `action`
+// (see ChatResponse.preview.action). We DON'T use the MCP's native write path —
+// it's blocked contract-side — so execution runs through the app's own AUDITED
+// on-chain services (the exact same ones the Earn / Margin pages and the Privy
+// margin-account flow use). Each service builds → signs (via wallet-adapter:
+// Freighter or Privy) → submits → polls, and returns { success, hash?, error? }.
+//
+// This module only MAPS an action to the right service call. It never signs by
+// itself and is only ever invoked after the user clicks "Approve & sign".
+
+import { ContractService, ASSET_TYPES, type AssetType } from "@/lib/stellar-utils";
+import { MarginAccountService } from "@/lib/margin-utils";
+
+/**
+ * The action shape is the one the brain produces — not a second copy of it.
+ *
+ * This file used to declare its own `CopilotAction` with eight of the canonical type's
+ * twenty-odd fields, and `copilot-workspace.tsx` imports the type from HERE. So the
+ * workspace was type-checking every `preview.action` against a subset that had already
+ * fallen behind: `leverage`, `borrow_asset`, `borrow_amount`, `min_hf`, `fraction`,
+ * `token_a`/`token_b`, `venue` and `explain` were all invisible to it, even though the
+ * server sends them and the runtime object carries them. Reading `action.leverage` in the
+ * bad-sequence rebuild path was a type error for that reason alone — the value is there.
+ *
+ * Re-exported rather than re-declared so this can never drift again. `Preview.action` is
+ * already typed as this, which is what makes the two agree by construction.
+ */
+export type { CopilotAction } from "@/lib/copilot/types";
+import type { CopilotAction } from "@/lib/copilot/types";
+
+export interface ExecuteContext {
+  amount: number; // user-entered / confirmed amount
+  walletAddress: string | null; // connected G-address
+  smartAccount: string | null; // C-address (margin account)
+}
+
+export type ExecuteResult = { ok: true; hash?: string } | { ok: false; error: string };
+
+// Operations that actually move funds and are wired to a working service today.
+export const EXECUTABLE_OPS = new Set([
+  "lend",
+  "redeem",
+  "deposit_collateral",
+  "withdraw_collateral",
+  "borrow",
+  "repay",
+  "deposit_and_borrow",
+  "create_account",
+  "add_liquidity",
+  "remove_liquidity",
+]);
+
+export function isExecutable(action: CopilotAction | null | undefined): boolean {
+  return !!action && EXECUTABLE_OPS.has(action.op);
+}
+
+/** 10^18 as a BigInt. Constructed, not a `n` literal: tsconfig targets below ES2020,
+ *  where a BigInt literal is a type error and fails `next build`. */
+const WAD = BigInt("1000000000000000000");
+
+/** Decimal amount → 18-decimal WAD string, precise (no float rounding). */
+function toWad(amount: number): string {
+  const [intPart, fracPart = ""] = String(amount).split(".");
+  const frac = (fracPart + "0".repeat(18)).slice(0, 18);
+  return (BigInt(intPart || "0") * WAD + BigInt(frac || "0")).toString();
+}
+
+/** Map a free-text asset symbol to a pool AssetType for ContractService. */
+function toAssetType(asset?: string | null): AssetType {
+  switch ((asset || "").toUpperCase()) {
+    case "XLM":
+      return ASSET_TYPES.XLM;
+    case "USDC":
+      return ASSET_TYPES.USDC;
+    case "BLUSDC":
+    case "BLEND_USDC":
+      return ASSET_TYPES.BLEND_USDC;
+    case "AQUSDC":
+    case "AQUARIUS_USDC":
+      return ASSET_TYPES.AQUARIUS_USDC;
+    case "SOUSDC":
+    case "SOROSWAP_USDC":
+      return ASSET_TYPES.SOROSWAP_USDC;
+    default:
+      return ASSET_TYPES.USDC;
+  }
+}
+
+function norm(r: { success: boolean; hash?: string; error?: string }): ExecuteResult {
+  return r.success ? { ok: true, hash: r.hash } : { ok: false, error: r.error || "Transaction failed" };
+}
+
+/**
+ * Execute a copilot write action through the app's audited services.
+ * Assumes the caller has already validated the amount and shown a preview.
+ */
+export async function executeAction(action: CopilotAction, ctx: ExecuteContext): Promise<ExecuteResult> {
+  const { amount, walletAddress, smartAccount } = ctx;
+  const asset = action.asset || "USDC";
+
+  const needsWallet = () => {
+    if (!walletAddress) return { ok: false as const, error: "Connect your wallet first." };
+    return null;
+  };
+  const needsAccount = () => {
+    if (!smartAccount) return { ok: false as const, error: "You need a Vanna smart account for this." };
+    return null;
+  };
+  const needsAmount = () => {
+    if (!(amount > 0)) return { ok: false as const, error: "Enter a valid amount." };
+    return null;
+  };
+
+  switch (action.op) {
+    case "create_account": {
+      const g = needsWallet();
+      if (g) return g;
+      const r = await MarginAccountService.createMarginAccount(walletAddress!);
+      return r.success
+        ? { ok: true, hash: (r as { hash?: string }).hash }
+        : { ok: false, error: (r as { error?: string }).error || "Failed to create smart account" };
+    }
+
+    case "lend": {
+      const w = needsWallet() || needsAmount();
+      if (w) return w;
+      return norm(await ContractService.deposit(walletAddress!, amount, toAssetType(asset)));
+    }
+    case "redeem": {
+      const w = needsWallet() || needsAmount();
+      if (w) return w;
+      return norm(await ContractService.withdraw(walletAddress!, amount, toAssetType(asset)));
+    }
+
+    case "deposit_collateral": {
+      const w = needsAccount() || needsAmount();
+      if (w) return w;
+      return norm(await MarginAccountService.depositCollateralTokens(smartAccount!, asset, toWad(amount)));
+    }
+    case "withdraw_collateral": {
+      const w = needsAccount() || needsAmount();
+      if (w) return w;
+      return norm(await MarginAccountService.withdrawCollateralBalance(smartAccount!, asset, toWad(amount)));
+    }
+    case "borrow": {
+      const w = needsAccount() || needsAmount();
+      if (w) return w;
+      return norm(await MarginAccountService.borrowTokens(smartAccount!, asset, toWad(amount)));
+    }
+    case "repay": {
+      const w = needsAccount() || needsAmount();
+      if (w) return w;
+      return norm(await MarginAccountService.repayLoan(smartAccount!, asset, toWad(amount)));
+    }
+
+    case "deposit_and_borrow": {
+      const w = needsAccount() || needsAmount();
+      if (w) return w;
+      // multiplier defaults to 2x when the user didn't state one; the preview
+      // labels this a multi-leg strategy requiring explicit confirmation.
+      return norm(await MarginAccountService.depositAndBorrow(smartAccount!, amount, 2, asset));
+    }
+
+    case "remove_liquidity": {
+      const w = needsWallet() || needsAccount() || needsAmount();
+      if (w) return w;
+      const sous =
+        String(action.token_b || "").toUpperCase() === "SOUSDC" ||
+        String(action.venue || "").toLowerCase().includes("soro");
+      if (sous) {
+        const { SoroswapService } = await import("@/lib/soroswap-utils");
+        return norm(
+          await SoroswapService.removeLiquidity(walletAddress!, smartAccount!, amount, "XLM", "USDC"),
+        );
+      }
+      const { AquariusService } = await import("@/lib/aquarius-utils");
+      return norm(
+        await AquariusService.removeLiquidity(walletAddress!, smartAccount!, "XLM", "USDC", amount),
+      );
+    }
+
+    case "add_liquidity": {
+      const w = needsWallet() || needsAccount();
+      if (w) return w;
+      const amountA = Number(action.amount_a);
+      const amountB = Number(action.amount_b);
+      if (!(amountA > 0) || !(amountB > 0)) {
+        return { ok: false, error: "Both sides of the LP pair need an amount." };
+      }
+      const xlmAmt = String(action.token_a || "").toUpperCase() === "XLM" ? amountA : amountB;
+      const otherAmt = String(action.token_a || "").toUpperCase() === "XLM" ? amountB : amountA;
+      const sous =
+        String(action.token_b || action.token_a || "").toUpperCase() === "SOUSDC" ||
+        String(action.venue || "").toLowerCase().includes("soro");
+      if (sous) {
+        const { SoroswapService } = await import("@/lib/soroswap-utils");
+        return norm(
+          await SoroswapService.addLiquidity(walletAddress!, smartAccount!, xlmAmt, otherAmt, "XLM", "USDC"),
+        );
+      }
+      const { AquariusService } = await import("@/lib/aquarius-utils");
+      return norm(
+        await AquariusService.addLiquidity(walletAddress!, smartAccount!, "XLM", "USDC", xlmAmt, otherAmt),
+      );
+    }
+
+    default:
+      return { ok: false, error: `“${action.op}” isn't wired for execution yet.` };
+  }
+}

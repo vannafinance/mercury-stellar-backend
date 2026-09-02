@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Protocol facts read from the live MCP, recorded so CI can check the asset registry",
+    "without depending on testnet being reachable. Regenerate with:",
+    "    node scripts/refresh-chain-facts.mjs",
+    "A diff on this file means the protocol changed under us — review it, do not just accept it."
+  ],
+  "recordedAt": "2026-08-05",
+  "source": "https://mcp.vanna.finance/mcp",
+  "collateral": {
+    "_source": "vanna_protocol_info { action: collateral_config }",
+    "allowed": {
+      "XLM": true,
+      "USDC": true,
+      "BLUSDC": false,
+      "AQUSDC": true,
+      "SOUSDC": true,
+      "EURC": false
+    },
+    "maxDistinctCollateralAssets": 10
+  },
+  "blendReserves": {
+    "_source": "vanna_farm_blend { action: list_reserves }",
+    "symbols": [
+      "XLM",
+      "USDC"
+    ]
+  },
+  "earnPools": {
+    "_source": "vanna_earn_market { action: pool_stats, kwargs: { symbol } }, probed per symbol",
+    "_note": [
+      "No list action exists, so each symbol is probed individually. A symbol is a pool when",
+      "pool_stats returns rates, and is not when it returns invalid_input.",
+      "Two symbols with identical rates on the same read are one pool under two names —",
+      "that is how the alias map below is derived rather than assumed."
+    ],
+    "symbols": [
+      "XLM",
+      "USDC",
+      "AQUSDC",
+      "SOUSDC"
+    ],
+    "aliases": {
+      "BLUSDC": "USDC"
+    },
+    "rejected": [
+      "EURC",
+      "AQUA"
+    ]
+  }
+}

@@ -21,6 +21,18 @@ const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
  */
 export const AppPrivyProvider = ({ children }: { children: React.ReactNode }) => {
   if (!PRIVY_APP_ID) {
+    // Loud in dev, because the degradation is otherwise invisible: no provider
+    // means no PrivyWalletBridge, so `getPrivyAuthControls()` stays null and the
+    // navbar hides the "Vanna wallet" option altogether (`privyEnabled`). The
+    // symptom is "Privy disappeared from the site" with nothing in the console
+    // pointing at a dropped env var.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        "[privy] NEXT_PUBLIC_PRIVY_APP_ID is not set — Privy is disabled: the " +
+          "“Vanna wallet” login option is hidden and only Freighter can connect. " +
+          "Add it to .env.local and restart the dev server.",
+      );
+    }
     return <>{children}</>;
   }
 

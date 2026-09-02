@@ -401,5 +401,755 @@ html.dark * {
     appearance: textfield;
   }
 
+  /* Page-aware copilot: Gemini-style attention pulse on DOM targets */
+  @keyframes copilot-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(112, 58, 230, 0.5);
+    }
+    70% {
+      box-shadow: 0 0 0 12px rgba(112, 58, 230, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(112, 58, 230, 0);
+    }
+  }
+
+  .copilot-target-highlight {
+    animation: copilot-pulse 1.5s ease-in-out 2;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    outline: 2px solid rgba(112, 58, 230, 0.55);
+    outline-offset: 2px;
+  }
+
+}
+
+/* ── Copilot / Assistant surfaces ──────────────────────────────────────────
+   ONE palette, from the Claude Design `Copilot.dc.html` :root / .dark blocks, scoped to
+   `.cp-root` so it cannot collide app-wide. Applied to both the Copilot page and the
+   Assistant drawer (which portals to <body>, outside the page tree).
+
+   STRUCTURE, AND WHY IT IS THIS SHAPE
+
+   Canonical names carry the values. The `--cp-*` names below are ALIASES — `var()`
+   indirections onto the canonical set, declared exactly once in the light block and never
+   repeated for dark. Dark mode overrides only the canonical values, so an alias
+   automatically follows. That makes the recurring failure structurally impossible: the way
+   this surface kept breaking was a token defined in one theme block and forgotten in the
+   other, which resolves to nothing and paints a transparent background or inherits a
+   colour from an ancestor. An alias cannot be forgotten in one theme, because it is not
+   declared per theme at all.
+
+   Before this there were two hand-maintained copies of the same palette — the design's and
+   `--cp-*` — which had to be kept in agreement by eye. They were byte-identical on every
+   shared value, which is exactly the sort of duplication that stays correct until it
+   quietly doesn't.
+
+   WHAT IS DELIBERATELY NOT ALIASED ONTO THIS PALETTE
+
+   `--pc-*` (plan approval card) and `--rc-*` (run execution card) are aliases too, but
+   onto their own shared `--card-*` layer further down, not onto this one. That is a
+   measured decision, not an oversight: none of the 75 card tokens carries the same value
+   as a page token in both themes, and the venue and status colours are ΔE 13–30 apart,
+   because the card ramp was contrast-measured against a CARD surface and is opaque
+   (`#ede6fd`) where this palette is translucent over the page (`rgba(112,58,230,.10)`).
+   The full mapping, with the contrast each merge would cost, is in
+   `docs/copilot/TOKEN-MAP-cards.md`.
+
+   The violet and rose ramps are re-declared for dark because the app's own scales are
+   light-only: `bg-violet-50 text-violet-500` renders a near-white lavender chip with
+   dark-violet ink, which on a #111 surface reads as a light-mode button someone forgot to
+   theme.
+
+   WHY THE DARK RAMP OVERRIDES `--color-violet-*` AND NOT ONLY `--violet-*`
+
+   It has to override the name Tailwind actually reads. `@theme` emits
+   `--color-violet-50: var(--violet-50)` into `:root`, and a `var()` inside a custom
+   property is substituted at computed-value time ON THE ELEMENT THAT DECLARES IT — here,
+   `<html>`. So `--color-violet-50` computes to the light `#f1ebfd` once, on the root, and
+   descendants inherit that literal. Redeclaring `--violet-50` further down the tree cannot
+   reach back and change it.
+
+   `--color-vgray-*` looks like the same pattern and works, which is what made this easy to
+   miss: its source (`--analytics-vgray-*`) is overridden by `html.dark`, the SAME element
+   that declares the alias, so the substitution picks up the dark value.
+
+   The visible consequence was the auto-sign card: `bg-violet-50` stayed near-white lavender
+   on the dark page while `text-vgray-800` inverted to near-white, so "Custom limits" and the
+   cap inputs were white-on-white. Both names are set below — `--violet-*` for the handful of
+   places that read it directly, `--color-violet-*` for every Tailwind `violet-*` utility —
+   and because they are set on `.cp-root` the override stays scoped to the copilot. */
+.cp-root {
+  /* ── canonical palette (light) ── */
+  --page: #ffffff;
+  --surface: #ffffff;
+  --g50: #f7f8fa;
+  --g100: #e2e2e2;
+  --g200: #cfcfcf;
+  --g300: #9ca3af;
+  --g400: #6b7280;
+  --g500: #4b5563;
+  --g600: #374151;
+  --g700: #1f2937;
+  --g800: #1f1f1f;
+  --g900: #111111;
+  /* Declared here, not inherited from the app's `:root`, so this block is self-sufficient.
+     The values match `:root` exactly — the point is that removing them upstream can no
+     longer silently strip the copilot's accent colour. */
+  --violet-50: #f1ebfd;
+  --violet-100: #d3c2f7;
+  --violet-200: #bda4f4;
+  --violet-300: #9f7bee;
+  --violet-400: #8d61eb;
+  --violet-500: #703ae6;
+  --violet-600: #6635d1;
+  --rose-50: #ffe6f2;
+  --rose-500: #ff007a;
+  --imperial-500: #fc5457;
+  --imperial-600: #e54c4f;
+  --emerald: #10b981;
+  --amber: #f59e0b;
+  --venue-margin-fg: #5f2fd0;
+  --venue-margin-bg: rgba(112, 58, 230, 0.1);
+  --venue-margin-bd: rgba(112, 58, 230, 0.28);
+  --venue-earn-fg: #0b7a63;
+  --venue-earn-bg: rgba(11, 122, 99, 0.1);
+  --venue-earn-bd: rgba(11, 122, 99, 0.28);
+  --venue-farm-fg: #8a5a06;
+  --venue-farm-bg: rgba(245, 158, 11, 0.14);
+  --venue-farm-bd: rgba(245, 158, 11, 0.32);
+  --venue-wallet-fg: #4b5563;
+  --venue-wallet-bg: rgba(102, 112, 133, 0.12);
+  --venue-wallet-bd: rgba(102, 112, 133, 0.28);
+  /* Three status trios, one shape each: a readable ink, a ~10% fill, a ~30% border.
+     `ok` completes the set. Its absence is why "settled" and "risk gate · allow"
+     were painted with the raw `--emerald` mark colour, which is 2.54:1 on a white
+     card — an AA failure. `--ok-fg` is 5.28:1. The same trap had already been
+     avoided for warn and danger, whose inks (5.92:1, 5.22:1) are deliberately much
+     darker than the amber and red MARK colours they pair with (2.15:1, 3.21:1).
+     Ink for text, mark for dots and bars — they are not interchangeable. */
+  --ok-fg: #0b7a63;
+  --ok-bg: rgba(16, 185, 129, 0.1);
+  --ok-bd: rgba(16, 185, 129, 0.3);
+  --warn-fg: #8a5a06;
+  --warn-bg: rgba(245, 158, 11, 0.1);
+  --warn-bd: rgba(245, 158, 11, 0.3);
+  --danger-fg: #c9333b;
+  --danger-bg: rgba(252, 84, 87, 0.1);
+  --danger-bd: rgba(252, 84, 87, 0.3);
+  --skel: #ededf1;
+  --mark: rgba(112, 58, 230, 0.1);
+  --gradient: linear-gradient(135deg, #fc5457 10%, #703ae6 80%);
+
+  /* Health-factor zones and meter tracks. New in this design — the gauge the owner's
+     reference build shows. Kept here rather than inside a component so the margin rail and
+     the run card cannot end up drawing the same band in two different colours. */
+  --z-danger: #e03e42;
+  --z-warn: #c98214;
+  --z-caution: #1c7c83;
+  --z-healthy: #0b8f68;
+  --z-danger-dim: rgba(224, 62, 66, 0.2);
+  --z-warn-dim: rgba(201, 130, 20, 0.2);
+  --z-caution-dim: rgba(28, 124, 131, 0.2);
+  --z-healthy-dim: rgba(11, 143, 104, 0.18);
+  --bar-track: #ececf0;
+  --bar-cool: #1c7c83;
+  --bar-warm: #e54c4f;
+
+  /* Nav, toggle and chip chrome. */
+  --navbg: #ffffff;
+  --navborder: #ebebeb;
+  --navtext: #111111;
+  --togglebg: #f4f4f4;
+  --toggleborder: #e5e7eb;
+  --toggleoff: #a9a9a9;
+  --chipbg: #f7f7f7;
+  --chipborder: #dfdfdf;
+  --chiptext: #1f1f1f;
+
+  /* ── aliases: declared once, never per theme ── */
+  --cp-surface: var(--surface);
+  --cp-g50: var(--g50);
+  --cp-g100: var(--g100);
+  --cp-g200: var(--g200);
+  --cp-g300: var(--g300);
+  --cp-g400: var(--g400);
+  --cp-g500: var(--g500);
+  --cp-g600: var(--g600);
+  --cp-g700: var(--g700);
+  --cp-g900: var(--g900);
+  --cp-violet-500: var(--violet-500);
+  --cp-violet-soft: var(--violet-50);
+  --cp-violet-soft-border: var(--violet-100);
+  --cp-gradient: var(--gradient);
+  --cp-venue-margin-fg: var(--venue-margin-fg);
+  --cp-venue-margin-bg: var(--venue-margin-bg);
+  --cp-venue-margin-bd: var(--venue-margin-bd);
+  --cp-venue-earn-fg: var(--venue-earn-fg);
+  --cp-venue-earn-bg: var(--venue-earn-bg);
+  --cp-venue-earn-bd: var(--venue-earn-bd);
+  --cp-venue-farm-fg: var(--venue-farm-fg);
+  --cp-venue-farm-bg: var(--venue-farm-bg);
+  --cp-venue-farm-bd: var(--venue-farm-bd);
+  --cp-venue-wallet-fg: var(--venue-wallet-fg);
+  --cp-venue-wallet-bg: var(--venue-wallet-bg);
+  --cp-venue-wallet-bd: var(--venue-wallet-bd);
+  --cp-ok-fg: var(--ok-fg);
+  --cp-ok-bg: var(--ok-bg);
+  --cp-ok-bd: var(--ok-bd);
+  --cp-warn-fg: var(--warn-fg);
+  --cp-warn-bg: var(--warn-bg);
+  --cp-warn-bd: var(--warn-bd);
+  --cp-danger-fg: var(--danger-fg);
+  --cp-danger-bg: var(--danger-bg);
+  --cp-danger-bd: var(--danger-bd);
+  --cp-emerald: var(--emerald);
+  --cp-amber: var(--amber);
+  --cp-imperial: var(--imperial-500);
+  --cp-skel: var(--skel);
+  --cp-mark: var(--mark);
+
+  /* Tailwind's `vgray-*` utilities, re-pointed at the canonical ramp above.
+     301 colour utilities across the copilot shell (`copilot-workspace`, the
+     assistant drawer, the guide view) are written as `text-vgray-400`,
+     `border-vgray-100` and friends rather than as `var()`. Aliasing the names
+     they resolve moves every one of them onto this palette at once, with no
+     markup change — which is the whole reason to do it here rather than rewrite
+     301 call sites and risk a typo in each.
+
+     This is not only a coherence change; both ends of the ramp were wrong:
+
+       - `border-vgray-100`, 52 sites, was `#e6e8ee` light / `#3f3f46` dark. The
+         app's own hairline is `#E2E2E2` / `#333333` (see the global `*` rule at
+         the top of this file), which is exactly `--g100`. The copilot was drawing
+         a slightly bluer, slightly lighter border than every other page.
+       - `text-vgray-400`, 41 sites, was `#8b95a7` on a white card — 3.02:1, which
+         FAILS WCAG AA for normal text. `--g400` is `#6b7280`, 4.83:1. Every muted
+         label and eyebrow on the surface was under-contrast in light mode.
+
+     Ledger's ramp is neutral where `vgray` is blue-tinted, so light shifts by
+     ΔE 8–14 from step 300 up and contrast rises at every step (500: 4.97 → 7.56,
+     900: 17.74 → 18.88). Dark barely moves — 8 of the 10 steps are already
+     identical, only 100 and 300 change.
+
+     It must be `--color-vgray-*`, the name Tailwind reads, not
+     `--analytics-vgray-*` — for the same reason the dark violet ramp below has to
+     override `--color-violet-*`. But unlike that case these can be declared once
+     rather than per theme: the `var()` is substituted on the element that
+     declares it, and that element is `.cp-root`, whose own `--g*` values
+     `html.dark .cp-root` overrides. So dark follows automatically. */
+  --color-vgray-50: var(--g50);
+  --color-vgray-100: var(--g100);
+  --color-vgray-200: var(--g200);
+  --color-vgray-300: var(--g300);
+  --color-vgray-400: var(--g400);
+  --color-vgray-500: var(--g500);
+  --color-vgray-600: var(--g600);
+  --color-vgray-700: var(--g700);
+  --color-vgray-800: var(--g800);
+  --color-vgray-900: var(--g900);
+
+  /* NOTHING THIS SURFACE RENDERS MAY LEAVE ITS CARD.
+     Every answer here is server text, and a lot of it contains a 56-character Stellar
+     C-address — one unbreakable word wider than the card. A margin-account address in an
+     "already has margin smart account CCX2…" answer ran straight out of the panel and
+     painted over the right rail, so the rail's own copy was unreadable underneath it.
+
+     `anywhere` rather than `break-word`: only `anywhere` counts toward min-content sizing,
+     which is what lets a flex or grid child actually shrink. `break-word` breaks the line
+     but leaves the item's min-content width at the full address, so the box keeps
+     overflowing and the text just wraps outside it. Inherited, so it covers text added
+     later without anyone having to remember this. */
+  overflow-wrap: anywhere;
+}
+
+html.dark .cp-root {
+  /* Canonical values only. Every `--cp-*` alias above follows automatically. */
+  --page: #111111;
+  --surface: #1c1c24;
+  --g50: #27272a;
+  --g100: #333333;
+  --g200: #52525b;
+  --g300: #8b8b96;
+  --g400: #a1a1aa;
+  --g500: #c8c8d0;
+  --g600: #d4d4d8;
+  --g700: #e4e4e7;
+  --g800: #f4f4f5;
+  --g900: #fafafa;
+  --emerald: #3fc0a3;
+  --amber: #dfa24a;
+  --venue-margin-fg: #a686f2;
+  --venue-margin-bg: rgba(154, 114, 240, 0.14);
+  --venue-margin-bd: rgba(154, 114, 240, 0.34);
+  --venue-earn-fg: #3fc0a3;
+  --venue-earn-bg: rgba(63, 192, 163, 0.12);
+  --venue-earn-bd: rgba(63, 192, 163, 0.3);
+  --venue-farm-fg: #dfa24a;
+  --venue-farm-bg: rgba(223, 162, 74, 0.12);
+  --venue-farm-bd: rgba(223, 162, 74, 0.3);
+  --venue-wallet-fg: #a8b0c0;
+  --venue-wallet-bg: rgba(168, 176, 192, 0.11);
+  --venue-wallet-bd: rgba(168, 176, 192, 0.26);
+  /* In dark the mark colour is already readable (emerald 7.48:1), so `--ok-fg`
+     is the dark emerald rather than a darkened green — matching --venue-earn-fg. */
+  --ok-fg: #3fc0a3;
+  --ok-bg: rgba(63, 192, 163, 0.1);
+  --ok-bd: rgba(63, 192, 163, 0.3);
+  --warn-fg: #e0ac5c;
+  --warn-bg: rgba(223, 162, 74, 0.09);
+  --warn-bd: rgba(223, 162, 74, 0.28);
+  --danger-fg: #f0666e;
+  --danger-bg: rgba(240, 102, 110, 0.1);
+  --danger-bd: rgba(240, 102, 110, 0.3);
+  --skel: #2a2a32;
+  --mark: rgba(154, 114, 240, 0.16);
+  --z-danger: #f0666e;
+  --z-warn: #dfa24a;
+  --z-caution: #4fd3dd;
+  --z-healthy: #3fc0a3;
+  --z-danger-dim: rgba(240, 102, 110, 0.22);
+  --z-warn-dim: rgba(223, 162, 74, 0.22);
+  --z-caution-dim: rgba(79, 211, 221, 0.2);
+  --z-healthy-dim: rgba(63, 192, 163, 0.2);
+  --bar-track: #2c2c34;
+  --bar-cool: #4fd3dd;
+  --bar-warm: #f0666e;
+  --navbg: #111111;
+  --navborder: rgba(255, 255, 255, 0.06);
+  --navtext: #ffffff;
+  --togglebg: #1e1e1e;
+  --toggleborder: #2c2c2c;
+  --toggleoff: #595959;
+  --chipbg: #1c1c1c;
+  --chipborder: #2a2a2a;
+  --chiptext: #ffffff;
+
+  /* Dark violet / rose ramps — every violet-* utility on a copilot surface. */
+  --violet-50: #2a1a3e;
+  --violet-100: #3b2560;
+  --violet-200: #4d3080;
+  --violet-300: #b69bf5;
+  --violet-400: #a686f2;
+  --violet-500: #9a72f0;
+  --violet-600: #ab8af4;
+  --rose-50: #3a0f27;
+
+  /* The names Tailwind's `violet-*` / `rose-*` utilities actually resolve. See the note
+     above the light block: the `@theme` aliases were already substituted on <html>, so
+     overriding the canonical values alone left every violet utility light-mode. */
+  --color-violet-50: #2a1a3e;
+  --color-violet-100: #3b2560;
+  --color-violet-200: #4d3080;
+  --color-violet-300: #b69bf5;
+  --color-violet-400: #a686f2;
+  --color-violet-500: #9a72f0;
+  --color-violet-600: #ab8af4;
+  --color-rose-50: #3a0f27;
+}
+
+/* ── Card layer: plan approval + run execution ─────────────────────────────
+   From the Claude Design `Plan Approval Card.dc.html` and `Run Execution
+   Card.dc.html`. ONE palette serves both. The `--card-*` names carry the values;
+   `--pc-*` (plan approval) and `--rc-*` (run execution) are ALIASES onto them,
+   declared exactly once here and never repeated for dark. Dark overrides only
+   canonical values, so an alias follows automatically — the same invariant as
+   `--cp-*` above, and for the same reason: a token defined in one theme block
+   and forgotten in the other resolves to nothing and paints a transparent
+   background. An alias cannot be forgotten in one theme; it is not declared per
+   theme at all. Every `--pc-*` / `--rc-*` name is kept verbatim because the two
+   components build some of them at runtime (`var(--pc-${venue}-fg)`), so a name
+   that looks unused here is read by a computed lookup.
+
+   WHY THE TWO CARDS SHARE A BLOCK
+   Their design files agree. Of the 32 roles both declare, 30 are byte-identical
+   in BOTH themes. The two that are not were nobody's decision — they were found
+   by diffing, which is the argument against keeping two hand-maintained copies.
+
+   WHY THIS IS NOT ALIASED ONTO THE PAGE PALETTE (`--cp-*` and the canonical set
+   above). Measured, not assumed: of the 75 card tokens, ZERO hold the same value
+   as a page token in both themes, and only one role (the white button label) is
+   even perceptually indistinguishable. The greys are close — ΔE 1.2–5.2 against
+   `--g50`…`--g900` — but the venue and status colours are a different palette
+   rather than a variant of one, at ΔE 13–30: the card ramp was contrast-measured
+   against a CARD surface and is opaque (`#ede6fd`), where the page ramp is
+   translucent over the page (`rgba(112,58,230,.10)`). Aliasing across would cost,
+   on the card surface: earn ink 8.8:1 → 5.3:1, farm 9.2 → 5.9, danger 9.3 → 5.2,
+   margin 11.3 → 7.0. These two cards are the approval gate and the live run for
+   transactions that move real money, so they keep the higher-contrast ramp.
+
+   Two rules the designs encode and this block preserves:
+     - No `opacity` anywhere. A dimmed ancestor is what made the card unreadable,
+       and a leg must never read as done before it is done — pending / running /
+       settled are carried by shape + label + colour (dashed ring, square,
+       spinner, check, pause bars, cross), so a later leg is a muted token, never
+       a faded box.
+     - Disabled primary keeps a solid fill (`--card-btn-off-*`), never a surface
+       grey. A grey-on-grey repaint reads as "broken", not "not yet".
+
+   Contrast against each card's own surface, recomputed from the values below
+   (the design files' own figures were a little pessimistic — they claimed body
+   12.4:1 light / muted 8.6:1):
+     light  #ffffff : heading 18.9:1 · body 14.0:1 · muted 9.0:1
+                      inset #f4f5f8 body 13.3:1 · focus leg #f7f4ff body 13.1:1
+     dark   #16161d : heading 17.1:1 · body 14.8:1 · muted 9.8:1
+                      inset #1e1e27 body 13.0:1 · focus leg #221b3a body 12.0:1
+     primary label #ffffff on the gradient's darkest stop #6b2fd6 = 7.2:1 */
+.plan-card,
+.run-card {
+  /* ── canonical palette (light) ── */
+
+  /* Surfaces and rules. The card surface is a step off the page surface on
+     purpose: a card should read as recessed rather than flush. */
+  --card-surface: #ffffff;
+  --card-inset: #f4f5f8;
+  --card-line: #d9dce3;
+  --card-line-soft: #e7e9ef;
+  --card-focus-bg: #f7f4ff;
+  --card-track: #e2e4ea;
+
+  /* Ink. */
+  --card-heading: #0e1116;
+  --card-body: #262c38;
+  --card-muted: #414a58;
+
+  /* `quiet` and `accent` are the only two roles the two design files disagree
+     on, and only in light: quiet ΔE 1.64 (6.00:1 vs 6.38:1), accent ΔE 6.36
+     (7.91:1 vs 9.32:1). Held apart so this commit changes no pixel — which value
+     wins is a design decision, not a plumbing one. Dark agrees, so the `-run`
+     variants repeat the same dark value rather than aliasing; an alias declared
+     per theme would give back the invariant this block exists to hold. */
+  --card-quiet: #5a6472;
+  --card-quiet-run: #56606e;
+  --card-accent: #5b23d6;
+  --card-accent-run: #4b1bc4;
+  --card-accent-soft: #ede6fd;
+  --card-accent-bd: #c9b6f6;
+
+  /* Venue chips. Opaque, unlike the page's translucent venue tokens. */
+  --card-margin-fg: #3f1a9e;
+  --card-margin-bg: #ede6fd;
+  --card-margin-bd: #c9b6f6;
+  --card-earn-fg: #08544a;
+  --card-earn-bg: #dff2ee;
+  --card-earn-bd: #a9d9cf;
+  --card-farm-fg: #6a3d05;
+  --card-farm-bg: #fbeed6;
+  --card-farm-bd: #e8cf9c;
+  --card-wallet-fg: #33404f;
+  --card-wallet-bg: #eaedf2;
+  --card-wallet-bd: #c3cad4;
+
+  /* Status. `warn` and `farm` share their light values and diverge in dark —
+     kept as separate roles because they answer different questions. */
+  --card-ok-fg: #0a5c3f;
+  --card-ok-bg: #e3f5ec;
+  --card-ok-bd: #a8dcc4;
+  --card-warn-fg: #6a3d05;
+  --card-warn-bg: #fbeed6;
+  --card-warn-bd: #e8cf9c;
+  --card-danger-fg: #8c1620;
+  --card-danger-bg: #fde9ea;
+  --card-danger-bd: #f2bfc3;
+
+  /* Controls. */
+  --card-btn-fill: linear-gradient(135deg, #fc5457 0%, #6b2fd6 100%);
+  --card-btn-fg: #ffffff;
+  --card-btn-off-bg: #4b4660;
+  --card-btn-off-fg: #ffffff;
+  --card-btn-2-bd: #b9bfcb;
+  --card-btn-2-fg: #1b2029;
+  --card-field-bg: #ffffff;
+  --card-field-bd: #9aa2b1;
+
+  /* ── aliases: declared once, never per theme ── */
+
+  /* Plan approval card. */
+  --pc-surface: var(--card-surface);
+  --pc-inset: var(--card-inset);
+  --pc-line: var(--card-line);
+  --pc-line-soft: var(--card-line-soft);
+  --pc-heading: var(--card-heading);
+  --pc-body: var(--card-body);
+  --pc-muted: var(--card-muted);
+  --pc-quiet: var(--card-quiet);
+  --pc-accent: var(--card-accent);
+  --pc-accent-soft: var(--card-accent-soft);
+  --pc-margin-fg: var(--card-margin-fg);
+  --pc-margin-bg: var(--card-margin-bg);
+  --pc-margin-bd: var(--card-margin-bd);
+  --pc-earn-fg: var(--card-earn-fg);
+  --pc-earn-bg: var(--card-earn-bg);
+  --pc-earn-bd: var(--card-earn-bd);
+  --pc-farm-fg: var(--card-farm-fg);
+  --pc-farm-bg: var(--card-farm-bg);
+  --pc-farm-bd: var(--card-farm-bd);
+  --pc-wallet-fg: var(--card-wallet-fg);
+  --pc-wallet-bg: var(--card-wallet-bg);
+  --pc-wallet-bd: var(--card-wallet-bd);
+  --pc-warn-fg: var(--card-warn-fg);
+  --pc-warn-bg: var(--card-warn-bg);
+  --pc-warn-bd: var(--card-warn-bd);
+  --pc-danger-fg: var(--card-danger-fg);
+  --pc-danger-bg: var(--card-danger-bg);
+  --pc-danger-bd: var(--card-danger-bd);
+  --pc-btn-fill: var(--card-btn-fill);
+  --pc-btn-fg: var(--card-btn-fg);
+  --pc-btn-off-bg: var(--card-btn-off-bg);
+  --pc-btn-off-fg: var(--card-btn-off-fg);
+  --pc-btn-2-bd: var(--card-btn-2-bd);
+  --pc-btn-2-fg: var(--card-btn-2-fg);
+  /* The focus ring is the accent, not a colour of its own. */
+  --pc-focus: var(--card-accent);
+
+  /* Run execution card. */
+  --rc-surface: var(--card-surface);
+  --rc-inset: var(--card-inset);
+  --rc-focus-bg: var(--card-focus-bg);
+  --rc-line: var(--card-line);
+  --rc-line-soft: var(--card-line-soft);
+  --rc-heading: var(--card-heading);
+  --rc-body: var(--card-body);
+  --rc-muted: var(--card-muted);
+  --rc-quiet: var(--card-quiet-run);
+  --rc-accent: var(--card-accent-run);
+  --rc-accent-bd: var(--card-accent-bd);
+  --rc-accent-soft: var(--card-accent-soft);
+  --rc-margin-fg: var(--card-margin-fg);
+  --rc-margin-bg: var(--card-margin-bg);
+  --rc-margin-bd: var(--card-margin-bd);
+  --rc-earn-fg: var(--card-earn-fg);
+  --rc-earn-bg: var(--card-earn-bg);
+  --rc-earn-bd: var(--card-earn-bd);
+  --rc-farm-fg: var(--card-farm-fg);
+  --rc-farm-bg: var(--card-farm-bg);
+  --rc-farm-bd: var(--card-farm-bd);
+  --rc-wallet-fg: var(--card-wallet-fg);
+  --rc-wallet-bg: var(--card-wallet-bg);
+  --rc-wallet-bd: var(--card-wallet-bd);
+  --rc-ok-fg: var(--card-ok-fg);
+  --rc-ok-bg: var(--card-ok-bg);
+  --rc-ok-bd: var(--card-ok-bd);
+  --rc-warn-fg: var(--card-warn-fg);
+  --rc-warn-bg: var(--card-warn-bg);
+  --rc-warn-bd: var(--card-warn-bd);
+  --rc-danger-fg: var(--card-danger-fg);
+  --rc-danger-bg: var(--card-danger-bg);
+  --rc-danger-bd: var(--card-danger-bd);
+  --rc-track: var(--card-track);
+  --rc-btn-fill: var(--card-btn-fill);
+  --rc-btn-fg: var(--card-btn-fg);
+  --rc-btn-2-bd: var(--card-btn-2-bd);
+  --rc-btn-2-fg: var(--card-btn-2-fg);
+  --rc-field-bg: var(--card-field-bg);
+  --rc-field-bd: var(--card-field-bd);
+}
+
+/* Canonical values only. Every alias above follows automatically. */
+html.dark .plan-card,
+.dark .plan-card,
+html.dark .run-card,
+.dark .run-card {
+  --card-surface: #16161d;
+  --card-inset: #1e1e27;
+  --card-line: #3a3a46;
+  --card-line-soft: #2b2b35;
+  --card-focus-bg: #221b3a;
+  --card-track: #2f2f3a;
+  --card-heading: #f8f9fc;
+  --card-body: #e6e9f0;
+  --card-muted: #b9bfcd;
+  --card-quiet: #a2a9b8;
+  --card-quiet-run: #a2a9b8;
+  --card-accent: #c0a5ff;
+  --card-accent-run: #c0a5ff;
+  --card-accent-soft: #2b2050;
+  --card-accent-bd: #4a3a7d;
+  --card-margin-fg: #cdb8ff;
+  --card-margin-bg: #2b2050;
+  --card-margin-bd: #4a3a7d;
+  --card-earn-fg: #8ce8d2;
+  --card-earn-bg: #0f3730;
+  --card-earn-bd: #1f5b4f;
+  --card-farm-fg: #f6cf90;
+  --card-farm-bg: #3b2a11;
+  --card-farm-bd: #5f4620;
+  --card-wallet-fg: #cdd3df;
+  --card-wallet-bg: #262631;
+  --card-wallet-bd: #454552;
+  --card-ok-fg: #86e8b6;
+  --card-ok-bg: #0e3326;
+  --card-ok-bd: #1d5a41;
+  --card-warn-fg: #f6cf90;
+  --card-warn-bg: #2a2113;
+  --card-warn-bd: #54401c;
+  --card-danger-fg: #ffb3b8;
+  --card-danger-bg: #3a1a1d;
+  --card-danger-bd: #6b2b31;
+  --card-btn-fill: linear-gradient(135deg, #ff6b6e 0%, #8557ef 100%);
+  --card-btn-fg: #ffffff;
+  --card-btn-off-bg: #3a3550;
+  --card-btn-off-fg: #e7e4f2;
+  --card-btn-2-bd: #4d4d5c;
+  --card-btn-2-fg: #eceef4;
+  --card-field-bg: #101016;
+  --card-field-bd: #5b5b6c;
+}
+
+/* The secondary buttons' border and text colour live here, not inline, because an inline
+   `color` outranks any stylesheet `:hover` — set them inline and the hover tint never
+   lands. Only layout stays inline for these two. */
+.plan-card .pc-btn-2 {
+  border: 1px solid var(--pc-btn-2-bd);
+  color: var(--pc-btn-2-fg);
+}
+.plan-card .pc-btn-3 {
+  border: 1px solid transparent;
+  color: var(--pc-quiet);
+}
+.plan-card .pc-btn-1:hover:not(:disabled) {
+  filter: saturate(1.15);
+}
+.plan-card .pc-btn-2:hover {
+  border-color: var(--pc-accent);
+  color: var(--pc-accent);
+}
+.plan-card .pc-btn-3:hover {
+  color: var(--pc-body);
+}
+.plan-card .pc-btn-1:focus-visible,
+.plan-card .pc-btn-2:focus-visible,
+.plan-card .pc-btn-3:focus-visible {
+  outline: 3px solid var(--pc-focus);
+  outline-offset: 2px;
+}
+
+@keyframes pc-pulse {
+  0%,
+  100% {
+    background: var(--pc-accent);
+  }
+  50% {
+    background: var(--pc-accent-soft);
+  }
+}
+
+/* ── Run execution card ────────────────────────────────────────────────────
+   Its palette is the shared card layer above. Only behaviour lives here.
+
+   Border and text colour for the secondary/quiet buttons live here, not inline: an
+   inline `color` outranks a stylesheet `:hover` and the tint would never land. */
+.run-card .rc-btn-s {
+  border: 1px solid var(--rc-btn-2-bd);
+  color: var(--rc-btn-2-fg);
+}
+.run-card .rc-btn-q {
+  border: 1px solid transparent;
+  color: var(--rc-quiet);
+}
+.run-card .rc-btn-max {
+  border: 1px solid var(--rc-warn-bd);
+  color: var(--rc-warn-fg);
+}
+.run-card .rc-btn-p:hover:not(:disabled) {
+  filter: saturate(1.14);
+}
+.run-card .rc-btn-s:hover,
+.run-card .rc-btn-max:hover {
+  border-color: var(--rc-accent);
+  color: var(--rc-accent);
+}
+.run-card .rc-btn-q:hover {
+  color: var(--rc-body);
+}
+.run-card .rc-btn-p:focus-visible,
+.run-card .rc-btn-s:focus-visible,
+.run-card .rc-btn-q:focus-visible,
+.run-card .rc-btn-max:focus-visible,
+.run-card .rc-field input:focus-visible {
+  outline: 3px solid var(--rc-accent);
+  outline-offset: 2px;
+}
+.run-card .rc-field:focus-within {
+  border-color: var(--rc-accent);
+}
+/* The field owns its outline via :focus-within above; the inner input must not draw
+   a second one on top of it. */
+.run-card .rc-field input:focus {
+  outline: none;
+}
+.run-card .lp-dual-field:focus-within {
+  border-color: var(--rc-field-bd);
+}
+.run-card .lp-dual-field input:focus,
+.run-card .lp-dual-field input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+@keyframes rc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rc-blink {
+  0%,
+  100% {
+    background: var(--rc-accent);
+  }
+  50% {
+    background: var(--rc-accent-soft);
+  }
+}
+
+@keyframes rc-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@keyframes cp-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cp-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+@keyframes cp-shimmer {
+  0% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.5;
+  }
+}
+
+@keyframes cp-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
 }
 

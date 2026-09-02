@@ -5,7 +5,9 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# This base image ships npm 10, which fails `npm ci` on a valid lockfile.
+# See .github/workflows/ci.yml for why the pin is on npm, not the lockfile.
+RUN npm i -g npm@11 && npm ci
 
 # 2. builder
 FROM node:22-bookworm-slim AS builder

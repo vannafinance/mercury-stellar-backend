@@ -14,6 +14,8 @@ import { useAppModeStore } from "@/store/app-mode-store";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 import { FaucetPopup } from "./faucet/faucet-popup";
 import { ConnectWalletModal } from "./wallet/connect-wallet-modal";
+import { OPEN_CONNECT_WALLET_EVENT } from "@/lib/assistant/client-tools";
+import { getPrivyAuthControls } from "@/lib/wallet-adapter";
 
 interface Navbar {
   /** Nav entries; `group` ("primary" | "bordered" | "secondary") controls placement/styling. */
@@ -50,6 +52,15 @@ function isNavItemActive(
     pathname === item.link ||
     (item.link !== "/" && pathname.startsWith(`${item.link}/`))
   );
+}
+
+/**
+ * Active nav pill. The pink was a light-mode literal, so on the dark bar it lit up as a
+ * near-white chip — the one thing in the header brighter than the logo. Dark gets the
+ * deep rose the rest of the dark palette is built on, with the same brand pink ink.
+ */
+function activePillClass(isDark: boolean): string {
+  return isDark ? "bg-[#3A0F27] text-[#FF3D91]" : "bg-[#FFE6F2] text-[#FF007A]";
 }
 
 /**
@@ -142,6 +153,34 @@ export const Navbar = (props: Navbar) => {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+
+  // Copilot / Ask: open Connect or Create Vanna wallet (Privy/Freighter).
+  // Event is dispatched by openConnectWallet client tool — keys stay client-side.
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ prefer?: string; intent?: string }>).detail || {};
+      const prefer = String(detail.prefer || "modal").toLowerCase();
+      // Already connected — just surface the wallet menu instead of re-login.
+      if (address) {
+        setIsWalletDropdownOpen(true);
+        return;
+      }
+      // Prefer Freighter only when explicitly requested.
+      if (prefer === "freighter") {
+        void connectWallet("freighter");
+        return;
+      }
+      // Create path: auto-Privy only when bridge is ready; else open modal
+      // (avoids "Privy login is not available" race with no fallback UI).
+      if (prefer === "privy" && privyEnabled && getPrivyAuthControls()) {
+        void connectWallet("privy");
+        return;
+      }
+      setIsConnectModalOpen(true);
+    };
+    window.addEventListener(OPEN_CONNECT_WALLET_EVENT, handler);
+    return () => window.removeEventListener(OPEN_CONNECT_WALLET_EVENT, handler);
+  }, [address, privyEnabled, connectWallet]);
 
   const handleNavItemClickWithLink = (item: {
     title: string;
@@ -361,7 +400,7 @@ export const Navbar = (props: Navbar) => {
                 tabIndex={0}
                 className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                   isActive
-                    ? "bg-[#FFE6F2] text-[#FF007A]"
+                    ? activePillClass(isDark)
                     : isDark
                     ? "text-white"
                     : ""
@@ -405,7 +444,7 @@ export const Navbar = (props: Navbar) => {
                       tabIndex={0}
                       className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                         isActive
-                          ? "bg-[#FFE6F2] text-[#FF007A]"
+                          ? activePillClass(isDark)
                           : isDark
                           ? "text-white"
                           : ""
@@ -594,7 +633,7 @@ export const Navbar = (props: Navbar) => {
                   tabIndex={0}
                   className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                     isActive
-                      ? "bg-[#FFE6F2] text-[#FF007A]"
+                      ? activePillClass(isDark)
                       : isDark
                       ? "text-white"
                       : ""
@@ -681,7 +720,7 @@ export const Navbar = (props: Navbar) => {
                 tabIndex={0}
                 className={`rounded-[8px] py-[9px] px-[16px] text-[14px] font-semibold group flex gap-1.5 items-center hover:text-[#FF007A] cursor-pointer transition-colors ${
                   isActive
-                    ? "bg-[#FFE6F2] text-[#FF007A]"
+                    ? activePillClass(isDark)
                     : isDark
                     ? "text-white"
                     : ""

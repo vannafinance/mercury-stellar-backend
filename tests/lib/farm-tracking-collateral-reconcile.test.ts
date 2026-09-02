@@ -84,4 +84,22 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
 
     expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(50, 6);
   });
+
+  it("nets same-asset debt from a raw SAC balance when the debt map is provided", async () => {
+    mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
+      if (sac === "AQUSDC") return Promise.resolve("75.0000000");
+      return Promise.resolve("0.0000000");
+    });
+
+    const balances: Record<string, { amount: string; usdValue: string }> = {};
+    const borrowed = {
+      AQUSDC: { amount: "50.0000000", usdValue: "50.00" },
+    };
+
+    const netUsd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1, borrowed);
+
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(25, 6);
+    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(25, 2);
+    expect(netUsd).toBeCloseTo(25, 2);
+  });
 });

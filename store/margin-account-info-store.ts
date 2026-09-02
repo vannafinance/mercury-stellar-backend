@@ -23,6 +23,24 @@ const inflightCheckByUser = new Map<string, Promise<void>>();
 const lastRefreshByAccount = new Map<string, number>();
 const inflightRefreshByAccount = new Map<string, Promise<void>>();
 
+// D25: when a mutation force-refreshes the store directly (authoritative client
+// read), pause the cached /api/account snapshot from feeding the store for a
+// window just past the route's 15s edge TTL — otherwise the still-cached
+// (pre-mutation) snapshot could clobber the fresh post-mutation values. After
+// the window the edge cache has caught up, so the snapshot feed resumes safely.
+let snapshotFeedSuppressedUntil = 0;
+/**
+ * Pause the cached /api/account snapshot from feeding the store for `ms`
+ * (default 20s, just past the route's 15s edge TTL). Called after a mutation
+ * does an authoritative client read so the lagging cached snapshot can't clobber
+ * the fresh post-mutation values.
+ */
+export const suppressSnapshotFeed = (ms = 20_000) => {
+  snapshotFeedSuppressedUntil = Date.now() + ms;
+};
+/** True while the snapshot feed is suppressed; consumers should skip writing snapshot data into the store. */
+export const isSnapshotFeedSuppressed = () => Date.now() < snapshotFeedSuppressedUntil;
+
 const canonicalMarginToken = (token: string): string => {
   const normalized = token.toUpperCase();
   if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
@@ -451,15 +469,19 @@ export const createMarginAccount = async (userAddress: string): Promise<boolean>
       showTxSuccess("Margin account created!");
       return true;
     } else {
-      const rawMessage = result.error || 'Failed to create margin account';
-      setAccountCreationError(rawMessage);
-      showTxError(normalizeCreateAccountError(rawMessage));
+      // Normalized here rather than in the component: `accountCreationError` is
+      // rendered verbatim by create-margin-account.tsx, and the most common cause
+      // — a wallet with no XLM, so Soroban RPC cannot even load the source account
+      // — arrived as a raw "Account not found" dump or the bare fallback string.
+      const message = normalizeCreateAccountError(result.error || '');
+      setAccountCreationError(message);
+      showTxError(message);
       return false;
     }
   } catch (error: any) {
-    const rawMessage = error?.message || 'Failed to create margin account';
-    setAccountCreationError(rawMessage);
-    showTxError(normalizeCreateAccountError(rawMessage));
+    const message = normalizeCreateAccountError(error?.message || '');
+    setAccountCreationError(message);
+    showTxError(message);
     return false;
   }
 };

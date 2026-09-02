@@ -9,7 +9,10 @@ import { getAddress } from "@/lib/wallet-adapter";
 //
 // Mirrors FALLBACK_SOURCE in oracle-price.ts / READ_SOURCE_ADDRESS in
 // allMarginAccounts.ts (a funded public testnet account).
-const READ_SOURCE_FALLBACK = "GAUVY7FNDKVWRMW3SYEMX6QMFSWQDKC6XIPJJKAMOEMLZPAI7XZPDV3D";
+// Public testnet G-address used only as a fee/sequence source for simulations.
+// Callers MUST tolerate it being unfunded (use Account(addr, "0") on getAccount miss).
+// Do not Horizon-load this as if it were the user's account.
+const READ_SOURCE_FALLBACK = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 export async function getReadSourceAddress(): Promise<string> {
   // Server (no browser) → never touch Freighter; use the public source.

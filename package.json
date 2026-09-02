@@ -10,10 +10,12 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:multi-leg": "vitest run tests/lib/multi-leg-agent.test.ts tests/lib/plan-sanitize.test.ts tests/lib/step-extractor.test.ts tests/lib/domain-firewall.test.ts"
   },
   "dependencies": {
     "@google-cloud/bigquery": "8.3.1",
+    "@google/genai": "^1.52.0",
     "@privy-io/react-auth": "^3.34.0",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.4.3",
@@ -21,6 +23,7 @@
     "chart.js": "^4.5.1",
     "classnames": "^2.5.1",
     "framer-motion": "^12.23.24",
+    "google-auth-library": "^10.9.1",
     "gsap": "^3.13.0",
     "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.562.0",

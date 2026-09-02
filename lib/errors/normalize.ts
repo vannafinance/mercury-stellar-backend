@@ -210,7 +210,11 @@ export function normalizeDepositCollateralError(raw: string | undefined): string
   }
   if (lower.includes('insufficient')) return 'Insufficient wallet balance for this deposit.';
   if (lower.includes('trustline entry is missing')) {
-    return 'Your wallet is missing the USDC trustline required to deposit BLUSDC. Open the Faucet, mint Blend USDC, then retry.';
+    return (
+      'This asset is not set up in your wallet yet (missing trustline). ' +
+      'Open the Faucet to mint it (establishes the trustline), then retry. ' +
+      'Copilot will try to run that setup automatically before the deposit next time.'
+    );
   }
   if (lower.includes('hosterror'))
     return appendTxHash('Deposit failed on-chain. Please retry with a slightly smaller amount.', compact);
@@ -322,14 +326,56 @@ export function normalizeCreateAccountError(msg: string): string {
   const m = (msg ?? '').toLowerCase();
   if (!m) return 'Failed to create margin account. Please try again.';
   if (isCancel(m)) return 'Transaction cancelled by user.';
+  if (isUnfundedWalletError(m)) return unfundedWalletMessage('open your margin account');
   if (isBudgetExceeded(m)) return BUDGET_EXCEEDED_MESSAGE;
   const code = contractErrorCode(msg);
   if (code !== null) {
     return appendTxHash(marginErrorMessage(code) ?? `AccountManager contract error #${code}.`, msg);
   }
-  if (m.includes('account not found') || m.includes('not found on network'))
-    return 'Wallet has no XLM on testnet. Open the Faucet and fund your wallet, then try again.';
   if (m.includes('insufficient') || m.includes('balance') || m.includes('fee'))
     return "Wallet doesn't have enough XLM to pay the transaction fee. Use the Faucet to fund it, then try again.";
   return 'Failed to create margin account. Please try again.';
+}
+
+// ─── unfunded wallet ─────────────────────────────────────────────────────────
+//
+// A wallet that has never received XLM has no *ledger account*, so Stellar
+// refuses the transaction before any Vanna contract runs. Horizon and Soroban RPC
+// each phrase that differently ("Account not found", "Failed to load account
+// 'G…'", `op_underfunded`), and MCP wraps its copy in `contract_error` — so the
+// same first-run situation arrives as half a dozen strings from three sources.
+//
+// Detection lives here, once, because four call sites need to agree on it: the
+// copilot's single-write humanizer, its multi-leg leg humanizer, the margin-page
+// store, and normalizeCreateAccountError above. A brand-new Privy wallet hits
+// this on the very first action a user takes, which makes it the highest-traffic
+// error in the product and the worst one to leave as a raw RPC dump.
+
+/** True when a raw error means "this wallet holds no XLM on the ledger". */
+export function isUnfundedWalletError(raw: string | undefined | null): boolean {
+  const text = (raw ?? '').toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('account not found') ||
+    text.includes('account does not exist') ||
+    text.includes('not found on network') ||
+    text.includes('failed to load account') ||
+    text.includes('op_underfunded') ||
+    text.includes('tx_insufficient_balance') ||
+    text.includes('underfunded')
+  );
+}
+
+/**
+ * The one message for an unfunded wallet.
+ *
+ * @param action - What the user was trying to do, as a verb phrase completing
+ *                 "then …" (e.g. "open your margin account"). Defaults to a
+ *                 neutral retry so callers without that context stay accurate.
+ */
+export function unfundedWalletMessage(action = 'try again'): string {
+  return (
+    "You don't have enough funds to cover the transaction fee. A new wallet needs " +
+    `about 1 XLM for the Stellar account reserve — claim funds from the Faucet, then ${action}.`
+  );
 }

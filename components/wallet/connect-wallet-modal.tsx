@@ -67,8 +67,8 @@ export const ConnectWalletModal = ({
       ? [
           {
             key: "privy",
-            name: "Email or Google",
-            description: "Sign in with email or Google",
+            name: "Create Vanna wallet",
+            description: "Email or Google — we create & save a Stellar wallet for you",
             onClick: onSelectPrivy,
             iconBg: isDark ? "bg-[#132A45]" : "bg-[#EAF2FE]",
             icon: <EmailLoginIcon />,
@@ -163,11 +163,14 @@ export const ConnectWalletModal = ({
 
             {privyEnabled && (
               <div
-                className={`px-5 py-3 border-t text-[11px] ${
+                className={`px-5 py-3 border-t text-[11px] leading-relaxed ${
                   isDark ? "border-[#222] text-[#666]" : "border-[#F0F0F0] text-[#888]"
                 }`}
               >
-                New to crypto? Choose Email or Google — no seed phrase needed.
+                New to crypto? <span className={isDark ? "text-[#999]" : "text-[#555]"}>Create Vanna wallet</span>{" "}
+                signs you in with email or Google, creates an embedded Stellar wallet, and saves it to your
+                Privy account automatically — no seed phrase to copy. You can reconnect anytime with the same
+                login.
               </div>
             )}
           </motion.div>
