@@ -50,6 +50,8 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Node 22 bundles npm 10, which rejects this lockfile. See ci.yml.
+      - run: npm i -g npm@11
       - run: npm ci
 
       # Gate the deploy on the type-check. The full build is re-run inside the

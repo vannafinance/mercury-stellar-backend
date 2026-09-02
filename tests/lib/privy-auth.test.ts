@@ -74,7 +74,7 @@ function fetchJwks(doc: unknown = jwksFor(publicKey)): typeof fetch {
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 }
 
 const verify = (token: string, over: Parameters<typeof verifyPrivyToken>[1] = {}) =>
@@ -184,12 +184,12 @@ describe("configuration and transport failures fail closed", () => {
   it("surfaces an unreachable JWKS endpoint", async () => {
     const fetchImpl = (async () => {
       throw new Error("ENOTFOUND");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     await expect(verify(signToken(validClaims()), { fetchImpl })).rejects.toThrow(/JWKS/i);
   });
 
   it("surfaces a non-200 JWKS response", async () => {
-    const fetchImpl = (async () => new Response("nope", { status: 503 })) as typeof fetch;
+    const fetchImpl = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
     await expect(verify(signToken(validClaims()), { fetchImpl })).rejects.toThrow(/503/);
   });
 
