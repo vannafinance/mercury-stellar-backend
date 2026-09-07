@@ -85,21 +85,22 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
     expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(50, 6);
   });
 
-  it("nets same-asset debt from a raw SAC balance when the debt map is provided", async () => {
+  it("does not net same-asset debt out of the raw SAC balance — borrowed proceeds are legitimate leverage collateral", async () => {
+    // A dual-borrow/leverage account: 75 AQUSDC raw balance, 50 of which was just
+    // borrowed. The contract's own ledger (record_borrow_and_credit /
+    // apply_deposit_borrow_ledger in SmartAccountContract) credits borrowed proceeds
+    // straight into CollateralBalanceWAD, and RiskEngine's real health factor is
+    // computed against that same balance — so the display must not strip it back out.
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
       if (sac === "AQUSDC") return Promise.resolve("75.0000000");
       return Promise.resolve("0.0000000");
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
-    const borrowed = {
-      AQUSDC: { amount: "50.0000000", usdValue: "50.00" },
-    };
+    const usd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1);
 
-    const netUsd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1, borrowed);
-
-    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(25, 6);
-    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(25, 2);
-    expect(netUsd).toBeCloseTo(25, 2);
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(75, 6);
+    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(75, 2);
+    expect(usd).toBeCloseTo(75, 2);
   });
 });

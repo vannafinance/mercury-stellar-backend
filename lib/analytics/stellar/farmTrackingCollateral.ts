@@ -46,12 +46,19 @@ export const MARGIN_SAC_BALANCE_KEYS: readonly string[] = MARGIN_SAC_TOKENS.map(
  * `collateralBalances`. The on-chain collateral ledger (CollateralBalanceWAD)
  * does not update when the user swaps via Aquarius/Soroswap — only raw balances
  * reflect the post-swap portfolio, so HF must use these for display.
+ *
+ * Do NOT net this against `borrowedBalances`: on a leveraged/dual-borrow
+ * position, borrowed proceeds are credited straight into the smart account's
+ * own CollateralBalanceWAD by the contract itself (`record_borrow_and_credit`
+ * / `apply_deposit_borrow_ledger` in SmartAccountContract) and RiskEngine's
+ * real health factor is computed against that same balance. Subtracting the
+ * borrowed amount here previously stripped out exactly that legitimate
+ * leverage collateral, cratering the displayed HF for any dual-borrow account.
  */
 export async function reconcileMarginRawSacCollateral(
   marginAccountAddress: string,
   balances: Record<string, { amount: string; usdValue: string }>,
   priceForToken: (token: string) => number,
-  borrowedBalances?: Record<string, { amount: string; usdValue: string }>,
 ): Promise<number> {
   let rawUsdTotal = 0;
   try {
@@ -61,16 +68,7 @@ export async function reconcileMarginRawSacCollateral(
       ),
     );
     MARGIN_SAC_TOKENS.forEach(({ balanceKey }, i) => {
-      const rawAmount = parseFloat(amounts[i]) || 0;
-      const borrowedAmount = borrowedBalances?.[balanceKey]
-        ? parseFloat(borrowedBalances[balanceKey]!.amount) || 0
-        : 0;
-      // The SAC balance is the total token balance held by the smart account. When
-      // borrowed cash is still sitting there, it is included in that number but is
-      // not additional collateral. Keep the old raw overlay for callers that do not
-      // have debt available, while the margin snapshot passes its authoritative debt
-      // map and anchors collateral on the net amount.
-      const amount = Math.max(0, rawAmount - borrowedAmount);
+      const amount = parseFloat(amounts[i]) || 0;
       const price = priceForToken(balanceKey);
       const usd = amount * price;
       rawUsdTotal += usd;
