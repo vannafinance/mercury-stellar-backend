@@ -18,6 +18,12 @@ const VARS = [
   "CUSTOM_OIDC_TOKEN",
   "GOOGLE_SERVICE_ACCOUNT_JSON",
   "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+  // Cleared as well as set: these are real markers of a Google-managed runtime, so a
+  // suite that actually runs on Cloud Run (or in a Cloud Build step) would otherwise see
+  // them leak in and flip every "developer_login" expectation below.
+  "K_SERVICE",
+  "FUNCTION_TARGET",
+  "GAE_ENV",
 ] as const;
 
 const saved = new Map<string, string | undefined>();
@@ -116,6 +122,47 @@ describe("vertexAuthMode", () => {
       GOOGLE_OIDC_TOKEN_ENV: "CUSTOM_OIDC_TOKEN",
       VERCEL_OIDC_TOKEN: "header.payload.sig",
     });
+    expect(vertexAuthMode()).toBe("developer_login");
+  });
+
+  /**
+   * Cloud Run holds no key and no OIDC token: the credential is the attached service
+   * account, reachable only through the metadata server, which an env-var check cannot
+   * see. Reporting "developer_login" there put a `gcloud login` warning on every healthy
+   * deployed revision — on a host with no gcloud binary and no user login — while Vertex
+   * was authenticating fine through ADC. A warning that fires on a working deploy is worse
+   * than none, because it teaches people to ignore the real one.
+   */
+  it("Cloud Run with no key → attached_service_account, not a gcloud warning", () => {
+    setEnv({ K_SERVICE: "vanna-app-dev" });
+    expect(vertexAuthMode()).toBe("attached_service_account");
+  });
+
+  it("Cloud Functions gen1 (FUNCTION_TARGET) and App Engine (GAE_ENV) count too", () => {
+    setEnv({ FUNCTION_TARGET: "handler" });
+    expect(vertexAuthMode()).toBe("attached_service_account");
+    setEnv({ GAE_ENV: "standard" });
+    expect(vertexAuthMode()).toBe("attached_service_account");
+  });
+
+  it("an explicit key still wins over the attached account", () => {
+    // A deploy that deliberately mounts its own key should report that key, not the
+    // ambient host identity — getAccessToken tries the key first, so the chip must agree.
+    setEnv({ K_SERVICE: "vanna-app-dev", GOOGLE_SERVICE_ACCOUNT_JSON: KEY_JSON });
+    expect(vertexAuthMode()).toBe("service_account");
+  });
+
+  it("federation still wins over the attached account", () => {
+    setEnv({
+      K_SERVICE: "vanna-app-dev",
+      GOOGLE_WORKLOAD_IDENTITY_AUDIENCE: AUDIENCE,
+      VERCEL_OIDC_TOKEN: "header.payload.sig",
+    });
+    expect(vertexAuthMode()).toBe("workload_identity");
+  });
+
+  it("an empty K_SERVICE is not a managed runtime", () => {
+    setEnv({ K_SERVICE: "   " });
     expect(vertexAuthMode()).toBe("developer_login");
   });
 });

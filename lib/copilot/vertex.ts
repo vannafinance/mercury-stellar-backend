@@ -178,7 +178,11 @@ function workloadIdentityConfig(): {
  * call throws and understanding silently drops to keyword matching, which is the failure
  * that made the same prompt answer on one laptop and not another.
  */
-export function vertexAuthMode(): "workload_identity" | "service_account" | "developer_login" {
+export function vertexAuthMode():
+  | "workload_identity"
+  | "service_account"
+  | "attached_service_account"
+  | "developer_login" {
   const wif = workloadIdentityConfig();
   if (wif && (process.env[wif.subjectTokenEnvVar] || "").trim()) return "workload_identity";
   if (
@@ -190,7 +194,32 @@ export function vertexAuthMode(): "workload_identity" | "service_account" | "dev
   ) {
     return "service_account";
   }
+  if (onGoogleManagedRuntime()) return "attached_service_account";
   return "developer_login";
+}
+
+/**
+ * Are we running on a Google-managed runtime that attaches a service account?
+ *
+ * This exists because the checks above read env vars only, and the credential Cloud Run
+ * actually uses lives behind the metadata server where no env var reveals it. With no key
+ * and no OIDC token set, the old code concluded "developer_login" and the UI showed a
+ * `gcloud login` warning on every deployed revision — on a host that has no gcloud binary
+ * and no user login, and where Vertex was in fact authenticating perfectly well through
+ * ADC on the attached service account. A warning that fires on a healthy deploy trains
+ * people to ignore the one that matters, so the two states are named differently.
+ *
+ * K_SERVICE is set by Cloud Run and Cloud Functions gen2, FUNCTION_TARGET by gen1, and
+ * GAE_ENV by App Engine. Detection is deliberately env-var based and does not probe the
+ * metadata server: this is called to render a status chip, so it must stay synchronous
+ * and free of network I/O.
+ */
+function onGoogleManagedRuntime(): boolean {
+  return Boolean(
+    (process.env.K_SERVICE || "").trim() ||
+      (process.env.FUNCTION_TARGET || "").trim() ||
+      (process.env.GAE_ENV || "").trim(),
+  );
 }
 
 /** @deprecated Prefer vertexAuthMode() — kept so callers reading a boolean still compile. */
