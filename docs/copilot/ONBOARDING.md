@@ -59,7 +59,6 @@ WORKOS_M2M_TOKEN_URL=https://sensitive-silk-47-staging.authkit.app/oauth2/token
 
 NEXT_PUBLIC_PRIVY_APP_ID=your_privy_app_id
 COPILOT_LOG=1
-COPILOT_READS_ONLY=false
 ```
 
 #### 3. Start the Development Server
@@ -102,8 +101,8 @@ npx tsc --noEmit
 
 ## 4. Key Safety Rules You Should Know
 
-1. **Safety Kill Switch (`COPILOT_READS_ONLY=true`):**
-   * When testing automated prompt matrices or scripts, set `COPILOT_READS_ONLY=true` in `.env.local`. This allows the AI to answer questions and generate plans, but completely disables on-chain execution.
+1. **Writes Always Execute:**
+   * There is no reads-only kill switch. Any prompt the router reads as a write goes to chain, in every environment. When running automated prompt matrices or scripts, point them at a throwaway testnet account.
 2. **Auto-Sign Single-Leg Execution:**
    * If a user has enabled Auto-Sign with the Sign Service, single writes execute immediately without an approval popup. Multi-step strategies **always** display a plan preview first.
 3. **No Key Custody:**

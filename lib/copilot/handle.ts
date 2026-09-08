@@ -5559,14 +5559,6 @@ async function runWrite(
     message: string;
   },
 ): Promise<ChatResponse> {
-  if (copilotConfig.readsOnly) {
-    return {
-      kind: "blocked",
-      message: "Writes are disabled (COPILOT_READS_ONLY).",
-      request_id: ctx.request_id,
-    };
-  }
-
   // Reject statically impossible asset/venue combinations before resolving a wallet or
   // smart account. A malformed request cannot become valid because a wallet connects,
   // and asking for a wallet first hides the actionable reason from the user.
