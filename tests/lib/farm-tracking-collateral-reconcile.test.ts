@@ -108,9 +108,14 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
     // Guards the multi-token path: every MARGIN_SAC token is overlaid at its own
     // price, and a borrowed asset's balance survives intact alongside a deposited
     // one. Regression cover for the per-symbol loop, not just the single-token case.
+    //
+    // Note the asymmetry this also pins down: the Blend USDC entry is READ as sac
+    // "USDC" but WRITTEN under balanceKey "BLUSDC", and the price is looked up by
+    // the balanceKey. Mocking the balanceKey side returns 0 and silently drops the
+    // token out of the total.
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
       if (sac === "XLM") return Promise.resolve("100.0000000");
-      if (sac === "BLUSDC") return Promise.resolve("50.0000000");
+      if (sac === "USDC") return Promise.resolve("50.0000000");
       return Promise.resolve("0.0000000");
     });
 
