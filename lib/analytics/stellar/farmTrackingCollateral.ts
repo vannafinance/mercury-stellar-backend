@@ -51,8 +51,9 @@ export async function reconcileMarginRawSacCollateral(
   marginAccountAddress: string,
   balances: Record<string, { amount: string; usdValue: string }>,
   priceForToken: (token: string) => number,
-  borrowedBalances?: Record<string, { amount: string; usdValue: string }>,
+  _borrowedBalances?: Record<string, { amount: string; usdValue: string }>,
 ): Promise<number> {
+  void _borrowedBalances;
   let rawUsdTotal = 0;
   try {
     const amounts = await Promise.all(
@@ -62,15 +63,11 @@ export async function reconcileMarginRawSacCollateral(
     );
     MARGIN_SAC_TOKENS.forEach(({ balanceKey }, i) => {
       const rawAmount = parseFloat(amounts[i]) || 0;
-      const borrowedAmount = borrowedBalances?.[balanceKey]
-        ? parseFloat(borrowedBalances[balanceKey]!.amount) || 0
-        : 0;
-      // The SAC balance is the total token balance held by the smart account. When
-      // borrowed cash is still sitting there, it is included in that number but is
-      // not additional collateral. Keep the old raw overlay for callers that do not
-      // have debt available, while the margin snapshot passes its authoritative debt
-      // map and anchors collateral on the net amount.
-      const amount = Math.max(0, rawAmount - borrowedAmount);
+      // Raw token balance in the smart account is gross collateral backing the loan.
+      // Borrowed assets held in the account constitute gross assets under Vanna
+      // protocol solvency rules (HF = Gross Assets / Debt). Presentation layers
+      // (positions table, Copilot side-rail) apply per-symbol net display netting.
+      const amount = rawAmount;
       const price = priceForToken(balanceKey);
       const usd = amount * price;
       rawUsdTotal += usd;

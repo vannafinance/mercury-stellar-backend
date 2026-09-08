@@ -96,7 +96,7 @@ describe("deposit-collateral health-factor projection matches the real formula",
     expect(simulation!.hf_before).toBeCloseTo(realHfBefore, 4);
   });
 
-  it("still projects a lower health factor for a borrow (debt increases, collateral does not)", async () => {
+  it("still projects a lower health factor for a borrow (debt increases alongside gross collateral)", async () => {
     const realHfBefore = COLLATERAL_BEFORE / DEBT_BEFORE;
     const borrowAction: CopilotAction = {
       op: "borrow",
@@ -110,8 +110,36 @@ describe("deposit-collateral health-factor projection matches the real formula",
       smartAccount: "CTEST",
       amount: 50,
     });
-    const expectedAfter = COLLATERAL_BEFORE / (DEBT_BEFORE + 50 * XLM_PRICE);
+    const expectedAfter = (COLLATERAL_BEFORE + 50 * XLM_PRICE) / (DEBT_BEFORE + 50 * XLM_PRICE);
     expect(simulation!.hf_after).toBeCloseTo(expectedAfter, 3);
     expect(simulation!.hf_after!).toBeLessThan(simulation!.hf_before!);
+  });
+
+  it("projects gross collateral and health factor accurately for deposit_and_borrow (leverage)", async () => {
+    const realHfBefore = COLLATERAL_BEFORE / DEBT_BEFORE;
+    const levAction: CopilotAction = {
+      op: "deposit_and_borrow",
+      asset: "XLM",
+      amount: 100,
+      leverage: 2.0,
+      requires_account: true,
+      requires_amount: true,
+    };
+    const { simulation } = await evaluateWriteRisk(mcpWithHealth(realHfBefore), {
+      action: levAction,
+      smartAccount: "CTEST",
+      amount: 100,
+    });
+    // At 2.0x leverage: deposit 100 XLM ($15.78), borrow 100 XLM ($15.78)
+    const depositUsd = 100 * XLM_PRICE;
+    const borrowUsd = depositUsd * (2.0 - 1); // 15.78
+    const expectedColAfter = COLLATERAL_BEFORE + depositUsd + borrowUsd;
+    const expectedDebtAfter = DEBT_BEFORE + borrowUsd;
+    const expectedHfAfter = expectedColAfter / expectedDebtAfter;
+
+    expect(simulation).not.toBeNull();
+    expect(simulation!.collateral_after).toBeCloseTo(expectedColAfter, 2);
+    expect(simulation!.debt_after).toBeCloseTo(expectedDebtAfter, 2);
+    expect(simulation!.hf_after).toBeCloseTo(expectedHfAfter, 3);
   });
 });

@@ -85,7 +85,7 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
     expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(50, 6);
   });
 
-  it("nets same-asset debt from a raw SAC balance when the debt map is provided", async () => {
+  it("preserves raw SAC balances even when the debt map is provided (gross protocol accounting)", async () => {
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
       if (sac === "AQUSDC") return Promise.resolve("75.0000000");
       return Promise.resolve("0.0000000");
@@ -96,10 +96,40 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
       AQUSDC: { amount: "50.0000000", usdValue: "50.00" },
     };
 
-    const netUsd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1, borrowed);
+    const grossUsd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1, borrowed);
 
-    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(25, 6);
-    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(25, 2);
-    expect(netUsd).toBeCloseTo(25, 2);
+    expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(75, 6);
+    expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(75, 2);
+    expect(grossUsd).toBeCloseTo(75, 2);
+  });
+
+  it("preserves both deposit and borrowed asset raw SAC balances across multiple tokens", async () => {
+    mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
+      if (sac === "XLM") return Promise.resolve("100.0000000");
+      if (sac === "USDC") return Promise.resolve("50.0000000");
+      return Promise.resolve("0.0000000");
+    });
+
+    const balances: Record<string, { amount: string; usdValue: string }> = {};
+    const borrowed = {
+      BLUSDC: { amount: "50.0000000", usdValue: "50.00" },
+    };
+
+    // XLM price $0.15, BLUSDC price $1.00
+    const priceMap: Record<string, number> = { XLM: 0.15, BLUSDC: 1.0, AQUSDC: 1.0, SOUSDC: 1.0 };
+    const grossUsd = await reconcileMarginRawSacCollateral(
+      "CACCT",
+      balances,
+      (t) => priceMap[t] ?? 1,
+      borrowed,
+    );
+
+    // Both XLM and BLUSDC must remain intact with true gross balances
+    expect(parseFloat(balances.XLM.amount)).toBeCloseTo(100, 6);
+    expect(parseFloat(balances.XLM.usdValue)).toBeCloseTo(15.00, 2);
+    expect(parseFloat(balances.BLUSDC.amount)).toBeCloseTo(50, 6);
+    expect(parseFloat(balances.BLUSDC.usdValue)).toBeCloseTo(50.00, 2);
+    // Gross USD = 100 * 0.15 + 50 * 1.0 = 65.00
+    expect(grossUsd).toBeCloseTo(65.00, 2);
   });
 });
