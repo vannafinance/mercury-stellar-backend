@@ -241,7 +241,6 @@ async function computeMarginSnapshotUncached(
       marginAccountAddress,
       collateralBalances,
       tokenPrice,
-      borrowedBalances,
     ).catch((e) => {
       console.warn("[account-snapshot] raw SAC reconcile failed:", e);
       return 0;

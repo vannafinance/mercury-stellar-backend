@@ -85,51 +85,49 @@ describe("reconcileMarginRawSacCollateral — AQUSDC/SOUSDC live-balance overlay
     expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(50, 6);
   });
 
-  it("preserves raw SAC balances even when the debt map is provided (gross protocol accounting)", async () => {
+  it("does not net same-asset debt out of the raw SAC balance — borrowed proceeds are legitimate leverage collateral", async () => {
+    // A dual-borrow/leverage account: 75 AQUSDC raw balance, 50 of which was just
+    // borrowed. The contract's own ledger (record_borrow_and_credit /
+    // apply_deposit_borrow_ledger in SmartAccountContract) credits borrowed proceeds
+    // straight into CollateralBalanceWAD, and RiskEngine's real health factor is
+    // computed against that same balance — so the display must not strip it back out.
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
       if (sac === "AQUSDC") return Promise.resolve("75.0000000");
       return Promise.resolve("0.0000000");
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
-    const borrowed = {
-      AQUSDC: { amount: "50.0000000", usdValue: "50.00" },
-    };
-
-    const grossUsd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1, borrowed);
+    const usd = await reconcileMarginRawSacCollateral("CACCT", balances, () => 1);
 
     expect(parseFloat(balances.AQUSDC.amount)).toBeCloseTo(75, 6);
     expect(parseFloat(balances.AQUSDC.usdValue)).toBeCloseTo(75, 2);
-    expect(grossUsd).toBeCloseTo(75, 2);
+    expect(usd).toBeCloseTo(75, 2);
   });
 
-  it("preserves both deposit and borrowed asset raw SAC balances across multiple tokens", async () => {
+  it("preserves raw SAC balances across multiple tokens at their own prices", async () => {
+    // Guards the multi-token path: every MARGIN_SAC token is overlaid at its own
+    // price, and a borrowed asset's balance survives intact alongside a deposited
+    // one. Regression cover for the per-symbol loop, not just the single-token case.
     mocks.getMarginAccountTokenBalance.mockImplementation((_addr: string, sac: string) => {
       if (sac === "XLM") return Promise.resolve("100.0000000");
-      if (sac === "USDC") return Promise.resolve("50.0000000");
+      if (sac === "BLUSDC") return Promise.resolve("50.0000000");
       return Promise.resolve("0.0000000");
     });
 
     const balances: Record<string, { amount: string; usdValue: string }> = {};
-    const borrowed = {
-      BLUSDC: { amount: "50.0000000", usdValue: "50.00" },
-    };
-
-    // XLM price $0.15, BLUSDC price $1.00
     const priceMap: Record<string, number> = { XLM: 0.15, BLUSDC: 1.0, AQUSDC: 1.0, SOUSDC: 1.0 };
+
     const grossUsd = await reconcileMarginRawSacCollateral(
       "CACCT",
       balances,
       (t) => priceMap[t] ?? 1,
-      borrowed,
     );
 
-    // Both XLM and BLUSDC must remain intact with true gross balances
     expect(parseFloat(balances.XLM.amount)).toBeCloseTo(100, 6);
-    expect(parseFloat(balances.XLM.usdValue)).toBeCloseTo(15.00, 2);
+    expect(parseFloat(balances.XLM.usdValue)).toBeCloseTo(15.0, 2);
     expect(parseFloat(balances.BLUSDC.amount)).toBeCloseTo(50, 6);
-    expect(parseFloat(balances.BLUSDC.usdValue)).toBeCloseTo(50.00, 2);
-    // Gross USD = 100 * 0.15 + 50 * 1.0 = 65.00
-    expect(grossUsd).toBeCloseTo(65.00, 2);
+    expect(parseFloat(balances.BLUSDC.usdValue)).toBeCloseTo(50.0, 2);
+    // 100 XLM * $0.15 + 50 BLUSDC * $1.00 = $65.00
+    expect(grossUsd).toBeCloseTo(65.0, 2);
   });
 });

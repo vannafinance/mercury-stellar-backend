@@ -17,6 +17,12 @@ jobs:
           # different major than the one that ships is not a real gate.
           node-version: 22
           cache: npm
+
+      # The lockfile's peer graph (date-fns, zod) resolves only under npm 11.
+      # Node 22 bundles npm 10, which rejects a valid lockfile with a spurious
+      # "Missing: zod@3.25.76 from lock file". Regenerating under npm 10 does
+      # not help — it cannot produce a self-consistent tree for this graph.
+      - run: npm i -g npm@11
       - run: npm ci
 
       # Hard gates — must pass to merge.

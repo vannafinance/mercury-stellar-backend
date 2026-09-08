@@ -46,14 +46,20 @@ export const MARGIN_SAC_BALANCE_KEYS: readonly string[] = MARGIN_SAC_TOKENS.map(
  * `collateralBalances`. The on-chain collateral ledger (CollateralBalanceWAD)
  * does not update when the user swaps via Aquarius/Soroswap — only raw balances
  * reflect the post-swap portfolio, so HF must use these for display.
+ *
+ * Do NOT net this against `borrowedBalances`: on a leveraged/dual-borrow
+ * position, borrowed proceeds are credited straight into the smart account's
+ * own CollateralBalanceWAD by the contract itself (`record_borrow_and_credit`
+ * / `apply_deposit_borrow_ledger` in SmartAccountContract) and RiskEngine's
+ * real health factor is computed against that same balance. Subtracting the
+ * borrowed amount here previously stripped out exactly that legitimate
+ * leverage collateral, cratering the displayed HF for any dual-borrow account.
  */
 export async function reconcileMarginRawSacCollateral(
   marginAccountAddress: string,
   balances: Record<string, { amount: string; usdValue: string }>,
   priceForToken: (token: string) => number,
-  _borrowedBalances?: Record<string, { amount: string; usdValue: string }>,
 ): Promise<number> {
-  void _borrowedBalances;
   let rawUsdTotal = 0;
   try {
     const amounts = await Promise.all(
@@ -62,12 +68,7 @@ export async function reconcileMarginRawSacCollateral(
       ),
     );
     MARGIN_SAC_TOKENS.forEach(({ balanceKey }, i) => {
-      const rawAmount = parseFloat(amounts[i]) || 0;
-      // Raw token balance in the smart account is gross collateral backing the loan.
-      // Borrowed assets held in the account constitute gross assets under Vanna
-      // protocol solvency rules (HF = Gross Assets / Debt). Presentation layers
-      // (positions table, Copilot side-rail) apply per-symbol net display netting.
-      const amount = rawAmount;
+      const amount = parseFloat(amounts[i]) || 0;
       const price = priceForToken(balanceKey);
       const usd = amount * price;
       rawUsdTotal += usd;
