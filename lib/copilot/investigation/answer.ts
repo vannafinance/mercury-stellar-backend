@@ -40,6 +40,8 @@ export function strategyReply(input: {
   candidates: CandidateSet | null | undefined;
   capacity: ResearchCapacity | null | undefined;
   question: string | null;
+  intent?: "answer" | "strategy";
+  findings?: ReadonlyArray<{ summary: string }>;
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
@@ -72,5 +74,12 @@ export function strategyReply(input: {
   if (input.status === "incomplete") {
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
-  return factualAnswer(input.facts) ?? "The completed checks are shown below.";
+  const facts = factualAnswer(input.facts);
+  if (facts) return facts;
+  // Conceptual answers are language, not sized amounts. Publishing findings here is
+  // the only way "what is a health factor?" gets a definition instead of silence.
+  if (input.intent === "answer" && input.findings?.length) {
+    return input.findings.map((finding) => finding.summary).join(" ");
+  }
+  return "The completed checks are shown below.";
 }

@@ -21,6 +21,7 @@ import {
 } from "@/lib/wallet-adapter";
 import { useUserStore } from "@/store/user";
 import { clearMarginAccount } from "@/store/margin-account-info-store";
+import { hasUnexpiredPrivySession } from "@/lib/privy-session";
 
 function findStellarWallet(user: ReturnType<typeof usePrivy>["user"]): WalletWithMetadata | undefined {
   return user?.linkedAccounts.find(
@@ -136,6 +137,7 @@ export const PrivyWalletBridge = () => {
       walletKind: "privy",
       walletProviderLabel: loginMethodLabel(user),
       manuallyDisconnected: false,
+      walletService: "ok",
     });
     return true;
   }, [user, signRawHash]);
@@ -148,12 +150,14 @@ export const PrivyWalletBridge = () => {
       login,
       logout,
       authenticated,
+      ready,
       resync: syncStellarWallet,
       getAccessToken,
       authorizeVannaSigner,
     });
+    useUserStore.getState().set({ privyReady: ready, privyAuthenticated: authenticated });
     return () => registerPrivyAuthControls(null);
-  }, [login, logout, authenticated, syncStellarWallet, getAccessToken, authorizeVannaSigner]);
+  }, [login, logout, ready, authenticated, syncStellarWallet, getAccessToken, authorizeVannaSigner]);
 
   useEffect(() => {
     if (!ready || !authenticated || !user) return;
@@ -208,9 +212,15 @@ export const PrivyWalletBridge = () => {
   }, [ready, authenticated, user, user?.linkedAccounts, signRawHash, syncStellarWallet]);
 
   // Clear everything on logout so a stale Privy signer/address can't linger.
+  // Do NOT treat "SDK ready but not authenticated" as logout when a persisted
+  // token is still valid — that is auth.privy.io unreachable, not a sign-out.
   useEffect(() => {
     if (ready && !authenticated) {
       registerPrivyBridge(null);
+      if (hasUnexpiredPrivySession()) {
+        useUserStore.getState().set({ walletService: "unreachable" });
+        return;
+      }
       const { walletKind } = useUserStore.getState();
       if (walletKind === "privy") {
         setActiveWalletKind(null);
@@ -222,6 +232,7 @@ export const PrivyWalletBridge = () => {
           balance: "0",
           tokenBalances: { XLM: "0", USDC: "0", BLEND_USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },
           depositedBalances: { XLM: "0", USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },
+          walletService: null,
         });
         clearMarginAccount();
       }

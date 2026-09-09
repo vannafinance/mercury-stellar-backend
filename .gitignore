@@ -58,6 +58,8 @@ next-env.d.ts
 .cursor
 
 # local-only notes / snapshots (do not commit)
+/.agents/
+.agents/
 PHASE_1_SNAPSHOT.txt
 skills-lock.json
 .claude.md

@@ -81,11 +81,12 @@ export const Navbar = (props: Navbar) => {
   const { isDark, toggleTheme } = useTheme();
   const zoom = useViewportScale(1440);
   const walletProviderLabel = useUserStore((state) => state.walletProviderLabel);
-  const { address, walletKind, connectWallet, disconnectWallet, isLoading } = useWallet();
+  const { address, walletKind, connectWallet, disconnectWallet, isLoading, walletService, retryWalletService } = useWallet();
   // For Privy, show what the user actually signed in with (Google, Apple, ...)
   // instead of the generic "Privy Wallet" — see contexts/privy-wallet-bridge.tsx.
   const walletLabel =
     walletKind === "privy" ? walletProviderLabel ?? "Privy Wallet" : "Freighter Wallet";
+  const walletUnreachable = walletService === "unreachable";
   const privyEnabled = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const [marginCopied, setMarginCopied] = useState(false);
@@ -786,10 +787,10 @@ export const Navbar = (props: Navbar) => {
                 <Button
                   size="small"
                   type="navbar"
-                  disabled={isLoading}
-                  onClick={() => setIsConnectModalOpen(true)}
-                  text={isLoading ? "Connecting..." : "Connect Wallet"}
-                  ariaLabel="Connect a wallet"
+                  disabled={isLoading && !walletUnreachable}
+                  onClick={() => walletUnreachable ? void retryWalletService() : setIsConnectModalOpen(true)}
+                  text={walletUnreachable ? "Wallet service unreachable — retrying" : isLoading ? "Connecting..." : "Connect Wallet"}
+                  ariaLabel={walletUnreachable ? "Wallet service unreachable — retrying" : "Connect a wallet"}
                 />
               </div>
             ) : (
@@ -1201,10 +1202,10 @@ export const Navbar = (props: Navbar) => {
               <Button
                 size="small"
                 type="gradient"
-                disabled={isLoading}
-                onClick={() => setIsConnectModalOpen(true)}
-                text={isLoading ? "..." : "Connect"}
-                ariaLabel="Connect a wallet"
+                disabled={isLoading && !walletUnreachable}
+                onClick={() => walletUnreachable ? void retryWalletService() : setIsConnectModalOpen(true)}
+                text={walletUnreachable ? "Retrying…" : isLoading ? "..." : "Connect"}
+                ariaLabel={walletUnreachable ? "Wallet service unreachable — retrying" : "Connect a wallet"}
               />
             ) : (
               <div className="relative" ref={walletMenuMobileRef}>

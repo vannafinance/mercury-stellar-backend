@@ -54,35 +54,41 @@ export function useInvestigation(wallet: string | null) {
     sequence.current += 1;
     setState((previous) => ({ ...previous, loading: false, progress: null, error: "Investigation cancelled. No transactions were requested." }));
   }, []);
-  const run = useCallback(async (message: string) => {
+  const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
+    const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
     const id = ++sequence.current;
     const owner = wallet;
-    const current = () => sequence.current === id && activeWallet.current === owner && !controller.signal.aborted;
+    const current = () => sequence.current === id && activeWallet.current === owner && !combined.aborted;
     // Above the route's 75s guarantee: the server should always answer first, so this
     // is a backstop for a dead connection rather than the normal end of a slow run.
+    // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
     const timer = setTimeout(() => controller.abort(), 120_000);
     const followUp = awaitingAnswer.current ? continuation.current : null;
     if (!followUp) continuation.current = null;
     setState({ wallet: owner, loading: true, prompt, result: null, progress: null, error: null });
+    let received = false;
+    let streamError = false;
     try {
-      const headers = await requestHeaders(AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]));
+      const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]));
       if (!current()) return;
       const response = await fetch("/api/copilot/investigate", {
-        method: "POST", headers, signal: controller.signal,
+        method: "POST", headers, signal: combined,
         body: JSON.stringify({ message: prompt, wallet: owner, continuation: followUp }),
       });
       await consumeResearchStream(response, (event) => {
         if (!current()) return;
         if (event.type === "result") {
+          received = true;
           continuation.current = event.result.continuation;
           awaitingAnswer.current = event.result.question !== null || event.result.understanding?.intent === "strategy";
           setState((previous) => ({ ...previous, result: event.result, progress: null }));
         } else if (event.type === "error") {
+          streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
             awaitingAnswer.current = false;
@@ -90,9 +96,16 @@ export function useInvestigation(wallet: string | null) {
           setState((previous) => ({ ...previous, error: event.message, progress: null }));
         } else setState((previous) => ({ ...previous, progress: event.event }));
       });
+      if (current() && !received && !streamError) {
+        setState((previous) => ({
+          ...previous,
+          error: "The investigation finished without an answer. Please try again.",
+          progress: null,
+        }));
+      }
     } catch (error) {
       if (sequence.current === id && activeWallet.current === owner) setState((previous) => ({
-        ...previous, error: controller.signal.aborted ? "The investigation timed out. Please try again."
+        ...previous, error: combined.aborted ? "The investigation timed out. Please try again."
           : error instanceof Error ? error.message : "Investigation failed. Please try again.",
       }));
     } finally {

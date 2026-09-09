@@ -34,6 +34,8 @@ interface PrivyAuthControls {
   logout: () => Promise<void>;
   /** Whether Privy already has a live session (calling `login()` then no-ops). */
   authenticated: boolean;
+  /** False while the SDK is still hydrating. Absent on older test doubles. */
+  ready?: boolean;
   /**
    * Re-applies the current Privy session's Stellar wallet to the wallet store.
    * Lets the connect flow recover a session that's still live in Privy but no

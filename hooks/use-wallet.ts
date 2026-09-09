@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { setActiveWalletKind, getPrivyAuthControls, startPrivyConnect, type WalletKind } from '@/lib/wallet-adapter';
+import { hasUnexpiredPrivySession } from '@/lib/privy-session';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
@@ -90,6 +91,9 @@ export const useWallet = () => {
   const balance = useUserStore((state) => state.balance);
   const depositedBalances = useUserStore((state) => state.depositedBalances);
   const isLoadingStore = useUserStore((state) => state.isLoading);
+  const privyReady = useUserStore((state) => state.privyReady);
+  const privyAuthenticated = useUserStore((state) => state.privyAuthenticated);
+  const walletService = useUserStore((state) => state.walletService);
   
   const [isLoading, setIsLoading] = useState(false);
   const { tick } = useLedgerTick();
@@ -131,44 +135,43 @@ export const useWallet = () => {
       return;
     }
 
-    // A persisted Privy session rehydrates through Privy's own SDK state
-    // (see PrivyWalletBridge). Mark the kind, then try an immediate resync so
-    // the signing bridge is registered before the user hits Approve & sign.
-    if (walletKind === 'privy') {
-      setActiveWalletKind('privy');
-      try {
-        const controls = getPrivyAuthControls();
-        if (controls?.resync?.()) return;
-        // Bridge not ready yet — leave kind=privy; PrivyWalletBridge will fill it.
-        // Do NOT leave the user stuck forever: if Freighter is also authorized for
-        // this origin, we still allow Freighter as a live fallback at sign time
-        // (see wallet-adapter getAddress/signTransaction).
-      } catch {
-        /* ignore */
-      }
+    const privy = getPrivyAuthControls();
+    const persisted = hasUnexpiredPrivySession();
+
+    /**
+     * A persisted Privy token outranks Freighter. Wiping `address` while that token is
+     * still valid is the "Connect a wallet" false logout: Privy failed to fetch
+     * auth.privy.io, `authenticated` stayed false, Freighter was not injected, and the
+     * else-branch cleared the store. The session was never expired.
+     */
+    if (persisted && !privy?.authenticated) {
+      setActiveWalletKind("privy");
+      useUserStore.getState().set({
+        walletKind: "privy",
+        isLoading: false,
+        walletService: "unreachable",
+      });
+      try { privy?.resync?.(); } catch { /* bridge still hydrating */ }
       return;
     }
 
-    /**
-     * A live Privy session outranks "Freighter says no".
-     *
-     * `walletKind` is NOT persisted, so after a reload it rehydrates as null even when the
-     * Privy session is still alive in `privy:token`. The branch above only catches
-     * kind==='privy', so a reloaded Privy user fell straight through to Freighter here,
-     * Freighter reported not-connected, and the else-branch below wiped `address` to null.
-     *
-     * That is the "connected for two seconds, then back to Connect" flip: Privy's SDK
-     * rehydrates and paints the address, then this runs and clears it. Pressing Connect
-     * looked dead afterwards because Privy still had the session, so `login()` no-opped.
-     *
-     * Asking Privy directly is the fix — `authenticated` is exactly "Privy already has a
-     * live session". Freighter is only consulted once we know Privy does not.
-     */
-    const privy = getPrivyAuthControls();
-    if (privy?.authenticated) {
+    // A persisted Privy session rehydrates through Privy's own SDK state
+    // (see PrivyWalletBridge). Mark the kind, then try an immediate resync so
+    // the signing bridge is registered before the user hits Approve & sign.
+    if (walletKind === 'privy' || privy?.authenticated) {
       setActiveWalletKind('privy');
-      useUserStore.getState().set({ walletKind: 'privy', isLoading: false });
-      privy.resync?.();
+      try {
+        const controls = privy ?? getPrivyAuthControls();
+        useUserStore.getState().set({
+          walletKind: 'privy',
+          isLoading: false,
+          walletService: controls?.authenticated ? "ok" : useUserStore.getState().walletService,
+        });
+        if (controls?.resync?.()) return;
+        // Bridge not ready yet — leave kind=privy; PrivyWalletBridge will fill it.
+      } catch {
+        /* ignore */
+      }
       return;
     }
 
@@ -181,9 +184,10 @@ export const useWallet = () => {
           isConnected: connected,
           walletKind: 'freighter',
           isLoading: false,
+          walletService: 'ok',
         });
         await refreshBalances(walletAddress);
-      } else {
+      } else if (!hasUnexpiredPrivySession()) {
         useUserStore.getState().set({
           address: null,
           isConnected: false,
@@ -193,6 +197,7 @@ export const useWallet = () => {
           tokenBalances: { XLM: '0', USDC: '0', BLEND_USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
           depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
           isLoading: false,
+          walletService: null,
         });
       }
     } catch (error) {
@@ -201,7 +206,8 @@ export const useWallet = () => {
     }
   }, [refreshBalances]);
 
-  // Check wallet connection on mount and window focus
+  // Re-run when Privy finishes hydrating or recovers authentication — the mount
+  // check is a snapshot, and wiping before that snapshot is the false logout.
   useEffect(() => {
     checkConnection();
     
@@ -209,7 +215,7 @@ export const useWallet = () => {
     window.addEventListener('focus', handleFocus);
     
     return () => window.removeEventListener('focus', handleFocus);
-  }, [checkConnection]);
+  }, [checkConnection, privyReady, privyAuthenticated]);
 
   const connectWallet = useCallback(async (kind: WalletKind = 'freighter') => {
     if (kind === 'privy') {
@@ -295,6 +301,8 @@ export const useWallet = () => {
       depositedBalances: { XLM: '0', USDC: '0', AQUARIUS_USDC: '0', SOROSWAP_USDC: '0' },
       manuallyDisconnected: true, // Mark as manually disconnected to prevent auto-reconnect
       isLoading: false,
+      walletService: null,
+      privyAuthenticated: false,
     });
     // Clear cached margin-account stats so the margin page renders zeros
     // instead of the old user's HF / collateral / debt.
@@ -310,9 +318,11 @@ export const useWallet = () => {
     balance,
     depositedBalances,
     isLoading: isLoading || isLoadingStore,
+    walletService,
     connectWallet,
     disconnectWallet,
     refreshBalances,
+    retryWalletService: checkConnection,
   };
 };
 

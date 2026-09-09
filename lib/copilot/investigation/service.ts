@@ -193,7 +193,11 @@ export async function researchTurn(input: ResearchInput, dependencies: {
       : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
         : outcome.kind === "stopped" ? "incomplete"
           : "needs_input";
-  const message = strategyReply({ status, facts, candidates, capacity, question });
+  const message = strategyReply({
+    status, facts, candidates, capacity, question,
+    intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
+    findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
+  });
   if (!scope.trader) warnings.push("No verified wallet is connected. Only public market information was available.");
   else if (!scope.smartAccount) warnings.push("No active margin account was discovered for this wallet.");
   if (outcome.kind === "stopped") warnings.push(outcome.reason === "model_unavailable"

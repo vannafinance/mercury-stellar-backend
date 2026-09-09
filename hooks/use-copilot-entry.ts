@@ -14,9 +14,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * invokes once the investigation has produced an understanding worth acting on, so nothing
  * here can execute on its own.
  */
+export const ENTRY_DEADLINE_MS = 130_000;
+
 export function useCopilotEntry(options: {
   wallet: string | null;
-  onInvestigate: (message: string) => Promise<unknown>;
+  onInvestigate: (message: string, signal: AbortSignal) => Promise<unknown>;
 }) {
   const { wallet, onInvestigate } = options;
   const [loading, setLoading] = useState(false);
@@ -26,16 +28,18 @@ export function useCopilotEntry(options: {
   useEffect(() => { cancel(); setError(null); return cancel; }, [wallet, cancel]);
   const run = useCallback(async (text: string) => {
     const message = text.trim();
-    if (!message || active.current) return;
+    if (!message) return;
+    // A new prompt supersedes the in-flight one. Dropping it silently left
+    // `active` set forever after a hung turn, so every later prompt vanished.
+    active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
-    const timer = setTimeout(() => controller.abort(), 50_000);
+    const timer = setTimeout(() => controller.abort(), ENTRY_DEADLINE_MS);
     const current = () => active.current === controller && !controller.signal.aborted;
     setLoading(true); setError(null);
     try {
+      await onInvestigate(message, controller.signal);
       if (!current()) return;
-      clearTimeout(timer); // The investigation owns its own timeout and cancellation.
-      await onInvestigate(message);
     } catch (cause) {
       if (active.current === controller) setError(controller.signal.aborted ? "Copilot timed out. Please try again."
         : cause instanceof Error ? cause.message : "Copilot is unavailable.");

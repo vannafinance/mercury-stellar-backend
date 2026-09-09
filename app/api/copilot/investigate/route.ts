@@ -47,7 +47,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ code: known.code, message: known.message }, { status: known.status });
   }
   const loaded = await loadUserFromRequest(req);
-  if (!loaded.bound) return loaded.commit(NextResponse.json({ code: "sign_in_required", message: "Sign in to investigate your connected account." }, { status: 401 }));
+  const bound = loaded.bound;
+  const subject = bound?.sub ?? "guest";
   const secret = process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
   const network = process.env.COPILOT_RESEARCH_NETWORK?.trim() || "testnet";
   if (process.env.COPILOT_RESEARCH_ENABLED === "false" || secret.length < 32 || network !== "testnet") {
@@ -65,7 +66,6 @@ export async function POST(req: NextRequest) {
    * cause and suggests the wrong remedy. The message goes out first, then the cancel.
    */
   let onDeadline = () => abort.abort();
-  const bound = loaded.bound;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
       void withBoundUser(bound, async () => {
         try {
           const result = await researchTurn(input, {
-            subject: bound.sub, server: copilotConfig.mcpBaseUrl, network, secret,
+            subject, server: copilotConfig.mcpBaseUrl, network, secret,
             mcp: getMcpClient(), model: createFlashResearchModel(), signal,
             onProgress: (event) => send({ type: "progress", event }),
           });

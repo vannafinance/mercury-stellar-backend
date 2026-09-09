@@ -17,6 +17,9 @@ is allowed to see **9 of ~70 MCP tools**, is fenced by a regex firewall that run
 act. The result is what you observed: it cannot handle arbitrary prompts, because the
 part that can reason is the part with no authority.
 
+Worse, none of it is reachable while logged out: scope resolution demands a bound wallet
+before even a public price read (see 1b). Fix that first.
+
 The fix is **not** "let the LLM do everything". The deterministic sizing/safety core is
 the best thing in this codebase and must not be touched. The fix is to move the
 *boundary*: the LLM owns all understanding, routing and tool selection; deterministic
@@ -61,6 +64,67 @@ The 50s guard is cleared before the call it is meant to guard, delegating to
 `use-investigation`'s own 120s timer. If that promise never settles, `active.current`
 stays non-null forever and **every later prompt is silently swallowed** — no error, no
 spinner change, no recovery short of a page reload.
+
+---
+
+## 1b. Post-merge re-test (2026-09-09, after merging `origin/dev`)
+
+`origin/dev` is merged in (`a7fa86a`), `tsc --noEmit` clean, suite unchanged at
+2 known-flaky failures. **Every failure below still reproduces**, so none of this is a
+dev-vs-branch drift question.
+
+### The single worst bug — the wallet gate blocks public reads
+
+`what is the price of XLM?` with no wallet connected →
+*"I couldn't reach the information needed for this investigation."*
+
+`lib/copilot/investigation/scope.ts:20` runs **before any read**, unconditionally:
+
+```ts
+const bound = await interruptible(() => mcp.call("vanna_list_my_wallet_bindings", {}), signal);
+if (bound.error || bound.has_assertion !== true || bound.sub !== input.subject || ...) {
+  throw new ResearchError("binding_unavailable", "I couldn't verify your wallet connection...");
+}
+```
+
+Three of the nine capabilities are declared `scope: "public"` — `asset_price`,
+`earn_market`, `blend_markets`, `aquarius_markets` — and `available()` in
+`capabilities.ts:73` correctly returns `true` for them with no trader. None of that is
+reachable, because scope resolution throws first.
+
+**Consequence:** a logged-out visitor cannot ask the price of XLM, cannot ask what Blend
+pays, cannot ask what a health factor is. Every prompt returns the same generic failure.
+This is also the real explanation for E2 — it was never "no answer for conceptual
+questions", it is "no answer for anything at all without a bound wallet".
+
+**Fix:** make scope resolution lazy and tiered. Resolve `public` immediately with
+`{trader: null, smartAccount: null}`; only attempt binding resolution when the chosen
+capability needs `wallet` or `account` scope. A `ResearchError` from binding resolution
+must degrade that single capability to unavailable, not abort the run.
+
+```ts
+// sketch
+export async function resolveInvestigationScope(input, mcp, signal, need: Scope = "public") {
+  if (need === "public") return { subject: input.subject, trader: null, smartAccount: null, network: input.network };
+  ...existing binding logic, reached only when a wallet/account read is actually selected
+}
+```
+
+This one change is worth more than any other item in this document: it converts the
+copilot from "unusable while logged out" to "answers everything that does not need your
+account".
+
+### Also confirmed post-merge
+- Wallet still drops on every reload (Privy unreachable in this browser — `auth.privy.io`
+  `Failed to fetch`, Soroban RPC `200`).
+- Scope resolution burns ~11s before failing; the user watches
+  "Verifying your connected wallet and account" the whole time.
+
+### Branch vs dev — settled
+`use-copilot-entry.ts`, `use-investigation.ts`, `investigation/*`, `investigate/route.ts`
+do not exist on `origin/dev` at all, so every copilot failure here is ours. The wallet
+rehydration path, by contrast, differs from dev by one cosmetic line and is not the cause
+of anything. Pulling dev fixed nothing, as expected — it carried a wallet-UI label commit.
 
 ---
 

@@ -65,9 +65,11 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return null;
   const findings: Array<{ summary: string; evidenceIds: string[] }> = [];
+  const allowEmptyEvidence = goal.intent === "answer";
   for (const finding of raw.findings) {
     if (!isRecord(finding) || !exactKeys(finding, ["summary", "evidenceIds"]) ||
-      !text(finding.summary) || !texts(finding.evidenceIds) || finding.evidenceIds.length === 0) return null;
+      !text(finding.summary) || !texts(finding.evidenceIds) ||
+      (!allowEmptyEvidence && finding.evidenceIds.length === 0)) return null;
     findings.push({ summary: finding.summary, evidenceIds: [...finding.evidenceIds] });
   }
   return {

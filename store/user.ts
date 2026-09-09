@@ -31,6 +31,14 @@ export interface User {
   };
   isLoading: boolean;
   manuallyDisconnected: boolean; // Track if user manually disconnected
+  /** Privy SDK hydration. Null until the bridge has registered. */
+  privyReady: boolean | null;
+  privyAuthenticated: boolean;
+  /**
+   * `unreachable` when a persisted Privy token is still valid but the SDK is not
+   * authenticated — auth.privy.io failed, not a signed-out user.
+   */
+  walletService: "ok" | "unreachable" | null;
 }
 
 // Initial State
@@ -55,6 +63,9 @@ const initialState: User = {
   },
   isLoading: false,
   manuallyDisconnected: false,
+  privyReady: null,
+  privyAuthenticated: false,
+  walletService: null,
 };
 
 // Export Store

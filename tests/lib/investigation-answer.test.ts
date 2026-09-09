@@ -40,6 +40,20 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/Deposit 1000/i);
   });
 
+  it("publishes conceptual findings when intent is answer and there are no sized facts", () => {
+    const reply = strategyReply({
+      status: "researched",
+      facts: [],
+      candidates: null,
+      capacity: null,
+      question: null,
+      intent: "answer",
+      findings: [{ summary: "A health factor is collateral divided by debt. 1.1 is liquidation." }],
+    });
+    expect(reply).toMatch(/collateral divided by debt/);
+    expect(reply).not.toMatch(/completed checks/);
+  });
+
   it("names Earn when that idle path ranks first", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",

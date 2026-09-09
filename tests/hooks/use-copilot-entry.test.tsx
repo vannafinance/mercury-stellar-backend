@@ -30,7 +30,7 @@ describe("single composer entry", () => {
       const input = options();
       const { result } = renderHook(() => useCopilotEntry(input));
       await act(async () => result.current.run(message));
-      expect(input.onInvestigate).toHaveBeenCalledWith(message);
+      expect(input.onInvestigate).toHaveBeenCalledWith(message, expect.any(AbortSignal));
       expect(result.current.loading).toBe(false);
     }
     // No routing round-trip: there is nothing left to classify.
@@ -44,18 +44,34 @@ describe("single composer entry", () => {
     expect(input.onInvestigate).not.toHaveBeenCalled();
   });
 
-  it("runs one investigation at a time", async () => {
-    // A deferred created up front, and always settled before the test ends — a promise
-    // left pending here leaks React state updates into the tests that follow.
+  it("a new prompt cancels the in-flight one instead of dropping", async () => {
     let release = () => {};
-    const pending = new Promise<void>((resolve) => { release = resolve; });
-    const input = { wallet: "wallet", onInvestigate: vi.fn(() => pending) };
+    const pending = new Promise<void>((resolve, reject) => {
+      release = resolve;
+    });
+    let call = 0;
+    const input = {
+      wallet: "wallet",
+      onInvestigate: vi.fn((_message: string, signal: AbortSignal) => {
+        call += 1;
+        if (call === 1) {
+          return new Promise<void>((resolve, reject) => {
+            const stop = () => reject(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+            if (signal.aborted) stop();
+            else signal.addEventListener("abort", stop, { once: true });
+            pending.then(resolve, reject);
+          });
+        }
+        return Promise.resolve();
+      }),
+    };
     const { result } = renderHook(() => useCopilotEntry(input));
 
     const first = act(async () => { await result.current.run("first"); });
     await act(async () => { await result.current.run("second"); });
-    expect(input.onInvestigate).toHaveBeenCalledTimes(1);
-    expect(input.onInvestigate).toHaveBeenCalledWith("first");
+    expect(input.onInvestigate).toHaveBeenCalledTimes(2);
+    expect(input.onInvestigate.mock.calls[1][0]).toBe("second");
+    expect(result.current.loading).toBe(false);
 
     release();
     await first;

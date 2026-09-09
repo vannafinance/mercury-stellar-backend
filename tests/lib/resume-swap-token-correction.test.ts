@@ -43,6 +43,14 @@ vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
   return { ...actual, vertexSelectTool: vi.fn().mockResolvedValue(null) };
 });
 
+vi.mock("@/lib/copilot/swap-quote", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/swap-quote")>();
+  return {
+    ...actual,
+    quoteDexSwap: vi.fn().mockResolvedValue({ expected: 2.6, rate: 0.26 }),
+  };
+});
+
 const base = {
   user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
   smart_account: "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",

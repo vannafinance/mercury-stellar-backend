@@ -17,9 +17,19 @@ export async function resolveInvestigationScope(
   if (input.wallet && !StrKey.isValidEd25519PublicKey(input.wallet)) {
     throw new ResearchError("invalid_wallet", "Choose a valid connected Stellar wallet.", 400);
   }
+  /**
+   * Public and conceptual questions need no account. Requiring a binding here
+   * dropped "explain what a health factor is" for anyone without a linked wallet,
+   * including signed-out visitors. Guest identity never has bindings to check.
+   */
+  if (!input.wallet || input.subject === "guest") {
+    return { subject: input.subject, trader: null, smartAccount: null, network: input.network };
+  }
   const bound = await interruptible(() => mcp.call("vanna_list_my_wallet_bindings", {}), signal);
   if (bound.error || bound.has_assertion !== true || bound.sub !== input.subject || !Array.isArray(bound.bindings)) {
-    throw new ResearchError("binding_unavailable", "I couldn't verify your wallet connection. Reconnect your account and try again.");
+    // Bindings prove identity, not whether the prompt is answerable. Falling back to
+    // public scope lets a conceptual question complete instead of dying as "couldn't reach".
+    return { subject: input.subject, trader: null, smartAccount: null, network: input.network };
   }
   const wallets = bound.bindings.filter(isRecord).filter((row) =>
     row.revoked !== true && !row.revokedAt && !row.revoked_at && row.active !== false,

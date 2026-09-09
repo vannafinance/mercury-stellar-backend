@@ -2539,7 +2539,7 @@ export function CopilotWorkspace() {
 
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
-  const runInvestigation = useCallback(async (text: string) => {
+  const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
     actedRef.current = null;
     proposedRef.current = null;
     signedWorkflowStepRef.current = null;
@@ -2550,7 +2550,7 @@ export function CopilotWorkspace() {
     setSubmitted(text);
     setIntentText(text);
     setPaletteOpen(false);
-    await investigate(text);
+    await investigate(text, signal);
   }, [resetStrategyAccumulator, investigate, resetWorkflow]);
   const entry = useCopilotEntry({ wallet: address, onInvestigate: runInvestigation });
 
@@ -2625,10 +2625,11 @@ export function CopilotWorkspace() {
   // Journal signatures are explicit. A browser toggle cannot override server signing policy.
 
   const run = useCallback(async (text: string) => {
-    if (loading || signing || investigation.loading) return;
+    if (signing) return;
+    if (loading) cancelInFlight();
     setIntentText(text); setPaletteOpen(false);
     await dispatchRun(text);
-  }, [loading, signing, investigation.loading, dispatchRun]);
+  }, [loading, signing, cancelInFlight, dispatchRun]);
 
   /**
    * Send an approved plan back for execution.
@@ -4927,7 +4928,7 @@ export function CopilotWorkspace() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (entry.loading || investigation.loading || loading || signing) return;
+            if (signing) return;
             /**
              * A paused swap answered with just the corrected token ("SOUSDC") used to fire
              * a brand-new, context-free message through `run()` — the router cannot infer
@@ -4944,6 +4945,7 @@ export function CopilotWorkspace() {
               submitLegTokenAnswer(pausedSwap, resolvedToken);
               return;
             }
+            if (loading) cancelInFlight();
             run(intentText);
           }}
         >

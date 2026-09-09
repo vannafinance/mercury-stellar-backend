@@ -67,7 +67,8 @@ Return exactly one JSON object with one of these shapes (no extra keys):
 For a concrete request such as deposit, repay, borrow, lend, or supply to Blend with stated amounts,
 include goal.actions: [{"op":"deposit_collateral|borrow|repay|lend|supply_blend","asset":"XLM|BLUSDC|AQUSDC|SOUSDC","amount":"exact literal decimal from user","sourceQuote":"exact substring of the user message containing the amount"}].
 Use an empty actions array for open-ended strategy sizing and read-only questions. Never substitute a wallet-wide allocation for a concrete action. Never substitute another operation or venue because one is unsupported. For unsupported actions explain the capability limitation. Each action amount must appear literally in sourceQuote; never use max or compute a number yourself. Borrowing needs the user's stated HF floor; deposits and wallet Earn lending do not. Set intent=strategy for requested actions.
-Each finding must cite existing successful observation IDs. Never invent IDs or cite failed data.
+For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
+Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.
 Do not promise a permanent health floor or claim transactions ran. Clarifications and blockers
 are not financial recommendations. Use inspect args exactly as declared (e.g. {"asset":"XLM"}).`;
