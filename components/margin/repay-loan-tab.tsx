@@ -81,14 +81,13 @@ const clampRepayDust = (value: number): number => {
  * the true on-chain debt ("Net Outstanding Amount to Repay") and the margin
  * account's own balance of that asset ("Available Balance") side by side, both
  * in token units with a live USD line, plus a form with quick-% chips and a
- * free-text amount. 100% always requests the FULL debt — never capped to the
- * margin account's balance — and {@link MarginAccountService.repayLoan} pulls
- * only from the margin account (no wallet top-up): if the balance can't cover
- * it, the transfer itself rejects the request and that surfaces as a clean
- * insufficient-balance message (see {@link normalizeRepayError}) rather than a
- * silent partial repay. The mutation re-reads the debt fresh right before
- * signing. State is reset on wallet disconnect, and the preview (before →
- * after debt / HF / liquidation buffer) is rendered by
+ * free-text amount. 100% fills in whichever is smaller — the full debt, or the
+ * margin account's own balance of that asset — so it never asks for more than
+ * the account actually holds; {@link MarginAccountService.repayLoan} pulls
+ * only from the margin account (no wallet top-up), and the mutation re-reads
+ * both figures fresh right before signing so a stale display can't request
+ * more than what's really there. State is reset on wallet disconnect, and the
+ * preview (before → after debt / HF / liquidation buffer) is rendered by
  * {@link RepayPreviewSection}.
  */
 export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
@@ -136,15 +135,14 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setRepayInput("");
       setSelectedRepayPercentage(0);
       setCurrentDebtWad('0');
+      setCurrentAvailableBalanceWad('0');
     }
   }, [globalIsConnected, globalAddress]);
   const [currentDebtWad, setCurrentDebtWad] = useState<string>('0');
-  // Margin account's OWN balance of the selected repay currency, in WAD —
-  // purely informational (the "Available Balance" tile, so the user can see
-  // upfront whether they have enough before hitting Pay Now). Repay always
-  // requests the full debt regardless of this — no wallet top-up, no
-  // client-side capping — so a shortfall surfaces as a clean on-chain
-  // "insufficient balance" error instead of a silent partial repay.
+  // Raw WAD twin of `repayStats.availableBalance` — the display figure loses
+  // precision to a JS float, so 100% caps against this instead when it needs
+  // an exact on-chain amount.
+  const [currentAvailableBalanceWad, setCurrentAvailableBalanceWad] = useState<string>('0');
   // Live USD prices via the on-chain Reflector oracle (XLM/USDC) with
   // BLUSDC/AQUSDC/SOUSDC aliased to USDC inside the oracle module.
   const tokenPrices = useTokenPrices(['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
@@ -200,6 +198,7 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         ? clampRepayDust(parseFloat(debtResult.amount || '0') || 0)
         : 0;
       setCurrentDebtWad(debtResult.success && debtResult.debtWad ? debtResult.debtWad : '0');
+      setCurrentAvailableBalanceWad(marginBalWad ?? '0');
       setRepayStats({
         netOutstandingAmountToPay: trueDebtTokens,
         availableBalance: marginBalWad != null ? clampRepayDust(parseFloat(marginBalWad) / 1e18) : 0,
@@ -236,19 +235,24 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   }, [marginAccount, refreshRepayableStats]);
 
-  // Handler for percentage click. All percentages — including 100% — are
-  // fractions of `repayStats.netOutstandingAmountToPay`, the TRUE full debt
-  // (see {@link refreshRepayableStats}) — never capped to margin-account
-  // balance, so 100% always requests exactly what's owed.
+  // Handler for percentage click. 10/25/50% are fractions of
+  // `repayStats.netOutstandingAmountToPay`, the TRUE full debt (see
+  // {@link refreshRepayableStats}). 100% fills in whichever is smaller — the
+  // full debt, or the margin account's own balance of the asset — since a
+  // margin account only ever repays from its own balance (no wallet
+  // top-up), so asking for more than it holds can never succeed on-chain.
   const handlePercentageClick = (item: number) => {
     setSelectedRepayPercentage(item);
+
+    const target = item === 100
+      ? Math.min(repayStats.netOutstandingAmountToPay, repayStats.availableBalance)
+      : (repayStats.netOutstandingAmountToPay * item) / 100;
 
     // Below-a-cent dust is zeroed — same $0.01 threshold the "Net Outstanding
     // Amount to Repay" stat tile uses — so 100% doesn't fill in a confusing
     // non-zero amount the stat disagrees with.
-    const rawAmount = (repayStats.netOutstandingAmountToPay * item) / 100;
-    const usdEquiv = selectedTokenPrice > 0 ? rawAmount * selectedTokenPrice : rawAmount;
-    const calculatedAmount = usdEquiv < 0.01 ? 0 : clampRepayDust(rawAmount);
+    const usdEquiv = selectedTokenPrice > 0 ? target * selectedTokenPrice : target;
+    const calculatedAmount = usdEquiv < 0.01 ? 0 : clampRepayDust(target);
     setRepayInput(amountToInputString(calculatedAmount));
   };
 
@@ -284,24 +288,29 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       }
 
       try {
-        const latestDebt = await MarginAccountService.getBorrowedTokenDebtWad(
-          marginAccount,
-          normalizeContractTokenSymbol(selectedRepayCurrency)
-        );
+        const normalizedSymbol = normalizeContractTokenSymbol(selectedRepayCurrency);
+        const [latestDebt, freshMarginBalWad] = await Promise.all([
+          MarginAccountService.getBorrowedTokenDebtWad(marginAccount, normalizedSymbol),
+          MarginAccountService.getMarginAccountTokenBalanceWad(marginAccount, normalizedSymbol),
+        ]);
 
         const inputRepayWad = decimalAmountToWad(repayInput);
         const debtWad = latestDebt.success && latestDebt.debtWad
           ? BigInt(latestDebt.debtWad)
           : (currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0));
-        // "Repay Max" (100%) always targets the FULL on-chain debt — never
-        // capped to the margin account's balance. Repay pulls only from the
-        // margin account (no wallet top-up), so if the account can't cover
-        // it, the token transfer itself rejects the request and that's
-        // surfaced as a clean insufficient-balance error (normalizeRepayError)
-        // — never a silent partial repay for less than what was requested.
-        // Non-100% typed amounts are still capped at the debt (never overpay).
+        const marginBalWad = freshMarginBalWad != null
+          ? BigInt(freshMarginBalWad)
+          : (currentAvailableBalanceWad && currentAvailableBalanceWad !== '0'
+            ? BigInt(currentAvailableBalanceWad)
+            : BigInt(0));
+        // "Repay Max" (100%) targets the full on-chain debt capped to the
+        // margin account's own balance — the account only ever repays from
+        // its own balance (no wallet top-up), so requesting more than it
+        // holds could never succeed on-chain anyway. Non-100% typed amounts
+        // are still capped at the debt (never overpay).
+        const debtCappedToBalance = marginBalWad < debtWad ? marginBalWad : debtWad;
         const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
-          ? debtWad
+          ? debtCappedToBalance
           : debtWad > BigInt(0)
             ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
             : inputRepayWad;

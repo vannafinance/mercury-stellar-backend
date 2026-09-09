@@ -31,6 +31,39 @@ function findStellarWallet(user: ReturnType<typeof usePrivy>["user"]): WalletWit
   );
 }
 
+// Maps a Privy linkedAccounts entry type to the label its login button shows
+// (Google, Apple, X, ...), so the navbar can say what the user actually signed
+// in with instead of the generic, implementation-detail "Privy Wallet". Falls
+// back to that generic label for methods with no natural provider name (a
+// directly linked external wallet, a custom/enterprise SSO provider, etc.).
+const LOGIN_METHOD_LABELS: Partial<Record<string, string>> = {
+  google_oauth: "Google Wallet",
+  apple_oauth: "Apple Wallet",
+  twitter_oauth: "X Wallet",
+  discord_oauth: "Discord Wallet",
+  github_oauth: "GitHub Wallet",
+  linkedin_oauth: "LinkedIn Wallet",
+  spotify_oauth: "Spotify Wallet",
+  instagram_oauth: "Instagram Wallet",
+  tiktok_oauth: "TikTok Wallet",
+  line_oauth: "LINE Wallet",
+  twitch_oauth: "Twitch Wallet",
+  telegram: "Telegram Wallet",
+  farcaster: "Farcaster Wallet",
+  passkey: "Passkey Wallet",
+  email: "Email Wallet",
+  phone: "Phone Wallet",
+};
+
+function loginMethodLabel(user: ReturnType<typeof usePrivy>["user"]): string {
+  const accounts = user?.linkedAccounts ?? [];
+  for (const account of accounts) {
+    const label = LOGIN_METHOD_LABELS[account.type];
+    if (label) return label;
+  }
+  return "Privy Wallet";
+}
+
 export const PrivyWalletBridge = () => {
   const { ready, authenticated, user, login, logout, getAccessToken } = usePrivy();
   const { createWallet } = useCreateWallet();
@@ -101,6 +134,7 @@ export const PrivyWalletBridge = () => {
       address: stellarWallet.address,
       isConnected: true,
       walletKind: "privy",
+      walletProviderLabel: loginMethodLabel(user),
       manuallyDisconnected: false,
     });
     return true;
@@ -184,6 +218,7 @@ export const PrivyWalletBridge = () => {
           address: null,
           isConnected: false,
           walletKind: null,
+          walletProviderLabel: null,
           balance: "0",
           tokenBalances: { XLM: "0", USDC: "0", BLEND_USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },
           depositedBalances: { XLM: "0", USDC: "0", AQUARIUS_USDC: "0", SOROSWAP_USDC: "0" },

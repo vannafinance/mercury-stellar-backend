@@ -80,9 +80,12 @@ export const Navbar = (props: Navbar) => {
   const router = useRouter();
   const { isDark, toggleTheme } = useTheme();
   const zoom = useViewportScale(1440);
-  useUserStore();
+  const walletProviderLabel = useUserStore((state) => state.walletProviderLabel);
   const { address, walletKind, connectWallet, disconnectWallet, isLoading } = useWallet();
-  const walletLabel = walletKind === "privy" ? "Privy Wallet" : "Freighter Wallet";
+  // For Privy, show what the user actually signed in with (Google, Apple, ...)
+  // instead of the generic "Privy Wallet" — see contexts/privy-wallet-bridge.tsx.
+  const walletLabel =
+    walletKind === "privy" ? walletProviderLabel ?? "Privy Wallet" : "Freighter Wallet";
   const privyEnabled = !!process.env.NEXT_PUBLIC_PRIVY_APP_ID;
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const [marginCopied, setMarginCopied] = useState(false);

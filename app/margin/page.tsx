@@ -129,8 +129,14 @@ const MarginContent = () => {
       // store already holds — the single-source-of-truth guarantee. If this read
       // shows zero collateral but we already had some, update only the debt side
       // and PRESERVE the collateral/health; a later good read reconciles.
+      // This guard only makes sense for repeated reads of the SAME account — a
+      // snapshot for a DIFFERENT account (a just-switched wallet, or a freshly
+      // created margin account replacing a stale cached one) must always win in
+      // full, even at zero, or a brand-new account renders with the previous
+      // account's collateral/positions until something else happens to refresh it.
+      const sameAccount = store.marginAccountAddress === snapshot.marginAccountAddress;
       const snapGross = snapshot.grossCollateralValue ?? 0;
-      const degraded = snapGross <= 0.01 && (store.grossCollateralValue ?? 0) > 0.01;
+      const degraded = sameAccount && snapGross <= 0.01 && (store.grossCollateralValue ?? 0) > 0.01;
       store.set({
         hasMarginAccount: true,
         marginAccountAddress: snapshot.marginAccountAddress,

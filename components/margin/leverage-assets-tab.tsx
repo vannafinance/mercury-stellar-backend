@@ -26,7 +26,7 @@ import { useWallet } from "@/hooks/use-wallet";
 import toast from "react-hot-toast";
 import { normalizeContractError, normalizeDepositCollateralError } from "@/lib/errors/normalize";
 import { useTokenPrices } from "@/hooks/use-token-prices";
-import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
+import { useAccountSnapshot, ACCOUNT_SNAPSHOT_KEY } from "@/hooks/use-account-snapshot";
 import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin-action-preview";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
@@ -1093,6 +1093,13 @@ export const LeverageAssetsTab = () => {
 
       if (created) {
         await checkUserMarginAccount(userAddress);
+        // The cached /api/account/[addr] snapshot for this wallet was last
+        // fetched BEFORE the account existed (hasMarginAccount: false) and
+        // nothing else invalidates it on creation — without this, the page
+        // keeps rendering that stale pre-creation snapshot (or, worse, a
+        // still-cached previous account's collateral/positions) until the
+        // next throttled ledger tick or a manual reload catches up.
+        qc.invalidateQueries({ queryKey: [...ACCOUNT_SNAPSHOT_KEY, userAddress] });
         setActiveDialogue("none");
       }
     } catch (error) {

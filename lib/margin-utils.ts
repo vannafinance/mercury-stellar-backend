@@ -2651,10 +2651,14 @@ export class MarginAccountService {
    *
    * The caller (liquidator) must:
    *   - Hold enough of each borrowed token in their wallet to repay every open debt.
-   *   - Have approved the AccountManager to spend those tokens (handled by Soroban auth).
+   *   - Have sufficient, unexpired token allowances for AccountManager via separate
+   *     token approve transactions. Signing liquidation alone does not create them.
    *
    * On success the liquidator pays all outstanding debt and receives the smart account's
-   * entire collateral balance as profit.  The transaction must be signed by the liquidator.
+   * collateral: plain tokens, underlying from batched Blend exits, and transferable
+   * LP shares. Profit depends on debt paid, collateral value, fees and exit costs.
+   * The transaction must be signed by the liquidator. Resource limits are enforced
+   * across the whole invocation; a higher inclusion fee cannot fix BudgetExceeded.
    *
    * @param liquidatorAddress  Stellar address that will pay the debt and receive collateral.
    * @param marginAccountAddress  The smart-account (margin account) address to liquidate.
