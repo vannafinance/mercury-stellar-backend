@@ -131,11 +131,17 @@ export function HealthDial({
   const floorOut = dialPoint(dialT(floor), 75);
 
   const hfText = unknown ? "—" : noDebt ? "∞" : (hf as number).toFixed(2);
+  /**
+   * "liquidates at 1.10" read as though 1.10 itself were survivable. It is not: the
+   * deployed RiskEngine's `is_account_healthy` returns false at exactly 1.100000 and true
+   * only from 1.100001 (binary-searched against testnet to 1e-6). The boundary is
+   * exclusive, so the label has to say the account is already unsafe *at* 1.10.
+   */
   const hfSub = unknown
     ? "position read unavailable"
     : noDebt
       ? "no debt — nothing to liquidate"
-      : `liquidates at 1.10`;
+      : `unsafe at 1.10 or below`;
 
   // Proportional to each other, so the two bars are comparable rather than each filling its
   // own track. Debt beside a much larger collateral figure should look small.

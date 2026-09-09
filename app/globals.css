@@ -218,6 +218,66 @@ html.dark * {
   border-color: #333333;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Copilot console — outside @layer, like the margin-page rules above, because
+   inside `@layer utilities` Tailwind's preflight `border-width: 0` won and the
+   card rendered with no frame at all.
+
+   Two cards, not four. The command bar keeps its own frame — it is a control and
+   should look like one — and everything the turn produces (the working, the
+   proposed plan, approval, the answer) shares ONE card below it, with hairline
+   rules where a phase changes rather than a new frame each time. Previously each
+   phase had its own border, so a single continuous piece of work read as several
+   unrelated widgets and the eye had to re-anchor at every edge.
+
+   Deliberately NOT a chat transcript: no avatars, no bubbles, no message
+   alternation. This is a control surface for an account, not a conversation.
+   ───────────────────────────────────────────────────────────────────────────── */
+.cp-command,
+.cp-console {
+  min-width: 0;
+  background: var(--cp-surface);
+  border: 1px solid var(--cp-g100);
+  /* The violet edge marks the active surface without a second frame inside it. */
+  border-left: 3px solid var(--cp-violet-500);
+  border-radius: 12px;
+}
+
+.cp-console {
+  overflow: hidden;
+}
+
+/* The command row. Generous but not cavernous: the old 23px/34px input was
+   display type doing the job of a control. */
+.cp-command {
+  padding: 15px 18px 15px 17px;
+}
+
+.cp-console__input {
+  font-size: 17px;
+  line-height: 26px;
+  letter-spacing: -0.005em;
+}
+
+/* A phase boundary INSIDE the card, not a new card. The rule collapses on the
+   first visible section so a single-phase turn has no stray line above it. */
+.cp-console__section {
+  padding: 20px 22px 22px 20px;
+  border-top: 1px solid var(--cp-g100);
+}
+
+.cp-console__section:first-child {
+  border-top: 0;
+}
+
+/* Sections arrive rather than appear. 220ms reads as motion without making a
+   fast turn feel gated by animation. */
+@media (prefers-reduced-motion: no-preference) {
+  .cp-console__section {
+    animation: cp-in 220ms ease-out forwards;
+  }
+}
+
 /* Margin page 60/40 layout — outside @layer so it beats all Tailwind utilities */
 .margin-layout-cols {
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) !important;

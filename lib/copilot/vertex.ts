@@ -40,6 +40,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { promisify } from "util";
 import { copilotConfig } from "./config";
+import { assertFlashModel } from "./investigation/flash-policy";
 import type { RoutedIntent } from "./types";
 import {
   FC_ROUTE_SYSTEM,
@@ -560,6 +561,53 @@ export async function generateJson(system: string, user: string): Promise<Record
   } catch {
     throw new VertexError(`Vertex JSON parse failed: ${out.slice(0, 400)}`);
   }
+}
+
+/** Bounded research turn. Separate from the legacy router; no model fallback. */
+export async function generateInvestigationJson(
+  model: string,
+  system: string,
+  user: string,
+  signal: AbortSignal,
+  thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM",
+): Promise<unknown> {
+  assertFlashModel(model);
+  signal.throwIfAborted();
+  const token = await getAccessToken();
+  signal.throwIfAborted();
+  const res = await fetch(modelUrl(model), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        maxOutputTokens: 4096,
+        // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
+        ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
+      },
+    }),
+    signal,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) tokenCache = null;
+    // Do not include response bodies that may contain provider diagnostics or credentials.
+    throw new VertexError(`Vertex investigation HTTP ${res.status}`);
+  }
+  const raw = await res.text();
+  if (Buffer.byteLength(raw, "utf8") > 262_144) throw new VertexError("Vertex investigation response too large");
+  const parsed = JSON.parse(raw) as {
+    candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+  };
+  logUsage("investigation", parsed);
+  const candidate = parsed.candidates?.[0];
+  if (candidate?.finishReason !== "STOP") throw new VertexError("Vertex investigation did not finish a decision");
+  const out = candidate.content?.parts?.filter((part) => part.thought !== true)
+    .map((part) => part.text ?? "").join("") ?? "";
+  if (!out.trim()) throw new VertexError("Vertex investigation returned no decision");
+  return JSON.parse(out);
 }
 
 /** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */

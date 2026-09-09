@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
-import { setActiveWalletKind, getPrivyAuthControls, type WalletKind } from '@/lib/wallet-adapter';
+import { setActiveWalletKind, getPrivyAuthControls, startPrivyConnect, type WalletKind } from '@/lib/wallet-adapter';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
 import { useLedgerTick } from '@/contexts/ledger-subscriber';
@@ -215,13 +215,25 @@ export const useWallet = () => {
       // Opens Privy's login modal; PrivyWalletBridge reactively writes
       // address/isConnected/walletKind into the store once the user
       // authenticates and their Stellar embedded wallet is ready.
-      const controls = getPrivyAuthControls();
-      if (!controls) {
-        toast.error('Privy login is not available right now');
-        return;
+      // `login()` no-ops when a Privy session is already live — startPrivyConnect
+      // resyncs in that case so the click is not a dead button.
+      try {
+        useUserStore.getState().set({ manuallyDisconnected: false });
+        const result = startPrivyConnect();
+        if (result === 'unavailable') {
+          toast.error('Privy login is not available right now');
+          return;
+        }
+        if (result === 'resync') {
+          toast.success('Vanna wallet connected');
+        } else if (result === 'pending-wallet') {
+          toast('Signed in — creating your Vanna wallet…');
+        }
+      } catch (error: unknown) {
+        console.error('Privy login failed:', error);
+        const message = error instanceof Error ? error.message : undefined;
+        toast.error(normalizeContractError(message, 'Failed to open Vanna wallet login'));
       }
-      setActiveWalletKind('privy');
-      controls.login();
       return;
     }
 

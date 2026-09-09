@@ -28,6 +28,8 @@ substitutions:
   # and routing accuracy is the feature — a silent model change is a silent
   # behaviour change. Fallbacks live in lib/copilot/config.ts.
   _VERTEX_MODEL: gemini-3.7-flash
+  _WORKFLOW_PROJECT: vanna-mcp
+  _WORKFLOW_DATABASE: copilot-workflows
   _TAG: latest
 
 options:
@@ -89,7 +91,7 @@ steps:
       # roles/aiplatform.user there keeps a single consistent value instead of
       # splitting them. COPILOT_PUBLIC_ORIGIN/_AUTH_REDIRECT_URI derive from
       # _SITE_URL so dev and prod each get their own origin automatically.
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE}
       # WorkOS M2M is what every copilot READ authenticates with; the Connect
       # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) backs the write/auto-sign
       # path. Cloud Run resolves `:latest` at deploy time, so a new secret

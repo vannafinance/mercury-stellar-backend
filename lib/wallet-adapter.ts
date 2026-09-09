@@ -144,6 +144,35 @@ export function getPrivyAuthControls(): PrivyAuthControls | null {
   return privyAuthControls;
 }
 
+export type PrivyConnectResult = "unavailable" | "login" | "resync" | "pending-wallet";
+
+/**
+ * Start the email/Google (Privy) connect path from outside the Privy tree.
+ *
+ * Privy's `login()` is a silent no-op when a session already exists — that is
+ * the "Create Vanna wallet does nothing" click. If we are already
+ * authenticated, resync the embedded Stellar wallet into the store instead of
+ * calling `login()` again.
+ */
+export function startPrivyConnect(): PrivyConnectResult {
+  const controls = getPrivyAuthControls();
+  if (!controls) return "unavailable";
+
+  setActiveWalletKind("privy");
+
+  if (controls.authenticated) {
+    return controls.resync() ? "resync" : "pending-wallet";
+  }
+
+  const opened = controls.login() as void | Promise<unknown>;
+  if (opened && typeof (opened as Promise<unknown>).then === "function") {
+    void (opened as Promise<unknown>).catch((error: unknown) => {
+      console.error("Privy login failed:", error);
+    });
+  }
+  return "login";
+}
+
 /**
  * The Privy access token for the current session, or null when there isn't one.
  *

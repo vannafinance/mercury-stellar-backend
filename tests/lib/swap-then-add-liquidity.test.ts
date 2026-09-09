@@ -31,9 +31,28 @@ const vertexSwap = vi.hoisted(() =>
     template_id: "swap",
   }),
 );
+/**
+ * Neutralise the free-form LLM planner, offline.
+ *
+ * What this file tests is the DETERMINISTIC path: that the step extractor still adds the
+ * add_liquidity leg when Vertex's tool selection names only the swap. The planner is a
+ * separate route to a plan and is not under test here — but it was left unmocked, so
+ * `handleChat` made a real Vertex call against vitest's 5s default timeout. That made a
+ * multi-leg correctness test fail or pass on network latency.
+ */
+vi.mock("@/lib/copilot/llm-planner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/llm-planner")>();
+  return { ...actual, shouldLlmPlan: () => false, llmPlanStrategy: async () => null };
+});
+
 vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();
   return { ...actual, vertexSelectTool: vertexSwap };
+});
+
+vi.mock("@/lib/copilot/lp-pair", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/lp-pair")>();
+  return { ...actual, readAmmOtherPerXlm: vi.fn().mockResolvedValue(0.12) };
 });
 
 describe("swap then add liquidity is a two-leg farm LP plan", () => {
@@ -164,5 +183,5 @@ describe("swap then add liquidity is a two-leg farm LP plan", () => {
       delete process.env.MCP_MODE;
       resetMcpClient();
     }
-  });
+  }, 15000);
 });

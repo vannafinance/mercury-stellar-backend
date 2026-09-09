@@ -352,3 +352,61 @@ already correct. The bug was the MCP overriding it with a narrower explicit list
 
 **Note on rollback:** if `available credit` ever looks materially wrong, roll MCP back to
 `00077-dkr`. That isolates the search change from the allowlist change.
+
+---
+
+## Z. Website / margin page — found 2026-09-08 while auditing the copilot
+
+These are **not copilot issues** and nothing here was changed: `dev` is authoritative for
+the site. Recorded because they were measured against the deployed contract and they gate
+any strategy sizing the copilot might later do. Reproduce with
+`node scripts/audit-risk-engine.cjs <C-smart-account>` (read-only simulation, never signs).
+
+### Z1. The page's health factor is materially higher than the contract's
+For the authorised test account, at one ledger:
+
+| | Margin page | Deployed RiskEngine |
+|---|---|---|
+| Collateral | $4,219.36 | $3,201.70 |
+| Debt | $1,736.19 | $1,752.02 |
+| **Health factor** | **2.430** | **1.827** |
+
+Per-asset against the contract's own `get_collateral_token_balance`, the whole gap is two
+items — XLM, BLUSDC, AQUSDC and BLEND_USDC all match exactly:
+
+- **SOUSDC — page 1,381.16 vs contract ledger 475.18 (+$906).** `reconcileMarginRawSacCollateral`
+  deliberately overlays the live raw SAC balance because the recorded ledger goes stale
+  after swaps. The account really does hold 1,381.16, so the overlay is the more truthful
+  portfolio number — but the contract computes health from the recorded ledger, so it is
+  not the number that liquidates you.
+- **LP receipts — page counts AQ_XLM_USDC $148.47 + SS_XLM_USDC $10.37 (+$159); the
+  contract records both as 0.** Consistent with the borrow/withdraw guards skipping LPs.
+
+Not urgent at a 1.30 floor, but it errs in the unsafe direction: the page reads *safer*
+than the chain. Whichever figure the redesign shows should either be the contract's or be
+labelled as something other than health.
+
+### Z2. A dropped enrichment read silently lowers the total, with nothing on screen
+`lib/account-snapshot.ts` runs both enrichments as
+`reconcileMarginRawSacCollateral(...).catch(() => 0)` and
+`mergeFarmTrackingCollateralIntoBalances(...).catch(() => ({}))` — fail-open with only a
+`console.warn`. Observed live: one snapshot returned gross collateral **$2,858.90** instead
+of **$4,219.36**, a $1,361 drop that is almost exactly SOUSDC's contribution — that asset
+had simply dropped out of the overlay. The displayed health factor moves ~2.43 ↔ ~1.91 on
+whether one RPC read succeeded, with no indication either way. Testnet RPC was returning
+`ECONNRESET` at the time.
+
+The same mechanism on a **debt** read would overstate the health factor instead of
+understating collateral, which is the dangerous direction. Suggested fix (deliberately not
+applied here, since it touches the shared snapshot the whole site reads): record which
+reads failed on the snapshot and let the surfaces label the total incomplete.
+
+### Z3. The dial's liquidation label is off by the boundary
+`is_account_healthy` binary-searched to 1e-6 against testnet: HF exactly `1.100000` returns
+**false**, `1.100001` returns **true**. The boundary is exclusive, so at 1.10 the account
+is already liquidatable. The copilot's own dial now reads "unsafe at 1.10 or below"; any
+other surface still saying "liquidates at 1.10" reads as safe-at-1.10.
+
+### Z4. Two live-network reads seen failing during this session
+`GET /api/mercury/events?...` returned **500**, and `GET /api/account/<G>` took **6–9s per
+call** while firing on every ledger tick.

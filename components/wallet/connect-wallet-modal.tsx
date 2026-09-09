@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 
@@ -53,6 +55,13 @@ export const ConnectWalletModal = ({
   isLoading,
 }: ConnectWalletModalProps) => {
   const { isDark } = useTheme();
+  // Portal to document.body so this overlay is not trapped inside the navbar's
+  // `zoom` + z-[1000] stacking context. On wide screens that zoom is ~1.33, and
+  // `position: fixed` descendants miss clicks (the Create Vanna wallet row sits
+  // lower than Freighter and is the one that looks dead). Body also stacks above
+  // the copilot assistant drawer (z-[10000]).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const options = [
     {
@@ -77,7 +86,7 @@ export const ConnectWalletModal = ({
       : []),
   ];
 
-  return (
+  const dialog = (
     <AnimatePresence>
       {isOpen && (
         <>
@@ -86,7 +95,7 @@ export const ConnectWalletModal = ({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-[2000] bg-black/60 backdrop-blur-sm"
+            className="fixed inset-0 z-[20000] bg-black/60 backdrop-blur-sm"
             onClick={onClose}
           />
           <motion.div
@@ -94,7 +103,8 @@ export const ConnectWalletModal = ({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.97 }}
             transition={{ duration: 0.22, ease: "easeOut" }}
-            className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[2001] w-[92vw] max-w-[380px] rounded-[16px] overflow-hidden ${
+            onClick={(event) => event.stopPropagation()}
+            className={`fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[20001] w-[92vw] max-w-[380px] rounded-[16px] overflow-hidden ${
               isDark ? "bg-[#161616] border border-[#2A2A2A]" : "bg-white border border-[#E8E8E8]"
             }`}
             style={{
@@ -178,4 +188,7 @@ export const ConnectWalletModal = ({
       )}
     </AnimatePresence>
   );
+
+  if (!mounted) return null;
+  return createPortal(dialog, document.body);
 };

@@ -4,6 +4,8 @@ Reference for the agent-native copilot: what it is, the path a message takes, wh
 does what, and where each safety property lives.
 
 Companion docs:
+- [FLASH_AGENT_UPGRADE_PLAN.md](./FLASH_AGENT_UPGRADE_PLAN.md) — phased migration to a
+  Gemini Flash investigation loop; includes current implementation and verification status.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the same system as diagrams: services, message
   path, write and plan lifecycles, identity, multi-leg execution.
 - [GUARDRAILS.md](./GUARDRAILS.md) — every refusal and safety gate, which file owns it, and

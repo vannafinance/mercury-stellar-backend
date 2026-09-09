@@ -464,7 +464,23 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
       /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i,
     ) ||
     text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
-    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
+    text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i) ||
+    /**
+     * Stated as a floor NOT to cross, which is how the owner's own acceptance prompt
+     * phrases it: "so health factor does not go below 1.3". The patterns above only read
+     * "above / over / at least", so this phrasing parsed as NO floor at all — and a floor
+     * that does not parse is not enforced anywhere, including the write-risk gate.
+     */
+    text.match(
+      /(?:hf|health\s*factor)[^.]{0,40}?(?:not|never|no)\s+[^.]{0,24}?(?:below|under|lower\s+than|beneath)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    // Negation stated BEFORE the noun: "do not let the health factor dip below 1.25".
+    text.match(
+      /(?:not|never|no)\s+[^.]{0,40}?(?:hf|health\s*factor)[^.]{0,24}?(?:below|under|lower\s+than|beneath)\s*(\d+(?:\.\d+)?)/i,
+    ) ||
+    text.match(
+      /(?:not|never|no)\s+[^.]{0,24}?(?:below|under|lower\s+than)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i,
+    );
   if (m && m.index != null) {
     const n = Number(m[1]);
     if (Number.isFinite(n) && n > 0 && n < 50) {

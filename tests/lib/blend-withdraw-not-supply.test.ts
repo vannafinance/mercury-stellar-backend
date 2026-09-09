@@ -32,6 +32,27 @@ vi.mock("@/lib/account-snapshot", async (importOriginal) => {
     }),
   };
 });
+/**
+ * Force the deterministic keyword path, offline.
+ *
+ * `handleChat` otherwise makes a real Vertex routing call, which made this guard
+ * network-dependent: under full-suite load it flaked, and a money-direction test that
+ * can go green or red on latency is worse than none. The override this guards
+ * (`blendWrite` in handle.ts) lives on the KEYWORD path, so making Vertex unavailable is
+ * both deterministic and the case that actually needs covering — if the model is down,
+ * the wrong-direction bug must still not reappear.
+ */
+vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();
+  return {
+    ...actual,
+    vertexSelectTool: vi.fn(async () => { throw new actual.VertexError("offline in test"); }),
+    vertexExplain: vi.fn(async () => { throw new actual.VertexError("offline in test"); }),
+    vertexExplainStructured: vi.fn(async () => { throw new actual.VertexError("offline in test"); }),
+    vertexSummarizeExecution: vi.fn(async () => { throw new actual.VertexError("offline in test"); }),
+  };
+});
+
 import { handleChat } from "@/lib/copilot/handle";
 import { resetMcpClient } from "@/lib/copilot/mcp-client";
 

@@ -107,5 +107,6 @@ docs/*.docx
 # Ignored so a handoff bundle can never be swept into a commit by `git add -A`.
 /.handoff-extract/
 /.handoff-prev/
+/.local/copilot-workflows/
 *-handoff.zip
 
