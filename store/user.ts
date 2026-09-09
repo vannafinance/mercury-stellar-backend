@@ -10,6 +10,11 @@ export interface User {
   address: string | null;
   isConnected: boolean;
   walletKind: 'freighter' | 'privy' | null;
+  // Human-readable label for a Privy-embedded wallet's underlying login method
+  // (e.g. "Google Wallet", "Apple Wallet") — derived from Privy's linkedAccounts,
+  // so the navbar can show what the user actually signed in with instead of the
+  // generic "Privy Wallet". Null for Freighter, or before Privy resolves it.
+  walletProviderLabel: string | null;
   balance: string; // Native XLM balance
   tokenBalances: {
     XLM: string;
@@ -33,6 +38,7 @@ const initialState: User = {
   address: null,
   isConnected: false,
   walletKind: null,
+  walletProviderLabel: null,
   balance: '0',
   tokenBalances: {
     XLM: '0',
