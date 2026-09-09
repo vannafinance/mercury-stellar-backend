@@ -15,7 +15,11 @@ import type {
  */
 const CEILINGS: Readonly<InvestigationLimits> = Object.freeze({
   maxTurns: 12,
-  maxToolCalls: 10,
+  /**
+   * Raised from 10 once the investigator has the full read catalogue and can
+   * batch independent reads. Overrides may only lower this ceiling.
+   */
+  maxToolCalls: 24,
   /**
    * 45s, down from 55s. The loop is not the only thing inside the route's 75s promise:
    * scope resolution (20s) and the authoritative position read (8s) both block it, and

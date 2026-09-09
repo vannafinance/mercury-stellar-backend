@@ -1,7 +1,7 @@
 import type { ReadRequest, ResearchDecision } from "./types";
 
 /** Bounded so one decision cannot drain the whole tool budget in a single turn. */
-export const MAX_BATCHED_READS = 4;
+export const MAX_BATCHED_READS = 8;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value) &&

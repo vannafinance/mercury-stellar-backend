@@ -66,11 +66,16 @@ export interface Observation {
   error?: string;
 }
 
+export type ReadCost = "cheap" | "moderate" | "expensive";
+
 export interface ReadCapability {
   name: string;
   description: string;
-  /** A flat, strict argument vocabulary. Empty means no model-selected arguments. */
+  /** Enum vocabularies the model may pick from. Empty means no enum arguments. */
   arguments: Record<string, readonly string[]>;
+  /** Non-enum model args (decimal amounts, asset lists). Omitted when unused. */
+  extraArguments?: Partial<Record<string, "decimal" | "asset_list">>;
+  cost: ReadCost;
 }
 
 export interface ResearchTurn {

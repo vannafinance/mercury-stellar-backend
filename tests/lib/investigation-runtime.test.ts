@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { runInvestigation } from "@/lib/copilot/investigation/runtime";
 import { readCapabilities, resolveRead } from "@/lib/copilot/investigation/capabilities";
+import { MAX_BATCHED_READS } from "@/lib/copilot/investigation/decision";
 import { assertFlashModel } from "@/lib/copilot/investigation/flash-policy";
 import type { InvestigationRequest, ResearchModel, ResearchTurn } from "@/lib/copilot/investigation/types";
 
@@ -401,12 +402,14 @@ describe("batched reads", () => {
     const tooMany = await runInvestigation(request, {
       model: sequence(batch(
         ["wallet_balances"], ["account_debt"], ["account_collateral"], ["account_health"],
-        ["asset_price", { asset: "XLM" }],
+        ["asset_price", { asset: "XLM" }], ["earn_market", { asset: "BLUSDC" }],
+        ["blend_markets"], ["aquarius_markets"], ["signing_status"],
       )),
       mcp,
     });
     expect(tooMany.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
     expect(mcp.call).not.toHaveBeenCalled();
+    expect(MAX_BATCHED_READS).toBe(8);
   });
 
   it("still stops when a batch re-asks for evidence it already holds", async () => {

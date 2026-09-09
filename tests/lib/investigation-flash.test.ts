@@ -25,7 +25,14 @@ describe("Flash research adapter", () => {
     expect(generateInvestigationJson).toHaveBeenCalledWith(
       "gemini-3.8-flash", expect.stringContaining("Permission to borrow is optional"), JSON.stringify(turn), signal,
       "LOW",
+      expect.arrayContaining([
+        expect.objectContaining({ name: "research_complete" }),
+        expect.objectContaining({ name: "clarify" }),
+        expect.objectContaining({ name: "blocked" }),
+      ]),
     );
+    const decls = vi.mocked(generateInvestigationJson).mock.calls[0][5] as Array<{ name: string }>;
+    expect(decls.map((decl) => decl.name)).toEqual(["research_complete", "clarify", "blocked"]);
   });
 
   /**

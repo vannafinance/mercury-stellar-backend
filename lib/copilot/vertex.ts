@@ -42,11 +42,13 @@ import { promisify } from "util";
 import { copilotConfig } from "./config";
 import { assertFlashModel } from "./investigation/flash-policy";
 import type { RoutedIntent } from "./types";
+import { decisionFromFunctionCalls } from "./investigation/decls";
 import {
   FC_ROUTE_SYSTEM,
   ROUTER_TOOL_DECLS,
   guardIntent,
   intentFromFunctionCall,
+  type FunctionDeclaration,
 } from "./vertex-tools";
 import {
   ANSWER_RESPONSE_SCHEMA,
@@ -570,19 +572,26 @@ export async function generateInvestigationJson(
   user: string,
   signal: AbortSignal,
   thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM",
+  functionDeclarations: FunctionDeclaration[] = [],
 ): Promise<unknown> {
   assertFlashModel(model);
   signal.throwIfAborted();
   const token = await getAccessToken();
   signal.throwIfAborted();
+  const useTools = functionDeclarations.length > 0;
   const res = await fetch(modelUrl(model), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: "user", parts: [{ text: user }] }],
+      ...(useTools ? {
+        tools: [{ functionDeclarations }],
+        // ANY forces a declared function; JSON mime type is mutually exclusive with tools.
+        toolConfig: { functionCallingConfig: { mode: "ANY" } },
+      } : {}),
       generationConfig: {
-        responseMimeType: "application/json",
+        ...(useTools ? {} : { responseMimeType: "application/json" }),
         maxOutputTokens: 4096,
         // 3.8 retires sampling knobs; reasoning level is set per turn by the caller.
         ...(/^gemini-3/.test(model) ? { thinkingConfig: { thinkingLevel } } : { temperature: 0 }),
@@ -599,13 +608,29 @@ export async function generateInvestigationJson(
   const raw = await res.text();
   if (Buffer.byteLength(raw, "utf8") > 262_144) throw new VertexError("Vertex investigation response too large");
   const parsed = JSON.parse(raw) as {
-    candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>;
+    candidates?: Array<{
+      finishReason?: string;
+      content?: {
+        parts?: Array<{
+          text?: string;
+          thought?: boolean;
+          functionCall?: { name?: string; args?: Record<string, unknown> };
+        }>;
+      };
+    }>;
   };
   logUsage("investigation", parsed);
   const candidate = parsed.candidates?.[0];
   if (candidate?.finishReason !== "STOP") throw new VertexError("Vertex investigation did not finish a decision");
-  const out = candidate.content?.parts?.filter((part) => part.thought !== true)
-    .map((part) => part.text ?? "").join("") ?? "";
+  const parts = candidate.content?.parts?.filter((part) => part.thought !== true) ?? [];
+  const calls = parts
+    .filter((part) => part.functionCall?.name)
+    .map((part) => ({
+      name: String(part.functionCall!.name),
+      args: (part.functionCall!.args ?? {}) as Record<string, unknown>,
+    }));
+  if (calls.length) return decisionFromFunctionCalls(calls);
+  const out = parts.map((part) => part.text ?? "").join("");
   if (!out.trim()) throw new VertexError("Vertex investigation returned no decision");
   return JSON.parse(out);
 }

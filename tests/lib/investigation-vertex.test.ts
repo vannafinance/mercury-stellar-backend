@@ -14,7 +14,10 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
-function response(parts: Array<{ text: string; thought?: boolean }>, finishReason = "STOP") {
+function response(
+  parts: Array<{ text?: string; thought?: boolean; functionCall?: { name: string; args?: Record<string, unknown> } }>,
+  finishReason = "STOP",
+) {
   return Response.json({ candidates: [{ finishReason, content: { parts } }] });
 }
 
@@ -60,5 +63,31 @@ describe("Vertex investigation transport", () => {
     await expect(generateInvestigationJson("gemini-3.8-pro", "system", "user", new AbortController().signal))
       .rejects.toThrow("Gemini Flash");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses native function calling when declarations are provided and never JSON mime type", async () => {
+    const fetcher = vi.fn(async () => response([
+      { functionCall: { name: "wallet_balances", args: {} } },
+      { functionCall: { name: "account_debt", args: {} } },
+    ]));
+    vi.stubGlobal("fetch", fetcher);
+    const decls = [
+      { name: "wallet_balances", description: "wallet" },
+      { name: "account_debt", description: "debt" },
+      { name: "research_complete", description: "done" },
+    ];
+    expect(await generateInvestigationJson(
+      "gemini-3.8-flash", "system", "user", new AbortController().signal, "LOW", decls,
+    )).toEqual({
+      kind: "inspect",
+      reads: [
+        { capability: "wallet_balances", args: {} },
+        { capability: "account_debt", args: {} },
+      ],
+    });
+    const body = JSON.parse(String((fetcher.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.generationConfig.responseMimeType).toBeUndefined();
+    expect(body.tools).toEqual([{ functionDeclarations: decls }]);
+    expect(body.toolConfig).toEqual({ functionCallingConfig: { mode: "ANY" } });
   });
 });
