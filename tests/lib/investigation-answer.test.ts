@@ -54,6 +54,18 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/completed checks/);
   });
 
+  it("cites a can_withdraw read in the factual answer", () => {
+    const reply = strategyReply({
+      status: "researched",
+      facts: [{
+        id: "e2:allowed", label: "withdraw 100 XLM", value: "allowed", unit: "",
+        venue: "margin", evidenceId: "e2", sourcePath: "allowed", readAt: 1,
+      }],
+      candidates: null, capacity: null, question: null, intent: "answer",
+    });
+    expect(reply).toMatch(/withdraw 100 XLM is allowed on the current health check/);
+  });
+
   it("names Earn when that idle path ranks first", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",

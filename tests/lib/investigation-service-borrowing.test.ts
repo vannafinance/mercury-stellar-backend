@@ -103,4 +103,61 @@ describe("unspecified borrowing with a stated floor", () => {
     expect(result.message).not.toMatch(/1000 USDC/i);
     expect(result.executionAllowed).toBe(false);
   });
+
+  it("still returns ranked options when the time budget expires after rates were read", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue({
+      grossCollateralUsd: CAPACITY.grossCollateralUsd,
+      debtUsd: CAPACITY.debtUsd,
+      healthFactor: CAPACITY.healthFactor,
+      snapshot: {
+        borrowedBalances: { XLM: 1000 },
+        collateralBalances: { XLM: 1668 },
+        totalBorrowedValue: 217.12,
+        grossCollateralValue: 317,
+        totalCollateralValue: 317,
+      },
+    });
+    mocks.computeBorrowCapacity.mockResolvedValue(CAPACITY);
+
+    const mcp = {
+      call: vi.fn(async (tool: string) => {
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "2", borrow_apr_pct: "4" };
+        if (tool === "vanna_list_blend_reserves") {
+          return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" }] };
+        }
+        throw new Error(`Unexpected tool ${tool}`);
+      }),
+    };
+    let turn = 0;
+    const result = await researchTurn(
+      {
+        message: "use XLM to build a strategy that keeps health factor above 1.3. You can even take new loans",
+        wallet: SCOPE.trader,
+        continuation: null,
+      },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: "a".repeat(32),
+        mcp, signal: new AbortController().signal, limits: { maxDurationMs: 400 },
+        model: async () => {
+          if (turn++ === 0) {
+            return {
+              kind: "inspect",
+              reads: [
+                { capability: "earn_market", args: { asset: "XLM" } },
+                { capability: "blend_markets", args: {} },
+              ],
+            };
+          }
+          await new Promise(() => {});
+          return { kind: "blocked", reason: "unreachable" };
+        },
+      },
+    );
+
+    expect(result.status).toBe("researched");
+    expect(result.warnings.some((warning) => /ran out of time/i.test(warning))).toBe(true);
+    expect((result.candidates?.feasible.length ?? 0) + (result.candidates?.rejected.length ?? 0)).toBeGreaterThan(0);
+    expect(result.executionAllowed).toBe(false);
+  });
 });

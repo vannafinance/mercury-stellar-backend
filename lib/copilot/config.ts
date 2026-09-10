@@ -260,6 +260,14 @@ export const copilotConfig = {
     const n = Math.floor(envFloat("COPILOT_MULTI_LEG_MAX", 8));
     return n >= 1 && n <= 12 ? n : 8;
   },
+  /**
+   * Per authenticated subject (or the shared guest bucket) per UTC day.
+   * This is the billing backstop the domain firewall used to approximate with regex.
+   */
+  get dailyTokenCap(): number {
+    const n = Math.floor(envFloat("COPILOT_DAILY_TOKEN_CAP", 250_000));
+    return n >= 10_000 && n <= 5_000_000 ? n : 250_000;
+  },
 };
 
 /**

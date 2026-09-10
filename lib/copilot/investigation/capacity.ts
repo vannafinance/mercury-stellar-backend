@@ -20,6 +20,7 @@
 
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
+import { isUsable, unavailable, usable, type ReadResult } from "@/lib/usable-read";
 import { parseMinHealthFactor } from "../router";
 import { formatWad, decimalWad, WAD } from "./fixed";
 import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
@@ -53,12 +54,14 @@ export type MarginSnapshot = Awaited<ReturnType<typeof computeMarginSnapshot>>;
  * outside this work's scope; the panel showing 0.01 on a partial read is reported separately
  * for the owner of that code.
  */
-function snapshotIsUsable(snapshot: MarginSnapshot): boolean {
+export function snapshotUsability(snapshot: MarginSnapshot): ReadResult<MarginSnapshot> {
   const debt = snapshot.totalBorrowedValue;
   const gross = snapshot.grossCollateralValue;
-  if (!Number.isFinite(debt) || !Number.isFinite(gross) || debt < 0 || gross < 0) return false;
+  if (!Number.isFinite(debt) || !Number.isFinite(gross) || debt < 0 || gross < 0) {
+    return unavailable("position_read_non_finite");
+  }
   // No debt: nothing to be inconsistent with.
-  if (debt <= 0) return true;
+  if (debt <= 0) return usable(snapshot);
   /**
    * Below the liquidation threshold the account should already be gone, so a live account
    * reporting it is far more likely to be a partial read than a real position. Refusing to
@@ -66,7 +69,12 @@ function snapshotIsUsable(snapshot: MarginSnapshot): boolean {
    * quoting a health factor of 0.01 or sizing against a collateral figure that is missing
    * most of its legs.
    */
-  return gross / debt > LIQUIDATION_THRESHOLD;
+  if (gross / debt > LIQUIDATION_THRESHOLD) return usable(snapshot);
+  return unavailable("position_read_inconsistent");
+}
+
+function snapshotIsUsable(snapshot: MarginSnapshot): boolean {
+  return isUsable(snapshotUsability(snapshot));
 }
 
 export async function computeBorrowCapacity(

@@ -13,6 +13,8 @@
  */
 
 import { ASSET_DOMAIN_WORDS } from "./registry/assets";
+import { classifyOrFallback } from "./domain-classifier";
+import { wouldExceedTokenCap, tokenCapMessage } from "./token-budget";
 
 export type FirewallResult =
   | { allow: true; reason: string }
@@ -25,32 +27,19 @@ const BLOCK_MESSAGE =
   "Try something like “what’s my health factor?”, “lend 10 XLM”, or " +
   "“park 20 XLM then farm 10 BLUSDC at 2x”.";
 
-/** Clear off-domain abuse vectors (billing / policy). */
-const BLOCK_PATTERNS: RegExp[] = [
-  // Coding / software engineering free work (billing abuse)
+/** Narrow abuse tripwire — cost backstop, not the primary domain gate. */
+const ABUSE_TRIPWIRE: RegExp[] = [
   /\b(write|generate|debug|fix|implement|refactor|code\s+review)\b.+\b(code|function|class|script|program|api|endpoint)\b/i,
-  /\b(python|javascript|typescript|java|golang|rust|c\+\+|react|next\.js|django|flask|sql query)\b/i,
   /\b(leetcode|hackerrank|coding\s+interview|solve\s+this\s+problem|coding\s+challenge)\b/i,
   /\b(write\s+(me\s+)?a\s+(function|class|script|program|regex|dockerfile|kubernetes|app|website|bot))\b/i,
   /\b(help\s+me\s+(code|program|debug|build\s+(an?\s+)?(app|website|api)))\b/i,
-  /\b(github\s+actions|ci\/cd|terraform|ansible|npm\s+install|pip\s+install)\b/i,
-  /\b(stack\s*overflow|copy\s+paste\s+code|boilerplate)\b/i,
-  // Homework / essays / general AI abuse
   /\b(write\s+(me\s+)?(an?\s+)?(essay|homework|assignment|thesis|paper|cover\s+letter|resume)\b)/i,
   /\b(do\s+my\s+homework|solve\s+this\s+math|calculus|integral|derivative|physics\s+problem)\b/i,
-  // Unrelated life / entertainment
-  /\b(recipe|cook|dating|horoscope|joke|poem|song\s+lyrics|movie\s+plot|netflix)\b/i,
   /\b(crypto\s+scam|how\s+to\s+(hack|phish|exploit)\b)/i,
-  // Other chains as coding help
-  /\b(solidity|smart\s+contract\s+code|metamask\s+dapp)\b.+\b(write|code|implement)\b/i,
-  /\b(write|implement|code)\b.+\b(solidity|ethereum\s+contract)\b/i,
-  // Algorithmic / Competitive programming / LeetCode puzzles
-  /\b(given\s+(an?|the|two|three|\d+)?\s*(array|string|integer|number\s+[a-z]|matrix|list|tree|graph|pattern)|print\s+(a\s+|the\s+)?pattern|descending\s+order|ascending\s+order|test\s*cases?|time\s+complexity|space\s+complexity|input\s+format|output\s+format|constraints?:)\b/i,
-  /\b(generate\s+and\s+print|print\s+numbers|separate\s+rows\s+with|end\s+the\s+output\s+with)\b/i,
-  /\b(find\s+the\s+(max|min|maximum|minimum|sum|subarray|substring|longest|shortest)|binary\s+search|dynamic\s+programming|dfs|bfs|two\s+pointers?|backtracking)\b/i,
-  // Adversarial jailbreak / prompt extraction / roleplay persona evasion
   /\b(ignore\s+(all\s+)?(previous|prior)\s+(instructions|prompts|rules)|system\s+prompt|reveal\s+(your\s+)?instructions|print\s+(your\s+)?system\s+prompt|jailbreak|DAN\s+mode|developer\s+mode)\b/i,
-  /\b(pretend\s+(to\s+be|you\s+are)|act\s+as\s+(a|an))\b.+\b(teacher|professor|terminal|linux|python|coder|girlfriend|boyfriend|therapist|doctor|lawyer|historian|chemist)\b/i,
+  /\b(pretend\s+(to\s+be|you\s+are)|act\s+as\s+(a|an))\b.+\b(teacher|professor|terminal|linux|python|coder|girlfriend|boyfriend|therapist|doctor|lawyer)\b/i,
+  /\b(generate\s+and\s+print|print\s+numbers|separate\s+rows\s+with|end\s+the\s+output\s+with)\b/i,
+  /\b(time\s+complexity|space\s+complexity|input\s+format|output\s+format)\b/i,
 ];
 
 /**
@@ -288,8 +277,8 @@ export function evaluateDomainFirewall(
     };
   }
 
-  // 1) Hard block first (blatant abuse, coding, homework, jailbreaks)
-  for (const re of BLOCK_PATTERNS) {
+  // 1) Narrow abuse tripwire first (coding-as-a-service, homework, jailbreaks)
+  for (const re of ABUSE_TRIPWIRE) {
     if (re.test(m)) {
       return { allow: false, reason: `block:${re.source.slice(0, 40)}`, message: BLOCK_MESSAGE };
     }
@@ -330,15 +319,54 @@ export function evaluateDomainFirewall(
     return { allow: false, reason: "block:off_domain_question", message: BLOCK_MESSAGE };
   }
 
-  // Default: allow short leftovers that might be asset ticks (e.g. "BLUSDC")
-  if (m.length <= 24 && /^[A-Za-z0-9\s?.!]+$/.test(m)) {
+  // Default: allow a short leftover that looks like an asset ticker (e.g. "BLUSDC"),
+  // not an English sentence — "give me a lasagna recipe" is 24 characters and used
+  // to sneak through this gate once the recipe tripwire was narrowed.
+  if (m.length <= 24 && /^[A-Za-z0-9._-]+\??$/.test(m)) {
     return { allow: true, reason: "allow:short_token" };
   }
 
   return { allow: false, reason: "block:default", message: BLOCK_MESSAGE };
 }
 
-/** System-prompt addendum for every LLM surface. */
+export function hasCheapDomainSignal(
+  message: string,
+  opts?: { hasPageContext?: boolean },
+): boolean {
+  const verdict = evaluateDomainFirewall(message, opts);
+  return verdict.allow;
+}
+
+export function abuseTripwire(message: string): FirewallResult | null {
+  const m = (message || "").trim();
+  if (!m) return { allow: false, reason: "empty", message: "Please type a question about Vanna Finance." };
+  for (const re of ABUSE_TRIPWIRE) {
+    if (re.test(m)) return { allow: false, reason: `block:${re.source.slice(0, 40)}`, message: BLOCK_MESSAGE };
+  }
+  return null;
+}
+
+export async function guardUserPrompt(
+  message: string,
+  opts: { subject: string; signal: AbortSignal; hasPageContext?: boolean },
+): Promise<FirewallResult> {
+  const trip = abuseTripwire(message);
+  if (trip) return trip;
+  if (wouldExceedTokenCap(opts.subject)) {
+    return { allow: false, reason: "token_cap", message: tokenCapMessage() };
+  }
+  if (hasCheapDomainSignal(message, { hasPageContext: opts.hasPageContext })) {
+    return { allow: true, reason: "cheap_allow" };
+  }
+  const classified = await classifyOrFallback(message, opts.signal, opts.subject, false);
+  if (classified.in_domain) return { allow: true, reason: classified.reason };
+  return {
+    allow: false,
+    reason: classified.reason,
+    message: classified.reason === "token_cap" ? tokenCapMessage() : BLOCK_MESSAGE,
+  };
+}
+
 export const DOMAIN_FIREWALL_SYSTEM = `
 DOMAIN FIREWALL (hard):
 - You ONLY answer about Vanna Finance on Stellar/Soroban: Earn, Farm, Margin, wallet, swaps, health factor, pools, APY, multi-step strategies.

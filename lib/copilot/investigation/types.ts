@@ -6,6 +6,11 @@ export interface InvestigationScope {
   trader: string | null;
   smartAccount: string | null;
   network: string;
+  /**
+   * Set when identity could not be verified this turn. Never a confirmed negative
+   * (an empty bindings list is not proof the wallet is unlinked).
+   */
+  unverified?: "bindings";
 }
 
 export interface InvestigationRequest {

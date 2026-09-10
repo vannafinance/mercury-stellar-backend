@@ -37,6 +37,7 @@ import {
 import { BlendService } from './blend-utils';
 import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
+import { pricedUsd, requireListedResults } from '@/lib/usable-read';
 import { markTxSubmitted, showTxStep } from './tx-progress';
 
 // Types
@@ -2146,12 +2147,10 @@ export class MarginAccountService {
         return { success: true, data: {} };
       }
 
-      const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
       const sourceSequence = sourceAccount.sequenceNumber();
 
-      // Every token debt is independent. Run the simulations (and optional
-      // price lookups) concurrently instead of one token at a time.
-      const rows = await Promise.allSettled(borrowedTokens.map(async (token) => {
+      const readDebt = async (token: string): Promise<{ token: string; amount: number } | { token: string; error: string }> => {
+        try {
           const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
           const getBalanceTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
@@ -2165,36 +2164,68 @@ export class MarginAccountService {
             )
             .setTimeout(30)
             .build();
-          
+
           const balanceResult = await server.simulateTransaction(getBalanceTx);
-          
-          if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
-            const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
-            const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
-
-            if (balanceNumber > 0) {
-              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
-              const usdValue = (balanceNumber * price).toFixed(2);
-              return { token, balance: {
-                amount: balanceNumber.toFixed(6),
-                usdValue
-              } };
-            }
+          if ('error' in balanceResult || !('result' in balanceResult) || !balanceResult.result) {
+            return { token, error: 'simulation_empty' };
           }
-          return null;
-      }));
-
-      rows.forEach((row, index) => {
-        if (row.status === 'fulfilled' && row.value) {
-          borrowedBalances[row.value.token] = row.value.balance;
-        } else if (row.status === 'rejected') {
-          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
+          const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
+          const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
+          if (!Number.isFinite(balanceNumber) || balanceNumber < 0) {
+            return { token, error: 'invalid_amount' };
+          }
+          return { token, amount: balanceNumber };
+        } catch (reason: unknown) {
+          return { token, error: reason instanceof Error ? reason.message : 'read_failed' };
         }
-      });
-      
+      };
+
+      // Every listed token must produce a number. A failed sim used to return `null`
+      // from allSettled and be omitted, so a two-token debt (XLM+USDC) rendered as
+      // XLM-only and the health factor was overstated. Retry the misses once, then
+      // refuse the whole scan rather than publish a partial book.
+      let reads = await Promise.all(borrowedTokens.map(readDebt));
+      const failedFirst = reads.filter((row): row is { token: string; error: string } => 'error' in row);
+      if (failedFirst.length > 0) {
+        const retried = await Promise.all(failedFirst.map((row) => readDebt(row.token)));
+        const byToken = new Map(retried.map((row) => [row.token, row]));
+        reads = reads.map((row) => 'error' in row ? byToken.get(row.token) ?? row : row);
+      }
+
+      const byId: Record<string, { amount: string; usdValue: string } | undefined> = {};
+      for (const read of reads) {
+        if ('error' in read) {
+          console.warn(`⚠️ Failed to get balance for token ${read.token}:`, read.error);
+          continue;
+        }
+        let usdValue = '0.00';
+        if (options.includePrices !== false) {
+          const price = await fetchTokenPrice(read.token);
+          const priced = pricedUsd(read.amount, price, `borrowed ${read.token}`);
+          if (!priced.ok) {
+            return { success: false, error: priced.reason };
+          }
+          usdValue = priced.value.toFixed(2);
+        }
+        byId[read.token] = { amount: read.amount.toFixed(6), usdValue };
+      }
+
+      const assembled = requireListedResults(
+        borrowedTokens,
+        byId,
+        (token) => `Incomplete debt read: ${token}`,
+      );
+      if (!assembled.ok) {
+        console.warn('[margin-utils] borrowed scan incomplete', {
+          listed: borrowedTokens,
+          reason: assembled.reason,
+        });
+        return { success: false, error: assembled.reason };
+      }
+
       return {
         success: true,
-        data: this.addUsdcAliases(borrowedBalances)
+        data: this.addUsdcAliases(assembled.value)
       };
       
     } catch (error: any) {

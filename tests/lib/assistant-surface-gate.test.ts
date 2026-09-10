@@ -68,10 +68,7 @@ describe("assistant surface never executes a transaction", () => {
     expect(res.intent?.template_id).toBe("assistant_surface_redirect");
   });
 
-  it("does not gate the copilot surface — it still reaches the write path", async () => {
-    // Forced to the in-memory mock client so this never makes a real network call —
-    // this test is only proving the gate does not fire outside surface: "assistant",
-    // not exercising the real write pipeline (that is covered elsewhere).
+  it("does not treat the copilot surface as the assistant widget", async () => {
     process.env.MCP_MODE = "mock";
     resetMcpClient();
     try {
@@ -81,6 +78,7 @@ describe("assistant surface never executes a transaction", () => {
         message: "deposit 5 XLM as collateral",
       });
       expect(res.intent?.template_id).not.toBe("assistant_surface_redirect");
+      expect(res.intent?.template_id).toBe("investigation_owns_planning");
     } finally {
       delete process.env.MCP_MODE;
       resetMcpClient();

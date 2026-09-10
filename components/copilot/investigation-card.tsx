@@ -61,10 +61,10 @@ export function InvestigationCard({
     understanding: null, question: null, facts: [], checks: [], warnings: [], continuation: "", executionAllowed: false,
     scope: { wallet: null, smartAccount: null, network: "testnet" },
   } : null);
-  const progressLabel = !progress ? "Starting"
+  const progressLabel = !progress ? "Starting the investigation"
     : progress.kind === "scope" ? progress.label
-      : progress.kind === "reviewing" ? "Working out what to check next"
-        : progress.kind === "reading" ? `Reading ${progress.label}`
+      : progress.kind === "reviewing" ? "Working out what to check next…"
+        : progress.kind === "reading" ? `Reading ${progress.label}…`
           : `${progress.label}: ${progress.status === "ok" ? "read complete" : "unavailable"}`;
 
   const stance = result?.understanding ? BORROWING[result.understanding.borrowing] : null;

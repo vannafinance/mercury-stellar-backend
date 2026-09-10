@@ -96,7 +96,8 @@ import {
 import { classifyCoverage, residueIsMaterial } from "./residue";
 import { logCopilotEvent } from "./log";
 import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
-import { evaluateDomainFirewall } from "./domain-firewall";
+import { guardUserPrompt } from "./domain-firewall";
+import { currentTokenSubject } from "./token-budget";
 import { findLeverage, findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
 import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
 import { quoteDexSwap } from "./swap-quote";
@@ -560,7 +561,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     !req.resume_multi_leg?.legs?.length &&
     !req.summarize_execution?.legs?.length
   ) {
-    const fw = evaluateDomainFirewall(message, {
+    const fw = await guardUserPrompt(message, {
+      // Verified Privy/WorkOS subject from the route wrapper — not the client `user_id`.
+      subject: currentTokenSubject() ?? userId,
+      signal: AbortSignal.timeout(8_000),
       hasPageContext: Boolean(req.semantic_page_context || req.page_snapshot),
     });
     if (!fw.allow) {
@@ -880,6 +884,23 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       request_id,
       Array.isArray(req.history) ? req.history : undefined,
     );
+  }
+
+  /**
+   * The Copilot workspace investigates first and executes through the workflow journal.
+   * Re-planning a free-text prompt with keywords here is a second planner with different
+   * sizing semantics. Structured payloads (approved_plan, pending_write, resume, auto-sign)
+   * already returned above.
+   */
+  if (req.surface === "copilot") {
+    return {
+      kind: "blocked",
+      message:
+        "I investigate this prompt on the Copilot page before acting, and I will not re-plan it with keywords. " +
+        "Approve a prepared plan to execute, or send a signing control from the Autonomy card.",
+      intent: { template_id: "investigation_owns_planning" },
+      request_id,
+    };
   }
 
   // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─

@@ -1,5 +1,5 @@
 import type { MCPClient } from "../mcp-client";
-import type { ResearchModel, InvestigationProgress } from "./types";
+import type { ResearchModel, InvestigationProgress, InvestigationLimits } from "./types";
 import type { ResearchView } from "./view";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { researchCodec } from "./continuation";
@@ -12,6 +12,10 @@ import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, reques
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence } from "./evidence";
 import { compileRequestedActions } from "./requested-actions";
+import { matchFastPath, fastPathView, healthObservations, priceObservation } from "./fast-path";
+import { detectAutomationGap } from "../conditional-guard";
+import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
+import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -31,7 +35,12 @@ export const SCOPE_BUDGET_MS = 20_000;
 export const POSITION_BUDGET_MS = 8_000;
 export const CAPACITY_BUDGET_MS = 15_000;
 
-export interface ResearchInput { message: string; wallet: string | null; continuation: string | null }
+export interface ResearchInput {
+  message: string;
+  wallet: string | null;
+  continuation: string | null;
+  history?: Array<{ role: "user" | "assistant"; text: string }>;
+}
 
 export async function researchTurn(input: ResearchInput, dependencies: {
   subject: string;
@@ -42,6 +51,7 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   model: ResearchModel;
   signal: AbortSignal;
   onProgress?: (event: InvestigationProgress) => void;
+  limits?: Partial<InvestigationLimits>;
 }): Promise<ResearchView> {
   const codec = researchCodec(dependencies.secret, dependencies.server);
   /**
@@ -53,7 +63,9 @@ export async function researchTurn(input: ResearchInput, dependencies: {
    * one would need the scope resolution this exists to skip; the client treats an empty
    * continuation as "no thread", which is correct here.
    */
-  const immediate = immediateReply(input.message);
+  const immediate = await immediateReply(input.message, {
+    subject: dependencies.subject, signal: dependencies.signal,
+  });
   if (immediate) {
     return {
       status: "replied", message: immediate.message,
@@ -63,6 +75,36 @@ export async function researchTurn(input: ResearchInput, dependencies: {
       continuation: "", executionAllowed: false,
     };
   }
+  if (wouldExceedTokenCap(dependencies.subject)) {
+    return {
+      status: "blocked", message: tokenCapMessage(),
+      originalRequest: input.message, refinements: [], understanding: null, question: null,
+      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+      warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
+      continuation: "", executionAllowed: false,
+    };
+  }
+  const fast = input.continuation ? null : matchFastPath(input.message);
+  if (fast?.kind === "price") {
+    try {
+      const publicScope = {
+        subject: dependencies.subject, trader: null, smartAccount: null, network: dependencies.network,
+      };
+      const observation = await interruptible(
+        () => priceObservation(fast.asset, publicScope, dependencies.mcp),
+        AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]),
+      );
+      return fastPathView({
+        message: input.message, scope: publicScope, observations: [observation],
+        secret: dependencies.secret, server: dependencies.server,
+      });
+    } catch (error) {
+      console.warn("[copilot] investigation price fast-path failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+      // Fall through to the investigation loop rather than failing a price question.
+    }
+  }
   dependencies.onProgress?.({ kind: "scope", label: "Verifying your connected wallet and account" });
   /**
    * Scope resolution runs BEFORE the investigation loop and so is outside its 55s
@@ -70,9 +112,18 @@ export async function researchTurn(input: ResearchInput, dependencies: {
    * leave the client to time out with no message at all. Bounded explicitly so the loop
    * always gets its own budget, and a stall here reports itself.
    */
-  const scope = await resolveInvestigationScope({
-    subject: dependencies.subject, wallet: input.wallet, network: dependencies.network,
-  }, dependencies.mcp, AbortSignal.any([dependencies.signal, AbortSignal.timeout(SCOPE_BUDGET_MS)]));
+  let scope;
+  try {
+    scope = await resolveInvestigationScope({
+      subject: dependencies.subject, wallet: input.wallet, network: dependencies.network,
+    }, dependencies.mcp, AbortSignal.any([dependencies.signal, AbortSignal.timeout(SCOPE_BUDGET_MS)]));
+  } catch (error) {
+    if (error instanceof ResearchError) throw error;
+    console.error("[copilot] investigation scope failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
+    });
+    throw new ResearchError("account_unavailable", "I couldn't read the wallet's margin-account association. Try again when account data is available.");
+  }
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
   let messages = [...prior?.messages ?? [], input.message];
   // Validate capacity before paying for any model call. Never truncate an older constraint.
@@ -103,8 +154,62 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   try {
     position = await interruptible(() => computeAccountPosition(scope.smartAccount, dependencies.signal),
       AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]));
-  } catch {
+  } catch (error) {
+    console.warn("[copilot] investigation position seed failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    });
     // Left null. `capacity` below reports a genuine snapshot failure once, not twice.
+  }
+  if (fast?.kind === "health" && position) {
+    return fastPathView({
+      message: input.message, scope,
+      observations: healthObservations(position),
+      secret: dependencies.secret, server: dependencies.server,
+    });
+  }
+  if (position) {
+    // Expire due mandates. Execution still requires an approved frozen plan and a
+    // dedicated runner — this call never signs or submits.
+    try {
+      evaluateStandingOrders({
+        liveFor: (order) => ({
+          healthFactor: order.trigger.kind === "health_factor" && position.healthFactor
+            ? Number(position.healthFactor) : null,
+          priceUsd: null,
+        }),
+      });
+    } catch (error) {
+      console.warn("[copilot] standing order evaluation failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+    }
+  }
+  if (!prior) {
+    const parsed = parseStandingOrder(input.message);
+    if (parsed && scope.trader) {
+      const order = createStandingOrder({
+        subject: dependencies.subject, trader: scope.trader, smartAccount: scope.smartAccount,
+        trigger: parsed.trigger, action: parsed.action,
+      });
+      return {
+        status: "blocked",
+        message: `${STANDING_ORDER_OFFER} Mandate ${order.id} is waiting for an approved plan; nothing is watching yet.`,
+        originalRequest: input.message, refinements: [], understanding: null, question: null,
+        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+        continuation: "", executionAllowed: false,
+      };
+    }
+    const gap = detectAutomationGap(input.message, true);
+    if (gap?.kind === "standing_order") {
+      return {
+        status: "blocked", message: gap.message,
+        originalRequest: input.message, refinements: [], understanding: null, question: null,
+        facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+        warnings: [], scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+        continuation: "", executionAllowed: false,
+      };
+    }
   }
   /**
    * Headroom reuses the snapshot the position read already paid for. Both need the same
@@ -128,8 +233,9 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   }] : [];
   const result = await runInvestigation({
     message: input.message, scope, seed,
+    history: (input.history ?? []).slice(-8),
     task: { messages, lastQuestion: prior?.lastQuestion ?? null },
-  }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress });
+  }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits });
   const { facts, warnings } = normalizeResearchFacts(result.observations);
   const outcome = result.outcome;
   /**
@@ -142,7 +248,14 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   if (prior && outcome.kind === "research_complete" && outcome.goal.relation === "new") {
     messages = [input.message];
     // Never carry the previous task's floor or amount into an unrelated new goal.
-    capacity = position?.snapshot ? await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position.snapshot) : null;
+    try {
+      capacity = position?.snapshot ? await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position.snapshot) : null;
+    } catch (error) {
+      console.warn("[copilot] investigation capacity refresh failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+      capacity = null;
+    }
   }
   if (capacityResult.failed) {
     // Only a genuine FAILURE is worth saying. "No floor was stated" is not a failure, and
@@ -171,18 +284,29 @@ export async function researchTurn(input: ResearchInput, dependencies: {
    * new loans. Only an explicit prohibition suppresses borrow shapes.
    */
   const borrowing = outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified";
-  const candidates = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
-    ? generateCandidates({
-        grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
-        debtUsd: capacity?.debtUsd ?? "0",
-        floor: capacity?.floor ?? "1.30",
-        idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
-        idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
-        borrowingAllowed: Boolean(capacity) && borrowing !== "forbidden",
-        requestedBorrowUsd: requestedBorrow?.usd ?? null,
-        comparisons: rateComparisons,
-      })
-    : null;
+  let candidates = null;
+  try {
+    candidates = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
+      ? generateCandidates({
+          grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
+          debtUsd: capacity?.debtUsd ?? "0",
+          floor: capacity?.floor ?? "1.30",
+          idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
+          idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
+          borrowingAllowed: Boolean(capacity) && borrowing !== "forbidden",
+          requestedBorrowUsd: requestedBorrow?.usd ?? null,
+          comparisons: rateComparisons,
+        })
+      : null;
+  } catch (error) {
+    console.error("[copilot] investigation candidate ranking failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    });
+    warnings.push("Strategy options could not be ranked from the reads that completed.");
+  }
+  if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
+    warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
+  }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   // Venue, pair and "how much" are decided by ranking to the stated floor. Asking them
@@ -198,8 +322,13 @@ export async function researchTurn(input: ResearchInput, dependencies: {
     intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
     findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
   });
-  if (!scope.trader) warnings.push("No verified wallet is connected. Only public market information was available.");
-  else if (!scope.smartAccount) warnings.push("No active margin account was discovered for this wallet.");
+  if (scope.unverified === "bindings") {
+    warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
+  } else if (!scope.trader) {
+    warnings.push("No verified wallet is connected. Only public market information was available.");
+  } else if (!scope.smartAccount) {
+    warnings.push("No active margin account was discovered for this wallet.");
+  }
   if (outcome.kind === "stopped") warnings.push(outcome.reason === "model_unavailable"
     ? "The language model was unavailable. No keyword plan was substituted."
     : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);

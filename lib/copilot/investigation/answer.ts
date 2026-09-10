@@ -18,6 +18,10 @@ export function factualAnswer(facts: readonly ResearchFact[]): string | null {
   if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = facts.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
+  const eligibility = facts.filter(f => f.sourcePath === "allowed" && f.venue === "margin");
+  for (const fact of eligibility) {
+    sentences.push(`${fact.label} is ${fact.value} on the current health check.`);
+  }
   const rates = facts.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply"));
   if (rates.length) sentences.push(`The reported supply rates are ${rates.map(f => `${f.label.replace(" supply APR", "")}: ${amount(f)}`).join("; ")}.`);
   return sentences.length ? sentences.join(" ") : null;

@@ -9,9 +9,9 @@ import { immediateReply } from "@/lib/copilot/investigation/immediate";
  * when it is wrapped in pleasantries or phrased as a question about capability.
  */
 describe("turns answered without investigating", () => {
-  it("answers a bare greeting with what the surface actually does", () => {
+  it("answers a bare greeting with what the surface actually does", async () => {
     for (const text of ["hi", "Hi!", "hey", "heyy", "hello", "yo", "gm", "good morning", "thanks", "ok"]) {
-      const reply = immediateReply(text);
+      const reply = await immediateReply(text);
       expect(reply?.kind, text).toBe("greeting");
       expect(reply?.message).toMatch(/Vanna copilot/);
       // It says what to try, so the answer moves the user forward.
@@ -19,13 +19,13 @@ describe("turns answered without investigating", () => {
     }
   });
 
-  it("answers a capability question without reading the account", () => {
+  it("answers a capability question without reading the account", async () => {
     for (const text of ["what can you do", "what are you?", "how do you work", "help", "what is this"]) {
-      expect(immediateReply(text)?.kind, text).toBe("greeting");
+      expect((await immediateReply(text))?.kind, text).toBe("greeting");
     }
   });
 
-  it("does NOT swallow a real request that merely opens with a greeting", () => {
+  it("does NOT swallow a real request that merely opens with a greeting", async () => {
     // The whole failure mode: answering this with an introduction drops the borrow.
     for (const text of [
       "hi, can I borrow 500 USDC",
@@ -33,11 +33,11 @@ describe("turns answered without investigating", () => {
       "hello — lend 10 XLM please",
       "thanks, now deposit 5 XLM as collateral",
     ]) {
-      expect(immediateReply(text), text).toBeNull();
+      expect(await immediateReply(text), text).toBeNull();
     }
   });
 
-  it("lets every ordinary product request through untouched", () => {
+  it("lets every ordinary product request through untouched", async () => {
     for (const text of [
       "what's my health factor?",
       "lend 10 XLM",
@@ -45,29 +45,29 @@ describe("turns answered without investigating", () => {
       "swap 10 XLM to AQUSDC then add liquidity in Aquarius",
       "how is the USDC pool doing?",
     ]) {
-      expect(immediateReply(text), text).toBeNull();
+      expect(await immediateReply(text), text).toBeNull();
     }
   });
 
-  it("refuses an off-domain prompt with the firewall's message, before any model call", () => {
-    const reply = immediateReply("write me a python script to sort a list");
+  it("refuses an off-domain prompt with the firewall's message, before any model call", async () => {
+    const reply = await immediateReply("write me a python script to sort a list");
     expect(reply?.kind).toBe("off_domain");
     expect(reply?.message).toMatch(/only help with Vanna Finance/);
   });
 
-  it("greets rather than refusing, even though a greeting carries no product vocabulary", () => {
+  it("greets rather than refusing, even though a greeting carries no product vocabulary", async () => {
     // The firewall would reject "hi" for having no domain terms; greeting someone with a
     // refusal is the wrong answer, so the greeting check runs first.
-    expect(immediateReply("hi")?.kind).toBe("greeting");
+    expect((await immediateReply("hi"))?.kind).toBe("greeting");
   });
 
-  it("returns nothing for empty input, leaving the existing validation to speak", () => {
-    expect(immediateReply("")).toBeNull();
-    expect(immediateReply("   ")).toBeNull();
+  it("returns nothing for empty input, leaving the existing validation to speak", async () => {
+    expect(await immediateReply("")).toBeNull();
+    expect(await immediateReply("   ")).toBeNull();
   });
 
-  it("does not treat a long message as a greeting because it starts with one", () => {
+  it("does not treat a long message as a greeting because it starts with one", async () => {
     const long = `hi ${"there ".repeat(20)}`;
-    expect(immediateReply(long)).not.toMatchObject({ kind: "greeting" });
+    expect(await immediateReply(long)).not.toMatchObject({ kind: "greeting" });
   });
 });

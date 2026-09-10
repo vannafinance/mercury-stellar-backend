@@ -288,7 +288,9 @@ describe("bounded execution", () => {
       } },
     });
 
-    expect(result.outcome).toEqual({ kind: "stopped", reason: "deadline" });
+    expect(result.outcome.kind).toBe("research_complete");
+    if (result.outcome.kind !== "research_complete") throw new Error("expected a partial research handoff");
+    expect(result.outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))).toBe(true);
     // Both observations survive: the price as evidence, the stalled one as an honest error.
     expect(result.observations).toHaveLength(2);
     const price = result.observations.find((observation) => observation.capability === "asset_price");
@@ -383,13 +385,50 @@ describe("batched reads", () => {
     expect(mcp.call).not.toHaveBeenCalled();
   });
 
-  it("spends no read when any capability in the batch is invalid", async () => {
-    const mcp = { call: vi.fn(async () => ({ debt_usd: "217.59" })) };
-    const model = sequence(batch(["account_debt"], ["not_a_capability"]));
+  it("records an invalid capability as a failed observation and still runs the rest of the batch", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mcp = { call: vi.fn(async (_tool: string) => ({ debt_usd: "217.59" })) };
+    const model = sequence(batch(["account_debt"], ["not_a_capability"]), complete(["e1"]));
     const result = await runInvestigation(request, { model, mcp });
 
-    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_decision" });
-    expect(mcp.call).not.toHaveBeenCalled();
+    expect(result.outcome).toEqual(complete(["e1"]));
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    expect(mcp.call).toHaveBeenCalledWith("vanna_get_debt", { smart_account: "C_VERIFIED" }, "G_VERIFIED");
+    expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capability: "account_debt", status: "ok", id: "e1" }),
+      expect.objectContaining({
+        capability: "not_a_capability", status: "error",
+        error: "This read is not available for the connected account.",
+      }),
+    ]));
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/investigation read rejected/);
+    logged.mockRestore();
+  });
+
+  it("turns a malformed can_withdraw amount into a failed observation and continues", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const mcp = { call: vi.fn(async () => ({ allowed: true, symbol: "XLM", amount: "100" })) };
+    const model: ResearchModel = async (turn) => {
+      if (!turn.observations.length) return inspect("can_withdraw", { asset: "XLM", amount: "100 XLM" });
+      expect(turn.observations[0]).toMatchObject({
+        capability: "can_withdraw", status: "error",
+        error: "The read was requested with invalid arguments.",
+      });
+      const ok = turn.observations.find((observation) => observation.capability === "can_withdraw" && observation.status === "ok");
+      if (ok) return complete([ok.id]);
+      return inspect("can_withdraw", { asset: "XLM", amount: "100" });
+    };
+    const result = await runInvestigation(request, { model, mcp });
+    expect(mcp.call).toHaveBeenCalledTimes(1);
+    expect(mcp.call).toHaveBeenCalledWith(
+      "vanna_can_withdraw",
+      { smart_account: "C_VERIFIED", symbol: "XLM", amount: "100" },
+      "G_VERIFIED",
+    );
+    expect(result.observations[0].status).toBe("error");
+    expect(result.observations[1]).toMatchObject({ capability: "can_withdraw", status: "ok" });
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/investigation read rejected/);
+    logged.mockRestore();
   });
 
   it("rejects a batch that repeats one read, and one over the per-turn cap", async () => {

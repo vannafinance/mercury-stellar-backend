@@ -28,6 +28,8 @@ jobs:
       # Hard gates — must pass to merge.
       - name: Type-check
         run: npx tsc --noEmit
+      - name: Investigation eval
+        run: npx vitest run tests/lib/investigation-eval.test.ts
       - name: Build
         run: npm run build
 

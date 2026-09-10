@@ -29,6 +29,12 @@ export function useInvestigation(wallet: string | null) {
   const sequence = useRef(0);
   const continuation = useRef<string | null>(null);
   /**
+   * Bounded chat window sent with every turn so a refinement like "make it 1.4"
+   * still has context when no question is open. Distinct from `continuation`, which
+   * only chains a reply onto an unresolved investigation.
+   */
+  const transcript = useRef<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  /**
    * Only a reply to an open question continues the prior investigation.
    *
    * Sending the continuation unconditionally made every new goal a refinement of the
@@ -46,6 +52,7 @@ export function useInvestigation(wallet: string | null) {
     sequence.current += 1;
     continuation.current = null;
     awaitingAnswer.current = false;
+    transcript.current = [];
     setState({ wallet: activeWallet.current, loading: false, prompt: "", result: null, progress: null, error: null });
   }, []);
   useEffect(() => { reset(); return () => { abort.current?.abort(); sequence.current += 1; }; }, [wallet, reset]);
@@ -70,15 +77,29 @@ export function useInvestigation(wallet: string | null) {
     const timer = setTimeout(() => controller.abort(), 120_000);
     const followUp = awaitingAnswer.current ? continuation.current : null;
     if (!followUp) continuation.current = null;
-    setState({ wallet: owner, loading: true, prompt, result: null, progress: null, error: null });
+    const history = transcript.current.slice(-8);
+    setState({
+      wallet: owner, loading: true, prompt, result: null,
+      progress: { kind: "scope", label: "Preparing your session" }, error: null,
+    });
     let received = false;
     let streamError = false;
+    let settled = false;
+    const settle = (patch: { error?: string | null } = {}) => {
+      if (sequence.current !== id || activeWallet.current !== owner) return;
+      settled = true;
+      setState((previous) => ({ ...previous, loading: false, progress: null, ...patch }));
+    };
     try {
       const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]));
-      if (!current()) return;
+      if (sequence.current !== id || activeWallet.current !== owner) return;
+      if (combined.aborted) {
+        settle({ error: "The investigation timed out. Please try again." });
+        return;
+      }
       const response = await fetch("/api/copilot/investigate", {
         method: "POST", headers, signal: combined,
-        body: JSON.stringify({ message: prompt, wallet: owner, continuation: followUp }),
+        body: JSON.stringify({ message: prompt, wallet: owner, continuation: followUp, history }),
       });
       await consumeResearchStream(response, (event) => {
         if (!current()) return;
@@ -86,31 +107,36 @@ export function useInvestigation(wallet: string | null) {
           received = true;
           continuation.current = event.result.continuation;
           awaitingAnswer.current = event.result.question !== null || event.result.understanding?.intent === "strategy";
+          const next: Array<{ role: "user" | "assistant"; text: string }> = [
+            ...transcript.current,
+            { role: "user", text: prompt },
+            { role: "assistant", text: event.result.message },
+          ];
+          transcript.current = next.slice(-8);
           setState((previous) => ({ ...previous, result: event.result, progress: null }));
         } else if (event.type === "error") {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
             awaitingAnswer.current = false;
+            transcript.current = [];
           }
           setState((previous) => ({ ...previous, error: event.message, progress: null }));
         } else setState((previous) => ({ ...previous, progress: event.event }));
       });
       if (current() && !received && !streamError) {
-        setState((previous) => ({
-          ...previous,
-          error: "The investigation finished without an answer. Please try again.",
-          progress: null,
-        }));
+        settle({ error: "The investigation finished without an answer. Please try again." });
       }
     } catch (error) {
-      if (sequence.current === id && activeWallet.current === owner) setState((previous) => ({
-        ...previous, error: combined.aborted ? "The investigation timed out. Please try again."
+      settle({
+        error: combined.aborted ? "The investigation timed out. Please try again."
           : error instanceof Error ? error.message : "Investigation failed. Please try again.",
-      }));
+      });
     } finally {
       clearTimeout(timer);
-      if (sequence.current === id && activeWallet.current === owner) setState((previous) => ({ ...previous, loading: false, progress: null }));
+      if (!settled && sequence.current === id && activeWallet.current === owner) {
+        setState((previous) => ({ ...previous, loading: false, progress: null }));
+      }
     }
   }, [wallet]);
 

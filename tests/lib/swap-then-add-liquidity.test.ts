@@ -174,7 +174,6 @@ describe("swap then add liquidity is a two-leg farm LP plan", () => {
         user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
         smart_account: "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
         tier: "free",
-        surface: "copilot",
         message: AQUARIUS,
       });
       expect(res.kind).toBe("plan_preview");

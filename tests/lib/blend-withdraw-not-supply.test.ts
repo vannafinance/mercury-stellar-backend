@@ -127,7 +127,6 @@ const base = {
   user_id: "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5",
   smart_account: "CDNGNLGLM5PK4PQ2XDA66W7JDQT3FKDLDGJ7XOBHQXEVRQR5U4PJFV3C",
   tier: "free" as const,
-  surface: "copilot" as const,
 };
 
 describe("THE LIVE BUG: handleChat never overrides a Blend withdrawal back to a supply", () => {

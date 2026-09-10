@@ -41,11 +41,14 @@ describe("Vertex investigation transport", () => {
   });
 
   it("does not retry another model or expose error response bodies", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const fetcher = vi.fn(async () => new Response("sensitive provider diagnostics", { status: 503 }));
     vi.stubGlobal("fetch", fetcher);
     await expect(generateInvestigationJson("gemini-3.8-flash", "system", "user", new AbortController().signal))
       .rejects.toThrow(/^Vertex investigation HTTP 503$/);
     expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(logged.mock.calls)).toMatch(/sensitive provider diagnostics/);
+    logged.mockRestore();
   });
 
   it("rejects token-exhausted partial JSON even when the text looks parseable", async () => {

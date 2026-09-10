@@ -62,6 +62,31 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         add("ltv_ratio", "Loan-to-value ratio", data.ltv_ratio, "ratio", "margin");
         // Do not derive the app's HF from these fields: contract/UI semantics differ.
         break;
+      case "account_position":
+        add("health_factor", "Current health factor", data.health_factor, "HF", "margin");
+        add("collateral_usd", "Reported collateral value", data.collateral_usd, "USD", "margin");
+        add("debt_usd", "Reported debt value", data.debt_usd, "USD", "margin");
+        break;
+      case "can_withdraw":
+      case "can_borrow": {
+        const asset = String(observation.args.asset);
+        const amount = typeof observation.args.amount === "string" ? observation.args.amount
+          : decimal(observation.args.amount);
+        const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
+        if (typeof data.allowed === "boolean" && amount) {
+          facts.push({
+            id: `${observation.id}:allowed`,
+            label: `${verb} ${amount} ${asset}`,
+            value: data.allowed ? "allowed" : "not allowed",
+            unit: "",
+            venue: "margin",
+            evidenceId: observation.id,
+            sourcePath: "allowed",
+            readAt: observation.observedAt,
+          });
+        }
+        break;
+      }
       case "account_debt":
         add("total_debt_usd", "Total margin debt", data.total_debt_usd, "USD", "margin");
         for (const { row, path } of rows("debt")) {

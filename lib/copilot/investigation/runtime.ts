@@ -80,6 +80,14 @@ function toolFailed(data: Record<string, unknown>): boolean {
     data.available === false || ["error", "failed", "rejected", "unavailable"].includes(String(data.status));
 }
 
+function clientSafeReadError(error: unknown): string {
+  return error instanceof Error && error.message === "Read capability unavailable"
+    ? "This read is not available for the connected account."
+    : "The read was requested with invalid arguments.";
+}
+
+const RATE_READS = new Set(["earn_market", "blend_markets", "blend_reserve", "aquarius_markets"]);
+
 /** Stop waiting promptly. Legacy MCP reads cannot yet be cancelled at transport level. */
 export function interruptible<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -155,11 +163,40 @@ export async function runInvestigation(
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
   };
+  /**
+   * A deadline with usable evidence is still a research handoff. Labelling it `stopped`
+   * dropped candidate generation (`service.ts` requires `research_complete`) and turned
+   * a timed-out investigation into an empty result.
+   */
+  const finishStop = (reason: Extract<InvestigationOutcome, { kind: "stopped" }>["reason"]): InvestigationResult => {
+    if (reason !== "deadline") return finish({ kind: "stopped", reason });
+    const usable = observations.filter((observation) => observation.status === "ok");
+    if (!usable.length) return finish({ kind: "stopped", reason: "deadline" });
+    const missed = [...new Set(observations.filter((observation) => observation.status === "error")
+      .map((observation) => observation.capability.replaceAll("_", " ")))];
+    return finish({
+      kind: "research_complete",
+      goal: {
+        intent: usable.some((observation) => RATE_READS.has(observation.capability)) ? "strategy" : "answer",
+        relation: "new",
+        objective: request.message,
+        constraints: missed.length
+          ? [`Partial research: the time budget ran out before ${missed.join(", ")}`]
+          : ["Partial research: the time budget ran out"],
+        borrowing: "unspecified",
+      },
+      findings: usable.map((observation) => ({
+        summary: `Recorded ${observation.capability.replaceAll("_", " ")} before the time budget ran out.`,
+        evidenceIds: [observation.id],
+      })),
+      openQuestions: [],
+    });
+  };
 
   try {
     while (modelTurns < limits.maxTurns) {
       const stopped = stopReason();
-      if (stopped) return finish({ kind: "stopped", reason: stopped });
+      if (stopped) return finishStop(stopped);
       modelTurns += 1;
       progress({ kind: "reviewing", turn: modelTurns });
       let raw: unknown;
@@ -170,11 +207,17 @@ export async function runInvestigation(
           remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
         }, signal), signal);
-      } catch {
-        return finish({ kind: "stopped", reason: stopReason() ?? "model_unavailable" });
+      } catch (error) {
+        const halted = stopReason();
+        if (!halted) {
+          console.error("[copilot] investigation model failed", {
+            error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+          });
+        }
+        return halted ? finishStop(halted) : finish({ kind: "stopped", reason: "model_unavailable" });
       }
       const afterModel = stopReason();
-      if (afterModel) return finish({ kind: "stopped", reason: afterModel });
+      if (afterModel) return finishStop(afterModel);
       let decision;
       try {
         const encoded = JSON.stringify(raw);
@@ -196,17 +239,30 @@ export async function runInvestigation(
       if (decision.kind !== "inspect") return finish(decision);
       if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
 
-      // Resolve the whole batch before running any of it, so an invalid capability or
-      // argument anywhere in the decision costs no MCP calls at all.
-      const resolved: Array<{ request: typeof decision.reads[number]; read: ReturnType<typeof resolveRead>; key: string }> = [];
+      // Resolve each read independently. A single bad argument used to abort the whole
+      // investigation as `invalid_decision`; it is now one failed observation so the loop
+      // can continue with the rest of the batch.
+      const resolved: Array<{
+        request: typeof decision.reads[number];
+        read: ReturnType<typeof resolveRead> | null;
+        key: string;
+        reject?: string;
+      }> = [];
       for (const request of decision.reads) {
-        let read: ReturnType<typeof resolveRead>;
         try {
-          read = resolveRead(request.capability, request.args, scope);
-        } catch {
-          return finish({ kind: "stopped", reason: "invalid_decision" });
+          const read = resolveRead(request.capability, request.args, scope);
+          resolved.push({ request, read, key: JSON.stringify([read.tool, read.args]) });
+        } catch (error) {
+          const reject = clientSafeReadError(error);
+          console.error("[copilot] investigation read rejected", {
+            capability: request.capability,
+            reason: error instanceof Error ? error.message : reject,
+          });
+          resolved.push({
+            request, read: null, reject,
+            key: JSON.stringify(["invalid", request.capability, request.args]),
+          });
         }
-        resolved.push({ request, read, key: JSON.stringify([read.tool, read.args]) });
       }
       // A batch may not exceed the remaining tool budget; the model is told what is left.
       if (toolCalls + resolved.length > limits.maxToolCalls) {
@@ -228,7 +284,7 @@ export async function runInvestigation(
        * and results appended in request order, so evidence numbering stays deterministic
        * regardless of which read returns first.
        */
-      const dispatched = resolved.map(({ request, read, key }, offset) => {
+      const dispatched = resolved.map(({ request, read, key, reject }, offset) => {
         const id = `e${toolCalls + offset + 1}`;
         const label = request.capability.replaceAll("_", " ");
         progress({ kind: "reading", capability: request.capability, label });
@@ -237,6 +293,11 @@ export async function runInvestigation(
           // Timestamp the start of the read conservatively; upstream data can be older still.
           observedAt: now(), status: "error",
         };
+        if (!read) {
+          observation.error = reject ?? "The read was requested with invalid arguments.";
+          if (!signal.aborted) progress({ kind: "read_finished", capability: request.capability, label, status: "error" });
+          return { key, label, capability: request.capability, observation, settled: Promise.resolve(), prior: seen.get(key) };
+        }
         /**
          * Each read gets its OWN deadline as well as the run's. Sharing only the run signal
          * meant one stalled call held the entire concurrent batch until the run expired,
@@ -256,10 +317,16 @@ export async function runInvestigation(
             observation.data = undefined;
             observation.error = "MCP returned invalid or oversized data. No value was inferred.";
           }
-        }).catch(() => {
+        }).catch((error) => {
           // Exception strings can carry upstream credentials; do not feed them to the model.
           // A read that ran out of its own time is reported as such: the model can retry a
           // timeout usefully, whereas "failed" invites it to treat the venue as broken.
+          console.error("[copilot] investigation read failed", {
+            capability: request.capability,
+            tool: read.tool,
+            timeout: readSignal.aborted && !signal.aborted,
+            error: error instanceof Error ? error.name : "unknown",
+          });
           observation.error = readSignal.aborted && !signal.aborted
             ? "MCP read exceeded its time limit. No value was inferred."
             : "MCP read failed. No value was inferred.";
@@ -291,9 +358,16 @@ export async function runInvestigation(
           });
         }
       }
-      if (afterBatch) return finish({ kind: "stopped", reason: afterBatch });
+      if (afterBatch) return finishStop(afterBatch);
     }
     return finish({ kind: "stopped", reason: "turn_budget" });
+  } catch (error) {
+    const halted = stopReason();
+    if (halted) return finishStop(halted);
+    console.error("[copilot] investigation loop failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    });
+    return finish({ kind: "stopped", reason: "model_unavailable" });
   } finally {
     clearTimeout(timer);
   }

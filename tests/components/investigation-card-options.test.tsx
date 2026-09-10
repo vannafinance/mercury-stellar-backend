@@ -239,4 +239,18 @@ describe("investigation card / options", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in wallet" }));
     expect(onSign).toHaveBeenCalledTimes(1);
   });
+
+  it("renders the live investigation progress instead of a bare spinner", () => {
+    render(
+      <InvestigationCard
+        prompt="can I withdraw 100 XLM without getting liquidated?"
+        result={null}
+        progress={{ kind: "reading", capability: "can_withdraw", label: "can withdraw" }}
+        loading
+        error={null}
+        onReset={() => {}}
+      />,
+    );
+    expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
+  });
 });

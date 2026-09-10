@@ -63,14 +63,13 @@ export interface ResearchView {
 }
 
 /**
- * The old keyword planner invents amounts (the live 1000 USDC deposit). It remains
- * only for concrete single actions that investigation did not size — never for a
- * strategy that already stated a health floor or already has a ranked option.
+ * The Copilot workspace never keyword-plans. Investigation owns understanding;
+ * the workflow journal owns execution. `handleChat` still contains the old
+ * router for unsurfaced callers and tests — a prompt with `surface: "copilot"`
+ * is refused there rather than re-planned.
  */
 export function shouldUseLegacyExecutor(view: ResearchView): boolean {
   void view;
-  // A completed read is not an action classification or an execution authorization.
-  // Never replay a prompt through a second planner with different sizing semantics.
   return false;
 }
 

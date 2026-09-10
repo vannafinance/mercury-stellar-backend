@@ -64,6 +64,15 @@ describe("financial evidence normalization", () => {
     expect(result.facts[0]).toMatchObject({ unit: "% APR", value: "5.123456789", sourcePath: "supply_apy_pct" });
     expect(result.warnings.length).toBeGreaterThan(0);
   });
+  it("cites a can_withdraw preflight as an audited eligibility fact", () => {
+    const result = normalizeResearchFacts([{
+      id: "e2", capability: "can_withdraw", args: { asset: "XLM", amount: "100" },
+      observedAt: 1000, status: "ok", data: { allowed: true, symbol: "XLM", amount: "100" },
+    }]);
+    expect(result.facts).toEqual([expect.objectContaining({
+      label: "withdraw 100 XLM", value: "allowed", sourcePath: "allowed", venue: "margin", evidenceId: "e2",
+    })]);
+  });
   /**
    * `enabled: true` is a configuration flag; the Sign Service reports the live session
    * separately and can contradict it. Calling an expired delegation "Active" is the one

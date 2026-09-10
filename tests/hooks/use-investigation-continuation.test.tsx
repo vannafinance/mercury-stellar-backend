@@ -37,7 +37,12 @@ function view(over: Partial<ResearchView> = {}): ResearchView {
 
 /** Queue one server outcome per run() call, and record what each request sent. */
 function server(outcomes: Array<{ result?: ResearchView; error?: { code: string; message: string } }>) {
-  const sent: Array<{ message: string; continuation: string | null }> = [];
+  const sent: Array<{
+    message: string;
+    continuation: string | null;
+    wallet: string | null;
+    history?: Array<{ role: string; text: string }>;
+  }> = [];
   let call = 0;
   vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
     sent.push(JSON.parse(init.body));
@@ -62,6 +67,29 @@ describe("useInvestigation — continuation chaining", () => {
     expect(result.current.loading).toBe(false);
     expect(sent).toHaveLength(0);
   });
+
+  it("two prompts submitted in sequence each POST to investigate", async () => {
+    const sent = server([{ result: view() }, { result: view() }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await act(async () => { await result.current.run("first"); });
+    await act(async () => { await result.current.run("second"); });
+    expect(sent.map((row) => row.message)).toEqual(["first", "second"]);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("a second prompt while headers are stalled still sends its own request and clears loading", async () => {
+    mocks.headers.mockImplementationOnce(() => new Promise(() => {}));
+    const sent = server([{ result: view() }, { result: view() }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    let first!: Promise<void>;
+    act(() => { first = result.current.run("first"); });
+    expect(result.current.loading).toBe(true);
+    await act(async () => { await result.current.run("second"); });
+    expect(sent.map((row) => row.message)).toEqual(["second"]);
+    expect(result.current.loading).toBe(false);
+    await act(async () => { await first; });
+    expect(sent).toHaveLength(1);
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.headers.mockResolvedValue({ "content-type": "application/json" });
@@ -75,9 +103,20 @@ describe("useInvestigation — continuation chaining", () => {
     await act(async () => { await result.current.run("build a strategy with USDC and XLM"); });
 
     expect(sent).toHaveLength(2);
+    expect(sent.map((row) => row.message)).toEqual([
+      "price of XLM",
+      "build a strategy with USDC and XLM",
+    ]);
+    expect(result.current.loading).toBe(false);
     expect(sent[0].continuation).toBeNull();
+    expect(sent[0].history).toEqual([]);
     // The second goal is its own investigation, not a refinement of the first.
-    expect(sent[1]).toEqual({ message: "build a strategy with USDC and XLM", continuation: null, wallet: WALLET });
+    expect(sent[1].continuation).toBeNull();
+    expect(sent[1].message).toBe("build a strategy with USDC and XLM");
+    expect(sent[1].history).toEqual([
+      { role: "user", text: "price of XLM" },
+      { role: "assistant", text: "collected" },
+    ]);
   });
 
   it("chains a reply that answers an open question", async () => {
@@ -90,7 +129,12 @@ describe("useInvestigation — continuation chaining", () => {
     await act(async () => { await result.current.run("build a strategy with USDC and XLM"); });
     await act(async () => { await result.current.run("about 500 USDC"); });
 
-    expect(sent[1]).toEqual({ message: "about 500 USDC", continuation: "r1.first", wallet: WALLET });
+    expect(sent[1].message).toBe("about 500 USDC");
+    expect(sent[1].continuation).toBe("r1.first");
+    expect(sent[1].history).toEqual([
+      { role: "user", text: "build a strategy with USDC and XLM" },
+      { role: "assistant", text: "collected" },
+    ]);
   });
 
   it("stops chaining once the answered question is resolved", async () => {
@@ -123,6 +167,7 @@ describe("useInvestigation — continuation chaining", () => {
 
     expect(sent[1].continuation).toBe("r1.first");
     expect(sent[2].continuation).toBeNull();
+    expect(sent[2].history).toEqual([]);
   });
 
   it("reset clears the chain so the next goal starts clean", async () => {
@@ -137,5 +182,6 @@ describe("useInvestigation — continuation chaining", () => {
     await act(async () => { await result.current.run("something else entirely"); });
 
     expect(sent[1].continuation).toBeNull();
+    expect(sent[1].history).toEqual([]);
   });
 });

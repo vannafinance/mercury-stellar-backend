@@ -40,6 +40,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { promisify } from "util";
 import { copilotConfig } from "./config";
+import { currentTokenSubject, recordTokenUsage } from "./token-budget";
 import { assertFlashModel } from "./investigation/flash-policy";
 import type { RoutedIntent } from "./types";
 import { decisionFromFunctionCalls } from "./investigation/decls";
@@ -504,6 +505,13 @@ function logUsage(tag: string, parsed: unknown): void {
         (int(meta.thoughtsTokenCount) ? ` thoughts=${int(meta.thoughtsTokenCount)}` : ""),
     );
   }
+  const subject = currentTokenSubject();
+  if (subject) {
+    recordTokenUsage(
+      subject,
+      promptTokens + int(meta.candidatesTokenCount) + int(meta.thoughtsTokenCount),
+    );
+  }
 }
 
 /** JSON-mode Vertex call — used by router + LLM strategy planner. */
@@ -602,12 +610,17 @@ export async function generateInvestigationJson(
   });
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) tokenCache = null;
-    // Do not include response bodies that may contain provider diagnostics or credentials.
+    const body = await res.text().catch(() => "");
+    // Server log only — the thrown message stays a status code so tool internals
+    // never reach the SSE payload.
+    console.error("[copilot] Vertex investigation HTTP error", {
+      status: res.status, model, body: body.slice(0, 4000),
+    });
     throw new VertexError(`Vertex investigation HTTP ${res.status}`);
   }
   const raw = await res.text();
   if (Buffer.byteLength(raw, "utf8") > 262_144) throw new VertexError("Vertex investigation response too large");
-  const parsed = JSON.parse(raw) as {
+  let parsed: {
     candidates?: Array<{
       finishReason?: string;
       content?: {
@@ -619,20 +632,44 @@ export async function generateInvestigationJson(
       };
     }>;
   };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    throw new VertexError("Vertex investigation response was not JSON");
+  }
   logUsage("investigation", parsed);
   const candidate = parsed.candidates?.[0];
-  if (candidate?.finishReason !== "STOP") throw new VertexError("Vertex investigation did not finish a decision");
-  const parts = candidate.content?.parts?.filter((part) => part.thought !== true) ?? [];
+  const finishReason = candidate?.finishReason;
+  const parts = candidate?.content?.parts?.filter((part) => part.thought !== true) ?? [];
   const calls = parts
     .filter((part) => part.functionCall?.name)
     .map((part) => ({
       name: String(part.functionCall!.name),
       args: (part.functionCall!.args ?? {}) as Record<string, unknown>,
     }));
-  if (calls.length) return decisionFromFunctionCalls(calls);
+  if (finishReason === "SAFETY" || finishReason === "BLOCKLIST" || finishReason === "PROHIBITED_CONTENT") {
+    console.error("[copilot] Vertex investigation blocked", { finishReason, model });
+    throw new VertexError("Vertex investigation did not finish a decision");
+  }
+  if (calls.length) {
+    if (finishReason && finishReason !== "STOP") {
+      console.warn("[copilot] Vertex investigation function calls with finishReason", { finishReason, model });
+    }
+    return decisionFromFunctionCalls(calls);
+  }
+  if (finishReason !== "STOP") {
+    console.error("[copilot] Vertex investigation did not finish a decision", {
+      finishReason: finishReason ?? null, model,
+    });
+    throw new VertexError("Vertex investigation did not finish a decision");
+  }
   const out = parts.map((part) => part.text ?? "").join("");
   if (!out.trim()) throw new VertexError("Vertex investigation returned no decision");
-  return JSON.parse(out);
+  try {
+    return JSON.parse(out);
+  } catch {
+    throw new VertexError("Vertex investigation returned no decision");
+  }
 }
 
 /** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */

@@ -20,7 +20,7 @@
  *    prevent.
  */
 
-import { evaluateDomainFirewall } from "../domain-firewall";
+import { evaluateDomainFirewall, guardUserPrompt } from "../domain-firewall";
 
 export interface ImmediateReply {
   kind: "greeting" | "off_domain";
@@ -46,7 +46,10 @@ const IDENTITY =
   "Try “what’s my health factor?”, “lend 10 XLM”, or “use my USDC and XLM to build a " +
   "strategy that keeps the health factor above 1.3”.";
 
-export function immediateReply(message: string): ImmediateReply | null {
+export async function immediateReply(
+  message: string,
+  opts?: { subject?: string; signal?: AbortSignal; hasPageContext?: boolean },
+): Promise<ImmediateReply | null> {
   const text = message.trim();
   if (!text) return null;
 
@@ -54,6 +57,14 @@ export function immediateReply(message: string): ImmediateReply | null {
   // firewall would reject it, and greeting someone with a refusal is the wrong answer.
   if (text.length <= 40 && (GREETING.test(text) || CAPABILITY_QUESTION.test(text))) {
     return { kind: "greeting", message: IDENTITY };
+  }
+
+  if (opts?.subject && opts.signal) {
+    const verdict = await guardUserPrompt(text, {
+      subject: opts.subject, signal: opts.signal, hasPageContext: opts.hasPageContext,
+    });
+    if (!verdict.allow) return { kind: "off_domain", message: verdict.message };
+    return null;
   }
 
   const verdict = evaluateDomainFirewall(text);

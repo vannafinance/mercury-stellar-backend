@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/copilot";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { withBoundUser } from "@/lib/copilot/user-context";
+import { withTokenSubject } from "@/lib/copilot/token-budget";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -241,7 +242,9 @@ export async function POST(req: NextRequest) {
   const loadedUser = await loadUserFromRequest(req);
 
   try {
-    const data = await withBoundUser(loadedUser.bound, () => handleChat(payload));
+    const data = await withBoundUser(loadedUser.bound, () =>
+      withTokenSubject(loadedUser.bound?.sub ?? "guest", () => handleChat(payload)),
+    );
     const multiLeg = !!(data.data && (data.data as Record<string, unknown>).multi_leg);
     const multiSteps = multiLeg
       ? ((data.data as Record<string, unknown>).multi_leg_steps as unknown[])
