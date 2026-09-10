@@ -169,3 +169,5 @@ decides — it is load-bearing for Margin and Portfolio.
 
 M4 (custom per-user spend limits under the $1,000/day ceiling) and M5 (per-tool timing, shared
 price cache) follow once these land.
+
+> **Superseded by `HANDOFF-roadmap-v2.md`** (10 Sep 2026). Every task here still appears there, plus four items from a production-practice review, in a corrected order. Use v2.

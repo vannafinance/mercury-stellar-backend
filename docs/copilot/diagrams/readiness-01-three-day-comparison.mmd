@@ -1,0 +1,24 @@
+flowchart LR
+
+subgraph FAST["A 3-day agent"]
+  direction TB
+  F1["Framework loop<br/>LangGraph / ADK"]
+  F2["Managed tracing<br/>Langfuse / LangSmith"]
+  F3["Cloud Run deploy"]
+  F4["Wrong answer =<br/><b>mild annoyance</b>"]
+  F1 --> F2 --> F3 --> F4
+end
+
+subgraph OURS["A financial agent"]
+  direction TB
+  O1["Same loop problem"]
+  O2["Same tracing problem"]
+  O3["Same deploy problem"]
+  O4["+ contract-verified thresholds"]
+  O5["+ three sources that disagree"]
+  O6["+ token identity that is genuinely ambiguous"]
+  O7["Wrong answer =<br/><b>a liquidation</b>"]
+  O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7
+end
+
+FAST -.->|"the first three rows are<br/>the same work"| OURS

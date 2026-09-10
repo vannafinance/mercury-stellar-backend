@@ -1,0 +1,18 @@
+flowchart LR
+
+U["User says<br/><b>'USDC'</b>"]
+Q{"Which one?"}
+B["BLUSDC<br/>Blend"]
+A["AQUSDC<br/>Aquarius"]
+S["SOUSDC<br/>Soroswap"]
+ORACLE[("One shared oracle symbol<br/>oracleSymbol: USDC<br/><i>the only legitimate use</i>")]
+RULE["<b>Resolve, don't just ask</b><br/>hold one variant → don't ask<br/>one dominates → lead with it, show why<br/>comparable → ask with balances and rates"]
+
+U --> Q
+Q --> B
+Q --> A
+Q --> S
+B --> ORACLE
+A --> ORACLE
+S --> ORACLE
+Q -.-> RULE

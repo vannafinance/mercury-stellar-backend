@@ -1,0 +1,21 @@
+flowchart LR
+
+subgraph SRC["Three sources"]
+  direction TB
+  APP["<b>App snapshot</b><br/>computeMarginSnapshot<br/>posted + unposted SAC<br/>+ farm positions"]
+  MCPS["<b>MCP account_health</b><br/>recorded balances<br/>no scalar health factor"]
+  CON["<b>RiskEngine contract</b><br/>liquidation_snapshot<br/>walks get_all_collateral_tokens<br/><b>posted only</b>"]
+end
+
+DISPLAY["<b>DISPLAY</b><br/>'your health factor is 3.90'"]
+SIZING["<b>SIZING</b><br/>'you can borrow $X<br/>before breaching 1.30'"]
+GUARD{"Do they agree<br/>within tolerance?<br/>max $0.50 or 0.5%"}
+REFUSE["Refuse to quote a size<br/>and explain the difference"]
+QUOTE["Quote the sized figure"]
+
+APP --> DISPLAY
+CON --> SIZING
+APP --> GUARD
+CON --> GUARD
+GUARD -->|no| REFUSE
+GUARD -->|yes| QUOTE

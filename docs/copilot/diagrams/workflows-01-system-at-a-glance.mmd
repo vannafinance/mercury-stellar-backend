@@ -1,0 +1,57 @@
+flowchart TB
+
+USER(["User states an objective<br/><i>'borrow as much as possible,<br/>keep health factor above 1.3'</i>"])
+
+subgraph L1["LAYER 1 · Surfaces"]
+  direction LR
+  CP["Copilot workspace<br/>/copilot"]
+  PA["Page assistant<br/>no account access"]
+  API["HTTP API<br/>POST /api/copilot"]
+end
+
+subgraph L2["LAYER 2 · Admission"]
+  direction LR
+  CLS["Domain classifier<br/>Flash · cached per hash"]
+  CAP["Daily token cap<br/>per verified subject"]
+  IDN["Identity<br/>Privy / WorkOS sub"]
+end
+
+subgraph L3["LAYER 3 · Understanding & Investigation  ·  the model works here"]
+  direction LR
+  FP["Fast path<br/>exact-match cache"]
+  GOAL["Goal extraction<br/>objective + constraints"]
+  LOOP["Flash decision loop<br/>24 reads · 12 turns · 45s"]
+  EVID["Evidence ledger<br/>ids · 60s staleness"]
+  FP --- GOAL --> LOOP --> EVID
+  EVID -.->|next read| LOOP
+end
+
+subgraph L4["LAYER 4 · Deterministic core  ·  no model output reaches this"]
+  direction LR
+  SIZE["Sizing<br/>integer WAD"]
+  CAND["Candidate ranking<br/>+ no-borrow option"]
+  RISK["Risk validator<br/>HF floor · negative carry"]
+  ASSET["Asset resolution<br/>wire symbol only"]
+end
+
+subgraph L5["LAYER 5 · Approval & execution"]
+  direction LR
+  APPR["Server-held approval<br/>fingerprint · expiry · bind"]
+  EXEC["Leg executor<br/>idempotent · resumable"]
+  SIGN["Signing<br/>wallet or auto-sign policy"]
+end
+
+subgraph L6["LAYER 6 · Verify"]
+  SETTLE["Settlement read-back<br/>honest partials"]
+end
+
+MCP[["MCP · the only path to chain<br/>reads audited · writes never declared to the model<br/>builds unsigned XDR"]]
+CHAIN[("Soroban<br/>RiskEngine · AccountManager<br/>SmartAccount")]
+
+USER --> L1 --> L2 --> L3
+L3 -->|validated shape, no amounts| L4
+L4 --> L5 --> L6
+L3 <-->|audited reads| MCP
+L5 <-->|build · submit| MCP
+L6 <-->|read back| MCP
+MCP <--> CHAIN

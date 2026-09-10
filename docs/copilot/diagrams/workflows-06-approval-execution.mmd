@@ -1,0 +1,29 @@
+flowchart TB
+
+CARD["Proposal card<br/>ranked candidate · legs in order ·<br/>projected HF · what was not verified ·<br/>approval scope"]
+MOD{"User modifies?"}
+REPROMPT["Conversational refinement<br/><i>'make it 1.4'</i> · full re-solve ·<br/><b>never an editable amount field</b>"]
+APPROVE(["User approves — the only edge<br/>that authorises anything"])
+REVAL{"Revalidate:<br/>fresh prices,<br/>floor still holds?"}
+DRIFTED["Re-propose<br/><b>never execute a stale size</b>"]
+AUTO{"Auto-sign armed<br/>AND within cap?"}
+WALLET["Wallet signature per leg<br/>user signs the built XDR"]
+DIRECT["Executes with no prompt<br/>inside the daily cap"]
+SUBMIT["Submit · confirm settlement<br/><b>code decides settled, not the model</b>"]
+NEXT{"More legs?"}
+FAIL{"Leg failed?"}
+RESUME["Offer resume of the remainder<br/>carrying every slot the leg had<br/><b>settled legs never replayed</b>"]
+RECEIPT(["Receipt · what landed,<br/>what did not"])
+
+CARD --> MOD
+MOD -->|yes| REPROMPT --> CARD
+MOD -->|no| APPROVE --> REVAL
+REVAL -->|drifted| DRIFTED
+REVAL -->|holds| AUTO
+AUTO -->|no, or over cap| WALLET --> SUBMIT
+AUTO -->|yes| DIRECT --> SUBMIT
+SUBMIT --> FAIL
+FAIL -->|yes| RESUME
+FAIL -->|no| NEXT
+NEXT -->|yes| AUTO
+NEXT -->|no| RECEIPT
