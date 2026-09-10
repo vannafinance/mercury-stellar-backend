@@ -132,6 +132,11 @@ export const CATALOG: readonly CatalogEntry[] = [
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {
+    name: "liquidation_snapshot", tool: "vanna_get_liquidation_snapshot", scope: "account", cost: "expensive",
+    description: "The RiskEngine function that decides liquidation. On-chain collateral and debt in USD, plus the liquidatable flag. Not a synthesized health factor and not the Margin page snapshot.",
+    modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
+  },
+  {
     name: "earn_market", tool: "vanna_get_pool_stats", scope: "public", cost: "cheap",
     description: "Read Vanna Earn rates and liquidity for one canonical asset. Not Blend farm rates. Bare USDC is ambiguous.",
     modelArgs: { asset: { type: "enum", values: earnAssets } },

@@ -98,7 +98,9 @@ export async function proposeWorkflow(input: {
     : await collectObservations(scope, input.mcp, input.signal, now);
   const capacity = reused
     ? prior.evidence!.capacity
-    : await computeBorrowCapacity(scope.smartAccount, prior.messages, input.signal);
+    : await computeBorrowCapacity(scope.smartAccount, prior.messages, input.signal, null, {
+      mcp: input.mcp, trader: scope.trader,
+    });
   const requestedBorrow = requestedBorrowFrom(prior.messages, observations, now);
   const comparisons = compareObservedRates(observations, now);
   const idleWalletUsd = idleWalletUsdFrom(observations, now);

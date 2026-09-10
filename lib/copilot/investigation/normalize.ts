@@ -101,6 +101,11 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         add("collateral_usd", "Reported collateral value", data.collateral_usd, "USD", "margin");
         add("debt_usd", "Reported debt value", data.debt_usd, "USD", "margin");
         break;
+      case "liquidation_snapshot":
+        add("collateral_usd", "Contract liquidation collateral", data.collateral_usd, "USD", "margin");
+        add("debt_usd", "Contract liquidation debt", data.debt_usd, "USD", "margin");
+        flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
+        break;
       case "can_withdraw":
       case "can_borrow": {
         const allowed = asBool(data.allowed)

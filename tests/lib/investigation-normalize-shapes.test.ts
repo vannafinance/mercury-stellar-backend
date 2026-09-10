@@ -109,6 +109,23 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     })]);
   });
 
+  it("extracts liquidation_snapshot collateral and debt without synthesizing a health factor", () => {
+    const result = normalizeResearchFacts([observation("liquidation_snapshot", {
+      smart_account: "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ",
+      collateral_usd: "4230.94",
+      debt_usd: "2705.60",
+      liquidatable: false,
+      source: "risk_engine.liquidation_snapshot",
+    })]);
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "Contract liquidation collateral", value: "4230.94", unit: "USD" }),
+      expect.objectContaining({ label: "Contract liquidation debt", value: "2705.60", unit: "USD" }),
+      expect.objectContaining({ label: "Liquidation snapshot flag", value: "not liquidatable" }),
+    ]));
+    expect(result.facts.some((fact) => fact.unit === "HF" || fact.sourcePath === "health_factor")).toBe(false);
+    expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
+  });
+
   it("still accepts the mock MCP aliases amount_human/usd without totals", () => {
     const collateral = normalizeResearchFacts([observation("account_collateral", {
       collateral: [{ symbol: "USDC", amount_human: "100", usd: 100 }],

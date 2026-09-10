@@ -147,9 +147,29 @@ async function main() {
         flag: snapshotHit.value.length > 2 ? snapshotHit.value[2] : null,
       };
     }
-    let recommendation = 'Do not change sizing in this phase. Wait until liquidation_snapshot can be read on this deployment; the earlier 12% gap compared computeMarginSnapshot to get_current_total_balance, which is adjacent to the decision function rather than proven identical.';
+    const appGross = typeof appBody?.grossCollateralValue === 'number' ? appBody.grossCollateralValue : null;
+    const appDebt = typeof appBody?.totalBorrowedValue === 'number' ? appBody.totalBorrowedValue : null;
+    const within = (a, b) => {
+      if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return null;
+      const diff = Math.abs(a - b);
+      const scale = Math.max(Math.abs(a), Math.abs(b), 1);
+      return { diff, agrees: diff <= Math.max(0.5, 0.005 * scale) };
+    };
+    let recommendation = 'liquidation_snapshot could not be decoded. Pass A sizing must not guess a basis.';
     if (snapshotDecoded) {
-      recommendation = `liquidation_snapshot(account) is a 3-tuple [collateralWad, debtWad, flag]. Collateral (~$${snapshotDecoded.collateralUsd}) matches get_current_total_balance and computeMarginSnapshot gross. Snapshot debt (~$${snapshotDecoded.debtUsd}) matches get_current_total_borrows, not the app snapshot's totalBorrowedValue (${appBody?.totalBorrowedValue ?? 'n/a'}). Phase 3 sizing should follow this snapshot's debt basis. Do not change sizing in this phase. Ledgers were ${sameLedger ? 'pinned' : 'adjacent, not identical'} (${ledgers.join(', ')}).`;
+      const coll = within(appGross, snapshotDecoded.collateralUsd);
+      const debt = within(appDebt, snapshotDecoded.debtUsd);
+      const collText = coll == null
+        ? 'app gross was not available for comparison'
+        : coll.agrees
+          ? `agrees with computeMarginSnapshot gross (~$${appGross})`
+          : `disagrees with computeMarginSnapshot gross (~$${appGross}) by ~$${coll.diff.toFixed(2)}`;
+      const debtText = debt == null
+        ? 'app debt was not available for comparison'
+        : debt.agrees
+          ? `agrees with computeMarginSnapshot totalBorrowedValue (~$${appDebt})`
+          : `disagrees with computeMarginSnapshot totalBorrowedValue (~$${appDebt}) by ~$${debt.diff.toFixed(2)}`;
+      recommendation = `liquidation_snapshot(account) is a 3-tuple [collateralWad, debtWad, flag]. Contract collateral (~$${snapshotDecoded.collateralUsd}) matches get_current_total_balance and ${collText}. Contract debt (~$${snapshotDecoded.debtUsd}) matches get_current_total_borrows and ${debtText}. Phase 3 Pass A sizes from this contract basis only when both sides stay within max($0.50, 0.5% of the larger side); a larger drift refuses a sized figure. Display keeps computeMarginSnapshot. Ledgers were ${sameLedger ? 'pinned' : 'adjacent, not identical'} (${ledgers.join(', ')}).`;
     } else if (snapshotHit && snapshotHit.value != null) {
       recommendation = 'liquidation_snapshot returned a value. Phase 3 sizing must follow whatever basis that function actually consults, not get_current_total_balance or the app snapshot by assumption. Compare the recorded fields below before changing any amount math.';
     }

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { readContractHealthState, ContractHealthError } from "@/lib/copilot/investigation/contract-health";
+import { readContractHealthState, readLiquidationSnapshot, ContractHealthError } from "@/lib/copilot/investigation/contract-health";
 import { validateHealthPath } from "@/lib/copilot/investigation/health-path";
 import { CONTRACT_ADDRESSES } from "@/lib/stellar-utils";
 
@@ -70,6 +70,11 @@ function rpcStub(options: {
     }
     if (name === "is_account_healthy") {
       return success(StellarSdk.nativeToScVal(options.healthy ?? true, { type: "bool" }), 100);
+    }
+    if (name === "liquidation_snapshot") {
+      const collateral = BigInt(options.balance ?? "3201700390866888623283");
+      const debt = BigInt(options.debt ?? "1752018314227471074759");
+      return success(StellarSdk.nativeToScVal([collateral, debt, false]), 100);
     }
     throw new Error(`unexpected method ${name}`);
   });
@@ -160,5 +165,18 @@ describe("contract health simulator", () => {
     controller.abort();
     await expect(readContractHealthState(ACCOUNT, { rpc, signal: controller.signal })).rejects.toThrow();
     expect(rpc.simulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it("decodes liquidation_snapshot without synthesizing a health factor", async () => {
+    const rpc = rpcStub({
+      balance: "3051150757526167668754",
+      debt: "1650090736719844418769",
+    });
+    const snap = await readLiquidationSnapshot(ACCOUNT, { rpc });
+    expect(snap.ledger).toBe(100);
+    expect(snap.liquidatable).toBe(false);
+    expect(snap.collateralUsd).toBeCloseTo(3051.150757526168, 6);
+    expect(snap.debtUsd).toBeCloseTo(1650.0907367198442, 6);
+    expect(snap).not.toHaveProperty("healthFactor");
   });
 });

@@ -1,0 +1,47 @@
+{
+  "phase": "3-pass-A",
+  "checkedAt": "2026-09-10T10:46:00.000Z",
+  "account": "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ",
+  "sameLedger": false,
+  "ledgers": {
+    "get_current_total_balance": 4602718,
+    "get_current_total_borrows": 4602719,
+    "liquidation_snapshot": 4602720,
+    "computeMarginSnapshot": "GET /api/account after the contract probes — not the same ledger as liquidation_snapshot"
+  },
+  "computeMarginSnapshot": {
+    "source": "lib/account-snapshot.ts via GET /api/account on 127.0.0.1:3000",
+    "grossCollateral": 4083.8674712280954,
+    "debt": 1650.090819788582,
+    "healthFactor": 2.4749349685802997
+  },
+  "liquidationSnapshot": {
+    "method": "liquidation_snapshot(account)",
+    "ledger": 4602720,
+    "collateralWad": "3051150757526167668754",
+    "debtWad": "1650090736719844418769",
+    "liquidatable": false,
+    "collateralUsd": 3051.150757526168,
+    "debtUsd": 1650.0907367198442
+  },
+  "riskEngineTotals": {
+    "get_current_total_balance": { "ledger": 4602718, "usd": 3051.150757226097 },
+    "get_current_total_borrows": { "ledger": 4602719, "usd": 1650.090694979732 }
+  },
+  "drift": {
+    "tolerance": "max($0.50, 0.5% of the larger side)",
+    "collateral": {
+      "app": 4083.8674712280954,
+      "contract": 3051.150757526168,
+      "diffUsd": 1032.72,
+      "agrees": false
+    },
+    "debt": {
+      "app": 1650.090819788582,
+      "contract": 1650.0907367198442,
+      "diffUsd": 0.000083,
+      "agrees": true
+    }
+  },
+  "recommendation": "Size from RiskEngine.liquidation_snapshot collateral+debt when both sides agree with computeMarginSnapshot within max($0.50, 0.5%). On this bound account, debt agrees and collateral does not (~$1033, ~25%). Pass A therefore refuses a sized borrow figure rather than silently preferring either source. Display keeps the app snapshot so the copilot matches the Margin page (HF ~2.47). Ledgers were adjacent, not identical (4602718–4602720); a $1033 collateral gap is not two-ledger price drift. Live MCP does not yet expose action=liquidation_snapshot; the local MCP repo implements it, and the app falls back to a direct RiskEngine simulate of the same function until that action is deployed."
+}

@@ -467,7 +467,7 @@ describe("batched reads", () => {
     const seeded = {
       ...request,
       seed: [{
-        id: "e0", capability: "account_position" as const, args: {}, observedAt: 1, status: "ok" as const,
+        id: "e0", capability: "account_position" as const, args: {}, observedAt: 50_000, status: "ok" as const,
         data: {
           collateral_usd: "317.00", debt_usd: "217.12", health_factor: "1.46",
           source: "vanna_app_margin_snapshot",
@@ -481,13 +481,35 @@ describe("batched reads", () => {
       ),
       complete(["e1"]),
     );
-    const result = await runInvestigation(seeded, { model, mcp });
+    const result = await runInvestigation(seeded, { model, mcp, now: () => 50_000 });
     expect(result.outcome).toEqual(complete(["e1"]));
     expect(mcp.call.mock.calls.map((call) => call[0])).toEqual(["vanna_can_withdraw"]);
     const fromSnapshot = result.observations.filter((item) =>
       ["account_health", "account_debt", "account_collateral"].includes(item.capability));
     expect(fromSnapshot).toHaveLength(3);
     expect(fromSnapshot.every((item) =>
-      item.status === "ok" && item.data?.source === "vanna_app_margin_snapshot")).toBe(true);
+      item.status === "ok" && item.data?.source === "vanna_app_margin_snapshot"
+      && item.observedAt === 50_000)).toBe(true);
+  });
+
+  it("inherits the seed timestamp so stale snapshot-backed evidence fails the age check", async () => {
+    const mcp = { call: vi.fn() };
+    const seeded = {
+      ...request,
+      seed: [{
+        id: "e0", capability: "account_position" as const, args: {}, observedAt: 1, status: "ok" as const,
+        data: {
+          collateral_usd: "317.00", debt_usd: "217.12", health_factor: "1.46",
+          source: "vanna_app_margin_snapshot",
+        },
+      }],
+    };
+    const model = sequence(batch(["account_health"]), complete(["e1"]));
+    const result = await runInvestigation(seeded, {
+      model, mcp, now: () => 70_000, limits: { maxEvidenceAgeMs: 60_000 },
+    });
+    expect(result.observations.find((item) => item.capability === "account_health")?.observedAt).toBe(1);
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(result.outcome).toEqual({ kind: "stopped", reason: "invalid_evidence" });
   });
 });

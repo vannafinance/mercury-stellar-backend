@@ -173,6 +173,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_collateral: { tool: "vanna_margin_status", action: "collateral" },
   vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
+  vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
   // margin writes + preflights
   vanna_can_borrow: { tool: "vanna_margin_trade", action: "can_borrow" },
   vanna_can_withdraw: { tool: "vanna_margin_trade", action: "can_withdraw" },
@@ -700,7 +701,8 @@ export function unwrapToolData(value: unknown, depth = 0): Record<string, unknow
   const hasFactKeys = "allowed" in value || "can_withdraw" in value || "can_borrow" in value
     || "collateral_usd" in value || "debt_usd" in value || "health_factor" in value
     || "collateral" in value || "debt" in value || "total_debt_usd" in value
-    || "total_value_usd" in value || "price_usd" in value || "is_healthy" in value;
+    || "total_value_usd" in value || "price_usd" in value || "is_healthy" in value
+    || "liquidatable" in value;
   if (!hasFactKeys && Array.isArray(value.content)) {
     const text = extractText(value);
     if (text) return unwrapToolData(text, depth + 1);

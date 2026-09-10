@@ -28,7 +28,7 @@ describe("investigation read catalogue", () => {
       "max_borrow", "can_borrow", "can_withdraw", "farm_overview", "blend_position",
       "farm_lp_position", "prices_batch", "collateral_config", "protocol_addresses",
       "vtoken_exchange_rate", "earn_position", "list_smart_accounts", "blend_reserve",
-      "lp_balance", "inactive_accounts",
+      "lp_balance", "inactive_accounts", "liquidation_snapshot",
     ]));
     expect(new Set(names).size).toBe(names.length);
   });
@@ -63,6 +63,7 @@ describe("investigation read catalogue", () => {
     expect(names).not.toContain("wallet_balances");
     expect(names).not.toContain("can_borrow");
     expect(names).not.toContain("farm_overview");
+    expect(names).not.toContain("liquidation_snapshot");
   });
 
   it("binds identity and venue symbols outside the model", () => {
@@ -74,6 +75,8 @@ describe("investigation read catalogue", () => {
       .toEqual({ tool: "vanna_can_borrow", args: { smart_account: "C_VERIFIED", symbol: "XLM", amount: "20" } });
     expect(resolveRead("can_withdraw", { asset: "XLM", amount: "5.5" }, account))
       .toEqual({ tool: "vanna_can_withdraw", args: { smart_account: "C_VERIFIED", symbol: "XLM", amount: "5.5" } });
+    expect(resolveRead("liquidation_snapshot", {}, account))
+      .toEqual({ tool: "vanna_get_liquidation_snapshot", args: { smart_account: "C_VERIFIED" } });
     expect(resolveRead("prices_batch", { assets: ["XLM", "BLUSDC", "AQUSDC"] }, guest))
       .toEqual({ tool: "vanna_get_prices_batch", args: { symbols: ["XLM", "USDC"] } });
     expect(resolveRead("earn_position", { asset: "BLUSDC" }, account))
@@ -104,6 +107,8 @@ describe("investigation read catalogue", () => {
     ]);
     expect(toServerCall("vanna_can_withdraw", { smart_account: "C", symbol: "XLM", amount: "100" }))
       .toEqual({ name: "vanna_margin_trade", arguments: { action: "can_withdraw", kwargs: { smart_account: "C", symbol: "XLM", amount: "100" } } });
+    expect(toServerCall("vanna_get_liquidation_snapshot", { smart_account: "C" }))
+      .toEqual({ name: "vanna_margin_status", arguments: { action: "liquidation_snapshot", kwargs: { smart_account: "C" } } });
     expect(toServerCall("vanna_auto_sign_status", { wallet_address: "G" }))
       .toEqual({ name: "vanna_sign", arguments: { action: "session_status", kwargs: { wallet_address: "G" } } });
     for (const entry of CATALOG) {

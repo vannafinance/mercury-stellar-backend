@@ -278,9 +278,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * own bound rather than adding latency after it.
    */
   const capacityTask = interruptible(
-    () => computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null),
+    () => computeBorrowCapacity(
+      scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null,
+      { mcp: scopedMcp, trader: scope.trader },
+    ),
     AbortSignal.any([dependencies.signal, AbortSignal.timeout(CAPACITY_BUDGET_MS)]))
-    .then(value => ({ value, failed: false }), () => ({ value: null, failed: true }));
+    .then(value => ({ value, failed: false as const, reason: null as string | null }), (error) => ({
+      value: null, failed: true as const,
+      reason: error instanceof Error ? error.message : "unavailable",
+    }));
   const seed = position ? [{
     id: "e0", capability: "account_position", args: {}, observedAt: Date.now(), status: "ok" as const,
     data: {
@@ -306,9 +312,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const { facts, warnings } = normalizeResearchFacts(result.observations);
   const outcome = result.outcome;
   /**
-   * Deterministic headroom, from the app's authoritative snapshot rather than the MCP
-   * `account_health` figure — the two disagree (measured 4,219.36 vs 3,164.34) and only
-   * the app's gross-assets base is the one dev computes and the owner confirmed.
+   * Deterministic headroom, from the contract liquidation_snapshot once it agrees
+   * with the app snapshot. Display still uses the snapshot; a material drift
+   * refuses to quote a size rather than silently preferring either source.
    */
   const capacityResult = await capacityTask;
   let capacity = capacityResult.value;
@@ -316,18 +322,30 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     messages = [input.message];
     // Never carry the previous task's floor or amount into an unrelated new goal.
     try {
-      capacity = position?.snapshot ? await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position.snapshot) : null;
+      capacity = position?.snapshot
+        ? await computeBorrowCapacity(
+          scope.smartAccount, messages, dependencies.signal, position.snapshot,
+          { mcp: scopedMcp, trader: scope.trader },
+        )
+        : null;
     } catch (error) {
       console.warn("[copilot] investigation capacity refresh failed", {
         error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
       });
       capacity = null;
+      if (!capacityResult.failed && error instanceof Error && error.message === "sizing_sources_disagree") {
+        warnings.push("The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size.");
+      }
     }
   }
   if (capacityResult.failed) {
     // Only a genuine FAILURE is worth saying. "No floor was stated" is not a failure, and
     // warning about it read as "your position could not be read", which is a false claim.
-    warnings.push("Borrowing headroom could not be computed from your current position.");
+    warnings.push(
+      capacityResult.reason === "sizing_sources_disagree"
+        ? "The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size."
+        : "Borrowing headroom could not be computed from your current position.",
+    );
   }
   const rateComparisons = compareObservedRates(result.observations, Date.now());
   /**

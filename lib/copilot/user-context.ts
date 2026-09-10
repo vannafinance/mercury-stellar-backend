@@ -104,6 +104,7 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_get_collateral",
   "vanna_get_debt",
   "vanna_get_max_borrow",
+  "vanna_get_liquidation_snapshot",
   "vanna_can_borrow",
   "vanna_can_withdraw",
   "vanna_get_pool_stats",

@@ -77,7 +77,9 @@ describe("a position that could not be read fully", () => {
 
   it("reuses a shared snapshot instead of reading the chain twice", async () => {
     snapshot.mockResolvedValue(full);
-    await computeBorrowCapacity("CACCOUNT", ["keep hf above 1.3"], undefined, full);
+    await computeBorrowCapacity("CACCOUNT", ["keep hf above 1.3"], undefined, full, {
+      contract: { collateralUsd: 4211.63, debtUsd: 1732.61, liquidatable: false },
+    });
     // The 5-7s snapshot call is the reason the route was blowing its own deadline.
     expect(snapshot).not.toHaveBeenCalled();
   });

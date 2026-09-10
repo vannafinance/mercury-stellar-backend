@@ -159,3 +159,51 @@ export async function readContractHealthState(
     registryDiverged: engine !== CONTRACT_ADDRESSES.RISK_ENGINE,
   };
 }
+
+function wadUsd(wad: string, method: string): number {
+  const usd = Number(BigInt(wad)) / 1e18;
+  if (!Number.isFinite(usd) || usd < 0) {
+    throw new ContractHealthError("invalid_contract_amount", `${method} did not convert to a USD amount`);
+  }
+  return usd;
+}
+
+/**
+ * RiskEngine.liquidation_snapshot — the function that decides liquidation.
+ *
+ * Used as a sizing fallback when the live MCP dispatcher does not yet expose
+ * the audited read. Same simulate path as `readContractHealthState`; never a write.
+ */
+export async function readLiquidationSnapshot(
+  smartAccount: string,
+  options: {
+    signal?: AbortSignal;
+    rpc?: ReadOnlyRpc;
+  } = {},
+): Promise<{ collateralUsd: number; debtUsd: number; liquidatable: boolean; ledger: number }> {
+  if (!StellarSdk.StrKey.isValidContract(smartAccount)) {
+    throw new ContractHealthError("invalid_smart_account", "Expected a smart-account contract address.");
+  }
+  const rpc = options.rpc ?? server();
+  const resolved = await simulate(rpc, CONTRACT_ADDRESSES.REGISTRY, "get_risk_engine_address", [], options.signal);
+  const engine = typeof resolved.value === "string" ? resolved.value : "";
+  if (!StellarSdk.StrKey.isValidContract(engine)) {
+    throw new ContractHealthError("risk_engine_unresolved", "The registry did not return a RiskEngine address.");
+  }
+  const account = StellarSdk.nativeToScVal(smartAccount, { type: "address" });
+  const snap = await simulate(rpc, engine, "liquidation_snapshot", [account], options.signal);
+  if (!Array.isArray(snap.value) || snap.value.length < 2) {
+    throw new ContractHealthError("invalid_liquidation_snapshot", "liquidation_snapshot did not return a 3-tuple.");
+  }
+  const collateralWad = u256(snap.value[0], "liquidation_snapshot");
+  const debtWad = u256(snap.value[1], "liquidation_snapshot");
+  if (snap.value.length > 2 && typeof snap.value[2] !== "boolean") {
+    throw new ContractHealthError("invalid_liquidation_snapshot", "liquidation_snapshot flag was not a boolean.");
+  }
+  return {
+    collateralUsd: wadUsd(collateralWad, "liquidation_snapshot"),
+    debtUsd: wadUsd(debtWad, "liquidation_snapshot"),
+    liquidatable: snap.value[2] === true,
+    ledger: snap.ledger,
+  };
+}

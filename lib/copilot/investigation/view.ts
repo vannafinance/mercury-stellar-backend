@@ -26,9 +26,9 @@ export interface ResearchUnderstanding {
 /**
  * Borrowing headroom at the user's own stated floor — computed, never modelled.
  *
- * Sized against the app's authoritative `grossCollateralValue` (owner decision: dev is
- * correct), using the closed form in `sizing.ts`. Present only when the user actually
- * stated a floor; a floor is never invented on their behalf.
+ * Sized against RiskEngine `liquidation_snapshot` once it agrees with the app
+ * snapshot. Present only when the user actually stated a floor; a floor is never
+ * invented on their behalf. Drift beyond tolerance yields no capacity object.
  */
 export interface ResearchCapacity {
   floor: string;

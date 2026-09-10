@@ -3,21 +3,25 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 /**
  * Borrowing headroom, and the two inputs it must never guess.
  *
- * The BASE has to be the app's own `grossCollateralValue` — the figure `margin-health.ts`
- * divides by debt, confirmed by the owner as dev's correct number. MCP's `account_health`
- * reports a materially different collateral total for the same account at the same ledger
- * (measured 4,219.36 vs 3,164.34), so quoting headroom off the MCP read would size against
- * a base nothing else in the product agrees with.
- *
- * The FLOOR has to come from the user's own words. Inventing 1.3 for someone who never
- * asked for it fabricates the most important input of the calculation, so no floor means
- * no answer rather than a default one.
+ * Sizing uses RiskEngine `liquidation_snapshot` (the function that decides
+ * liquidation) once that agrees with the app snapshot. Display still uses the
+ * app snapshot. The FLOOR has to come from the user's own words.
  */
 
-const mocks = vi.hoisted(() => ({ computeMarginSnapshot: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  computeMarginSnapshot: vi.fn(),
+  readLiquidationSnapshot: vi.fn(),
+}));
 vi.mock("@/lib/account-snapshot", () => ({ computeMarginSnapshot: mocks.computeMarginSnapshot }));
+vi.mock("@/lib/copilot/investigation/contract-health", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/investigation/contract-health")>();
+  return { ...actual, readLiquidationSnapshot: mocks.readLiquidationSnapshot };
+});
 
-import { computeBorrowCapacity } from "@/lib/copilot/investigation/capacity";
+import {
+  computeBorrowCapacity,
+  reconcileSizingBasis,
+} from "@/lib/copilot/investigation/capacity";
 
 const ACCOUNT = "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ";
 
@@ -26,12 +30,22 @@ function snapshot(grossCollateralValue: number, totalBorrowedValue: number) {
   mocks.computeMarginSnapshot.mockResolvedValue({ grossCollateralValue, totalBorrowedValue });
 }
 
-beforeEach(() => vi.clearAllMocks());
+function contract(collateralUsd: number, debtUsd: number) {
+  return { contract: { collateralUsd, debtUsd, liquidatable: false } };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.readLiquidationSnapshot.mockRejectedValue(new Error("simulate unavailable"));
+});
 
 describe("borrow capacity", () => {
-  it("sizes headroom from the app's gross collateral and the user's stated floor", async () => {
+  it("sizes headroom from the contract snapshot when it agrees with the app", async () => {
     snapshot(4219.36, 1736.19);
-    const capacity = await computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3 and borrow for me"]);
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3 and borrow for me"], undefined, undefined,
+      contract(4219.36, 1736.19),
+    );
 
     expect(capacity).toEqual({
       floor: "1.3",
@@ -41,6 +55,69 @@ describe("borrow capacity", () => {
       // (4219.36 - 1.3*1736.19) / 0.3
       maxBorrowUsd: "6541.043333333333333333",
     });
+  });
+
+  it("sizes from the contract numbers when they differ only by rounding", async () => {
+    snapshot(4219.36, 1736.19);
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined,
+      contract(4219.40, 1736.20),
+    );
+    expect(capacity?.grossCollateralUsd).toBe("4219.4");
+    expect(capacity?.debtUsd).toBe("1736.2");
+  });
+
+  it("refuses to quote a size when the Phase 2.5 debt gap shows up", async () => {
+    snapshot(4230.94, 1684.99);
+    await expect(computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined,
+      contract(4230.94, 2705.60),
+    )).rejects.toThrow("sizing_sources_disagree");
+  });
+
+  it("refuses to size from the app snapshot when the contract read is missing", async () => {
+    snapshot(4219.36, 1736.19);
+    await expect(computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3"]))
+      .rejects.toThrow("sizing_contract_unavailable");
+  });
+
+  it("falls back to a direct contract simulate when MCP does not expose the snapshot", async () => {
+    snapshot(4219.36, 1736.19);
+    mocks.readLiquidationSnapshot.mockResolvedValue({
+      collateralUsd: 4219.36, debtUsd: 1736.19, liquidatable: false, ledger: 4602720,
+    });
+    const mcp = {
+      call: vi.fn(async () => ({
+        error: "invalid_input",
+        message: "Unknown action 'liquidation_snapshot' for vanna_margin_status.",
+      })),
+    };
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined,
+      { mcp, trader: "GTEST" },
+    );
+    expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
+    expect(mocks.readLiquidationSnapshot).toHaveBeenCalledWith(ACCOUNT, expect.anything());
+  });
+
+  it("fetches the contract snapshot through MCP when one is not preloaded", async () => {
+    snapshot(4219.36, 1736.19);
+    const mcp = {
+      call: vi.fn(async () => ({
+        collateral_usd: "4219.36", debt_usd: "1736.19", liquidatable: false,
+        source: "risk_engine.liquidation_snapshot",
+      })),
+    };
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined,
+      { mcp, trader: "GTEST" },
+    );
+    expect(mcp.call).toHaveBeenCalledWith(
+      "vanna_get_liquidation_snapshot",
+      { smart_account: ACCOUNT },
+      "GTEST",
+    );
+    expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
   });
 
   it("returns nothing when the user never stated a floor", async () => {
@@ -55,7 +132,7 @@ describe("borrow capacity", () => {
     const capacity = await computeBorrowCapacity(ACCOUNT, [
       "build a strategy keeping health factor above 1.3",
       "actually keep health factor above 2.0",
-    ]);
+    ], undefined, undefined, contract(4219.36, 1736.19));
     expect(capacity?.floor).toBe("2");
     // (4219.36 - 2*1736.19) / 1 = 746.98
     expect(capacity?.maxBorrowUsd).toBe("746.98");
@@ -71,13 +148,17 @@ describe("borrow capacity", () => {
 
   it("reports zero headroom rather than a negative number when already at the floor", async () => {
     snapshot(1300, 1000);
-    const capacity = await computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3"]);
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined, contract(1300, 1000),
+    );
     expect(capacity).toMatchObject({ maxBorrowUsd: "0", healthFactor: "1.3" });
   });
 
   it("omits the health factor when there is no debt to divide by", async () => {
     snapshot(500, 0);
-    const capacity = await computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.5"]);
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.5"], undefined, undefined, contract(500, 0),
+    );
     expect(capacity?.healthFactor).toBeNull();
     // With no debt, capacity is G/(F-1) = 500/0.5 = 1000.
     expect(capacity?.maxBorrowUsd).toBe("1000");
@@ -92,6 +173,26 @@ describe("borrow capacity", () => {
     mocks.computeMarginSnapshot.mockRejectedValue(new Error("RPC unavailable"));
     // The caller turns this into an explicit warning; silently returning null here would
     // render as "you have no headroom", which is a different and wrong claim.
-    await expect(computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.3"])).rejects.toThrow();
+    await expect(computeBorrowCapacity(
+      ACCOUNT, ["keep health factor above 1.3"], undefined, undefined, contract(4219.36, 1736.19),
+    )).rejects.toThrow();
+  });
+});
+
+describe("reconcileSizingBasis", () => {
+  it("treats a sub-dollar gap as agreement", () => {
+    const result = reconcileSizingBasis(
+      { grossCollateralValue: 1000, totalBorrowedValue: 400 },
+      { collateralUsd: 1000.25, debtUsd: 400.10, liquidatable: false },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("treats a 60% debt miss as disagreement", () => {
+    const result = reconcileSizingBasis(
+      { grossCollateralValue: 4230.94, totalBorrowedValue: 1684.99 },
+      { collateralUsd: 4230.94, debtUsd: 2705.60, liquidatable: false },
+    );
+    expect(result).toEqual({ ok: false, reason: "sizing_sources_disagree" });
   });
 });

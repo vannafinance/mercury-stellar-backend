@@ -103,7 +103,7 @@ function logPhase(phase: string, extra: Record<string, unknown>) {
 function snapshotBackedData(
   capability: string,
   observations: Observation[],
-): Record<string, unknown> | null {
+): { data: Record<string, unknown>; observedAt: number } | null {
   if (!SNAPSHOT_BACKED.has(capability)) return null;
   const seed = observations.find((item) =>
     item.capability === "account_position" && item.status === "ok" && isRecord(item.data)
@@ -112,21 +112,23 @@ function snapshotBackedData(
   const collateral = seed.data.collateral_usd;
   const debt = seed.data.debt_usd;
   const health = seed.data.health_factor;
+  let data: Record<string, unknown> | null = null;
   if (capability === "account_health") {
     if (collateral == null && debt == null && health == null) return null;
-    return {
+    data = {
       ...(collateral != null ? { collateral_usd: collateral } : {}),
       ...(debt != null ? { debt_usd: debt } : {}),
       ...(health != null ? { health_factor: health } : {}),
       source: "vanna_app_margin_snapshot",
     };
-  }
-  if (capability === "account_debt") {
+  } else if (capability === "account_debt") {
     if (debt == null) return null;
-    return { total_debt_usd: debt, debt_usd: debt, source: "vanna_app_margin_snapshot" };
+    data = { total_debt_usd: debt, debt_usd: debt, source: "vanna_app_margin_snapshot" };
+  } else {
+    if (collateral == null) return null;
+    data = { total_value_usd: collateral, collateral_usd: collateral, source: "vanna_app_margin_snapshot" };
   }
-  if (collateral == null) return null;
-  return { total_value_usd: collateral, collateral_usd: collateral, source: "vanna_app_margin_snapshot" };
+  return { data, observedAt: seed.observedAt };
 }
 
 /** Stop waiting promptly. Legacy MCP reads cannot yet be cancelled at transport level. */
@@ -336,9 +338,10 @@ export async function runInvestigation(
           // Timestamp the start of the read conservatively; upstream data can be older still.
           observedAt: now(), status: "error",
         };
+        const startedAt = observation.observedAt;
         const finishRead = (source: "mcp" | "snapshot" | "invalid") => {
           logPhase("read", {
-            capability: request.capability, ms: now() - observation.observedAt,
+            capability: request.capability, ms: now() - startedAt,
             status: observation.status, source,
           });
           if (!signal.aborted) progress({ kind: "read_finished", capability: request.capability, label, status: observation.status });
@@ -351,8 +354,9 @@ export async function runInvestigation(
         const fromSeed = snapshotBackedData(request.capability, observations);
         if (fromSeed) {
           try {
-            observation.data = observationData(fromSeed, limits.maxObservationBytes);
+            observation.data = observationData(fromSeed.data, limits.maxObservationBytes);
             observation.status = "ok";
+            observation.observedAt = fromSeed.observedAt;
           } catch {
             observation.data = undefined;
             observation.error = "Seeded position could not be copied as evidence.";

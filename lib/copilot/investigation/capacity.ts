@@ -1,19 +1,20 @@
 /**
  * Borrowing headroom at the user's own stated health floor.
  *
- * Two decisions are baked in, both deliberate:
+ * Display and sizing are different jobs:
  *
- * 1. **The base is the app's snapshot, not MCP's.** `computeMarginSnapshot` produces the
- *    `grossCollateralValue` that `lib/margin-health.ts` divides by debt — the figure the
- *    owner confirmed as correct and which is byte-identical to `origin/dev`. MCP's
- *    `account_health` reports a materially different collateral number (measured
- *    4,219.36 vs 3,164.34 for the same account at one ledger), so sizing against the MCP
- *    read would quote headroom against a base nothing else in the product agrees with.
+ * 1. **Display** ("your health factor is 3.90") uses the app snapshot —
+ *    `computeAccountPosition` / `computeMarginSnapshot` — so the copilot matches
+ *    the Margin page.
  *
- * 2. **The floor must come from the user.** `parseMinHealthFactor` reads it out of their
- *    own words. If they never stated one, this returns null rather than assuming a
- *    default — quoting headroom "at 1.3" to someone who never asked for 1.3 invents the
- *    single most important input of the calculation.
+ * 2. **Sizing** ("you can borrow $X before breaching 1.30") uses the contract
+ *    `liquidation_snapshot` (the function that decides liquidation). If that
+ *    read cannot be compared to a usable app snapshot within a small tolerance,
+ *    this refuses to quote a size rather than silently preferring either source.
+ *
+ * 3. **The floor must come from the user.** `parseMinHealthFactor` reads it out
+ *    of their own words. If they never stated one, this returns null rather than
+ *    assuming a default.
  *
  * No model output reaches this file, and it performs no writes.
  */
@@ -21,7 +22,10 @@
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 import { isUsable, unavailable, usable, type ReadResult } from "@/lib/usable-read";
+import type { MCPClient } from "../mcp-client";
 import { parseMinHealthFactor } from "../router";
+import { readLiquidationSnapshot } from "./contract-health";
+import { isRecord } from "./decision";
 import { formatWad, decimalWad, WAD } from "./fixed";
 import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
 import type { ResearchCapacity } from "./view";
@@ -33,6 +37,24 @@ function usd(value: number): string {
 }
 
 export type MarginSnapshot = Awaited<ReturnType<typeof computeMarginSnapshot>>;
+
+export type ContractLiquidationBasis = {
+  collateralUsd: number;
+  debtUsd: number;
+  liquidatable: boolean;
+};
+
+export type SizingOptions = {
+  /** Pre-fetched contract snapshot. `null` means the fetch already failed. */
+  contract?: ContractLiquidationBasis | null;
+  mcp?: Pick<MCPClient, "call">;
+  trader?: string | null;
+};
+
+/** Absolute USD band that still counts as WAD / rounding noise. */
+export const SIZING_DRIFT_ABS_USD = 0.5;
+/** Relative band on the larger of the two sides. */
+export const SIZING_DRIFT_REL = 0.005;
 
 /**
  * Is this snapshot self-consistent enough to compute against?
@@ -77,6 +99,83 @@ function snapshotIsUsable(snapshot: MarginSnapshot): boolean {
   return isUsable(snapshotUsability(snapshot));
 }
 
+function withinDrift(app: number, contract: number): boolean {
+  const diff = Math.abs(app - contract);
+  const scale = Math.max(Math.abs(app), Math.abs(contract), 1);
+  return diff <= Math.max(SIZING_DRIFT_ABS_USD, SIZING_DRIFT_REL * scale);
+}
+
+/**
+ * App snapshot vs contract liquidation_snapshot. Agreement means we may size from
+ * the contract numbers. Disagreement is unavailable — never a silent preference.
+ */
+export function reconcileSizingBasis(
+  app: { grossCollateralValue: number; totalBorrowedValue: number },
+  contract: ContractLiquidationBasis,
+): ReadResult<ContractLiquidationBasis> {
+  if (
+    !Number.isFinite(contract.collateralUsd) || !Number.isFinite(contract.debtUsd)
+    || contract.collateralUsd < 0 || contract.debtUsd < 0
+  ) {
+    return unavailable("sizing_contract_unavailable");
+  }
+  if (
+    !withinDrift(app.grossCollateralValue, contract.collateralUsd)
+    || !withinDrift(app.totalBorrowedValue, contract.debtUsd)
+  ) {
+    return unavailable("sizing_sources_disagree");
+  }
+  return usable(contract);
+}
+
+export function parseLiquidationSnapshot(data: unknown): ContractLiquidationBasis | null {
+  if (!isRecord(data) || data.error) return null;
+  const collateral = Number(data.collateral_usd);
+  const debt = Number(data.debt_usd);
+  if (!Number.isFinite(collateral) || !Number.isFinite(debt) || collateral < 0 || debt < 0) {
+    return null;
+  }
+  return {
+    collateralUsd: collateral,
+    debtUsd: debt,
+    liquidatable: data.liquidatable === true,
+  };
+}
+
+async function resolveContractBasis(
+  smartAccount: string,
+  options?: SizingOptions,
+  signal?: AbortSignal,
+): Promise<ContractLiquidationBasis> {
+  if (options && Object.prototype.hasOwnProperty.call(options, "contract")) {
+    if (options.contract) return options.contract;
+    throw new Error("sizing_contract_unavailable");
+  }
+  if (options?.mcp) {
+    try {
+      const data = await options.mcp.call(
+        "vanna_get_liquidation_snapshot",
+        { smart_account: smartAccount },
+        options.trader ?? undefined,
+      );
+      const parsed = parseLiquidationSnapshot(data);
+      if (parsed) return parsed;
+    } catch {
+      // Live MCP may not have the action yet; fall through to a direct simulate.
+    }
+  }
+  try {
+    const snap = await readLiquidationSnapshot(smartAccount, { signal });
+    return {
+      collateralUsd: snap.collateralUsd,
+      debtUsd: snap.debtUsd,
+      liquidatable: snap.liquidatable,
+    };
+  } catch {
+    throw new Error("sizing_contract_unavailable");
+  }
+}
+
 export async function computeBorrowCapacity(
   smartAccount: string | null,
   messages: readonly string[],
@@ -88,6 +187,7 @@ export async function computeBorrowCapacity(
    * which the user saw as "the connection closed before the investigation finished".
    */
   shared?: MarginSnapshot | null,
+  options?: SizingOptions,
 ): Promise<ResearchCapacity | null> {
   if (!smartAccount) return null;
 
@@ -118,8 +218,13 @@ export async function computeBorrowCapacity(
   // A partially-read position produces a confidently wrong headroom figure.
   if (!snapshotIsUsable(snapshot)) throw new Error("position_read_inconsistent");
 
-  const grossWad = decimalWad(usd(snapshot.grossCollateralValue));
-  const debtWad = decimalWad(usd(snapshot.totalBorrowedValue));
+  const contract = await resolveContractBasis(smartAccount, options, signal);
+  signal?.throwIfAborted();
+  const agreed = reconcileSizingBasis(snapshot, contract);
+  if (!isUsable(agreed)) throw new Error(agreed.reason);
+
+  const grossWad = decimalWad(usd(agreed.value.collateralUsd));
+  const debtWad = decimalWad(usd(agreed.value.debtUsd));
   const maxBorrow = maxBorrowForFloorWad(grossWad, debtWad, floorWad);
 
   return {
