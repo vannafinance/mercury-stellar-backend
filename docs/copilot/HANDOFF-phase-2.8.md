@@ -173,6 +173,42 @@ we cannot demonstrate.
 
 ---
 
+## Task 5 — MCP-side work is in scope for this handoff
+
+**Both repos are connected.** Earlier handoffs said MCP work was out of scope and should be
+routed elsewhere — that was wrong. When the right fix is server-side, make it there and say
+so in your summary. Name the repo for every change.
+
+- **App:** `C:\Users\akgam\Documents\vanna-copilot-orchestrator`
+- **MCP:** `C:\Users\akgam\Documents\vanna_mcp` (tools in `vanna-mcp/mcp_server/tools/`),
+  deploying to GCP project `vanna-mcp`
+
+Prefer the app side when the app is simply mis-reading a sound response — Task 1 is mostly
+that. Go MCP-side when the response itself is missing something a caller legitimately needs.
+
+**Known MCP-side items, in priority order:**
+
+1. **`can_withdraw` tool shape.** Phase 2.7 found it lives as `vanna_margin_trade` with an
+   `action`, while `catalog.ts` declares `vanna_can_withdraw`. It works today, but the
+   catalog and the server should agree on one name. Confirm the live shape, then align —
+   whichever side is wrong.
+2. **`account_health` has no scalar health factor.** It returns `is_healthy` and
+   `distance_to_liquidation`. A decision, not a bug: either the app stops asking for a ratio
+   (Task 1's approach) *or* MCP exposes one derived from `liquidation_snapshot`. **Prefer the
+   app-side fix** — `normalize.ts:63` is right that contract and UI HF semantics differ, and
+   a second authoritative-looking ratio is how surfaces start disagreeing again.
+3. **`liquidation_snapshot` is not exposed as an MCP read at all.** It is the function that
+   *decides* liquidation, and Phase 3 sizing needs it. Adding it as an audited read is
+   genuine MCP-side work — but land it in Phase 3 with the ledger-pinned measurement, not
+   here.
+4. **Custom per-user spend limits** under the $1,000/day auto-sign ceiling. MCP + Sign
+   Service own caps; the app only displays them. Not this phase.
+5. **Tool parity sweep:** every capability in `catalog.ts` should exist server-side with
+   matching argument names. A mismatch is invisible until it fails live, which is precisely
+   how Task 1's reads failed.
+
+---
+
 ## What NOT to change
 
 - **Sizing, and the source of truth.** Still Phase 3, still pending the ledger-pinned
