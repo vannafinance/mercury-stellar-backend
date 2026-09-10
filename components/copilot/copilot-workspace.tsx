@@ -54,6 +54,7 @@ import {
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldSessionAutoSubmit,
+  signServiceFromSessionRead,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -1640,6 +1641,8 @@ export function CopilotWorkspace() {
   /** Strategy meta (summary, HF floor, SA) from multi-leg payloads — survives hop clears. */
   const strategyMetaRef = useRef<Record<string, unknown>>({});
   const abortRef = useRef<AbortController | null>(null);
+  /** Bumped when enable/disable lands so an in-flight GET /sessions cannot overwrite it. */
+  const signReadSeq = useRef(0);
   /** Stops chain effect + in-flight fetch without wiping settled log legs. */
   const cancelledRef = useRef(false);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -1797,7 +1800,8 @@ export function CopilotWorkspace() {
   const sessionSigningAvailable = walletKind === "privy" && !!address;
 
   /**
-   * What the MCP Sign Service said last time we tried to enable auto-sign.
+   * What the Sign Service last reported for this wallet (`GET /sessions` on
+   * connect, then enable / disable).
    *
    * Auto-approve may arm only when this is `ok`. A client-side cap is not a
    * policy — calling the API directly would bypass it.
@@ -1823,6 +1827,60 @@ export function CopilotWorkspace() {
 
   /** Whether anything server-side is actually holding the caps. */
   const capsEnforced = signServiceState.status === "ok";
+
+  /**
+   * On wallet connect, read the live Sign Service session. Without this the rail
+   * stayed `unknown` until a successful enable in this tab, so a session that
+   * already existed (another MCP client, or a prior visit) never showed
+   * "Budget active".
+   */
+  useEffect(() => {
+    if (!address || !sessionSigningAvailable) {
+      setSignServiceState({ status: "unknown", reason: null });
+      return;
+    }
+    let cancelled = false;
+    const seq = ++signReadSeq.current;
+    setSignServiceState({ status: "unknown", reason: null });
+    void (async () => {
+      try {
+        const res = await fetch("/api/copilot", {
+          method: "POST",
+          headers: await copilotRequestHeaders(),
+          body: JSON.stringify({
+            user_id: address,
+            tier: "paid",
+            surface: "copilot",
+            auto_sign: { action: "status" },
+          }),
+        });
+        const data = (await res.json()) as ChatResponse;
+        if (cancelled || seq !== signReadSeq.current) return;
+        const next = signServiceFromSessionRead(data);
+        setSignServiceState({ status: next.status, reason: next.reason });
+        if (next.caps) {
+          try {
+            localStorage.setItem(
+              AUTO_CAPS_KEY,
+              JSON.stringify({
+                max_per_tx_usd: next.caps.tx,
+                max_per_day_usd: next.caps.day,
+              }),
+            );
+          } catch {
+            /* ignore */
+          }
+          setSavedCaps({ tx: next.caps.tx, day: next.caps.day });
+        }
+      } catch {
+        // A failed read is not evidence the Sign Service is down — leave unknown
+        // so the enable path still works.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, sessionSigningAvailable]);
   /**
    * Auto-approve is armed only when the Sign Service is enforcing the caps.
    * A client-side-only cap can be bypassed by calling the API directly.
@@ -2679,12 +2737,14 @@ export function CopilotWorkspace() {
       // Distinct from "the Sign Service rejected our token" (a fault on our side the
       // user cannot act on) and from success — this one has a specific user action.
       if (data.kind === "needs_wallet_bind") {
+        signReadSeq.current += 1;
         if (action === "disable") setAutoApprove(address, false);
         setSignServiceState({ status: "unbound", reason: null });
         return;
       }
 
       if (action === "disable") {
+        signReadSeq.current += 1;
         setAutoApprove(address, false);
         setSignServiceState({ status: "unknown", reason: null });
         return;
@@ -2702,6 +2762,7 @@ export function CopilotWorkspace() {
         facts.error ||
         (data.kind === "error" ? data.message : null) ||
         null;
+      signReadSeq.current += 1;
       setSignServiceState(
         mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
       );
@@ -6088,6 +6149,18 @@ export function CopilotWorkspace() {
                 toast.error(
                   "Auto-approve needs a Vanna embedded wallet. Freighter signs in its own " +
                     "extension popup, which this app cannot skip.",
+                );
+                return;
+              }
+              // Sign Service already has a live session (GET /sessions on connect).
+              // Arm locally — do not open the budget picker or POST enable again.
+              if (capsEnforced) {
+                setRailBudgetOpen(false);
+                setAutoApprove(address, true);
+                toast.success(
+                  savedCaps
+                    ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day`
+                    : "Auto-approve on — Sign Service caps are active",
                 );
                 return;
               }

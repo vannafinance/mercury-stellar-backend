@@ -105,6 +105,13 @@ export interface ChatRequest {
       | "use_defaults"
       | "custom"
       | "disable"
+      /**
+       * Read-only: MCP `vanna_auto_sign_status` → Sign Service `GET /sessions`.
+       * Does not create a session, start a bind, or change caps. The copilot
+       * polls this on wallet connect so the Autonomy card can show "Budget
+       * active" when a session already exists (another client, or a prior visit).
+       */
+      | "status"
       | "bind_start"
       | "bind_status"
       /**

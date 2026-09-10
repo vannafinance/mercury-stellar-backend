@@ -104,3 +104,49 @@ export function shouldArmAutoApprove(opts: {
   if (!opts.sessionSigningAvailable) return { arm: false, reason: "wallet_cannot_session_sign" };
   return { arm: true };
 }
+
+export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound";
+
+/**
+ * Map a Sign Service session read (`auto_sign.action = status`) onto the
+ * Autonomy rail. `ok` is the only status that may show "Budget active".
+ *
+ * Disabled (no session) is `unknown`, not `unavailable`: absence of a session
+ * is the default, not a Sign Service fault. The user still enables through
+ * the budget picker.
+ */
+export function signServiceFromSessionRead(res: {
+  kind?: string | null;
+  message?: string | null;
+  data?: Record<string, unknown> | null;
+}): {
+  status: SignServiceRailStatus;
+  reason: string | null;
+  caps?: { tx: number; day: number };
+} {
+  const facts = (res.data ?? {}) as Record<string, unknown>;
+  const err = facts.error == null ? "" : String(facts.error);
+  if (res.kind === "needs_wallet_bind" || err === "wallet_not_bound") {
+    return { status: "unbound", reason: null };
+  }
+  if (res.kind === "error" || err) {
+    return {
+      status: "unavailable",
+      reason: err || String(res.message ?? "error"),
+    };
+  }
+  const enabled = facts.enabled === true || facts.status === "enabled";
+  if (!enabled) {
+    return { status: "unknown", reason: null };
+  }
+  const tx = Number(facts.max_per_tx_usd);
+  const day = Number(facts.max_per_day_usd);
+  return {
+    status: "ok",
+    reason: null,
+    caps:
+      Number.isFinite(tx) && tx > 0
+        ? { tx, day: Number.isFinite(day) && day > 0 ? day : tx }
+        : undefined,
+  };
+}

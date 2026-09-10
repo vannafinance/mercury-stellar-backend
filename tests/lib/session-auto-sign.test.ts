@@ -9,6 +9,7 @@ import {
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
   shouldSessionAutoSubmit,
+  signServiceFromSessionRead,
 } from "@/components/copilot/session-auto-sign";
 
 describe("hopAutoSubmitKey", () => {
@@ -178,5 +179,53 @@ describe("shouldArmAutoApprove", () => {
     expect(shouldArmAutoApprove({ mcpEnabled: true, sessionSigningAvailable: true })).toEqual({
       arm: true,
     });
+  });
+});
+
+describe("signServiceFromSessionRead", () => {
+  it("maps an active GET /sessions payload to Budget-active (ok + caps)", () => {
+    expect(
+      signServiceFromSessionRead({
+        kind: "answer",
+        data: {
+          enabled: true,
+          status: "enabled",
+          max_per_tx_usd: 1000,
+          max_per_day_usd: 2500,
+        },
+      }),
+    ).toEqual({
+      status: "ok",
+      reason: null,
+      caps: { tx: 1000, day: 2500 },
+    });
+  });
+
+  it("treats no session as unknown, not a Sign Service fault", () => {
+    expect(
+      signServiceFromSessionRead({
+        kind: "answer",
+        data: { enabled: false, status: "disabled" },
+      }),
+    ).toEqual({ status: "unknown", reason: null });
+  });
+
+  it("maps wallet_not_bound without opening a bind from the mapper itself", () => {
+    expect(
+      signServiceFromSessionRead({
+        kind: "answer",
+        data: { enabled: false, status: "unbound", error: "wallet_not_bound" },
+      }),
+    ).toEqual({ status: "unbound", reason: null });
+  });
+
+  it("maps Sign Service faults to unavailable", () => {
+    expect(
+      signServiceFromSessionRead({
+        kind: "error",
+        message: "SIGN_SERVICE_URL is unset",
+        data: { error: "not_configured", enabled: false },
+      }),
+    ).toEqual({ status: "unavailable", reason: "not_configured" });
   });
 });

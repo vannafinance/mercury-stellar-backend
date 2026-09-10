@@ -2143,6 +2143,56 @@ async function handleAutoSignAction(
       return handleBindRegister(mcp, req, request_id, trader, userId);
     }
 
+    if (action === "status") {
+      // Read-only. A silent poll on wallet connect must not mint a connect
+      // request, open the bind UI, or create a session — it only tells the
+      // Autonomy card whether GET /sessions is already enforcing.
+      const r = await mcp.call("vanna_auto_sign_status", { wallet_address: trader }, userId);
+      const tx = Number(r.max_per_tx_usd);
+      const day = Number(r.max_per_day_usd);
+      const enabled = r.enabled === true || r.status === "enabled";
+      const facts = {
+        ...factsForUi(r),
+        enabled,
+        status: r.status ?? (enabled ? "enabled" : "disabled"),
+        max_per_tx_usd: Number.isFinite(tx) ? tx : r.max_per_tx_usd ?? null,
+        max_per_day_usd: Number.isFinite(day) ? day : r.max_per_day_usd ?? null,
+        session_id: r.session_id ?? null,
+        error: r.error ?? null,
+      };
+      if (isWalletNotBound(r)) {
+        return {
+          kind: "answer",
+          message:
+            (r.summary as string) ||
+            (r.message as string) ||
+            "This wallet is connected but not bound for Vanna signing.",
+          data: { ...facts, enabled: false, status: "unbound", error: "wallet_not_bound" },
+          request_id,
+        };
+      }
+      if (r.error) {
+        return {
+          kind: "error",
+          message:
+            (r.summary as string) ||
+            (r.message as string) ||
+            `Could not read auto-sign status (${String(r.error)}).`,
+          data: facts,
+          request_id,
+        };
+      }
+      return {
+        kind: "answer",
+        message:
+          (r.summary as string) ||
+          (r.message as string) ||
+          (enabled ? "Auto-sign is on." : "Auto-sign is off."),
+        data: facts,
+        request_id,
+      };
+    }
+
     if (action === "disable") {
       const r = await mcp.call("vanna_disable_auto_sign", { wallet_address: trader }, userId);
       // Revoking a server-side session is gated on the same binding as creating one,

@@ -40,6 +40,7 @@ describe("read/write credential split", () => {
       "vanna_swap",
       "vanna_deposit_collateral",
       "vanna_enable_auto_sign",
+      "vanna_auto_sign_status",
       "vanna_sign_and_submit",
       "vanna_sign",
       "vanna_earn_write",

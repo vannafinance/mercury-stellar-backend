@@ -193,6 +193,25 @@ function installFakeNetwork() {
       }
       return structured({ status: "ok", summary: "Auto-sign disabled." });
     }
+    if (name === "vanna_sign" && action === "session_status") {
+      if (!bound) {
+        return structured({
+          error: "wallet_not_bound",
+          message: "This wallet is not bound to the authenticated user.",
+          http_status: 403,
+          detail: { status: "error", error: "wallet_not_bound" },
+        });
+      }
+      return structured({
+        status: "enabled",
+        enabled: true,
+        wallet_address: TRADER,
+        session_id: "sess_1",
+        max_per_tx_usd: 1000,
+        max_per_day_usd: 1000,
+        summary: "Auto-sign is on for GBC2B7N2... Spend caps ≈ $1000.00/tx and $1000.00/day (Sign Service).",
+      });
+    }
     if (name === "vanna_wallet" && action === "connect_start") {
       return structured({
         request_id: REQUEST_ID,
@@ -232,6 +251,13 @@ async function postCopilot(
   return (await res.json()) as {
     kind: string;
     message: string;
+    data?: {
+      enabled?: boolean;
+      status?: string;
+      error?: string | null;
+      max_per_tx_usd?: number | null;
+      max_per_day_usd?: number | null;
+    } | null;
     wallet_bind?: {
       status?: string;
       connect_url?: string | null;
@@ -604,5 +630,32 @@ describe("the transport maps the connect tools onto the consolidated API", () =>
       name: "vanna_wallet",
       arguments: { action: "connect_status", kwargs: { request_id: REQUEST_ID } },
     });
+  });
+});
+
+describe("auto_sign status reads GET /sessions without starting a bind", () => {
+  it("on an unbound wallet reports wallet_not_bound and does not mint a connect request", async () => {
+    const data = await postCopilot({ action: "status" });
+    expect(callsTo("vanna_sign", "session_status")).toHaveLength(1);
+    expect(callsTo("vanna_sign", "session_status")[0].assertion).toBe(PRIVY_TOKEN);
+    expect(callsTo("vanna_wallet", "connect_start")).toHaveLength(0);
+    expect(callsTo("vanna_sign", "enable_auto_sign")).toHaveLength(0);
+    expect(data.kind).toBe("answer");
+    expect(data.kind).not.toBe("needs_wallet_bind");
+    expect(data.data?.error).toBe("wallet_not_bound");
+    expect(data.data?.enabled).toBe(false);
+  });
+
+  it("on a bound wallet with a live session returns enabled + USD caps", async () => {
+    bound = true;
+    const data = await postCopilot({ action: "status" });
+    expect(callsTo("vanna_sign", "session_status")).toHaveLength(1);
+    expect(callsTo("vanna_wallet", "connect_start")).toHaveLength(0);
+    expect(data.kind).toBe("answer");
+    expect(data.data?.enabled).toBe(true);
+    expect(data.data?.status).toBe("enabled");
+    expect(data.data?.max_per_tx_usd).toBe(1000);
+    expect(data.data?.max_per_day_usd).toBe(1000);
+    expect(data.message).toMatch(/auto-sign is on/i);
   });
 });
