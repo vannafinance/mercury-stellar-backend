@@ -16,6 +16,12 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     }
     return undefined;
   };
+  const asBool = (raw: unknown): boolean | null => {
+    if (typeof raw === "boolean") return raw;
+    if (raw === 1 || raw === "1" || raw === "true") return true;
+    if (raw === 0 || raw === "0" || raw === "false") return false;
+    return null;
+  };
   for (const observation of observations) {
     const data = observation.data;
     if (observation.status !== "ok" || !data) {
@@ -29,9 +35,10 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt });
     };
     const flag = (path: string, label: string, raw: unknown, yes: string, no: string) => {
-      if (typeof raw !== "boolean") return;
+      const bit = asBool(raw);
+      if (bit === null) return;
       facts.push({
-        id: `${observation.id}:${path}`, label, value: raw ? yes : no, unit: "",
+        id: `${observation.id}:${path}`, label, value: bit ? yes : no, unit: "",
         venue: "margin", evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
       });
     };
@@ -96,10 +103,9 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         break;
       case "can_withdraw":
       case "can_borrow": {
-        const allowed = typeof data.allowed === "boolean" ? data.allowed
-          : observation.capability === "can_withdraw" && typeof data.can_withdraw === "boolean" ? data.can_withdraw
-            : observation.capability === "can_borrow" && typeof data.can_borrow === "boolean" ? data.can_borrow
-              : null;
+        const allowed = asBool(data.allowed)
+          ?? (observation.capability === "can_withdraw" ? asBool(data.can_withdraw) : null)
+          ?? (observation.capability === "can_borrow" ? asBool(data.can_borrow) : null);
         const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
           ?? decimal(observation.args.amount)
           ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))

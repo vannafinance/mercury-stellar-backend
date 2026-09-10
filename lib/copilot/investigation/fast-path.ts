@@ -5,14 +5,15 @@ import { compactResearchEvidence } from "./evidence";
 import { normalizeResearchFacts } from "./normalize";
 import type { InvestigationScope, Observation } from "./types";
 import type { ResearchView } from "./view";
-import { formatHealthFactor } from "./answer";
+import { factualAnswer } from "./answer";
 
 /**
  * Exact-match reads that skip the investigation loop.
  *
  * Not a second planner: these are cache hits for questions the page already knows how
- * to answer (health from the same snapshot as the Margin rail; a single oracle price).
- * Anything with a write verb, a second clause, or an ambiguous USDC falls through.
+ * to answer (health from the same snapshot as the Margin rail; a single oracle price;
+ * a named withdraw eligibility check). Anything with a second write/plan clause falls
+ * through.
  */
 
 const WRITE_OR_PLAN =
@@ -23,6 +24,12 @@ const HEALTH_ASK =
 
 const PRICE_ASK =
   /\b(?:price|oracle|worth|trading at|value)\b/i;
+
+const WITHDRAW_ELIGIBILITY =
+  /\b(can i|could i|may i|is it (?:ok|safe)|without (?:getting )?liquidat|would .{0,40}liquidat|allowed to)\b/i;
+
+const MULTI_CLAUSE =
+  /\b(then|and also|swap|lend|borrow|repay|farm|deposit|redeem)\b/i;
 
 function onlyAsset(text: string): AssetId | null {
   const named = allAssets().filter((asset) => {
@@ -53,6 +60,25 @@ export function matchFastPath(message: string): FastPathMatch | null {
   return null;
 }
 
+/**
+ * Eligibility-only withdraw: "can I withdraw 100 XLM without getting liquidated?"
+ * A command ("withdraw 100 XLM") or a second write clause falls through to the loop.
+ */
+export function parseWithdrawCheck(message: string): { asset: AssetId; amount: string } | null {
+  const text = message.trim();
+  if (!text || text.length > 160) return null;
+  if (MULTI_CLAUSE.test(text)) return null;
+  const match = text.match(/\bwithdraw\s+(\d+(?:\.\d{1,18})?)\s+(XLM|BLUSDC|AQUSDC|SOUSDC)\b/i);
+  if (!match) return null;
+  if (!WITHDRAW_ELIGIBILITY.test(text) && !/\?\s*$/.test(text)) return null;
+  return { amount: match[1], asset: match[2].toUpperCase() as AssetId };
+}
+
+function payloadFailed(data: Record<string, unknown>): boolean {
+  return !!data.error || data.isError === true || data.ok === false || data.success === false ||
+    data.available === false || ["error", "failed", "rejected", "unavailable"].includes(String(data.status));
+}
+
 function view(input: {
   message: string;
   scope: InvestigationScope;
@@ -61,13 +87,7 @@ function view(input: {
   server: string;
 }): ResearchView {
   const { facts, warnings } = normalizeResearchFacts(input.observations);
-  const health = facts.find((fact) => fact.venue === "margin" && fact.unit === "HF");
-  const price = facts.find((fact) => fact.venue === "oracle");
-  const reply = health
-    ? `Your reported health factor is ${formatHealthFactor(health.value)}.`
-    : price
-      ? `${price.label}: $${price.value}.`
-      : "I could not read a live figure for that just now.";
+  const reply = factualAnswer(facts) ?? "I could not read a live figure for that just now.";
   const evidence = compactResearchEvidence(input.observations, null, Date.now());
   evidence.allowedCandidateIds = [];
   return {
@@ -131,7 +151,25 @@ export async function priceObservation(
     capability: "asset_price",
     args: { asset },
     observedAt: Date.now(),
-    status: data.error || data.available === false ? "error" : "ok",
+    status: payloadFailed(data) ? "error" : "ok",
+    data,
+  };
+}
+
+export async function withdrawObservation(
+  asset: AssetId,
+  amount: string,
+  scope: InvestigationScope,
+  mcp: { call: (tool: string, args: Record<string, unknown>, userId?: string) => Promise<Record<string, unknown>> },
+): Promise<Observation> {
+  const read = resolveRead("can_withdraw", { asset, amount }, scope);
+  const data = await mcp.call(read.tool, read.args, scope.trader ?? undefined);
+  return {
+    id: "e1",
+    capability: "can_withdraw",
+    args: { asset, amount },
+    observedAt: Date.now(),
+    status: payloadFailed(data) ? "error" : "ok",
     data,
   };
 }

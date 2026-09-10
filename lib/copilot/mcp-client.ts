@@ -344,6 +344,8 @@ class LiveMCPClient implements MCPClient {
   /** Cached Streamable-HTTP session — see getSession. */
   private sessionId: string | null = null;
   private sessionPromise: Promise<string> | null = null;
+  /** JSON-RPC ids must be unique per in-flight call on a shared session. */
+  private nextRpcId = 2;
   /** Writes (sign/sim) often exceed 30s on testnet under load. */
   private static readonly TIMEOUT_MS = TIMEOUT_MS;
 
@@ -518,6 +520,8 @@ class LiveMCPClient implements MCPClient {
       );
     }
 
+    const rpcId = this.nextRpcId++;
+    const startedAt = Date.now();
     let callRes: Response;
     try {
       callRes = await fetch(copilotConfig.mcpBaseUrl, {
@@ -525,7 +529,7 @@ class LiveMCPClient implements MCPClient {
         headers: sessionHeaders,
         body: JSON.stringify({
           jsonrpc: "2.0",
-          id: 2,
+          id: rpcId,
           method: "tools/call",
           params: toServerCall(tool, args),
         }),
@@ -590,7 +594,11 @@ class LiveMCPClient implements MCPClient {
         { code: errorCode(error), retryable: false },
       );
     }
-    return shapeToolResult(result);
+    const shaped = shapeToolResult(result);
+    console.info("[mcp-client] call", {
+      tool, ms: Date.now() - startedAt, keys: Object.keys(shaped),
+    });
+    return shaped;
   }
 }
 
@@ -658,20 +666,57 @@ function errorMessage(value: Record<string, unknown>): string | null {
   return null;
 }
 
-function shapeToolResult(result: any): Record<string, unknown> {
-  if (result?.structuredContent && typeof result.structuredContent === "object") {
-    return result.structuredContent as Record<string, unknown>;
-  }
-  const text = extractText(result);
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+const WRAP_KEYS = new Set(["result", "data", "payload", "output"]);
+
+/**
+ * MCP CallToolResult → the financial object the normalizer reads.
+ *
+ * JSON-RPC already peeled `payload.result`. Some tools still arrive double-wrapped
+ * (`{ result: { allowed: true } }`, or the JSON string in `content[].text`), and a
+ * capability then reports "no supported display fields" next to a successful read.
+ * Unwrap here once rather than in every catalogue branch.
+ */
+export function unwrapToolData(value: unknown, depth = 0): Record<string, unknown> {
+  if (depth > 4) return isPlainObject(value) ? value : { result: value };
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return {};
+    try {
+      return unwrapToolData(JSON.parse(text), depth + 1);
+    } catch {
+      return { result: text };
     }
-    return { result: parsed };
-  } catch {
-    return { result: text };
   }
+  if (!isPlainObject(value)) return { result: value };
+
+  if (isPlainObject(value.structuredContent)) {
+    return unwrapToolData(value.structuredContent, depth + 1);
+  }
+
+  const hasFactKeys = "allowed" in value || "can_withdraw" in value || "can_borrow" in value
+    || "collateral_usd" in value || "debt_usd" in value || "health_factor" in value
+    || "collateral" in value || "debt" in value || "total_debt_usd" in value
+    || "total_value_usd" in value || "price_usd" in value || "is_healthy" in value;
+  if (!hasFactKeys && Array.isArray(value.content)) {
+    const text = extractText(value);
+    if (text) return unwrapToolData(text, depth + 1);
+  }
+
+  const keys = Object.keys(value);
+  const wrapKey = keys.find((key) => WRAP_KEYS.has(key));
+  const inner = wrapKey ? value[wrapKey] : undefined;
+  if (!hasFactKeys && inner !== undefined && (isPlainObject(inner) || typeof inner === "string")) {
+    return unwrapToolData(inner, depth + 1);
+  }
+  return value;
+}
+
+function shapeToolResult(result: any): Record<string, unknown> {
+  return unwrapToolData(result);
 }
 
 // ── factory ─────────────────────────────────────────────────────────────────

@@ -151,10 +151,37 @@ export type MarginSnapshot = {
 
 // Multiple mounted surfaces can request the same account snapshot at once
 // (Copilot, the right rail, Margin, and Portfolio). Share the active read by
-// address so those surfaces do not launch overlapping Soroban scans. This is
-// in-flight deduplication only; completed snapshots are not retained here, so
-// mutation-driven refreshes still get fresh chain data.
+// address so those surfaces do not launch overlapping Soroban scans. Completed
+// snapshots are retained only while the latest ledger is unchanged; a failed
+// ledger read skips that cache rather than inventing a pin.
 const snapshotInflight = new Map<string, Promise<MarginSnapshot>>();
+const snapshotCompleted = new Map<string, { ledger: number; snapshot: MarginSnapshot }>();
+
+export function resetMarginSnapshotCache(): void {
+  snapshotInflight.clear();
+  snapshotCompleted.clear();
+}
+
+async function readLatestLedger(): Promise<number | null> {
+  // Tests mock stellar-utils without an RPC URL. Fail closed: never invent a ledger
+  // to pin a completed snapshot, or the copilot would quote a stale position.
+  try {
+    const { SOROBAN_RPC_URL } = await import("@/lib/stellar-utils");
+    if (!SOROBAN_RPC_URL) return null;
+    const StellarSdk = await import("@stellar/stellar-sdk");
+    const latest = await new StellarSdk.rpc.Server(SOROBAN_RPC_URL).getLatestLedger();
+    const sequence = Number((latest as { sequence?: number }).sequence);
+    return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
+  } catch {
+    return null;
+  }
+}
+
+async function rememberCompleted(account: string, snapshot: MarginSnapshot): Promise<void> {
+  const ledger = await readLatestLedger();
+  if (ledger == null) return;
+  snapshotCompleted.set(account, { ledger, snapshot });
+}
 
 /**
  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
@@ -201,12 +228,28 @@ export async function computeMarginSnapshot(
   marginAccountAddress: string,
   opts?: { onPartial?: (p: PartialSnapshot) => void },
 ): Promise<MarginSnapshot> {
-  // Progressive callers need their own onPartial callback. The route and
-  // Copilot all use the no-callback form and can safely share one read.
-  if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
+  // Progressive callers need their own onPartial callback. Still remember the
+  // completed snapshot so Copilot can reuse the page-load warm on the same ledger.
+  if (opts?.onPartial) {
+    const snapshot = await computeMarginSnapshotUncached(marginAccountAddress, opts);
+    await rememberCompleted(marginAccountAddress, snapshot);
+    return snapshot;
+  }
   const existing = snapshotInflight.get(marginAccountAddress);
   if (existing) return existing;
-  const run = computeMarginSnapshotUncached(marginAccountAddress);
+  const run = (async () => {
+    const ledger = await readLatestLedger();
+    if (ledger != null) {
+      const cached = snapshotCompleted.get(marginAccountAddress);
+      if (cached && cached.ledger === ledger) {
+        console.info("[account-snapshot] cache hit", { account: marginAccountAddress, ledger });
+        return cached.snapshot;
+      }
+    }
+    const snapshot = await computeMarginSnapshotUncached(marginAccountAddress);
+    await rememberCompleted(marginAccountAddress, snapshot);
+    return snapshot;
+  })();
   snapshotInflight.set(marginAccountAddress, run);
   try {
     return await run;

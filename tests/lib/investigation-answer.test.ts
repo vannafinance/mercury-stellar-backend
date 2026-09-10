@@ -66,6 +66,28 @@ describe("strategyReply", () => {
     expect(reply).toMatch(/withdraw 100 XLM is allowed on the current health check/);
   });
 
+  it("rounds USD to two decimals and leaves token precision in the stored fact", () => {
+    const debt = {
+      id: "e0:debt_usd", label: "Reported debt value",
+      value: "278.9886", unit: "USD" as const,
+      venue: "margin" as const, evidenceId: "e0", sourcePath: "debt_usd", readAt: 1,
+    };
+    const tokens = {
+      id: "e1:balance", label: "XLM wallet balance",
+      value: "2781.9471234", unit: "XLM" as const,
+      venue: "wallet" as const, evidenceId: "e1", sourcePath: "assets[0].balance", readAt: 1,
+    };
+    const reply = strategyReply({
+      status: "researched", facts: [debt, tokens],
+      candidates: null, capacity: null, question: null, intent: "answer",
+    });
+    expect(reply).toMatch(/\$278\.99/);
+    expect(reply).toMatch(/2,781\.9471234 XLM/);
+    expect(reply).not.toMatch(/\$278\.9886/);
+    expect(debt.value).toBe("278.9886");
+    expect(tokens.value).toBe("2781.9471234");
+  });
+
   it("rounds a health factor to two decimals without changing the stored fact", () => {
     const fact = {
       id: "e0:health_factor", label: "Current health factor",

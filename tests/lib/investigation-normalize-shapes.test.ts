@@ -102,6 +102,13 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
   });
 
+  it("accepts allowed as a string boolean from a wrapped envelope", () => {
+    const result = normalizeResearchFacts([observation("can_withdraw", { allowed: "true", symbol: "XLM", amount: "100" })]);
+    expect(result.facts).toEqual([expect.objectContaining({
+      label: "withdraw 100 XLM", value: "allowed", sourcePath: "allowed",
+    })]);
+  });
+
   it("still accepts the mock MCP aliases amount_human/usd without totals", () => {
     const collateral = normalizeResearchFacts([observation("account_collateral", {
       collateral: [{ symbol: "USDC", amount_human: "100", usd: 100 }],

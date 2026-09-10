@@ -88,6 +88,47 @@ function clientSafeReadError(error: unknown): string {
 
 const RATE_READS = new Set(["earn_market", "blend_markets", "blend_reserve", "aquarius_markets"]);
 
+const SNAPSHOT_BACKED = new Set(["account_health", "account_debt", "account_collateral"]);
+
+function logPhase(phase: string, extra: Record<string, unknown>) {
+  console.info("[copilot] investigation phase", { phase, ...extra });
+}
+
+/**
+ * Health / debt / collateral asked after the app snapshot was seeded. The model
+ * is told to inspect all three even though `account_position` already holds them;
+ * going back to MCP for the same figures is what burned the 45s loop on the
+ * flagship withdraw prompt. Fulfill from the seed instead of spending a 15s read.
+ */
+function snapshotBackedData(
+  capability: string,
+  observations: Observation[],
+): Record<string, unknown> | null {
+  if (!SNAPSHOT_BACKED.has(capability)) return null;
+  const seed = observations.find((item) =>
+    item.capability === "account_position" && item.status === "ok" && isRecord(item.data)
+    && item.data.source === "vanna_app_margin_snapshot");
+  if (!seed?.data) return null;
+  const collateral = seed.data.collateral_usd;
+  const debt = seed.data.debt_usd;
+  const health = seed.data.health_factor;
+  if (capability === "account_health") {
+    if (collateral == null && debt == null && health == null) return null;
+    return {
+      ...(collateral != null ? { collateral_usd: collateral } : {}),
+      ...(debt != null ? { debt_usd: debt } : {}),
+      ...(health != null ? { health_factor: health } : {}),
+      source: "vanna_app_margin_snapshot",
+    };
+  }
+  if (capability === "account_debt") {
+    if (debt == null) return null;
+    return { total_debt_usd: debt, debt_usd: debt, source: "vanna_app_margin_snapshot" };
+  }
+  if (collateral == null) return null;
+  return { total_value_usd: collateral, collateral_usd: collateral, source: "vanna_app_margin_snapshot" };
+}
+
 /** Stop waiting promptly. Legacy MCP reads cannot yet be cancelled at transport level. */
 export function interruptible<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -200,6 +241,7 @@ export async function runInvestigation(
       modelTurns += 1;
       progress({ kind: "reviewing", turn: modelTurns });
       let raw: unknown;
+      const modelStarted = now();
       try {
         raw = await interruptible(() => dependencies.model({
           message: request.message, history: structuredClone(history), context: { ...context },
@@ -207,6 +249,7 @@ export async function runInvestigation(
           remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
         }, signal), signal);
+        logPhase("model", { turn: modelTurns, ms: now() - modelStarted });
       } catch (error) {
         const halted = stopReason();
         if (!halted) {
@@ -293,9 +336,28 @@ export async function runInvestigation(
           // Timestamp the start of the read conservatively; upstream data can be older still.
           observedAt: now(), status: "error",
         };
+        const finishRead = (source: "mcp" | "snapshot" | "invalid") => {
+          logPhase("read", {
+            capability: request.capability, ms: now() - observation.observedAt,
+            status: observation.status, source,
+          });
+          if (!signal.aborted) progress({ kind: "read_finished", capability: request.capability, label, status: observation.status });
+        };
         if (!read) {
           observation.error = reject ?? "The read was requested with invalid arguments.";
-          if (!signal.aborted) progress({ kind: "read_finished", capability: request.capability, label, status: "error" });
+          finishRead("invalid");
+          return { key, label, capability: request.capability, observation, settled: Promise.resolve(), prior: seen.get(key) };
+        }
+        const fromSeed = snapshotBackedData(request.capability, observations);
+        if (fromSeed) {
+          try {
+            observation.data = observationData(fromSeed, limits.maxObservationBytes);
+            observation.status = "ok";
+          } catch {
+            observation.data = undefined;
+            observation.error = "Seeded position could not be copied as evidence.";
+          }
+          finishRead("snapshot");
           return { key, label, capability: request.capability, observation, settled: Promise.resolve(), prior: seen.get(key) };
         }
         /**
@@ -348,12 +410,17 @@ export async function runInvestigation(
             ? "MCP read exceeded its time limit. No value was inferred."
             : "MCP read failed. No value was inferred.";
         }).finally(() => {
-          if (!signal.aborted) progress({ kind: "read_finished", capability: request.capability, label, status: observation.status });
+          finishRead("mcp");
         });
         return { key, label, capability: request.capability, observation, settled, prior: seen.get(key) };
       });
       toolCalls += resolved.length;
+      const batchStarted = now();
       await Promise.all(dispatched.map((entry) => entry.settled));
+      logPhase("batch", {
+        turn: modelTurns, size: dispatched.length, ms: now() - batchStarted,
+        capabilities: dispatched.map((entry) => entry.capability),
+      });
       /**
        * On a DEADLINE, record the batch before stopping. Returning early discarded every
        * read that had already completed in the same batch, so the run reported "0 reads"

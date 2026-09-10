@@ -171,7 +171,11 @@ export async function resolveInvestigationScope(
     return publicScope(input);
   }
   const cached = scopeCache.get(cacheKey(input));
-  if (cached && cached.expiresAt > Date.now()) return cached.scope;
+  if (cached && cached.expiresAt > Date.now()) {
+    console.info("[copilot] investigation phase", { phase: "scope_cache", hit: true, ms: 0 });
+    return cached.scope;
+  }
+  console.info("[copilot] investigation phase", { phase: "scope_cache", hit: false });
 
   const bound = await readBindings(mcp, signal, input.subject, input.wallet);
   if (!isUsable(bound)) {

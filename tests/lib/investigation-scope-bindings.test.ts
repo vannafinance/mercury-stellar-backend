@@ -138,6 +138,10 @@ describe("investigation scope bindings", () => {
     const second = await resolveInvestigationScope(input, mcp, new AbortController().signal);
     expect(second).toEqual(first);
     expect(mcp.call).toHaveBeenCalledTimes(2);
+    expect(console.info).toHaveBeenCalledWith(
+      "[copilot] investigation phase",
+      expect.objectContaining({ phase: "scope_cache", hit: true }),
+    );
   });
 
   it("does not cache an unverified public fallback", async () => {

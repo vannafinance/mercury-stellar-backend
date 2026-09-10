@@ -458,4 +458,36 @@ describe("batched reads", () => {
 
     expect(result.outcome).toEqual({ kind: "stopped", reason: "repeated_read" });
   });
+
+  it("fulfills health, debt and collateral from a seeded snapshot instead of MCP", async () => {
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_can_withdraw") return { allowed: true, symbol: "XLM", amount: "100" };
+      throw new Error(`unexpected MCP ${tool}`);
+    }) };
+    const seeded = {
+      ...request,
+      seed: [{
+        id: "e0", capability: "account_position" as const, args: {}, observedAt: 1, status: "ok" as const,
+        data: {
+          collateral_usd: "317.00", debt_usd: "217.12", health_factor: "1.46",
+          source: "vanna_app_margin_snapshot",
+        },
+      }],
+    };
+    const model = sequence(
+      batch(
+        ["account_health"], ["account_debt"], ["account_collateral"],
+        ["can_withdraw", { asset: "XLM", amount: "100" }],
+      ),
+      complete(["e1"]),
+    );
+    const result = await runInvestigation(seeded, { model, mcp });
+    expect(result.outcome).toEqual(complete(["e1"]));
+    expect(mcp.call.mock.calls.map((call) => call[0])).toEqual(["vanna_can_withdraw"]);
+    const fromSnapshot = result.observations.filter((item) =>
+      ["account_health", "account_debt", "account_collateral"].includes(item.capability));
+    expect(fromSnapshot).toHaveLength(3);
+    expect(fromSnapshot.every((item) =>
+      item.status === "ok" && item.data?.source === "vanna_app_margin_snapshot")).toBe(true);
+  });
 });

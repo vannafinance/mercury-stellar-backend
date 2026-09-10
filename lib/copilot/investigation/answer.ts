@@ -6,8 +6,14 @@ import type { ResearchCapacity } from "./view";
 export function factualAnswer(facts: readonly ResearchFact[]): string | null {
   const amount = (fact: ResearchFact) => {
     const n = Number(fact.value);
-    const value = Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: 7 }) : fact.value;
-    return fact.unit === "USD" ? `$${value}` : `${value} ${fact.unit}`.trim();
+    const usd = fact.unit === "USD";
+    const value = Number.isFinite(n)
+      ? n.toLocaleString("en-US", {
+          minimumFractionDigits: usd ? 2 : 0,
+          maximumFractionDigits: usd ? 2 : 7,
+        })
+      : fact.value;
+    return usd ? `$${value}` : `${value} ${fact.unit}`.trim();
   };
   const sentences: string[] = [];
   const balances = facts.filter(f => f.venue === "wallet" && f.sourcePath.endsWith(".balance"));

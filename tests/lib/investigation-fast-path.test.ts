@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { matchFastPath, fastPathView, healthObservations } from "@/lib/copilot/investigation/fast-path";
+import { matchFastPath, fastPathView, healthObservations, parseWithdrawCheck } from "@/lib/copilot/investigation/fast-path";
 import { STANDING_ORDER_OFFER } from "@/lib/copilot/standing-orders";
 import { resetTokenUsage } from "@/lib/copilot/token-budget";
 
@@ -59,6 +59,20 @@ describe("matchFastPath", () => {
     expect(matchFastPath("what's USDC trading at")).toBeNull();
     expect(matchFastPath("price of XLM then borrow")).toBeNull();
   });
+
+  it("does not treat a withdraw eligibility question as a health fast-path", () => {
+    expect(matchFastPath("can I withdraw 100 XLM without getting liquidated?")).toBeNull();
+  });
+});
+
+describe("parseWithdrawCheck", () => {
+  it("parses the flagship eligibility prompt and ignores a write command", () => {
+    expect(parseWithdrawCheck("can I withdraw 100 XLM without getting liquidated?")).toEqual({
+      asset: "XLM", amount: "100",
+    });
+    expect(parseWithdrawCheck("withdraw 100 XLM")).toBeNull();
+    expect(parseWithdrawCheck("can I withdraw 100 XLM then borrow 50 BLUSDC?")).toBeNull();
+  });
 });
 
 describe("fastPathView", () => {
@@ -107,6 +121,31 @@ describe("researchTurn fast path", () => {
     );
     expect(result.message).toMatch(/2\.43/);
     expect(result.executionAllowed).toBe(false);
+  });
+
+  it("answers a named withdraw check from can_withdraw without the investigation loop", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue({
+      grossCollateralUsd: "317.00",
+      debtUsd: "217.12",
+      healthFactor: "2.43",
+      snapshot: {},
+    });
+    const mcp = { call: vi.fn(async () => ({ allowed: true, symbol: "XLM", amount: "100" })) };
+    const model = vi.fn(async () => { throw new Error("model should not run"); });
+    const result = await researchTurn(
+      { message: "can I withdraw 100 XLM without getting liquidated?", wallet: SCOPE.trader, continuation: null },
+      deps({ mcp, model }),
+    );
+    expect(model).not.toHaveBeenCalled();
+    expect(mcp.call).toHaveBeenCalledWith(
+      "vanna_can_withdraw",
+      expect.objectContaining({ symbol: "XLM", amount: "100", smart_account: SCOPE.smartAccount }),
+      SCOPE.trader,
+    );
+    expect(result.message).toMatch(/withdraw 100 XLM is allowed on the current health check/);
+    expect(result.executionAllowed).toBe(false);
+    expect(result.status).toBe("researched");
   });
 
   it("offers a standing-order mandate and does not execute", async () => {

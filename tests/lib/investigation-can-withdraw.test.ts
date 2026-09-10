@@ -99,8 +99,9 @@ describe("withdraw eligibility research", () => {
         throw new Error(`Unexpected tool ${tool}`);
       }),
     };
+    const prompt = "is a 100 XLM withdrawal from my margin account allowed?";
     const result = await researchTurn(
-      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      { message: prompt, wallet: SCOPE.trader, continuation: null },
       {
         subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: "a".repeat(32),
         mcp, signal: new AbortController().signal,
@@ -120,7 +121,7 @@ describe("withdraw eligibility research", () => {
             goal: {
               intent: "answer",
               relation: "new",
-              objective: PROMPT,
+              objective: prompt,
               constraints: [],
               borrowing: "unspecified",
             },

@@ -12,7 +12,7 @@ import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, reques
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence } from "./evidence";
 import { compileRequestedActions } from "./requested-actions";
-import { matchFastPath, fastPathView, healthObservations, priceObservation } from "./fast-path";
+import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
@@ -54,7 +54,11 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   limits?: Partial<InvestigationLimits>;
 }): Promise<ResearchView> {
   const startedAt = Date.now();
-  const view = await executeResearchTurn(input, dependencies);
+  const logPhase = (phase: string, extra: Record<string, unknown> = {}) => {
+    console.info("[copilot] investigation phase", { phase, ms: Date.now() - startedAt, ...extra });
+  };
+  const view = await executeResearchTurn(input, { ...dependencies, logPhase });
+  logPhase("turn", { status: view.status });
   return { ...view, elapsedMs: Math.max(0, Date.now() - startedAt) };
 }
 
@@ -68,7 +72,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   signal: AbortSignal;
   onProgress?: (event: InvestigationProgress) => void;
   limits?: Partial<InvestigationLimits>;
+  logPhase?: (phase: string, extra?: Record<string, unknown>) => void;
 }): Promise<ResearchView> {
+  const logPhase = dependencies.logPhase ?? (() => undefined);
   const codec = researchCodec(dependencies.secret, dependencies.server);
   /**
    * Answer before spending anything, when there is nothing to investigate. This runs ahead
@@ -129,10 +135,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * always gets its own budget, and a stall here reports itself.
    */
   let scope;
+  const scopeStarted = Date.now();
   try {
     scope = await resolveInvestigationScope({
       subject: dependencies.subject, wallet: input.wallet, network: dependencies.network,
     }, dependencies.mcp, AbortSignal.any([dependencies.signal, AbortSignal.timeout(SCOPE_BUDGET_MS)]));
+    logPhase("scope", { ms: Date.now() - scopeStarted, unverified: scope.unverified ?? null });
   } catch (error) {
     if (error instanceof ResearchError) throw error;
     console.error("[copilot] investigation scope failed", {
@@ -167,14 +175,38 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * and the rest of the product cannot show different numbers.
    */
   let position: Awaited<ReturnType<typeof computeAccountPosition>> = null;
-  try {
-    position = await interruptible(() => computeAccountPosition(scope.smartAccount, dependencies.signal),
-      AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]));
-  } catch (error) {
+  const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
+  const positionStarted = Date.now();
+  const positionTask = interruptible(
+    () => computeAccountPosition(scope.smartAccount, dependencies.signal),
+    AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]),
+  ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const withdrawTask = withdrawAsk
+    ? interruptible(
+        () => withdrawObservation(withdrawAsk.asset, withdrawAsk.amount, scope, scopedMcp),
+        AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]),
+      ).then((value) => ({ value, error: null as unknown }), (error) => {
+        console.warn("[copilot] investigation withdraw pre-read failed", {
+          error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+        });
+        return { value: null, error };
+      })
+    : Promise.resolve({ value: null, error: null });
+  const [positionResult, withdrawResult] = await Promise.all([positionTask, withdrawTask]);
+  if (positionResult.error) {
     console.warn("[copilot] investigation position seed failed", {
-      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      error: positionResult.error instanceof Error
+        ? { name: positionResult.error.name, message: positionResult.error.message }
+        : String(positionResult.error),
     });
-    // Left null. `capacity` below reports a genuine snapshot failure once, not twice.
+  }
+  position = positionResult.value;
+  logPhase("position", { ms: Date.now() - positionStarted, seeded: !!position });
+  if (withdrawAsk) {
+    logPhase("withdraw_preread", {
+      ms: Date.now() - positionStarted,
+      status: withdrawResult.value?.status ?? "skipped",
+    });
   }
   if (fast?.kind === "health" && position) {
     return fastPathView({
@@ -227,6 +259,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       };
     }
   }
+  const withdrawObs = withdrawResult.value;
+  if (withdrawAsk && withdrawObs && withdrawObs.status === "ok") {
+    return fastPathView({
+      message: input.message, scope,
+      observations: [
+        ...(position ? healthObservations(position) : []),
+        { ...withdrawObs, id: position ? "e1" : "e0" },
+      ],
+      secret: dependencies.secret, server: dependencies.server,
+    });
+  }
   /**
    * Headroom reuses the snapshot the position read already paid for. Both need the same
    * figures, and `computeMarginSnapshot` is a 5-7s live RPC call — buying it twice per turn
@@ -247,11 +290,19 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       source: "vanna_app_margin_snapshot",
     },
   }] : [];
+  const loopStarted = Date.now();
   const result = await runInvestigation({
     message: input.message, scope, seed,
     history: (input.history ?? []).slice(-8),
     task: { messages, lastQuestion: prior?.lastQuestion ?? null },
   }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits });
+  logPhase("loop", {
+    ms: Date.now() - loopStarted,
+    outcome: result.outcome.kind,
+    modelTurns: result.usage.modelTurns,
+    toolCalls: result.usage.toolCalls,
+    loopElapsedMs: result.usage.elapsedMs,
+  });
   const { facts, warnings } = normalizeResearchFacts(result.observations);
   const outcome = result.outcome;
   /**
