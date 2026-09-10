@@ -53,6 +53,22 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   onProgress?: (event: InvestigationProgress) => void;
   limits?: Partial<InvestigationLimits>;
 }): Promise<ResearchView> {
+  const startedAt = Date.now();
+  const view = await executeResearchTurn(input, dependencies);
+  return { ...view, elapsedMs: Math.max(0, Date.now() - startedAt) };
+}
+
+async function executeResearchTurn(input: ResearchInput, dependencies: {
+  subject: string;
+  server: string;
+  network: string;
+  secret: string;
+  mcp: Pick<MCPClient, "call">;
+  model: ResearchModel;
+  signal: AbortSignal;
+  onProgress?: (event: InvestigationProgress) => void;
+  limits?: Partial<InvestigationLimits>;
+}): Promise<ResearchView> {
   const codec = researchCodec(dependencies.secret, dependencies.server);
   /**
    * Answer before spending anything, when there is nothing to investigate. This runs ahead

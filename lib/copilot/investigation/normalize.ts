@@ -10,16 +10,30 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
     return /^-?\d+(?:\.\d+)?$/.test(text) && text.length <= 60 ? text : null;
   };
+  const pick = (...values: unknown[]): unknown => {
+    for (const value of values) {
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+    return undefined;
+  };
   for (const observation of observations) {
     const data = observation.data;
     if (observation.status !== "ok" || !data) {
       warnings.add(`${observation.capability.replaceAll("_", " ")}: data was unavailable. No value was assumed.`);
+      logDropped(observation, "unavailable");
       continue;
     }
     const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"]) => {
       const value = decimal(raw);
       if (value === null) return;
       facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt });
+    };
+    const flag = (path: string, label: string, raw: unknown, yes: string, no: string) => {
+      if (typeof raw !== "boolean") return;
+      facts.push({
+        id: `${observation.id}:${path}`, label, value: raw ? yes : no, unit: "",
+        venue: "margin", evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
+      });
     };
     const rows = (key: string): Array<{ row: Record<string, unknown>; path: string }> => {
       if (!Array.isArray(data[key])) return [];
@@ -31,6 +45,13 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         }
         return [{ row, path: `${key}[${index}]` }];
       });
+    };
+    const listed = (...keys: string[]) => {
+      for (const key of keys) {
+        const found = rows(key);
+        if (found.length) return found;
+      }
+      return [];
     };
     const assetLabel = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_/-]{1,24}$/.test(value) ? value : null;
     const before = facts.length;
@@ -57,9 +78,15 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       }
       case "account_health":
         add("health_factor", "Current health factor", data.health_factor, "HF", "margin");
-        add("collateral_usd", "Reported collateral value", data.collateral_usd, "USD", "margin");
-        add("debt_usd", "Reported debt value", data.debt_usd, "USD", "margin");
+        add("collateral_usd", "Reported collateral value", pick(data.collateral_usd, data.total_collateral_usd), "USD", "margin");
+        add("debt_usd", "Reported debt value", pick(data.debt_usd, data.total_debt_usd), "USD", "margin");
         add("ltv_ratio", "Loan-to-value ratio", data.ltv_ratio, "ratio", "margin");
+        flag("is_healthy", "Account health status", data.is_healthy, "healthy", "at risk");
+        add("distance_to_liquidation", "Distance to liquidation", data.distance_to_liquidation, "ratio", "margin");
+        add("net_available_collateral_usd", "Net available collateral", data.net_available_collateral_usd, "USD", "margin");
+        add("net_borrow_rate_pct", "Net borrow rate", data.net_borrow_rate_pct, "% APR", "margin");
+        add("borrow_threshold", "Borrow LTV threshold", data.borrow_threshold, "ratio", "margin");
+        add("liquidation_threshold", "Liquidation LTV threshold", data.liquidation_threshold, "ratio", "margin");
         // Do not derive the app's HF from these fields: contract/UI semantics differ.
         break;
       case "account_position":
@@ -69,15 +96,21 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         break;
       case "can_withdraw":
       case "can_borrow": {
-        const asset = String(observation.args.asset);
-        const amount = typeof observation.args.amount === "string" ? observation.args.amount
-          : decimal(observation.args.amount);
+        const allowed = typeof data.allowed === "boolean" ? data.allowed
+          : observation.capability === "can_withdraw" && typeof data.can_withdraw === "boolean" ? data.can_withdraw
+            : observation.capability === "can_borrow" && typeof data.can_borrow === "boolean" ? data.can_borrow
+              : null;
+        const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
+          ?? decimal(observation.args.amount)
+          ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))
+          ?? decimal(pick(data.max_withdraw_human, data.max_borrow_human));
+        const asset = assetLabel(observation.args.asset) ?? assetLabel(data.symbol) ?? "asset";
         const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
-        if (typeof data.allowed === "boolean" && amount) {
+        if (allowed !== null) {
           facts.push({
             id: `${observation.id}:allowed`,
-            label: `${verb} ${amount} ${asset}`,
-            value: data.allowed ? "allowed" : "not allowed",
+            label: amount ? `${verb} ${amount} ${asset}` : `${verb} ${asset}`,
+            value: allowed ? "allowed" : "not allowed",
             unit: "",
             venue: "margin",
             evidenceId: observation.id,
@@ -88,17 +121,22 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         break;
       }
       case "account_debt":
-        add("total_debt_usd", "Total margin debt", data.total_debt_usd, "USD", "margin");
-        for (const { row, path } of rows("debt")) {
+        add("total_debt_usd", "Total margin debt", pick(data.total_debt_usd, data.debt_usd), "USD", "margin");
+        for (const { row, path } of listed("debt", "borrows", "positions")) {
           const symbol = assetLabel(row.symbol);
-          if (symbol) add(`${path}.balance`, `${symbol} borrowed`, row.balance, symbol, "margin");
+          if (!symbol) continue;
+          add(`${path}.balance`, `${symbol} borrowed`, pick(row.balance, row.amount_human, row.amount), symbol, "margin");
+          add(`${path}.value_usd`, `${symbol} debt value`, pick(row.value_usd, row.usd), "USD", "margin");
         }
         break;
       case "account_collateral":
-        add("total_value_usd", "Posted collateral value", data.total_value_usd, "USD", "margin");
-        for (const { row, path } of rows("collateral")) {
+        add("total_value_usd", "Posted collateral value", pick(data.total_value_usd, data.total_collateral_usd, data.collateral_usd), "USD", "margin");
+        for (const { row, path } of listed("collateral", "positions", "balances")) {
           const symbol = assetLabel(row.symbol);
-          if (symbol) add(`${path}.value_usd`, `${symbol} collateral value`, row.value_usd, "USD", "margin");
+          if (!symbol) continue;
+          const usd = pick(row.value_usd, row.usd);
+          if (decimal(usd) !== null) add(`${path}.value_usd`, `${symbol} collateral value`, usd, "USD", "margin");
+          else add(`${path}.balance`, `${symbol} collateral`, pick(row.balance, row.amount_human, row.amount), symbol, "margin");
         }
         break;
       case "asset_price":
@@ -169,7 +207,20 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     }
     if (facts.length === before && observation.capability !== "aquarius_markets") {
       warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
+      logDropped(observation, "no_fields");
     }
   }
   return { facts, warnings: [...warnings] };
+}
+
+/** Keys only — payloads are large and may still carry secrets the sanitizer missed. */
+function logDropped(observation: Observation, kind: "unavailable" | "no_fields") {
+  const data = observation.data;
+  console.warn("[copilot] investigation fact extract", {
+    capability: observation.capability,
+    status: observation.status,
+    kind,
+    error: observation.error,
+    keys: data && isRecord(data) ? Object.keys(data) : [],
+  });
 }

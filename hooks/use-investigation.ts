@@ -113,7 +113,7 @@ export function useInvestigation(wallet: string | null) {
             { role: "assistant", text: event.result.message },
           ];
           transcript.current = next.slice(-8);
-          setState((previous) => ({ ...previous, result: event.result, progress: null }));
+          setState((previous) => ({ ...previous, result: event.result, progress: null, loading: false }));
         } else if (event.type === "error") {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {

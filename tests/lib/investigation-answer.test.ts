@@ -66,6 +66,20 @@ describe("strategyReply", () => {
     expect(reply).toMatch(/withdraw 100 XLM is allowed on the current health check/);
   });
 
+  it("rounds a health factor to two decimals without changing the stored fact", () => {
+    const fact = {
+      id: "e0:health_factor", label: "Current health factor",
+      value: "3.898658825216954744", unit: "HF" as const,
+      venue: "margin" as const, evidenceId: "e0", sourcePath: "health_factor", readAt: 1,
+    };
+    const reply = strategyReply({
+      status: "researched", facts: [fact],
+      candidates: null, capacity: null, question: null, intent: "answer",
+    });
+    expect(reply).toBe("Your reported health factor is 3.90.");
+    expect(fact.value).toBe("3.898658825216954744");
+  });
+
   it("names Earn when that idle path ranks first", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",

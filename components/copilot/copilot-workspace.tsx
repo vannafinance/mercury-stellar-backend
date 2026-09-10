@@ -4462,10 +4462,7 @@ export function CopilotWorkspace() {
    */
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
-    if (!loading) {
-      setElapsedSec(0);
-      return;
-    }
+    if (!loading) return;
     const startedAt = Date.now();
     setElapsedSec(0);
     const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);

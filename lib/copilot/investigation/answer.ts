@@ -13,7 +13,7 @@ export function factualAnswer(facts: readonly ResearchFact[]): string | null {
   const balances = facts.filter(f => f.venue === "wallet" && f.sourcePath.endsWith(".balance"));
   if (balances.length) sentences.push(`Your wallet holds ${balances.map(amount).join(", ")}.`);
   const health = facts.find(f => f.venue === "margin" && f.unit === "HF");
-  if (health) sentences.push(`Your reported health factor is ${health.value}.`);
+  if (health) sentences.push(`Your reported health factor is ${formatHealthFactor(health.value)}.`);
   const debt = facts.find(f => f.label === "Total margin debt") ?? facts.find(f => f.label === "Reported debt value");
   if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = facts.filter(f => f.venue === "oracle");
@@ -25,6 +25,12 @@ export function factualAnswer(facts: readonly ResearchFact[]): string | null {
   const rates = facts.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply"));
   if (rates.length) sentences.push(`The reported supply rates are ${rates.map(f => `${f.label.replace(" supply APR", "")}: ${amount(f)}`).join("; ")}.`);
   return sentences.length ? sentences.join(" ") : null;
+}
+
+/** Display rounding only. Sizing and stored facts keep the full-precision string. */
+export function formatHealthFactor(value: string): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : value;
 }
 
 function money(usd: string): string {

@@ -5,6 +5,7 @@ import { compactResearchEvidence } from "./evidence";
 import { normalizeResearchFacts } from "./normalize";
 import type { InvestigationScope, Observation } from "./types";
 import type { ResearchView } from "./view";
+import { formatHealthFactor } from "./answer";
 
 /**
  * Exact-match reads that skip the investigation loop.
@@ -63,7 +64,7 @@ function view(input: {
   const health = facts.find((fact) => fact.venue === "margin" && fact.unit === "HF");
   const price = facts.find((fact) => fact.venue === "oracle");
   const reply = health
-    ? `Your reported health factor is ${health.value}.`
+    ? `Your reported health factor is ${formatHealthFactor(health.value)}.`
     : price
       ? `${price.label}: $${price.value}.`
       : "I could not read a live figure for that just now.";

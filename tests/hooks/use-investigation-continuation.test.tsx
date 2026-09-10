@@ -184,4 +184,19 @@ describe("useInvestigation — continuation chaining", () => {
     expect(sent[1].continuation).toBeNull();
     expect(sent[1].history).toEqual([]);
   });
+
+  it("clears loading when the result event arrives even if the stream stays open", async () => {
+    server([{ result: view() }]);
+    mocks.consume.mockImplementation(async (_res: unknown, emit: (event: unknown) => void) => {
+      emit({ type: "result", result: view() });
+      await new Promise(() => {});
+    });
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    act(() => { void result.current.run("can I withdraw 100 XLM without getting liquidated?"); });
+    await vi.waitFor(() => {
+      expect(result.current.result?.message).toBe("collected");
+    });
+    expect(result.current.loading).toBe(false);
+    act(() => { result.current.cancel(); });
+  });
 });

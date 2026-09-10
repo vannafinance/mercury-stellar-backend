@@ -253,4 +253,9 @@ describe("investigation card / options", () => {
     );
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
+
+  it("shows the server-measured duration on a finished investigation", () => {
+    card(view({ elapsedMs: 12_400, message: "Your reported health factor is 3.90." }));
+    expect(screen.getByText(/Checked in 12s/)).toBeTruthy();
+  });
 });

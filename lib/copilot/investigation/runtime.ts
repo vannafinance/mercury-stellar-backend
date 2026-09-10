@@ -1,4 +1,4 @@
-import type { MCPClient } from "../mcp-client";
+import { MCPError, type MCPClient } from "../mcp-client";
 import { readCapabilities, resolveRead } from "./capabilities";
 import { isRecord, parseDecision } from "./decision";
 import type {
@@ -312,22 +312,39 @@ export async function runInvestigation(
             observation.status = toolFailed(observation.data) ? "error" : "ok";
             if (observation.status === "error") {
               observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
+              console.warn("[copilot] investigation MCP payload unavailable", {
+                capability: request.capability,
+                tool: read.tool,
+                keys: Object.keys(observation.data),
+                status: observation.data.status,
+                error: typeof observation.data.error === "string" && observation.data.error.length <= 80
+                  ? observation.data.error : undefined,
+              });
             }
-          } catch {
+          } catch (error) {
             observation.data = undefined;
             observation.error = "MCP returned invalid or oversized data. No value was inferred.";
+            console.warn("[copilot] investigation MCP payload invalid", {
+              capability: request.capability,
+              tool: read.tool,
+              reason: error instanceof Error ? error.message : "invalid",
+              keys: isRecord(response) ? Object.keys(response) : [],
+            });
           }
         }).catch((error) => {
           // Exception strings can carry upstream credentials; do not feed them to the model.
           // A read that ran out of its own time is reported as such: the model can retry a
           // timeout usefully, whereas "failed" invites it to treat the venue as broken.
+          const timeout = readSignal.aborted && !signal.aborted;
           console.error("[copilot] investigation read failed", {
             capability: request.capability,
             tool: read.tool,
-            timeout: readSignal.aborted && !signal.aborted,
+            timeout,
             error: error instanceof Error ? error.name : "unknown",
+            code: error instanceof MCPError ? error.code : undefined,
+            httpStatus: error instanceof MCPError ? error.httpStatus : undefined,
           });
-          observation.error = readSignal.aborted && !signal.aborted
+          observation.error = timeout
             ? "MCP read exceeded its time limit. No value was inferred."
             : "MCP read failed. No value was inferred.";
         }).finally(() => {

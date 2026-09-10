@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CATALOG, readCapabilities, resolveRead } from "@/lib/copilot/investigation/catalog";
 import { catalogToolNames } from "@/lib/copilot/investigation/capabilities";
 import { readOnlyToolNames } from "@/lib/copilot/user-context";
+import { toServerCall } from "@/lib/copilot/mcp-client";
 import type { InvestigationScope } from "@/lib/copilot/investigation/types";
 
 const account: InvestigationScope = {
@@ -92,5 +93,23 @@ describe("investigation read catalogue", () => {
     expect(() => resolveRead("vanna_borrow", { amount: "1000" }, account)).toThrow();
     expect(() => resolveRead("can_borrow", { asset: "XLM", amount: "10" }, guest)).toThrow();
     expect(() => resolveRead("prices_batch", { assets: ["XLM", "XLM", "XLM", "XLM", "XLM", "XLM", "XLM", "XLM", "BLUSDC"] }, guest)).toThrow();
+  });
+
+  it("maps every catalogue tool onto a live MCP surface dispatcher", () => {
+    const surfaces = new Set([
+      "vanna_oracle", "vanna_protocol_info", "vanna_account", "vanna_margin_status",
+      "vanna_margin_trade", "vanna_earn_market", "vanna_earn_position", "vanna_earn_write",
+      "vanna_farm_overview", "vanna_farm_blend", "vanna_farm_lp", "vanna_wallet",
+      "vanna_sign", "vanna_swap",
+    ]);
+    expect(toServerCall("vanna_can_withdraw", { smart_account: "C", symbol: "XLM", amount: "100" }))
+      .toEqual({ name: "vanna_margin_trade", arguments: { action: "can_withdraw", kwargs: { smart_account: "C", symbol: "XLM", amount: "100" } } });
+    expect(toServerCall("vanna_auto_sign_status", { wallet_address: "G" }))
+      .toEqual({ name: "vanna_sign", arguments: { action: "session_status", kwargs: { wallet_address: "G" } } });
+    for (const entry of CATALOG) {
+      const call = toServerCall(entry.tool, { marker: true });
+      expect([...surfaces]).toContain(call.name);
+      expect(call.arguments).toEqual({ action: expect.any(String), kwargs: { marker: true } });
+    }
   });
 });

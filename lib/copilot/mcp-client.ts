@@ -217,6 +217,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_connect_wallet_start: { tool: "vanna_wallet", action: "connect_start" },
   vanna_connect_wallet_status: { tool: "vanna_wallet", action: "connect_status" },
   // signing
+  vanna_auto_sign_status: { tool: "vanna_sign", action: "session_status" },
   vanna_enable_auto_sign: { tool: "vanna_sign", action: "enable_auto_sign" },
   vanna_disable_auto_sign: { tool: "vanna_sign", action: "disable_auto_sign" },
   vanna_sign_and_submit: { tool: "vanna_sign", action: "sign_and_submit" },

@@ -177,7 +177,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "can_withdraw", tool: "vanna_can_withdraw", scope: "account", cost: "moderate",
-    description: "Whether a specific collateral withdrawal is allowed without breaching health. A READ — it checks, it does not withdraw. Amount must be the user's stated figure, never invented.",
+    description: "Whether a specific collateral withdrawal is allowed without breaching health. A READ — it checks, it does not withdraw. Amount must be the user's stated figure, never invented. Live MCP serves this as vanna_margin_trade action=can_withdraw; mcp-client remaps the catalogue name so the model cannot aim at a write dispatcher.",
     modelArgs: {
       asset: { type: "enum", values: marginAssets },
       amount: { type: "decimal" },

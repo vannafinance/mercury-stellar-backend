@@ -60,6 +60,8 @@ export interface ResearchView {
   continuation: string;
   proposalCandidateId?: string | null;
   executionAllowed: false;
+  /** Server wall time for this turn. Optional so older clients stay valid. */
+  elapsedMs?: number;
 }
 
 /**

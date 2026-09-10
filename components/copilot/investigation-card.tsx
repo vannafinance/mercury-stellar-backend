@@ -1,10 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ChevronRight, CircleAlert, Loader2, Search } from "lucide-react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -68,6 +70,16 @@ export function InvestigationCard({
           : `${progress.label}: ${progress.status === "ok" ? "read complete" : "unavailable"}`;
 
   const stance = result?.understanding ? BORROWING[result.understanding.borrowing] : null;
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!loading) return;
+    const startedAt = Date.now();
+    setElapsedSec(0);
+    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [loading]);
+  const serverClock = result?.elapsedMs != null ? formatElapsedMs(result.elapsedMs) : null;
+  const deviceClock = elapsedSec > 0 ? formatRunClock(elapsedSec) : null;
 
   return (
     /*
@@ -89,7 +101,7 @@ export function InvestigationCard({
           {loading && (
             <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500">
               <Loader2 size={15} className="shrink-0 animate-spin" />
-              {progressLabel}
+              {progressLabel}{deviceClock ? ` · ${deviceClock}` : ""}
             </p>
           )}
           {error && (
@@ -131,6 +143,12 @@ export function InvestigationCard({
                 </>
               ) : null}
               <p className="mt-3 text-[14px] leading-6 text-vgray-700">{result.message}</p>
+              {(serverClock || (!loading && deviceClock)) && (
+                <p className="mt-1.5 font-mono text-[12px] tabular-nums text-vgray-400">
+                  {serverClock ? `Checked in ${serverClock}` : `Checked in ${deviceClock}`}
+                  {serverClock && !loading && deviceClock ? ` · ${deviceClock} this device` : ""}
+                </p>
+              )}
 
               {/* The one computed number worth the headline: real headroom at their floor. */}
               {result.capacity && (
