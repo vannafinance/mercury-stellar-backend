@@ -1,6 +1,10 @@
 /**
  * Deterministic intent router (keyword + regex).
- * Primary path when no external LLM is configured; always available as fallback.
+ *
+ * Exact-match reads (health, single-asset price) return from the shared
+ * investigation read-cache and never plan. Write/plan keyword matching remains
+ * for the assistant widget and tests; the Copilot surface never calls this
+ * (`investigation_owns_planning`).
  *
  * Strips G/C Stellar addresses before parsing amounts so digits inside addresses
  * never become fake quantities.
@@ -8,6 +12,7 @@
 
 import type { RoutedIntent } from "./types";
 import { findAmountFraction, findBalanceFraction } from "./amount-intent";
+import { matchFastPath } from "./investigation/read-cache";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 
@@ -870,6 +875,29 @@ export function routeMessage(message: string): RoutedIntent {
   const raw = message.trim();
   if (!raw) {
     return { kind: "clarify", message: "Please type a question or action." };
+  }
+  /**
+   * Exact-match reads return here. This function has no authority to override a
+   * researched plan: write/plan clauses miss the cache and, on the Copilot
+   * surface, never reach `routeMessage` at all (`investigation_owns_planning`).
+   */
+  const cached = matchFastPath(raw);
+  if (cached?.kind === "health") {
+    return {
+      kind: "read",
+      tool: "vanna_get_account_health",
+      args: {},
+      requires_account: true,
+      template_id: "query_account_health",
+    };
+  }
+  if (cached?.kind === "price") {
+    return {
+      kind: "read",
+      tool: "vanna_get_price",
+      args: { symbol: cached.asset },
+      template_id: "query_price",
+    };
   }
   // Collapsed once, here, so every exact-phrase `any(text, "...")` check below benefits —
   // "how   much    do i owe" (G-04) has the same words as "how much do i owe" but none of

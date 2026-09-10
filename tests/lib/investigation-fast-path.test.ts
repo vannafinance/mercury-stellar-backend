@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchFastPath, fastPathView, healthObservations, parseWithdrawCheck } from "@/lib/copilot/investigation/fast-path";
+import { routeMessage } from "@/lib/copilot/router";
 import { STANDING_ORDER_OFFER } from "@/lib/copilot/standing-orders";
 import { resetTokenUsage } from "@/lib/copilot/token-budget";
 
@@ -62,6 +63,26 @@ describe("matchFastPath", () => {
 
   it("does not treat a withdraw eligibility question as a health fast-path", () => {
     expect(matchFastPath("can I withdraw 100 XLM without getting liquidated?")).toBeNull();
+  });
+});
+
+describe("routeMessage read-through cache", () => {
+  it("returns the same health and price templates the investigation cache would", () => {
+    expect(routeMessage("what's my health factor?")).toMatchObject({
+      kind: "read",
+      template_id: "query_account_health",
+    });
+    expect(routeMessage("price of XLM")).toMatchObject({
+      kind: "read",
+      template_id: "query_price",
+      args: { symbol: "XLM" },
+    });
+  });
+
+  it("does not let the cache swallow a write mixed into a health sentence", () => {
+    expect(matchFastPath("what's my health factor and can I borrow 50")).toBeNull();
+    const routed = routeMessage("what's my health factor and can I borrow 50");
+    expect(routed.kind === "read" && routed.template_id === "query_account_health").toBe(false);
   });
 });
 

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
+  shouldArmAutoApprove,
   shouldSessionAutoSubmit,
 } from "@/components/copilot/session-auto-sign";
 
@@ -155,5 +156,27 @@ describe("promoteSignableAutoSignResponse", () => {
       preview: { human_summary: "Enable" },
     };
     expect(promoteSignableAutoSignResponse(raw, false)).toEqual(raw);
+  });
+});
+
+describe("shouldArmAutoApprove", () => {
+  it("refuses when the Sign Service is not enforcing", () => {
+    expect(shouldArmAutoApprove({ mcpEnabled: false, sessionSigningAvailable: true })).toEqual({
+      arm: false,
+      reason: "sign_service_not_enforcing",
+    });
+  });
+
+  it("refuses a wallet that cannot session-sign even if MCP enabled", () => {
+    expect(shouldArmAutoApprove({ mcpEnabled: true, sessionSigningAvailable: false })).toEqual({
+      arm: false,
+      reason: "wallet_cannot_session_sign",
+    });
+  });
+
+  it("arms only when both the Sign Service and the embedded wallet are ready", () => {
+    expect(shouldArmAutoApprove({ mcpEnabled: true, sessionSigningAvailable: true })).toEqual({
+      arm: true,
+    });
   });
 });

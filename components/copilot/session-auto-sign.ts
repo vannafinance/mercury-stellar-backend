@@ -91,3 +91,16 @@ export function promoteSignableAutoSignResponse<
     preview,
   };
 }
+
+/**
+ * A client-side cap is not a policy. Arm auto-approve only when the Sign
+ * Service is enforcing, and only for a wallet that can session-sign.
+ */
+export function shouldArmAutoApprove(opts: {
+  mcpEnabled: boolean;
+  sessionSigningAvailable: boolean;
+}): { arm: true } | { arm: false; reason: "sign_service_not_enforcing" | "wallet_cannot_session_sign" } {
+  if (!opts.mcpEnabled) return { arm: false, reason: "sign_service_not_enforcing" };
+  if (!opts.sessionSigningAvailable) return { arm: false, reason: "wallet_cannot_session_sign" };
+  return { arm: true };
+}

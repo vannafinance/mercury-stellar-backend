@@ -1,0 +1,63 @@
+{
+  "phase": "3-pass-B",
+  "checkedAt": "2026-09-10T11:19:38.000Z",
+  "account": "CBOQAN5NFII4P5HD73M2IRSFYZSXC5XC76FQWQ5JU7LJAO66TFFPG5XY",
+  "sameLedger": true,
+  "ledgers": {
+    "get_current_total_balance": 4603116,
+    "get_current_total_borrows": 4603116,
+    "liquidation_snapshot": 4603116
+  },
+  "computeMarginSnapshot": {
+    "source": "lib/account-snapshot.ts via GET /api/account on 127.0.0.1:3000",
+    "grossCollateral": 1087.2026330299564,
+    "debt": 278.90665145696755,
+    "healthFactor": 3.898087863270986
+  },
+  "liquidationSnapshot": {
+    "method": "liquidation_snapshot(account)",
+    "ledger": 4603116,
+    "collateralWad": "953800246876571343006",
+    "debtWad": "278906711447904139268",
+    "liquidatable": false,
+    "collateralUsd": 953.8002468765714,
+    "debtUsd": 278.9067114479041
+  },
+  "riskEngineTotals": {
+    "get_current_total_balance": { "ledger": 4603116, "usd": 953.8002468765714 },
+    "get_current_total_borrows": { "ledger": 4603116, "usd": 278.9067114479041 }
+  },
+  "drift": {
+    "tolerance": "max($0.50, 0.5% of the larger side)",
+    "collateral": {
+      "app": 1087.2026330299564,
+      "contract": 953.8002468765714,
+      "diffUsd": 133.4,
+      "agrees": false
+    },
+    "debt": {
+      "app": 278.90665145696755,
+      "contract": 278.9067114479041,
+      "diffUsd": 0.00006,
+      "agrees": true
+    },
+    "healthFactor": {
+      "app": 3.9,
+      "contractPosted": 3.42
+    }
+  },
+  "liveMcp": {
+    "checkedAt": "2026-09-10T17:03:21+05:30",
+    "revision": "vanna-mcp-server-00089-wkn",
+    "image": "us-central1-docker.pkg.dev/vanna-mcp/cloud-run-source-deploy/vanna-mcp-server:passb-2528c49",
+    "path": "catalogue vanna_get_liquidation_snapshot → vanna_margin_status action=liquidation_snapshot",
+    "result": {
+      "smart_account": "CBOQAN5NFII4P5HD73M2IRSFYZSXC5XC76FQWQ5JU7LJAO66TFFPG5XY",
+      "collateral_usd": "953.928072854968961887",
+      "debt_usd": "278.991220446165599071",
+      "liquidatable": false,
+      "source": "risk_engine.liquidation_snapshot"
+    }
+  },
+  "recommendation": "RiskEngine reads at ledger 4603116 are pinned. Debt agrees. Collateral disagrees by ~$133.40 because computeMarginSnapshot adds unposted SAC on the same C-address (reconcileMarginRawSacCollateral) while get_current_total_balance_internal / liquidation_snapshot walk only registered collateral tokens. Pass B keeps refuse-to-size. Display keeps the page figure (~3.90). Recommended product: show posted $953.80, unposted $133.40, health 3.42. Live MCP on revision vanna-mcp-server-00089-wkn returns the 3-tuple via vanna_margin_status action=liquidation_snapshot (catalogue path, not simulate fallback)."
+}

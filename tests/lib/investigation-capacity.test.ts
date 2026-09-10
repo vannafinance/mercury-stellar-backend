@@ -22,6 +22,7 @@ import {
   computeBorrowCapacity,
   reconcileSizingBasis,
 } from "@/lib/copilot/investigation/capacity";
+import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
 
 const ACCOUNT = "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ";
 
@@ -83,6 +84,7 @@ describe("borrow capacity", () => {
 
   it("falls back to a direct contract simulate when MCP does not expose the snapshot", async () => {
     snapshot(4219.36, 1736.19);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     mocks.readLiquidationSnapshot.mockResolvedValue({
       collateralUsd: 4219.36, debtUsd: 1736.19, liquidatable: false, ledger: 4602720,
     });
@@ -98,10 +100,16 @@ describe("borrow capacity", () => {
     );
     expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
     expect(mocks.readLiquidationSnapshot).toHaveBeenCalledWith(ACCOUNT, expect.anything());
+    expect(info).toHaveBeenCalledWith(
+      "[copilot] liquidation_snapshot path",
+      expect.objectContaining({ path: "simulate_fallback", smartAccount: ACCOUNT }),
+    );
+    info.mockRestore();
   });
 
   it("fetches the contract snapshot through MCP when one is not preloaded", async () => {
     snapshot(4219.36, 1736.19);
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const mcp = {
       call: vi.fn(async () => ({
         collateral_usd: "4219.36", debt_usd: "1736.19", liquidatable: false,
@@ -118,6 +126,12 @@ describe("borrow capacity", () => {
       "GTEST",
     );
     expect(capacity?.maxBorrowUsd).toBe("6541.043333333333333333");
+    expect(mocks.readLiquidationSnapshot).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      "[copilot] liquidation_snapshot path",
+      expect.objectContaining({ path: "mcp", smartAccount: ACCOUNT }),
+    );
+    info.mockRestore();
   });
 
   it("returns nothing when the user never stated a floor", async () => {
@@ -194,5 +208,13 @@ describe("reconcileSizingBasis", () => {
       { collateralUsd: 4230.94, debtUsd: 2705.60, liquidatable: false },
     );
     expect(result).toEqual({ ok: false, reason: "sizing_sources_disagree" });
+  });
+});
+
+describe("sizing refuse copy", () => {
+  it("explains unposted margin-account balances, not a generic disagreement", () => {
+    expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/not posted as collateral/i);
+    expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/liquidation engine/i);
+    expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/Margin page/i);
   });
 });

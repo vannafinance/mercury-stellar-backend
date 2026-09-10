@@ -130,10 +130,18 @@ async function main() {
       if (value == null || value === '') return null;
       try { return Number(BigInt(value)) / 1e18; } catch { return null; }
     };
-    const totalBalance = report.account.reads.find((entry) => entry.method === 'get_current_total_balance');
-    const totalBorrows = report.account.reads.find((entry) => entry.method === 'get_current_total_borrows');
-    const snapshotHit = report.account.liquidationSnapshot.find((entry) => entry.value != null)
+    let totalBalance = report.account.reads.find((entry) => entry.method === 'get_current_total_balance');
+    let totalBorrows = report.account.reads.find((entry) => entry.method === 'get_current_total_borrows');
+    let snapshotHit = report.account.liquidationSnapshot.find((entry) => entry.value != null)
       ?? report.account.liquidationSnapshot[0];
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const ledgers = [totalBalance?.ledger, totalBorrows?.ledger, snapshotHit?.ledger]
+        .filter((ledger) => Number.isFinite(ledger));
+      if (ledgers.length === 3 && ledgers.every((ledger) => ledger === ledgers[0])) break;
+      totalBalance = await read(address, 'get_current_total_balance', [arg]);
+      totalBorrows = await read(address, 'get_current_total_borrows', [arg]);
+      snapshotHit = { signature: 'account', ...await read(address, 'liquidation_snapshot', [arg]) };
+    }
     const appBody = appSnapshot && appSnapshot.body && typeof appSnapshot.body === 'object' ? appSnapshot.body : null;
     const ledgers = [
       totalBalance?.ledger, totalBorrows?.ledger, snapshotHit?.ledger,

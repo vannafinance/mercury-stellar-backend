@@ -64,17 +64,6 @@ export interface ResearchView {
   elapsedMs?: number;
 }
 
-/**
- * The Copilot workspace never keyword-plans. Investigation owns understanding;
- * the workflow journal owns execution. `handleChat` still contains the old
- * router for unsurfaced callers and tests — a prompt with `surface: "copilot"`
- * is refused there rather than re-planned.
- */
-export function shouldUseLegacyExecutor(view: ResearchView): boolean {
-  void view;
-  return false;
-}
-
 export type ResearchStreamEvent =
   | { type: "progress"; event: import("./types").InvestigationProgress }
   | { type: "result"; result: ResearchView }

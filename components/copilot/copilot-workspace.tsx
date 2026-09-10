@@ -52,6 +52,7 @@ import {
 import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
+  shouldArmAutoApprove,
   shouldSessionAutoSubmit,
 } from "./session-auto-sign";
 import {
@@ -82,7 +83,6 @@ import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 import { useInvestigation } from "@/hooks/use-investigation";
-import { shouldUseLegacyExecutor } from "@/lib/copilot/investigation/view";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
@@ -1418,7 +1418,6 @@ export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   const investigation = useInvestigation(address);
   const workflow = useWorkflow(address);
-  const actedRef = useRef<string | null>(null);
   const proposedRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
@@ -1796,28 +1795,17 @@ export function CopilotWorkspace() {
   // Session signing only applies to Privy embedded wallets — Freighter always
   // prompts through its extension, so the toggle can't apply there.
   const sessionSigningAvailable = walletKind === "privy" && !!address;
-  const sessionSigning = sessionSigningAvailable && autoApprove;
 
   /**
    * What the MCP Sign Service said last time we tried to enable auto-sign.
    *
-   * Separate from `autoApprove` because they are two different mechanisms and only one of
-   * them currently works. `autoApprove` is in-app session signing: the Privy embedded
-   * wallet signs a staged XDR without a prompt, client-side. The Sign Service is a
-   * server-side signer that would also enforce the spend caps as policy — and it rejects
-   * our machine-to-machine token with `invalid_user_assertion` / "Invalid token audience",
-   * so it is not enforcing anything today.
-   *
-   * The UI conflated the two: enabling auto-approve flipped the switch on and printed
-   * "Caps $1000/tx · $1000/day" next to a visible 401, which claims a policy that does not
-   * exist. Holding the Sign Service's answer separately lets the rail say which half is on.
+   * Auto-approve may arm only when this is `ok`. A client-side cap is not a
+   * policy — calling the API directly would bypass it.
    *
    * `unbound` is a third answer, not a flavour of `unavailable`. "The Sign Service
    * refused our credential" is our fault and the user can do nothing about it;
    * "this wallet is not authorized for Vanna to sign" is a consent they have never
-   * been asked for, and it has a button. Collapsing the two is what made a
-   * `wallet_not_bound` 403 look like an outage and sent the operator round the
-   * reconnect loop — a wallet-connect modal cannot produce a signing binding.
+   * been asked for, and it has a button.
    */
   const [signServiceState, setSignServiceState] = useState<{
     status: "unknown" | "ok" | "unavailable" | "unbound";
@@ -1833,12 +1821,17 @@ export function CopilotWorkspace() {
    */
   const [bindingInApp, setBindingInApp] = useState(false);
 
+  /** Whether anything server-side is actually holding the caps. */
+  const capsEnforced = signServiceState.status === "ok";
+  /**
+   * Auto-approve is armed only when the Sign Service is enforcing the caps.
+   * A client-side-only cap can be bypassed by calling the API directly.
+   */
+  const sessionSigning = sessionSigningAvailable && autoApprove && capsEnforced;
   /** Switch clicked on, budget not yet confirmed — engaged but not asserting a policy. */
   const autoPending = railBudgetOpen && !sessionSigning;
   /** Only the per-tx cap is required; a blank daily cap falls back to it in enableAutoSign. */
   const capsValid = railCapsMode === "defaults" || Number(customTx) > 0;
-  /** Whether anything server-side is actually holding the caps. */
-  const capsEnforced = signServiceState.status === "ok";
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -2415,7 +2408,9 @@ export function CopilotWorkspace() {
         if (address) {
           if (/\bauto-sign disabled\b/i.test(data.message || "")) {
             setAutoApprove(address, false);
+            setSignServiceState({ status: "unknown", reason: null });
           } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
+            setSignServiceState({ status: "ok", reason: null });
             setAutoApprove(address, true);
           }
         }
@@ -2540,7 +2535,6 @@ export function CopilotWorkspace() {
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
-    actedRef.current = null;
     proposedRef.current = null;
     signedWorkflowStepRef.current = null;
     setSigningJournal(false);
@@ -2557,33 +2551,10 @@ export function CopilotWorkspace() {
   const { run: dispatchRun } = entry;
 
   /**
-   * Act on what was understood, once the investigation finishes.
-   *
-   * Without this the surface is a dead end: every prompt is investigated and then NOTHING
-   * happens — no plan, no answer, no button. `InvestigationCard` only shows a Continue
-   * button when given `onContinue`, and it is not given one, so an actionable prompt like
-   * "swap 10 XLM to AQUSDC then add liquidity" investigated for half a minute and stopped.
-   *
-   * This runs only when the investigation reached a conclusion. A question still open
-   * (`needs_input`), a refusal (`blocked`), a greeting (`replied`) or a run that ran out of
-   * time (`incomplete`) must NOT proceed — acting on an incomplete understanding is the
-   * failure this ordering exists to prevent.
-   *
-   * The honest caveat: sized Blend options go through the workflow journal (`/propose`,
-   * `/approve`, `/advance`) so the amounts the card showed are the ones held for approval.
-   * Concrete single actions that investigation did not size still hand the original request
-   * to the existing executor. A strategy that already stated a health floor never does —
-   * that path was inventing a 1000 USDC deposit.
+   * Sized Blend options go through the workflow journal (`/propose`, `/approve`,
+   * `/advance`) so the amounts the card showed are the ones held for approval.
+   * This runs only when the investigation reached a conclusion with a candidate.
    */
-  useEffect(() => {
-    const view = investigation.result;
-    if (!view || investigation.loading || investigation.error) return;
-    if (!shouldUseLegacyExecutor(view)) return;
-    if (actedRef.current === view.continuation) return;
-    actedRef.current = view.continuation;
-    void postCopilot({ message: view.originalRequest }, view.originalRequest);
-  }, [investigation.result, investigation.loading, investigation.error, postCopilot]);
-
   const proposePlan = workflow.propose;
   const confirmWorkflow = workflow.confirm;
   useEffect(() => {
@@ -2749,19 +2720,19 @@ export function CopilotWorkspace() {
       }
       setSavedCaps({ tx: txCap, day: dayCap });
 
-      // Nothing to turn on for a wallet that cannot sign without its own prompt, and the
-      // Sign Service could not stand in for it. Saying so beats a switch that lights up
-      // and changes nothing.
-      if (!sessionSigningAvailable && !mcpEnabled) {
-        toast.error("Auto-approve unavailable for this wallet — every write still needs a signature.");
+      const arm = shouldArmAutoApprove({ mcpEnabled, sessionSigningAvailable });
+      if (!arm.arm) {
+        setAutoApprove(address, false);
+        toast.error(
+          arm.reason === "sign_service_not_enforcing"
+            ? "Auto-approve refused — the Sign Service is not enforcing spend caps. " +
+              "A limit that only lives in this browser can be bypassed."
+            : "Auto-approve unavailable for this wallet — every write still needs a signature.",
+        );
         return;
       }
       setAutoApprove(address, true);
-      toast.success(
-        mcpEnabled
-          ? `Auto-approve on · $${txCap}/tx · $${dayCap}/day`
-          : `Auto-approve on in-app · caps $${txCap}/tx · $${dayCap}/day not enforced by the Sign Service`,
-      );
+      toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
     },
     [address, customTx, customDay, sessionSigningAvailable],
   );
@@ -2881,17 +2852,9 @@ export function CopilotWorkspace() {
         },
         label,
       );
-      // Sync local auto-approve (session auto-submit) with the user's cap choice.
-      //
-      // Two outcomes are recorded, not one. `signServiceState` is whether MCP actually
-      // enabled server-side auto-sign; `autoApprove` is whether this app may sign a staged
-      // XDR with the embedded wallet without a prompt. The second does not depend on the
-      // first — which is the only reason auto-approve is usable at all right now, since the
-      // Sign Service currently rejects our M2M token. What it must NOT do is claim the
-      // first succeeded: it used to flip on and print the caps as policy even when the
-      // response was `kind: "error"` carrying a 401.
-      // Unbound wallet: finish the binding in THIS gesture rather than handing the
-      // user a second quest. See completeWalletBindInApp.
+      // Sync local auto-approve with the Sign Service session. Caps that only
+      // live in this browser are not a policy — applyAutoSignOutcome refuses to
+      // arm unless MCP actually enabled a server-side session.
       if (data?.kind === "needs_wallet_bind" && data.wallet_bind) {
         const finished = await completeWalletBindInApp(data.wallet_bind);
         if (finished) return;
@@ -5063,7 +5026,6 @@ export function CopilotWorkspace() {
             <InvestigationCard
               {...investigation}
               onReset={() => {
-                actedRef.current = null;
                 proposedRef.current = null;
                 signedWorkflowStepRef.current = null;
                 setSigningJournal(false);
@@ -5310,7 +5272,7 @@ export function CopilotWorkspace() {
                   <PlanApprovalCard
                     plan={response.plan}
                     busy={loading}
-                    sessionSigning={autoApprove}
+                    sessionSigning={sessionSigning}
                     onApprove={approvePlan}
                     onModify={() => {
                       // Put the original wording back in the composer so it can be

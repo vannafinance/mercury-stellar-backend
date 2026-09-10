@@ -148,7 +148,10 @@ async function resolveContractBasis(
   signal?: AbortSignal,
 ): Promise<ContractLiquidationBasis> {
   if (options && Object.prototype.hasOwnProperty.call(options, "contract")) {
-    if (options.contract) return options.contract;
+    if (options.contract) {
+      console.info("[copilot] liquidation_snapshot path", { path: "preloaded", smartAccount });
+      return options.contract;
+    }
     throw new Error("sizing_contract_unavailable");
   }
   if (options?.mcp) {
@@ -159,13 +162,17 @@ async function resolveContractBasis(
         options.trader ?? undefined,
       );
       const parsed = parseLiquidationSnapshot(data);
-      if (parsed) return parsed;
+      if (parsed) {
+        console.info("[copilot] liquidation_snapshot path", { path: "mcp", smartAccount });
+        return parsed;
+      }
     } catch {
       // Live MCP may not have the action yet; fall through to a direct simulate.
     }
   }
   try {
     const snap = await readLiquidationSnapshot(smartAccount, { signal });
+    console.info("[copilot] liquidation_snapshot path", { path: "simulate_fallback", smartAccount });
     return {
       collateralUsd: snap.collateralUsd,
       debtUsd: snap.debtUsd,

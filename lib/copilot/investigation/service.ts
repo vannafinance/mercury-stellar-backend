@@ -8,6 +8,7 @@ import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { compareObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition } from "./capacity";
+import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, requestedBorrowFrom } from "./candidates";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence } from "./evidence";
@@ -334,7 +335,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       });
       capacity = null;
       if (!capacityResult.failed && error instanceof Error && error.message === "sizing_sources_disagree") {
-        warnings.push("The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size.");
+        warnings.push(SIZING_SOURCES_DISAGREE_WARNING);
       }
     }
   }
@@ -343,7 +344,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     // warning about it read as "your position could not be read", which is a false claim.
     warnings.push(
       capacityResult.reason === "sizing_sources_disagree"
-        ? "The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size."
+        ? SIZING_SOURCES_DISAGREE_WARNING
         : "Borrowing headroom could not be computed from your current position.",
     );
   }
