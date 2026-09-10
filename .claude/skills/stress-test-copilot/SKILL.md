@@ -9,7 +9,7 @@ A passing test suite tells you the parts work. Only firing real prompts at the r
 tells you the product works. Every phase of this project has had a green suite alongside a
 flagship prompt that failed live — that gap is what this skill closes.
 
-The output is **evidence with a cause attached**, never a pass/fail tally.
+**Also:** Cursor skill `.cursor/skills/stress-test-vanna` (MCP + copilot, writes, Horizon, canvas). This file remains the copilot-only method; the library is shared.
 
 ## Before you start
 
