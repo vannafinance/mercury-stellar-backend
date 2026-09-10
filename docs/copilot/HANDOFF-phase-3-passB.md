@@ -47,15 +47,33 @@ contract) while **collateral differs by $1,032.72 (~25%)**. Debt agreeing that p
 out ledger drift — these reads are effectively simultaneous. This is not noise, and it is not
 the Phase 2.7 bug in reverse.
 
-**The cause is in `lib/account-snapshot.ts:384`:**
+**Settled against the contract source, not inferred.** `risk_engine.rs` on
+`vannafinance/Protocol_V1_Soroban` branch **`testnet`** @ `1d333fb` (10 Sep 2026),
+`get_current_total_balance_internal`:
+
+```rust
+let collateral_token_symbols: Vec<Symbol> =
+    smart_account_contract_client.get_all_collateral_tokens();
+...
+for token in collateral_token_symbols.iter() {
+```
+
+It walks **only the tokens registered as collateral on the smart account** — skipping revoked
+tokens and frozen tracking positions, valuing LP and Blend positions through their helpers.
+Nothing else is counted.
+
+**The app adds more, at `lib/account-snapshot.ts:384`:**
 
 ```ts
 let grossCollateralValue = farmPositionValue + rawAssetValue + nonSacCollateralValue;
 ```
 
-The app adds **`rawAssetValue`** — raw wallet holdings. The contract's
-`get_current_total_balance` counts recorded collateral plus Blend receipts, i.e. only what is
-actually **posted**. Both figures are internally correct; they answer different questions.
+`rawAssetValue` comes from `reconcileMarginRawSacCollateral(marginAccountAddress, …)` — raw
+SAC balances held by the **same margin account** but never posted as collateral. So both
+sides read the same account; the app counts unposted balances, the contract does not.
+
+That $1,032.72 is real money sitting in the margin account. It is simply **not pledged**, and
+the RiskEngine will not count it when deciding whether to liquidate.
 
 | | Collateral | Debt | Health factor |
 |---|---|---|---|
@@ -71,10 +89,23 @@ they should, and the copilot's own floor logic inherits the same optimism.
 
 1. **Do not change the app's collateral maths in this phase.** It is load-bearing for the
    Margin page and Portfolio, and changing it silently would move numbers under users.
-2. **Raise it with the app/product owner** with these figures. The question for them: should
-   "health factor" mean *posted collateral / debt* (what liquidates you) or *total net
-   position / debt* (what the page shows today)? Only one of those can be labelled "health
-   factor" without misleading.
+2. **Raise it with the app/product owner** with these figures and the contract excerpt above.
+   The contract has already answered which definition governs liquidation, so the question is
+   only what the product should *show*.
+
+   **Recommended answer — show both, labelled honestly, and compute health from posted only:**
+
+   | Line | Value | Meaning |
+   |---|---|---|
+   | Posted collateral | $3,051.15 | backs your loan; what the risk engine counts |
+   | In account, not posted | $1,032.72 | yours, in the margin account, **not** pledged |
+   | Health factor | **1.85** | posted ÷ debt — the number that liquidates you |
+
+   This is better than either current option. It stops overstating safety, and it turns a
+   misleading figure into an actionable one: the user can see they hold $1,032.72 they could
+   post right now to lift their health factor. A copilot that can say *"post your unposted
+   AQUSDC and your health factor goes from 1.85 to 2.47"* is more useful than one quoting 2.47
+   as though it were already true.
 3. **Keep Pass A's behaviour meanwhile** — refuse to quote a sized borrow when the sources
    disagree, keep displaying the page's figure. That is the right conservative default.
 4. **Add the explanation to the refusal.** Today the card says the sources disagree. It should
