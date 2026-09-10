@@ -58,6 +58,21 @@ signed-in runs. Those carry into this phase's acceptance.
 
 ---
 
+## Do this in two passes — report back between them
+
+Tasks 1 and 2 are independent and both large. Doing them in one pass produces a diff big
+enough that a failure tells you nothing about which half caused it.
+
+- **Pass A — Tasks 1, 3, and as much of 4 as is automatable.** Source of truth, the
+  timestamp fix, and the phase-latency capture. Report back. This establishes a verified
+  baseline, and gets sizing onto the right basis *before* anything is deleted.
+- **Pass B — Task 2.** The planner consolidation, against that verified baseline.
+
+Do not begin Pass B until Pass A is reported and the suite is green. The eval gate is what
+makes the deletion safe; running it against a baseline that is itself in flux wastes it.
+
+---
+
 ## Task 1 — Source of truth: display from the snapshot, size from the contract
 
 **The question Phase 2.9 raised without answering: should the copilot depend on the *app*
