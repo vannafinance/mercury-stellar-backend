@@ -31,6 +31,7 @@ import { MarginActionPreview, type PreviewRow } from "@/components/margin/margin
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
+import { numberAmountToWad } from "@/lib/utils/sanitize-amount";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 // Live step-by-step progress for the WB deposit(+borrow) flow — a multi-leg
 // operation (deposit, then borrow, then a second borrow for Dual Borrow)
@@ -955,7 +956,7 @@ export const LeverageAssetsTab = () => {
           for (const item of wbDeposits) {
             stepNum += 1;
             showStep(`Step ${stepNum}/${totalSteps}: Depositing ${item.amount.toFixed(2)} ${item.asset}`);
-            const amountWad = (BigInt(Math.floor(item.amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+            const amountWad = numberAmountToWad(item.amount).toString();
             const depositResult = await MarginAccountService.depositCollateralTokens(
               marginAccountAddress!,
               item.asset,

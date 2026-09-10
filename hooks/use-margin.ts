@@ -10,6 +10,7 @@ import { getMarginHistoryFromMercury, type MarginTxEntry } from '@/lib/mercury-m
 import { getMarginHistoryFromRpc } from '@/lib/margin-history-rpc';
 import { MarginAccountService } from '@/lib/margin-utils';
 import { useUserStore } from '@/store/user';
+import { numberAmountToWad } from '@/lib/utils/sanitize-amount';
 
 /** Margin history row decoded from AccountManager events. */
 export type MarginHistoryRow = {
@@ -109,9 +110,8 @@ export const useMarginHistory = () => {
 // transfer instead of the plain lending-pool supply/redeem flow.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Precision-safe human-amount → WAD (1e18) string, scaling via BigInt to avoid float drift. */
-const toWad = (amount: number): string =>
-  (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+/** Precision-safe human-amount → WAD (1e18) string, preserving all 7 Stellar decimals. */
+const toWad = (amount: number): string => numberAmountToWad(amount).toString();
 
 /** Maps a display/asset-type symbol to the raw contract collateral symbol. */
 const normalizeContractTokenSymbol = (symbol: string): string => {

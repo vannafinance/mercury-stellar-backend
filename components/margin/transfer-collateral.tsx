@@ -17,7 +17,7 @@ import { useUserStore } from "@/store/user";
 import toast from "react-hot-toast";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
-import { validateAmountChange, floorAmountToInput } from "@/lib/utils/sanitize-amount";
+import { validateAmountChange, floorAmountToInput, decimalAmountToWad } from "@/lib/utils/sanitize-amount";
 import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-prices";
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
@@ -175,7 +175,16 @@ export const TransferCollateral = () => {
         Math.min(maxRiskSafeWithdraw, maxTransferableBalance - XLM_MARGIN_WITHDRAW_BUFFER)
       );
     }
-    return Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON);
+    // The epsilon only exists to guard against float rounding drift in the
+    // health-factor-derived estimate below (maxRiskSafeWithdraw's
+    // hasMeaningfulDebt branch). When there's no debt, maxRiskSafeWithdraw is
+    // already the exact on-chain balance (maxTransferableBalance, no HF math
+    // involved) — subtracting anything here stranded real dust behind on
+    // every 100%/Max withdraw of a debt-free non-XLM token (e.g. a WAD-exact
+    // 50 BLUSDC balance withdrew as 49.9999999, leaving 0.0000001 un-sendable).
+    return hasMeaningfulDebt
+      ? Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON)
+      : maxRiskSafeWithdraw;
   })();
   const isOverSourceBalance = Number(valueInput || 0) > sourceBalance;
 
@@ -363,7 +372,12 @@ export const TransferCollateral = () => {
       );
     },
     mutationFn: async () => {
-      const amountWad = (BigInt(Math.floor(Number(valueInput) * 1000000)) * BigInt(1000000000000)).toString();
+      // String-based conversion (not Number(valueInput) * 1e6 then *1e12) —
+      // that math only kept 6 of Stellar's 7 decimal places, silently
+      // truncating the last digit and stranding it as un-transferable dust
+      // on every Max/100% transfer (the same bug the Repay form had, fixed
+      // there via this same helper — see decimalAmountToWad's doc comment).
+      const amountWad = decimalAmountToWad(valueInput).toString();
 
       const result = selectedTransferType === "MB"
         ? await MarginAccountService.depositCollateralTokens(

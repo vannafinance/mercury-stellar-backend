@@ -9,6 +9,7 @@ import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeCreateAccountError } from "@/lib/errors/normalize";
+import { numberAmountToWad } from "@/lib/utils/sanitize-amount";
 // ────────────────────────────────────────────────────────────────────
 // Rate-limiting / request-dedup gates.
 // Goal: prevent StrictMode double-fire, rapid remounts, and concurrent
@@ -312,13 +313,11 @@ export const borrowTokens = async (
     }
 
 
-    // Convert borrow amount to WAD (18 decimals). Splitting the multiplication
-    // through BigInt avoids the JS Number `toString()` falling back to
-    // scientific notation for large values (e.g. 3431.79 * 1e18 prints as
-    // '3.43e+21'), which downstream `BigInt(...)` parsing rejects.
-    const borrowAmountWad = (
-      BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
-    ).toString();
+    // Convert borrow amount to WAD (18 decimals), preserving all 7 Stellar
+    // decimals (numberAmountToWad, not a raw Number `toString()` — that falls
+    // back to scientific notation for large values, e.g. 3431.79 * 1e18
+    // prints as '3.43e+21', which downstream `BigInt(...)` parsing rejects).
+    const borrowAmountWad = numberAmountToWad(borrowAmount).toString();
 
     // Update loading state
     useMarginAccountInfoStore.getState().set({ 
