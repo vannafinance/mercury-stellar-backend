@@ -284,9 +284,10 @@ export interface OneClickStrategyResult {
 }
 
 import { netOfOriginationFee } from './borrow-fee';
+import { numberAmountToWad } from './utils/sanitize-amount';
 
 function toWad(amount: number): string {
-  return (BigInt(Math.floor(amount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+  return numberAmountToWad(amount).toString();
 }
 
 /**

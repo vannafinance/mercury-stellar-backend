@@ -63,8 +63,9 @@ vi.mock("@/lib/aquarius-utils", () => ({
 }));
 
 import { closePosition } from "@/lib/one-click-strategy";
+import { numberAmountToWad } from "@/lib/utils/sanitize-amount";
 
-const toWad = (n: number) => (BigInt(Math.floor(n * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+const toWad = (n: number) => numberAmountToWad(n).toString();
 
 const baseParams = {
   userAddress: "GUSER",

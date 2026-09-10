@@ -39,6 +39,7 @@ import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar
 import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
 import { pricedUsd, requireListedResults } from '@/lib/usable-read';
 import { markTxSubmitted, showTxStep } from './tx-progress';
+import { numberAmountToWad } from './utils/sanitize-amount';
 
 // Types
 /**
@@ -2927,16 +2928,11 @@ export class MarginAccountService {
         };
       }
 
-      const depositAmountWad = (
-        BigInt(Math.floor(collateralAmount * 1_000_000)) * BigInt(1_000_000_000_000)
-      ).toString();
+      const depositAmountWad = numberAmountToWad(collateralAmount).toString();
       const borrowAmountWadBigInt =
-        borrowAmount > 0
-          ? BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
-          : BigInt(0);
+        borrowAmount > 0 ? numberAmountToWad(borrowAmount) : BigInt(0);
       const totalDeployAmount = collateralAmount + Math.max(0, borrowAmount);
-      const totalDeployAmountWad =
-        BigInt(Math.floor(totalDeployAmount * 1_000_000)) * BigInt(1_000_000_000_000);
+      const totalDeployAmountWad = numberAmountToWad(totalDeployAmount);
 
       const callBytes = BlendService.buildExternalProtocolCallBytes(
         blendPoolAddress,
@@ -3067,11 +3063,11 @@ export class MarginAccountService {
       const isCrossAsset = contractDepositSymbol !== contractBorrowSymbol;
 
 
-      const depositAmountWad = (BigInt(Math.floor(depositAmount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+      const depositAmountWad = numberAmountToWad(depositAmount).toString();
       const borrowAmountTokens = options?.borrowAmountTokens != null
         ? options.borrowAmountTokens
         : (multiplier > 1 ? depositAmount * (multiplier - 1) : 0);
-      const borrowAmountWad = (BigInt(Math.floor(borrowAmountTokens * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+      const borrowAmountWad = numberAmountToWad(borrowAmountTokens).toString();
 
       // Pre-flight checks (cheap reads, surface admin/config issues before signing)
       const configCheck = await this.isTokenConfigured(contractDepositSymbol);

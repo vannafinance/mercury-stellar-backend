@@ -14,8 +14,16 @@ const VALID_AMOUNT_RE = /^[0-9]*\.?[0-9]{0,7}$/;
  * string. Use for "Max" / percentage presets so they carry full precision and
  * stay editable — not `toFixed(2)`, which truncated real balances to 2dp.
  */
-export const floorAmountToInput = (n: number): string =>
-  Number.isFinite(n) && n > 0 ? String(Math.floor(n * 1e7) / 1e7) : "";
+export const floorAmountToInput = (n: number): string => {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const floored = Math.floor(n * 1e7) / 1e7;
+  // toFixed, not String() — String() switches to exponential notation below
+  // 1e-6 (e.g. 0.0000008 -> "8e-7"), which then fails to re-parse as a valid
+  // amount and renders wrong in the input. toFixed(7) always gives a plain
+  // decimal string; strip trailing zeros (and a bare trailing '.') to match
+  // this function's existing "clean, no trailing zeros" contract.
+  return floored.toFixed(7).replace(/\.?0+$/, "");
+};
 
 /**
  * Returns true if `value` is a valid in-progress amount string:
@@ -59,4 +67,19 @@ export function decimalAmountToWad(value: string): bigint {
   const whole = wholeRaw || "0";
   const fraction = fractionRaw.padEnd(18, "0").slice(0, 18);
   return BigInt(whole) * BigInt("1000000000000000000") + BigInt(fraction || "0");
+}
+
+/**
+ * Precision-safe `number` -> 18-decimal WAD, for call sites that compute an
+ * amount as a JS number rather than holding a validated input string.
+ * Routes through {@link decimalAmountToWad} via `toFixed(7)` (Stellar's own
+ * max precision) — NOT `Math.floor(n * 1_000_000) * 1_000_000_000_000`, which
+ * only keeps 6 of Stellar's 7 decimal places and silently truncates the last
+ * digit. That truncation is exactly what stranded 0.0000001-0.0000009 of
+ * un-transferable dust on every Max/100% deposit, borrow, and withdraw built
+ * on that formula (components/margin/transfer-collateral.tsx and others).
+ */
+export function numberAmountToWad(n: number): bigint {
+  if (!Number.isFinite(n) || n <= 0) return BigInt(0);
+  return decimalAmountToWad(n.toFixed(AMOUNT_MAX_DECIMALS));
 }
