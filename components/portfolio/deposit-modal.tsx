@@ -14,6 +14,7 @@ import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
+import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 interface DepositModalProps {
   isOpen: boolean;
@@ -78,6 +79,14 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
   const { totalCollateralValue, totalBorrowedValue, avgHealthFactor } = useMarginAccountInfoStore();
   const tokenPrices = useTokenPrices(["XLM", "USDC", "BLUSDC", "AQUSDC", "SOUSDC"]);
   const { isDark } = useTheme();
+  // Real on-chain XLM minimum reserve (base + subentries) for the connected
+  // WALLET — a flat "keep 1 XLM" undershoots for a wallet holding several
+  // trustlines. Without this, Max/100% on an XLM deposit filled in the raw
+  // wallet balance, which traps on-chain with Error(Contract, #10)
+  // ("resulting balance is not within the allowed range") — the same bug
+  // already fixed for withdraws in transfer-collateral.tsx/collateral-box.tsx,
+  // just not yet applied to this deposit modal.
+  const [xlmMinReserve, setXlmMinReserve] = useState(1.5);
 
   // Ensure the margin-account store is resolved/fresh while the modal is open
   // (cheap — checkUserMarginAccount dedupes/throttles internally) so the
@@ -88,7 +97,24 @@ export const DepositModal: React.FC<DepositModalProps> = ({ isOpen, onClose }) =
     }
   }, [isOpen, userAddress]);
 
-  const assetBalance = parseFloat(tokenBalances[selectedAsset as keyof typeof tokenBalances] || "0") || 0;
+  useEffect(() => {
+    if (!userAddress) return;
+    let cancelled = false;
+    getXlmMinReserve(userAddress).then((r) => {
+      if (!cancelled) setXlmMinReserve(r);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress]);
+
+  const rawAssetBalance = parseFloat(tokenBalances[selectedAsset as keyof typeof tokenBalances] || "0") || 0;
+  // Non-XLM assets: the full wallet balance is spendable (their own reserve
+  // is just the trustline, already reflected in the XLM floor above).
+  const assetBalance =
+    selectedAsset === ASSET_TYPES.XLM
+      ? maxSpendableXlm(rawAssetBalance, xlmMinReserve)
+      : rawAssetBalance;
   const cfg = ASSET_DISPLAY[selectedAsset] ?? ASSET_DISPLAY.XLM;
   const selectedTokenPrice = tokenPrices[normalizeContractTokenSymbol(selectedAsset)] ?? 1;
   const numAmount = parseFloat(amount) || 0;

@@ -35,13 +35,16 @@ function accountTopicXdr(account: string): string | null {
 
 export async function GET(req: NextRequest) {
   if (!REST_BASE || !MERCURY_KEY) {
-    return NextResponse.json([], {
-      status: 200,
-      headers: {
-        "Cache-Control": "no-store",
-        "X-Mercury-Configured": "0",
-      },
-    });
+    // A missing optional indexer is not a server error — every page load in
+    // an environment without MERCURY_URL/MERCURY_KEY used to 500 here, which
+    // reads as a crashed route and buries real 500s in the noise. `events: []`
+    // matches fetchEventsPage's success shape (lib/mercury-client.ts) exactly,
+    // so callers degrade to "no history" instead of throwing; `unconfigured`
+    // lets a caller that cares distinguish this from a genuinely empty result.
+    return NextResponse.json(
+      { events: [], unconfigured: true },
+      { status: 200, headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const sp = req.nextUrl.searchParams;
