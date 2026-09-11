@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Vanna Copilot — Architecture &amp; Workflows</title>
+<style>
+  body{margin:0;background:#f6f7f9;color:#1b1b1f;font-family:'Segoe UI',system-ui,sans-serif;line-height:1.55;}
+  .top{padding:26px 30px 10px;border-bottom:1px solid #e3e5ea;background:#fff;}
+  h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.3px;}
+  .sub{color:#5b6270;font-size:13.5px;margin-top:8px;max-width:960px;}
+  .meta{margin-top:14px;display:flex;gap:26px;flex-wrap:wrap;font-size:11.5px;color:#7a808c;}
+  .meta b{display:block;color:#1b1b1f;font-size:12.5px;font-weight:600;margin-top:2px;}
+  h2{margin:34px 30px 0;font-size:19px;font-weight:700;padding-top:14px;border-top:2px solid #6741d9;}
+  h3{margin:20px 30px 0;font-size:14.5px;font-weight:600;color:#5029a3;}
+  p{margin:8px 30px;font-size:13.5px;max-width:1000px;}
+  ul,ol{margin:8px 30px;padding-left:20px;font-size:13.5px;max-width:1000px;}
+  li{margin-bottom:5px;}
+  .tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px;margin-left:8px;vertical-align:middle;}
+  .tag.ok{background:#d1fae5;color:#065f46;}
+  .tag.warn{background:#fee2e2;color:#991b1b;}
+  .tag.new{background:#fef3c7;color:#92400e;}
+  .tag.open{background:#e0e7ff;color:#3730a3;}
+  .wrap{padding:16px 20px;overflow-x:auto;-webkit-overflow-scrolling:touch;background:#f3f4f7;border-radius:14px;margin:16px 30px;border:1px solid #dfe2ea;}
+  .mermaid{display:block;background:#fff;border:1px solid #dce0e8;border-radius:12px;padding:32px 36px;min-width:1100px;box-shadow:0 4px 20px rgba(0,0,0,0.03);overflow:visible;}
+  .mermaid svg{max-width:none !important;width:100% !important;min-width:1050px !important;height:auto !important;font-size:15px !important;}
+  .mermaid .label{font-family:'Segoe UI',system-ui,sans-serif !important;font-size:14.5px !important;font-weight:500 !important;}
+  .tech{color:#6c757d;font-size:11.5px;font-style:italic;display:block;margin-top:3px;}
+  .cap{color:#5b6270;font-size:12.5px;padding:8px 32px 0;max-width:1020px;}
+  .cmp{margin:16px 30px 24px;border:1px solid #e3e5ea;border-radius:12px;background:#fff;overflow:auto;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{background:#eef0f4;text-align:left;padding:10px 12px;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:#3b4150;white-space:nowrap;}
+  td{padding:9px 12px;border-top:1px solid #eceef2;vertical-align:top;}
+  td b{color:#111;}
+  code{background:#e9ebef;padding:1px 6px;border-radius:5px;font-size:12px;}
+  .note{margin:14px 30px 24px;border-left:3px solid #10b981;background:#ecfdf5;border-radius:0 10px 10px 0;padding:13px 17px;font-size:13px;color:#334;}
+  .warnbox{margin:14px 30px 24px;border-left:3px solid #ef4444;background:#fef2f2;border-radius:0 10px 10px 0;padding:13px 17px;font-size:13px;color:#334;}
+  .infobox{margin:14px 30px 24px;border-left:3px solid #6741d9;background:#f3f0ff;border-radius:0 10px 10px 0;padding:13px 17px;font-size:13px;color:#334;}
+  .note b,.warnbox b,.infobox b{color:#111;}
+  .toc{margin:18px 30px;background:#fff;border:1px solid #e3e5ea;border-radius:12px;padding:14px 20px;font-size:13px;}
+  .toc ol{columns:2;column-gap:34px;margin:6px 0 0;}
+  .toc a{color:#5029a3;text-decoration:none;}
+  .foot{margin:30px;padding-top:14px;border-top:1px solid #e3e5ea;font-size:11.5px;color:#7a808c;}
+  .step{margin:10px 30px;padding:10px 16px;background:#fff;border:1px solid #e3e5ea;border-left:3px solid #6741d9;border-radius:0 8px 8px 0;font-size:13px;max-width:1000px;}
+  .step b{color:#5029a3;}
+  .step .why{display:block;margin-top:5px;color:#5b6270;font-size:12.5px;}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>Vanna Copilot — Architecture &amp; Workflows</h1>
+  <div class="sub">The agent-native margin copilot as running diagrams: every layer, every model call, the path a prompt takes end to end, where each number comes from, and what happens when each part fails. Each step states <b>what</b> it does and <b>why</b> it exists — most steps here were added in response to a specific production failure.</div>
+  <div class="meta">
+    <div>Version<b>v1.0</b></div>
+    <div>Date<b>11 September 2026</b></div>
+    <div>Branch<b>copilot-upgrade</b></div>
+    <div>Suite<b>1,631 app · 582 MCP · 232 sign</b></div>
+    <div>Status<b>P2 in progress · gaps in §8</b></div>
+  </div>
+</div>
+
+<div class="toc">
+  <b>Contents</b>
+  <ol>
+    <li><a href="#s1">The system at a glance</a></li>
+    <li><a href="#s2">Every model call — what each one does</a></li>
+    <li><a href="#s3">The message lifecycle, step by step</a></li>
+    <li><a href="#s4">Inside the investigation loop</a></li>
+    <li><a href="#s5">Where every number comes from</a></li>
+    <li><a href="#s6">Write execution — approval to settlement</a></li>
+    <li><a href="#s7">The MCP surface and auto-sign scoping</a></li>
+    <li><a href="#s8">Known gaps</a></li>
+  </ol>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="s1">1 · The system at a glance</h2>
+<p>A user states an objective in their own words. The system investigates the live account through audited reads, evaluates what is feasible, sizes it in deterministic code, proposes it for approval, executes leg by leg, and verifies what actually settled.</p>
+<p><b>Six layers. Each one owns a decision the layer above it is not allowed to make.</b></p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart TB
+
+USER(["<b>User states an objective</b><br/><i>'use USDC and BLUSDC so my health factor<br/>stays above 1.3 — you may take loans'</i>"])
+
+subgraph L1["<b>LAYER 1 · Surfaces</b>"]
+  direction LR
+  CP["<b>Copilot workspace</b><br/>/copilot<br/><span class='tech'>full agent</span>"]
+  PA["<b>Page assistant</b><br/>no account access<br/><span class='tech'>explains the screen</span>"]
+  API["<b>HTTP API</b><br/>POST /api/copilot<br/><span class='tech'>same brain, no UI</span>"]
+end
+
+subgraph L2["<b>LAYER 2 · Admission</b>"]
+  direction LR
+  CLS["<b>Domain classifier</b><br/>Flash, low effort<br/><span class='tech'>cached per prompt hash</span>"]
+  CAP["<b>Daily token cap</b><br/>per verified subject<br/><span class='tech'>the real billing guard</span>"]
+  IDN["<b>Identity</b><br/>Privy / WorkOS sub<br/><span class='tech'>never client-supplied</span>"]
+end
+
+subgraph L3["<b>LAYER 3 · Understanding &amp; Investigation</b> &nbsp;·&nbsp; the model works here"]
+  direction LR
+  FP["<b>Fast path</b><br/>exact-match cache<br/><span class='tech'>price, health</span>"]
+  GOAL["<b>Goal extraction</b><br/>objective + constraints<br/><span class='tech'>borrowing permission</span>"]
+  LOOP["<b>Flash decision loop</b><br/>24 reads · 12 turns · 45s<br/><span class='tech'>native function calling</span>"]
+  EVID["<b>Evidence ledger</b><br/>ids · 60s staleness<br/><span class='tech'>sanitised, 16KB cap</span>"]
+  FP --- GOAL --> LOOP --> EVID
+  EVID -.->|next read| LOOP
+end
+
+subgraph L4["<b>LAYER 4 · Deterministic core</b> &nbsp;·&nbsp; no model output reaches this"]
+  direction LR
+  SIZE["<b>Sizing</b><br/>integer WAD<br/><span class='tech'>no floats in money</span>"]
+  CAND["<b>Candidate ranking</b><br/>+ no-borrow option<br/><span class='tech'>rejects negative carry</span>"]
+  RISK["<b>Risk validator</b><br/>HF floor · drift guard<br/><span class='tech'>refuses on disagreement</span>"]
+  ASSET["<b>Asset resolution</b><br/>wire symbol only<br/><span class='tech'>bare USDC is a question</span>"]
+end
+
+subgraph L5["<b>LAYER 5 · Approval &amp; execution</b>"]
+  direction LR
+  APPR["<b>Server-held approval</b><br/>fingerprint · expiry · bind<br/><span class='tech'>5 min TTL</span>"]
+  EXEC["<b>Leg executor</b><br/>idempotent · resumable<br/><span class='tech'>settled legs never replayed</span>"]
+  SIGN["<b>Signing</b><br/>wallet or auto-sign<br/><span class='tech'>Sign Service policy</span>"]
+end
+
+subgraph L6["<b>LAYER 6 · Verify</b>"]
+  SETTLE["<b>Settlement read-back</b><br/>honest partials<br/><span class='tech'>code decides settled</span>"]
+end
+
+MCP[["<b>MCP</b> — the only path to chain<br/>reads audited · writes never declared to the model<br/>builds unsigned XDR · enforces spend caps"]]
+CHAIN[("<b>Soroban</b><br/>RiskEngine · AccountManager<br/>SmartAccount · Blend · Aquarius")]
+
+USER --> L1 --> L2 --> L3
+L3 -->|validated shape, no amounts| L4
+L4 --> L5 --> L6
+L3 <-->|audited reads| MCP
+L5 <-->|build · submit| MCP
+L6 <-->|read back| MCP
+MCP <--> CHAIN
+</pre>
+</div>
+<div class="cap"><b>The load-bearing rule:</b> the model interprets language and chooses what to inspect. It never decides an amount, never decides what is safe, and never decides that something settled. What crosses from Layer 3 to Layer 4 is a validated <i>shape</i> — which operations, which assets, in what order — with no numbers in it. Every figure below that line is computed and re-derivable from its inputs.</div>
+
+<div class="infobox"><b>Why the constraint is worth it.</b> A model that cannot choose a number cannot invent one. Every serious bug this surface has produced looked identical from outside: the model said something plausible and wrong. Making arithmetic unreachable from the model removes the whole class rather than patching instances. <b>This is not a limit on intelligence</b> — understanding is deliberately unlimited; only arithmetic and authority are closed.</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="s2">2 · Every model call — what each one does</h2>
+<p>There are <b>five</b> places a language model is called. Four make a decision; one only formats numbers that are already computed. Reasoning effort is set <b>per call</b>, not globally.</p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart LR
+
+subgraph C1["1 · Domain classifier"]
+  direction TB
+  C1R["READS<br/>the prompt only"]
+  C1M["Gemini Flash<br/>effort: LOW<br/>cached per hash"]
+  C1W["WRITES<br/>in_domain + reason"]
+  C1R --> C1M --> C1W
+end
+
+subgraph C2["2 · Goal extraction"]
+  direction TB
+  C2R["READS<br/>prompt + bounded history"]
+  C2M["Gemini Flash<br/>effort: default"]
+  C2W["WRITES<br/>objective · constraints ·<br/>borrowing permission"]
+  C2R --> C2M --> C2W
+end
+
+subgraph C3["3 · Investigation loop"]
+  direction TB
+  C3R["READS<br/>goal + evidence so far"]
+  C3M["Gemini Flash<br/>effort: MEDIUM<br/>function calling"]
+  C3W["WRITES<br/>inspect / clarify /<br/>blocked / complete"]
+  C3R --> C3M --> C3W
+end
+
+subgraph C4["4 · Answer formatting"]
+  direction TB
+  C4R["READS<br/><b>computed figures only</b>"]
+  C4M["Gemini Flash<br/>effort: LOW"]
+  C4W["WRITES<br/>prose around numbers<br/>it cannot change"]
+  C4R --> C4M --> C4W
+end
+
+subgraph C5["5 · Execution receipt"]
+  direction TB
+  C5R["READS<br/>settled tx results"]
+  C5M["Gemini Flash<br/>effort: default"]
+  C5W["WRITES<br/>what actually landed"]
+  C5R --> C5M --> C5W
+end
+
+C1 -->|in domain| C2 --> C3
+C3 -.->|complete| CORE[["Deterministic core<br/>computes every number"]]
+CORE --> C4
+C4 -.->|after execution| C5
+</pre>
+</div>
+
+<div class="cmp">
+<table>
+<thead><tr><th style="width:16%">Call</th><th style="width:10%">Effort</th><th style="width:26%">Reads</th><th style="width:24%">Produces</th><th>Why that effort</th></tr></thead>
+<tbody>
+<tr><td><b>Domain classifier</b></td><td><code>low</code></td><td>The prompt, nothing else</td><td><code>{in_domain, reason}</code>, cached per hash</td><td>A cheap binary gate. <b>Borderline</b> — classification is still a decision; measure it against real prompts including jailbreaks.</td></tr>
+<tr><td><b>Goal extraction</b></td><td><code>default</code></td><td>Prompt + bounded prior turns</td><td>Objective, constraints, borrowing permission, open questions</td><td>Real decomposition. Reading "you may borrow" as "borrow" changes what gets proposed.</td></tr>
+<tr><td><b>Investigation loop</b></td><td><code>MEDIUM</code></td><td>Goal + all observations so far</td><td>Which reads to run next, or a terminal decision</td><td>The only genuinely agentic call. A wrong choice wastes one of twelve turns.</td></tr>
+<tr><td><b>Answer formatting</b></td><td><code>LOW</code></td><td><b>Computed figures only.</b> Never raw tool output.</td><td>Sentences around numbers it cannot alter</td><td>Measured: <code>output=48, thoughts=515</code> — eleven times more tokens deciding how to phrase a price than phrasing it. Nothing to deliberate about.</td></tr>
+<tr><td><b>Execution receipt</b></td><td><code>default</code></td><td>Settled transaction results</td><td>Narration of what landed and what did not</td><td>Reporting partial completion honestly needs judgement about what matters.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note"><b>Effort is tuned, not cut.</b> LOW appears in exactly one decision-free place. Under-provisioning a call that genuinely decides produces a wrong answer needing a retry — more expensive than provisioning it correctly, and in this domain a wrong answer can cost a liquidation.</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="s3">3 · The message lifecycle, step by step</h2>
+<p>One path, with named exits. Every terminal state says something true — which is why <i>"I couldn't reach the information needed"</i> is not on the list. It described nothing, and it hid four distinct failures for three phases.</p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart TB
+
+P(["Prompt"])
+CLS{"In domain?"}
+OOD["<b>OUT OF DOMAIN</b><br/>declined · no tokens spent<br/>beyond the classifier"]
+BUDGET{"Under the<br/>daily token cap?"}
+CAPPED["<b>CAPPED</b><br/>told plainly,<br/>not silently degraded"]
+FAST{"Exact-match<br/>fast path?"}
+CACHED["<b>Answered from cache</b><br/>under 1s · skips the loop"]
+
+SCOPE["<b>Resolve scope</b><br/>bindings → account<br/><span class='tech'>cached 5 min · 20s cap</span>"]
+POS["<b>Seed position</b><br/>contract read, 8s cap<br/><span class='tech'>never blocks on app snapshot</span>"]
+LOOP["<b>INVESTIGATION LOOP</b><br/>see section 4"]
+
+OUT{"Loop outcome"}
+CLARIFY["<b>CLARIFY</b><br/>pre-resolved with a recommendation,<br/>never a bare question"]
+BLOCKED["<b>BLOCKED</b><br/>a required read failed<br/>no zero substituted"]
+DEADLINE["<b>DEADLINE</b><br/>out of time · keeps partial evidence<br/>and still ranks what it has"]
+COMPLETE["<b>RESEARCH COMPLETE</b>"]
+
+SIZE["<b>Deterministic sizing</b><br/>+ candidate ranking"]
+DRIFT{"App and contract<br/>agree within tolerance?<br/><span class='tech'>max $0.50 or 0.5%</span>"}
+DISAGREE["<b>REFUSED TO SIZE</b><br/>explains <i>why</i> they differ"]
+PROPOSE["<b>PROPOSAL</b><br/>legs · amounts · projected HF ·<br/>what could not be verified"]
+
+P --> CLS
+CLS -->|no| OOD
+CLS -->|yes| BUDGET
+BUDGET -->|no| CAPPED
+BUDGET -->|yes| FAST
+FAST -->|hit| CACHED
+FAST -->|miss| SCOPE --> POS --> LOOP --> OUT
+OUT --> CLARIFY
+OUT --> BLOCKED
+OUT --> DEADLINE
+OUT --> COMPLETE
+DEADLINE --> SIZE
+COMPLETE --> SIZE
+SIZE --> DRIFT
+DRIFT -->|no| DISAGREE
+DRIFT -->|yes| PROPOSE
+</pre>
+</div>
+
+<h3>The steps, and why each exists</h3>
+
+<div class="step"><b>Step 1 — Domain classifier.</b> One cheap Flash call, cached per prompt hash.
+<span class="why"><b>Why:</b> it replaced a 348-line regex blocklist that was written as a billing guard but also refused legitimate prompts because <code>position\b</code> did not match "positions". A model reads intent; a regex reads spelling.</span></div>
+
+<div class="step"><b>Step 2 — Daily token cap</b>, per verified subject.
+<span class="why"><b>Why:</b> this is what actually addresses cost. The regex firewall never did — it blocked shapes, not spend.</span></div>
+
+<div class="step"><b>Step 3 — Fast path.</b> Exact-match reads (price, health) answer in under a second and skip the loop.
+<span class="why"><b>Why:</b> a price question does not need an agent. Measured: <b>686ms</b> through the fast path versus <b>38.7s</b> when it fell through to the model. Critically this is a <i>cache</i>, not a fallback — it can only answer questions it matches exactly, and it can never override a researched plan.</span></div>
+
+<div class="step"><b>Step 4 — Resolve scope</b> (wallet bindings → margin account), cached five minutes, hard-capped at 20s.
+<span class="why"><b>Why cached:</b> two chained MCP calls run otherwise on every turn. Measured at <b>13.1s</b> on a cold resolve — 81% of that turn. <b>Why capped:</b> it sits outside the loop's own deadline, so an unbounded stall here consumed the whole route budget.</span></div>
+
+<div class="step"><b>Step 5 — Seed the position</b> from the contract, 8s cap.
+<span class="why"><b>Why from the contract:</b> the app's snapshot is unbounded, shares a process-wide promise, and has been measured at <b>6.3s–96s</b>. It caused five separate copilot failures. The contract read is one MCP call, cancellable, and reports the posted collateral the risk engine actually uses.</span></div>
+
+<div class="step"><b>Step 6 — The loop</b> decides what else to inspect. See §4.</div>
+
+<div class="step"><b>Step 7 — Deterministic sizing and ranking.</b> Integer WAD, no floats.
+<span class="why"><b>Why integer:</b> <code>(1.3).toFixed(18)</code> is <code>1.300000000000000044</code>. That representation noise let a stated floor of exactly 1.1 slip past a threshold guard.</span></div>
+
+<div class="step"><b>Step 8 — Drift guard.</b> If the app snapshot and the contract disagree beyond max($0.50, 0.5%), refuse to quote a size.
+<span class="why"><b>Why refuse rather than pick:</b> consistency with a wrong figure does not prevent a liquidation. A dropped debt leg once showed HF <b>2.51</b> where the contract implied <b>1.56</b>.</span></div>
+
+<div class="cmp">
+<table>
+<thead><tr><th style="width:16%">Exit</th><th style="width:18%">Verdict</th><th>Meaning and direction</th></tr></thead>
+<tbody>
+<tr><td><b>Deadline</b></td><td><span class="tag warn">System failure</span></td><td><b>Eliminate.</b> A user should never see this.</td></tr>
+<tr><td><b>Blocked</b></td><td><span class="tag open">Frequency is the bug</span></td><td>Cannot be zero — RPC does go down. Caching and pre-seeding make it rare; the behaviour is correct.</td></tr>
+<tr><td><b>Clarify</b></td><td><span class="tag ok">Correct</span></td><td><b>Keep, make it smart.</b> Arrive pre-resolved: <i>"Using SOUSDC — you hold $1,381 of it against $93 each of the others. Switch?"</i></td></tr>
+<tr><td><b>Out of domain</b></td><td><span class="tag ok">Correct</span></td><td>Cheap, and it protects the token budget.</td></tr>
+<tr><td><b>Refused to size</b></td><td><span class="tag ok">Correct</span></td><td>Sources disagree. Quoting one anyway is a confident guess about someone's liquidation risk.</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="s4">4 · Inside the investigation loop</h2>
+<p>The loop is where the model earns its place. It decides what to inspect, sees the result, and decides again — bounded so a bad decision costs a turn rather than the session.</p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart TB
+
+START(["Goal + seeded position"])
+TURN{"Turn budget left?<br/><b>max 12</b>"}
+DECIDE["<b>Flash decides</b><br/>native function calling<br/>scope-filtered read catalogue"]
+KIND{"Decision"}
+
+INSPECT["<b>INSPECT</b><br/>up to 8 reads, batched"]
+VALID{"Arguments valid?<br/>exact key set · strict<br/>decimal · enum"}
+REJECT["<b>One failed observation</b><br/>with a reason<br/><b>the batch continues</b>"]
+SEED{"Already in the<br/>seeded snapshot?"}
+FROMSEED["Served from seed<br/>tagged source · inherits<br/>the seed's timestamp"]
+CALL["<b>MCP call</b><br/>own 15s deadline"]
+OBS["<b>Observation recorded</b><br/>id · timestamp · status<br/>sanitised · 16KB cap"]
+
+CLARIFY(["CLARIFY"])
+BLOCKED(["BLOCKED"])
+DONE(["RESEARCH COMPLETE"])
+STOP(["DEADLINE<br/>keep what was gathered"])
+
+START --> TURN
+TURN -->|no| STOP
+TURN -->|yes| DECIDE --> KIND
+KIND -->|inspect| INSPECT --> VALID
+VALID -->|no| REJECT --> OBS
+VALID -->|yes| SEED
+SEED -->|yes| FROMSEED --> OBS
+SEED -->|no| CALL --> OBS
+OBS --> TURN
+KIND -->|clarify| CLARIFY
+KIND -->|blocked| BLOCKED
+KIND -->|research_complete| DONE
+</pre>
+</div>
+
+<div class="cmp">
+<table>
+<thead><tr><th style="width:24%">Budget</th><th style="width:12%">Value</th><th>Why this number</th></tr></thead>
+<tbody>
+<tr><td>Model turns</td><td><code>12</code></td><td>Each turn is a full inference. Needing more means the goal was not understood.</td></tr>
+<tr><td>Tool calls</td><td><code>24</code></td><td>Raised from 10 when the catalogue grew to 24 capabilities.</td></tr>
+<tr><td>Reads per batch</td><td><code>8</code></td><td>Parallel calls collapse into one inspect step, so breadth costs one turn rather than eight.</td></tr>
+<tr><td>Per-read deadline</td><td><code>15s</code></td><td>Added after one stalled call held an entire batch until the run died, producing zero evidence.</td></tr>
+<tr><td>Loop deadline</td><td><code>45s</code></td><td>Sits inside the route's 75s reply guarantee alongside scope and position.</td></tr>
+<tr><td>Evidence staleness</td><td><code>60s</code></td><td>Prices move. Older evidence is not reused.</td></tr>
+<tr><td>Observation size</td><td><code>16 KB</code></td><td>Oversized responses become errors rather than truncations — a half-read financial payload is worse than none.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="infobox"><b>What the model can and cannot reach.</b> <b>24 read capabilities are declared; zero write capabilities are.</b> Identity — trader, smart account, holder — is bound from the verified session inside the resolver, never from model arguments. Arguments are validated against an <b>exact key set</b>, so an extra field cannot ride alongside legitimate ones. Amounts pass a strict decimal regex; assets must match an enum, and bare <code>USDC</code> is deliberately absent from it.</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="s5">5 · Where every number comes from</h2>
+<p>Three sources can answer "how much collateral does this account have", and they do not agree. Which one is right depends on what the number is <i>for</i> — settled by reading the contract, not by preference.</p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart LR
+
+subgraph SRC["Three sources"]
+  direction TB
+  APP["<b>App snapshot</b><br/>computeMarginSnapshot<br/>posted + farm + <b>unposted</b><br/><span class='tech'>unbounded · 6.3s–96s</span>"]
+  MCPS["<b>MCP account_health</b><br/>recorded balances<br/><span class='tech'>no scalar health factor</span>"]
+  CON["<b>RiskEngine contract</b><br/>liquidation_snapshot<br/>walks get_all_collateral_tokens<br/><span class='tech'>posted only</span>"]
+end
+
+DISPLAY["<b>DISPLAY</b><br/>'your health factor is 3.89'"]
+SIZING["<b>SIZING</b><br/>'you can borrow $X<br/>before breaching 1.30'"]
+GUARD{"Agree within<br/>tolerance?"}
+REFUSE["<b>Refuse to quote a size</b><br/>and explain the difference"]
+QUOTE["Quote the sized figure"]
+
+APP --> DISPLAY
+CON --> SIZING
+APP --> GUARD
+CON --> GUARD
+GUARD -->|no| REFUSE
+GUARD -->|yes| QUOTE
+</pre>
+</div>
+<div class="cap"><b>Display follows the app; sizing follows the contract; a disagreement blocks rather than guesses.</b> Display must match the Margin page — a copilot contradicting the page is worse than one slightly stale. Sizing must match the contract, because that is what decides liquidation.</div>
+
+<h3>The measured gap, and why it exists</h3>
+<div class="cmp">
+<table>
+<thead><tr><th style="width:24%"></th><th style="width:20%">App</th><th style="width:20%">Contract</th><th>Difference</th></tr></thead>
+<tbody>
+<tr><td><b>Collateral</b></td><td>$1,087.20</td><td>$953.80</td><td>$133.40 — unposted SAC in the margin account</td></tr>
+<tr><td><b>Debt</b></td><td>$278.91</td><td>$278.91</td><td>agrees exactly — rules out timing</td></tr>
+<tr><td><b>Health factor</b></td><td><b>3.89</b></td><td><b>3.42</b></td><td>solvency vs liquidation proximity</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="infobox"><b>Both numbers are correct; they answer different questions.</b> <code>get_current_total_balance_internal</code> walks only <code>smart_account_contract_client.get_all_collateral_tokens()</code> — <b>posted</b> collateral. The app additionally counts raw SAC balances held in the same margin account but never pledged. <code>posted + unposted ÷ debt</code> is a valid <b>solvency</b> measure; <code>posted ÷ debt</code> is <b>liquidation proximity</b>. Only the second one governs the 1.10 threshold, so the copilot quotes it for anything sizing-related and labels which it is using.</div>
+
+<h3>Facts that are not in doubt</h3>
+<ul>
+<li><b>The liquidation boundary is strictly greater than 1.10.</b> Binary-searched against the deployed RiskEngine: <code>is_account_healthy</code> returns false at exactly <code>1.100000</code> and true at <code>1.100001</code>. Measured, not assumed.</li>
+<li><b>Borrowing raises both sides.</b> The smart-account contract credits borrowed proceeds into its own collateral ledger, so a borrow of <i>x</i> adds <i>x</i> to gross assets and <i>x</i> to debt. Modelling it as debt-only once doubled real leverage silently.</li>
+<li><b>A zero collateral row is not an empty position.</b> Recorded <code>BLEND_USDC</code> can be <code>0</code> while the tracking balance is ~$120.</li>
+<li><b>Zero balance with any non-zero debt is unhealthy</b> — no dust tolerance.</li>
+<li><b>"USDC" is not an asset.</b> BLUSDC, AQUSDC and SOUSDC are three separate SACs. Bare <code>USDC</code> is deliberately absent from the enum handed to the model, so it cannot be chosen accidentally.</li>
+</ul>
+
+<!-- ============ 6 ============ -->
+<h2 id="s6">6 · Write execution — approval to settlement</h2>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart TB
+
+CARD["<b>Proposal card</b><br/>ranked candidate · legs in order ·<br/>projected HF · what was not verified"]
+MOD{"User modifies?"}
+REPROMPT["<b>Conversational refinement</b><br/><i>'make it 1.4'</i> · full re-solve<br/><b>never an editable amount field</b>"]
+APPROVE(["<b>User approves</b><br/>the only edge that authorises anything"])
+REVAL{"<b>Revalidate</b><br/>fresh prices,<br/>floor still holds?"}
+DRIFTED["<b>Re-propose</b><br/>never execute a stale size"]
+AUTO{"Auto-sign armed<br/>AND within cap?"}
+WALLET["<b>Wallet signature per leg</b><br/>user signs the built XDR"]
+DIRECT["<b>Executes with no prompt</b><br/>inside the daily cap"]
+SUBMIT["<b>Submit · confirm settlement</b><br/>code decides settled, not the model"]
+FAIL{"Leg failed?"}
+RESUME["<b>Resume the remainder</b><br/>carrying every slot the leg had<br/><b>settled legs never replayed</b>"]
+NEXT{"More legs?"}
+RECEIPT(["<b>Receipt</b><br/>what landed, what did not"])
+
+CARD --> MOD
+MOD -->|yes| REPROMPT --> CARD
+MOD -->|no| APPROVE --> REVAL
+REVAL -->|drifted| DRIFTED
+REVAL -->|holds| AUTO
+AUTO -->|no, or over cap| WALLET --> SUBMIT
+AUTO -->|yes| DIRECT --> SUBMIT
+SUBMIT --> FAIL
+FAIL -->|yes| RESUME
+FAIL -->|no| NEXT
+NEXT -->|yes| AUTO
+NEXT -->|no| RECEIPT
+</pre>
+</div>
+
+<h3>Why there is no editable amount field</h3>
+<p>An editable leg amount hands the user a control that can break the exact constraint the system exists to protect. Validation then fails, the card says <i>"that breaks your 1.3 floor"</i>, and the user is reduced to guessing numbers against a solver. <b>Edit the inputs — floor, budget, assets, borrow yes/no — never the output amounts.</b> An expert who wants exactly 437 XLM still gets it, but the plan is relabelled <i>user-sized</i> rather than <i>copilot-sized</i>.</p>
+
+<h3>What requires proof of wallet ownership</h3>
+<div class="cmp">
+<table>
+<thead><tr><th style="width:26%">Action</th><th style="width:14%">Binding?</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Reads — positions, health, markets</td><td><b>No</b></td><td>Public on-chain data. Anyone can read that address in a block explorer, so proof of ownership buys no confidentiality — it only blocks legitimate users.</td></tr>
+<tr><td>Manual-signed writes</td><td><b>No</b></td><td>The user's own wallet signature <i>is</i> the proof.</td></tr>
+<tr><td>Auto-sign</td><td><b>Yes</b></td><td>The Sign Service signs on the user's behalf, so it must hold evidence they authorised that wallet.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="warnbox"><b>Coupling all three to one mechanism caused four phases of misleading refusals.</b> A binding is written only by a three-step consent flow reachable through enabling auto-sign. Connecting a wallet does not create one. So reads failed with <i>"this wallet isn't linked to your signed-in account"</i> while the Margin page rendered the same account perfectly — because it reads the chain directly and needs no binding at all.</div>
+
+<h3>Write failure taxonomy</h3>
+<div class="cmp">
+<table>
+<thead><tr><th style="width:26%">Failure</th><th style="width:40%">Correct response</th><th>State</th></tr></thead>
+<tbody>
+<tr><td>Insufficient balance</td><td>Refuse before building; state the shortfall in tokens and USD</td><td><span class="tag ok">Handled</span></td></tr>
+<tr><td>Health floor breached mid-plan</td><td>Stop; report which leg and the resulting HF</td><td><span class="tag ok">Handled</span></td></tr>
+<tr><td>Soroban CPU budget exceeded</td><td>Fall back to the budget-tolerant executor</td><td><span class="tag open">Unverified live</span></td></tr>
+<tr><td>RPC timeout</td><td>Do not assume failure; read back before retrying, never double-submit</td><td><span class="tag open">Writes are one attempt</span></td></tr>
+<tr><td>User rejects the signature</td><td>Stage the built XDR, do not discard it</td><td><span class="tag ok">Fixed, verified on-chain</span></td></tr>
+<tr><td>Price moved past the floor</td><td>Re-propose with fresh sizing</td><td><span class="tag ok">Revalidation added</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="s7">7 · The MCP surface and auto-sign scoping <span class="tag new">MCP is a separate product</span></h2>
+<p>MCP ships publicly, like Aave's server. That changes two things from hygiene into launch blockers: the read/write boundary, and who may spend an auto-sign session.</p>
+
+<div class="wrap">
+<pre class="mermaid">
+flowchart TB
+
+subgraph CALLERS["Callers"]
+  direction LR
+  COPILOT["<b>Vanna Copilot</b><br/>first-party<br/><span class='tech'>carries the user's Privy assertion</span>"]
+  THIRD["<b>Third-party agent</b><br/>Cursor, someone else's bot<br/><span class='tech'>valid assertion, different client</span>"]
+end
+
+TOK{"Token scope"}
+READS["<b>vanna_margin_read</b><br/>vanna_account_read<br/><span class='tech'>can_borrow · can_withdraw · status</span>"]
+WRITES["<b>vanna_margin_write</b><br/>vanna_account_write<br/><span class='tech'>borrow · repay · settle · open · close</span>"]
+NOTOFFERED["<b>Write tools absent<br/>from tools/list</b><br/><span class='tech'>not offered, not merely blocked</span>"]
+
+BUILD["<b>Build unsigned XDR</b><br/><span class='tech'>one implementation, server-side</span>"]
+SESS{"Auto-sign session:<br/>does the calling client<br/>match, or hold a grant?"}
+SIGNED["<b>Signed and submitted</b><br/>within the daily cap"]
+UNSIGNED["<b>Unsigned XDR returned</b><br/>sign in a first-party surface<br/><span class='tech'>capability degrades, never escalates</span>"]
+
+COPILOT --> TOK
+THIRD --> TOK
+TOK -->|vanna:read| READS
+TOK -->|vanna:read| NOTOFFERED
+TOK -->|vanna:write| WRITES
+WRITES --> BUILD --> SESS
+SESS -->|match or grant| SIGNED
+SESS -->|no grant| UNSIGNED
+</pre>
+</div>
+
+<h3>Why execution lives in MCP, not the app</h3>
+<p>Not latency — writes are chain-bound anyway, so a 500ms hop is noise against settlement time. The reason is that <b>transaction construction and spend policy must have exactly one implementation, server-side, where no caller can route around it.</b> If the copilot built XDR itself and MCP built it too, the two would diverge on contract addresses, auth entries and caps. A cap enforced in the app is a cap you bypass by calling the API directly.</p>
+
+<h3>Why sessions are bound to user <i>and</i> client</h3>
+<p>Sessions were already bound to the verified assertion <code>sub</code> — a different identity could never spend them. That part was correct. What was missing was any distinction between <b>our copilot and a third-party agent holding the same user's assertion</b>: both got identical signing power. With MCP public, connecting any agent would have silently handed it the user's daily cap.</p>
+<div class="note"><b>The governing property: capability degrades, it never escalates.</b> A client with no grant receives the <b>unsigned XDR</b> — not a refusal, and not a signature. It can still do useful work; the user just signs it themselves in a first-party surface.</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="s8">8 · Known gaps <span class="tag warn">honest</span></h2>
+<div class="cmp">
+<table>
+<thead><tr><th style="width:26%">Gap</th><th style="width:36%">Why it matters</th><th>Direction</th></tr></thead>
+<tbody>
+<tr><td><b>No transaction has ever landed</b> <span class="tag warn">biggest</span></td><td>Zero hashes. Every write result so far is a simulation. The write path is unproven however many tests pass.</td><td>One 1 XLM repay from the signed-in page with a Horizon confirmation.</td></tr>
+<tr><td><b>The unbounded app snapshot</b></td><td>Five distinct failures trace to it: a 120s health abort, <code>/api/account</code> 6.3–96s, a hung Approve, a blocked risk validation, a wedged dev server. It shares a process-wide promise, so one stalled read poisons every later caller.</td><td>Hard deadline; a timed-out inflight must reject and clear.</td></tr>
+<tr><td><b>Swallowed errors keep returning</b></td><td>A bare <code>catch</code> that maps any failure to a generic string and logs nothing. Fixed in <code>investigate/route.ts</code>, reappeared in <code>risk.ts</code>, still open in <code>propose/route.ts</code>. Each instance costs a debugging cycle.</td><td>Standing rule: no bare catch on a user-reachable path.</td></tr>
+<tr><td><b><code>handle.ts</code> is still 7,949 lines</b></td><td>Down from 8,642, target ~4,000–4,500. Reads and dispatch still live there alongside write execution.</td><td>One decision path per eval gate.</td></tr>
+<tr><td><b>Durable state</b></td><td>Sessions, approvals, execution checkpoints and standing orders are in-memory and single-process. A four-leg plan two legs in has no durable record of what settled.</td><td>Cloud SQL, one schema.</td></tr>
+<tr><td><b>Live injection untested</b></td><td>On-chain strings are attacker-controlled and reach the model. Defence is unit-tested only.</td><td>Issue a testnet token with an injected symbol and run the account prompts.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="foot">
+Vanna Copilot · Architecture &amp; Workflows v1.0 · 11 September 2026. Figures are measured against the authorised testnet account <code>CBOQAN…G5XY</code> unless stated. The 1.10 liquidation bound was binary-searched against the deployed RiskEngine; the collateral definition was read from <code>Protocol_V1_Soroban</code> branch <code>testnet</code> @ <code>1d333fb</code>. Latency figures postdate the elapsed-timer fix — anything measured before it counted from page load and is not reliable. Gaps in §8 are unresolved; do not present them as settled.
+<br/><br/>
+Edit any diagram by hand: <code>excalidraw.com</code> → ☰ → <b>Mermaid to Excalidraw</b> → paste the diagram source from this page.
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'neutral',
+    themeVariables: { fontSize: '15px', fontFamily: 'Segoe UI, system-ui, sans-serif' },
+    flowchart: { curve: 'basis', nodeSpacing: 55, rankSpacing: 65, htmlLabels: true }
+  });
+  const blocks = [...document.querySelectorAll('pre.mermaid')];
+  for (let i = 0; i < blocks.length; i++) {
+    const el = blocks[i];
+    const src = el.innerHTML
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&amp;/g, '&');
+    try {
+      const { svg } = await mermaid.render('rendered-' + i, src);
+      el.innerHTML = svg;
+      const svgEl = el.querySelector('svg');
+      if (svgEl) {
+        svgEl.style.maxWidth = 'none';
+        svgEl.style.width = '100%';
+        svgEl.style.minWidth = '1100px';
+        svgEl.style.height = 'auto';
+      }
+    } catch (e) {
+      el.innerHTML = '<div style="color:#991b1b;background:#fef2f2;border:1px solid #fecaca;'
+        + 'border-radius:8px;padding:12px;font-size:12px;white-space:pre-wrap;text-align:left">'
+        + 'Diagram ' + (i + 1) + ' failed to render:\n' + (e && e.message ? e.message : e) + '</div>';
+    }
+  }
+</script>
+</body>
+</html>

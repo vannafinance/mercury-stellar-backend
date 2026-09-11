@@ -8,6 +8,7 @@ import { ResearchError, resolveInvestigationScope } from "@/lib/copilot/investig
 import { validateProposal, workflowJournal } from "@/lib/copilot/investigation/proposal";
 import { WorkflowConflict } from "@/lib/copilot/workflow/journal";
 import { workflowView } from "@/lib/copilot/workflow/types";
+import { logUnexpected } from "@/lib/copilot/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,6 +94,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const known = error instanceof ResearchError ? error : error instanceof Error && error.message === "workflow_not_found"
       ? new ResearchError("workflow_not_found", "This plan was not found for your account.", 404)
       : null;
+    if (!known) {
+      logUnexpected("approval failed", { subject: bound.sub, workflowId: id, network, error });
+    }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "approval_unavailable",
       message: known?.message ?? "This plan could not be approved. Please try again.",

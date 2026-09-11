@@ -35,10 +35,13 @@ function accountTopicXdr(account: string): string | null {
 
 export async function GET(req: NextRequest) {
   if (!REST_BASE || !MERCURY_KEY) {
-    return NextResponse.json(
-      { error: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." },
-      { status: 500, headers: { "Cache-Control": "no-store" } },
-    );
+    return NextResponse.json([], {
+      status: 200,
+      headers: {
+        "Cache-Control": "no-store",
+        "X-Mercury-Configured": "0",
+      },
+    });
   }
 
   const sp = req.nextUrl.searchParams;

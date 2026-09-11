@@ -6,6 +6,7 @@ import { copilotConfig } from "@/lib/copilot/config";
 import { isRecord } from "@/lib/copilot/investigation/decision";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { proposeWorkflow } from "@/lib/copilot/investigation/proposal";
+import { logUnexpected } from "@/lib/copilot/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,6 +63,11 @@ export async function POST(req: NextRequest) {
     return loaded.commit(NextResponse.json(view, { headers: { "Cache-Control": "no-store" } }));
   } catch (error) {
     const known = error instanceof ResearchError ? error : null;
+    if (!known) {
+      logUnexpected("proposal failed", {
+        subject: bound.sub, candidateId: input.candidateId, network, error,
+      });
+    }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "proposal_unavailable",
       message: known?.message ?? "A plan could not be prepared from the current investigation. Please try again.",

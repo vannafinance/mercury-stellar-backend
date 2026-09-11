@@ -19,6 +19,7 @@ export type StepReadiness =
 
 import type { InvestigationScope } from "../investigation/types";
 import { isRetryableRiskReason } from "./risk";
+import { logUnexpected } from "../log";
 
 export class WorkflowConflict extends Error {}
 type Identity = { scope: InvestigationScope; server: string };
@@ -87,12 +88,7 @@ export class WorkflowJournal {
     let reason: string | null;
     try { reason = await validate(structuredClone(p)); }
     catch (error) {
-      console.error("[copilot] workflow approval validation failed", {
-        workflowId: id,
-        error: error instanceof Error
-          ? { name: error.name, message: error.message, stack: error.stack }
-          : String(error),
-      });
+      logUnexpected("workflow approval validation failed", { workflowId: id, error });
       reason = "Fresh validation was unavailable. Prepare a new proposal before approving.";
     }
     const current = await this.read(id, identity);

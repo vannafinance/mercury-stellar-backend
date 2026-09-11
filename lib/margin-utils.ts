@@ -2169,7 +2169,11 @@ export class MarginAccountService {
           
           const balanceResult = await server.simulateTransaction(getBalanceTx);
           
-          if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
+          if ('error' in balanceResult) {
+            throw new Error(`Simulation failed for debt ${token}: ${balanceResult.error}`);
+          }
+
+          if ('result' in balanceResult && balanceResult.result) {
             const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
 
@@ -2185,11 +2189,23 @@ export class MarginAccountService {
           return null;
       }));
 
-      rows.forEach((row, index) => {
+      const rejectedRow = rows.find((row) => row.status === 'rejected') as PromiseRejectedResult | undefined;
+      if (rejectedRow) {
+        const failedIndex = rows.indexOf(rejectedRow);
+        const failedToken = borrowedTokens[failedIndex] ?? 'unknown';
+        const reason = rejectedRow.reason instanceof Error
+          ? rejectedRow.reason.message
+          : String(rejectedRow.reason || 'RPC simulation failed');
+        console.warn(`⚠️ Failed to get balance for token ${failedToken}:`, rejectedRow.reason);
+        return {
+          success: false,
+          error: `Failed to read debt balance for token ${failedToken}: ${reason}`
+        };
+      }
+
+      rows.forEach((row) => {
         if (row.status === 'fulfilled' && row.value) {
           borrowedBalances[row.value.token] = row.value.balance;
-        } else if (row.status === 'rejected') {
-          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
         }
       });
       
@@ -2406,7 +2422,11 @@ export class MarginAccountService {
 
           const balSim = await server.simulateTransaction(balTx);
 
-          if (!('error' in balSim) && 'result' in balSim && balSim.result) {
+          if ('error' in balSim) {
+            throw new Error(`Simulation failed for collateral ${token}: ${balSim.error}`);
+          }
+
+          if ('result' in balSim && balSim.result) {
             const rawBal = StellarSdk.scValToNative(balSim.result.retval);
             const balanceWad = rawBal?.toString?.() ?? String(rawBal ?? '0');
             const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
@@ -2423,11 +2443,23 @@ export class MarginAccountService {
           return null;
       }));
 
-      rows.forEach((row, index) => {
+      const rejectedCollateral = rows.find((row) => row.status === 'rejected') as PromiseRejectedResult | undefined;
+      if (rejectedCollateral) {
+        const failedIndex = rows.indexOf(rejectedCollateral);
+        const failedToken = collateralTokens[failedIndex] ?? 'unknown';
+        const reason = rejectedCollateral.reason instanceof Error
+          ? rejectedCollateral.reason.message
+          : String(rejectedCollateral.reason || 'RPC call failed');
+        console.warn(`⚠️ Failed to read collateral balance for ${failedToken}:`, rejectedCollateral.reason);
+        return {
+          success: false,
+          error: `Failed to read collateral balance for token ${failedToken}: ${reason}`,
+        };
+      }
+
+      rows.forEach((row) => {
         if (row.status === 'fulfilled' && row.value) {
           balances[row.value.token] = row.value.balance;
-        } else if (row.status === 'rejected') {
-          console.warn(`⚠️ Failed to read collateral balance for ${collateralTokens[index]}:`, row.reason);
         }
       });
 

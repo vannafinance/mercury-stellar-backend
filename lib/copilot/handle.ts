@@ -14,7 +14,7 @@ import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
 import { cleanExecutionCopy, farmReceiptLine, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
-import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
+import { getMcpClient, type MCPClient } from "./mcp-client";
 import { RETRY, withRetry } from "./retry-policy";
 import {
   enableAutoSign,
@@ -90,6 +90,10 @@ import { capToFreeBalance, netOfOriginationFee } from "@/lib/borrow-fee";
 import { looksLikeMultiGoal } from "./plan-sanitize";
 import { resolveUnnamedIntent } from "./unnamed-intent";
 import { previewRoutedPlan, freezeLeveragedPlanPreview } from "./plan-preview";
+import { money, fmt2, pct, amount, usd, fmtPosAmount } from "./display-amounts";
+import { usdTotal } from "./mcp-payload";
+import { VANNA_AQUARIUS_FARM_PAIRS, filterAquariusFarmPools } from "./farm-pools";
+import { mcpErrorResponse } from "./mcp-error-response";
 import { shouldPauseForHealthFloor } from "./hf-pause";
 import { logCopilotEvent } from "./log";
 import { guardUserPrompt } from "./domain-firewall";
@@ -126,7 +130,6 @@ import {
   vertexExplain,
   vertexExplainStructured,
   vertexSummarizeExecution,
-  VertexError,
 } from "./vertex";
 
 export function getBrainHealth(): BrainHealth {
@@ -198,35 +201,6 @@ function rejectionResponse(
  * have nothing" rather than "I could not tell". Falls back to summing the per-asset
  * `<SYM>_usd` entries so a renamed total degrades to arithmetic, not to zero.
  */
-function usdTotal(payload: unknown, kind: "collateral" | "debt"): number | null {
-  if (!payload || typeof payload !== "object") return null;
-  const entries = Object.entries(payload as Record<string, unknown>).map(
-    ([k, v]) => [k.toLowerCase().replace(/\s+/g, "_"), v] as const,
-  );
-  const byKey = new Map(entries);
-
-  const candidates =
-    kind === "collateral"
-      ? ["collateral_usd", "total_collateral_usd", "total_value_usd", "value_usd"]
-      : ["total_debt_usd", "debt_usd", "total_borrowed_usd", "borrowed_usd"];
-  for (const k of candidates) {
-    const n = Number(byKey.get(k));
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-
-  let sum = 0;
-  let seen = false;
-  for (const [k, v] of entries) {
-    if (!/_usd$/.test(k) || /^(total|collateral|debt|value|borrowed)_/.test(k)) continue;
-    const n = Number(v);
-    if (Number.isFinite(n)) {
-      sum += n;
-      seen = true;
-    }
-  }
-  return seen ? sum : null;
-}
-
 /**
  * True when a write prompt also asks what the action will do.
  *
@@ -1847,15 +1821,6 @@ const LOCAL_FALLBACK_OPS = new Set([
   "repay",
 ]);
 
-const money = (n: number) =>
-  `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-const fmt2 = (n: number | string): string => {
-  const v = typeof n === "number" ? n : Number(n);
-  if (!Number.isFinite(v)) return String(n);
-  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
 function snapshotRowLabel(symbol: string): string {
   const u = String(symbol).toUpperCase();
   if (u.startsWith("AQ_")) return "Aquarius LP";
@@ -2548,21 +2513,6 @@ async function marginSideAnswer(ctx: {
     mcp: { tool: "computeMarginSnapshot", has_unsigned_xdr: false },
     request_id: ctx.request_id,
   };
-}
-
-/**
- * Short amount for a fact value — long wad strings are unreadable in a list.
- *
- * Locale pinned to "en-US" like every other formatter in this file (see the two
- * `toLocaleString("en-US", ...)` calls below) — `undefined` inherits the SERVER
- * PROCESS's OS locale, not the user's. Reported live: a pool reserve of 111,981 XLM
- * rendered as "1,11,981.0527", Indian-style lakh grouping, because this was the one
- * formatter in the file left on the default locale.
- */
-function fmtPosAmount(amount: string): string {
-  const n = Number(amount);
-  if (!Number.isFinite(n)) return amount;
-  return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 /**
@@ -7657,105 +7607,6 @@ function mapToolToOp(tool: string): string {
   return m[tool] || tool.replace(/^vanna_/, "");
 }
 
-/**
- * Display helpers for prose this server writes itself (as opposed to prose Gemini
- * writes — that path is rounded in `vertexExplain`). MCP returns contract precision,
- * e.g. "14.977890082244174400", which is unreadable in a sentence.
- */
-function pct(v: unknown): string {
-  const n = Number(v);
-  return Number.isFinite(n) ? `${n.toFixed(2)}%` : "n/a";
-}
-function amount(v: unknown): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "n/a";
-  return n.toLocaleString("en-US", { maximumFractionDigits: 4 });
-}
-function usd(v: unknown): string {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "n/a";
-  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-/**
- * Vanna's farmable Aquarius pairs. Must mirror `AQUARIUS_POOLS` in
- * lib/aquarius-utils.ts, which is the source of truth — it carries the actual
- * pool contract addresses the app transacts against.
- *
- * XLM/AQUA is deliberately absent: the protocol has no XLM/AQUA pool (confirmed
- * by the contracts owner, and `AQUARIUS_POOLS` holds only XLM/USDC and XLM/USDT).
- * It was previously listed here from the test-prompt doc, and because the filter
- * below matches against Aquarius's *whole* public API dump, an unrelated AQUA pool
- * satisfied the pair and got presented as farmable — with blank APY and liquidity,
- * since Vanna has no position or address for it.
- */
-const VANNA_AQUARIUS_FARM_PAIRS: Array<{ pair: string; a: string; b: string }> = [
-  { pair: "XLM/USDC", a: "XLM", b: "USDC" },
-  { pair: "XLM/USDT", a: "XLM", b: "USDT" },
-];
-
-function normalizeTokenLabel(t: string): string {
-  const u = t.toUpperCase().replace(/^MOCK\s+/, "").trim();
-  if (u === "NATIVE" || u === "XLM") return "XLM";
-  if (u.includes("AQUA") && !u.includes("USDC")) return "AQUA";
-  if (u.includes("USDT") || u === "MOCK USDT") return "USDT";
-  if (u.includes("USDC") || u === "TUSDC") return "USDC";
-  return u.split(/[:\s]/)[0] || u;
-}
-
-function tokensMatchPair(tokens: string[], a: string, b: string): boolean {
-  const set = new Set(tokens.map(normalizeTokenLabel));
-  return set.has(a) && set.has(b);
-}
-
-/**
- * Filter MCP Aquarius API dump down to the 3 Vanna-farmable pairs (PDF F9).
- * When multiple API pools share a pair, keep the highest total APY.
- */
-function filterAquariusFarmPools(raw: Record<string, unknown>): {
-  pools: Array<Record<string, unknown>>;
-} {
-  const list = Array.isArray(raw.pools) ? (raw.pools as Record<string, unknown>[]) : [];
-  const out: Array<Record<string, unknown>> = [];
-  for (const want of VANNA_AQUARIUS_FARM_PAIRS) {
-    const candidates = list.filter((p) => {
-      const tokens = Array.isArray(p.tokens)
-        ? (p.tokens as unknown[]).map((t) => String(t))
-        : Array.isArray(p.tokens_raw)
-          ? (p.tokens_raw as unknown[]).map((t) => String(t).split(":")[0])
-          : [];
-      return tokensMatchPair(tokens, want.a, want.b);
-    });
-    candidates.sort(
-      (x, y) =>
-        Number(y.total_apy_pct ?? y.apy_pct ?? 0) - Number(x.total_apy_pct ?? x.apy_pct ?? 0),
-    );
-    const best = candidates[0];
-    if (best) {
-      out.push({
-        pair: want.pair,
-        token_a: want.a,
-        token_b: want.b,
-        total_apy_pct: best.total_apy_pct ?? best.apy_pct ?? null,
-        apy_pct: best.apy_pct ?? null,
-        liquidity_usd: best.liquidity_usd ?? null,
-        pool_address: best.pool_address ?? null,
-        fee: best.fee ?? null,
-        pool_type: best.pool_type ?? null,
-      });
-    } else {
-      out.push({
-        pair: want.pair,
-        token_a: want.a,
-        token_b: want.b,
-        total_apy_pct: null,
-        note: "No live API match for this pair on testnet right now.",
-      });
-    }
-  }
-  return { pools: out };
-}
-
 /** Rank Vanna earn pools by supply APY and return the winner (Sanujit EW5). */
 async function pickHighestEarnPool(
   mcp: ReturnType<typeof getMcpClient>,
@@ -7888,62 +7739,4 @@ async function resolveSmartAccount(
     /* ignore */
   }
   return null;
-}
-
-function mcpErrorResponse(e: unknown, request_id: string, template_id?: string): ChatResponse {
-  const code = e instanceof MCPError ? e.code : null;
-  const diagnostic =
-    code || (e instanceof MCPError && e.httpStatus != null)
-      ? {
-          mcp_error_code: code,
-          http_status: e instanceof MCPError ? e.httpStatus : null,
-          retryable: e instanceof MCPError ? e.retryable : false,
-        }
-      : undefined;
-  if (e instanceof MCPAuthError) {
-    const authMessage =
-      code === "invalid_user_assertion"
-        ? "MCP could not verify your user session. Sign in again, then retry."
-        : code === "missing_user_assertion"
-          ? "This write needs an authenticated user session. Sign in, then retry."
-          : "MCP authentication failed. Check the current wallet session and try again.";
-    return {
-      kind: "error",
-      message: `${authMessage}${code ? ` Code: ${code}.` : ""}`,
-      data: diagnostic,
-      intent: { template_id: template_id ?? null },
-      request_id,
-    };
-  }
-  if (e instanceof MCPCallError || e instanceof MCPError) {
-    const codeMessage =
-      code === "wallet_not_bound"
-        ? "Authorize Vanna as an additional signer for this wallet, then retry."
-        : code === "over_per_tx_cap" || code === "over_per_day_cap"
-          ? "The configured auto-sign spend cap rejected this request. Reduce the amount or change the cap."
-          : code === "simulation_failed" || code === "budget_exceeded"
-            ? "MCP could not simulate this transaction. Check the amount and account state, then retry."
-            : null;
-    return {
-      kind: "error",
-      message: `${codeMessage ?? `MCP error: ${e.message}`}${code ? ` Code: ${code}.` : ""}`,
-      data: diagnostic,
-      intent: { template_id: template_id ?? null },
-      request_id,
-    };
-  }
-  if (e instanceof VertexError) {
-    return {
-      kind: "error",
-      message: `Vertex error: ${e.message}`,
-      intent: { template_id: template_id ?? null },
-      request_id,
-    };
-  }
-  return {
-    kind: "error",
-    message: e instanceof Error ? e.message : "Copilot failed",
-    intent: { template_id: template_id ?? null },
-    request_id,
-  };
 }

@@ -3,7 +3,7 @@
 **For:** the implementer. **Audited by:** Claude. **Created:** 11 Sep 2026.
 **App:** `copilot-upgrade` @ `7f3aee0` (3 unpushed local commits, ~56 files in tree).
 **MCP:** `main` @ `60b2717`, deployed.
-**Verified baseline:** `tsc` clean · vitest **1,618 / 0 / 3** · `handle.ts` **8,164** · `router.ts` **2,645**.
+**Verified baseline:** `tsc` clean · vitest **1,644 / 0 / 3** · `handle.ts` **~7,743** · `router.ts` **2,645**.
 
 > This supersedes `HANDOFF-phase-P2-planner-cut.md` and `HANDOFF-phase-4-roadmap.md`.
 > Numbering per `PHASES.md`: **P0–P7** app, **M-A/B/C** MCP.
@@ -86,8 +86,13 @@ Keyword `parseStatedWrite` removed — fully specified writes compile from the p
 awaits MCP risk on **any** candidate (stated repay *and* ranked strategy); Approve /
 `readyForStep` still do. Duplicate checkpoint imports and the fall-through test hang are
 fixed. Audit JSONL, file checkpoints, and `guardrail-policy.ts` are wired on the journal
-path. **Do not redo.** MCP sections 3–4b and 6 are Gemini’s — this repo must not change
-`catalog.ts` / `LEGACY_TOOL_MAP` until that deploy.
+path. **Swallowed-catch class closed:** `logUnexpected` logs name/message/stack on
+investigate, propose, approve, submit, confirm, advance, plus risk/journal — the propose
+route was the third instance and the one that hid the 13:24 timeout. Display helpers,
+farm-pool filter, MCP payload totals, and MCP error mapping peeled out of `handle.ts`
+(`display-amounts.ts`, `farm-pools.ts`, `mcp-payload.ts`, `mcp-error-response.ts`) so the
+`runRead` move is unblocked. **Do not redo.** MCP sections 3–4b and 6 are Gemini’s — this
+repo must not change `catalog.ts` / `LEGACY_TOOL_MAP` until that deploy.
 
 ---
 
@@ -106,8 +111,9 @@ path. **Do not redo.** MCP sections 3–4b and 6 are Gemini’s — this repo mu
 are done.
 
 - Plan-preview sizing is **done** (`lib/copilot/plan-preview.ts`).
-- Next peel: `runRead` + the position/earn/farm answer helpers (~2,500 lines, 1802–4368).
-  That is the remaining read cluster. Do not start it mid-eval.
+- Display helpers / farm-pool filter / MCP error mapping peeled out of `handle.ts`.
+- Next peel: `runRead` + the position/earn/farm answer helpers (~2,500 lines, still in
+  `handle.ts` ~1735–4300). That is the remaining read cluster. Do not start it mid-eval.
 - `router.ts` read-through cache is in place. Exact-match reads answer early; write/plan
   clauses miss the cache; Copilot free-text never reaches `routeMessage`.
 - **Do not pull `runWrite` / `runPlan` out.**

@@ -6,6 +6,7 @@ import { copilotConfig } from "@/lib/copilot/config";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { WorkflowConflict } from "@/lib/copilot/workflow/journal";
 import { advanceWorkflow } from "@/lib/copilot/investigation/execute";
+import { logUnexpected } from "@/lib/copilot/log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +54,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const known = error instanceof ResearchError ? error : error instanceof Error && error.message === "workflow_not_found"
       ? new ResearchError("workflow_not_found", "This plan was not found for your account.", 404)
       : null;
+    if (!known) {
+      logUnexpected("advance failed", { subject: bound.sub, workflowId: id, network, error });
+    }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "advance_unavailable",
       message: known?.message ?? "This plan could not advance. Please try again.",

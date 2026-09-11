@@ -9,6 +9,7 @@ import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/se
 import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { isRecord } from "@/lib/copilot/investigation/decision";
+import { logUnexpected } from "@/lib/copilot/log";
 import type { ResearchStreamEvent } from "@/lib/copilot/investigation/view";
 
 export const runtime = "nodejs";
@@ -140,12 +141,7 @@ export async function POST(req: NextRequest) {
           } catch (error) {
             const known = error instanceof ResearchError ? error : null;
             if (!known) {
-              console.error("[copilot] investigation failed", {
-                request_id, subject, network,
-                error: error instanceof Error
-                  ? { name: error.name, message: error.message, stack: error.stack }
-                  : String(error),
-              });
+              logUnexpected("investigation failed", { request_id, subject, network, error });
             }
             send({ type: "error", code: known?.code ?? "research_unavailable", message: known?.message ?? "I couldn't reach the information needed for this investigation. Please try again." });
             console.info("[copilot] investigate done", { request_id, status: known?.code ?? "error", ms: elapsed() });

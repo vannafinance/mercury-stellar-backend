@@ -89,12 +89,43 @@ export type MarginSnapshot = {
   debtLimit: number;
 };
 
+export const DEFAULT_SNAPSHOT_TIMEOUT_MS = 12_000;
+
+/** A snapshot that would understate debt or invent a total from a failed read. */
+export class SnapshotUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SnapshotUnavailableError";
+  }
+}
+
+export class SnapshotTimeoutError extends SnapshotUnavailableError {
+  constructor(timeoutMs = DEFAULT_SNAPSHOT_TIMEOUT_MS) {
+    super(`Margin snapshot timed out after ${timeoutMs}ms`);
+    this.name = "SnapshotTimeoutError";
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, errorFactory: () => Error): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(errorFactory()), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 // Multiple mounted surfaces can request the same account snapshot at once
 // (Copilot, the right rail, Margin, and Portfolio). Share the active read by
 // address so those surfaces do not launch overlapping Soroban scans. This is
 // in-flight deduplication only; completed snapshots are not retained here, so
 // mutation-driven refreshes still get fresh chain data.
 const snapshotInflight = new Map<string, Promise<MarginSnapshot>>();
+
+export function resetMarginSnapshotCache(): void {
+  snapshotInflight.clear();
+}
 
 /**
  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
@@ -114,6 +145,11 @@ export type PartialSnapshot = Pick<
   | "netAvailableCollateral"
   | "collateralLeftBeforeLiquidation"
 >;
+
+export type ComputeMarginSnapshotOptions = {
+  onPartial?: (p: PartialSnapshot) => void;
+  timeoutMs?: number;
+};
 
 /** Borrow rate for the largest debt asset (independent of collateral reads). */
 async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: number): Promise<number> {
@@ -139,27 +175,47 @@ async function fetchBorrowRate(borrowedBalances: Balances, effectiveDebtValue: n
  */
 export async function computeMarginSnapshot(
   marginAccountAddress: string,
-  opts?: { onPartial?: (p: PartialSnapshot) => void },
+  opts?: ComputeMarginSnapshotOptions,
 ): Promise<MarginSnapshot> {
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
   // Progressive callers need their own onPartial callback. The route and
   // Copilot all use the no-callback form and can safely share one read.
   if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
   const existing = snapshotInflight.get(marginAccountAddress);
   if (existing) return existing;
-  const run = computeMarginSnapshotUncached(marginAccountAddress);
+
+  const run = computeMarginSnapshotUncached(marginAccountAddress, { timeoutMs });
   snapshotInflight.set(marginAccountAddress, run);
-  try {
-    return await run;
-  } finally {
+
+  const clearInflight = () => {
     if (snapshotInflight.get(marginAccountAddress) === run) {
       snapshotInflight.delete(marginAccountAddress);
     }
+  };
+  run.then(clearInflight, clearInflight);
+
+  try {
+    return await run;
+  } finally {
+    clearInflight();
   }
 }
 
-async function computeMarginSnapshotUncached(
+export async function computeMarginSnapshotUncached(
   marginAccountAddress: string,
-  opts?: { onPartial?: (p: PartialSnapshot) => void },
+  opts?: ComputeMarginSnapshotOptions,
+): Promise<MarginSnapshot> {
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
+  return withTimeout(
+    computeMarginSnapshotCore(marginAccountAddress, opts),
+    timeoutMs,
+    () => new SnapshotTimeoutError(timeoutMs),
+  );
+}
+
+async function computeMarginSnapshotCore(
+  marginAccountAddress: string,
+  opts?: ComputeMarginSnapshotOptions,
 ): Promise<MarginSnapshot> {
   const [borrowedResult, collateralResult] = await Promise.all([
     MarginAccountService.getCurrentBorrowedBalances(marginAccountAddress, { includePrices: false }),
@@ -170,38 +226,42 @@ async function computeMarginSnapshotUncached(
     fetchTokenPrices([...PRICEABLE_TOKENS]),
   ]);
 
+  if (!borrowedResult.success || !borrowedResult.data) {
+    throw new SnapshotUnavailableError(borrowedResult.error || "Failed to get borrowed balances");
+  }
+
+  if (!collateralResult.success || !collateralResult.data) {
+    throw new SnapshotUnavailableError(collateralResult.error || "Failed to get collateral balances");
+  }
+
   let totalBorrowedValue = 0;
   let totalCollateralValue = 0;
   const borrowedBalances: Balances = {};
   const collateralBalances: Balances = {};
 
-  if (borrowedResult.success && borrowedResult.data) {
-    const deduped: Record<string, Balance> = {};
-    Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
-      const canonical = canonicalMarginToken(token);
-      const current = deduped[canonical];
-      if (!current || parseFloat(amount) > parseFloat(current.amount)) deduped[canonical] = { amount, usdValue };
-    });
-    Object.entries(deduped).forEach(([token, { amount }]) => {
-      const usd = parseFloat(amount) * tokenPrice(token);
-      totalBorrowedValue += usd;
-      borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
-    });
-  }
+  const dedupedBorrowed: Record<string, Balance> = {};
+  Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
+    const canonical = canonicalMarginToken(token);
+    const current = dedupedBorrowed[canonical];
+    if (!current || parseFloat(amount) > parseFloat(current.amount)) dedupedBorrowed[canonical] = { amount, usdValue };
+  });
+  Object.entries(dedupedBorrowed).forEach(([token, { amount }]) => {
+    const usd = parseFloat(amount) * tokenPrice(token);
+    totalBorrowedValue += usd;
+    borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
+  });
 
-  if (collateralResult.success && collateralResult.data) {
-    const deduped: Record<string, string> = {};
-    Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
-      const canonical = canonicalMarginToken(token);
-      const current = deduped[canonical];
-      if (!current || parseFloat(amount) > parseFloat(current)) deduped[canonical] = amount;
-    });
-    Object.entries(deduped).forEach(([token, amount]) => {
-      const usd = parseFloat(amount) * tokenPrice(token);
-      totalCollateralValue += usd;
-      collateralBalances[token] = { amount, usdValue: usd.toFixed(2) };
-    });
-  }
+  const dedupedCollateral: Record<string, string> = {};
+  Object.entries(collateralResult.data).forEach(([token, { amount }]) => {
+    const canonical = canonicalMarginToken(token);
+    const current = dedupedCollateral[canonical];
+    if (!current || parseFloat(amount) > parseFloat(current)) dedupedCollateral[canonical] = amount;
+  });
+  Object.entries(dedupedCollateral).forEach(([token, amount]) => {
+    const usd = parseFloat(amount) * tokenPrice(token);
+    totalCollateralValue += usd;
+    collateralBalances[token] = { amount, usdValue: usd.toFixed(2) };
+  });
 
   const effectiveDebtValue = totalBorrowedValue > USD_DUST_EPSILON ? totalBorrowedValue : 0;
 

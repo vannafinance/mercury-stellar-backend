@@ -7,6 +7,7 @@ import { readContractHealthState } from "../investigation/contract-health";
 import { decimalWad, formatWad, WAD } from "../investigation/fixed";
 import { sizeLegs, type LegRequest } from "../investigation/sizing";
 import { RETRY, withRetry } from "../retry-policy";
+import { logUnexpected } from "../log";
 import { allowedInvocation } from "./allowlist";
 import type { WorkflowOp, WorkflowProposal } from "./types";
 
@@ -157,11 +158,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     if (!projected.ok) return `The proposed steps do not pass your ${proposal.floor} health-factor floor (${projected.reason}).`;
     return null;
   } catch (error) {
-    console.error("[copilot] workflow risk validation failed", {
-      error: error instanceof Error
-        ? { name: error.name, message: error.message, stack: error.stack }
-        : String(error),
-    });
+    logUnexpected("workflow risk validation failed", { error });
     return explain(error);
   }
 }

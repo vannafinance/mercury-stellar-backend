@@ -138,3 +138,23 @@ is 90s.
 **Suggested shape:** a hard deadline on `computeMarginSnapshotUncached` (8–15s is enough;
 the copilot already budgets 8s for the seed). Timed-out inflight should reject so the
 next caller does not join a 90s corpse. Copilot will not edit this file.
+
+---
+
+## Update (11 Sep 2026): Local Fixes Applied & Patch Available
+
+A minimal, targeted fix for the three shared-library issues described above has been implemented locally to keep the copilot unblocked while respecting the app team's file ownership:
+
+1. **Snapshot Deadline & Inflight Cleanup** (`lib/account-snapshot.ts`):
+   - Added a 12s deadline (`DEFAULT_SNAPSHOT_TIMEOUT_MS = 12_000`) via `withTimeout` wrapping `computeMarginSnapshotUncached`.
+   - On timeout or failure, `snapshotInflight.delete(marginAccountAddress)` runs immediately on promise settlement so subsequent callers initiate fresh reads instead of inheriting failed/stalled promises.
+   - Fail closed: `computeMarginSnapshotUncached` throws `SnapshotUnavailableError` on `!borrowedResult.success` or `!collateralResult.success`.
+2. **Fail-Closed Debt Reads** (`lib/margin-utils.ts`):
+   - In `getCurrentBorrowedBalances`, RPC simulation errors throw inside `borrowedTokens.map`, and rejected rows in `Promise.allSettled` immediately cause the method to return `{ success: false, error: ... }` rather than silently dropping failed legs and returning `success: true`.
+   - The same fail-closed protection is applied to `getCollateralBalances`.
+3. **Graceful Mercury Degradation** (`app/api/mercury/route.ts` & `app/api/mercury/events/route.ts`):
+   - Unconfigured environments return HTTP 200 with empty list / null data and `X-Mercury-Configured: 0` header rather than HTTP 500 crashes.
+
+A clean patch containing exactly these changes is available at:
+[`docs/copilot/app-team/shared-file-fixes.patch`](shared-file-fixes.patch)
+

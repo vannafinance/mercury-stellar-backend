@@ -18,8 +18,20 @@ const MERCURY_KEY = process.env.MERCURY_KEY;
 export async function POST(req: NextRequest) {
   if (!MERCURY_URL || !MERCURY_KEY) {
     return NextResponse.json(
-      { errors: [{ message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." }] },
-      { status: 500 },
+      {
+        data: null,
+        errors: [{
+          message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing).",
+          extensions: { code: "not_configured" },
+        }],
+      },
+      {
+        status: 200,
+        headers: {
+          "Cache-Control": "no-store",
+          "X-Mercury-Configured": "0",
+        },
+      },
     );
   }
 
