@@ -231,11 +231,15 @@ export function InvestigationCard({
               {workflow && (
                 <div className="mt-5 rounded-xl border border-violet-100 px-4 py-3.5">
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
-                    {workflow.status === "proposed" ? "Plan for approval" : "Execution"}
+                    {workflow.status === "proposed" || workflow.status === "validating"
+                      ? "Plan for approval"
+                      : workflow.status === "blocked" || workflow.status === "cancelled"
+                        ? "Not executed"
+                        : "Execution"}
                   </p>
                   <p className="mt-2 text-[14px] leading-6 text-vgray-900">{workflow.objective}</p>
                   <p className="mt-1.5 text-[12px] leading-5 text-vgray-500">{workflow.message}</p>
-                  {workflow.status === "proposed" ? (
+                  {workflow.status === "proposed" || workflow.status === "blocked" ? (
                     <ol className="mt-3 space-y-2">
                       {workflow.steps.map((step) => (
                         <li key={step.id} className="font-mono text-[12px] tabular-nums text-vgray-700">

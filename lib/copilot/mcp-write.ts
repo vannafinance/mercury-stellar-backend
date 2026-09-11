@@ -13,6 +13,7 @@ import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
 import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
+import { autoSignAllowed } from "./guardrail-policy";
 
 /**
  * Earn pool symbols, from the registry rather than from a doc.
@@ -1349,6 +1350,12 @@ function readyToSignMessage(_label: string): string {
   return "Built and ready — approve to sign it with your wallet.";
 }
 
+function writeOpForTool(tool: string): string {
+  const name = tool.replace(/^vanna_/, "");
+  if (name === "settle_account") return "settle";
+  return name;
+}
+
 export async function executeMcpWrite(
   mcp: MCPClient,
   step: WriteStep,
@@ -1687,6 +1694,7 @@ export async function executeMcpWrite(
   // is active, MCP write tools submit themselves (`auto_sign: "on"`) and we
   // already returned above. If not, unsigned XDR is the contract: in-app
   // auto-approve is client session-signing of this XDR, not a server submit.
+  const humanSign = !autoSignAllowed(writeOpForTool(step.tool));
   return {
     tool: step.tool,
     label: step.label,
@@ -1694,6 +1702,7 @@ export async function executeMcpWrite(
     unsigned_xdr: xdr,
     status: "needs_wallet_sign",
     message: readyToSignMessage(step.label),
+    ...(humanSign ? { forbid_session_sign: true } : {}),
     mcp_trace: { ...baseTrace, auto_sign: "disabled" },
   };
 }

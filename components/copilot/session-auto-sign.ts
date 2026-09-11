@@ -129,6 +129,11 @@ export function signServiceFromSessionRead(res: {
   if (res.kind === "needs_wallet_bind" || err === "wallet_not_bound") {
     return { status: "unbound", reason: null };
   }
+  // No Privy assertion yet is not a Sign Service fault. Leave the rail unknown
+  // so the enable path still works and we do not paint "unavailable".
+  if (err === "missing_user_assertion") {
+    return { status: "unknown", reason: null };
+  }
   if (res.kind === "error" || err) {
     return {
       status: "unavailable",

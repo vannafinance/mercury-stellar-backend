@@ -18,6 +18,7 @@ export type StepReadiness =
   | { kind: "stop"; reason: string };
 
 import type { InvestigationScope } from "../investigation/types";
+import { isRetryableRiskReason } from "./risk";
 
 export class WorkflowConflict extends Error {}
 type Identity = { scope: InvestigationScope; server: string };
@@ -85,11 +86,26 @@ export class WorkflowJournal {
     // Claim before external reads. A crash here requires a new proposal, never an implicit approval.
     let reason: string | null;
     try { reason = await validate(structuredClone(p)); }
-    catch { reason = "Fresh validation was unavailable. Prepare a new proposal before approving."; }
+    catch (error) {
+      console.error("[copilot] workflow approval validation failed", {
+        workflowId: id,
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack }
+          : String(error),
+      });
+      reason = "Fresh validation was unavailable. Prepare a new proposal before approving.";
+    }
     const current = await this.read(id, identity);
     if (current.value.status !== "validating") throw new WorkflowConflict("workflow_changed");
     if (p.expiresAt <= this.now()) reason = "The proposal expired during validation. Prepare a fresh proposal.";
-    current.value.status = reason ? "blocked" : "approved";
+    /**
+     * A timeout or RPC miss is not a consumed approval. Returning to `proposed`
+     * keeps Approve enabled so a flaky testnet read is not a dead card. Policy
+     * refusals (funds, floor) still block — those will not pass on a retry of
+     * the same amounts.
+     */
+    const retry = Boolean(reason && isRetryableRiskReason(reason));
+    current.value.status = reason ? (retry ? "proposed" : "blocked") : "approved";
     current.value.message = reason ?? "Approved. Preparing the first step.";
     if (!reason) current.value.approvedAt = this.now();
     return this.save(current);

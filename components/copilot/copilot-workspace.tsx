@@ -78,6 +78,7 @@ import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
 import { RunExecutionCard, toRunLegStatus, type RunLeg } from "./run-execution-card";
 import { HealthDial } from "./health-dial";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
+import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { lpSides } from "@/lib/copilot/lp-pair";
 import { AnswerView } from "./answer-view";
@@ -1421,6 +1422,7 @@ export function CopilotWorkspace() {
   const workflow = useWorkflow(address);
   const proposedRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
+  const approvedJournalRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const hasMarginAccount = useMarginAccountInfoStore((s) => s.hasMarginAccount);
@@ -1842,11 +1844,18 @@ export function CopilotWorkspace() {
     let cancelled = false;
     const seq = ++signReadSeq.current;
     setSignServiceState({ status: "unknown", reason: null });
-    void (async () => {
+    let attempts = 0;
+    const run = async () => {
       try {
+        const headers = await copilotRequestHeaders();
+        if (cancelled || seq !== signReadSeq.current) return;
+        if (!headers[PRIVY_TOKEN_HEADER]) {
+          if (attempts++ < 12) window.setTimeout(() => { void run(); }, 500);
+          return;
+        }
         const res = await fetch("/api/copilot", {
           method: "POST",
-          headers: await copilotRequestHeaders(),
+          headers,
           body: JSON.stringify({
             user_id: address,
             tier: "paid",
@@ -1876,7 +1885,8 @@ export function CopilotWorkspace() {
         // A failed read is not evidence the Sign Service is down — leave unknown
         // so the enable path still works.
       }
-    })();
+    };
+    void run();
     return () => {
       cancelled = true;
     };
@@ -2595,6 +2605,7 @@ export function CopilotWorkspace() {
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
     proposedRef.current = null;
     signedWorkflowStepRef.current = null;
+    approvedJournalRef.current = null;
     setSigningJournal(false);
     resetWorkflow();
     resetStrategyAccumulator();
@@ -2651,7 +2662,29 @@ export function CopilotWorkspace() {
     }
   }, [workflow.view, workflow.loading, signingJournal, address, confirmWorkflow]);
 
-  // Journal signatures are explicit. A browser toggle cannot override server signing policy.
+  /**
+   * Auto-approve ON means the journal should not wait for a second click.
+   * Propose no longer does the live price/balance pass — Approve does. The Sign
+   * Service still enforces caps; this only presses Approve the way the user already armed.
+   * A transient risk miss leaves the journal `proposed`; `approvedJournalRef` stops a loop.
+   */
+  useEffect(() => {
+    if (!sessionSigning) return;
+    const view = workflow.view;
+    if (!view || workflow.loading || workflow.error) return;
+    if (view.status !== "proposed") return;
+    if (approvedJournalRef.current === view.id) return;
+    approvedJournalRef.current = view.id;
+    void workflow.approve();
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.approve]);
+
+  useEffect(() => {
+    if (!sessionSigning) return;
+    const view = workflow.view;
+    if (!view || workflow.loading || signingJournal) return;
+    if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr)) return;
+    void signJournalXdr(true);
+  }, [sessionSigning, workflow.view, workflow.loading, signingJournal, signJournalXdr]);
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
@@ -5089,6 +5122,7 @@ export function CopilotWorkspace() {
               onReset={() => {
                 proposedRef.current = null;
                 signedWorkflowStepRef.current = null;
+                approvedJournalRef.current = null;
                 setSigningJournal(false);
                 investigation.reset();
                 workflow.reset();
@@ -5948,6 +5982,7 @@ export function CopilotWorkspace() {
             <div className="flex flex-col gap-5">
               <HealthDial
                   hf={liveHf}
+                  basis="page"
                   floor={guardianFloor}
                   collateralUsd={collateralValue ?? null}
                   debtUsd={borrowedValue ?? null}
@@ -6147,7 +6182,7 @@ export function CopilotWorkspace() {
               }
               if (!sessionSigningAvailable) {
                 toast.error(
-                  "Auto-approve needs a Vanna embedded wallet. Freighter signs in its own " +
+                  "Auto-approve needs a Privy embedded wallet. Freighter signs in its own " +
                     "extension popup, which this app cannot skip.",
                 );
                 return;
@@ -6187,7 +6222,7 @@ export function CopilotWorkspace() {
               {/* The caps live in the summary chip below, once and only once. */}
               <span className="block text-[11px] text-vgray-500">
                 {!sessionSigningAvailable
-                  ? "Needs a Vanna embedded wallet — tap for why"
+                  ? "Needs a Privy embedded wallet — tap for why"
                   : autoPending
                     ? "Pick a spend budget below to finish turning this on"
                     : sessionSigning
@@ -6225,7 +6260,7 @@ export function CopilotWorkspace() {
                 : "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
               : sessionSigningAvailable
                 ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
-                : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Vanna embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
+                : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Privy embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
           </p>
 
           {/* Spend-budget picker — the choice the 03 · AUTO-SIGN gate used to hijack the

@@ -42,6 +42,22 @@ describe("conceptual answers without a wallet", () => {
     })).toBeNull();
   });
 
+  it("allows empty evidence when the planner nominated stated actions", () => {
+    const decision = parseDecision({
+      kind: "research_complete",
+      goal: {
+        intent: "strategy",
+        objective: "repay 1 XLM",
+        constraints: [],
+        borrowing: "forbidden",
+        actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }],
+      },
+      findings: [{ summary: "User named a complete repay.", evidenceIds: [] }],
+      openQuestions: [],
+    });
+    expect(decision).toMatchObject({ kind: "research_complete", goal: { intent: "strategy" } });
+  });
+
   it("answers a health-factor definition without calling MCP", async () => {
     const summary = "A health factor is collateral divided by debt. Protocol liquidation starts at 1.1.";
     const result = await researchTurn(

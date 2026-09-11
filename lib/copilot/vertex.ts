@@ -40,8 +40,10 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { promisify } from "util";
 import { copilotConfig } from "./config";
+import { recordVertexUsage, withModelCall } from "./telemetry";
 import { currentTokenSubject, recordTokenUsage } from "./token-budget";
 import { assertFlashModel } from "./investigation/flash-policy";
+import { boundOnChainStrings } from "./investigation/onchain-strings";
 import type { RoutedIntent } from "./types";
 import { decisionFromFunctionCalls } from "./investigation/decls";
 import {
@@ -512,12 +514,14 @@ function logUsage(tag: string, parsed: unknown): void {
       promptTokens + int(meta.candidatesTokenCount) + int(meta.thoughtsTokenCount),
     );
   }
+  recordVertexUsage(parsed);
 }
 
 /** JSON-mode Vertex call — used by router + LLM strategy planner. */
 export async function generateJson(system: string, user: string): Promise<Record<string, unknown>> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: user }] }],
@@ -571,6 +575,7 @@ export async function generateJson(system: string, user: string): Promise<Record
   } catch {
     throw new VertexError(`Vertex JSON parse failed: ${out.slice(0, 400)}`);
   }
+  });
 }
 
 /** Bounded research turn. Separate from the legacy router; no model fallback. */
@@ -583,10 +588,15 @@ export async function generateInvestigationJson(
   functionDeclarations: FunctionDeclaration[] = [],
 ): Promise<unknown> {
   assertFlashModel(model);
+  const useTools = functionDeclarations.length > 0;
+  return withModelCall(model, {
+    outputType: useTools ? undefined : "json",
+    reasoningLevel: thinkingLevel,
+    maxTokens: 4096,
+  }, async () => {
   signal.throwIfAborted();
   const token = await getAccessToken();
   signal.throwIfAborted();
-  const useTools = functionDeclarations.length > 0;
   const res = await fetch(modelUrl(model), {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -670,6 +680,7 @@ export async function generateInvestigationJson(
   } catch {
     throw new VertexError("Vertex investigation returned no decision");
   }
+  });
 }
 
 /** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */
@@ -712,6 +723,10 @@ async function generateTextOnce(
   temperature: number,
   opts?: { lowThinking?: boolean },
 ): Promise<string> {
+  return withModelCall(model, {
+    outputType: "text",
+    reasoningLevel: opts?.lowThinking ? "LOW" : undefined,
+  }, async () => {
   const token = await getAccessToken();
   const thinking = opts?.lowThinking ? lowThinkingConfig(model) : null;
   const body = {
@@ -745,6 +760,7 @@ async function generateTextOnce(
     "";
   if (!out.trim()) throw new VertexError("Vertex returned empty explanation");
   return out.trim();
+  });
 }
 
 /** Plain-text generation used by the page assistant and vertexExplain. */
@@ -801,8 +817,9 @@ export async function generateWithClientTools(
   text: string;
   client_tools: Array<{ name: string; args: Record<string, unknown> }>;
 }> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "text" }, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     tools: [{ functionDeclarations: toolDecls }],
@@ -863,6 +880,7 @@ export async function generateWithClientTools(
     );
   }
   return { text, client_tools };
+  });
 }
 
 /**
@@ -879,8 +897,9 @@ async function generateFunctionCall(
   system: string,
   user: string,
 ): Promise<{ name: string; args: Record<string, unknown> }> {
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, {}, async () => {
+  const token = await getAccessToken();
   const body = {
     systemInstruction: { parts: [{ text: system }] },
     tools: [{ functionDeclarations: ROUTER_TOOL_DECLS }],
@@ -934,6 +953,7 @@ async function generateFunctionCall(
     name: String(call.name),
     args: (call.args ?? {}) as Record<string, unknown>,
   };
+  });
 }
 
 // ── tool catalog for routing ────────────────────────────────────────────────
@@ -1286,6 +1306,10 @@ function decimalsFor(key: string): number {
  * here also shortens the payload, which keeps more of a large response inside the clip
  * limit below. Non-numeric values (symbols, addresses, notes) pass through untouched.
  */
+function toolDataForModel(data: Record<string, unknown>): Record<string, unknown> {
+  return roundForProse(boundOnChainStrings(data)) as Record<string, unknown>;
+}
+
 function roundForProse(value: unknown, key = ""): unknown {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Number(value.toFixed(decimalsFor(key)));
@@ -1314,7 +1338,7 @@ export async function vertexExplain(
   data: Record<string, unknown>,
 ): Promise<string> {
   // Round first, then cap: the payload shrinks a lot once 18-decimal strings are gone.
-  const tidy = roundForProse(data) as Record<string, unknown>;
+  const tidy = toolDataForModel(data);
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
   // Same reasoning as vertexExplainStructured: the numbers are already decided.
@@ -1333,12 +1357,13 @@ export async function vertexExplainStructured(
   tool: string,
   data: Record<string, unknown>,
 ): Promise<StructuredAnswer | null> {
-  const tidy = roundForProse(data) as Record<string, unknown>;
+  const tidy = toolDataForModel(data);
   const clipped = JSON.stringify(tidy).slice(0, 6000);
   const user = `QUESTION: ${question}\nTOOL: ${tool}\nDATA:\n${clipped}`;
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json", reasoningLevel: "LOW" }, async () => {
+  const token = await getAccessToken();
   const thinking = lowThinkingConfig(model);
   const bodyFor = (withThinking: boolean) => ({
     systemInstruction: { parts: [{ text: ANSWER_SYSTEM }] },
@@ -1390,6 +1415,7 @@ export async function vertexExplainStructured(
     );
     return null;
   }
+  });
 }
 
 const RECEIPT_SYSTEM = `You write the closing summary for a multi-step DeFi strategy that has just finished running on Stellar.
@@ -1487,8 +1513,9 @@ export async function vertexSummarizeExecution(
   const clipped = JSON.stringify(roundForProse(execution)).slice(0, 5000);
   const user = `WHAT THE USER ASKED FOR: ${intent}\nWHAT RAN:\n${clipped}`;
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   try {
     const res = await fetch(modelUrl(model), {
       method: "POST",
@@ -1547,6 +1574,7 @@ export async function vertexSummarizeExecution(
     );
     return null;
   }
+  });
 }
 
 /**
@@ -1573,8 +1601,9 @@ export async function vertexGuideAnswer(
     .filter(Boolean)
     .join("\n\n");
 
-  const token = await getAccessToken();
   const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json" }, async () => {
+  const token = await getAccessToken();
   try {
     const res = await fetch(modelUrl(model), {
       method: "POST",
@@ -1611,13 +1640,15 @@ export async function vertexGuideAnswer(
     );
     return null;
   }
+  });
 }
 
 /** Cheap health probe used by /api/copilot GET */
 export async function vertexPing(): Promise<{ ok: boolean; model: string; error?: string }> {
+  const model = copilotConfig.vertexModel;
+  return withModelCall(model, { outputType: "json", maxTokens: 32 }, async () => {
   try {
     const token = await getAccessToken();
-    const model = copilotConfig.vertexModel;
     const res = await fetch(modelUrl(model), {
       method: "POST",
       headers: {
@@ -1643,4 +1674,5 @@ export async function vertexPing(): Promise<{ ok: boolean; model: string; error?
       error: e instanceof Error ? e.message : String(e),
     };
   }
+  });
 }

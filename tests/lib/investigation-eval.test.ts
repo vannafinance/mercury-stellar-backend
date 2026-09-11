@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
 
 /**
  * P2.6 fixture-backed evaluation gate. Asserts behaviour, not prose: which
@@ -82,7 +83,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     };
     let turn = 0;
     const result = await researchTurn(
-      { message: prompt, wallet: SCOPE.trader, continuation: null },
+      { message: prompt, wallet: SCOPE.trader, continuation: null, promptName: "withdraw-100-xlm" },
       deps(mcp, async () => turn++ === 0
         ? { kind: "inspect", reads: [{ capability: "can_withdraw", args: { asset: "XLM", amount: "100" } }] }
         : {
@@ -131,7 +132,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     };
     let turn = 0;
     const result = await researchTurn(
-      { message: prompt, wallet: SCOPE.trader, continuation: null },
+      { message: prompt, wallet: SCOPE.trader, continuation: null, promptName: "owner-strategy-usdc-xlm" },
       deps(mcp, async () => turn++ === 0
         ? {
             kind: "inspect",
@@ -174,7 +175,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
   it("bare USDC clarifies or resolves a variant rather than guessing", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a clarify"); }) };
     const result = await researchTurn(
-      { message: "what is the USDC rate?", wallet: SCOPE.trader, continuation: null },
+      { message: "what is the USDC rate?", wallet: SCOPE.trader, continuation: null, promptName: "bare-usdc-rate" },
       deps(mcp, async () => ({
         kind: "clarify",
         question: "Which USDC do you mean — Blend (BLUSDC), Aquarius (AQUSDC), or Soroswap (SOUSDC)?",
@@ -191,7 +192,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     const result = await researchTurn(
       {
         message: "if my health factor drops below 1.2 repay 10 XLM",
-        wallet: SCOPE.trader, continuation: null,
+        wallet: SCOPE.trader, continuation: null, promptName: "conditional-repay",
       },
       deps(mcp, async () => ({ kind: "blocked", reason: "should not reach the model" })),
     );
@@ -203,7 +204,7 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
   it("refuses an off-domain prompt at the immediate gate", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP off-domain"); }) };
     const result = await researchTurn(
-      { message: "write me a python function to sort a list", wallet: SCOPE.trader, continuation: null },
+      { message: "write me a python function to sort a list", wallet: SCOPE.trader, continuation: null, promptName: "off-domain-python" },
       deps(mcp, async () => ({ kind: "blocked", reason: "should not reach the model" })),
     );
     expect(result.status).toBe("replied");
@@ -211,5 +212,67 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(result.message).toMatch(/Vanna Finance/i);
     expect(mcp.call).not.toHaveBeenCalled();
     expect(mocks.resolveInvestigationScope).not.toHaveBeenCalled();
+  });
+
+  it("refuses to size when the app snapshot understates debt vs the contract", async () => {
+    // Fixture from BUGS-FOR-APP-TEAM.md: dropped USDC leg → app $1,684.99, contract $2,705.60.
+    const prompt =
+      "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.";
+    const mcp = {
+      call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+        if (tool === "vanna_get_pool_stats") {
+          return { supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "4" };
+        }
+        if (tool === "vanna_list_blend_reserves") {
+          return {
+            reserves: [
+              { venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" },
+              { venue: "blend", symbol: "USDC", supply_apr_pct: "10", supply_apy_pct: "10.5" },
+            ],
+          };
+        }
+        if (tool === "vanna_get_wallet_balance") {
+          return { assets: [{ symbol: "XLM", balance: "50", status: "ok" }, { symbol: "BLUSDC", balance: "80", status: "ok" }] };
+        }
+        if (tool === "vanna_get_price") {
+          return { price_usd: args.symbol === "XLM" ? "0.18" : "1" };
+        }
+        throw new Error(`Unexpected tool ${tool}`);
+      }),
+    };
+    let turn = 0;
+    const d = deps(mcp, async () => turn++ === 0
+      ? {
+          kind: "inspect",
+          reads: [
+            { capability: "earn_market", args: { asset: "XLM" } },
+            { capability: "earn_market", args: { asset: "BLUSDC" } },
+            { capability: "blend_markets", args: {} },
+            { capability: "wallet_balances", args: {} },
+            { capability: "asset_price", args: { asset: "XLM" } },
+            { capability: "asset_price", args: { asset: "BLUSDC" } },
+          ],
+        }
+      : {
+          kind: "research_complete",
+          goal: {
+            intent: "strategy",
+            objective: "Build a strategy with USDC and BLUSDC",
+            constraints: ["Health factor at or above 1.3"],
+            borrowing: "allowed",
+          },
+          findings: [{ summary: "Rates were read", evidenceIds: ["e1"] }],
+          openQuestions: [],
+        });
+    mocks.computeBorrowCapacity.mockRejectedValue(new Error("sizing_sources_disagree"));
+    const result = await researchTurn(
+      { message: prompt, wallet: SCOPE.trader, continuation: null, promptName: "owner-strategy-debt-drift" },
+      d,
+    );
+    expect(result.capacity).toBeNull();
+    expect(result.warnings).toContain(SIZING_SOURCES_DISAGREE_WARNING);
+    expect(result.candidates?.feasible.some((candidate) => candidate.borrows) ?? false).toBe(false);
+    expect(result.message).not.toMatch(/Sized so health/i);
+    expect(result.executionAllowed).toBe(false);
   });
 });

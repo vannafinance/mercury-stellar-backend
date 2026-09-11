@@ -5,6 +5,8 @@ import { claimedSet, isUsable, type ReadResult } from "@/lib/usable-read";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
 import type { InvestigationScope } from "./types";
+import { RETRY, withRetry } from "../retry-policy";
+import { setSpanAttr } from "../telemetry";
 
 export class ResearchError extends Error {
   constructor(readonly code: string, message: string, readonly status = 409) { super(message); }
@@ -72,7 +74,7 @@ async function readBindings(
   wallet: string | null,
 ): Promise<ReturnType<typeof walletsFromBindings>> {
   const call = () => interruptible(() => mcp.call("vanna_list_my_wallet_bindings", {}), signal);
-  const first = await call();
+  const first = await withRetry(RETRY.scope, call);
   const parsed = walletsFromBindings(first, subject);
   console.info("[copilot] investigation scope bindings", {
     raw: first,
@@ -81,7 +83,7 @@ async function readBindings(
     wallet,
   });
   if (parsed.ok) return parsed;
-  const retry = await call();
+  const retry = await withRetry(RETRY.scope, call);
   const retried = walletsFromBindings(retry, subject);
   console.info("[copilot] investigation scope bindings retry", {
     raw: retry,
@@ -100,7 +102,7 @@ async function resolveSmartAccount(
   const call = () => interruptible(() => mcp.call("vanna_resolve_account", { trader }, trader), signal);
   let resolved: Record<string, unknown>;
   try {
-    resolved = await call();
+    resolved = await withRetry(RETRY.scope, call);
   } catch (error) {
     console.warn("[copilot] investigation scope resolve threw", {
       trader,
@@ -110,7 +112,7 @@ async function resolveSmartAccount(
   }
   if (resolved.error) {
     try {
-      resolved = await call();
+      resolved = await withRetry(RETRY.scope, call);
     } catch (error) {
       console.warn("[copilot] investigation scope resolve retry threw", {
         trader,
@@ -172,9 +174,11 @@ export async function resolveInvestigationScope(
   }
   const cached = scopeCache.get(cacheKey(input));
   if (cached && cached.expiresAt > Date.now()) {
+    setSpanAttr("vanna.scope.cache", "hit");
     console.info("[copilot] investigation phase", { phase: "scope_cache", hit: true, ms: 0 });
     return cached.scope;
   }
+  setSpanAttr("vanna.scope.cache", "miss");
   console.info("[copilot] investigation phase", { phase: "scope_cache", hit: false });
 
   const bound = await readBindings(mcp, signal, input.subject, input.wallet);

@@ -61,6 +61,18 @@ const ZONE_LABEL: Record<HealthZone, string> = {
   unknown: "unavailable",
 };
 
+/** Caption under the figure. The 1.10 line is posted-collateral; the page number is not. */
+export function healthDialHfSub(opts: {
+  unknown: boolean;
+  noDebt: boolean;
+  basis: "posted" | "page";
+}): string {
+  if (opts.unknown) return "position read unavailable";
+  if (opts.noDebt) return "no debt — nothing to liquidate";
+  if (opts.basis === "posted") return "posted collateral · unsafe at 1.10 or below";
+  return "includes unposted · risk engine uses posted (unsafe at 1.10)";
+}
+
 const CX = 90;
 const CY = 92;
 
@@ -89,6 +101,12 @@ const SEGMENTS: Array<{ z: Exclude<HealthZone, "unknown">; a: number; b: number 
 export interface HealthDialProps {
   /** Live health factor. null when the position read failed — drawn as unavailable. */
   hf: number | null;
+  /**
+   * What `hf` measures. The 1.10 danger arc is the RiskEngine posted-collateral line.
+   * The Margin-page / workspace figure includes unposted balance, so feeding it without
+   * saying so pairs a solvency number with a liquidation threshold it does not use.
+   */
+  basis?: "posted" | "page";
   /** The user's own floor, or the policy default. Marked as a violet tick. */
   floor?: number;
   /** Where it would land if the pending plan ran — drawn as a hollow "from" marker. */
@@ -106,6 +124,7 @@ const money = (n: number) =>
 
 export function HealthDial({
   hf,
+  basis = "page",
   floor = 1.3,
   hfBefore = null,
   collateralUsd = null,
@@ -136,12 +155,11 @@ export function HealthDial({
    * deployed RiskEngine's `is_account_healthy` returns false at exactly 1.100000 and true
    * only from 1.100001 (binary-searched against testnet to 1e-6). The boundary is
    * exclusive, so the label has to say the account is already unsafe *at* 1.10.
+   *
+   * That 1.10 line is posted collateral. The workspace feeds the Margin-page figure
+   * (includes unposted), so the caption has to say which number this is.
    */
-  const hfSub = unknown
-    ? "position read unavailable"
-    : noDebt
-      ? "no debt — nothing to liquidate"
-      : `unsafe at 1.10 or below`;
+  const hfSub = healthDialHfSub({ unknown, noDebt, basis });
 
   // Proportional to each other, so the two bars are comparable rather than each filling its
   // own track. Debt beside a much larger collateral figure should look small.
@@ -188,7 +206,9 @@ export function HealthDial({
           aria-label={
             unknown
               ? "Health factor unavailable"
-              : `Health factor ${hfText}, ${ZONE_LABEL[zone]}, liquidation at 1.10`
+              : basis === "posted"
+                ? `Posted-collateral health factor ${hfText}, ${ZONE_LABEL[zone]}, risk engine unsafe at 1.10`
+                : `Health factor ${hfText} including unposted, ${ZONE_LABEL[zone]}, risk engine liquidates on posted at 1.10`
           }
           viewBox="0 0 180 108"
           style={{ width: 150, height: "auto", flexShrink: 0 }}

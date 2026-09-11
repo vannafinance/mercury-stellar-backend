@@ -105,6 +105,22 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         add("collateral_usd", "Contract liquidation collateral", data.collateral_usd, "USD", "margin");
         add("debt_usd", "Contract liquidation debt", data.debt_usd, "USD", "margin");
         flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
+        // Only when the fast-path attached a ratio from this same tuple. Never inferred
+        // here from collateral/debt — that would silently synthesize a health factor on
+        // every inspect of this capability.
+        add("posted_health_factor", "Posted-collateral health factor", data.posted_health_factor, "HF", "margin");
+        if (data.page_debt_mismatch === true) {
+          facts.push({
+            id: `${observation.id}:page_debt_mismatch`,
+            label: "Account panel disagrees",
+            value: typeof data.page_health_factor === "string" ? data.page_health_factor : "yes",
+            unit: "",
+            venue: "margin",
+            evidenceId: observation.id,
+            sourcePath: "page_debt_mismatch",
+            readAt: observation.observedAt,
+          });
+        }
         break;
       case "can_withdraw":
       case "can_borrow": {
@@ -171,6 +187,14 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         }
         if (Array.isArray(data.errors) && data.errors.length) warnings.add("Some Blend reserves could not be read; this is not a complete market comparison.");
         break;
+      case "blend_reserve": {
+        const symbol = assetLabel(data.symbol) ?? assetLabel(observation.args.asset);
+        const label = symbol ?? "Blend";
+        add("supply_apy_pct", `${label} Blend supply APY`, data.supply_apy_pct, "% APY", "blend");
+        add("supply_apr_pct", `${label} Blend supply APR`, data.supply_apr_pct, "% APR", "blend");
+        add("borrow_apy_pct", `${label} Blend borrow APY`, data.borrow_apy_pct, "% APY", "blend");
+        break;
+      }
       case "aquarius_markets": {
         /**
          * Surface each pool's PAIR and depth. The pair is a protocol fact the model was

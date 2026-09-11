@@ -1,3 +1,4 @@
+import { ASSET_IDS } from "../registry/assets";
 import type { ReadRequest, ResearchDecision } from "./types";
 
 /** Bounded so one decision cannot drain the whole tool budget in a single turn. */
@@ -59,13 +60,14 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
   if (goal.actions !== undefined && (!Array.isArray(goal.actions) || goal.actions.length > 8 || !goal.actions.every(action =>
     isRecord(action) && exactKeys(action, ["op", "asset", "amount", "sourceQuote"]) &&
     ["lend", "deposit_collateral", "borrow", "repay", "supply_blend"].includes(String(action.op)) &&
-    ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"].includes(String(action.asset)) &&
+    (ASSET_IDS as readonly string[]).includes(String(action.asset)) &&
     typeof action.amount === "string" && action.amount.length <= 60 && /^\d+(\.\d{1,18})?$/.test(action.amount) &&
     text(action.sourceQuote, 1600)))) return null;
   if (!Array.isArray(raw.findings) || raw.findings.length === 0 || raw.findings.length > 12 ||
     !texts(raw.openQuestions)) return null;
   const findings: Array<{ summary: string; evidenceIds: string[] }> = [];
-  const allowEmptyEvidence = goal.intent === "answer";
+  const allowEmptyEvidence = goal.intent === "answer"
+    || (Array.isArray(goal.actions) && goal.actions.length > 0);
   for (const finding of raw.findings) {
     if (!isRecord(finding) || !exactKeys(finding, ["summary", "evidenceIds"]) ||
       !text(finding.summary) || !texts(finding.evidenceIds) ||

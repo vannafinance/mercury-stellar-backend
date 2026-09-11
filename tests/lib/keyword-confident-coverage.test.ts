@@ -11,7 +11,7 @@
  * five more reads in the same broken state in one pass. An opt-in list finds gaps one
  * at a time forever, because "forgot to add the new route" leaves no trace. The
  * allowlist was flipped to an opt-OUT one (`VERTEX_REVIEWED_READ_TEMPLATES`,
- * `lib/copilot/handle.ts`) — every deterministic read is trusted by default now, so this
+ * `lib/copilot/intent-confidence.ts`) — every deterministic read is trusted by default now, so this
  * test's job changed from "is this template on the list" to "has anyone put this
  * template back on Vertex's-review list without meaning to."
  *
@@ -20,7 +20,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { routeMessage } from "@/lib/copilot/router";
-import { VERTEX_REVIEWED_READ_TEMPLATES } from "@/lib/copilot/handle";
+import { VERTEX_REVIEWED_READ_TEMPLATES } from "@/lib/copilot/intent-confidence";
 
 const REPRESENTATIVE_READS: Array<[string, string]> = [
   ["what's my health factor?", "query_account_health"],

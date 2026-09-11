@@ -3,10 +3,12 @@ import { researchCodec } from "./continuation";
 import { compactResearchEvidence } from "./evidence";
 import { normalizeResearchFacts } from "./normalize";
 import { matchFastPath, parseWithdrawCheck, type FastPathMatch } from "./read-cache";
+import { interruptible } from "./runtime";
 import type { InvestigationScope, Observation } from "./types";
 import type { ResearchView } from "./view";
 import { factualAnswer } from "./answer";
 import type { AssetId } from "../registry/assets";
+import { WAD } from "./fixed";
 
 export { matchFastPath, parseWithdrawCheck, type FastPathMatch };
 
@@ -14,7 +16,7 @@ export { matchFastPath, parseWithdrawCheck, type FastPathMatch };
  * Exact-match reads that skip the investigation loop.
  *
  * Not a second planner: these are cache hits for questions the page already knows how
- * to answer (health from the same snapshot as the Margin rail; a single oracle price;
+ * to answer (health from RiskEngine `liquidation_snapshot`; a single oracle price;
  * a named withdraw eligibility check). Anything with a second write/plan clause falls
  * through. `routeMessage` uses the same matcher so it cannot override a researched plan
  * with a keyword write.
@@ -82,6 +84,136 @@ export function healthObservations(position: {
       ...(position.healthFactor ? { health_factor: position.healthFactor } : {}),
       source: "vanna_app_margin_snapshot",
     },
+  }];
+}
+
+/** Posted-collateral ratio from one RiskEngine tuple. Not a mix of app and contract figures. */
+export function postedHealthFactorFromSnapshot(data: Record<string, unknown>): string | null {
+  const wadC = typeof data.collateral_usd_wad === "string" ? data.collateral_usd_wad : "";
+  const wadD = typeof data.debt_usd_wad === "string" ? data.debt_usd_wad : "";
+  if (/^\d+$/.test(wadC) && /^\d+$/.test(wadD)) {
+    const debt = BigInt(wadD);
+    if (debt === BigInt(0)) return null;
+    const ratio = BigInt(wadC) * WAD / debt;
+    const whole = ratio / WAD;
+    const frac = (ratio % WAD).toString().padStart(18, "0").replace(/0+$/, "");
+    return frac ? `${whole}.${frac}` : `${whole}`;
+  }
+  const collateral = Number(data.collateral_usd);
+  const debt = Number(data.debt_usd);
+  if (!Number.isFinite(collateral) || !Number.isFinite(debt) || collateral < 0 || debt <= 0) return null;
+  return String(collateral / debt);
+}
+
+function withPostedRatio(observation: Observation, extra: Record<string, unknown> = {}): Observation {
+  if (observation.status !== "ok" || !observation.data) return observation;
+  const posted = postedHealthFactorFromSnapshot(observation.data);
+  return posted
+    ? { ...observation, data: { ...observation.data, posted_health_factor: posted, ...extra } }
+    : { ...observation, data: { ...observation.data, ...extra } };
+}
+
+/**
+ * Same bands as sizing drift (`capacity.ts`). Unposted collateral changes the ratio;
+ * a dropped borrow leg changes *debt*. Only a debt mismatch means the page figure is
+ * unsafe to quote as health.
+ */
+export function pageDebtAgreesWithContract(pageDebtUsd: number, contractDebtUsd: number): boolean {
+  if (!Number.isFinite(pageDebtUsd) || !Number.isFinite(contractDebtUsd)) return false;
+  const diff = Math.abs(pageDebtUsd - contractDebtUsd);
+  const scale = Math.max(Math.abs(pageDebtUsd), Math.abs(contractDebtUsd), 1);
+  return diff <= Math.max(0.5, 0.005 * scale);
+}
+
+export async function liquidationSnapshotObservation(
+  scope: InvestigationScope,
+  mcp: { call: (tool: string, args: Record<string, unknown>, userId?: string) => Promise<Record<string, unknown>> },
+): Promise<Observation> {
+  const read = resolveRead("liquidation_snapshot", {}, scope);
+  const data = await mcp.call(read.tool, read.args, scope.trader ?? undefined);
+  return withPostedRatio({
+    id: "e0",
+    capability: "liquidation_snapshot",
+    args: {},
+    observedAt: Date.now(),
+    status: payloadFailed(data) ? "error" : "ok",
+    data,
+  });
+}
+
+/**
+ * Display matches the Margin page when that figure is safe to quote. The contract
+ * read is the cancellable source that must never hang the turn.
+ *
+ * Debt that agrees → one website number (unposted collateral is a definition, not a
+ * bug). Debt that disagrees → refuse the panel number and quote the risk engine.
+ * A dial that flashes a huge figure then settles (live: 25.50 → 3.89) is hydration
+ * lag on GET /api/account, not this mismatch.
+ */
+export async function readHealthFastPath(input: {
+  scope: InvestigationScope;
+  mcp: { call: (tool: string, args: Record<string, unknown>, userId?: string) => Promise<Record<string, unknown>> };
+  signal: AbortSignal;
+  budgetMs: number;
+  snapshotFallback: () => Promise<{
+    grossCollateralUsd: string;
+    debtUsd: string;
+    healthFactor: string | null;
+  } | null>;
+}): Promise<Observation[]> {
+  if (!input.scope.smartAccount) {
+    return [{
+      id: "e0",
+      capability: "liquidation_snapshot",
+      args: {},
+      observedAt: Date.now(),
+      status: "error",
+      error: "no_account",
+    }];
+  }
+  const budget = () => AbortSignal.any([input.signal, AbortSignal.timeout(input.budgetMs)]);
+  const contractTask = interruptible(
+    () => liquidationSnapshotObservation(input.scope, input.mcp),
+    budget(),
+  ).then((observation) => observation, (error) => {
+    console.warn("[copilot] investigation health contract read failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    });
+    return null;
+  });
+  const pageTask = interruptible(() => input.snapshotFallback(), budget()).then((position) => position, (error) => {
+    console.warn("[copilot] investigation health snapshot fallback failed", {
+      error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+    });
+    return null;
+  });
+  const [contract, page] = await Promise.all([contractTask, pageTask]);
+  const contractOk = contract?.status === "ok" && contract.data ? contract : null;
+  const contractDebt = contractOk ? Number(contractOk.data?.debt_usd) : Number.NaN;
+  const pageDebt = page ? Number(page.debtUsd) : Number.NaN;
+  if (
+    contractOk && page && pageDebtAgreesWithContract(pageDebt, contractDebt)
+  ) {
+    return healthObservations(page);
+  }
+  if (
+    contractOk && page && Number.isFinite(contractDebt) && Number.isFinite(pageDebt)
+    && !pageDebtAgreesWithContract(pageDebt, contractDebt)
+  ) {
+    return [withPostedRatio(contractOk, {
+      page_debt_mismatch: true,
+      ...(page.healthFactor ? { page_health_factor: page.healthFactor } : {}),
+    })];
+  }
+  if (contractOk) return [withPostedRatio(contractOk)];
+  if (page) return healthObservations(page);
+  return [{
+    id: "e0",
+    capability: "liquidation_snapshot",
+    args: {},
+    observedAt: Date.now(),
+    status: "error",
+    error: "health_unavailable",
   }];
 }
 

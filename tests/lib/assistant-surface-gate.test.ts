@@ -84,4 +84,42 @@ describe("assistant surface never executes a transaction", () => {
       resetMcpClient();
     }
   });
+
+  it("redirects the owner-style strategy paragraph without keyword-planning it", async () => {
+    const res = await handleChat({
+      ...base,
+      surface: "assistant",
+      message:
+        "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans.",
+    });
+    expect(res.kind).toBe("blocked");
+    expect(res.intent?.template_id).toBe("assistant_surface_redirect");
+  });
+
+  it("redirects enable auto-sign instead of starting a session", async () => {
+    const res = await handleChat({
+      ...base,
+      surface: "assistant",
+      message: "enable auto-sign",
+    });
+    expect(res.kind).toBe("blocked");
+    expect(res.intent?.template_id).toBe("assistant_surface_redirect");
+  });
+
+  it("does not Vertex-plan a live health question into a write", async () => {
+    process.env.MCP_MODE = "mock";
+    resetMcpClient();
+    try {
+      const res = await handleChat({
+        ...base,
+        surface: "assistant",
+        message: "what's my health factor?",
+      });
+      expect(res.kind).not.toBe("executed");
+      expect(res.intent?.template_id).not.toBe("assistant_surface_redirect");
+    } finally {
+      delete process.env.MCP_MODE;
+      resetMcpClient();
+    }
+  });
 });

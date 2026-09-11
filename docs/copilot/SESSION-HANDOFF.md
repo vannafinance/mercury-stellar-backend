@@ -1,11 +1,11 @@
-# Session handoff — Vanna copilot, 10 Sep 2026
+# Session handoff — Vanna copilot, 11 Sep 2026
 
 **For any AI agent** — Claude, Grok, Cursor, GPT. Written so you can continue without this
 conversation. Read §3 before acting; §4–6 are the parts you cannot get from the repo.
 
-**Honest opening:** the flagship prompt still does not fully work. Four phases of real
-progress, and `can I withdraw 100 XLM without getting liquidated?` returns a partial answer
-with a time-budget warning. Do not read the passing test suite as "done".
+**Honest opening:** health questions now work (~16s, contract-sourced). **No transaction
+has ever landed** — zero hashes, so the write path is unproven however many simulations
+pass. Do not read the passing test suite as "done".
 
 ---
 
@@ -24,12 +24,27 @@ settlement.
 
 ## 2. Current state
 
-- **App branch** `copilot-upgrade` @ `ea8c1bd`. `tsc` clean. `npx vitest run` = **1,590 passed / 1 failed / 3 skipped**. The one failure is a known network-flaky live-MCP test (`copilot-brain.test.ts`, "price of XLM") — it fails on network, not code.
-- **MCP branch** `copilot-phase-3`, [PR #2](https://github.com/vannafinance/vanna_mcp/pull/2). `python -m pytest tests/ -q` = **559 passed**.
-- **Deployed:** `vanna-mcp-server` rev `00089-wkn`, `vanna-sign-service` rev `00047-qn8`, `vanna-connect-gateway` rev `00011-mwr` (unchanged). All green.
-- **Test account:** `CBOQAN5NFII4P5HD73M2IRSFYZSXC5XC76FQWQ5JU7LJAO66TFFPG5XY` (wallet `GD4BQR…NPDH`, Stellar testnet).
+- **App** `copilot-upgrade` @ `7f3aee0`, **3 unpushed local commits**, ~62 files in tree
+  (uncommitted by instruction — the owner decides what reaches GitHub).
+- `tsc` clean · vitest **1,618 / 0 / 3** · MCP pytest **562**.
+- `handle.ts` **8,164** (from 8,642) · `router.ts` **2,645**.
+- **Deployed:** `vanna-mcp-server` `00090-v5g`, `vanna-sign-service` `00048-vck`,
+  `vanna-connect-gateway` `00011-mwr`. MCP `main` @ `60b2717` matches production.
+- **Langfuse** local on `:3100` (`aditya@vanna.finance` / `vanna-local-dev`), OTLP verified.
+- **Test account:** Privy `GD4BQR…NPDH` → `CBOQAN…G5XY`, testnet.
 
-⚠️ **MCP `main` does not contain what is running in production.** A deploy from `main` would roll back both services. Merge PR #2.
+### What works now that did not
+- **Health questions answer in ~16s** via MCP `liquidation_snapshot`, never Vertex, never
+  blocking on the app snapshot. Quotes *"3.42 on posted collateral"* and captions the
+  posted-vs-unposted gap. The old 120s browser abort is gone.
+- **Auto-approve ON is live** — Privy session signing, caps $1000/tx, $1000/day.
+- Copilot free-text no longer keyword-plans (`investigation_owns_planning`).
+
+### Still not proven
+- **No transaction has ever landed.** Zero hashes. The write path is unproven.
+- Signed-in battery (owner paragraph 5× ON / 5× OFF, messy prompts, three-turn) not run.
+- M-A on-chain injection test: unit-only, never live.
+
 
 ---
 
@@ -37,7 +52,9 @@ settlement.
 
 | File | What it is for |
 |---|---|
-| `docs/copilot/HANDOFF-roadmap-v2.md` | **The current plan.** Supersedes `HANDOFF-phase-4-roadmap.md`. |
+| `docs/copilot/HANDOFF-remaining-work.md` | **The current plan — start here.** All ten remaining tasks in order. Supersedes every earlier handoff. |
+| `docs/copilot/PHASES.md` | Canonical numbering (P0–P7, M-A/B/C) and the translation table for older docs. |
+| `docs/copilot/app-team/BUGS-FOR-APP-TEAM.md` | Two real app-team bugs + one FYI. Not ours to fix. |
 | `docs/copilot/PROMPT-LIBRARY.md` | Every live prompt result, verbatim, with cause. The flagship prompt has six dated entries showing its whole history. |
 | `docs/copilot/diagrams/*.mmd` | Nine Mermaid diagrams. Import via Excalidraw → Mermaid to Excalidraw. |
 | `.claude/skills/ship-across-repos/SKILL.md` | How to change both repos together without breaking the contract. |
@@ -167,6 +184,65 @@ app maths until the owner decides**; it is load-bearing for Margin and Portfolio
 `credentials_json: ${{ secrets.GCP_SA_KEY }}` and the repo has **no secrets configured**.
 Last successful run: never; last attempt 2 Sep. Fix: switch to Workload Identity Federation,
 matching the app repo. Needs IAM setup in `vanna-mcp`.
+
+---
+
+## 8a. OPEN CONCERN — a keyword planner came back on the write path
+
+`lib/copilot/investigation/requested-actions.ts` gained `parseStatedWrite`, a regex that
+decides whether a write executes without the investigation loop:
+
+```
+/^(?:please\s+|just\s+)?(repay|pay\s+back|pay\s+off|lend|deposit…)\s+(\d+…)\s*(XLM|BLUSDC|AQUSDC|SOUSDC)/i
+```
+
+Hardcoded verb list, **hardcoded asset list**, hardcoded politeness prefix. It is wired in
+`service.ts:182`, before the loop.
+
+**The problem it solves is real** — `"repay 1 XLM"` should not cost a 40s research loop, and
+the Approve hang it fixed was genuine. **The solution reintroduces what P2 exists to remove**:
+a second planner deciding on the highest-stakes path.
+
+Three concrete objections, not stylistic:
+
+1. **It answers with zero evidence.** `compactResearchEvidence([], null, …)` — no facts, no
+   capacity. The user approves a plan backed by nothing read. The evidence discipline exists
+   so every figure traces to a read.
+2. **The asset list drifts.** Add an asset and it silently stops matching — the same class as
+   the `vanna_auto_sign_status` map gap that 404'd in production.
+3. **It is brittle in the documented ways.** "repay one XLM", "settle 1 XLM of debt",
+   "pay off 1 xlm" all miss.
+
+**Better shape:** keep one planner and make it *fast* for a fully-specified write — one turn,
+no reads required when the action needs none. If a fast path is truly needed, it must produce
+the **same** compiled plan the loop would, carry the same evidence, and **fall through to the
+loop** rather than answering with none.
+
+Raised 11 Sep; not yet resolved. `compileRequestedActions` and execution-time preflight do
+still run, so it is not unsafe today — it is architectural drift.
+
+---
+
+## 8b. Operational lessons from 11 Sep
+
+**Do not test while an agent is editing the same tree.** Eight copilot files were written
+in fifteen minutes while the owner was testing `/copilot`. Every save triggers a Next dev
+recompile — that is the "Compiling…" indicator and the endless re-render. It very likely
+also killed an in-flight **Approve**: request in flight → file saved → route module
+swapped → request dies with no response, no popup, no error. **Freeze the tree, then
+test.**
+
+**The unbounded app snapshot is the single most recurrent root cause.** It has now caused:
+the 120s health-factor abort, `/api/account` at 6.3s–96s, and the Approve hang. The copilot
+can bound its *wait* but cannot cancel the work, and a second caller joins the same stalled
+promise. Reported to the app team as bug #3; the copilot-side answer is to not depend on it
+on any blocking path.
+
+**Check who owns a file before framing anything as someone else's bug.** Twice on 11 Sep I
+attributed copilot-owned code to the app team — the parity script (flagged a non-bug, and
+my "fix" broke a working path) and `components/copilot/health-dial.tsx` (ours, not the
+Margin page's). Same error shape both times: reasoning from a file's *content* without
+checking ownership.
 
 ---
 

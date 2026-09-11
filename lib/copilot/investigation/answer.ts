@@ -2,8 +2,45 @@ import type { ResearchFact, ResearchView } from "./view";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
 
+function askedIn(request: string | undefined, pattern: RegExp): boolean {
+  return !!request && pattern.test(request);
+}
+
+/**
+ * Only cite facts the prompt actually asked about. A repay of one asset used to
+ * print every wallet balance, health, and total debt because this function
+ * always dumped the full research bag.
+ */
+function relevantFacts(facts: readonly ResearchFact[], request?: string): readonly ResearchFact[] {
+  if (!request?.trim()) return facts;
+  const named = [...new Set(
+    (request.toUpperCase().match(/\b(XLM|BLUSDC|AQUSDC|SOUSDC|AQUA|EURC)\b/g) ?? []),
+  )];
+  const wantsHealth = askedIn(request, /\b(health(?:\s+factor)?|\bhf\b|liquidat|am i safe|at risk)\b/i);
+  const wantsDebt = askedIn(request, /\b(debt|owe|borrowed|liabilit)/i)
+    && !askedIn(request, /\b(repay|pay\s+back|pay\s+off)\b/i);
+  const wantsWallet = askedIn(request, /\b(wallet|balance|hold|how much .{0,24}(have|holding))\b/i);
+  const wantsPrice = askedIn(request, /\b(price|oracle|worth|trading at|value of)\b/i);
+  const wantsRates = askedIn(request, /\b(apy|apr|rate|yield|earn|blend)\b/i);
+  return facts.filter((fact) => {
+    if (fact.sourcePath === "allowed") return true;
+    if (fact.venue === "oracle") return wantsPrice || named.some((asset) => fact.label.toUpperCase().includes(asset));
+    if (fact.venue === "wallet" && fact.sourcePath.endsWith(".balance")) {
+      if (!wantsWallet && named.length === 0) return false;
+      if (named.length && !named.some((asset) => fact.unit === asset || fact.label.toUpperCase().includes(asset))) return false;
+      return wantsWallet || named.length > 0;
+    }
+    if (fact.sourcePath === "posted_health_factor" || fact.sourcePath === "health_factor" || fact.sourcePath === "page_debt_mismatch") {
+      return wantsHealth;
+    }
+    if (fact.label === "Total margin debt" || fact.label === "Reported debt value") return wantsDebt;
+    if (["earn", "blend"].includes(fact.venue) && fact.unit === "% APR") return wantsRates;
+    return true;
+  });
+}
+
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
-export function factualAnswer(facts: readonly ResearchFact[]): string | null {
+export function factualAnswer(facts: readonly ResearchFact[], request?: string): string | null {
   const amount = (fact: ResearchFact) => {
     const n = Number(fact.value);
     const usd = fact.unit === "USD";
@@ -16,19 +53,36 @@ export function factualAnswer(facts: readonly ResearchFact[]): string | null {
     return usd ? `$${value}` : `${value} ${fact.unit}`.trim();
   };
   const sentences: string[] = [];
-  const balances = facts.filter(f => f.venue === "wallet" && f.sourcePath.endsWith(".balance"));
+  const selected = relevantFacts(facts, request);
+  const balances = selected.filter(f => f.venue === "wallet" && f.sourcePath.endsWith(".balance"));
   if (balances.length) sentences.push(`Your wallet holds ${balances.map(amount).join(", ")}.`);
-  const health = facts.find(f => f.venue === "margin" && f.unit === "HF");
-  if (health) sentences.push(`Your reported health factor is ${formatHealthFactor(health.value)}.`);
-  const debt = facts.find(f => f.label === "Total margin debt") ?? facts.find(f => f.label === "Reported debt value");
+  const posted = selected.find(f => f.sourcePath === "posted_health_factor");
+  const pageHealth = selected.find(f => f.sourcePath === "health_factor" && f.venue === "margin");
+  const pageMismatch = selected.find(f => f.sourcePath === "page_debt_mismatch");
+  if (pageHealth && !posted && !pageMismatch) {
+    sentences.push(`Your reported health factor is ${formatHealthFactor(pageHealth.value)}.`);
+  } else if (posted) {
+    sentences.push(`${formatHealthFactor(posted.value)} on posted collateral, the base the risk engine uses.`);
+    if (pageMismatch) {
+      const panel = pageMismatch.value && pageMismatch.value !== "yes"
+        ? formatHealthFactor(pageMismatch.value)
+        : null;
+      sentences.push(
+        panel
+          ? `The account panel shows ${panel}, which does not match this debt, so I'm not using it.`
+          : "The account panel is showing a different figure, so I'm not using it.",
+      );
+    }
+  }
+  const debt = selected.find(f => f.label === "Total margin debt") ?? selected.find(f => f.label === "Reported debt value");
   if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
-  const prices = facts.filter(f => f.venue === "oracle");
+  const prices = selected.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
-  const eligibility = facts.filter(f => f.sourcePath === "allowed" && f.venue === "margin");
+  const eligibility = selected.filter(f => f.sourcePath === "allowed" && f.venue === "margin");
   for (const fact of eligibility) {
     sentences.push(`${fact.label} is ${fact.value} on the current health check.`);
   }
-  const rates = facts.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply"));
+  const rates = selected.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply"));
   if (rates.length) sentences.push(`The reported supply rates are ${rates.map(f => `${f.label.replace(" supply APR", "")}: ${amount(f)}`).join("; ")}.`);
   return sentences.length ? sentences.join(" ") : null;
 }
@@ -58,6 +112,8 @@ export function strategyReply(input: {
   question: string | null;
   intent?: "answer" | "strategy";
   findings?: ReadonlyArray<{ summary: string }>;
+  originalRequest?: string;
+  statedSteps?: ReadonlyArray<{ label: string }>;
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
@@ -90,7 +146,18 @@ export function strategyReply(input: {
   if (input.status === "incomplete") {
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
-  const facts = factualAnswer(input.facts);
+  if (input.statedSteps?.length) {
+    const list = input.statedSteps.map((step) => step.label).join(", then ");
+    const body = list.charAt(0).toUpperCase() + list.slice(1);
+    return input.statedSteps.length === 1
+      ? `${body}. Approve to run this step.`
+      : `${body}. Approve to run these steps.`;
+  }
+  if (input.intent === "strategy") {
+    if (input.findings?.length) return input.findings.map((finding) => finding.summary).join(" ");
+    return "The plan below uses the amounts in your request. Approve to run it.";
+  }
+  const facts = factualAnswer(input.facts, input.originalRequest);
   if (facts) return facts;
   // Conceptual answers are language, not sized amounts. Publishing findings here is
   // the only way "what is a health factor?" gets a definition instead of silence.

@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: [
+    "@opentelemetry/sdk-node",
+    "@opentelemetry/resources",
+    "@opentelemetry/sdk-trace-node",
+    "@opentelemetry/exporter-trace-otlp-http",
+    "@opentelemetry/semantic-conventions",
+    "@opentelemetry/context-async-hooks",
+  ],
   turbopack: {
     // This repo sits beside another package-lock.json. Pin tracing/build scope
     // to this application instead of letting Next infer the parent workspace.

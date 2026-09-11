@@ -1,5 +1,6 @@
 vi.mock("@/lib/copilot/workflow/risk", () => ({ validateWorkflowRisk: vi.fn(async () => null) }));
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { validateWorkflowRisk } from "@/lib/copilot/workflow/risk";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
 import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
 import { compactResearchEvidence } from "@/lib/copilot/investigation/evidence";
@@ -100,6 +101,7 @@ beforeEach(() => {
   harness.reset();
   harness.resolveInvestigationScope.mockReset();
   harness.computeBorrowCapacity.mockReset();
+  vi.mocked(validateWorkflowRisk).mockClear();
   harness.resolveInvestigationScope.mockResolvedValue(SCOPE);
   harness.computeBorrowCapacity.mockRejectedValue(new Error("capacity re-read should not run on fresh evidence"));
 });
@@ -114,6 +116,7 @@ describe("proposeWorkflow evidence reuse", () => {
     });
     expect(mcp.call).not.toHaveBeenCalled();
     expect(harness.computeBorrowCapacity).not.toHaveBeenCalled();
+    expect(validateWorkflowRisk).not.toHaveBeenCalled();
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
     expect(view.steps[0].amount).toBe(view.steps[1].amount);
@@ -153,5 +156,36 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(harness.computeBorrowCapacity).toHaveBeenCalled();
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
+  });
+});
+
+describe("proposeWorkflow requested_actions", () => {
+  it("creates the journal from sealed steps without MCP or risk validation", async () => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = ["requested_actions"];
+    evidence.requestedSteps = [{
+      id: "requested-0",
+      op: "repay",
+      asset: "XLM",
+      amount: "1",
+      label: "repay 1 XLM",
+      tool: "vanna_repay",
+      sizing: { basis: "stated" },
+      args: {
+        symbol: "XLM", amount: "1", trader: SCOPE.trader, smart_account: SCOPE.smartAccount,
+      },
+    }];
+    const mcp = { call: vi.fn(async () => { throw new Error("MCP should not run for a stated repay"); }) };
+    const view = await proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["repay 1 XLM from my account"], null, evidence),
+      candidateId: "requested_actions",
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp, signal: new AbortController().signal, now: NOW,
+    });
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(validateWorkflowRisk).not.toHaveBeenCalled();
+    expect(view.status).toBe("proposed");
+    expect(view.steps).toEqual([expect.objectContaining({ op: "repay", asset: "XLM", amount: "1" })]);
   });
 });

@@ -26,6 +26,8 @@ import { workflowStore } from "../workflow/store";
 import { workflowView, type WorkflowProposal, type WorkflowRecord, type WorkflowView } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
+import { allowedInvocation } from "../workflow/allowlist";
+import { appendAudit } from "../audit-log";
 
 const READS = [
   { capability: "wallet_balances", args: {} },
@@ -69,14 +71,22 @@ export async function proposeWorkflow(input: {
   if (input.candidateId === "requested_actions") {
     const steps = prior.evidence?.requestedSteps;
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
+    for (const step of steps) allowedInvocation(step, scope);
     const floor = prior.evidence?.capacity?.floor ?? null;
     const draft = { scope, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
       constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps };
-    const reason = await validateWorkflowRisk({ ...draft, id: "", revision: 1, digest: "", createdAt: wallNow, expiresAt: wallNow + 300_000 },
-      input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(25_000)]));
-    if (reason) throw new ResearchError("risk_validation_failed", reason);
-    return workflowView(await workflowJournal(input.secret).create(draft));
+    /**
+     * Propose holds the compiled plan for the card. Live prices and balances are
+     * re-checked on approve and again immediately before the first leg (P6).
+     * Awaiting MCP here is what left "repay 1 XLM" with no Approve button for 90s.
+     */
+    const record = await workflowJournal(input.secret).create(draft);
+    void appendAudit({
+      at: wallNow, subject: input.subject, action: "proposed",
+      workflowId: record.proposal.id, digest: record.proposal.digest, floor,
+    });
+    return workflowView(record);
   }
   const earnIdle = input.candidateId.startsWith("lend_idle_");
   if (!scope.trader || (!earnIdle && !scope.smartAccount)) {
@@ -149,16 +159,22 @@ export async function proposeWorkflow(input: {
       : []),
   ];
   const journal = workflowJournal(input.secret);
-  const riskReason = await validateWorkflowRisk({ id: "", revision: 1, digest: "", createdAt: now, expiresAt: now + 300_000,
-    scope, server: input.server, objective: candidate.label, messages: prior.messages, assumptions,
-    constraints: capacity ? [`Health factor at or above ${capacity.floor}`] : [], floor: capacity?.floor ?? null, steps: compiled.steps,
-  }, input.mcp, AbortSignal.any([input.signal, AbortSignal.timeout(25_000)]));
-  if (riskReason) throw new ResearchError("risk_validation_failed", riskReason);
+  /**
+   * Same as requested_actions: the card is compiled here; live prices and
+   * balances are re-checked on Approve and again immediately before the first
+   * leg. Awaiting MCP risk on propose is what left the user staring at
+   * “Preparing the plan timed out” with no Approve button.
+   */
   try {
     const record = await journal.create({
       scope, server: input.server, objective: candidate.label, messages: prior.messages,
       assumptions, constraints: capacity ? [`Health factor at or above ${capacity.floor}`] : [],
       floor: capacity?.floor ?? null, steps: compiled.steps,
+    });
+    void appendAudit({
+      at: now, subject: input.subject, action: "proposed",
+      workflowId: record.proposal.id, digest: record.proposal.digest,
+      floor: capacity?.floor ?? null,
     });
     return workflowView(record);
   } catch (error) {
@@ -170,7 +186,7 @@ export async function proposeWorkflow(input: {
 }
 
 export async function validateProposal(proposal: WorkflowProposal): Promise<string | null> {
-  return validateWorkflowRisk(proposal, getMcpClient(), AbortSignal.timeout(25_000));
+  return validateWorkflowRisk(proposal, getMcpClient(), AbortSignal.timeout(60_000));
 }
 
 /**

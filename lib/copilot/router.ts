@@ -3,8 +3,10 @@
  *
  * Exact-match reads (health, single-asset price) return from the shared
  * investigation read-cache and never plan. Write/plan keyword matching remains
- * for the assistant widget and tests; the Copilot surface never calls this
- * (`investigation_owns_planning`).
+ * for tests and the unnamed (non-copilot, non-assistant) surface; the Copilot
+ * page never calls this (`investigation_owns_planning`), and the assistant
+ * widget redirects writes before Vertex/LLM planning.
+ * This function must never override a researched plan.
  *
  * Strips G/C Stellar addresses before parsing amounts so digits inside addresses
  * never become fake quantities.

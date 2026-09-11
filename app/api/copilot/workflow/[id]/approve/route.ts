@@ -72,6 +72,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         throw new ResearchError("context_expired", "This investigation has expired or the connected account changed. Start a new investigation to refresh its context.");
       }
       const record = await journal.approve(id, { scope, server: stored.value.proposal.server }, input.revision, input.digest, validateProposal);
+      const { appendAudit } = await import("@/lib/copilot/audit-log");
+      void appendAudit({
+        at: Date.now(), subject: bound.sub,
+        action: record.status === "approved" ? "approved" : "blocked",
+        workflowId: record.proposal.id, digest: record.proposal.digest,
+        floor: record.proposal.floor, reason: record.status === "blocked" ? record.message : undefined,
+      });
       return workflowView(record);
     });
     return loaded.commit(NextResponse.json(view, { headers: { "Cache-Control": "no-store" } }));

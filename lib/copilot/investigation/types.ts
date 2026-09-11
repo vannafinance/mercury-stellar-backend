@@ -27,6 +27,8 @@ export interface InvestigationRequest {
    * factor as unavailable next to a rail showing it.
    */
   seed?: readonly Observation[];
+  /** Named eval fixture for traces. Never the user message. */
+  promptName?: string;
 }
 
 export interface GoalUnderstanding {

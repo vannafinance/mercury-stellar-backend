@@ -219,6 +219,16 @@ describe("signServiceFromSessionRead", () => {
     ).toEqual({ status: "unbound", reason: null });
   });
 
+  it("does not paint a Sign Service fault when the Privy assertion is not ready", () => {
+    expect(
+      signServiceFromSessionRead({
+        kind: "error",
+        message: "User assertion missing or invalid.",
+        data: { error: "missing_user_assertion", enabled: false },
+      }),
+    ).toEqual({ status: "unknown", reason: null });
+  });
+
   it("maps Sign Service faults to unavailable", () => {
     expect(
       signServiceFromSessionRead({

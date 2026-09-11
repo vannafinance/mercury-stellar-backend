@@ -30,9 +30,20 @@ Also note that users reason in **worked scenarios with numbers** — *"if ETH dr
 get liquidated"* — rather than in abstract queries. Any battery without conditional,
 scenario-shaped prompts is missing the most common real shape.
 
-## Step 2 — Write from four perspectives
+## Step 2 — Write from five perspectives
 
-Cover all four. Each finds a different class of failure.
+Cover all five. Each finds a different class of failure.
+
+### The owner (open-ended paragraph)
+
+A single-operation prompt never hits goal extraction, candidate ranking, the no-borrow
+alternative, and deterministic sizing at once. Every generated battery **must** include
+the acceptance paragraph verbatim, plus variations (two assets / none, floor / omit,
+borrow granted / forbidden):
+
+- "use some USDC and BLUSDC to build a strategy so my health factor doesn't go below 1.3 — you can use spot and farm markets yourself, and you can even take new loans."
+
+Do not rewrite this into lend/borrow commands.
 
 ### The newcomer
 Vague, anxious, imprecise vocabulary. Does not know your terms and may not know theirs.

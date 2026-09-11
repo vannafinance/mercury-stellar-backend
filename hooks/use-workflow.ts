@@ -29,6 +29,8 @@ export function useWorkflow(wallet: string | null = null) {
   }>({ view: null, loading: false, error: null });
   const storageKey = wallet ? `vanna-workflow:${wallet}` : null;
   const active = useRef<AbortController | null>(null);
+  const viewRef = useRef<WorkflowView | null>(null);
+  viewRef.current = state.view;
   useEffect(() => {
     active.current?.abort();
     const controller = new AbortController(); active.current = controller;
@@ -83,7 +85,7 @@ export function useWorkflow(wallet: string | null = null) {
   }, []);
 
   const approve = useCallback(async () => {
-    const current = state.view;
+    const current = viewRef.current;
     if (!current || state.loading) return;
     active.current?.abort();
     const controller = new AbortController();

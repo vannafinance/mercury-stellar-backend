@@ -6,8 +6,8 @@
  *   MCP server       → execute reads + builds + health/caps
  *   Sign Service     → auto-sign + submit (via vanna_sign_and_submit)
  *
- * No local HF/leverage policy gates. No Freighter "Approve & sign" path for
- * the happy path — if auto-sign is off, we ask the user to enable it.
+ * No local HF/leverage policy gates. Signing is Privy embedded (auto-approve)
+ * or the wallet prompt — if auto-sign is off, we ask the user to enable it.
  */
 
 import { randomUUID } from "crypto";
@@ -15,6 +15,7 @@ import { copilotConfig, TEMPLATE_COUNT } from "./config";
 import { explainRead, factsForUi } from "./explain";
 import { cleanExecutionCopy, farmReceiptLine, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, MCPAuthError, MCPCallError, MCPError, type MCPClient } from "./mcp-client";
+import { RETRY, withRetry } from "./retry-policy";
 import {
   enableAutoSign,
   executeMcpWrite,
@@ -86,19 +87,14 @@ import {
   readinessDisplayAsset,
 } from "./asset-readiness";
 import { capToFreeBalance, netOfOriginationFee } from "@/lib/borrow-fee";
-import { looksLikeMultiGoal, preferMultiGoalPlan } from "./plan-sanitize";
+import { looksLikeMultiGoal } from "./plan-sanitize";
+import { resolveUnnamedIntent } from "./unnamed-intent";
+import { previewRoutedPlan, freezeLeveragedPlanPreview } from "./plan-preview";
 import { shouldPauseForHealthFloor } from "./hf-pause";
-import {
-  coalesceLeveragedDepositBorrow,
-  extractPlanIR,
-  preferExtractedPlan,
-} from "./step-extractor";
-import { classifyCoverage, residueIsMaterial } from "./residue";
 import { logCopilotEvent } from "./log";
-import { llmPlanStrategy, shouldLlmPlan } from "./llm-planner";
 import { guardUserPrompt } from "./domain-firewall";
 import { currentTokenSubject } from "./token-budget";
-import { findLeverage, findUnsupportedAsset, parseMinHealthFactor, routeMessage } from "./router";
+import { findLeverage, parseMinHealthFactor, routeMessage } from "./router";
 import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
 import { quoteDexSwap } from "./swap-quote";
 import { readFarmAmmLpShares } from "./farm-lp";
@@ -129,7 +125,6 @@ import {
   vertexAuthMode,
   vertexExplain,
   vertexExplainStructured,
-  vertexSelectTool,
   vertexSummarizeExecution,
   VertexError,
 } from "./vertex";
@@ -315,77 +310,7 @@ function impactExplanation(sim: Simulation | null): string | null {
   return lines.join("\n");
 }
 
-/** True when the router already resolved this to a Blend-venue read. */
-function isBlendRead(routed: RoutedIntent): boolean {
-  return (
-    routed.kind === "read" &&
-    (routed.tool === "vanna_list_blend_reserves" ||
-      routed.tool === "vanna_get_blend_reserve_stats" ||
-      routed.tool === "vanna_get_blend_position")
-  );
-}
-
-/**
- * Measure how much of the message the deterministic extractor accounted for, and log it.
- *
- * Shadow only: nothing here changes the response. The point is to collect a real over-ask
- * rate before the coverage check is allowed to interrupt anyone — turning it loud on an
- * assumed rate is how a safety check becomes a nuisance the user learns to click past.
- * Scoped to plan-shaped messages, since residue on "what is XLM worth" is not the signal.
- */
-function logPlanCoverageShadow(
-  message: string,
-  routed: RoutedIntent,
-  request_id: string,
-): void {
-  if (!looksLikeMultiGoal(message) && routed.kind !== "plan") return;
-  try {
-    const ir = extractPlanIR(message);
-    const verdicts = classifyCoverage(ir.coverage);
-    logCopilotEvent("plan_coverage_shadow", {
-      request_id,
-      routed: routed.kind,
-      template_id: routed.kind === "plan" ? routed.template_id : null,
-      steps: ir.steps.length,
-      source: ir.source,
-      verdict: ir.coverage.verdict,
-      residue: verdicts.map((v) => `${v.class}:${v.decision}:${v.reason}`),
-      residue_text: ir.coverage.residue.map((r) => r.text),
-      material: residueIsMaterial(verdicts),
-      intra_clause: ir.coverage.intraClause.map((r) => r.text),
-      min_hf: ir.constraints.minHf,
-      leverage: ir.constraints.leverage,
-    });
-  } catch (e) {
-    // A measurement must never break a turn it is only observing.
-    console.warn(`[copilot] coverage shadow failed: ${String(e)}`);
-  }
-}
-
-/**
- * Read `template_id`s that must NOT be auto-trusted — reviewed by Vertex before the
- * final answer stands, even though the deterministic router already produced one.
- *
- * This used to be the other way round: an opt-IN allowlist, where a read had to be
- * added here before it was trusted, and every entry was added only after it was
- * reported live as broken. "Swap 10 XLM to USDC" ignored the router's own correct
- * "which USDC?" clarify because `clarify` wasn't yet a trusted kind; "What is Balance of
- * XLM in my Margin Account" (a word-order variant of an already-fixed phrasing) fell to
- * the generic capabilities blurb because `query_collateral` hadn't been added yet.
- * Building a coverage test (`tests/lib/keyword-confident-coverage.test.ts`) to check
- * that allowlist against what the router actually produces found FIVE more reads in the
- * same broken state in one pass (`query_can_borrow`, `query_can_withdraw`,
- * `query_inactive`, `query_vtoken`, `query_exchange_rate`) — an opt-IN list will keep
- * finding new gaps exactly this way, one at a time, forever, because "forgot to add the
- * new route here" leaves no trace until someone hits it.
- *
- * Flipped to opt-OUT: every deterministic read is now trusted by default, the same way
- * every deterministic write/clarify/restricted/auto_sign/client result already is.
- * Empty today — nothing currently needs Vertex to double-check it — but the escape
- * hatch stays for a genuinely fuzzy future read where sending it to Vertex anyway is a
- * deliberate design choice, not a forgotten allowlist entry.
- */
-export const VERTEX_REVIEWED_READ_TEMPLATES: readonly string[] = [];
+export { VERTEX_REVIEWED_READ_TEMPLATES } from "./intent-confidence";
 
 export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   const request_id = newRequestId();
@@ -832,6 +757,17 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     (/\buse (?:the )?default(?:s)?(?:\s+caps?)?\b/i.test(lower) &&
       /\bauto[- ]?(?:sign|approve)\b/i.test(lower))
   ) {
+    if (req.surface === "assistant") {
+      return {
+        kind: "blocked",
+        message:
+          "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+          "don't sign or submit transactions myself. Open the Copilot page to run " +
+          `"${message}".`,
+        intent: { template_id: "assistant_surface_redirect" },
+        request_id,
+      };
+    }
     // “use defaults for auto-sign”
     if (/\bdefault/i.test(lower) && /\b(cap|auto|sign|approve)\b/i.test(lower)) {
       return handleAutoSignAction(
@@ -903,513 +839,48 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     };
   }
 
-  // ── Route intent (hybrid: fast keywords + smart Vertex for complex goals) ─
-  // Simple single-action prompts (swap/lend/deposit…) skip Vertex for speed.
-  // Multi-goal / long / strategy language always uses Gemini so understanding is
-  // free-form — not a fixed prompt list. Keyword router still corrects venue
-  // mistakes after Vertex (Blend vs Earn, USDC variants, etc.).
-  const kwFast = routeMessage(message);
-  const needsSemanticIntent = (() => {
-    const t = message.trim();
-    // A keyword PLAN already lists every leg. Length > 90 used to force Vertex, which
-    // collapsed "lend 1000 XLM, 100 BLUSDC, 100 SOUSDC, 100 AQUSDC" to one lend.
-    if (kwFast.kind === "plan") return false;
-    if (t.length > 90) return true;
-    const actionVerbs =
-      t.match(
-        // "create"/"open"/"connect" count as actions: without them "create a wallet and
-        // deposit 10 XLM" scored one verb, took the fast keyword path, and returned only
-        // the wallet dialog — silently dropping the deposit.
-        //
-        // "post" is the same trap one word over: "post 200 XLM and borrow BLUSDC" counted
-        // ONE verb (only "borrow"), so this stayed false, the deterministic single-borrow
-        // branch answered alone with no Vertex involved, and it borrowed 200 BLUSDC with
-        // no deposit leg at all — "200" was the deposit amount, attached to the wrong verb.
-        // "deposit 200 XLM and borrow BLUSDC" (same sentence, one word different) took the
-        // Vertex path and built the correct two-leg plan, which is how this survived
-        // undetected: the fast path silently answers, it does not visibly fail.
-        /\b(swap|lend|borrow|deposit|post|repay|farm|invest|supply|withdraw|redeem|add|remove|allocate|park|grow|deploy|create|open|connect)\b/gi,
-      ) || [];
-    const uniqueVerbs = new Set(actionVerbs.map((v) => v.toLowerCase()));
-    if (uniqueVerbs.size >= 2) return true;
-    // Yield + farm in one breath even if only one “verb” matched cleanly
-    if (/\b(park|lend|earn|yield)\b/i.test(t) && /\b(farm|blend|deploy)\b/i.test(t)) return true;
-    if (
-      /\b(invest|strategy|rebalance|optimize|max(?:imum)?\s*profit|wherever|whatever|make sure|ensure|keeping|while|then also|and also|multi[- ]?step)\b/i.test(
-        t,
-      ) &&
-      !/^\s*(swap|lend|borrow|deposit|repay|supply|farm blend)\b/i.test(t)
-    ) {
-      return true;
-    }
-    /**
-     * "what is the current rate of farm's bXLM and bUSDC" — a plain comparison
-     * QUESTION naming two tickers, not a plan — tripped this check anyway: "and" joins
-     * "bXLM and bUSDC" (a noun list, not two clauses) and "farm's" satisfies `\bfarm\b`
-     * with no way for the regex to tell the possessive NOUN ("the farm's X") from the
-     * imperative VERB ("farm 20 XLM"). Reported live: forced this off the deterministic
-     * router.ts answer (which correctly resolves it to the Blend read) and onto Vertex,
-     * which guessed a different, wrong tool. A possessive "farm's"/"blend's"/"earn's"
-     * right before the noun it modifies is never the action verb this check means to
-     * catch — real plans say "farm 20 XLM", never "farm's XLM".
-     */
-    const possessiveVenueNoun = /\b(farm|blend|earn)'s\b/i.test(t);
-    // Two independent clauses joined by and/then with risk language
-    if (
-      !possessiveVenueNoun &&
-      /\b(and|then)\b/i.test(t) &&
-      /\b(health|liquidat|profit|yield|farm|earn|hf)\b/i.test(t)
-    ) {
-      return true;
-    }
-    return false;
-  })();
-
-  const keywordConfident =
-    !needsSemanticIntent &&
-    (kwFast.kind === "write" ||
-      kwFast.kind === "plan" ||
-      kwFast.kind === "restricted" ||
-      kwFast.kind === "auto_sign" ||
-      // G-wallet create/connect is always client-side — never let Vertex map it to create_account
-      kwFast.kind === "client" ||
-      /**
-       * A deterministic "which one do you mean?" is the safest kind here, not one to
-       * distrust — yet it was the one kind missing from this list, so it was never
-       * "confident" and Vertex re-decided the message from scratch every time.
-       *
-       * That is why "swap 10 XLM to USDC" kept answering "Vanna does not offer direct
-       * spot token swaps" — router.ts's own clarify for exactly this case ran, produced
-       * the right "which USDC?" message, and was thrown away right here because
-       * `kind: "clarify"` matched none of the branches above. Vertex then answered the
-       * question independently and never saw the clarify at all. Same root cause as the
-       * bare "vtoken"/"supply balance" reads answering with no chips: those routes exist
-       * in router.ts too, and were exchanged for Vertex's version for the same reason.
-       *
-       * `clarify_capabilities` is a DIFFERENT kind of clarify from the one this comment
-       * defends, and must not ride along with it — it is router.ts's own last-resort
-       * "nothing matched" catch-all, not a deliberate disambiguation. Treating it as
-       * confident meant Vertex was never even asked for any phrasing router.ts's regex
-       * net had not yet special-cased, no matter how ordinary — "What is my AQUSDC
-       * balance" / "How much AQUSDC do I have" both hit this exact fallback and got the
-       * generic capability blurb, even though Vertex already has a working
-       * `vanna_get_wallet_balance` tool for exactly this question (confirmed live: once
-       * this fallback stopped short-circuiting to Vertex, it answered correctly). Every
-       * other unmatched-by-router.ts message already defers to Vertex; this fallback
-       * should not be the one exception that gives up before asking.
-       */
-      (kwFast.kind === "clarify" && kwFast.template_id !== "clarify_capabilities") ||
-      // Opt-out, not opt-in — see VERTEX_REVIEWED_READ_TEMPLATES's own doc comment for
-      // why: a deterministic read is trusted the same way every other kind here already
-      // is, unless its template_id is deliberately named as needing Vertex's review.
-      (kwFast.kind === "read" &&
-        !!kwFast.template_id &&
-        !VERTEX_REVIEWED_READ_TEMPLATES.includes(kwFast.template_id)));
-
-  let routed: RoutedIntent;
   /**
-   * Whether the model was asked and could not answer.
-   *
-   * The keyword fallback is a good safety net for phrasings it knows, but when it lands on
-   * the generic capability list the two failures are indistinguishable to the user: "I did
-   * not understand you" and "the component that understands never ran" print the same
-   * paragraph. On a machine whose `gcloud auth login` had expired, every unrecognised
-   * phrasing came back as that blurb, which is what got reported as a hardcoded response.
+   * Assistant widget: never keyword-plan a write. The Copilot page owns planning.
+   * Routing + Vertex + the LLM planner used to run here only to redirect — that is
+   * the remaining decision path this peel removes.
    */
-  let modelUnreachable = false;
-  if (keywordConfident) {
-    routed = kwFast;
-  } else {
-    try {
-      routed = await vertexSelectTool(message, {
-        smartAccount,
-        trader,
-        pageContext: req.page_context ?? null,
-      });
-    } catch (e) {
-      console.warn("[copilot] vertex route failed, keyword fallback:", e instanceof Error ? e.message : e);
-      modelUnreachable = true;
-      routed = kwFast;
-    }
-  }
-
-  // Prefer deterministic keyword routes for Sanujit earn multi-pool / farm / lend
-  // phrases — Vertex often collapses "list all earn pools", mis-routes highest-APY,
-  // or maps "supply to Blend" onto deposit_collateral.
-  {
-    const unsupported = findUnsupportedAsset(message);
+  if (req.surface === "assistant") {
+    const kw = routeMessage(message);
     if (
-      unsupported &&
-      // LP and swap verbs belong here too. Without them "add liquidity to the XLM/BTC
-      // pool" skipped this gate entirely and was answered with "how much of each token?"
-      // — asking a user to size a position in a token that does not exist on this
-      // network, and only failing once the amounts came back.
-      /\b(lend|supply|earn|deposit|borrow|repay|farm|swap|provide|add|remove|park|invest|deploy|redeem|withdraw)\b/i.test(
-        message,
-      )
+      kw.kind === "write" ||
+      kw.kind === "plan" ||
+      kw.kind === "auto_sign" ||
+      looksLikeMultiGoal(message)
     ) {
       return {
         kind: "blocked",
         message:
-          `“${unsupported}” is not supported on Vanna testnet. Use XLM, BLUSDC, AQUSDC, or SOUSDC ` +
-          `(not bare USDC without a variant — pick BLUSDC / AQUSDC / SOUSDC when you mean a dollar token).`,
-        intent: { template_id: "unsupported_asset", slots: { asset: unsupported } },
+          "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+          "don't sign or submit transactions myself. Open the Copilot page to run " +
+          `"${message}".`,
+        intent: { template_id: "assistant_surface_redirect" },
         request_id,
       };
     }
-    const kw = keywordConfident ? kwFast : routeMessage(message);
-    const lowerMsg = message.toLowerCase();
-    /**
-     * "Can You Remove 50 BLUSDC fom Farm's Blend Pool" executed a real SUPPLY instead of
-     * a withdrawal — router.ts's own `withdraw_from_blend` route (added for exactly this
-     * report) correctly classified it, but this SEPARATE, independent regex re-derives
-     * "is this a Blend write" from the raw message and force-overrides `routed` to
-     * `deploy_to_blend` a few lines down whenever it fires, clobbering whatever `kw` said.
-     * "farm's" satisfied `\bfarm\b` (the apostrophe is a `\b` word boundary) with no check
-     * for which direction the money should move. Same removal-verb carve-out as router.ts.
-     */
-    const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/.test(lowerMsg);
-    const blendWrite =
-      /\bblend\b/.test(lowerMsg) &&
-      /\b(supply|deposit|deploy|farm|add|liquidity)\b/.test(lowerMsg) &&
-      !blendRemoveVerb &&
-      !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
-    /**
-     * "What is my Holdings in Blend Pool" said "Holdings", not any of the words this
-     * list already knew — `blendRead` was FALSE for it, so this whole override never
-     * ran and the message fell through to router.ts's/Vertex's original pool-wide
-     * `query_blend`/`vanna_list_blend_reserves` pick, answering with the pool's total
-     * supply instead of the user's own position (reported live, reproduced exactly).
-     * "holdings"/"holding" added here and to the personal-position check below.
-     */
-    const blendRead =
-      /\bblend\b/.test(lowerMsg) &&
-      !blendWrite &&
-      /\b(stats|apy|reserve|pays|yield|supplied|position|btoken|holdings?|how much)\b/.test(lowerMsg);
-
-    /** Prefer explicit tickers in the message over nested "USDC" inside BLUSDC. */
-    const assetFromMessage = (): string | null => {
-      if (/\bblusdc\b|\bblend[_\s-]?usdc\b/i.test(message)) return "BLUSDC";
-      if (/\baqusdc\b|\baquarius[_\s-]?usdc\b/i.test(message)) return "AQUSDC";
-      if (/\bsousdc\b|\bsoroswap[_\s-]?usdc\b/i.test(message)) return "SOUSDC";
-      if (/\bxlm\b/i.test(message)) return "XLM";
-      return null;
-    };
-
-    if (kw.kind === "read" && kw.template_id === "query_all_earn_pools") {
-      routed = kw;
-    } else if (
-      kw.kind === "write" &&
-      (kw.op === "add_liquidity" || kw.op === "remove_liquidity" || kw.op === "swap") &&
-      routed.kind !== "plan"
-    ) {
-      /**
-       * "Swap 10 XLM to AQUSDC and add liquidity in Aquarius" executed ONLY the swap —
-       * the add_liquidity clause never even reached a "how much?" follow-up, it was
-       * silently discarded at intent-parsing time. Root cause: this override exists so
-       * Vertex misclassifying a single LP/swap write as `deposit_collateral` gets
-       * corrected back — but `routeMessage` (the deterministic router `kw` comes from)
-       * can only ever see ONE clause of a multi-clause sentence, since it returns at
-       * the FIRST matching `if` block; for this message it returns just the swap half.
-       * Without this guard, that partial single-op guess unconditionally overwrote
-       * `routed` even when `routed` was ALREADY a correct, complete multi-step PLAN
-       * from Vertex that covered both clauses — throwing away the second leg. A plan
-       * was never the failure mode this override was written for (Vertex recognising
-       * 2 steps is not "misclassified as deposit_collateral"), so it no longer fires
-       * once `routed` is already one.
-       */
-      // LP / swap must never become deposit_collateral.
-      routed = kw;
-    } else if (kw.kind === "write" && kw.template_id === "invest_max_yield") {
-      routed = kw;
-    } else if (kw.kind === "write" && (kw.op === "deploy_to_blend" || kw.op === "supply_to_blend")) {
-      // Always honor keyword farm write; fix bare USDC when BLUSDC was named.
-      const named = assetFromMessage();
-      routed = {
-        ...kw,
-        asset:
-          (named && named !== "USDC" ? named : null) ||
-          (kw.asset && kw.asset !== "USDC" ? kw.asset : null) ||
-          named ||
-          kw.asset ||
-          "XLM",
-      };
-    } else if (kw.kind === "write" && kw.op === "withdraw_from_blend") {
-      // Same "always honor the keyword router's own classification" rule as the supply
-      // case above — explicit, not left to fall through the blendWrite/blendRead chain
-      // below, precisely because that chain is what clobbered this router decision before.
-      const named = assetFromMessage();
-      routed = {
-        ...kw,
-        asset:
-          (named && named !== "USDC" ? named : null) ||
-          (kw.asset && kw.asset !== "USDC" ? kw.asset : null) ||
-          named ||
-          kw.asset ||
-          "XLM",
-      };
-    } else if (blendWrite) {
-      // Force deploy_to_blend even if Vertex picked deposit_and_borrow / deposit_collateral.
-      const fromKw = kw.kind === "write" ? kw : null;
-      const assetFix =
-        assetFromMessage() ||
-        (fromKw?.asset && fromKw.asset !== "USDC" ? fromKw.asset : null) ||
-        fromKw?.asset ||
-        "XLM";
-      routed = {
-        kind: "write",
-        op: "deploy_to_blend",
-        template_id: "deploy_to_blend",
-        asset: assetFix,
-        amount: fromKw?.amount ?? null,
-        multi_leg: true,
-        requires_account: true,
-        requires_amount: true,
-        leverage: fromKw?.leverage ?? null,
-      };
-    } else if (
-      // Vertex sometimes plans LP as deposit_collateral — override when Aquarius/LP named.
-      // Never fire on a swap+LP sentence: this rewrite is a SINGLE add_liquidity write,
-      // which is exactly how "Swap 10 XLM to AQUSDC and add liquidity in Aquarius"
-      // lost the swap (or, after the plan-builder landed, clobbered a 2-step plan).
-      !/\bswap\b/i.test(message) &&
-      kw.kind !== "plan" &&
-      routed.kind !== "plan" &&
-      /\b(aquarius|add liquidity|provide liquidity)\b/i.test(message) &&
-      /\b(add|provide)\b/i.test(message) &&
-      (routed.kind !== "write" || routed.op !== "add_liquidity")
-    ) {
-      if (kw.kind === "write" && kw.op === "add_liquidity") {
-        routed = kw;
-      } else {
-        const dualMatch = message.match(
-          /(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b(?:\s+and\s+|\s*\+\s*)(\d+(?:\.\d+)?)\s*(BLUSDC|AQUSDC|SOUSDC|USDC|XLM)\b/i,
-        );
-        routed = {
-          kind: "write",
-          op: "add_liquidity",
-          template_id: "add_liquidity",
-          asset: dualMatch?.[4]?.toUpperCase() ?? "BLUSDC",
-          amount: dualMatch ? Number(dualMatch[1]) : null,
-          token_a: dualMatch?.[2]?.toUpperCase() ?? "XLM",
-          token_b: dualMatch?.[4]?.toUpperCase() ?? "BLUSDC",
-          amount_a: dualMatch ? Number(dualMatch[1]) : null,
-          amount_b: dualMatch ? Number(dualMatch[3]) : null,
-          multi_leg: true,
-          requires_account: true,
-          requires_amount: true,
-        };
-      }
-    } else if (blendRead) {
-      // Naming two reserves is a comparison — always list both (never single-symbol).
-      const named = [
-        /\bxlm\b/i.test(message) ? "XLM" : null,
-        /\busdc\b/i.test(message) ? "USDC" : null,
-      ].filter(Boolean) as string[];
-      const compare =
-        named.length > 1 ||
-        /\b(vs|versus| or |compare|pays more|better than)\b/i.test(message);
-      const sym = !compare && named.length === 1 ? named[0]! : null;
-      const wantsPosition = /\b(supplied|positions?|btoken|holdings?|how much)\b/i.test(message);
-      /**
-       * "What is my Holdings in Blend Pool" — Vertex/router had already picked
-       * `vanna_list_blend_reserves` (the pool-wide stats tool), and `isBlendRead`
-       * only checks "is this SOME blend-read tool", so it counted that as "Vertex got
-       * it right" and skipped this override entirely, even though the message clearly
-       * asked for the user's OWN position, not the pool's totals (reported live,
-       * reproduced exactly — same root cause the `blendRead` gate above had to fix,
-       * one layer deeper). `vertexOk` must check Vertex picked the SAME category
-       * (personal position vs pool stats) the message actually asks for, not merely
-       * that it picked *a* Blend tool.
-       */
-      const vertexOk =
-        !compare &&
-        (wantsPosition
-          ? routed.kind === "read" && routed.tool === "vanna_get_blend_position"
-          : isBlendRead(routed));
-      if (!vertexOk) {
-        if (wantsPosition) {
-          routed = {
-            kind: "read",
-            tool: "vanna_get_farm_overview",
-            args: {
-              venue: "blend",
-              ...(sym ? { asset: sym === "USDC" ? "BLUSDC" : sym } : {}),
-            },
-            requires_account: true,
-            template_id: "query_farm_position",
-          };
-        } else {
-          routed = {
-            kind: "read",
-            tool: sym ? "vanna_get_blend_reserve_stats" : "vanna_list_blend_reserves",
-            args: sym ? { symbol: sym } : {},
-            template_id: "query_blend",
-          };
-        }
-      }
-    } else if (
-      kw.kind === "write" &&
-      kw.op === "lend" &&
-      (routed.kind !== "write" ||
-        routed.op !== "lend" ||
-        kw.template_id === "lend_highest" ||
-        (kw.amount != null && (routed.amount == null || kw.amount < 0)))
-    ) {
-      routed = kw;
-    }
-
-    // Multi-goal: keyword plan + clause-order extraction (plan-then-execute).
-    // Never let Vertex collapse park+farm / swap+farm into one write.
-    if (looksLikeMultiGoal(message) || kw.kind === "plan") {
-      const before = routed.kind;
-      routed = preferMultiGoalPlan(routed, kw, message);
-      // LangChain-style: deterministic ordered decomposition of long prompts
-      const extracted = preferExtractedPlan(routed, message);
-      routed = extracted;
-      if (extracted.kind === "plan" && before !== "plan") {
-        console.warn(
-          `[copilot] multi-goal: plan with ${extracted.steps.length} steps (was ${before})`,
-        );
-      }
-    }
   }
 
-  // Prefer a richer deterministic keyword plan over a shorter intermediate route.
-  // This prevents the planner from being called just to rediscover a dropped LP leg.
-  if (
-    kwFast.kind === "plan" &&
-    (routed.kind !== "plan" || kwFast.steps.length > routed.steps.length)
-  ) {
-    routed = kwFast;
-  }
-
-  // Late catch: long multi-verb messages that still arrived as a single write
-  if (routed.kind === "write" && looksLikeMultiGoal(message)) {
-    const upgraded = preferExtractedPlan(routed, message);
-    if (upgraded.kind === "plan") {
-      console.warn(
-        `[copilot] multi-goal: upgraded single write to extracted plan (${upgraded.steps.length} steps)`,
-      );
-      routed = upgraded;
-    }
-  }
-
-  logPlanCoverageShadow(message, routed, request_id);
-
-  // LLM plan-then-execute (primary understanding for free-form multi-leg).
-  // Keywords/extractors already ran; model fills gaps and free-form English.
-  // Allowlist + sanitize keep this safe (not unrestricted tool calling).
-  //
-  // Skipped entirely once `routed` is a deterministically-recognized carry plan
-  // (template_id "delta_neutral_carry", from step-extractor.ts). That decomposition
-  // needs no network call and is already correct; a Vertex round-trip here could only
-  // replace it with a plan of equal or greater length that still has to win the
-  // `>=` comparison below — and this exact strategy has previously come back from the
-  // model with the wrong asset on the borrow leg and the legs out of order. Once the
-  // deterministic path has it right, a model call is pure downside: latency with a
-  // chance of a wrong swap, no chance of an improvement.
-  const isConfirmedCarryPlan =
-    routed.kind === "plan" && routed.template_id === "delta_neutral_carry";
-
-  /**
-   * The deterministic plan already accounts for every part of the message.
-   *
-   * `accountCoverage` records which character ranges of the prompt some component claimed
-   * and what was left over; `residueIsMaterial` says whether the leftovers mean anything.
-   * That measurement was already being computed every multi-goal turn and only LOGGED —
-   * it is the exact question "is there anything here the model could still add?", and the
-   * answer was being thrown away while the model was called regardless.
-   *
-   * This is the biggest single item on the Vertex bill for this surface: the planner costs
-   * ~950 prompt plus 400–1800 THINKING tokens, thinking bills at output rates, and on a
-   * fully-covered prompt it can only return the plan we already have. Gated on a complete
-   * decomposition of at least two legs, so anything ambiguous, partial or single-leg still
-   * gets the model — this trades no understanding for the saving, which is why it is safe
-   * to apply by default rather than behind a flag.
-   */
-  const deterministicPlanIsComplete = (() => {
-    if (routed.kind !== "plan") return false;
-    if (routed.steps.filter((s) => s.kind === "write").length < 2) return false;
-    // Most missing amounts are exactly the gap the model is useful for. An unsized
-    // add_liquidity leg is different: the user intentionally supplied only the swap
-    // amount and the executor already knows to pause for the LP side after the swap.
-    // Calling Vertex here only adds latency and risks replacing a correct venue-aware
-    // plan with a collapsed single swap.
-    if (
-      routed.steps.some(
-        (s) =>
-          s.kind === "write" &&
-          s.amount == null &&
-          s.op !== "add_liquidity",
-      )
-    ) return false;
-    try {
-      const ir = extractPlanIR(message);
-      if (ir.steps.length < 2) return false;
-      const residue = classifyCoverage(ir.coverage);
-      if (!residueIsMaterial(residue)) return true;
-      // The extractor may leave the natural-language LP clause as residue because
-      // its amount is intentionally deferred to the pool-ratio/input card. If the
-      // deterministic plan already contains that LP leg, there is no semantic gap
-      // for Vertex to resolve and another model call only adds latency.
-      return (
-        routed.steps.some((s) => s.kind === "write" && s.op === "add_liquidity") &&
-        residue.every((r) =>
-          /add\s+liquidity|provide\s+liquidity|add\s+lp|aquarius|soroswap/i.test(r.span.text),
-        )
-      );
-    } catch {
-      return false; // never let the optimisation decide a turn it failed to measure
-    }
-  })();
-  if (deterministicPlanIsComplete) {
-    logCopilotEvent("llm_planner_skipped", {
+  const unnamed = await resolveUnnamedIntent({
+    message,
+    smartAccount,
+    trader,
+    pageContext: req.page_context ?? null,
+    request_id,
+  });
+  if (unnamed.kind === "blocked") {
+    return {
+      kind: "blocked",
+      message: unnamed.message,
+      intent: { template_id: unnamed.template_id, slots: unnamed.slots },
       request_id,
-      reason: "deterministic_plan_complete",
-      steps: routed.kind === "plan" ? routed.steps.length : 0,
-    });
+    };
   }
-
-  if (
-    !isConfirmedCarryPlan &&
-    !deterministicPlanIsComplete &&
-    shouldLlmPlan(message) &&
-    (routed.kind === "plan" || looksLikeMultiGoal(message))
-  ) {
-    try {
-      const llmPlan = await llmPlanStrategy(message, { trader, smartAccount });
-      if (llmPlan && llmPlan.kind === "plan" && llmPlan.steps.length > 0) {
-        // Prefer LLM order when it has ≥2 steps or richer swap args
-        if (
-          routed.kind !== "plan" ||
-          llmPlan.steps.length >= (routed.steps?.filter((s) => s.kind === "write").length || 0)
-        ) {
-          console.warn(
-            `[copilot] llm-planner: using model plan (${llmPlan.steps.length} steps)`,
-          );
-          routed = preferExtractedPlan(llmPlan, message);
-        } else if (routed.kind === "plan") {
-          // Merge: keep keyword structure, fill from LLM
-          routed = preferMultiGoalPlan(llmPlan, routed, message);
-        }
-      }
-    } catch (e) {
-      console.warn("[copilot] llm-planner skipped:", e instanceof Error ? e.message : e);
-    }
-  }
-
-  // Single write that LLM can still promote to multi-leg
-  if (routed.kind === "write" && shouldLlmPlan(message)) {
-    try {
-      const llmPlan = await llmPlanStrategy(message, { trader, smartAccount });
-      if (llmPlan?.kind === "plan" && llmPlan.steps.length >= 2) {
-        routed = llmPlan;
-      }
-    } catch {
-      /* keep write */
-    }
-  }
+  let routed = unnamed.routed;
+  const modelUnreachable = unnamed.modelUnreachable;
 
   // Never execute a write whose defining clause we cannot honour — a dropped
   // condition or an unwatchable standing order must be said out loud, not ignored.
@@ -1453,151 +924,10 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // executes once the user sends it back as approved_plan (handled near the top of
   // this function, before routing, so approval never re-infers anything).
   if (routed.kind === "plan") {
-    /**
-     * Carry a stated share onto the leg it belongs to, whoever built the plan.
-     *
-     * `step-extractor` attaches this per clause, but a plan can also come from the LLM
-     * planner, whose steps carry only op/asset/amount — so "deposit 50% of XLM in my
-     * wallet as collateral and borrow BLUSDC at 2x" reached the approval card reading
-     * "amount to be confirmed" on both legs and warning that it would stop to ask, for a
-     * prompt that had already said how much. Applied here because it is the one point
-     * every plan passes through on its way to being frozen.
-     *
-     * Only onto ops that HAVE a balance to take a share of — a borrow is sized by its
-     * leverage, and stamping "50%" on it would describe a different trade.
-     */
-    const share = findBalanceFraction(message);
-    if (share != null) {
-      routed = {
-        ...routed,
-        steps: routed.steps.map((s) =>
-          s.kind === "write" &&
-          s.amount == null &&
-          (s as { fraction?: number | null }).fraction == null &&
-          FRACTION_SIZED_PLAN_OPS.has(String(s.op))
-            ? { ...s, fraction: share, args: { ...(s.args || {}), fraction: share } }
-            : s,
-        ),
-      };
-    }
-    /**
-     * "Deposit X as collateral AND borrow Y at N×" is ONE leveraged position, not two
-     * independent legs — which is exactly how the Margin page models it (collateral box +
-     * borrow box + leverage slider produce a single position).
-     *
-     * Split apart, the borrow leg carries no amount and, from the LLM planner, no leverage
-     * either: the card read "Borrow BLUSDC on your margin account / amount to be confirmed"
-     * with no mention of the 2× the user had just stated, and nothing downstream could size
-     * it, because `leverage-plan` sizes a borrow against the deposit in the SAME step.
-     * Merging restores the shape it already knows how to size — `deposit_value × (L−1)`.
-     */
-    routed = {
-      ...routed,
-      steps: coalesceLeveragedDepositBorrow(routed.steps, {
-        leverage: findLeverage(message),
-        message,
-      }),
-    };
-    /**
-     * Show the REAL computed amount on the preview card instead of "amount to be
-     * confirmed" — for both a single leveraged borrow and a split across two.
-     *
-     * Reported live: the preview for "deposit 30 XLM and borrow 3x BLUSDC and AqUSDC"
-     * showed step 2 as "amount to be confirmed" even though the amount is fully
-     * computable from live prices — the exact thing this codebase already treats as
-     * wrong ("asking 'how much do you want to borrow?' when the answer is computable
-     * is the copilot refusing to do arithmetic the site does on every render"). The
-     * number WAS already computed correctly once the plan was approved (via this same
-     * `expandPlanWrites` + `materializeLeverageWrites` pipeline, run again at execution
-     * time in `runApprovedPlan`) — it just was not shown before that point. Running the
-     * identical pipeline here means the preview and the execution can never disagree,
-     * since they call the same functions with the same inputs.
-     *
-     * Best-effort: an oracle hiccup falls back to the original coalesced steps (still
-     * showing "amount to be confirmed"), never blocks the preview from rendering.
-     */
-    if (routed.steps.some((s) => s.kind === "write" && s.op === "deposit_and_borrow" && Number(s.leverage) > 1)) {
-      try {
-        const rawExpanded = expandPlanWrites(routed.steps);
-        const priceSymbols = materializeLeveragePriceSymbols(rawExpanded);
-        const prices = priceSymbols.length ? await fetchLeveragePrices(mcp, priceSymbols, userId) : {};
-        const materialized = materializeLeverageWrites(rawExpanded, prices);
-        if (materialized.ok) {
-          routed = {
-            ...routed,
-            steps: materialized.writes.map((w) => ({
-              kind: "write" as const,
-              op: w.op,
-              asset: w.asset ?? null,
-              amount: w.amount ?? null,
-              leverage: w.leverage ?? null,
-              args: toSlots(w),
-            })),
-          };
-        }
-      } catch {
-        /* best-effort — an unreachable oracle must never block the preview */
-      }
-    }
-    /**
-     * Refuse the WHOLE plan upfront if any step is statically impossible, rather than
-     * showing a multi-step "Approve & run" card destined to pause one signature in.
-     *
-     * Reported live: "swap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC" showed
-     * the full 4-step plan, the user approved it, and only THEN did leg 1 (the swap)
-     * turn out to be impossible — BLUSDC can never be swapped into, on any AMM, no
-     * matter the amount or balance. That fact is knowable before ever building the
-     * preview. `staticStepBlocker` is the exact same check `mapOpToMcpStep` runs at
-     * execution time, so the upfront refusal and the real one can never disagree.
-     */
-    for (const s of routed.steps) {
-      if (s.kind !== "write" || !s.op) continue;
-      const slots = toSlots(s);
-      const blocked = staticStepBlocker(String(s.op), {
-        asset: (slots.asset as string) ?? s.asset ?? null,
-        token_a: (slots.token_a as string) ?? null,
-        token_b: (slots.token_b as string) ?? null,
-      });
-      if (blocked) {
-        return { kind: "blocked", message: blocked, intent: { template_id: String(s.op) }, request_id };
-      }
-    }
-    const frozen = freezePlan(routed, Date.now());
-    if (frozen.steps.length) {
-      const unsizedLp = routed.steps.find(
-        (s) => s.kind === "write" && s.op === "add_liquidity" && !(typeof s.amount === "number" && s.amount > 0),
-      );
-      if (unsizedLp && unsizedLp.kind === "write") {
-        const sides = lpSides(
-          unsizedLp.asset,
-          typeof unsizedLp.args?.token_b === "string" ? unsizedLp.args.token_b : null,
-          typeof unsizedLp.args?.venue === "string" ? unsizedLp.args.venue : null,
-        );
-        frozen.lp_input = {
-          sides,
-          other_per_xlm: await readAmmOtherPerXlm(sides[1]),
-        };
-      }
-      console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval`);
-      const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
-      return {
-        kind: "plan_preview",
-        message: [
-          `Here's the plan — nothing has run yet.`,
-          "",
-          ...lines,
-          "",
-          ...(frozen.warnings.length ? frozen.warnings.map((w) => `Note: ${w}`) : []),
-          frozen.warnings.length ? "" : "",
-          "Approve it to run, or tell me what to change.",
-        ]
-          .filter((l, i, a) => !(l === "" && a[i - 1] === ""))
-          .join("\n"),
-        plan: frozen,
-        intent: { template_id: "plan_preview", slots: { plan_id: frozen.plan_id } },
-        request_id,
-      };
-    }
+    const preview = await previewRoutedPlan({
+      routed, message, mcp, userId, request_id,
+    });
+    if (preview) return preview;
   }
 
   // Normalize plan → MultiLegAgent (expand → execute → HF stop → report)
@@ -1758,21 +1088,6 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
 }
 
 // ── Auto-sign ─────────────────────────────────────────────────────────────
-
-/**
- * Plan ops that can be sized as a share of a live balance.
- *
- * Mirrors `FRACTION_SIZED_OPS` in registry/intent, minus the ops a plan never produces
- * as a bare leg. Deliberately excludes `borrow` and `deposit_and_borrow`: their size
- * comes from the leverage multiple, so a share would contradict it.
- */
-const FRACTION_SIZED_PLAN_OPS = new Set([
-  "lend",
-  "supply",
-  "deposit_collateral",
-  "withdraw_collateral",
-  "repay",
-]);
 
 /**
  * Did the Sign Service refuse because this wallet is not bound to the caller?
@@ -3650,20 +2965,20 @@ async function readEarnPositions(
       // from an honest zero balance, and answered "no active Earn positions" for a wallet
       // with real supply on every single asset. Must be treated as a failure, not a zero.
       let r: Record<string, unknown> | null = null;
-      for (let attempt = 0; attempt < 2 && r === null; attempt++) {
-        try {
+      try {
+        r = await withRetry(RETRY.mcpRead, async () => {
           const res = await mcp.call("vanna_get_vtoken_balance", built.args, ctx.userId);
           if (res?.error) {
             throw new Error(`vtoken balance returned error=${res.error}: ${String(res.message ?? "")}`);
           }
-          r = res;
-        } catch (e) {
-          if (attempt === 1) throw e;
-          console.warn(
-            `[copilot] vtoken balance attempt 1 failed for ${symbol}, retrying once -> ` +
-              `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
-          );
-        }
+          return res;
+        });
+      } catch (e) {
+        console.warn(
+          `[copilot] vtoken balance failed for ${symbol} -> ` +
+            `${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
+        );
+        throw e;
       }
       // `redeemable_human` (underlying token, e.g. "20.018337...") is what the Earn
       // page's own "Your Supply" column shows — NOT `human` (the vToken share count,
@@ -3678,7 +2993,9 @@ async function readEarnPositions(
       let usd: number | null = symbol === "XLM" ? null : amount;
       if (symbol === "XLM" && amount > 0.0001) {
         try {
-          const priceResp = await mcp.call("vanna_get_price", { symbol: "XLM" }, ctx.userId);
+          const priceResp = await withRetry(RETRY.mcpRead, () =>
+            mcp.call("vanna_get_price", { symbol: "XLM" }, ctx.userId),
+          );
           const price = Number(priceResp?.price_usd ?? priceResp?.price ?? NaN);
           if (Number.isFinite(price)) usd = amount * price;
         } catch {
@@ -5571,52 +4888,6 @@ function assetSetupSignResponse(
       mcp: { tool: "asset_setup", status: "needs_wallet_sign", needs_auto_sign: false },
     },
     request_id: ctx.request_id,
-  };
-}
-
-/**
- * Freeze an already-sized multi-leg leveraged position into a `plan_preview` instead
- * of executing its first leg immediately.
- *
- * `deposit_and_borrow` and the leveraged `deploy_to_blend`/`supply_to_blend` paths used
- * to call `runWrite` on leg 1 directly here and chain the rest via `next_step` — so a
- * multi-leg leveraged position could go straight to a signature with no approval card
- * at all, even though every OTHER multi-leg entry point (`tryMultiGoalPlan`, the LLM
- * planner) freezes and shows a plan first. Same trade, two different safety postures
- * depending on phrasing — confirmed live: "open a 3x position with 50 BLUSDC" deposited
- * for real with no card, while "deposit 100 AQUSDC and borrow XLM at 3x" (same shape,
- * caught by `tryMultiGoalPlan` instead) correctly showed one.
- *
- * The steps here are already fully sized (via `planLeverage`/`splitLeverageAmounts`,
- * which needs the async price fetch `routeMessage` can't do), so this only has to wrap
- * them in the same freeze/approve shape `handleChat`'s own `kind === "plan"` branch
- * uses — never re-derive amounts, never touch the chain until the user approves.
- */
-function freezeLeveragedPlanPreview(
-  steps: Array<{ op: string; asset: string | null; amount: number | null; leverage?: number | null; args?: Record<string, unknown> }>,
-  opts: { templateId: string; summary: string; requestId: string },
-): ChatResponse {
-  const frozen = freezePlan(
-    { kind: "plan", template_id: opts.templateId, summary: opts.summary, steps: steps.map((s) => ({ kind: "write" as const, ...s })) },
-    Date.now(),
-  );
-  console.warn(`[copilot] plan_preview ${frozen.plan_id} (${frozen.steps.length} steps) awaiting approval — leveraged position`);
-  const lines = frozen.steps.map((s) => `${s.n}. ${s.label}`);
-  return {
-    kind: "plan_preview",
-    message: [
-      `Here's the plan — nothing has run yet.`,
-      "",
-      ...lines,
-      "",
-      ...(frozen.warnings.length ? frozen.warnings.map((w) => `Note: ${w}`) : []),
-      "Approve it to run, or tell me what to change.",
-    ]
-      .filter((l, i, a) => !(l === "" && a[i - 1] === ""))
-      .join("\n"),
-    plan: frozen,
-    intent: { template_id: "plan_preview", slots: { plan_id: frozen.plan_id } },
-    request_id: opts.requestId,
   };
 }
 
@@ -7750,26 +7021,12 @@ async function runPlan(
     action.requires_amount = !amountOptional;
     action.leverage = w.leverage ?? null;
 
-    // Soft network retry once — multi-leg is latency-sensitive and MCP cold starts fail often.
     let writeRes = await runWrite(action, {
       ...ctx,
       smartAccount,
       // Avoid raw multi-goal text re-triggering negative-amount / max-yield heuristics
       message: `multi-leg step ${writeCursor}/${totalWriteLegs}: ${w.label}`,
     });
-    if (
-      writeRes.kind === "error" &&
-      /fetch failed|network|timed out|timeout|ECONNRESET|could not reach/i.test(
-        writeRes.message || "",
-      )
-    ) {
-      await new Promise((r) => setTimeout(r, 1200));
-      writeRes = await runWrite(action, {
-        ...ctx,
-        smartAccount,
-        message: `multi-leg step ${writeCursor}/${totalWriteLegs} retry: ${w.label}`,
-      });
-    }
     lastPartial = writeRes;
 
     if (writeRes.data && typeof writeRes.data === "object") {

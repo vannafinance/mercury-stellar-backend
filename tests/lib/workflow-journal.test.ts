@@ -137,6 +137,17 @@ describe("workflow approval and execution journal", () => {
     expect((await journal.approve(p.id, identity, 1, p.digest, async () => "Balance changed")).status).toBe("blocked");
     await expect(journal.claimNext(p.id, identity)).rejects.toThrow("workflow_not_runnable");
   });
+  it("returns a proposal to proposed when live reads miss so Approve can be pressed again", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    const record = await journal.approve(
+      p.id, identity, 1, p.digest,
+      async () => "Live balances could not be re-read in time. Nothing was submitted — approve again.",
+    );
+    expect(record.status).toBe("proposed");
+    expect(record.message).toMatch(/approve again/);
+    expect((await journal.approve(p.id, identity, 1, p.digest, async () => null)).status).toBe("approved");
+  });
   /**
    * Reconcile before retrying. An uncertain step's transaction may or may not be in flight,
    * so the ledger — not a retry — decides what happened.

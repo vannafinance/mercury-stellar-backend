@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { zoneOf } from "@/components/copilot/health-dial";
+import { zoneOf, healthDialHfSub } from "@/components/copilot/health-dial";
 
 describe("health zones match the protocol, not a guess", () => {
   it("puts the liquidation boundary at 1.10", () => {
@@ -23,5 +23,11 @@ describe("health zones match the protocol, not a guess", () => {
     expect(zoneOf(null)).toBe("unknown");
     expect(zoneOf(undefined)).toBe("unknown");
     expect(zoneOf(Number.NaN)).toBe("unknown");
+  });
+
+  it("does not pair the page figure with the posted 1.10 line as if they were the same number", () => {
+    expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "page" })).toMatch(/unposted/);
+    expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "posted" })).toMatch(/posted collateral/);
+    expect(healthDialHfSub({ unknown: false, noDebt: false, basis: "page" })).toMatch(/1\.10/);
   });
 });

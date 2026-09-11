@@ -16,7 +16,9 @@
  */
 
 import { copilotConfig } from "./config";
+import { withMcpCall } from "./telemetry";
 import { callNeedsUserToken, currentUser } from "./user-context";
+import { RETRY, withRetry } from "./retry-policy";
 
 export type MCPErrorCode = string;
 
@@ -62,6 +64,7 @@ export interface MCPClient {
 
 class MockMCPClient implements MCPClient {
   async call(tool: string, args: Record<string, unknown>, _userId?: string): Promise<Record<string, unknown>> {
+    return withMcpCall(tool, async () => {
     if (tool === "vanna_get_account_health") {
       return {
         health_factor: 1.72,
@@ -140,6 +143,7 @@ class MockMCPClient implements MCPClient {
     }
     // write-shaped mock (unused for execution path)
     return { unsigned_xdr: `AAAA...MOCK_XDR::${tool}`, is_write: true };
+    });
   }
 }
 
@@ -459,6 +463,15 @@ class LiveMCPClient implements MCPClient {
     _userId?: string,
     retryOnStaleSession = true,
   ): Promise<Record<string, unknown>> {
+    return withMcpCall(tool, () => this.executeCall(tool, args, _userId, retryOnStaleSession));
+  }
+
+  private async executeCall(
+    tool: string,
+    args: Record<string, unknown>,
+    _userId?: string,
+    retryOnStaleSession = true,
+  ): Promise<Record<string, unknown>> {
     const token = await this.getToken();
     const baseHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -525,18 +538,20 @@ class LiveMCPClient implements MCPClient {
     const startedAt = Date.now();
     let callRes: Response;
     try {
-      callRes = await fetch(copilotConfig.mcpBaseUrl, {
-        method: "POST",
-        headers: sessionHeaders,
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: rpcId,
-          method: "tools/call",
-          params: toServerCall(tool, args),
+      callRes = await withRetry(needsUser ? RETRY.mcpWrite : RETRY.mcpRead, () =>
+        fetch(copilotConfig.mcpBaseUrl, {
+          method: "POST",
+          headers: sessionHeaders,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            method: "tools/call",
+            params: toServerCall(tool, args),
+          }),
+          signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+          cache: "no-store",
         }),
-        signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-        cache: "no-store",
-      });
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (/abort|timeout/i.test(msg)) {
@@ -570,7 +585,7 @@ class LiveMCPClient implements MCPClient {
         callRes.status === 404 || (callRes.status === 400 && /session/i.test(text));
       if (staleSession && retryOnStaleSession) {
         this.resetSession();
-        return this.call(tool, args, _userId, false);
+        return this.executeCall(tool, args, _userId, false);
       }
       throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`);
     }

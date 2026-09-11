@@ -1,6 +1,8 @@
 import { MCPError, type MCPClient } from "../mcp-client";
+import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
 import { isRecord, parseDecision } from "./decision";
+import { boundOnChainStrings } from "./onchain-strings";
 import type {
   InvestigationLimits, InvestigationOutcome, InvestigationRequest, InvestigationResult,
   Observation, ResearchModel,
@@ -72,7 +74,8 @@ function observationData(raw: unknown, maxBytes: number): Record<string, unknown
   // Check the original before walking/copying it; data enters through the existing MCP JSON transport.
   const encoded = JSON.stringify(raw);
   if (Buffer.byteLength(encoded, "utf8") > maxBytes) throw new Error("Tool response exceeded the observation budget");
-  return sanitizeData(raw) as Record<string, unknown>;
+  // SEP-41 symbols and pool names are attacker-controlled. Bound them before Vertex sees the payload.
+  return boundOnChainStrings(sanitizeData(raw)) as Record<string, unknown>;
 }
 
 function toolFailed(data: Record<string, unknown>): boolean {
@@ -131,16 +134,35 @@ function snapshotBackedData(
   return { data, observedAt: seed.observedAt };
 }
 
-/** Stop waiting promptly. Legacy MCP reads cannot yet be cancelled at transport level. */
+/**
+ * Stop waiting promptly. Legacy MCP reads and the app snapshot cannot be cancelled
+ * at transport level, so this must settle on abort even when `operation()` never does.
+ * First settlement wins; a later success or failure of the inner work is ignored.
+ */
 export function interruptible<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
-    if (signal.aborted) { reject(signal.reason); return; }
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
+    let settled = false;
+    const settle = (apply: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      apply();
+    };
+    const onAbort = () => settle(() => {
+      reject(signal.reason ?? new DOMException("This operation was aborted", "AbortError"));
+    });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
     Promise.resolve().then(() => {
       signal.throwIfAborted();
       return operation();
-    }).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    }).then(
+      (value) => settle(() => resolve(value)),
+      (error) => settle(() => reject(error)),
+    );
   });
 }
 
@@ -241,6 +263,7 @@ export async function runInvestigation(
       const stopped = stopReason();
       if (stopped) return finishStop(stopped);
       modelTurns += 1;
+      const turnResult = await withInvestigationTurn(modelTurns, async (span) => {
       progress({ kind: "reviewing", turn: modelTurns });
       let raw: unknown;
       const modelStarted = now();
@@ -272,6 +295,7 @@ export async function runInvestigation(
         decision = null;
       }
       if (!decision) return finish({ kind: "stopped", reason: "invalid_decision" });
+      span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
         const valid = decision.findings.every((finding) => finding.evidenceIds.every((id) => {
@@ -447,6 +471,9 @@ export async function runInvestigation(
         }
       }
       if (afterBatch) return finishStop(afterBatch);
+      return null;
+      });
+      if (turnResult) return turnResult;
     }
     return finish({ kind: "stopped", reason: "turn_budget" });
   } catch (error) {

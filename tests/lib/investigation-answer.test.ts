@@ -102,6 +102,41 @@ describe("strategyReply", () => {
     expect(fact.value).toBe("3.898658825216954744");
   });
 
+  it("names posted-collateral health as the risk-engine figure, not the page snapshot", () => {
+    const reply = strategyReply({
+      status: "researched",
+      facts: [{
+        id: "e0:posted_health_factor", label: "Posted-collateral health factor",
+        value: "3.42", unit: "HF", venue: "margin", evidenceId: "e0",
+        sourcePath: "posted_health_factor", readAt: 1,
+      }],
+      candidates: null, capacity: null, question: null, intent: "answer",
+    });
+    expect(reply).toBe("3.42 on posted collateral, the base the risk engine uses.");
+  });
+
+  it("refuses the panel figure when debt does not match the risk engine", () => {
+    const reply = strategyReply({
+      status: "researched",
+      facts: [
+        {
+          id: "e0:posted_health_factor", label: "Posted-collateral health factor",
+          value: "3.42", unit: "HF", venue: "margin", evidenceId: "e0",
+          sourcePath: "posted_health_factor", readAt: 1,
+        },
+        {
+          id: "e0:page_debt_mismatch", label: "Account panel disagrees",
+          value: "25.50", unit: "", venue: "margin", evidenceId: "e0",
+          sourcePath: "page_debt_mismatch", readAt: 1,
+        },
+      ],
+      candidates: null, capacity: null, question: null, intent: "answer",
+    });
+    expect(reply).toMatch(/3\.42 on posted collateral/);
+    expect(reply).toMatch(/25\.50/);
+    expect(reply).not.toMatch(/Your reported health factor is 25\.50/);
+  });
+
   it("names Earn when that idle path ranks first", () => {
     const candidates = generateCandidates({
       grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
@@ -116,5 +151,37 @@ describe("strategyReply", () => {
     expect(reply).toMatch(/Lend idle BLUSDC to Earn/);
     expect(reply).toMatch(/\$680\.00/);
     expect(reply).not.toMatch(/1000 USDC/i);
+  });
+
+  it("does not dump wallet holdings for a stated repay", () => {
+    const reply = strategyReply({
+      status: "researched",
+      facts: [
+        {
+          id: "e1:balance", label: "XLM wallet balance", value: "19354.27", unit: "XLM",
+          venue: "wallet", evidenceId: "e1", sourcePath: "assets[0].balance", readAt: 1,
+        },
+        {
+          id: "e1:blusdc", label: "BLUSDC wallet balance", value: "193", unit: "BLUSDC",
+          venue: "wallet", evidenceId: "e1", sourcePath: "assets[1].balance", readAt: 1,
+        },
+        {
+          id: "e0:hf", label: "Current health factor", value: "3.12", unit: "HF",
+          venue: "margin", evidenceId: "e0", sourcePath: "health_factor", readAt: 1,
+        },
+        {
+          id: "e0:debt", label: "Reported debt value", value: "278.86", unit: "USD",
+          venue: "margin", evidenceId: "e0", sourcePath: "debt_usd", readAt: 1,
+        },
+      ],
+      candidates: null, capacity: null, question: null, intent: "strategy",
+      originalRequest: "repay 1xlm from my account",
+      statedSteps: [{ label: "repay 1 XLM" }],
+    });
+    expect(reply).toMatch(/repay 1 XLM/i);
+    expect(reply).not.toMatch(/wallet holds/i);
+    expect(reply).not.toMatch(/health factor is 3\.12/i);
+    expect(reply).not.toMatch(/\$278\.86/);
+    expect(reply).not.toMatch(/BLUSDC/);
   });
 });

@@ -1,0 +1,467 @@
+diff --git a/app/api/mercury/events/route.ts b/app/api/mercury/events/route.ts
+index 9658043..bfc9069 100644
+--- a/app/api/mercury/events/route.ts
++++ b/app/api/mercury/events/route.ts
+@@ -34,11 +34,18 @@ function accountTopicXdr(account: string): string | null {
+ }
+ 
+ export async function GET(req: NextRequest) {
++  // Mercury is optional. This environment has no MERCURY_URL / MERCURY_KEY, so
++  // event history is unavailable — not a server fault. Returning 500 on every
++  // page load made a missing indexer look like a crashed route (110ms, no
++  // upstream call). Empty list + configured:false is the degraded feature.
+   if (!REST_BASE || !MERCURY_KEY) {
+-    return NextResponse.json(
+-      { error: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." },
+-      { status: 500, headers: { "Cache-Control": "no-store" } },
+-    );
++    return NextResponse.json([], {
++      status: 200,
++      headers: {
++        "Cache-Control": "no-store",
++        "X-Mercury-Configured": "0",
++      },
++    });
+   }
+ 
+   const sp = req.nextUrl.searchParams;
+diff --git a/app/api/mercury/route.ts b/app/api/mercury/route.ts
+index 9793383..f365802 100644
+--- a/app/api/mercury/route.ts
++++ b/app/api/mercury/route.ts
+@@ -18,8 +18,14 @@ const MERCURY_KEY = process.env.MERCURY_KEY;
+ export async function POST(req: NextRequest) {
+   if (!MERCURY_URL || !MERCURY_KEY) {
+     return NextResponse.json(
+-      { errors: [{ message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing)." }] },
+-      { status: 500 },
++      {
++        data: null,
++        errors: [{
++          message: "Mercury is not configured (MERCURY_URL / MERCURY_KEY missing).",
++          extensions: { code: "not_configured" },
++        }],
++      },
++      { status: 200, headers: { "X-Mercury-Configured": "0" } },
+     );
+   }
+ 
+diff --git a/lib/account-snapshot.ts b/lib/account-snapshot.ts
+index 3ab4886..36df597 100644
+--- a/lib/account-snapshot.ts
++++ b/lib/account-snapshot.ts
+@@ -20,6 +20,8 @@ import {
+ } from "@/lib/analytics/stellar/farmTrackingCollateral";
+ import { deriveMarginHealth } from "@/lib/margin-health";
+ import { ACTIVE_ASSETS } from "@/lib/analytics/stellar/canon";
++import { pricedUsd, unavailable, type ReadResult } from "@/lib/usable-read";
++import { RETRY, withRetry } from "@/lib/copilot/retry-policy";
+ 
+ // "USDC" is the canonical peg the three USDC-flavoured collateral variants
+ // (BLUSDC/AQUSDC/SOUSDC, already in ACTIVE_ASSETS) resolve to on-chain — kept
+@@ -68,6 +70,65 @@ export const isTrackingSymbol = (sym: string): boolean => {
+ type Balance = { amount: string; usdValue: string };
+ type Balances = Record<string, Balance>;
+ 
++/** A snapshot that would understate debt or invent a total from a failed read. */
++export class SnapshotUnavailableError extends Error {
++  constructor(readonly reason: string) {
++    super(reason);
++    this.name = "SnapshotUnavailableError";
++  }
++}
++
++function amountsAgree(a: number, b: number): boolean {
++  const scale = Math.max(Math.abs(a), Math.abs(b), 1e-12);
++  return Math.abs(a - b) / scale <= 1e-6;
++}
++
++/**
++ * Price every distinct borrowed asset and sum them.
++ *
++ * Aliases of one asset (`USDC` / `BLUSDC`) collapse to one row when the amounts
++ * agree; they are never summed (that double-counts Blend USDC) and never reduced
++ * with `Math.max` across *different* assets (XLM vs USDC). A missing or zero
++ * price on a non-zero debt is unavailable, never `$0`.
++ */
++export function priceBorrowedDebts(
++  data: Balances,
++  priceOf: (token: string) => number,
++): ReadResult<{ borrowedBalances: Balances; totalBorrowedValue: number }> {
++  const groups = new Map<string, Array<{ source: string; amount: number; amountText: string }>>();
++  for (const [token, row] of Object.entries(data)) {
++    const amount = parseFloat(row.amount);
++    if (!Number.isFinite(amount) || amount < 0) {
++      return unavailable(`borrowed ${token}: invalid amount`);
++    }
++    const canonical = canonicalMarginToken(token);
++    const list = groups.get(canonical) ?? [];
++    list.push({ source: token, amount, amountText: row.amount });
++    groups.set(canonical, list);
++  }
++  const borrowedBalances: Balances = {};
++  let totalBorrowedValue = 0;
++  for (const [canonical, rows] of groups) {
++    const representative = rows[0];
++    for (const row of rows.slice(1)) {
++      if (!amountsAgree(row.amount, representative.amount)) {
++        return {
++          ok: false,
++          reason: `borrowed ${canonical}: alias amounts disagree (${representative.source}=${representative.amount}, ${row.source}=${row.amount})`,
++        };
++      }
++    }
++    const priced = pricedUsd(representative.amount, priceOf(canonical), `borrowed ${canonical}`);
++    if (!priced.ok) return priced;
++    totalBorrowedValue += priced.value;
++    borrowedBalances[canonical] = {
++      amount: representative.amountText,
++      usdValue: priced.value.toFixed(2),
++    };
++  }
++  return { ok: true, value: { borrowedBalances, totalBorrowedValue } };
++}
++
+ /**
+  * Full derived view of a margin account: per-token borrowed/collateral balances
+  * plus the rolled-up USD totals and health figures (HF, debt limit, net
+@@ -91,10 +152,51 @@ export type MarginSnapshot = {
+ 
+ // Multiple mounted surfaces can request the same account snapshot at once
+ // (Copilot, the right rail, Margin, and Portfolio). Share the active read by
+-// address so those surfaces do not launch overlapping Soroban scans. This is
+-// in-flight deduplication only; completed snapshots are not retained here, so
+-// mutation-driven refreshes still get fresh chain data.
++// address so those surfaces do not launch overlapping Soroban scans. Completed
++// snapshots are retained only while the latest ledger is unchanged; a failed
++// ledger read skips that cache rather than inventing a pin.
+ const snapshotInflight = new Map<string, Promise<MarginSnapshot>>();
++const snapshotCompleted = new Map<string, { ledger: number; snapshot: MarginSnapshot }>();
++
++export function resetMarginSnapshotCache(): void {
++  snapshotInflight.clear();
++  snapshotCompleted.clear();
++}
++
++async function readLatestLedger(): Promise<number | null> {
++  // Tests mock stellar-utils without an RPC URL. Fail closed: never invent a ledger
++  // to pin a completed snapshot, or the copilot would quote a stale position.
++  try {
++    return await withRetry(RETRY.rpcRead, async () => {
++      const { SOROBAN_RPC_URL } = await import("@/lib/stellar-utils");
++      if (!SOROBAN_RPC_URL) return null;
++      const StellarSdk = await import("@stellar/stellar-sdk");
++      const latest = await new StellarSdk.rpc.Server(SOROBAN_RPC_URL).getLatestLedger();
++      const sequence = Number((latest as { sequence?: number }).sequence);
++      return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
++    });
++  } catch {
++    return null;
++  }
++}
++
++function partialFromSnapshot(snapshot: MarginSnapshot): PartialSnapshot {
++  return {
++    borrowedBalances: snapshot.borrowedBalances,
++    collateralBalances: snapshot.collateralBalances,
++    totalBorrowedValue: snapshot.totalBorrowedValue,
++    avgHealthFactor: snapshot.avgHealthFactor,
++    grossCollateralValue: snapshot.grossCollateralValue,
++    netAvailableCollateral: snapshot.netAvailableCollateral,
++    collateralLeftBeforeLiquidation: snapshot.collateralLeftBeforeLiquidation,
++  };
++}
++
++async function rememberCompleted(account: string, snapshot: MarginSnapshot): Promise<void> {
++  const ledger = await readLatestLedger();
++  if (ledger == null) return;
++  snapshotCompleted.set(account, { ledger, snapshot });
++}
+ 
+ /**
+  * Early slice of a {@link MarginSnapshot} emitted via `onPartial` once the fast
+@@ -141,12 +243,31 @@ export async function computeMarginSnapshot(
+   marginAccountAddress: string,
+   opts?: { onPartial?: (p: PartialSnapshot) => void },
+ ): Promise<MarginSnapshot> {
+-  // Progressive callers need their own onPartial callback. The route and
+-  // Copilot all use the no-callback form and can safely share one read.
+-  if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
++  // Share the in-flight read even when a caller wants onPartial. Skipping that
++  // map used to launch two full Soroban scans per page load (~9.5s each). A
++  // late onPartial caller gets the completed snapshot as one update.
+   const existing = snapshotInflight.get(marginAccountAddress);
+-  if (existing) return existing;
+-  const run = computeMarginSnapshotUncached(marginAccountAddress);
++  if (existing) {
++    const snapshot = await existing;
++    opts?.onPartial?.(partialFromSnapshot(snapshot));
++    return snapshot;
++  }
++  const run = (async () => {
++    const started = Date.now();
++    const ledger = await readLatestLedger();
++    if (ledger != null) {
++      const cached = snapshotCompleted.get(marginAccountAddress);
++      if (cached && cached.ledger === ledger) {
++        console.info("[account-snapshot] cache hit", { ledger, ms: Date.now() - started });
++        opts?.onPartial?.(partialFromSnapshot(cached.snapshot));
++        return cached.snapshot;
++      }
++    }
++    const snapshot = await computeMarginSnapshotUncached(marginAccountAddress, opts);
++    await rememberCompleted(marginAccountAddress, snapshot);
++    console.info("[account-snapshot] computed", { ledger, ms: Date.now() - started });
++    return snapshot;
++  })();
+   snapshotInflight.set(marginAccountAddress, run);
+   try {
+     return await run;
+@@ -175,19 +296,26 @@ async function computeMarginSnapshotUncached(
+   const borrowedBalances: Balances = {};
+   const collateralBalances: Balances = {};
+ 
+-  if (borrowedResult.success && borrowedResult.data) {
+-    const deduped: Record<string, Balance> = {};
+-    Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
+-      const canonical = canonicalMarginToken(token);
+-      const current = deduped[canonical];
+-      if (!current || parseFloat(amount) > parseFloat(current.amount)) deduped[canonical] = { amount, usdValue };
+-    });
+-    Object.entries(deduped).forEach(([token, { amount }]) => {
+-      const usd = parseFloat(amount) * tokenPrice(token);
+-      totalBorrowedValue += usd;
+-      borrowedBalances[token] = { amount, usdValue: usd.toFixed(2) };
+-    });
++  if (!borrowedResult.success) {
++    throw new SnapshotUnavailableError(borrowedResult.error ?? "borrowed_balances_unavailable");
+   }
++  const folded = priceBorrowedDebts(borrowedResult.data ?? {}, tokenPrice);
++  const pricedRows = folded.ok
++    ? Object.fromEntries(Object.entries(folded.value.borrowedBalances).map(([token, row]) => [
++      token,
++      { amount: row.amount, usd: row.usdValue, price: tokenPrice(token) },
++    ]))
++    : undefined;
++  console.info("[account-snapshot] borrowed fold", {
++    account: marginAccountAddress,
++    raw: borrowedResult.data ?? {},
++    priced: pricedRows,
++    reason: folded.ok ? undefined : folded.reason,
++    totalBorrowedValue: folded.ok ? folded.value.totalBorrowedValue : undefined,
++  });
++  if (!folded.ok) throw new SnapshotUnavailableError(folded.reason);
++  Object.assign(borrowedBalances, folded.value.borrowedBalances);
++  totalBorrowedValue = folded.value.totalBorrowedValue;
+ 
+   if (collateralResult.success && collateralResult.data) {
+     const deduped: Record<string, string> = {};
+diff --git a/lib/blend-utils.ts b/lib/blend-utils.ts
+index 96a1362..5ac7caf 100644
+--- a/lib/blend-utils.ts
++++ b/lib/blend-utils.ts
+@@ -15,6 +15,14 @@ import {
+   describeFailedTx,
+ } from './stellar-utils';
+ import { markTxSubmitted } from './tx-progress';
++import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
++
++async function simulateWithRetry(
++  server: StellarSdk.rpc.Server,
++  tx: Parameters<StellarSdk.rpc.Server["simulateTransaction"]>[0],
++) {
++  return withRetry(RETRY.rpcRead, () => server.simulateTransaction(tx));
++}
+ 
+ /** Blend action enum variant — must match `SmartAccExternalAction` on-chain. */
+ export type BlendAction = 'Deposit' | 'Withdraw';
+@@ -928,7 +936,7 @@ export class BlendService {
+         fee: StellarSdk.BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE,
+       }).addOperation(regContract.call('get_tracking_token_contract_addr')).setTimeout(30).build();
+ 
+-      const trackAddrSim = await server.simulateTransaction(trackAddrTx);
++      const trackAddrSim = await simulateWithRetry(server, trackAddrTx);
+       if (!StellarSdk.rpc.Api.isSimulationSuccess(trackAddrSim) || !trackAddrSim.result?.retval) {
+         return result;
+       }
+@@ -957,7 +965,7 @@ export class BlendService {
+           )
+         ).setTimeout(30).build();
+ 
+-        const balSim = await server.simulateTransaction(balTx);
++        const balSim = await simulateWithRetry(server, balTx);
+         if (StellarSdk.rpc.Api.isSimulationSuccess(balSim) && balSim.result?.retval) {
+           const raw = Number(StellarSdk.scValToNative(balSim.result.retval));
+           const bTokens = raw / 1e7; // tracking token uses 7 decimals
+diff --git a/lib/margin-utils.ts b/lib/margin-utils.ts
+index a2cb653..f768d4d 100644
+--- a/lib/margin-utils.ts
++++ b/lib/margin-utils.ts
+@@ -37,8 +37,8 @@ import {
+ import { BlendService } from './blend-utils';
+ import { mergeFarmTrackingCollateralIntoBalances } from '@/lib/analytics/stellar/farmTrackingCollateral';
+ import { fetchTokenPrice, getCachedTokenPrice } from './oracle-price';
++import { pricedUsd, requireListedResults } from '@/lib/usable-read';
+ import { markTxSubmitted, showTxStep } from './tx-progress';
+-import { numberAmountToWad } from './utils/sanitize-amount';
+ 
+ // Types
+ /**
+@@ -2147,12 +2147,10 @@ export class MarginAccountService {
+         return { success: true, data: {} };
+       }
+ 
+-      const borrowedBalances: Record<string, { amount: string; usdValue: string }> = {};
+       const sourceSequence = sourceAccount.sequenceNumber();
+ 
+-      // Every token debt is independent. Run the simulations (and optional
+-      // price lookups) concurrently instead of one token at a time.
+-      const rows = await Promise.allSettled(borrowedTokens.map(async (token) => {
++      const readDebt = async (token: string): Promise<{ token: string; amount: number } | { token: string; error: string }> => {
++        try {
+           const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
+           const getBalanceTx = new StellarSdk.TransactionBuilder(readSource, {
+             fee: StellarSdk.BASE_FEE,
+@@ -2166,36 +2164,68 @@ export class MarginAccountService {
+             )
+             .setTimeout(30)
+             .build();
+-          
+-          const balanceResult = await server.simulateTransaction(getBalanceTx);
+-          
+-          if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
+-            const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
+-            const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
+ 
+-            if (balanceNumber > 0) {
+-              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
+-              const usdValue = (balanceNumber * price).toFixed(2);
+-              return { token, balance: {
+-                amount: balanceNumber.toFixed(6),
+-                usdValue
+-              } };
+-            }
++          const balanceResult = await server.simulateTransaction(getBalanceTx);
++          if ('error' in balanceResult || !('result' in balanceResult) || !balanceResult.result) {
++            return { token, error: 'simulation_empty' };
+           }
+-          return null;
+-      }));
++          const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
++          const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18);
++          if (!Number.isFinite(balanceNumber) || balanceNumber < 0) {
++            return { token, error: 'invalid_amount' };
++          }
++          return { token, amount: balanceNumber };
++        } catch (reason: unknown) {
++          return { token, error: reason instanceof Error ? reason.message : 'read_failed' };
++        }
++      };
+ 
+-      rows.forEach((row, index) => {
+-        if (row.status === 'fulfilled' && row.value) {
+-          borrowedBalances[row.value.token] = row.value.balance;
+-        } else if (row.status === 'rejected') {
+-          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
++      // Every listed token must produce a number. A failed sim used to return `null`
++      // from allSettled and be omitted, so a two-token debt (XLM+USDC) rendered as
++      // XLM-only and the health factor was overstated. Retry the misses once, then
++      // refuse the whole scan rather than publish a partial book.
++      let reads = await Promise.all(borrowedTokens.map(readDebt));
++      const failedFirst = reads.filter((row): row is { token: string; error: string } => 'error' in row);
++      if (failedFirst.length > 0) {
++        const retried = await Promise.all(failedFirst.map((row) => readDebt(row.token)));
++        const byToken = new Map(retried.map((row) => [row.token, row]));
++        reads = reads.map((row) => 'error' in row ? byToken.get(row.token) ?? row : row);
++      }
++
++      const byId: Record<string, { amount: string; usdValue: string } | undefined> = {};
++      for (const read of reads) {
++        if ('error' in read) {
++          console.warn(`⚠️ Failed to get balance for token ${read.token}:`, read.error);
++          continue;
+         }
+-      });
+-      
++        let usdValue = '0.00';
++        if (options.includePrices !== false) {
++          const price = await fetchTokenPrice(read.token);
++          const priced = pricedUsd(read.amount, price, `borrowed ${read.token}`);
++          if (!priced.ok) {
++            return { success: false, error: priced.reason };
++          }
++          usdValue = priced.value.toFixed(2);
++        }
++        byId[read.token] = { amount: read.amount.toFixed(6), usdValue };
++      }
++
++      const assembled = requireListedResults(
++        borrowedTokens,
++        byId,
++        (token) => `Incomplete debt read: ${token}`,
++      );
++      if (!assembled.ok) {
++        console.warn('[margin-utils] borrowed scan incomplete', {
++          listed: borrowedTokens,
++          reason: assembled.reason,
++        });
++        return { success: false, error: assembled.reason };
++      }
++
+       return {
+         success: true,
+-        data: this.addUsdcAliases(borrowedBalances)
++        data: this.addUsdcAliases(assembled.value)
+       };
+       
+     } catch (error: any) {
+@@ -2897,11 +2927,16 @@ export class MarginAccountService {
+         };
+       }
+ 
+-      const depositAmountWad = numberAmountToWad(collateralAmount).toString();
++      const depositAmountWad = (
++        BigInt(Math.floor(collateralAmount * 1_000_000)) * BigInt(1_000_000_000_000)
++      ).toString();
+       const borrowAmountWadBigInt =
+-        borrowAmount > 0 ? numberAmountToWad(borrowAmount) : BigInt(0);
++        borrowAmount > 0
++          ? BigInt(Math.floor(borrowAmount * 1_000_000)) * BigInt(1_000_000_000_000)
++          : BigInt(0);
+       const totalDeployAmount = collateralAmount + Math.max(0, borrowAmount);
+-      const totalDeployAmountWad = numberAmountToWad(totalDeployAmount);
++      const totalDeployAmountWad =
++        BigInt(Math.floor(totalDeployAmount * 1_000_000)) * BigInt(1_000_000_000_000);
+ 
+       const callBytes = BlendService.buildExternalProtocolCallBytes(
+         blendPoolAddress,
+@@ -3032,11 +3067,11 @@ export class MarginAccountService {
+       const isCrossAsset = contractDepositSymbol !== contractBorrowSymbol;
+ 
+ 
+-      const depositAmountWad = numberAmountToWad(depositAmount).toString();
++      const depositAmountWad = (BigInt(Math.floor(depositAmount * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+       const borrowAmountTokens = options?.borrowAmountTokens != null
+         ? options.borrowAmountTokens
+         : (multiplier > 1 ? depositAmount * (multiplier - 1) : 0);
+-      const borrowAmountWad = numberAmountToWad(borrowAmountTokens).toString();
++      const borrowAmountWad = (BigInt(Math.floor(borrowAmountTokens * 1_000_000)) * BigInt(1_000_000_000_000)).toString();
+ 
+       // Pre-flight checks (cheap reads, surface admin/config issues before signing)
+       const configCheck = await this.isTokenConfigured(contractDepositSymbol);
+diff --git a/lib/mercury-client.ts b/lib/mercury-client.ts
+index 88cd704..0d45808 100644
+--- a/lib/mercury-client.ts
++++ b/lib/mercury-client.ts
+@@ -20,8 +20,9 @@ interface MercuryResponse<T> {
+ 
+ /** True when the env is wired (used to gate Mercury-backed hooks). */
+ export const isMercuryEnabled = (): boolean =>
+-  // The proxy reports misconfig as a 500 with an error; this is a cheap
+-  // client-side hint so callers can fall back to RPC without a round-trip.
++  // Server-only secrets cannot be probed from the bundle. The events proxy
++  // returns an empty list with X-Mercury-Configured: 0 when unset, so callers
++  // that always fetch still degrade instead of 500ing the page.
+   typeof window !== "undefined";
+ 
+ export async function mercuryQuery<T>(

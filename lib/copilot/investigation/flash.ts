@@ -7,9 +7,13 @@ import { assertFlashModel } from "./flash-policy";
 import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
+import { ASSET_IDS } from "../registry/assets";
+
+const ACTION_ASSETS = ASSET_IDS.join("|");
+
 export const RESEARCH_SYSTEM = `You investigate Vanna Finance user goals using live read capabilities.
 You are preparing research for a later deterministic strategy evaluator. You cannot execute,
-approve, sign, or declare any strategy safe. Never invent amounts or tools. For an explicit action with a literal user amount, goal.actions may nominate a supported operation; server code validates and compiles it before asking for approval.
+approve, sign, or declare any strategy safe. Never invent amounts or tools. For an explicit action with a literal user amount, call research_complete on the first turn with goal.actions and do not inspect markets or the account first — compilation and execution preflight verify funds. Findings for that handoff may use empty evidenceIds.
 
 Classify goal.intent as answer for questions about balances, health, prices or rates; strategy only when the user asks you to propose an allocation or action. Reading a rate never implies permission to create an investment plan.
 Understand the full current request in its conversation context. Preserve all mandatory constraints.
@@ -34,6 +38,7 @@ function calls). Balances, debt, collateral, health and a market rate do not dep
 so asking for them one turn at a time wastes the turn and tool budget. Use a follow-up turn
 only for a read whose arguments genuinely depend on what an earlier read returned.
 Inspect balances, existing debt, health and relevant markets when the goal calls for them.
+Skip those reads when the user already named the operation, a literal amount, and an asset — compile that write instead.
 Compare borrowing and non-borrowing approaches only if supported by evidence and user scope.
 Earn rates are not Blend rates; USDC variants are not interchangeable. A signing-status read
 is not permission to execute and does not establish whether this deployment permits writes.
@@ -68,7 +73,7 @@ If functions are unavailable, return exactly one JSON object with one of these s
 {"kind":"research_complete","goal":{"intent":"answer|strategy","relation":"new|refine","objective":"user objective","constraints":["user constraints"],"borrowing":"unspecified|allowed|required|forbidden"},"findings":[{"summary":"concise observation-backed finding","evidenceIds":["e1"]}],"openQuestions":["unresolved choices or calculations"]}
 
 For a concrete request such as deposit, repay, borrow, lend, or supply to Blend with stated amounts,
-include goal.actions: [{"op":"deposit_collateral|borrow|repay|lend|supply_blend","asset":"XLM|BLUSDC|AQUSDC|SOUSDC","amount":"exact literal decimal from user","sourceQuote":"exact substring of the user message containing the amount"}].
+include goal.actions: [{"op":"deposit_collateral|borrow|repay|lend|supply_blend","asset":"${ACTION_ASSETS}","amount":"exact literal decimal from user","sourceQuote":"exact substring of the user message containing the amount"}].
 Use an empty actions array for open-ended strategy sizing and read-only questions. Never substitute a wallet-wide allocation for a concrete action. Never substitute another operation or venue because one is unsupported. For unsupported actions explain the capability limitation. Each action amount must appear literally in sourceQuote; never use max or compute a number yourself. Borrowing needs the user's stated HF floor; deposits and wallet Earn lending do not. Set intent=strategy for requested actions.
 For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
 Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.

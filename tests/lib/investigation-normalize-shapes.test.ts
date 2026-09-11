@@ -126,6 +126,18 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
   });
 
+  it("surfaces posted_health_factor only when the observation already carries it", () => {
+    const result = normalizeResearchFacts([observation("liquidation_snapshot", {
+      collateral_usd: "953.80",
+      debt_usd: "278.91",
+      liquidatable: false,
+      posted_health_factor: "3.42",
+    })]);
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourcePath: "posted_health_factor", value: "3.42", unit: "HF" }),
+    ]));
+  });
+
   it("still accepts the mock MCP aliases amount_human/usd without totals", () => {
     const collateral = normalizeResearchFacts([observation("account_collateral", {
       collateral: [{ symbol: "USDC", amount_human: "100", usd: 100 }],
@@ -166,5 +178,19 @@ describe("normalizeResearchFacts live MCP shapes", () => {
       kind: "unavailable",
       keys: ["error", "message"],
     }));
+  });
+
+  it("extracts facts from a single blend_reserve payload", () => {
+    const result = normalizeResearchFacts([observation("blend_reserve", {
+      venue: "blend",
+      symbol: "USDC",
+      supply_apy_pct: "0.78",
+      supply_apr_pct: "0.7799",
+      borrow_apy_pct: "1.14",
+    })]);
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: "USDC Blend supply APY", value: "0.78" }),
+    ]));
+    expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
   });
 });

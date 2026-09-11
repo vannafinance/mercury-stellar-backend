@@ -13,10 +13,11 @@ import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, reques
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence } from "./evidence";
 import { compileRequestedActions } from "./requested-actions";
-import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation } from "./fast-path";
+import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
+import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -41,6 +42,8 @@ export interface ResearchInput {
   wallet: string | null;
   continuation: string | null;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** Named eval fixture for traces. Never the user message. */
+  promptName?: string;
 }
 
 export async function researchTurn(input: ResearchInput, dependencies: {
@@ -54,13 +57,18 @@ export async function researchTurn(input: ResearchInput, dependencies: {
   onProgress?: (event: InvestigationProgress) => void;
   limits?: Partial<InvestigationLimits>;
 }): Promise<ResearchView> {
+  return withInvestigationRun(input.promptName, async (span) => {
   const startedAt = Date.now();
   const logPhase = (phase: string, extra: Record<string, unknown> = {}) => {
     console.info("[copilot] investigation phase", { phase, ms: Date.now() - startedAt, ...extra });
   };
   const view = await executeResearchTurn(input, { ...dependencies, logPhase });
   logPhase("turn", { status: view.status });
-  return { ...view, elapsedMs: Math.max(0, Date.now() - startedAt) };
+  const elapsedMs = Math.max(0, Date.now() - startedAt);
+  span.setAttribute("vanna.investigation.status", view.status);
+  span.setAttribute("vanna.investigation.elapsed_ms", elapsedMs);
+  return { ...view, elapsedMs };
+  });
 }
 
 async function executeResearchTurn(input: ResearchInput, dependencies: {
@@ -134,13 +142,22 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * deadline. Two slow MCP reads here could therefore consume the whole route budget and
    * leave the client to time out with no message at all. Bounded explicitly so the loop
    * always gets its own budget, and a stall here reports itself.
+   *
+   * Inner MCP calls also race this signal, but some fallbacks (on-chain discovery) do
+   * not. The outer `interruptible` is what keeps a hung resolve from eating the
+   * client's 120s backstop.
    */
   let scope;
   const scopeStarted = Date.now();
+  logPhase("scope_start");
+  const scopeSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(SCOPE_BUDGET_MS)]);
   try {
-    scope = await resolveInvestigationScope({
-      subject: dependencies.subject, wallet: input.wallet, network: dependencies.network,
-    }, dependencies.mcp, AbortSignal.any([dependencies.signal, AbortSignal.timeout(SCOPE_BUDGET_MS)]));
+    scope = await withInvestigationPhase("scope", () => interruptible(
+      () => resolveInvestigationScope({
+        subject: dependencies.subject, wallet: input.wallet, network: dependencies.network,
+      }, dependencies.mcp, scopeSignal),
+      scopeSignal,
+    ));
     logPhase("scope", { ms: Date.now() - scopeStarted, unverified: scope.unverified ?? null });
   } catch (error) {
     if (error instanceof ResearchError) throw error;
@@ -161,6 +178,31 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     return data;
   } };
+  if (fast?.kind === "health") {
+    /**
+     * Contract first. The app snapshot is a labelled fallback only — never the blocking
+     * path. Waiting on `computeMarginSnapshot` is what turned a health question into the
+     * client's 120s abort (11 Sep): the snapshot is a shared unbounded inflight the
+     * copilot cannot cancel. MCP `liquidation_snapshot` is one cancellable call.
+     */
+    const healthStarted = Date.now();
+    const observations = await readHealthFastPath({
+      scope,
+      mcp: scopedMcp,
+      signal: dependencies.signal,
+      budgetMs: POSITION_BUDGET_MS,
+      snapshotFallback: () => computeAccountPosition(scope.smartAccount, dependencies.signal),
+    });
+    logPhase("health_fast_path", {
+      ms: Date.now() - healthStarted,
+      source: observations[0]?.capability ?? null,
+      status: observations[0]?.status ?? null,
+    });
+    return fastPathView({
+      message: input.message, scope, observations,
+      secret: dependencies.secret, server: dependencies.server,
+    });
+  }
   /**
    * The authoritative position, read BEFORE the loop and handed to the model as evidence.
    *
@@ -178,9 +220,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let position: Awaited<ReturnType<typeof computeAccountPosition>> = null;
   const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
   const positionStarted = Date.now();
+  const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
   const positionTask = interruptible(
-    () => computeAccountPosition(scope.smartAccount, dependencies.signal),
-    AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]),
+    () => computeAccountPosition(scope.smartAccount, positionSignal),
+    positionSignal,
   ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
   const withdrawTask = withdrawAsk
     ? interruptible(
@@ -193,46 +236,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         return { value: null, error };
       })
     : Promise.resolve({ value: null, error: null });
-  const [positionResult, withdrawResult] = await Promise.all([positionTask, withdrawTask]);
-  if (positionResult.error) {
-    console.warn("[copilot] investigation position seed failed", {
-      error: positionResult.error instanceof Error
-        ? { name: positionResult.error.name, message: positionResult.error.message }
-        : String(positionResult.error),
-    });
-  }
-  position = positionResult.value;
-  logPhase("position", { ms: Date.now() - positionStarted, seeded: !!position });
-  if (withdrawAsk) {
-    logPhase("withdraw_preread", {
-      ms: Date.now() - positionStarted,
-      status: withdrawResult.value?.status ?? "skipped",
-    });
-  }
-  if (fast?.kind === "health" && position) {
-    return fastPathView({
-      message: input.message, scope,
-      observations: healthObservations(position),
-      secret: dependencies.secret, server: dependencies.server,
-    });
-  }
-  if (position) {
-    // Expire due mandates. Execution still requires an approved frozen plan and a
-    // dedicated runner — this call never signs or submits.
-    try {
-      evaluateStandingOrders({
-        liveFor: (order) => ({
-          healthFactor: order.trigger.kind === "health_factor" && position.healthFactor
-            ? Number(position.healthFactor) : null,
-          priceUsd: null,
-        }),
-      });
-    } catch (error) {
-      console.warn("[copilot] standing order evaluation failed", {
-        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
-      });
-    }
-  }
   if (!prior) {
     const parsed = parseStandingOrder(input.message);
     if (parsed && scope.trader) {
@@ -260,8 +263,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       };
     }
   }
+  const withdrawResult = await withdrawTask;
   const withdrawObs = withdrawResult.value;
+  if (withdrawAsk) {
+    logPhase("withdraw_preread", {
+      ms: Date.now() - positionStarted,
+      status: withdrawObs?.status ?? "skipped",
+    });
+  }
   if (withdrawAsk && withdrawObs && withdrawObs.status === "ok") {
+    const positionResult = await positionTask;
+    position = positionResult.value;
     return fastPathView({
       message: input.message, scope,
       observations: [
@@ -270,6 +282,82 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ],
       secret: dependencies.secret, server: dependencies.server,
     });
+  }
+  /**
+   * The planner's first turn can compile a fully specified write with no account
+   * snapshot. Waiting on the snapshot here is what turned "repay 1 XLM" into a 40s
+   * research loop. Seed it only after we know we still need ranking.
+   */
+  const loopStarted = Date.now();
+  const result = await withInvestigationPhase("loop", () => runInvestigation({
+    message: input.message, scope, seed: [],
+    history: (input.history ?? []).slice(-8),
+    task: { messages, lastQuestion: prior?.lastQuestion ?? null },
+    promptName: input.promptName,
+  }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits }));
+  logPhase("loop", {
+    ms: Date.now() - loopStarted,
+    outcome: result.outcome.kind,
+    modelTurns: result.usage.modelTurns,
+    toolCalls: result.usage.toolCalls,
+    loopElapsedMs: result.usage.elapsedMs,
+  });
+  const outcome = result.outcome;
+  if (outcome.kind === "research_complete") {
+    const compiledQuestion = outcome.openQuestions[0] ?? null;
+    const earlySteps = !compiledQuestion ? compileRequestedActions(outcome.goal, messages, scope) : [];
+    if (earlySteps.length) {
+      const evidence = compactResearchEvidence(result.observations, null, Date.now());
+      evidence.requestedSteps = earlySteps;
+      evidence.allowedCandidateIds = ["requested_actions"];
+      logPhase("compiled_write", { steps: earlySteps.length, op: earlySteps[0]?.op });
+      return {
+        status: "researched",
+        message: strategyReply({
+          status: "researched", facts: [], candidates: null, capacity: null, question: null,
+          intent: "strategy", originalRequest: messages[0], statedSteps: earlySteps,
+        }),
+        originalRequest: messages[0], refinements: messages.slice(1), question: null,
+        proposalCandidateId: "requested_actions",
+        understanding: outcome.goal, facts: [], capacity: null, candidates: null, rateComparisons: [],
+        checks: result.observations.map((observation) => ({
+          id: observation.id, label: observation.capability.replaceAll("_", " "),
+          status: observation.status, readAt: observation.observedAt,
+        })),
+        warnings: [],
+        scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+        continuation: codec.seal(scope, messages, null, evidence), executionAllowed: false,
+      };
+    }
+  }
+  const [positionResult] = await withInvestigationPhase("position", () =>
+    Promise.all([positionTask]));
+  if (positionResult.error) {
+    console.warn("[copilot] investigation position seed failed", {
+      error: positionResult.error instanceof Error
+        ? { name: positionResult.error.name, message: positionResult.error.message }
+        : String(positionResult.error),
+    });
+  }
+  position = positionResult.value;
+  const positionMs = Date.now() - positionStarted;
+  setSpanAttr("vanna.position.ms", positionMs);
+  setSpanAttr("vanna.position.seeded", !!position);
+  logPhase("position", { ms: positionMs, seeded: !!position });
+  if (position) {
+    try {
+      evaluateStandingOrders({
+        liveFor: (order) => ({
+          healthFactor: order.trigger.kind === "health_factor" && position.healthFactor
+            ? Number(position.healthFactor) : null,
+          priceUsd: null,
+        }),
+      });
+    } catch (error) {
+      console.warn("[copilot] standing order evaluation failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+    }
   }
   /**
    * Headroom reuses the snapshot the position read already paid for. Both need the same
@@ -288,30 +376,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       value: null, failed: true as const,
       reason: error instanceof Error ? error.message : "unavailable",
     }));
-  const seed = position ? [{
-    id: "e0", capability: "account_position", args: {}, observedAt: Date.now(), status: "ok" as const,
-    data: {
-      collateral_usd: position.grossCollateralUsd,
-      debt_usd: position.debtUsd,
-      ...(position.healthFactor ? { health_factor: position.healthFactor } : {}),
-      source: "vanna_app_margin_snapshot",
-    },
-  }] : [];
-  const loopStarted = Date.now();
-  const result = await runInvestigation({
-    message: input.message, scope, seed,
-    history: (input.history ?? []).slice(-8),
-    task: { messages, lastQuestion: prior?.lastQuestion ?? null },
-  }, { model: dependencies.model, mcp: scopedMcp, signal: dependencies.signal, onProgress: dependencies.onProgress, limits: dependencies.limits });
-  logPhase("loop", {
-    ms: Date.now() - loopStarted,
-    outcome: result.outcome.kind,
-    modelTurns: result.usage.modelTurns,
-    toolCalls: result.usage.toolCalls,
-    loopElapsedMs: result.usage.elapsedMs,
-  });
   const { facts, warnings } = normalizeResearchFacts(result.observations);
-  const outcome = result.outcome;
   /**
    * Deterministic headroom, from the contract liquidation_snapshot once it agrees
    * with the app snapshot. Display still uses the snapshot; a material drift
@@ -379,8 +444,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           floor: capacity?.floor ?? "1.30",
           idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
           idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
-          borrowingAllowed: Boolean(capacity) && borrowing !== "forbidden",
-          requestedBorrowUsd: requestedBorrow?.usd ?? null,
+          // A failed capacity (dropped-leg debt, sources disagree) must not
+          // invent headroom from $0 / a default 1.30 floor.
+          borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
+          requestedBorrowUsd:
+            capacity && !capacityResult.failed ? (requestedBorrow?.usd ?? null) : null,
           comparisons: rateComparisons,
         })
       : null;
@@ -403,10 +471,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
         : outcome.kind === "stopped" ? "incomplete"
           : "needs_input";
+  const requestedSteps = outcome.kind === "research_complete" && !question
+    ? compileRequestedActions(outcome.goal, messages, scope) : [];
   const message = strategyReply({
-    status, facts, candidates, capacity, question,
+    status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
     intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
     findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
+    originalRequest: messages[0],
+    statedSteps: requestedSteps,
   });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
@@ -421,7 +493,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
   evidence.allowedCandidateIds = outcome.kind === "research_complete" && !question
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
-  const requestedSteps = outcome.kind === "research_complete" && !question ? compileRequestedActions(outcome.goal, messages, scope) : [];
   if (requestedSteps.length) {
     evidence.requestedSteps = requestedSteps;
     evidence.allowedCandidateIds = ["requested_actions"];

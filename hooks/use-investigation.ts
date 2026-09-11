@@ -94,7 +94,7 @@ export function useInvestigation(wallet: string | null) {
       const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]));
       if (sequence.current !== id || activeWallet.current !== owner) return;
       if (combined.aborted) {
-        settle({ error: "The investigation timed out. Please try again." });
+        settle({ error: "The investigation ran out of time before it could finish. Nothing was executed — please try again." });
         return;
       }
       const response = await fetch("/api/copilot/investigate", {
@@ -128,8 +128,13 @@ export function useInvestigation(wallet: string | null) {
         settle({ error: "The investigation finished without an answer. Please try again." });
       }
     } catch (error) {
+      if (received || streamError) {
+        settle();
+        return;
+      }
       settle({
-        error: combined.aborted ? "The investigation timed out. Please try again."
+        error: combined.aborted
+          ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
           : error instanceof Error ? error.message : "Investigation failed. Please try again.",
       });
     } finally {

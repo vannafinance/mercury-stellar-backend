@@ -1,4 +1,5 @@
 import type { FunctionDeclaration } from "../vertex-tools";
+import { ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
 import { isRecord } from "./decision";
 import type { ReadCapability } from "./types";
@@ -72,7 +73,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             type: "object",
             properties: {
               op: { type: "string", enum: ["lend", "deposit_collateral", "borrow", "repay", "supply_blend"] },
-              asset: { type: "string", enum: ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"] },
+              asset: { type: "string", enum: [...ASSET_IDS] },
               amount: { type: "string" },
               sourceQuote: { type: "string" },
             },

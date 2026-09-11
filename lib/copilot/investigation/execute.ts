@@ -13,6 +13,8 @@ import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
+import { appendAudit } from "../audit-log";
+import { checkpointFromJournal, saveCheckpoint } from "../checkpoint";
 import { ResearchError, resolveInvestigationScope } from "./scope";
 import { workflowJournal } from "./proposal";
 
@@ -24,6 +26,22 @@ export type LedgerLookup = (hash: string) => Promise<
   { found: true; success: boolean; ledger: number } | { found: false }
 >;
 
+function persistRun(record: { proposal: WorkflowProposal; status: string; steps: Array<{ id: string; status: string; txHash?: string }> }, subject: string) {
+  const checkpoint = checkpointFromJournal({
+    workflowId: record.proposal.id, subject, status: record.status,
+    digest: record.proposal.digest, steps: record.steps,
+  });
+  void saveCheckpoint(checkpoint);
+  const hash = checkpoint.lastTxHash;
+  if (hash) {
+    void appendAudit({
+      at: Date.now(), subject, action: "executed",
+      workflowId: record.proposal.id, digest: record.proposal.digest,
+      txHash: hash, floor: record.proposal.floor,
+    });
+  }
+}
+
 function identityOf(proposal: WorkflowProposal) {
   return { scope: proposal.scope, server: proposal.server };
 }
@@ -34,7 +52,7 @@ function hashOf(value: unknown): string | null {
 }
 
 export async function readyForStep(proposal: WorkflowProposal, step: ProposalStep): Promise<StepReadiness> {
-  const reason = await validateWorkflowRisk({ ...proposal, steps: [step] }, getMcpClient(), AbortSignal.timeout(25_000));
+  const reason = await validateWorkflowRisk({ ...proposal, steps: [step] }, getMcpClient(), AbortSignal.timeout(45_000));
   return reason ? { kind: "stop", reason } : { kind: "ready" };
 }
 
@@ -151,6 +169,7 @@ export async function advanceWorkflow(input: {
     }
     record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash });
     record = await settleSubmitted(journal, input.id, identity, lookup);
+    persistRun(record, input.subject);
     return workflowView(record);
   }
 
