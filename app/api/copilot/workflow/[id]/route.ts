@@ -38,6 +38,12 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     const stored = await journal.lookup(id, loaded.bound.sub);
     if (stored.value.proposal.server !== copilotConfig.mcpBaseUrl) throw new Error("environment_changed");
     const record = await journal.cancel(id, { scope: stored.value.proposal.scope, server: copilotConfig.mcpBaseUrl });
+    const { appendAudit } = await import("@/lib/copilot/audit-log");
+    void appendAudit({
+      at: Date.now(), subject: loaded.bound.sub, action: "cancelled",
+      workflowId: record.proposal.id, digest: record.proposal.digest,
+      floor: record.proposal.floor,
+    });
     return loaded.commit(NextResponse.json(workflowView(record), { headers: { "Cache-Control": "no-store" } }));
   } catch {
     return loaded.commit(NextResponse.json({ message: "This plan could not be cancelled. An in-flight transaction must be reconciled first." }, { status: 409 }));

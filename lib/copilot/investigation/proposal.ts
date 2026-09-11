@@ -8,14 +8,11 @@
  */
 
 import type { MCPClient } from "../mcp-client";
-import { resolveRead } from "./capabilities";
-import { interruptible } from "./runtime";
-import { isRecord } from "./decision";
-import type { InvestigationScope, Observation } from "./types";
 import { computeBorrowCapacity } from "./capacity";
 import {
-  generateCandidates, idleWalletByAssetUsdFrom, idleWalletUsdFrom, requestedBorrowFrom,
+  generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, requestedBorrowFrom,
 } from "./candidates";
+import { collectStrategyReads } from "./strategy-reads";
 import { compareObservedRates } from "./rate-comparison";
 import { compileProposal } from "./compile";
 import { researchCodec } from "./continuation";
@@ -28,15 +25,6 @@ import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
 import { allowedInvocation } from "../workflow/allowlist";
 import { appendAudit } from "../audit-log";
-
-const READS = [
-  { capability: "wallet_balances", args: {} },
-  { capability: "asset_price", args: { asset: "XLM" } },
-  { capability: "asset_price", args: { asset: "BLUSDC" } },
-  { capability: "earn_market", args: { asset: "XLM" } },
-  { capability: "earn_market", args: { asset: "BLUSDC" } },
-  { capability: "blend_markets", args: {} },
-] as const;
 
 export function workflowJournal(secret: string): WorkflowJournal {
   return new WorkflowJournal(workflowStore<WorkflowRecord>(secret));
@@ -105,7 +93,7 @@ export async function proposeWorkflow(input: {
   const now = wallNow;
   const observations = reused
     ? prior.evidence!.observations
-    : await collectObservations(scope, input.mcp, input.signal, now);
+    : await collectStrategyReads(scope, input.mcp, input.signal, now);
   const capacity = reused
     ? prior.evidence!.capacity
     : await computeBorrowCapacity(scope.smartAccount, prior.messages, input.signal, null, {
@@ -115,6 +103,7 @@ export async function proposeWorkflow(input: {
   const comparisons = compareObservedRates(observations, now);
   const idleWalletUsd = idleWalletUsdFrom(observations, now);
   const idleWalletByAssetUsd = idleWalletByAssetUsdFrom(observations, now);
+  const idleWalletByAssetTokens = idleWalletByAssetTokensFrom(observations, now);
   const idleOnly = input.candidateId.startsWith("supply_idle_") || earnIdle;
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
@@ -126,14 +115,14 @@ export async function proposeWorkflow(input: {
         grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
         debtUsd: capacity?.debtUsd ?? "0",
         floor: capacity?.floor ?? "1.30",
-        idleWalletUsd, idleWalletByAssetUsd, borrowingAllowed: false, comparisons,
+          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, borrowingAllowed: false, comparisons,
       })
     : capacity && comparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity.grossCollateralUsd,
           debtUsd: capacity.debtUsd,
           floor: capacity.floor,
-          idleWalletUsd, idleWalletByAssetUsd,
+          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens,
           borrowingAllowed: true,
           requestedBorrowUsd: requestedBorrow?.usd ?? null,
           comparisons,
@@ -187,48 +176,6 @@ export async function proposeWorkflow(input: {
 
 export async function validateProposal(proposal: WorkflowProposal): Promise<string | null> {
   return validateWorkflowRisk(proposal, getMcpClient(), AbortSignal.timeout(60_000));
-}
-
-/**
- * Live reads used only when sealed investigation evidence is missing or older
- * than the 60s freshness window. Auto-propose should hit the sealed path.
- */
-async function collectObservations(
-  scope: InvestigationScope,
-  mcp: Pick<MCPClient, "call">,
-  signal: AbortSignal,
-  now: number,
-): Promise<Observation[]> {
-  const prepared: Array<{ capability: string; args: Record<string, unknown>; read: ReturnType<typeof resolveRead> }> = [];
-  for (const request of READS) {
-    try {
-      prepared.push({
-        capability: request.capability, args: { ...request.args },
-        read: resolveRead(request.capability, request.args, scope),
-      });
-    } catch { /* capability unavailable for this scope; skip rather than invent */ }
-  }
-  const observations: Observation[] = prepared.map((entry, offset) => ({
-    id: `p${offset + 1}`, capability: entry.capability, args: entry.args, observedAt: now, status: "error",
-  }));
-  await Promise.all(prepared.map(async (entry, offset) => {
-    const observation = observations[offset];
-    try {
-      const response = await interruptible(
-        () => mcp.call(entry.read.tool, entry.read.args, scope.trader ?? undefined),
-        AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
-      );
-      if (!isRecord(response) || response.error || response.isError === true || response.ok === false) {
-        observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
-        return;
-      }
-      observation.data = response;
-      observation.status = "ok";
-    } catch {
-      observation.error = "MCP read failed. No value was inferred.";
-    }
-  }));
-  return observations;
 }
 
 function compileMessage(reason: string): string {

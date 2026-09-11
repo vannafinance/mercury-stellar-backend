@@ -617,8 +617,13 @@ export const refreshBorrowedBalances = async (
         isLoadingBorrowedBalances: false,
       });
     }
-  } catch (error: any) {
-    console.error('❌ Error refreshing balances:', error);
+  } catch (error: unknown) {
+    // SnapshotTimeoutError's contract: do not log at error level. Axios
+    // "Network Error" from stellar-sdk is the same class — Next's overlay
+    // treats console.error(AxiosError) as a crash even when the next ledger
+    // tick recovers.
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.warn("[margin] balance refresh failed (non-fatal):", message);
     useMarginAccountInfoStore.getState().set({ isLoadingBorrowedBalances: false });
   } finally {
     lastRefreshByAccount.set(marginAccountAddress, Date.now());

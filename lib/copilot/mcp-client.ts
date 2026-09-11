@@ -394,29 +394,41 @@ class LiveMCPClient implements MCPClient {
     this.sessionPromise = (async () => {
       let initRes: Response;
       try {
-        initRes = await fetch(copilotConfig.mcpBaseUrl, {
-          method: "POST",
-          headers: baseHeaders,
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "initialize",
-            params: {
-              protocolVersion: "2024-11-05",
-              capabilities: {},
-              clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
-            },
-          }),
-          signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
-          cache: "no-store",
+        // One dropped packet on initialize used to kill the whole turn: call()
+        // only retries a stale session, which is a different case. Timeout and
+        // auth stay single-shot — retrying those just waits longer for a cold
+        // server or replays a rejected token.
+        initRes = await withRetry(RETRY.mcpRead, async () => {
+          try {
+            return await fetch(copilotConfig.mcpBaseUrl, {
+              method: "POST",
+              headers: baseHeaders,
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: {
+                  protocolVersion: "2024-11-05",
+                  capabilities: {},
+                  clientInfo: { name: "vanna-copilot-next", version: "1.0.0" },
+                },
+              }),
+              signal: AbortSignal.timeout(LiveMCPClient.TIMEOUT_MS),
+              cache: "no-store",
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/abort|timeout/i.test(msg)) {
+              throw new MCPCallError(
+                `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
+              );
+            }
+            throw e;
+          }
         });
       } catch (e) {
+        if (e instanceof MCPCallError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
-        if (/abort|timeout/i.test(msg)) {
-          throw new MCPCallError(
-            `MCP initialize timed out after ${LiveMCPClient.TIMEOUT_MS / 1000}s — MCP may be cold. Retry.`,
-          );
-        }
         throw new MCPCallError(
           `MCP initialize network error: could not reach MCP (${msg}). Check MCP_BASE_URL and connectivity.`,
         );

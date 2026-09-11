@@ -5,6 +5,13 @@ import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
+import {
+  type ThreadTurn,
+  shouldContinueInvestigation,
+  readStoredThread,
+  writeStoredThread,
+  clearStoredThread,
+} from "@/lib/copilot/investigation/thread";
 
 async function requestHeaders(signal: AbortSignal) {
   let stop: () => void = () => {};
@@ -23,8 +30,8 @@ async function requestHeaders(signal: AbortSignal) {
 export function useInvestigation(wallet: string | null) {
   const [state, setState] = useState<{
     wallet: string | null; loading: boolean; prompt: string; result: ResearchView | null;
-    progress: InvestigationProgress | null; error: string | null;
-  }>({ wallet, loading: false, prompt: "", result: null, progress: null, error: null });
+    progress: InvestigationProgress | null; error: string | null; turns: ThreadTurn[];
+  }>({ wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [] });
   const abort = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const continuation = useRef<string | null>(null);
@@ -34,28 +41,66 @@ export function useInvestigation(wallet: string | null) {
    * only chains a reply onto an unresolved investigation.
    */
   const transcript = useRef<Array<{ role: "user" | "assistant"; text: string }>>([]);
-  /**
-   * Only a reply to an open question continues the prior investigation.
-   *
-   * Sending the continuation unconditionally made every new goal a refinement of the
-   * previous one: asking "price of XLM" and then a full strategy goal recorded
-   * "price of XLM" as `originalRequest`, showed the real goal as a follow-up, and left
-   * the model preserving the stale objective — which the research prompt explicitly
-   * instructs it to do. A fresh goal has to start its own investigation.
-   */
-  const awaitingAnswer = useRef(false);
+  const lastResult = useRef<ResearchView | null>(null);
   const activeWallet = useRef(wallet);
   activeWallet.current = wallet;
+
+  const applyBlank = useCallback((owner: string | null) => {
+    continuation.current = null;
+    lastResult.current = null;
+    transcript.current = [];
+    setState({
+      wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
+    });
+  }, []);
 
   const reset = useCallback(() => {
     abort.current?.abort();
     sequence.current += 1;
-    continuation.current = null;
-    awaitingAnswer.current = false;
-    transcript.current = [];
-    setState({ wallet: activeWallet.current, loading: false, prompt: "", result: null, progress: null, error: null });
-  }, []);
-  useEffect(() => { reset(); return () => { abort.current?.abort(); sequence.current += 1; }; }, [wallet, reset]);
+    clearStoredThread(activeWallet.current);
+    applyBlank(activeWallet.current);
+  }, [applyBlank]);
+  useEffect(() => {
+    abort.current?.abort();
+    sequence.current += 1;
+    const stored = wallet ? readStoredThread(wallet) : null;
+    if (stored?.turns.length) {
+      continuation.current = stored.continuation;
+      lastResult.current = stored.result;
+      transcript.current = stored.turns.map((turn) => ({ role: turn.role, text: turn.text }));
+      const lastUser = [...stored.turns].reverse().find((turn) => turn.role === "user");
+      setState({
+        wallet, loading: false, prompt: lastUser?.text ?? "", result: stored.result,
+        progress: null, error: null, turns: stored.turns,
+      });
+      return () => { abort.current?.abort(); sequence.current += 1; };
+    }
+    applyBlank(wallet);
+    if (!wallet) return () => { abort.current?.abort(); sequence.current += 1; };
+    const restore = new AbortController();
+    void (async () => {
+      try {
+        const headers = await requestHeaders(AbortSignal.any([restore.signal, AbortSignal.timeout(8_000)]));
+        if (restore.signal.aborted || activeWallet.current !== wallet) return;
+        const response = await fetch("/api/copilot/session", { headers, signal: restore.signal, cache: "no-store" });
+        if (!response.ok || restore.signal.aborted || activeWallet.current !== wallet) return;
+        const remote = await response.json() as { turns?: ThreadTurn[]; continuation?: string | null; result?: ResearchView | null };
+        if (!Array.isArray(remote.turns) || !remote.turns.length) return;
+        continuation.current = remote.continuation ?? null;
+        lastResult.current = remote.result ?? null;
+        transcript.current = remote.turns.map((turn) => ({ role: turn.role, text: turn.text }));
+        writeStoredThread(wallet, {
+          wallet, continuation: remote.continuation ?? null, turns: remote.turns, result: remote.result ?? null,
+        });
+        const lastUser = [...remote.turns].reverse().find((turn) => turn.role === "user");
+        setState({
+          wallet, loading: false, prompt: lastUser?.text ?? "", result: remote.result ?? null,
+          progress: null, error: null, turns: remote.turns,
+        });
+      } catch { /* sessionStorage remains the live thread; a closed tab is the documented loss */ }
+    })();
+    return () => { restore.abort(); abort.current?.abort(); sequence.current += 1; };
+  }, [wallet, applyBlank]);
   const cancel = useCallback(() => {
     abort.current?.abort();
     sequence.current += 1;
@@ -75,13 +120,15 @@ export function useInvestigation(wallet: string | null) {
     // is a backstop for a dead connection rather than the normal end of a slow run.
     // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
     const timer = setTimeout(() => controller.abort(), 120_000);
-    const followUp = awaitingAnswer.current ? continuation.current : null;
-    if (!followUp) continuation.current = null;
+    const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
+    const session = continuation.current;
     const history = transcript.current.slice(-8);
-    setState({
-      wallet: owner, loading: true, prompt, result: null,
+    setState((previous) => ({
+      wallet: owner, loading: true, prompt: followUp ? previous.prompt || prompt : prompt,
+      result: previous.result,
+      turns: [...previous.turns, { role: "user" as const, text: prompt }].slice(-16),
       progress: { kind: "scope", label: "Preparing your session" }, error: null,
-    });
+    }));
     let received = false;
     let streamError = false;
     let settled = false;
@@ -99,29 +146,58 @@ export function useInvestigation(wallet: string | null) {
       }
       const response = await fetch("/api/copilot/investigate", {
         method: "POST", headers, signal: combined,
-        body: JSON.stringify({ message: prompt, wallet: owner, continuation: followUp, history }),
+        body: JSON.stringify({
+          message: prompt, wallet: owner, continuation: followUp, session, history,
+        }),
       });
       await consumeResearchStream(response, (event) => {
         if (!current()) return;
         if (event.type === "result") {
           received = true;
           continuation.current = event.result.continuation;
-          awaitingAnswer.current = event.result.question !== null || event.result.understanding?.intent === "strategy";
+          lastResult.current = event.result;
           const next: Array<{ role: "user" | "assistant"; text: string }> = [
             ...transcript.current,
             { role: "user", text: prompt },
             { role: "assistant", text: event.result.message },
           ];
           transcript.current = next.slice(-8);
-          setState((previous) => ({ ...previous, result: event.result, progress: null, loading: false }));
+          setState((previous) => {
+            const priorTurns: ThreadTurn[] = previous.turns.some((turn, index) =>
+              turn.role === "user" && turn.text === prompt && index === previous.turns.length - 1)
+              ? previous.turns
+              : [...previous.turns, { role: "user" as const, text: prompt }];
+            const turns: ThreadTurn[] = [
+              ...priorTurns,
+              { role: "assistant" as const, text: event.result.message, question: event.result.question },
+            ].slice(-16);
+            writeStoredThread(owner, {
+              wallet: owner ?? "",
+              continuation: event.result.continuation,
+              turns, result: event.result,
+            });
+            return { ...previous, result: event.result, turns, progress: null, loading: false };
+          });
         } else if (event.type === "error") {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
-            awaitingAnswer.current = false;
-            transcript.current = [];
+            lastResult.current = lastResult.current;
+            clearStoredThread(owner);
+            writeStoredThread(owner, {
+              wallet: owner ?? "",
+              continuation: null,
+              turns: transcript.current.slice(-16).map((turn) => ({
+                role: turn.role, text: turn.text,
+              })),
+              result: null,
+            });
           }
-          setState((previous) => ({ ...previous, error: event.message, progress: null }));
+          setState((previous) => ({
+            ...previous,
+            error: event.message,
+            progress: null,
+          }));
         } else setState((previous) => ({ ...previous, progress: event.event }));
       });
       if (current() && !received && !streamError) {
@@ -146,6 +222,6 @@ export function useInvestigation(wallet: string | null) {
   }, [wallet]);
 
   // Do not expose the previous wallet's state during the render before its effect resets.
-  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null };
+  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [] };
   return { ...visible, run, cancel, reset };
 }

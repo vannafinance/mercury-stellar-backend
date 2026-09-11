@@ -298,6 +298,10 @@ describe("bounded execution", () => {
     expect(result.outcome.kind).toBe("research_complete");
     if (result.outcome.kind !== "research_complete") throw new Error("expected a partial research handoff");
     expect(result.outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))).toBe(true);
+    expect(result.outcome.findings).toHaveLength(1);
+    expect(result.outcome.findings[0].summary).toMatch(/^Recorded asset price\./);
+    expect(result.outcome.findings[0].summary).toMatch(/Still missing: wallet balances/);
+    expect(result.outcome.findings[0].summary.match(/time budget ran out/g)).toBeNull();
     // Both observations survive: the price as evidence, the stalled one as an honest error.
     expect(result.observations).toHaveLength(2);
     const price = result.observations.find((observation) => observation.capability === "asset_price");
@@ -497,6 +501,26 @@ describe("batched reads", () => {
     expect(fromSnapshot.every((item) =>
       item.status === "ok" && item.data?.source === "vanna_app_margin_snapshot"
       && item.observedAt === 50_000)).toBe(true);
+  });
+
+  it("reuses a seeded wallet read instead of calling MCP again", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("unexpected MCP"); }) };
+    const seeded = {
+      ...request,
+      seed: [{
+        id: "p1", capability: "wallet_balances" as const, args: {}, observedAt: 50_000, status: "ok" as const,
+        data: { assets: [{ symbol: "SOUSDC", balance: "74985", status: "ok" }] },
+      }],
+    };
+    const model = sequence(
+      batch(["wallet_balances"]),
+      complete(["e1"]),
+    );
+    const result = await runInvestigation(seeded, { model, mcp, now: () => 50_000 });
+    expect(mcp.call).not.toHaveBeenCalled();
+    const wallet = result.observations.find((item) => item.capability === "wallet_balances" && item.id === "e1");
+    expect(wallet?.status).toBe("ok");
+    expect(wallet?.data).toMatchObject({ assets: [{ symbol: "SOUSDC", balance: "74985" }] });
   });
 
   it("inherits the seed timestamp so stale snapshot-backed evidence fails the age check", async () => {

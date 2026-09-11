@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchFastPath, fastPathView, healthObservations, parseWithdrawCheck, postedHealthFactorFromSnapshot, pageDebtAgreesWithContract } from "@/lib/copilot/investigation/fast-path";
+import { researchCodec } from "@/lib/copilot/investigation/continuation";
+import { compactResearchEvidence } from "@/lib/copilot/investigation/evidence";
 import { routeMessage } from "@/lib/copilot/router";
 import { STANDING_ORDER_OFFER } from "@/lib/copilot/standing-orders";
 import { resetTokenUsage } from "@/lib/copilot/token-budget";
@@ -336,5 +338,63 @@ describe("researchTurn fast path", () => {
     expect(result.message).toMatch(/repay 1 XLM/i);
     expect(result.message).not.toMatch(/wallet holds/i);
     expect(result.executionAllowed).toBe(false);
+  });
+
+  it("answers health from still-fresh carried evidence without another chain read", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const now = Date.now();
+    const evidence = compactResearchEvidence(healthObservations({
+      grossCollateralUsd: "317.00", debtUsd: "217.12", healthFactor: "1.46",
+    }), null, now);
+    const session = researchCodec("a".repeat(32), "mcp-test", () => now).seal(SCOPE, ["previous strategy"], null, evidence);
+    const mcp = { call: vi.fn(async () => { throw new Error("MCP should not run"); }) };
+    const result = await researchTurn(
+      { message: "what's my health factor?", wallet: SCOPE.trader, continuation: null, session },
+      deps({ mcp }),
+    );
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(mocks.computeAccountPosition).not.toHaveBeenCalled();
+    expect(result.message).toMatch(/1\.46/);
+    expect(result.executionAllowed).toBe(false);
+  });
+
+  it("seeds a stated repay from carried position instead of a live health read", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    const now = Date.now();
+    const evidence = compactResearchEvidence(healthObservations({
+      grossCollateralUsd: "317.00", debtUsd: "217.12", healthFactor: "1.46",
+    }), null, now);
+    const session = researchCodec("a".repeat(32), "mcp-test", () => now).seal(SCOPE, ["previous"], null, evidence);
+    const mcp = {
+      call: vi.fn(async (tool: string) => {
+        throw new Error(`Unexpected tool ${tool}`);
+      }),
+    };
+    let turn = 0;
+    const result = await researchTurn(
+      { message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null, session },
+      deps({
+        mcp,
+        model: async () => {
+          if (turn++ === 0) {
+            return { kind: "inspect", reads: [{ capability: "account_health", args: {} }] };
+          }
+          return {
+            kind: "research_complete",
+            goal: {
+              intent: "strategy", relation: "new", objective: "repay 1 XLM",
+              constraints: [], borrowing: "unspecified",
+              actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }],
+            },
+            findings: [{ summary: "Named repay.", evidenceIds: ["e0"] }],
+            openQuestions: [],
+          };
+        },
+      }),
+    );
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(mocks.computeAccountPosition).not.toHaveBeenCalled();
+    expect(result.status).toBe("researched");
+    expect(result.proposalCandidateId).toBe("requested_actions");
   });
 });

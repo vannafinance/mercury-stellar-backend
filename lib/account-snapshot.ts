@@ -40,13 +40,22 @@ const tokenPrice = (token: string): number => getCachedTokenPrice(token);
 // leaving the next caller to join the same hung promise.
 const SNAPSHOT_HARD_TIMEOUT_MS = 12_000;
 
+/** Firing at 12s is correct. Callers that handle this must not log it at error level. */
+export class SnapshotTimeoutError extends Error {
+  constructor(label: string, ms: number) {
+    super(`${label} timed out after ${ms}ms`);
+    this.name = "SnapshotTimeoutError";
+  }
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    }),
-  ]);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SnapshotTimeoutError(label, ms)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 const canonicalMarginToken = (token: string): string => {

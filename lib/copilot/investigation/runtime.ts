@@ -105,8 +105,13 @@ function logPhase(phase: string, extra: Record<string, unknown>) {
  */
 function snapshotBackedData(
   capability: string,
+  args: Record<string, unknown>,
   observations: Observation[],
 ): { data: Record<string, unknown>; observedAt: number } | null {
+  const match = observations.find((item) =>
+    item.capability === capability && item.status === "ok" && isRecord(item.data)
+    && JSON.stringify(item.args ?? {}) === JSON.stringify(args ?? {}));
+  if (match?.data) return { data: match.data, observedAt: match.observedAt };
   if (!SNAPSHOT_BACKED.has(capability)) return null;
   const seed = observations.find((item) =>
     item.capability === "account_position" && item.status === "ok" && isRecord(item.data)
@@ -239,6 +244,13 @@ export async function runInvestigation(
     if (!usable.length) return finish({ kind: "stopped", reason: "deadline" });
     const missed = [...new Set(observations.filter((observation) => observation.status === "error")
       .map((observation) => observation.capability.replaceAll("_", " ")))];
+    const established = [...new Set(usable.map((observation) => observation.capability.replaceAll("_", " ")))];
+    const establishedText = established.length === 1
+      ? `Recorded ${established[0]}.`
+      : established.length === 2
+        ? `Recorded ${established[0]} and ${established[1]}.`
+        : `Recorded ${established.slice(0, -1).join(", ")}, and ${established[established.length - 1]}.`;
+    const missingText = missed.length ? ` Still missing: ${missed.join(", ")}.` : "";
     return finish({
       kind: "research_complete",
       goal: {
@@ -250,10 +262,10 @@ export async function runInvestigation(
           : ["Partial research: the time budget ran out"],
         borrowing: "unspecified",
       },
-      findings: usable.map((observation) => ({
-        summary: `Recorded ${observation.capability.replaceAll("_", " ")} before the time budget ran out.`,
-        evidenceIds: [observation.id],
-      })),
+      findings: [{
+        summary: `${establishedText}${missingText}`.trim(),
+        evidenceIds: usable.map((observation) => observation.id),
+      }],
       openQuestions: [],
     });
   };
@@ -375,7 +387,7 @@ export async function runInvestigation(
           finishRead("invalid");
           return { key, label, capability: request.capability, observation, settled: Promise.resolve(), prior: seen.get(key) };
         }
-        const fromSeed = snapshotBackedData(request.capability, observations);
+        const fromSeed = snapshotBackedData(request.capability, request.args, observations);
         if (fromSeed) {
           try {
             observation.data = observationData(fromSeed.data, limits.maxObservationBytes);

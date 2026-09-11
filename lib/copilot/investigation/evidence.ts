@@ -12,7 +12,20 @@ import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { Observation } from "./types";
 import type { ResearchCapacity } from "./view";
 
-const KEEP = new Set(["wallet_balances", "asset_price", "earn_market", "blend_markets"]);
+const KEEP = new Set([
+  "wallet_balances", "asset_price", "earn_market", "blend_markets",
+  "account_position", "account_health", "account_debt", "account_collateral",
+]);
+const PRIORITY: Record<string, number> = {
+  account_position: 0,
+  account_health: 1,
+  account_debt: 2,
+  account_collateral: 3,
+  wallet_balances: 4,
+  asset_price: 5,
+  earn_market: 6,
+  blend_markets: 7,
+};
 const MAX_OBSERVATIONS = 16;
 
 export interface ResearchEvidence {
@@ -28,9 +41,13 @@ export function compactResearchEvidence(
   capacity: ResearchCapacity | null,
   capturedAt: number,
 ): ResearchEvidence {
+  const ranked = observations
+    .filter((observation) => KEEP.has(observation.capability))
+    .slice()
+    .sort((a, b) => (PRIORITY[a.capability] ?? 99) - (PRIORITY[b.capability] ?? 99));
   const kept: Observation[] = [];
-  for (const observation of observations) {
-    if (!KEEP.has(observation.capability) || kept.length >= MAX_OBSERVATIONS) continue;
+  for (const observation of ranked) {
+    if (kept.length >= MAX_OBSERVATIONS) break;
     kept.push(compactObservation(observation));
   }
   return {
@@ -45,6 +62,13 @@ export function compactResearchEvidence(
  * observations that were fresh at the end of investigation stay fresh even when
  * the investigation itself took most of that minute.
  */
+export function reusableObservations(
+  evidence: ResearchEvidence | undefined,
+  now: number,
+): Observation[] {
+  return researchEvidenceReusable(evidence, now) ? evidence.observations : [];
+}
+
 export function researchEvidenceReusable(
   evidence: ResearchEvidence | undefined,
   now: number,
@@ -122,6 +146,29 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       }];
     }) : [];
     return { assets };
+  }
+  if (capability === "account_position" || capability === "account_health") {
+    return {
+      ...(data.collateral_usd !== undefined ? { collateral_usd: data.collateral_usd } : {}),
+      ...(data.debt_usd !== undefined ? { debt_usd: data.debt_usd } : {}),
+      ...(data.health_factor !== undefined ? { health_factor: data.health_factor } : {}),
+      ...(data.posted_health_factor !== undefined ? { posted_health_factor: data.posted_health_factor } : {}),
+      ...(data.source !== undefined ? { source: data.source } : {}),
+    };
+  }
+  if (capability === "account_debt") {
+    return {
+      ...(data.total_debt_usd !== undefined ? { total_debt_usd: data.total_debt_usd } : {}),
+      ...(data.debt_usd !== undefined ? { debt_usd: data.debt_usd } : {}),
+      ...(data.source !== undefined ? { source: data.source } : {}),
+    };
+  }
+  if (capability === "account_collateral") {
+    return {
+      ...(data.total_value_usd !== undefined ? { total_value_usd: data.total_value_usd } : {}),
+      ...(data.collateral_usd !== undefined ? { collateral_usd: data.collateral_usd } : {}),
+      ...(data.source !== undefined ? { source: data.source } : {}),
+    };
   }
   if (capability === "blend_markets") {
     const reserves = Array.isArray(data.reserves) ? data.reserves.flatMap((row) => {

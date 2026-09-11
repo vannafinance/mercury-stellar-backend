@@ -22,4 +22,18 @@ describe("retry policy", () => {
     await expect(withRetry(RETRY.rpcRead, op)).rejects.toThrow(/invalid footprint/);
     expect(op).toHaveBeenCalledTimes(1);
   });
+
+  it("retries axios Network Error and browser Failed to fetch (case-insensitive)", async () => {
+    const axiosBlip = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("Network Error"), { code: "ERR_NETWORK" }))
+      .mockResolvedValueOnce("ok");
+    await expect(withRetry(RETRY.rpcRead, axiosBlip)).resolves.toBe("ok");
+    expect(axiosBlip).toHaveBeenCalledTimes(2);
+
+    const browserBlip = vi.fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce("ok");
+    await expect(withRetry(RETRY.mcpRead, browserBlip)).resolves.toBe("ok");
+    expect(browserBlip).toHaveBeenCalledTimes(2);
+  });
 });

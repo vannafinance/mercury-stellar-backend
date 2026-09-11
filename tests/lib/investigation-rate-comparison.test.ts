@@ -25,16 +25,33 @@ describe("evidence-based borrowing economics", () => {
   it("does not compare APR to APY when the simple APR is missing", () => {
     expect(compareObservedRates([earn(), blend({ supply_apr_pct: undefined })], now)).toEqual([]);
   });
-  it("maps Blend's USDC to BLUSDC but never AQUSDC", () => {
+  it("maps Blend's USDC to BLUSDC, and allows earn-only AQUSDC without attaching that reserve", () => {
     expect(compareObservedRates([{ ...earn(), args: { asset: "BLUSDC" } }, blend({ symbol: "USDC" })], now)[0].asset).toBe("BLUSDC");
-    expect(compareObservedRates([{ ...earn(), args: { asset: "AQUSDC" } }, blend({ symbol: "USDC" })], now)).toEqual([]);
+    const aqusdc = compareObservedRates([{ ...earn(), args: { asset: "AQUSDC" } }, blend({ symbol: "USDC" })], now);
+    expect(aqusdc).toEqual([{
+      asset: "AQUSDC",
+      earnSupplyApr: "2",
+      blendSupplyApr: null,
+      marginBorrowApr: "7",
+      spreadApr: null,
+      verdict: "earn_only",
+      evidenceIds: ["e1"],
+    }]);
   });
   it("rejects failed, stale, future and conflicting duplicate reads", () => {
     for (const bad of [{ ...earn(), status: "error" as const }, { ...earn(), observedAt: now - 60_001 }, { ...earn(), observedAt: now + 1 }]) {
       expect(compareObservedRates([bad, blend()], now)).toEqual([]);
     }
-    expect(compareObservedRates([earn(), earn(), blend()], now)).toEqual([]);
-    expect(compareObservedRates([earn(), blend(), blend()], now)).toEqual([]);
+    expect(compareObservedRates([
+      earn(),
+      { ...earn(), id: "e3", data: { borrow_apr_pct: "9", supply_apy_pct: "2" } },
+      blend(),
+    ], now)).toEqual([]);
+    expect(compareObservedRates([earn(), blend(), blend({ supply_apr_pct: "8" })], now)).toEqual([]);
+  });
+
+  it("collapses identical copies of the same read so a seed plus a loop fulfill still compares", () => {
+    expect(compareObservedRates([earn(), { ...earn(), id: "e9" }, blend(), { ...blend(), id: "e8" }], now)).toHaveLength(1);
   });
   it.each([{ error: "unavailable" }, { venue: "earn" }, { supply_apr_pct: "NaN" }, { supply_apr_pct: -1 }, { supply_apr_pct: "1001" }, { supply_apr_pct: "366.53" }])("rejects unusable reserve %o", (row) => {
     expect(compareObservedRates([earn(), blend(row)], now)).toEqual([]);

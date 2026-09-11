@@ -1,5 +1,6 @@
 import { requestAccess, getAddress, signTransaction } from '@/lib/wallet-adapter';
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { RETRY, withRetry } from '@/lib/copilot/retry-policy';
 import { markTxSubmitted } from './tx-progress';
 
 export const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
@@ -303,7 +304,7 @@ export class WalletService {
   static async getBalance(address: string): Promise<string> {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
-      const account = await server.loadAccount(address);
+      const account = await withRetry(RETRY.rpcRead, () => server.loadAccount(address));
       
       const xlmBalance = account.balances.find(
         (balance: any) => balance.asset_type === 'native'
@@ -1001,8 +1002,8 @@ export class ContractService {
     // Horizon and RPC source-account reads are independent. Starting them
     // together removes the old Horizon-before-Soroban waterfall.
     const [horizonResult, rpcAccountResult] = await Promise.allSettled([
-      horizon.loadAccount(address),
-      rpc.getAccount(address),
+      withRetry(RETRY.rpcRead, () => horizon.loadAccount(address)),
+      withRetry(RETRY.rpcRead, () => rpc.getAccount(address)),
     ]);
 
     let xlmBalance = '0';

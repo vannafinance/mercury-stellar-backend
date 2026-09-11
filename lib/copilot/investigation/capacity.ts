@@ -19,7 +19,7 @@
  * No model output reaches this file, and it performs no writes.
  */
 
-import { computeMarginSnapshot } from "@/lib/account-snapshot";
+import { computeMarginSnapshot, SnapshotTimeoutError } from "@/lib/account-snapshot";
 import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 import { isUsable, unavailable, usable, type ReadResult } from "@/lib/usable-read";
 import type { MCPClient } from "../mcp-client";
@@ -264,7 +264,16 @@ export async function computeAccountPosition(
   { grossCollateralUsd: string; debtUsd: string; healthFactor: string | null; snapshot: MarginSnapshot } | null
 > {
   if (!smartAccount) return null;
-  const snapshot = await computeMarginSnapshot(smartAccount);
+  let snapshot: MarginSnapshot;
+  try {
+    snapshot = await computeMarginSnapshot(smartAccount);
+  } catch (error) {
+    if (error instanceof SnapshotTimeoutError) {
+      console.warn("[copilot] account snapshot timed out", { smartAccount, message: error.message });
+      return null;
+    }
+    throw error;
+  }
   signal?.throwIfAborted();
   // Seeding a collapsed collateral read would hand the model a false position as fact.
   if (!snapshotIsUsable(snapshot)) return null;

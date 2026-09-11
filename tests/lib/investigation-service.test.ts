@@ -19,8 +19,12 @@ describe("investigation to deterministic comparison", () => {
     });
     // Comparing supply venues remains useful when borrowing is forbidden; only the
     // borrowing candidate is gated, not the evidence used for a debt-free option.
-    expect(result.rateComparisons).toHaveLength(1);
+    expect(result.rateComparisons?.some((row) => row.asset === "XLM")).toBe(true);
     expect(result.executionAllowed).toBe(false);
-    if (borrowing === "allowed") expect(result.rateComparisons?.[0]).toMatchObject({ spreadApr: "-4", verdict: "cost_exceeds_supply" });
+    if (borrowing === "allowed") {
+      expect(result.rateComparisons?.find((row) => row.asset === "XLM")).toMatchObject({
+        spreadApr: "-4", verdict: "cost_exceeds_supply",
+      });
+    }
   });
 });

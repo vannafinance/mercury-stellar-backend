@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 /**
@@ -46,6 +46,20 @@ export function checkpointFromJournal(input: {
     lastTxHash: lastHash,
     updatedAt: input.now ?? Date.now(),
   };
+}
+
+export async function loadCheckpoint(workflowId: string): Promise<ExecutionCheckpoint | null> {
+  try {
+    const raw = await readFile(
+      join(resolve(process.cwd(), ".local", "copilot-checkpoints"), `${workflowId}.json`),
+      "utf8",
+    );
+    const parsed = JSON.parse(raw) as ExecutionCheckpoint;
+    if (!parsed || parsed.workflowId !== workflowId) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveCheckpoint(checkpoint: ExecutionCheckpoint): Promise<void> {

@@ -40,11 +40,13 @@ function server(outcomes: Array<{ result?: ResearchView; error?: { code: string;
   const sent: Array<{
     message: string;
     continuation: string | null;
+    session?: string | null;
     wallet: string | null;
     history?: Array<{ role: string; text: string }>;
   }> = [];
   let call = 0;
-  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { body?: string; method?: string }) => {
+    if (!init?.body) return { ok: false, status: 404 } as unknown as Response;
     sent.push(JSON.parse(init.body));
     return { ok: true, body: {} } as unknown as Response;
   }));
@@ -93,6 +95,7 @@ describe("useInvestigation — continuation chaining", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.headers.mockResolvedValue({ "content-type": "application/json" });
+    sessionStorage.clear();
   });
 
   it("does not chain a new goal onto a finished investigation", async () => {
@@ -110,12 +113,19 @@ describe("useInvestigation — continuation chaining", () => {
     expect(result.current.loading).toBe(false);
     expect(sent[0].continuation).toBeNull();
     expect(sent[0].history).toEqual([]);
-    // The second goal is its own investigation, not a refinement of the first.
+    // New objective: do not inherit the first goal, but keep the transcript and evidence token.
     expect(sent[1].continuation).toBeNull();
+    expect(sent[1].session).toBe("r1.first");
     expect(sent[1].message).toBe("build a strategy with USDC and XLM");
     expect(sent[1].history).toEqual([
       { role: "user", text: "price of XLM" },
       { role: "assistant", text: "collected" },
+    ]);
+    expect(result.current.turns.map((turn) => turn.text)).toEqual([
+      "price of XLM",
+      "collected",
+      "build a strategy with USDC and XLM",
+      "collected",
     ]);
   });
 
@@ -137,20 +147,61 @@ describe("useInvestigation — continuation chaining", () => {
     ]);
   });
 
-  it("stops chaining once the answered question is resolved", async () => {
+  it("stops chaining a new independent goal once the answered question is resolved", async () => {
     const sent = server([
       { result: view({ status: "needs_input", continuation: "r1.first", question: "Which venue?" }) },
       { result: view({ continuation: "r1.second", question: null }) },
+      { result: view({ continuation: "r1.health", question: null, message: "Health is 1.46." }) },
     ]);
     const { result } = renderHook(() => useInvestigation(WALLET));
 
     await act(async () => { await result.current.run("build a strategy"); });
     await act(async () => { await result.current.run("Vanna Earn"); });
-    await act(async () => { await result.current.run("now compare Blend instead"); });
+    await act(async () => { await result.current.run("what's my health factor"); });
 
     expect(sent[1].continuation).toBe("r1.first");
-    // The prior turn closed the question, so this is a fresh objective.
     expect(sent[2].continuation).toBeNull();
+    expect(sent[2].session).toBe("r1.second");
+    expect(result.current.turns.some((turn) => turn.text === "build a strategy")).toBe(true);
+    expect(result.current.turns.some((turn) => turn.text === "what's my health factor")).toBe(true);
+  });
+
+  it("chains a refinement of the current plan as a full re-solve, not a new investigation", async () => {
+    const sent = server([
+      { result: view({
+        status: "researched", continuation: "r1.first", question: null,
+        understanding: { intent: "strategy", objective: "Build a yield position", constraints: ["1.3 floor"], borrowing: "allowed" },
+      }) },
+      { result: view({ continuation: "r1.second", question: null }) },
+    ]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+
+    await act(async () => { await result.current.run("build a strategy with USDC"); });
+    await act(async () => { await result.current.run("make it 1.4 instead"); });
+
+    expect(sent[1].message).toBe("make it 1.4 instead");
+    expect(sent[1].continuation).toBe("r1.first");
+  });
+
+  it("keeps the thread on screen while a reply is in flight", async () => {
+    const sent = server([
+      { result: view({ status: "needs_input", continuation: "r1.first", question: "Which variant?", message: "Which USDC?" }) },
+      { result: view({ continuation: "r1.second", question: null, message: "Using SOUSDC." }) },
+    ]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+
+    await act(async () => { await result.current.run("supply my USDC"); });
+    expect(result.current.turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(result.current.result?.question).toBe("Which variant?");
+
+    await act(async () => { await result.current.run("SOUSDC"); });
+    expect(sent[1].continuation).toBe("r1.first");
+    expect(result.current.turns.map((turn) => turn.text)).toEqual([
+      "supply my USDC",
+      "Which USDC?",
+      "SOUSDC",
+      "Using SOUSDC.",
+    ]);
   });
 
   it("drops the chain when the server reports the context expired", async () => {
@@ -167,7 +218,10 @@ describe("useInvestigation — continuation chaining", () => {
 
     expect(sent[1].continuation).toBe("r1.first");
     expect(sent[2].continuation).toBeNull();
-    expect(sent[2].history).toEqual([]);
+    expect(sent[2].history).toEqual([
+      { role: "user", text: "build a strategy" },
+      { role: "assistant", text: "collected" },
+    ]);
   });
 
   it("reset clears the chain so the next goal starts clean", async () => {

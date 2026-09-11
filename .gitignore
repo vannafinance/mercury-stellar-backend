@@ -112,3 +112,6 @@ docs/*.docx
 /.local/copilot-workflows/
 *-handoff.zip
 
+
+# Copilot runtime state: sessions, audit log, workflow checkpoints (user data + signed tokens)
+.local/

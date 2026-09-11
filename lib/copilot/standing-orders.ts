@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { detectAutomationGap } from "./conditional-guard";
 import { resolveAsset } from "./registry/assets";
 import { verifyApprovedPlan, type ApprovedPlan } from "./plan-approval";
@@ -30,6 +32,38 @@ export interface StandingOrder {
 
 const orders = new Map<string, StandingOrder>();
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60_000;
+let hydrated = false;
+
+function persistPath(): string {
+  return resolve(process.cwd(), ".local", "copilot-standing-orders", "orders.json");
+}
+
+function hydrate(): void {
+  if (hydrated) return;
+  hydrated = true;
+  if (process.env.NODE_ENV === "test") return;
+  try {
+    const raw = readFileSync(persistPath(), "utf8");
+    const rows = JSON.parse(raw) as StandingOrder[];
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (row && typeof row.id === "string") orders.set(row.id, row);
+    }
+  } catch { /* first run or empty store */ }
+}
+
+function persist(): void {
+  if (process.env.NODE_ENV === "test") return;
+  const directory = resolve(process.cwd(), ".local", "copilot-standing-orders");
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(persistPath(), `${JSON.stringify([...orders.values()])}\n`, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    console.warn("[copilot] standing order persist failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 const HEALTH_TRIGGER =
   /\b(?:health(?:\s+factor)?|hf)\b[^.?!]{0,40}\b(above|below|under|over|drops?|falls?|rises?|hits?|reaches?)\b[^.?!]{0,12}(\d+(?:\.\d+)?)/i;
@@ -77,6 +111,7 @@ export function createStandingOrder(input: {
   action: StandingAction;
   now?: number;
 }): StandingOrder {
+  hydrate();
   const now = input.now ?? Date.now();
   const order: StandingOrder = {
     id: randomUUID(),
@@ -92,31 +127,38 @@ export function createStandingOrder(input: {
     lastEvaluatedAt: null,
   };
   orders.set(order.id, order);
+  persist();
   return order;
 }
 
 export function armStandingOrder(id: string, plan: ApprovedPlan, now = Date.now()): StandingOrder {
+  hydrate();
   const order = orders.get(id);
   if (!order) throw new Error("standing_order_missing");
   const check = verifyApprovedPlan(plan, now);
   if (!check.ok) throw new Error(check.message);
   order.approval = plan;
   order.status = "armed";
+  persist();
   return order;
 }
 
 export function cancelStandingOrder(id: string, subject: string): StandingOrder | null {
+  hydrate();
   const order = orders.get(id);
   if (!order || order.subject !== subject) return null;
   order.status = "cancelled";
+  persist();
   return order;
 }
 
 export function listStandingOrders(subject: string): StandingOrder[] {
+  hydrate();
   return [...orders.values()].filter((order) => order.subject === subject);
 }
 
 export function getStandingOrder(id: string): StandingOrder | undefined {
+  hydrate();
   return orders.get(id);
 }
 
@@ -139,6 +181,7 @@ export function evaluateStandingOrders(input: {
   now?: number;
   liveFor: (order: StandingOrder) => { healthFactor: number | null; priceUsd: number | null };
 }): StandingOrder[] {
+  hydrate();
   const now = input.now ?? Date.now();
   const due: StandingOrder[] = [];
   for (const order of orders.values()) {
@@ -152,12 +195,17 @@ export function evaluateStandingOrders(input: {
     if (!order.approval) continue;
     if (triggerMet(order, input.liveFor(order))) due.push(order);
   }
+  persist();
   return due;
 }
 
 export function markStandingOrderFired(id: string): void {
+  hydrate();
   const order = orders.get(id);
-  if (order) order.status = "fired";
+  if (order) {
+    order.status = "fired";
+    persist();
+  }
 }
 
 export const STANDING_ORDER_OFFER =

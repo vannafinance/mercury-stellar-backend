@@ -9,10 +9,12 @@ import { normalizeResearchFacts } from "./normalize";
 import { compareObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition } from "./capacity";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, requestedBorrowFrom } from "./candidates";
 import { immediateReply } from "./immediate";
-import { compactResearchEvidence } from "./evidence";
+import { compactResearchEvidence, reusableObservations } from "./evidence";
+import type { ResearchConversation } from "./continuation";
 import { compileRequestedActions } from "./requested-actions";
+import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
@@ -41,9 +43,30 @@ export interface ResearchInput {
   message: string;
   wallet: string | null;
   continuation: string | null;
+  /**
+   * Last sealed conversation, used only for evidence when `continuation` is
+   * absent. Never inherits the prior objective, question, or approval binding.
+   */
+  session?: string | null;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
   /** Named eval fixture for traces. Never the user message. */
   promptName?: string;
+}
+
+function optionalConversation(
+  codec: ReturnType<typeof researchCodec>,
+  token: string | null | undefined,
+  scope: Parameters<ReturnType<typeof researchCodec>["open"]>[1],
+): ResearchConversation | null {
+  if (!token) return null;
+  try {
+    return codec.open(token, scope);
+  } catch (error) {
+    if (error instanceof ResearchError && (error.code === "context_expired" || error.code === "context_full")) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function researchTurn(input: ResearchInput, dependencies: {
@@ -94,9 +117,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * one would need the scope resolution this exists to skip; the client treats an empty
    * continuation as "no thread", which is correct here.
    */
-  const immediate = await immediateReply(input.message, {
-    subject: dependencies.subject, signal: dependencies.signal,
-  });
+  const immediate = input.continuation
+    ? null
+    : await immediateReply(input.message, {
+        subject: dependencies.subject, signal: dependencies.signal,
+      });
   if (immediate) {
     return {
       status: "replied", message: immediate.message,
@@ -167,6 +192,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     throw new ResearchError("account_unavailable", "I couldn't read the wallet's margin-account association. Try again when account data is available.");
   }
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
+  const session = prior ? null : optionalConversation(codec, input.session, scope);
+  const carried = prior?.evidence ?? session?.evidence;
+  const carriedObs = reusableObservations(carried, Date.now());
+  const haveCarriedPosition = carriedObs.some(
+    (observation) => observation.capability === "account_position" && observation.status === "ok",
+  );
   let messages = [...prior?.messages ?? [], input.message];
   // Validate capacity before paying for any model call. Never truncate an older constraint.
   codec.seal(scope, messages, prior?.lastQuestion ?? null);
@@ -179,6 +210,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     return data;
   } };
   if (fast?.kind === "health") {
+    const fromCarry = carriedObs.filter((observation) =>
+      (observation.capability === "account_position" || observation.capability === "account_health")
+      && observation.status === "ok");
+    if (fromCarry.length) {
+      logPhase("health_fast_path", { ms: 0, source: "carried_evidence", status: "ok" });
+      return fastPathView({
+        message: input.message, scope, observations: fromCarry,
+        secret: dependencies.secret, server: dependencies.server,
+      });
+    }
     /**
      * Contract first. The app snapshot is a labelled fallback only — never the blocking
      * path. Waiting on `computeMarginSnapshot` is what turned a health question into the
@@ -221,10 +262,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
   const positionStarted = Date.now();
   const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
-  const positionTask = interruptible(
-    () => computeAccountPosition(scope.smartAccount, positionSignal),
-    positionSignal,
-  ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const positionTask = haveCarriedPosition
+    ? Promise.resolve({ value: null as Awaited<ReturnType<typeof computeAccountPosition>>, error: null as unknown })
+    : interruptible(
+        () => computeAccountPosition(scope.smartAccount, positionSignal),
+        positionSignal,
+      ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
   const withdrawTask = withdrawAsk
     ? interruptible(
         () => withdrawObservation(withdrawAsk.asset, withdrawAsk.amount, scope, scopedMcp),
@@ -286,11 +329,50 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   /**
    * The planner's first turn can compile a fully specified write with no account
    * snapshot. Waiting on the snapshot here is what turned "repay 1 XLM" into a 40s
-   * research loop. Seed it only after we know we still need ranking.
+   * research loop. Seed ranking evidence only when this is not a stated write.
    */
+  const statedWrite = looksLikeStatedWrite(input.message);
+  const seedMarkets = needsMarketSeed(input.message);
+  let seed: Awaited<ReturnType<typeof healthObservations>> = [...carriedObs];
+  let positionAwaited = haveCarriedPosition;
+  const haveCarriedMarkets = carriedObs.some((observation) =>
+    (observation.capability === "earn_market" || observation.capability === "blend_markets"
+      || observation.capability === "wallet_balances") && observation.status === "ok");
+  if (!statedWrite && seedMarkets && !(haveCarriedPosition && haveCarriedMarkets)) {
+    const marketSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(12_000)]);
+    const [pos, markets] = await withInvestigationPhase("position", () => Promise.all([
+      positionTask,
+      collectStrategyReads(scope, scopedMcp, marketSignal, Date.now()).catch((error) => {
+        console.warn("[copilot] investigation market seed failed", {
+          error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+        });
+        return [];
+      }),
+    ]));
+    if (pos.error) {
+      console.warn("[copilot] investigation position seed failed", {
+        error: pos.error instanceof Error
+          ? { name: pos.error.name, message: pos.error.message }
+          : String(pos.error),
+      });
+    }
+    position = pos.value;
+    positionAwaited = true;
+    const positionMs = Date.now() - positionStarted;
+    setSpanAttr("vanna.position.ms", positionMs);
+    setSpanAttr("vanna.position.seeded", !!position || haveCarriedPosition);
+    logPhase("position", { ms: positionMs, seeded: !!position || haveCarriedPosition, markets: markets.length });
+    seed = [
+      ...carriedObs,
+      ...(position ? healthObservations(position) : []),
+      ...markets,
+    ];
+  } else if (haveCarriedPosition) {
+    logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
+  }
   const loopStarted = Date.now();
   const result = await withInvestigationPhase("loop", () => runInvestigation({
-    message: input.message, scope, seed: [],
+    message: input.message, scope, seed,
     history: (input.history ?? []).slice(-8),
     task: { messages, lastQuestion: prior?.lastQuestion ?? null },
     promptName: input.promptName,
@@ -330,20 +412,22 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       };
     }
   }
-  const [positionResult] = await withInvestigationPhase("position", () =>
-    Promise.all([positionTask]));
-  if (positionResult.error) {
-    console.warn("[copilot] investigation position seed failed", {
-      error: positionResult.error instanceof Error
-        ? { name: positionResult.error.name, message: positionResult.error.message }
-        : String(positionResult.error),
-    });
+  if (!positionAwaited) {
+    const [positionResult] = await withInvestigationPhase("position", () =>
+      Promise.all([positionTask]));
+    if (positionResult.error) {
+      console.warn("[copilot] investigation position seed failed", {
+        error: positionResult.error instanceof Error
+          ? { name: positionResult.error.name, message: positionResult.error.message }
+          : String(positionResult.error),
+      });
+    }
+    position = positionResult.value;
+    const positionMs = Date.now() - positionStarted;
+    setSpanAttr("vanna.position.ms", positionMs);
+    setSpanAttr("vanna.position.seeded", !!position);
+    logPhase("position", { ms: positionMs, seeded: !!position });
   }
-  position = positionResult.value;
-  const positionMs = Date.now() - positionStarted;
-  setSpanAttr("vanna.position.ms", positionMs);
-  setSpanAttr("vanna.position.seeded", !!position);
-  logPhase("position", { ms: positionMs, seeded: !!position });
   if (position) {
     try {
       evaluateStandingOrders({
@@ -444,6 +528,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           floor: capacity?.floor ?? "1.30",
           idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
           idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
+          idleWalletByAssetTokens: idleWalletByAssetTokensFrom(result.observations, observedNow),
           // A failed capacity (dropped-leg debt, sources disagree) must not
           // invent headroom from $0 / a default 1.30 floor.
           borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
@@ -463,9 +548,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
-  // Venue, pair and "how much" are decided by ranking to the stated floor. Asking them
-  // after that ranking exists is the failure the research prompt already forbids.
-  if (question && candidates?.feasible.length && decidedWithoutUser(question)) question = null;
+  question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
     : question ? "needs_input"
       : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
@@ -518,5 +601,25 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
 }
 
 function decidedWithoutUser(question: string): boolean {
-  return /how much|budget|allocat|which (venue|pool|market)|spot or farm|earn or farm|which usdc/i.test(question);
+  return /how much|budget|allocat|which (venue|pool|market)|spot or farm|earn or farm|which usdc|which (of )?(the )?(two )?(usdc )?variant/i.test(question);
+}
+
+const BORROW_AUTHORITY =
+  "May I borrow against your margin account, or should this use idle funds only?";
+
+function simplifyQuestion(
+  question: string | null,
+  hasCandidates: boolean,
+  borrowing: string,
+): string | null {
+  if (!question) return null;
+  const asksAuthority = /may i borrow|borrow against|permission to borrow|new (debt|borrow)|should (i|we) borrow/i.test(question);
+  if (hasCandidates && decidedWithoutUser(question)) {
+    if (asksAuthority && borrowing === "unspecified") return BORROW_AUTHORITY;
+    return null;
+  }
+  if (asksAuthority && decidedWithoutUser(question) && borrowing === "unspecified") {
+    return BORROW_AUTHORITY;
+  }
+  return question;
 }

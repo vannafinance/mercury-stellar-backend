@@ -37,6 +37,10 @@ interface Recorded {
 let recorded: Recorded[] = [];
 /** tools/call responses to serve, in order; a number means "fail with that status". */
 let toolCallScript: Array<number | "ok" | "structured_error"> = [];
+/** Remaining initialize POSTs that should throw a network error before succeeding. */
+let initializeNetworkFails = 0;
+/** If set, initialize throws this instead of returning a session. */
+let initializeThrow: Error | null = null;
 let realFetch: typeof fetch;
 let sessionCounter = 0;
 
@@ -72,6 +76,13 @@ function installFakeMcp() {
     if (url === MCP_URL) {
       const parsed = JSON.parse(body || "{}") as { method?: string };
       if (parsed.method === "initialize") {
+        if (initializeThrow) {
+          throw initializeThrow;
+        }
+        if (initializeNetworkFails > 0) {
+          initializeNetworkFails -= 1;
+          throw Object.assign(new TypeError("fetch failed"), { code: "ECONNRESET" });
+        }
         sessionCounter += 1;
         return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: {} }), {
           status: 200,
@@ -143,6 +154,8 @@ beforeEach(async () => {
   process.env.WORKOS_M2M_TOKEN_URL = TOKEN_URL;
   recorded = [];
   toolCallScript = [];
+  initializeNetworkFails = 0;
+  initializeThrow = null;
   sessionCounter = 0;
   installFakeMcp();
   const { resetMcpClient } = await libs();
@@ -301,5 +314,28 @@ describe("401 recovery", () => {
     expect(initializes()).toHaveLength(2);
     // The replay must carry the same identity, not drop it on the retry path.
     expect(toolCalls().map((c) => c.assertion)).toEqual(["tok_a", "tok_a"]);
+  });
+});
+
+describe("initialize handshake retry", () => {
+  it("retries a dropped initialize packet and then opens the session", async () => {
+    const { getMcpClient } = await libs();
+    initializeNetworkFails = 1;
+
+    await expect(getMcpClient().call("vanna_get_price", { symbol: "XLM" })).resolves.toEqual({
+      ok: true,
+    });
+    expect(initializes()).toHaveLength(2);
+    expect(toolCalls()).toHaveLength(1);
+  });
+
+  it("does not retry an initialize timeout", async () => {
+    const { getMcpClient, MCPCallError } = await libs();
+    initializeThrow = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+
+    await expect(getMcpClient().call("vanna_get_price", { symbol: "XLM" })).rejects.toBeInstanceOf(
+      MCPCallError,
+    );
+    expect(initializes()).toHaveLength(1);
   });
 });

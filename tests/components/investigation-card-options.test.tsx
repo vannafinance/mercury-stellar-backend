@@ -254,6 +254,40 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
   });
 
+  it("offers Switch as one action when a runner-up decided the ranking", () => {
+    const onPropose = vi.fn();
+    const candidates = generateCandidates({
+      grossCollateralUsd: "4219.36", debtUsd: "1736.19", floor: "1.30", borrowingAllowed: false,
+      idleWalletUsd: "77665",
+      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
+      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
+      comparisons: [
+        comparison({
+          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+        comparison({
+          asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+      ],
+    });
+    render(
+      <InvestigationCard
+        prompt="supply my USDC"
+        result={view({ candidates })}
+        progress={null}
+        loading={false}
+        error={null}
+        onReset={() => {}}
+        onPropose={onPropose}
+      />,
+    );
+    expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Switch →" }));
+    expect(onPropose).toHaveBeenCalledWith("lend_idle_AQUSDC");
+  });
+
   it("shows the server-measured duration on a finished investigation", () => {
     card(view({ elapsedMs: 12_400, message: "Your reported health factor is 3.90." }));
     expect(screen.getByText(/Checked in 12s/)).toBeTruthy();

@@ -10,6 +10,7 @@ import "@/lib/copilot/investigation/proposal";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { isRecord } from "@/lib/copilot/investigation/decision";
 import { logUnexpected } from "@/lib/copilot/log";
+import { appendSessionTurn } from "@/lib/copilot/session-store";
 import type { ResearchStreamEvent } from "@/lib/copilot/investigation/view";
 
 export const runtime = "nodejs";
@@ -32,10 +33,11 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   } finally { reader.releaseLock(); }
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
-  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "history"].includes(key)) ||
+  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history"].includes(key)) ||
     typeof body.message !== "string" || !body.message.trim() || body.message.length > 8000 ||
     !(body.wallet == null || typeof body.wallet === "string" && body.wallet.length <= 56) ||
     !(body.continuation == null || typeof body.continuation === "string" && body.continuation.length <= 65_536) ||
+    !(body.session == null || typeof body.session === "string" && body.session.length <= 65_536) ||
     !(body.history == null || Array.isArray(body.history) && body.history.length <= 8 && body.history.every((entry) =>
       isRecord(entry) && (entry.role === "user" || entry.role === "assistant") &&
       typeof entry.text === "string" && entry.text.trim() && entry.text.length <= 2000))) {
@@ -46,7 +48,13 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
         role: entry.role, text: entry.text.trim().slice(0, 2000),
       }))
     : undefined;
-  return { message: body.message.trim(), wallet: body.wallet as string | null ?? null, continuation: body.continuation as string | null ?? null, history };
+  return {
+    message: body.message.trim(),
+    wallet: body.wallet as string | null ?? null,
+    continuation: body.continuation as string | null ?? null,
+    session: body.session as string | null ?? null,
+    history,
+  };
 }
 
 function deadlineBody() {
@@ -137,6 +145,7 @@ export async function POST(req: NextRequest) {
               onProgress: (event) => send({ type: "progress", event }),
             });
             send({ type: "result", result });
+            void appendSessionTurn({ subject, user: input.message, result });
             console.info("[copilot] investigate done", { request_id, status: result.status, ms: elapsed() });
           } catch (error) {
             const known = error instanceof ResearchError ? error : null;

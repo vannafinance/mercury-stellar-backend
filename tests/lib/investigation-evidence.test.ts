@@ -24,6 +24,14 @@ describe("sealed investigation context", () => {
     const codec = researchCodec("a".repeat(32), "mcp-a", () => 1000);
     const evidence = compactResearchEvidence([
       {
+        id: "e0", capability: "account_position", args: {},
+        observedAt: 1000, status: "ok",
+        data: {
+          collateral_usd: "317.00", debt_usd: "217.12", health_factor: "1.46",
+          source: "vanna_app_margin_snapshot", noise: "drop",
+        },
+      },
+      {
         id: "e1", capability: "asset_price", args: { asset: "BLUSDC", extra: "drop" },
         observedAt: 1000, status: "ok",
         data: { price_usd: "1", noise: "no" },
@@ -33,9 +41,14 @@ describe("sealed investigation context", () => {
     const prior = codec.read(withEvidence);
     expect(prior.evidence?.capacity?.floor).toBe("1.30");
     expect(prior.evidence?.observations[0]).toMatchObject({
+      capability: "account_position",
+      data: { health_factor: "1.46", source: "vanna_app_margin_snapshot" },
+    });
+    expect(prior.evidence?.observations[0].data).not.toHaveProperty("noise");
+    expect(prior.evidence?.observations[1]).toMatchObject({
       capability: "asset_price", args: { asset: "BLUSDC" }, data: { price_usd: "1" },
     });
-    expect(prior.evidence?.observations[0].args).not.toHaveProperty("extra");
+    expect(prior.evidence?.observations[1].args).not.toHaveProperty("extra");
     expect(researchEvidenceReusable(prior.evidence, 1000)).toBe(true);
     expect(researchEvidenceReusable(prior.evidence, 61_001)).toBe(false);
 

@@ -17,7 +17,8 @@ describe("graded guardrail policy", () => {
   it("never allows session-sign for irreversible ops", () => {
     expect(autoSignAllowed("repay")).toBe(true);
     expect(autoSignAllowed("close_account")).toBe(false);
-    expect(autoSignAllowed("settle")).toBe(false);
+    expect(gradeForOp("settle_account")).toBe("irreversible");
+    expect(autoSignAllowed("settle_account")).toBe(false);
     expect(autoSignAllowed("liquidate")).toBe(false);
   });
 });

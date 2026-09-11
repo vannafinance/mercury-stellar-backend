@@ -117,6 +117,18 @@ export function strategyReply(input: {
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
+    if (top.decision?.runnerUpId && top.decision.reason) {
+      const alt = input.candidates && input.candidates.feasible.length > 1
+        ? " Switch → to use the next option instead."
+        : "";
+      const floor = input.capacity
+        ? ` Sized so health stays at or above ${Number(input.capacity.floor).toFixed(2)}.`
+        : "";
+      const hf = top.finalHealthFactor
+        ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
+        : "";
+      return `${top.decision.reason}${floor}${hf} Approve to run those steps.${alt}`;
+    }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
       ? `Blend’s supply rate minus borrow cost is about ${Number(top.netAprPct).toFixed(2)}% APR before fees.`

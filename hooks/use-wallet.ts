@@ -115,7 +115,10 @@ export const useWallet = () => {
     } catch (error) {
       // Non-fatal: a transient RPC/Horizon failure shouldn't block the wallet or
       // light up the dev error overlay — warn and let the next refresh recover.
-      console.warn('Error refreshing balances (non-fatal, will retry):', error);
+      console.warn(
+        "Error refreshing balances (non-fatal, will retry):",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }, [address]);
 
@@ -124,7 +127,10 @@ export const useWallet = () => {
   useEffect(() => {
     if (!tick || !address || !isConnected) return;
     refreshWalletBalancesOnChain(address).catch((error) => {
-      console.warn('Ledger balance refresh failed; next ledger will retry:', error);
+      console.warn(
+        "Ledger balance refresh failed; next ledger will retry:",
+        error instanceof Error ? error.message : String(error),
+      );
     });
   }, [tick, address, isConnected]);
 

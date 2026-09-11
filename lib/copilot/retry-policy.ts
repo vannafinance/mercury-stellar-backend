@@ -32,6 +32,7 @@ export const RETRY = {
       "ENOTFOUND",
       "EAI_AGAIN",
       "fetch failed",
+      "failed to fetch",
       "network",
       "socket hang up",
     ],
@@ -41,7 +42,15 @@ export const RETRY = {
   mcpRead: {
     attempts: 2,
     backoffMs: [300],
-    retryable: ["ECONNRESET", "EPIPE", "ETIMEDOUT", "fetch failed", "network", "socket hang up"],
+    retryable: [
+      "ECONNRESET",
+      "EPIPE",
+      "ETIMEDOUT",
+      "fetch failed",
+      "failed to fetch",
+      "network",
+      "socket hang up",
+    ],
     onExhaustion: "throw",
   },
   /** MCP / Sign Service writes — never retry from this policy. */
@@ -55,7 +64,14 @@ export const RETRY = {
   scope: {
     attempts: 2,
     backoffMs: [200],
-    retryable: ["ECONNRESET", "EPIPE", "ETIMEDOUT", "fetch failed", "network"],
+    retryable: [
+      "ECONNRESET",
+      "EPIPE",
+      "ETIMEDOUT",
+      "fetch failed",
+      "failed to fetch",
+      "network",
+    ],
     onExhaustion: "throw",
   },
 } as const satisfies Record<string, RetryPolicy>;
@@ -74,8 +90,9 @@ function errorText(error: unknown): string {
 
 export function isRetryableError(error: unknown, policy: RetryPolicy): boolean {
   if (policy.attempts <= 1 || policy.retryable.length === 0) return false;
-  const text = errorText(error);
-  return policy.retryable.some((token) => text.includes(token));
+  // Axios "Network Error", browser "Failed to fetch", Node "fetch failed".
+  const text = errorText(error).toLowerCase();
+  return policy.retryable.some((token) => text.includes(token.toLowerCase()));
 }
 
 export async function withRetry<T>(policy: RetryPolicy, operation: () => Promise<T>): Promise<T> {

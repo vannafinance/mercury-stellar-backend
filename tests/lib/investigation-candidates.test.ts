@@ -300,6 +300,54 @@ describe("an amount the user named outright", () => {
     expect(rejected[0].reason).not.toMatch(/At most/);
     expect(rejected[0].reason).toMatch(/invalid leg amount/);
   });
+
+  it("ranks the already-held USDC variant by return at size, not by a higher APR on a small balance", () => {
+    const { feasible } = generateCandidates({
+      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
+      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
+      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
+      comparisons: [
+        comparison({
+          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+        comparison({
+          asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+        comparison({ asset: "BLUSDC", earnSupplyApr: "4.0", blendSupplyApr: "3.5" }),
+      ],
+    });
+    expect(feasible[0].id).toBe("lend_idle_SOUSDC");
+    expect(feasible[0].decision?.factor).toBe("already_held");
+    expect(feasible[0].decision?.runnerUpId).toBe("lend_idle_AQUSDC");
+    expect(feasible[0].decision?.reason).toMatch(/SOUSDC/);
+    expect(feasible[0].decision?.reason).toMatch(/74,985/);
+    expect(feasible[0].decision?.reason).toMatch(/AQUSDC/);
+    expect(feasible[0].decision?.reason).toMatch(/swap/);
+  });
+
+  it("names a thin APR margin instead of claiming the yield decided it", () => {
+    const { feasible } = generateCandidates({
+      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
+      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680" },
+      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680" },
+      comparisons: [
+        comparison({
+          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+        comparison({
+          asset: "AQUSDC", earnSupplyApr: "4.3", blendSupplyApr: null,
+          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
+        }),
+      ],
+    });
+    expect(feasible[0].asset).toBe("SOUSDC");
+    expect(feasible[0].decision?.factor).toBe("thin_margin");
+    expect(feasible[0].decision?.reason).toMatch(/within 0\.2%/);
+    expect(feasible[0].decision?.reason).toMatch(/already hold/);
+  });
 });
 
 describe("valuing an amount the user named", () => {

@@ -26,6 +26,7 @@ const WRITE_GRADES: Record<string, GuardrailGrade> = {
   open_account: "manual_write",
   close_account: "irreversible",
   settle: "irreversible",
+  settle_account: "irreversible",
   liquidate: "irreversible",
 };
 

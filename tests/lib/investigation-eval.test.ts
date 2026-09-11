@@ -162,14 +162,11 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(result.candidates).not.toBeNull();
     expect(result.candidates?.feasible.some((candidate) => candidate.borrows)).toBe(true);
     expect(result.candidates?.feasible.some((candidate) => !candidate.borrows)).toBe(true);
-    expect(mcp.call.mock.calls.map((call) => call[0]).sort()).toEqual([
-      "vanna_get_pool_stats",
-      "vanna_get_pool_stats",
-      "vanna_get_price",
-      "vanna_get_price",
-      "vanna_get_wallet_balance",
-      "vanna_list_blend_reserves",
-    ].sort());
+    const tools = mcp.call.mock.calls.map((call) => call[0]);
+    expect(tools).toContain("vanna_get_pool_stats");
+    expect(tools).toContain("vanna_list_blend_reserves");
+    expect(tools).toContain("vanna_get_wallet_balance");
+    expect(tools).toContain("vanna_get_price");
   });
 
   it("bare USDC clarifies or resolves a variant rather than guessing", async () => {

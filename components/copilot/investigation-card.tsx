@@ -5,6 +5,7 @@ import { ChevronRight, CircleAlert, Loader2, Search } from "lucide-react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
+import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 
@@ -14,6 +15,7 @@ export interface InvestigationCardProps {
   progress: InvestigationProgress | null;
   loading: boolean;
   error: string | null;
+  turns?: ThreadTurn[];
   onReset: () => void;
   /** Act on what was understood — the plan card takes over from here. */
   onContinue?: () => void;
@@ -55,7 +57,7 @@ const BORROWING: Record<Borrowing, string | null> = {
 };
 
 export function InvestigationCard({
-  prompt, result: researchResult, progress, loading, error, onReset, onContinue, continueLabel,
+  prompt, result: researchResult, progress, loading, error, turns = [], onReset, onContinue, continueLabel,
   onPropose, workflow, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
 }: InvestigationCardProps) {
   const result: ResearchView | null = researchResult ?? (workflow ? {
@@ -98,6 +100,32 @@ export function InvestigationCard({
         </div>
       ) : (
         <>
+          {turns.length > 0 && (
+            <ol className="mb-4 space-y-3" aria-label="Investigation thread">
+              {turns.map((turn, index) => (
+                <li key={`${turn.role}-${index}`} className="min-w-0">
+                  {turn.role === "user" ? (
+                    <p className="text-[13px] leading-6 text-vgray-500">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-vgray-400">You · </span>
+                      {turn.text}
+                    </p>
+                  ) : (
+                    <div>
+                      <p className="text-[14px] leading-6 text-vgray-700">{turn.text}</p>
+                      {turn.question && index < turns.length - 1 && (
+                        <p className="mt-1.5 text-[13px] leading-5 text-violet-500">{turn.question}</p>
+                      )}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+          {turns.length > 0 && (
+            <p className="mb-3 text-[11px] leading-5 text-vgray-400">
+              This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+            </p>
+          )}
           {loading && (
             <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500">
               <Loader2 size={15} className="shrink-0 animate-spin" />
@@ -142,7 +170,9 @@ export function InvestigationCard({
                   )}
                 </>
               ) : null}
-              <p className="mt-3 text-[14px] leading-6 text-vgray-700">{result.message}</p>
+              {(!turns.length || turns[turns.length - 1]?.text !== result.message) && (
+                <p className="mt-3 text-[14px] leading-6 text-vgray-700">{result.message}</p>
+              )}
               {(serverClock || (!loading && deviceClock)) && (
                 <p className="mt-1.5 font-mono text-[12px] tabular-nums text-vgray-400">
                   {serverClock ? `Checked in ${serverClock}` : `Checked in ${deviceClock}`}
@@ -201,6 +231,9 @@ export function InvestigationCard({
                             ? ` · health factor ${Number(candidate.finalHealthFactor).toFixed(2)} after`
                             : " · no change to health factor"}
                         </p>
+                        {index === 0 && candidate.decision?.reason && (
+                          <p className="mt-2 text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>
+                        )}
                         {onPropose && (
                           <button
                             type="button"
@@ -209,6 +242,16 @@ export function InvestigationCard({
                             className="mt-3 rounded-lg bg-gradient px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50"
                           >
                             Prepare this plan
+                          </button>
+                        )}
+                        {index === 0 && candidate.decision?.runnerUpId && onPropose && (
+                          <button
+                            type="button"
+                            onClick={() => onPropose(candidate.decision!.runnerUpId!)}
+                            disabled={workflowLoading}
+                            className="mt-2 ml-2 rounded-lg border border-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-500 disabled:opacity-50"
+                          >
+                            Switch →
                           </button>
                         )}
                       </div>
@@ -299,7 +342,7 @@ export function InvestigationCard({
               {result.question && (
                 <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
-                    Optional — answer to refine
+                    Answer below to continue
                   </p>
                   <p className="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">
                     {result.question}

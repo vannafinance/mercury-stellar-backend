@@ -88,6 +88,7 @@ import { useInvestigation } from "@/hooks/use-investigation";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
+import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
   status: string;
@@ -2603,18 +2604,23 @@ export function CopilotWorkspace() {
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
-    proposedRef.current = null;
-    signedWorkflowStepRef.current = null;
-    approvedJournalRef.current = null;
-    setSigningJournal(false);
-    resetWorkflow();
-    resetStrategyAccumulator();
-    setResponse(null);
+    const continuing = shouldContinueInvestigation(text, investigation.result);
+    if (shouldReplacePlan(text, investigation.result)) {
+      signedWorkflowStepRef.current = null;
+      approvedJournalRef.current = null;
+      setSigningJournal(false);
+      proposedRef.current = null;
+      resetWorkflow();
+      resetStrategyAccumulator();
+      setResponse(null);
+    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    }
     setSubmitted(text);
-    setIntentText(text);
+    setIntentText("");
     setPaletteOpen(false);
     await investigate(text, signal);
-  }, [resetStrategyAccumulator, investigate, resetWorkflow]);
+  }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
   const entry = useCopilotEntry({ wallet: address, onInvestigate: runInvestigation });
 
   const { run: dispatchRun } = entry;
@@ -2633,8 +2639,9 @@ export function CopilotWorkspace() {
     const candidateId = view.proposalCandidateId ?? view.candidates?.feasible[0]?.id;
     if (!candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
-    if (proposedRef.current === view.continuation) return;
-    proposedRef.current = view.continuation;
+    const proposeKey = `${view.continuation}:${candidateId}`;
+    if (proposedRef.current === proposeKey) return;
+    proposedRef.current = proposeKey;
     void proposePlan(view.continuation, candidateId);
   }, [investigation.result, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading]);
 
@@ -5026,7 +5033,9 @@ export function CopilotWorkspace() {
                 }
               }}
               // Short enough not to wrap the empty box onto a second line.
-              placeholder="Ask, or state an action…"
+              placeholder={investigation.result?.question
+                ? "Answer the question, or refine the plan…"
+                : "Ask, or state an action…"}
               aria-label="Copilot intent"
               maxLength={8000}
               rows={1}
@@ -5129,7 +5138,11 @@ export function CopilotWorkspace() {
                 setIntentText("");
               }}
               onPropose={investigation.result?.continuation
-                ? (candidateId) => { void workflow.propose(investigation.result!.continuation, candidateId); }
+                ? (candidateId) => {
+                    const continuation = investigation.result!.continuation;
+                    proposedRef.current = `${continuation}:${candidateId}`;
+                    void workflow.propose(continuation, candidateId);
+                  }
                 : undefined}
               workflow={workflow.view}
               workflowError={workflow.error}
