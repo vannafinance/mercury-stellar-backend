@@ -2092,7 +2092,15 @@ export class MarginAccountService {
   static async getCurrentBorrowedBalances(
     marginAccountAddress: string,
     options: { includePrices?: boolean } = {},
-  ): Promise<{ success: boolean; data?: Record<string, { amount: string; usdValue: string }>; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    data?: Record<string, { amount: string; usdValue: string }>;
+    error?: string;
+    /** true when `data` is missing one or more debt legs that failed to read
+     *  even after retry — never trust `data` as the account's complete debt
+     *  when this is set (see the caller-side handling in account-snapshot.ts). */
+    partial?: boolean;
+  }> {
     try {
       // Validate address before making any blockchain calls
       if (!marginAccountAddress || typeof marginAccountAddress !== 'string' || marginAccountAddress.length < 10) {
@@ -2151,8 +2159,12 @@ export class MarginAccountService {
       const sourceSequence = sourceAccount.sequenceNumber();
 
       // Every token debt is independent. Run the simulations (and optional
-      // price lookups) concurrently instead of one token at a time.
-      const rows = await Promise.allSettled(borrowedTokens.map(async (token) => {
+      // price lookups) concurrently instead of one token at a time. Each leg
+      // gets a couple of retries first — soroban-testnet.stellar.org returns
+      // transient `read ECONNRESET` on simulateTransaction often enough in
+      // practice that a single-attempt read regularly drops a real debt leg.
+      const readOneTokenDebt = async (token: string, attempt = 0): Promise<{ token: string; balance: { amount: string; usdValue: string } } | null> => {
+        try {
           const readSource = new StellarSdk.Account(sourceAddr, sourceSequence);
           const getBalanceTx = new StellarSdk.TransactionBuilder(readSource, {
             fee: StellarSdk.BASE_FEE,
@@ -2166,38 +2178,70 @@ export class MarginAccountService {
             )
             .setTimeout(30)
             .build();
-          
-          const balanceResult = await server.simulateTransaction(getBalanceTx);
-          
-          if (!('error' in balanceResult) && 'result' in balanceResult && balanceResult.result) {
-            const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
-            const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
 
-            if (balanceNumber > 0) {
-              const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
-              const usdValue = (balanceNumber * price).toFixed(2);
-              return { token, balance: {
-                amount: balanceNumber.toFixed(6),
-                usdValue
-              } };
-            }
+          const balanceResult = await server.simulateTransaction(getBalanceTx);
+
+          if ('error' in balanceResult) {
+            throw new Error(String(balanceResult.error));
+          }
+          if (!('result' in balanceResult) || !balanceResult.result) {
+            return null;
+          }
+
+          const balanceWad = StellarSdk.scValToNative(balanceResult.result.retval) as string;
+          const balanceNumber = parseFloat(balanceWad) / Math.pow(10, 18); // Convert from WAD
+
+          if (balanceNumber > 0) {
+            const price = options.includePrices === false ? 0 : await fetchTokenPrice(token);
+            const usdValue = (balanceNumber * price).toFixed(2);
+            return { token, balance: {
+              amount: balanceNumber.toFixed(6),
+              usdValue
+            } };
           }
           return null;
-      }));
+        } catch (err) {
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+            return readOneTokenDebt(token, attempt + 1);
+          }
+          throw err;
+        }
+      };
 
+      const rows = await Promise.allSettled(borrowedTokens.map((token) => readOneTokenDebt(token)));
+
+      // Any leg still rejected after retries means `borrowedBalances` is
+      // missing real debt, not "this token has zero debt" — a dropped leg
+      // silently LOWERS total debt, which RAISES the displayed health
+      // factor, showing the user a position safer than it actually is.
+      // Report that honestly via `success: false` + `partial: true` instead
+      // of always returning success — callers must not treat `data` here as
+      // a confirmed-complete debt list.
+      let anyRejected = false;
       rows.forEach((row, index) => {
         if (row.status === 'fulfilled' && row.value) {
           borrowedBalances[row.value.token] = row.value.balance;
         } else if (row.status === 'rejected') {
-          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]}:`, row.reason);
+          anyRejected = true;
+          console.warn(`⚠️ Failed to get balance for token ${borrowedTokens[index]} after retries:`, row.reason);
         }
       });
-      
+
+      if (anyRejected) {
+        return {
+          success: false,
+          data: this.addUsdcAliases(borrowedBalances),
+          error: 'One or more debt reads failed after retries — this data is incomplete',
+          partial: true,
+        };
+      }
+
       return {
         success: true,
         data: this.addUsdcAliases(borrowedBalances)
       };
-      
+
     } catch (error: any) {
       console.error('❌ Error getting borrowed balances:', error);
       return {
@@ -2477,10 +2521,17 @@ export class MarginAccountService {
   static async repayLoan(
     marginAccountAddress: string,
     tokenSymbol: string,
-    repayAmountWad: string
+    repayAmountWad: string,
+    /** Progress-step display override, in token units (e.g. "500.03"). Use
+     *  when `repayAmountWad` has been padded above the caller's intended
+     *  amount (e.g. a small buffer to absorb interest accrued between debt
+     *  read and confirmation) — without this, the progress step shows the
+     *  padded on-chain figure, which can read as "why is it repaying more
+     *  than my debt?" even though the contract clamps it back down. */
+    displayAmountOverride?: string,
   ): Promise<{ success: boolean; hash?: string; error?: string; repaidAmountWad?: string }> {
     return withFootprintRaceRetry(
-      () => this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad),
+      () => this.repayLoanAttempt(marginAccountAddress, tokenSymbol, repayAmountWad, displayAmountOverride),
       'Repay',
     );
   }
@@ -2488,7 +2539,8 @@ export class MarginAccountService {
   private static async repayLoanAttempt(
     marginAccountAddress: string,
     tokenSymbol: string,
-    repayAmountWad: string
+    repayAmountWad: string,
+    displayAmountOverride?: string,
   ): Promise<{ success: boolean; hash?: string; error?: string; repaidAmountWad?: string }> {
     try {
       // The V2 ledger keys debt by token contract ADDRESS, not symbol — BLUSDC
@@ -2522,7 +2574,7 @@ export class MarginAccountService {
       // automatic wallet-side rescue. The caller decides whether to bring
       // more of this asset into the margin account (Transfer Collateral)
       // first, rather than that decision being made silently for them here.
-      const repayAmountDisplay = (Number(repayAmountWad) / 1e18).toFixed(7);
+      const repayAmountDisplay = displayAmountOverride ?? (Number(repayAmountWad) / 1e18).toFixed(7);
       showTxStep(`Repaying ${repayAmountDisplay} ${tokenSymbol}`);
       const transaction = new StellarSdk.TransactionBuilder(currentAccount, {
         fee: (parseInt(StellarSdk.BASE_FEE) * 50).toString(),

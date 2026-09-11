@@ -235,18 +235,20 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
     }
   }, [marginAccount, refreshRepayableStats]);
 
-  // Handler for percentage click. 10/25/50% are fractions of
+  // Handler for percentage click. Every chip (10/25/50/100%) is a fraction of
   // `repayStats.netOutstandingAmountToPay`, the TRUE full debt (see
-  // {@link refreshRepayableStats}). 100% fills in whichever is smaller — the
-  // full debt, or the margin account's own balance of the asset — since a
-  // margin account only ever repays from its own balance (no wallet
-  // top-up), so asking for more than it holds can never succeed on-chain.
+  // {@link refreshRepayableStats}) — but ALWAYS capped to whichever is
+  // smaller, that fraction or the margin account's own balance of the asset.
+  // A margin account only ever repays from its own balance (no wallet
+  // top-up), so filling in more than it holds can never succeed on-chain —
+  // that used to only apply to the 100% chip, so 10/25/50% still filled in
+  // an unpayable amount whenever the account held less than that fraction of
+  // its debt, immediately tripping "Insufficient Balance".
   const handlePercentageClick = (item: number) => {
     setSelectedRepayPercentage(item);
 
-    const target = item === 100
-      ? Math.min(repayStats.netOutstandingAmountToPay, repayStats.availableBalance)
-      : (repayStats.netOutstandingAmountToPay * item) / 100;
+    const rawFraction = (repayStats.netOutstandingAmountToPay * item) / 100;
+    const target = Math.min(rawFraction, repayStats.availableBalance);
 
     // Below-a-cent dust is zeroed — same $0.01 threshold the "Net Outstanding
     // Amount to Repay" stat tile uses — so 100% doesn't fill in a confusing
@@ -303,26 +305,68 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
           : (currentAvailableBalanceWad && currentAvailableBalanceWad !== '0'
             ? BigInt(currentAvailableBalanceWad)
             : BigInt(0));
-        // "Repay Max" (100%) targets the full on-chain debt capped to the
-        // margin account's own balance — the account only ever repays from
-        // its own balance (no wallet top-up), so requesting more than it
-        // holds could never succeed on-chain anyway. Non-100% typed amounts
-        // are still capped at the debt (never overpay).
-        const debtCappedToBalance = marginBalWad < debtWad ? marginBalWad : debtWad;
-        const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0)
-          ? debtCappedToBalance
-          : debtWad > BigInt(0)
-            ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
-            : inputRepayWad;
+        // Every submission — typed amount or any %-chip — is capped to BOTH
+        // the real debt (never overpay) AND the margin account's own live
+        // balance (it only ever repays from its own balance, no wallet
+        // top-up, so requesting more than it holds could never succeed
+        // on-chain anyway). This used to only cap-to-balance on the 100%
+        // chip, so 10/25/50% could still submit an amount the account
+        // didn't actually have.
+        const cappedToDebt = debtWad > BigInt(0)
+          ? (inputRepayWad > debtWad ? debtWad : inputRepayWad)
+          : inputRepayWad;
+
+        // 100% ("repay everything") is special: debt accrues interest every
+        // second, so ANY exact amount read here — even the freshest possible
+        // read, moments ago — is already stale by the time the transaction
+        // actually lands on-chain (wallet signing + ledger-close latency).
+        // Submitting that stale amount always leaves a sliver of newly-accrued
+        // interest un-repaid, which is exactly the recurring "tiny leftover
+        // debt after a full repay" bug. The contract's own repay_internal
+        // (account_manager.rs) clamps whatever is sent down to the REAL debt
+        // at execution time — and collect_from (pool.rs) clamps a second time
+        // to the live, share-derived debt at that exact ledger — so it can
+        // never over-collect.
+        //
+        // That makes overshooting safe, but submitting the account's ENTIRE
+        // balance (e.g. 1500 to clear a 500 debt) was the wrong way to use
+        // that safety margin: the wallet's OWN confirmation popup shows the
+        // raw amount being sent — before any contract-side clamping — so the
+        // user saw "Repaying 1500" for a debt of ~500 and had no way to know
+        // the contract would only actually take ~500. A small buffer (0.5%,
+        // floored at a fixed minimum for tiny debts) comfortably covers any
+        // realistic sign-and-confirm delay while keeping the number the
+        // wallet shows close to the real debt, not the whole account.
+        const REPAY_BUFFER_BPS = BigInt(50); // 0.5%
+        const REPAY_BUFFER_FLOOR_WAD = BigInt("10000000000000"); // 0.00001 token, min buffer for tiny debts
+        const bufferedDebtWad = debtWad > BigInt(0)
+          ? debtWad + (() => {
+              const proportional = (debtWad * REPAY_BUFFER_BPS) / BigInt(10_000);
+              return proportional > REPAY_BUFFER_FLOOR_WAD ? proportional : REPAY_BUFFER_FLOOR_WAD;
+            })()
+          : debtWad;
+        const finalRepayWad = selectedRepayPercentage === 100 && marginBalWad > BigInt(0)
+          ? (bufferedDebtWad > marginBalWad ? marginBalWad : bufferedDebtWad)
+          : (cappedToDebt > marginBalWad ? marginBalWad : cappedToDebt);
 
         if (finalRepayWad <= BigInt(0)) {
           throw new Error('Nothing to repay for this token');
         }
 
+        // The progress step should always read as "repaying the debt", never
+        // the padded/buffered on-chain amount (finalRepayWad) — that padding
+        // is invisible plumbing for the contract's own clamp, not something
+        // the user asked for. 100% shows the freshest debt reading; other
+        // percentages/typed amounts already show exactly what was entered.
+        const displayAmountOverride = selectedRepayPercentage === 100 && debtWad > BigInt(0)
+          ? (Number(debtWad) / 1e18).toFixed(7)
+          : repayInput || undefined;
+
         const result = await MarginAccountService.repayLoan(
           marginAccount,
           normalizeContractTokenSymbol(selectedRepayCurrency),
-          finalRepayWad.toString()
+          finalRepayWad.toString(),
+          displayAmountOverride,
         );
 
         if (!result.success) {
@@ -373,11 +417,32 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
       setSelectedRepayPercentage(0);
       qc.invalidateQueries({ queryKey: ['margin'] });
 
-      try {
-        await refreshRepayableStats(marginAccount);
-        await refreshMarginStoreBorrowedBalances(marginAccount, true);
-      } catch (error) {
-        console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
+      const preRepayDebtWad = currentDebtWad && currentDebtWad !== '0' ? BigInt(currentDebtWad) : BigInt(0);
+      const sym = normalizeContractTokenSymbol(selectedRepayCurrency);
+
+      // repayLoan already polled for on-chain SUCCESS, but a read immediately
+      // after can still land on an RPC node that hasn't ingested that same
+      // closed ledger yet — simulateTransaction (used for the balance re-read)
+      // and getTransaction (used to confirm the tx) don't always converge on
+      // the same node/instant. Without this, Current Positions kept showing
+      // the pre-repay debt until something unrelated (a reload, another
+      // node) happened to catch up. Retry the refresh a couple of times, a
+      // beat apart, until the store actually reflects a drop — or give up
+      // and let the regular ledger tick reconcile it, same as any other
+      // transient failure here.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await refreshRepayableStats(marginAccount);
+          await refreshMarginStoreBorrowedBalances(marginAccount, true);
+        } catch (error) {
+          console.warn("Post-repay balance refresh failed; ledger tick will reconcile.", error);
+          break;
+        }
+        const storeDebtWad = decimalAmountToWad(
+          useMarginAccountInfoStore.getState().borrowedBalances[sym]?.amount ?? '0',
+        );
+        if (storeDebtWad < preRepayDebtWad) break; // confirmed drop — done
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
       }
     },
     onSettled: () => {

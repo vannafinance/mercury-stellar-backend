@@ -86,7 +86,10 @@ export async function getLitePositionsFromChain(
       ]),
     ]);
 
-  const debts = debtResult.success && debtResult.data ? debtResult.data : {};
+  // Use whatever debt legs WERE read even on a partial failure (debtResult.partial) —
+  // dropping them entirely here would understate debt the same way the bug this
+  // guards against did; see MarginAccountService.getCurrentBorrowedBalances.
+  const debts = debtResult.data ?? {};
   // A SmartAccount stores aggregate debt per lending market, not a browser-side
   // "position id". Allocate each debt unit at most once across the reconstructed
   // protocol aggregates so multiple open pools never double-count one liability.

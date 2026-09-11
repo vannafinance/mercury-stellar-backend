@@ -29,6 +29,26 @@ export const USD_DUST_EPSILON = 0.01;
 
 const tokenPrice = (token: string): number => getCachedTokenPrice(token);
 
+// Hard deadline on the whole snapshot computation. Without this, one hung
+// Soroban RPC call (soroban-testnet.stellar.org ECONNRESET retries have been
+// measured taking 90s+) blocks every caller sharing `snapshotInflight` below —
+// /api/account/[addr] and Copilot's own account-position read among them — with
+// no way to abort. This does not cancel the underlying RPC calls (no
+// AbortController is threaded through Stellar SDK's rpc.Server here); it only
+// bounds how long ANY caller waits, and — critically — makes the shared inflight
+// promise REJECT so the entry is cleared (see the `finally` below) instead of
+// leaving the next caller to join the same hung promise.
+const SNAPSHOT_HARD_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 const canonicalMarginToken = (token: string): string => {
   const n = token.toUpperCase();
   if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
@@ -87,6 +107,11 @@ export type MarginSnapshot = {
   netAvailableCollateral: number;
   borrowRate: number;
   debtLimit: number;
+  /** true when one or more debt legs failed to read even after retry — every
+   *  figure derived from `totalBorrowedValue` (HF, net available, etc.) may
+   *  be UNDERSTATING real debt. UI should treat this account's risk figures
+   *  as unverified rather than silently trusting them. */
+  debtDataIncomplete: boolean;
 };
 
 // Multiple mounted surfaces can request the same account snapshot at once
@@ -141,12 +166,15 @@ export async function computeMarginSnapshot(
   marginAccountAddress: string,
   opts?: { onPartial?: (p: PartialSnapshot) => void },
 ): Promise<MarginSnapshot> {
+  const label = `computeMarginSnapshot(${marginAccountAddress})`;
   // Progressive callers need their own onPartial callback. The route and
   // Copilot all use the no-callback form and can safely share one read.
-  if (opts?.onPartial) return computeMarginSnapshotUncached(marginAccountAddress, opts);
+  if (opts?.onPartial) {
+    return withTimeout(computeMarginSnapshotUncached(marginAccountAddress, opts), SNAPSHOT_HARD_TIMEOUT_MS, label);
+  }
   const existing = snapshotInflight.get(marginAccountAddress);
   if (existing) return existing;
-  const run = computeMarginSnapshotUncached(marginAccountAddress);
+  const run = withTimeout(computeMarginSnapshotUncached(marginAccountAddress), SNAPSHOT_HARD_TIMEOUT_MS, label);
   snapshotInflight.set(marginAccountAddress, run);
   try {
     return await run;
@@ -175,7 +203,12 @@ async function computeMarginSnapshotUncached(
   const borrowedBalances: Balances = {};
   const collateralBalances: Balances = {};
 
-  if (borrowedResult.success && borrowedResult.data) {
+  // A `partial` result still carries whatever debt legs WERE read
+  // successfully — use them (never worse than before), but the account's
+  // real debt may be higher than what's shown here; `debtDataIncomplete`
+  // (set below) carries that uncertainty through to the caller.
+  const debtDataIncomplete = borrowedResult.partial === true;
+  if (borrowedResult.data) {
     const deduped: Record<string, Balance> = {};
     Object.entries(borrowedResult.data).forEach(([token, { amount, usdValue }]) => {
       const canonical = canonicalMarginToken(token);
@@ -296,5 +329,6 @@ async function computeMarginSnapshotUncached(
     netAvailableCollateral,
     borrowRate,
     debtLimit,
+    debtDataIncomplete,
   };
 }
