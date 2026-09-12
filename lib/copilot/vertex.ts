@@ -394,12 +394,17 @@ async function tryGcloudAccessToken(): Promise<{ token?: string; error?: string 
   // Path B: quoted gcloud.cmd via cmd.exe /c (Windows spaces-safe)
   if (gcloudCmd && process.platform === "win32") {
     try {
+      // Node re-escapes embedded quotes in execFile args ("\"C:\...\gcloud.cmd\"") and
+      // cmd.exe cannot parse that, so this path never succeeded on Windows. Pass the
+      // command line verbatim and drop /s, which would otherwise strip the outer quotes
+      // and split the path at "Cloud SDK".
       const { stdout, stderr } = await execFileAsync(
         "cmd.exe",
-        ["/d", "/s", "/c", `"${gcloudCmd}" auth print-access-token`],
+        ["/d", "/c", `"${gcloudCmd}" auth print-access-token`],
         {
           timeout: 25_000,
           windowsHide: true,
+          windowsVerbatimArguments: true,
           env: process.env,
           maxBuffer: 2 * 1024 * 1024,
         },
