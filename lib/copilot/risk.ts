@@ -326,18 +326,27 @@ export async function evaluateWriteRisk(
     }
   }
 
+  // A repay or a collateral deposit can only raise HF (for HF > 1, (C-x)/(D-x) > C/D).
+  // Blocking one because the account is *already* under the floor locks the user out of
+  // the only two actions that get them back above it — and blocks the guardian's own
+  // auto-repay for the same reason. The floor guards against being pushed under it, not
+  // against climbing out of it. Seen live: HF 1.27, floor 1.30, repay → "would breach".
+  const riskReducing = action.op === "repay" || action.op === "deposit_collateral";
+  const doesNotWorsen = hfBefore == null || hfAfter == null || hfAfter >= hfBefore;
+  const exemptFromFloor = riskReducing && doesNotWorsen;
+
   if (hfAfter != null && hfAfter < hardFloor) {
     decision = "block";
     reasons.unshift(
       `projected health factor ${hfAfter.toFixed(2)} < 1.00 — would be instantly liquidatable`,
     );
-  } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
+  } else if (!exemptFromFloor && userFloor != null && hfAfter != null && hfAfter < userFloor) {
     decision = "block";
     reasons.unshift(
       `projected HF ${hfAfter.toFixed(2)} would breach your floor of ${userFloor.toFixed(2)} ` +
         `(“keep health factor above ${userFloor}”). Lower size, add collateral, or raise your floor.`,
     );
-  } else if (hfAfter != null && hfAfter < policyFloor) {
+  } else if (!exemptFromFloor && hfAfter != null && hfAfter < policyFloor) {
     if (decision !== "block") decision = "needs_confirmation";
     reasons.unshift(
       `projected health factor ${hfAfter.toFixed(2)} below safety floor ${policyFloor}`,

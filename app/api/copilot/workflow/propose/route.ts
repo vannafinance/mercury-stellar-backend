@@ -30,7 +30,7 @@ async function inputFrom(req: NextRequest): Promise<{ continuation: string; cand
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid proposal request.", 400); }
   if (!isRecord(body) || Object.keys(body).some((key) => !["continuation", "candidateId"].includes(key)) ||
     typeof body.continuation !== "string" || !body.continuation.trim() || body.continuation.length > 65_536 ||
-    typeof body.candidateId !== "string" || !/^[a-z0-9_]{1,80}$/.test(body.candidateId)) {
+    typeof body.candidateId !== "string" || !/^[a-zA-Z0-9_]{1,80}$/.test(body.candidateId)) {
     throw new ResearchError("invalid_request", "Send the investigation continuation and the option to prepare only. This route cannot accept execution instructions or approval payloads.", 400);
   }
   return { continuation: body.continuation, candidateId: body.candidateId };

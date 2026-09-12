@@ -15,6 +15,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_GUARDIAN_FLOOR,
+  LIQUIDATION_HF,
+  parseStatedFloor,
+  type FloorVerdict,
+} from "@/lib/copilot/guardian-floor";
+import {
   ChevronRight,
   LayoutTemplate,
   X,
@@ -463,9 +469,9 @@ function readGuardianFloor(): number {
   try {
     const raw = localStorage.getItem(GUARDIAN_FLOOR_KEY);
     const n = raw != null ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 1 ? n : 1.3;
+    return Number.isFinite(n) && n > LIQUIDATION_HF ? n : DEFAULT_GUARDIAN_FLOOR;
   } catch {
-    return 1.3;
+    return DEFAULT_GUARDIAN_FLOOR;
   }
 }
 
@@ -4371,26 +4377,6 @@ export function CopilotWorkspace() {
     postCopilot,
   ]);
 
-  // Persist HF floor whenever the user states one in a prompt.
-  useEffect(() => {
-    if (!submitted) return;
-    const m =
-      submitted.match(
-        /(?:above|over|at least|>=?)\s*(\d+(?:\.\d+)?)/i,
-      ) ||
-      submitted.match(/health factor[^\d]*(\d+(?:\.\d+)?)/i);
-    if (m) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n) && n >= 1 && n < 20) {
-        try {
-          localStorage.setItem("vanna_copilot_guardian_min_hf", String(n));
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }, [submitted]);
-
   /** Clear current answer / staged action but keep session log. */
   const reset = () => {
     cancelledRef.current = true;
@@ -4891,8 +4877,29 @@ export function CopilotWorkspace() {
    * Read after mount, not during render: localStorage does not exist during SSR, and
    * defaulting to 1.3 on the server while the stored floor is 1.4 is a hydration mismatch.
    */
-  const [guardianFloor, setGuardianFloor] = useState(1.3);
+  const [guardianFloor, setGuardianFloor] = useState(DEFAULT_GUARDIAN_FLOOR);
   useEffect(() => setGuardianFloor(readGuardianFloor()), []);
+
+  /**
+   * A floor the user states in a prompt is honoured above the 1.1 liquidation line
+   * (with a warning when thin) and refused at or under it — never silently replaced.
+   * The verdict is shown under the health dial so the meter's "your floor" tick and
+   * the message about it never disagree. See lib/copilot/guardian-floor.ts.
+   */
+  const [floorNotice, setFloorNotice] = useState<FloorVerdict | null>(null);
+  useEffect(() => {
+    if (!submitted) return;
+    const verdict = parseStatedFloor(submitted, readGuardianFloor());
+    if (!verdict) return;
+    setFloorNotice(verdict);
+    if (verdict.verdict === "reject") return;
+    try {
+      localStorage.setItem(GUARDIAN_FLOOR_KEY, String(verdict.value));
+    } catch {
+      /* ignore */
+    }
+    setGuardianFloor(verdict.value);
+  }, [submitted]);
   // Same reason: the caps chip reads storage after mount, never during render.
   useEffect(() => setSavedCaps(readAutoCaps()), []);
 
@@ -6001,6 +6008,15 @@ export function CopilotWorkspace() {
                   debtUsd={borrowedValue ?? null}
                   noDebt={(borrowedValue ?? 0) < 0.5}
                 />
+              {floorNotice?.message && (
+                <p
+                  role="status"
+                  className="font-mono text-[11px] leading-[1.6]"
+                  style={{ color: floorNotice.verdict === "reject" ? BAD_INK : WARN_INK, marginTop: -6 }}
+                >
+                  {floorNotice.message}
+                </p>
+              )}
 
 
               {/* Open positions — same snapshot / rules as the Margin positions table. */}
