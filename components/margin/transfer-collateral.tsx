@@ -22,21 +22,10 @@ import { useTokenPrices as useTokenPricesFromHook } from "@/hooks/use-token-pric
 import { ConversionRatio } from "@/components/ui/conversion-ratio";
 import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
+import { maxMarginWithdrawal, marginWithdrawalPreset } from "@/lib/utils/margin-withdraw";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
 
 const XLM_TRANSFER_EPSILON = 1e-7;
-/** Match store + positions table: sub-cent residual debt is not real debt. */
-const BORROW_DUST_USD = 0.01;
-// XLM reserved inside the margin smart account. Stellar requires every
-// account to keep a base reserve (0.5 XLM × (2 + sub_entries)). A margin
-// account holds 4 collateral trustlines + persistent contract storage,
-// which costs ~5 XLM in base reserve, plus Soroban storage TTL/rent and
-// b_rate→underlying rounding dust. A 5 XLM buffer was too tight in
-// practice (4 XLM withdraws still failed on-chain); bumping to 8 keeps
-// the margin account safely above all on-chain minimums. Applies to every
-// WB XLM withdrawal, not just debt-free accounts — this is the margin
-// account's OWN on-chain float, unrelated to the health-factor check below.
-const XLM_MARGIN_WITHDRAW_BUFFER = 8;
 const LIQUIDATION_THRESHOLD = 1.1;
 
 /**
@@ -44,12 +33,9 @@ const LIQUIDATION_THRESHOLD = 1.1;
  * account in either direction (MB = wallet → margin deposit, WB = margin →
  * wallet withdraw). Computes several distinct caps: the source balance, the
  * risk-safe withdraw limit derived from the store's health factor (so a
- * withdrawal can't push HF below the 1.1 liquidation threshold), and an
- * executable cap that reserves XLM for the margin account's on-chain base
- * reserve and rounding drift. The Transfer button and an inline warning block
- * unsafe WB withdrawals; on a failed on-chain withdraw the entered amount is
- * stepped down to a safer value. Balances reset on wallet disconnect, and
- * {@link TransferPreviewSection} renders the before → after impact.
+ * withdrawal can't reach or cross the 1.1 liquidation threshold). Contract-held
+ * tokens have no wallet reserve deduction. Failed transactions preserve the
+ * entered amount and report the error. Balances refresh after confirmation.
  */
 export const TransferCollateral = () => {
   const { isDark } = useTheme();
@@ -84,7 +70,7 @@ export const TransferCollateral = () => {
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
   const avgHealthFactor = useMarginAccountInfoStore((state) => state.avgHealthFactor);
   const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
-  const hasMeaningfulDebt = totalBorrowedValue > BORROW_DUST_USD;
+  const hasMeaningfulDebt = totalBorrowedValue > 0;
   // Subscribe to global wallet state — local user/balance state is loaded once
   // on mount via Freighter, so without this hook the component keeps showing
   // the previous wallet's margin and wallet balances after disconnect.
@@ -131,61 +117,10 @@ export const TransferCollateral = () => {
       ? maxTransferableBalance
       : sourceBalance;
   const sourceBalanceInUsd = displayedSourceBalance * selectedTokenPrice;
-  const maxRiskSafeWithdraw = (() => {
-    if (selectedTransferType !== "WB") return maxTransferableBalance;
-    if (!hasMeaningfulDebt) return maxTransferableBalance;
-    // Use the store's avgHealthFactor (which mirrors the contract RiskEngine HF)
-    // rather than recomputing gross from collateral+debt — that formula is only
-    // correct for undeployed-cash accounts and gives a wrong (higher) limit when
-    // the borrower has deployed assets (aTokens, LP tokens, tracking tokens).
-    //
-    // gross_before = avgHF × debt
-    // After withdrawing W: gross_after = gross_before − W
-    // Constraint: gross_after / debt ≥ 1.1  →  W ≤ (avgHF − 1.1) × debt
-    const withdrawableUsd = Math.max(
-      0,
-      (avgHealthFactor - LIQUIDATION_THRESHOLD) * totalBorrowedValue
-    );
-    if (selectedTokenPrice <= 0) return 0;
-    const rawToken = withdrawableUsd / selectedTokenPrice;
-    // Snap to exact balance when float rounding gives a hair under (e.g. 99.9999 → 100)
-    const withdrawableToken =
-      maxTransferableBalance > 0 &&
-      rawToken < maxTransferableBalance &&
-      (maxTransferableBalance - rawToken) / maxTransferableBalance < 0.001
-        ? maxTransferableBalance
-        : rawToken;
-    return Math.max(0, Math.min(maxTransferableBalance, withdrawableToken) - XLM_TRANSFER_EPSILON);
-  })();
-  const maxExecutableWithdraw = (() => {
-    if (selectedTransferType !== "WB") return maxTransferableBalance;
-    const token = normalizeContractTokenSymbol(selectedCurrency);
-    // Exact full XLM collateral withdraw can fail on-chain due to state/
-    // rounding drift — keep a small operational buffer for WB XLM. This is
-    // the margin account's OWN on-chain reserve requirement (trustlines +
-    // persistent Soroban storage), completely separate from the
-    // health-factor check `maxRiskSafeWithdraw` already applies — so it must
-    // apply regardless of whether the account carries any debt. Previously
-    // gated behind `!hasMeaningfulDebt`, which let 100%/Max fill in the full
-    // margin balance for any account WITH debt, always failing on-chain by
-    // exactly this buffer amount.
-    if (token === "XLM") {
-      return Math.max(
-        0,
-        Math.min(maxRiskSafeWithdraw, maxTransferableBalance - XLM_MARGIN_WITHDRAW_BUFFER)
-      );
-    }
-    // The epsilon only exists to guard against float rounding drift in the
-    // health-factor-derived estimate below (maxRiskSafeWithdraw's
-    // hasMeaningfulDebt branch). When there's no debt, maxRiskSafeWithdraw is
-    // already the exact on-chain balance (maxTransferableBalance, no HF math
-    // involved) — subtracting anything here stranded real dust behind on
-    // every 100%/Max withdraw of a debt-free non-XLM token (e.g. a WAD-exact
-    // 50 BLUSDC balance withdrew as 49.9999999, leaving 0.0000001 un-sendable).
-    return hasMeaningfulDebt
-      ? Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON)
-      : maxRiskSafeWithdraw;
-  })();
+  const maxExecutableWithdraw = selectedTransferType === "WB"
+    ? maxMarginWithdrawal(maxTransferableBalance, totalBorrowedValue, avgHealthFactor, selectedTokenPrice)
+    : maxTransferableBalance;
+  const marginBalanceInput = collateralBalances[normalizeContractTokenSymbol(selectedCurrency)]?.amount ?? String(marginAccountBalance);
   const isOverSourceBalance = Number(valueInput || 0) > sourceBalance;
 
 
@@ -203,7 +138,7 @@ export const TransferCollateral = () => {
     selectedTransferType === "WB" &&
     Number(valueInput || 0) > 0 &&
     hasMeaningfulDebt &&
-    projectedHfAfterWb < LIQUIDATION_THRESHOLD;
+    projectedHfAfterWb <= LIQUIDATION_THRESHOLD;
 
   function computeMaxTransferableBalance(
     transferType: "MB" | "WB",
@@ -216,18 +151,8 @@ export const TransferCollateral = () => {
     return Math.max(0, balance);
   }
 
-  const getFriendlyTransferError = (rawError?: string, maxSafeWithdrawAmount?: number): string => {
-    const isXlmNoDebt =
-      selectedTransferType === "WB" &&
-      normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
-      totalBorrowedValue <= XLM_TRANSFER_EPSILON;
-    return normalizeTransferCollateralError(rawError, selectedCurrency, {
-      maxSafe: maxSafeWithdrawAmount,
-      isFullWithdraw: isXlmNoDebt || (selectedTransferType === "WB" && !hasMeaningfulDebt),
-      maxExecutableWithdraw,
-      xlmBuffer: XLM_MARGIN_WITHDRAW_BUFFER,
-    });
-  };
+  const getFriendlyTransferError = (rawError?: string): string =>
+    normalizeTransferCollateralError(rawError, selectedCurrency);
 
   const getSelectedWalletBalance = async (address: string, tokenSymbol: string): Promise<number> => {
     try {
@@ -326,9 +251,7 @@ export const TransferCollateral = () => {
     if (selectedTransferType !== "WB" || !marginAccount) return;
     const sym = normalizeContractTokenSymbol(selectedCurrency);
     const entry = collateralBalances[sym];
-    if (entry?.amount) {
-      setMarginAccountBalance(parseFloat(entry.amount) || 0);
-    }
+    setMarginAccountBalance(parseFloat(entry?.amount ?? "0") || 0);
   }, [collateralBalances, selectedCurrency, selectedTransferType, marginAccount]);
 
   // Refresh when currency changes
@@ -348,7 +271,9 @@ export const TransferCollateral = () => {
     setPercentage(item);
     const baseBalance = selectedTransferType === "WB" ? maxExecutableWithdraw : maxTransferableBalance;
     const calculatedAmount = (baseBalance * item) / 100;
-    setValueInput(floorAmountToInput(calculatedAmount));
+    setValueInput(selectedTransferType === "WB"
+      ? marginWithdrawalPreset(marginBalanceInput, maxExecutableWithdraw, item)
+      : floorAmountToInput(calculatedAmount));
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -362,7 +287,9 @@ export const TransferCollateral = () => {
     // floorAmountToInput floors to 7dp (never rounds UP past the real max, which
     // would trip the > max validation / on-chain rounding) while keeping full
     // Stellar precision — so Max transfers the whole balance, not a 2dp slice.
-    setValueInput(floorAmountToInput(targetMax));
+    setValueInput(selectedTransferType === "WB"
+      ? marginWithdrawalPreset(marginBalanceInput, maxExecutableWithdraw)
+      : floorAmountToInput(targetMax));
   };
 
   const transferMutation = useMutation({
@@ -410,31 +337,15 @@ export const TransferCollateral = () => {
       qc.invalidateQueries({ queryKey: ['margin'] });
 
       try {
+        await refreshBorrowedBalances(marginAccount, true);
         await refreshTokenBalances(userAddress, marginAccount);
       } catch (error) {
         console.warn("Post-transfer balance refresh failed; ledger tick will reconcile.", error);
       }
     },
     onError: (error) => {
-      // The on-chain call failed at the entered amount, so the "safe max"
-      // shown in the toast must be lower than what the user just tried —
-      // showing maxExecutableWithdraw (the frontend's optimistic estimate)
-      // is misleading because that's the same number that just failed.
       const message = error instanceof Error ? error.message : "Transfer failed";
-      const entered = Number(valueInput) || 0;
-      const steppedDown = Math.max(0, entered - XLM_MARGIN_WITHDRAW_BUFFER);
-      const safeFloor = Math.floor(steppedDown * 1e7) / 1e7;
-      const safeMaxAfterFailure = Math.max(0, Math.min(maxExecutableWithdraw, safeFloor));
-
-      if (
-        selectedTransferType === "WB" &&
-        normalizeContractTokenSymbol(selectedCurrency) === "XLM" &&
-        totalBorrowedValue <= XLM_TRANSFER_EPSILON &&
-        safeMaxAfterFailure > 0
-      ) {
-        setValueInput(floorAmountToInput(safeMaxAfterFailure));
-      }
-      const friendlyMessage = getFriendlyTransferError(message, safeMaxAfterFailure);
+      const friendlyMessage = getFriendlyTransferError(message);
       showTxError(friendlyMessage);
     },
   });
@@ -463,12 +374,12 @@ export const TransferCollateral = () => {
     }
     if (
       selectedTransferType === "WB" &&
-      Number(valueInput) > maxExecutableWithdraw + XLM_TRANSFER_EPSILON
+      Number(valueInput) > maxExecutableWithdraw
     ) {
       const safeMaxDisplay = (Math.floor(maxExecutableWithdraw * 100) / 100).toFixed(2);
       if (!hasMeaningfulDebt) {
         toast.error(
-          `Max transferable right now: ${safeMaxDisplay} ${selectedCurrency}. (A small reserve is kept to avoid on-chain rounding failures.)`
+          `Max transferable right now: ${safeMaxDisplay} ${selectedCurrency}.`
         );
       } else if (maxExecutableWithdraw > 0) {
         toast.error(
