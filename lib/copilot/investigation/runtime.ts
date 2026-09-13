@@ -438,7 +438,8 @@ export async function runInvestigation(
           // A read that ran out of its own time is reported as such: the model can retry a
           // timeout usefully, whereas "failed" invites it to treat the venue as broken.
           const timeout = readSignal.aborted && !signal.aborted;
-          console.error("[copilot] investigation read failed", {
+          // The request itself went away (client replaced or cancelled it): note it, do not alarm.
+          (signal.aborted ? console.info : console.error)("[copilot] investigation read failed", {
             capability: request.capability,
             tool: read.tool,
             timeout,
