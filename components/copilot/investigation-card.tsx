@@ -7,6 +7,7 @@ import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 
 export interface InvestigationCardProps {
@@ -79,6 +80,8 @@ export function InvestigationCard({
    * a second plan would race it, so the buttons wait.
    */
   const planInFlight = !!workflow && !["blocked", "completed", "cancelled"].includes(workflow.status);
+  /** A transaction is on its way to a ledger; the hook asks again at every ledger close. */
+  const awaitingLedger = !!workflow && ["approved", "running"].includes(workflow.status) && inFlight(workflow);
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     if (!loading) return;
@@ -293,11 +296,13 @@ export function InvestigationCard({
               )}
 
               {/* Between a click and its result the user must see the state, not a frozen card. */}
-              {workflowLoading && (
+              {(workflowLoading || awaitingLedger) && (
                 <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 font-mono text-[12px] text-violet-500" data-testid="workflow-progress">
                   <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" />
                   {!workflow
                     ? "Preparing the plan — sizing every step from the sealed reads…"
+                    : !workflowLoading && awaitingLedger
+                      ? `Step ${Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1)} of ${workflow.steps.length} is on its way to the ledger — checking at every ledger close…`
                     : workflow.status === "proposed" || workflow.status === "validating"
                       ? "Checking funds, prices and projected health before anything is submitted…"
                       : workflow.status === "awaiting_signature"
