@@ -248,7 +248,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (!position || decimalWad(position.underlying) <= ZERO) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
       const underlying = decimalWad(sizing.amount);
       if (underlying > decimalWad(position.underlying)) throw new Reject(name, `only ${position.underlying} ${leg.asset} is redeemable from Earn`);
-      const vtokens = formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying));
+      const vtokens = onChainAmount(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), undefined);
       const usd = formatWad(mulDown(underlying, price.price, WAD));
       drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null });
       continue;
@@ -379,7 +379,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction`
       : "this borrows without a supply that could cover the borrow cost");
   }
-  const deployed = supplied > ZERO ? supplied : drafts.reduce((sum, d) => sum + decimalWad(d.usd as string), ZERO);
+  // What the plan places: the supplied total, else the final leg's amount (a redeem feeding a
+  // deposit is one sum of money, not two).
+  const deployed = supplied > ZERO ? supplied : decimalWad(drafts[drafts.length - 1].usd as string);
   const netApr = deployed > ZERO ? (returnWad * WAD) / deployed : ZERO;
   const borrows = borrowed > ZERO;
   const lastSupply = [...drafts].reverse().find((d) => d.leg.op === "lend" || d.leg.op === "supply_blend");
@@ -452,7 +454,22 @@ function earnPositionOf(observations: readonly Observation[], asset: string, now
   const vtokens = read?.data?.human, underlying = read?.data?.redeemable_human;
   if (typeof vtokens !== "string" || typeof underlying !== "string") return null;
   try { decimalWad(vtokens); decimalWad(underlying); } catch { return null; }
-  return { vtokens, underlying };
+  // The read states the token's precision; the redeemable figure it also states is WAD (18 places).
+  return { vtokens: onChainAmount(vtokens, read?.data?.decimals), underlying: onChainAmount(underlying, read?.data?.decimals) };
+}
+
+/**
+ * An amount a transaction can carry. Reads report some figures at WAD precision
+ * (`redeemable_human: 5000.948562526353068375`, posted collateral balances); a Stellar
+ * asset carries at most 7 decimal places, and the approval-time gate refuses anything
+ * finer (`amount_precision`, seen 13 Sep on the first redeem → deposit). Truncated — never
+ * rounded up — to the precision the read states, else to Stellar's 7.
+ */
+function onChainAmount(amount: string, decimals: unknown): string {
+  const places = Number.isInteger(Number(decimals)) && Number(decimals) >= 0 && Number(decimals) <= 18 ? Number(decimals) : 7;
+  const [whole, fraction = ""] = amount.split(".");
+  const kept = fraction.slice(0, places).replace(/0+$/, "");
+  return kept ? `${whole}.${kept}` : whole;
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */
@@ -466,7 +483,7 @@ function positionRowBalance(observations: readonly Observation[], capability: st
       if (!isRecord(row) || (row.symbol !== symbol && row.symbol !== id) || row.balance_untrusted === true) continue;
       const balance = row.balance ?? row.amount_human ?? row.amount;
       if (typeof balance !== "string" && typeof balance !== "number") continue;
-      try { decimalWad(String(balance)); return String(balance); } catch { return null; }
+      try { decimalWad(String(balance)); return onChainAmount(String(balance), row.decimals); } catch { return null; }
     }
   }
   return null;

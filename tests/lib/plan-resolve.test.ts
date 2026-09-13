@@ -315,14 +315,17 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(rejected).toEqual([]);
     const c = candidates[0];
     expect(c.id).toBe("composed:re.AQUSDC+dc.AQUSDC");
-    // The tool takes vTokens; the deposit takes the underlying that comes back.
+    // The tool takes vTokens; the deposit takes the underlying that comes back — at the token's
+    // 7 decimals, not the read's 18 (the approval gate refused 5000.948562526353068375 on 13 Sep).
     expect(c.steps!.map((s) => [s.op, s.amount, s.tool])).toEqual([
       ["redeem", "4918.2651397", "vanna_redeem"],
-      ["deposit_collateral", "5000.786863027758031020", "vanna_deposit_collateral"],
+      ["deposit_collateral", "5000.786863", "vanna_deposit_collateral"],
     ]);
     expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", amount: "4918.2651397", lender: SCOPE.trader });
     expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
-    expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863027758031020", trader: SCOPE.trader });
+    expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863", trader: SCOPE.trader });
+    // One sum of money passes through two legs: deployed is what lands, not twice that.
+    expect(Number(c.amountUsd)).toBeCloseTo(5000.79, 1);
     // Collateral rises by the deposit; nothing lowers health, so no floor was needed.
     expect(Number(c.finalHealthFactor)).toBeCloseTo((6605.84 + 5000.79) / 5102.54, 3);
     expect(c.borrows).toBe(false);

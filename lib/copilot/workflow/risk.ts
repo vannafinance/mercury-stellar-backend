@@ -63,6 +63,8 @@ function explain(error: unknown): string {
   }
   if (/price_unavailable/.test(text)) return "A live oracle price could not be read. Nothing was submitted — approve again.";
   if (/balance_unavailable/.test(text)) return "A live token balance could not be read. Nothing was submitted — approve again.";
+  const precision = /amount_precision:([A-Za-z0-9_/-]+):(\d+)/.exec(text);
+  if (precision) return `A step's ${precision[1]} amount has more decimal places than the token carries on chain (${precision[2]}). No transaction was requested — prepare the plan again.`;
   if (/asset_not_validated|amount_precision|invalid_decimal/.test(text)) {
     return "Fresh balances, prices, token precision or projected health could not be verified. No transaction was requested.";
   }
@@ -104,7 +106,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         if (balance.error || reportedHolder !== holder || reportedContract !== contract ||
           !Number.isInteger(decimals) || decimals < 0 || decimals > 18) fail("balance_unavailable");
         for (const step of proposal.steps.filter(s => s.asset === asset)) {
-          if ((step.amount.split(".")[1]?.length ?? 0) > decimals) fail("amount_precision");
+          if ((step.amount.split(".")[1]?.length ?? 0) > decimals) fail(`amount_precision:${asset}:${decimals}`);
         }
         funds.set(`${holder}:${asset}`, decimalWad(String(balance.human)));
       }));
