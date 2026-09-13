@@ -16,6 +16,19 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `invest into earn pool where i can get the best/good returns` — re-run after `99fe08c`, before Faucet (signed-in, local MCP loop, executed)
+
+- **Date / commit / surface:** 2026-09-13 15:50 UTC · `feat/copilot-finetune` @ `99fe08c` · signed-in `/copilot` · local MCP · wallet 3.97 XLM (0 spendable), 0.0003729 AQUSDC
+- **Result:** `WRONG` — a dust transaction offered, approved and executed
+- **Returned, verbatim:**
+  > Lend idle AQUSDC in Earn: lend 0.0003729 AQUSDC to Earn. About 20.18% APR on $0.00, using idle funds only. Approve to run those steps. · OPTIONS · Lend idle AQUSDC in Earn · $0.00 · no change to health factor · 1 Lend 0.0003729 AQUSDC to Earn · Lend idle AQUSDC into the AQUSDC Earn pool, which offers 20.18% supply APY (p8). · Using AQUSDC — you hold 0 of it, so no swap is needed. · Ruled out — Lend idle BLUSDC in Earn. lend BLUSDC: no idle BLUSDC in the wallet.
+- **Executed:** tx `98c285fd…`, ledger 4658216, **fee 0.0964 XLM** to deposit $0.00007 of AQUSDC.
+- **Log:** investigate 26.9s (model 17.3s; 9,512 in / 382 out / 2,976 thinking); propose 0.4s; approve 1.4s; advance 2.8s; submit 3.0s; 4 ledger polls ≤ 0.5s. Nothing slow server-side — the wait was signing + ledger.
+- **Cause:** the sizer's only test for an idle line was amount > 0; nothing asked whether the leg was worth a transaction. Label fix from `99fe08c` visible (pool named AQUSDC); the "Idle in the wallet" line did not show because a candidate existed.
+- **Fix `82feeb4`:** a line worth less than the wallet read's own fee reserve at the read XLM price is dust — not idle for the fixed shapes, and a plan leg on it is ruled out as "0.0003729 AQUSDC ($0.00) is worth less than the fee reserve one transaction needs ($0.09) — not worth moving". No threshold of ours; nothing is dust when the reserve or the price was not read.
+- **Class:** confident wrong action — the worst class; caught by the battery before the founder.
+- **Next entry:** same prompt after Faucet.
+
 ### Copilot · `invest into earn pool where i can get the best/good returns` (signed-in, local MCP loop)
 
 - **Date / commit / surface:** 2026-09-13 15:40 UTC · `feat/copilot-finetune` @ `7c5d0df` · signed-in `/copilot` · local MCP (main + #3 + #4) · wallet 3.97 XLM (all minimum balance + fee reserve), 0.0004 AQUSDC; everything else posted or in Blend
