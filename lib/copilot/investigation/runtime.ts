@@ -1,7 +1,7 @@
 import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
-import { isRecord, parseDecision } from "./decision";
+import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
   InvestigationLimits, InvestigationOutcome, InvestigationRequest, InvestigationResult,
@@ -306,7 +306,11 @@ export async function runInvestigation(
       } catch {
         decision = null;
       }
-      if (!decision) return finish({ kind: "stopped", reason: "invalid_decision" });
+      if (!decision) {
+        // Say which check the model failed; the card only says "invalid decision".
+        console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: lastDecisionRefusal() || "unparseable", keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
+        return finish({ kind: "stopped", reason: "invalid_decision" });
+      }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));

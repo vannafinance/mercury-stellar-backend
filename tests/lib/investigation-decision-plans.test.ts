@@ -77,3 +77,23 @@ describe("research_complete plans", () => {
     expect(decision?.kind === "research_complete" && decision.plans?.[0].legs.length).toBe(2);
   });
 });
+
+describe("a malformed literal action", () => {
+  it("is dropped and counted, and no longer voids the research or the plans beside it", () => {
+    const decision = parseDecision({ ...base, goal: { ...base.goal, actions: [{ op: "redeem", asset: "AQUSDC", amount: "all", sourceQuote: "use my AqUSDC" }] },
+      plans: [plan([leg("redeem", "AQUSDC", { kind: "all_position" }), leg("deposit_collateral", "AQUSDC", { kind: "previous_leg" })])] });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(decision.goal.actions).toBeUndefined();
+    expect(decision.plans).toHaveLength(1);
+    expect(decision.droppedPlans).toBe(1);
+  });
+
+  it("leaves a readable reason when a decision really is refused", async () => {
+    const { lastDecisionRefusal } = await import("@/lib/copilot/investigation/decision");
+    expect(parseDecision({ ...base, findings: [{ summary: "s", evidenceIds: [] }] })).toBeNull();
+    expect(lastDecisionRefusal()).toMatch(/^finding: keys=summary,evidenceIds evidence=0$/);
+    expect(parseDecision({ kind: "research_complete", goal: base.goal, findings: base.findings })).toBeNull();
+    expect(lastDecisionRefusal()).toMatch(/^unknown kind or keys/);
+  });
+});
