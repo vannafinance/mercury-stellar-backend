@@ -252,6 +252,68 @@ describe("resolvePlans — an account already under its floor", () => {
   });
 });
 
+describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% of my xlm debt', 'lend 25% of xlm that i hold')", () => {
+  const wallet = (xlm: string) => obs("e1", "wallet_balances", { assets: [
+    { symbol: "XLM", balance: xlm, spendable: xlm, status: "ok" },
+    { symbol: "XLM_SAC", balance: xlm, decimals: 7, status: "ok" },
+  ], fee_reserve_xlm: "0.5" });
+  const debt = obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "14113.496721182603715676" }] });
+  const observations = [...OBSERVATIONS.map((o) => o.id !== "e1" ? o : wallet("9999.8772246")), debt];
+
+  it("lends a share of the idle balance, cut to the token's precision", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Lend a quarter", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "lend 25% of xlm that i hold" } }])],
+      ctx({ observations, messages: ["lend 25% of xlm that i hold and also repay 25% of xlm debt"] }),
+    );
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "lend", amount: "2499.9693061" }));
+  });
+
+  it("repays a share of the debt through the account: deposit the share, then repay it", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Repay a quarter of the XLM debt", [{ op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" } }])],
+      ctx({ observations, messages: ["lend 25% of xlm that i hold and also repay 25% of xlm debt"] }),
+    );
+    expect(rejected).toEqual([]);
+    // 25% of 14113.4967211 = 3528.3741802 (cut to 7 places), well within the 9,999 XLM the wallet spends.
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "3528.3741802"], ["repay", "3528.3741802"]]);
+    expect(candidates[0]?.rationale).toMatch(/Leaves 10,585\.1225 XLM of debt/);
+  });
+
+  it("caps a debt share by what the wallet can spend", () => {
+    const small = [...OBSERVATIONS.map((o) => o.id !== "e1" ? o : wallet("1000")), debt];
+    const { candidates } = resolvePlans(
+      [plan("Repay half", [{ op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "repay half of my xlm debt" } }])],
+      ctx({ observations: small, messages: ["repay half of my xlm debt"] }),
+    );
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "1000"], ["repay", "1000"]]);
+  });
+
+  it("understands a share said in words, and refuses one the user never said", () => {
+    const half = resolvePlans(
+      [plan("Lend half", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "50", of: "idle", sourceQuote: "lend half of my idle xlm" } }])],
+      ctx({ observations, messages: ["lend half of my idle xlm to earn"] }),
+    );
+    expect(half.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "lend", amount: "4999.9386123" }));
+    const invented = resolvePlans(
+      [plan("Lend a third", [{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "40", of: "idle", sourceQuote: "lend some of my xlm" } }])],
+      ctx({ observations, messages: ["lend some of my xlm"] }),
+    );
+    expect(invented.candidates).toEqual([]);
+    expect(invented.rejected[0]?.reason).toBe("the share 40% does not appear in your request");
+  });
+
+  it("withdraws a share of the posted collateral, against the floor", () => {
+    const posted = [...observations, obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "20000" }] })];
+    const { candidates, rejected } = resolvePlans(
+      [plan("Withdraw a tenth", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "10", of: "position", sourceQuote: "withdraw 10% of my xlm collateral" } }])],
+      ctx({ observations: posted, messages: ["withdraw 10% of my xlm collateral, keep HF above 1.2"] }),
+    );
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "withdraw_collateral", amount: "2000" }));
+  });
+});
+
 describe("resolvePlans — repay from what the wallet has", () => {
   /**
    * 13 Sep, "I want zero debt but keep all my collateral": the model sized the repay

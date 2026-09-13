@@ -93,7 +93,9 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number — " +
             "all_idle (the asset's idle wallet balance), to_floor (largest borrow at the user's health-factor floor), " +
             "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
-            "literal (an amount the user typed, with sourceQuote). The server sizes, checks and ranks every plan.",
+            "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated — '25%', 'half' — " +
+            "of what the leg draws on: of=idle for the wallet balance, of=position for the Earn position, the posted collateral " +
+            "or the debt; with sourceQuote). The server sizes, checks and ranks every plan.",
           items: {
             type: "object",
             properties: {
@@ -112,7 +114,9 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                       properties: {
                         kind: { type: "string", enum: [...PLAN_SIZINGS] },
                         amount: { type: "string", description: "literal only: the user's exact decimal." },
-                        sourceQuote: { type: "string", description: "literal only: exact substring of the user message containing the amount." },
+                        percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
+                        of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
+                        sourceQuote: { type: "string", description: "literal/fraction only: exact substring of the user message containing the amount or the share." },
                       },
                       required: ["kind"],
                     },

@@ -54,10 +54,12 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A rate row pairs an asset's Earn market with its Blend reserve, so a Blend leg needs both.
       if (leg.op === "lend" || leg.op === "borrow" || leg.op === "supply_blend") want("earn_market", leg.asset);
       if (leg.op === "supply_blend") want("blend_markets");
-      if (leg.sizing.kind === "all_idle") want("wallet_balances");
-      // `all_position` draws on what the op spends: the Earn position, the posted collateral, the debt.
-      if (leg.sizing.kind === "all_position" && leg.op === "redeem") want("earn_position", leg.asset);
-      if (leg.sizing.kind === "all_position" && leg.op === "withdraw_collateral") want("account_collateral");
+      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
+      if (ofIdle) want("wallet_balances");
+      // A position share draws on what the op spends: the Earn position, the posted collateral, the debt.
+      if (ofPosition && leg.op === "redeem") want("earn_position", leg.asset);
+      if (ofPosition && leg.op === "withdraw_collateral") want("account_collateral");
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
       if (leg.op === "repay") want("account_debt");
     }

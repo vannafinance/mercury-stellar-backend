@@ -26,7 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import type { InvestigationScope, Observation, PlanLeg, ProposedPlan } from "./types";
+import type { InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 
 export interface PlanContext {
   scope: InvestigationScope;
@@ -78,7 +78,7 @@ function opCode(op: PlanLeg["op"]): string {
 }
 
 /** A leg as the sizer walks it: the model's leg, plus a marker the expansion below sets. */
-type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true };
+type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true; repayShare?: PlanSizing & { kind: "fraction" } };
 
 /**
  * The account is what repays — `vanna_repay` draws on the smart account's balance, and
@@ -94,9 +94,47 @@ function expandLegs(legs: ProposedPlan["legs"]): SizerLeg[] {
   // the account, so it is the same two legs, capped by the debt — partial when the wallet
   // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
-  return legs.flatMap((leg): SizerLeg[] => leg.op === "repay" && (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position")
-    ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
-    : [leg]);
+  return legs.flatMap((leg): SizerLeg[] => {
+    if (leg.op !== "repay") return [leg];
+    if (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position") {
+      return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
+    }
+    // "repay 25% of my debt" (of: position) or "repay with a quarter of my idle XLM" (of: idle):
+    // the deposit leg takes the share; the repay takes what the deposit put in.
+    if (leg.sizing.kind === "fraction") {
+      return leg.sizing.of === "position"
+        ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true, repayShare: leg.sizing }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
+        : [{ op: "deposit_collateral", asset: leg.asset, sizing: leg.sizing, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
+    }
+    return [leg];
+  });
+}
+
+/**
+ * The share a fraction sizing means, as a WAD ratio, anchored to the user's words: the
+ * percent must appear in the quote as a number, or the quote must contain a word that
+ * means it. The words are language, not protocol — hand-authored like asset aliases.
+ */
+const FRACTION_WORDS: ReadonlyArray<{ pattern: RegExp; percent: number }> = [
+  { pattern: /\bthree[\s-]quarters?\b/i, percent: 75 },
+  { pattern: /\btwo[\s-]thirds?\b/i, percent: 200 / 3 },
+  { pattern: /\bhalf\b/i, percent: 50 },
+  { pattern: /\b(a\s+)?third\b/i, percent: 100 / 3 },
+  { pattern: /\b(a\s+)?quarter\b/i, percent: 25 },
+  { pattern: /\b(a\s+)?fifth\b/i, percent: 20 },
+  { pattern: /\b(a\s+)?tenth\b/i, percent: 10 },
+];
+function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: readonly string[], name: string): bigint {
+  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the share "${sizing.sourceQuote}" does not appear in your request`);
+  const percent = Number(sizing.percent);
+  const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+  const byNumber = numbers.some((n) => Math.abs(n - percent) < 1e-9);
+  const byWord = FRACTION_WORDS.some((w) => w.pattern.test(sizing.sourceQuote) && Math.abs(w.percent - percent) < 1e-6);
+  if (!byNumber && !byWord) throw new Reject(name, `the share ${sizing.percent}% does not appear in your request`);
+  return decimalWad(percent.toFixed(9)) / BigInt(100);
+}
+function shareOf(amount: string, share: bigint): string {
+  return formatWad(mulDown(decimalWad(amount), share, WAD));
 }
 
 /** The debt rows read this investigation, as `{ asset, owed }` — what a full repay must cover. */
@@ -270,8 +308,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         throw new Reject(name, `no idle ${leg.asset} in the wallet`);
       }
       if (leg.fundsRepay && owed !== null) {
-        const owedTokens = precise(owed, leg.asset, name);
-        const tokens = decimalWad(held.tokens) < decimalWad(owedTokens) ? held.tokens : owedTokens;
+        const target = precise(leg.repayShare ? shareOf(owed, anchoredShare(leg.repayShare, ctx.messages, name)) : owed, leg.asset, name);
+        const tokens = decimalWad(held.tokens) < decimalWad(target) ? held.tokens : target;
         const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
         drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
         continue;
@@ -317,6 +355,37 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (prev.leg.op === "lend") throw new Reject(name, "Earn lending leaves nothing in the account to use next");
       if (prev.leg.op === "redeem" && leg.op !== "deposit_collateral" && leg.op !== "lend") throw new Reject(name, "a redeem returns tokens to the wallet — deposit or lend them next");
       drafts.push({ leg, name, usd: { previous: index - 1 }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
+      continue;
+    }
+    if (sizing.kind === "fraction") {
+      const share = anchoredShare(sizing, ctx.messages, name);
+      if (sizing.of === "idle") {
+        if (leg.op !== "lend" && leg.op !== "deposit_collateral") throw new Reject(name, "a share of the wallet balance sizes a lend or a deposit");
+        const held = holdings[leg.asset as keyof typeof holdings];
+        if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`);
+        const tokens = precise(shareOf(held.tokens, share), leg.asset, name);
+        if (decimalWad(tokens) <= ZERO) throw new Reject(name, `${sizing.percent}% of ${held.tokens} ${leg.asset} rounds to nothing`);
+        const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
+        continue;
+      }
+      // of: position — a share of what the op spends. (A repay share was expanded into deposit → repay above.)
+      if (leg.op === "redeem") {
+        const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
+        if (!position || decimalWad(position.underlying) <= ZERO) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
+        const vtokens = precise(shareOf(position.vtokens, share), position.vtokenSymbol ?? leg.asset, name);
+        const underlying = precise(shareOf(position.underlying, share), leg.asset, name);
+        const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
+        continue;
+      }
+      if (leg.op !== "withdraw_collateral") throw new Reject(name, "a share of the position sizes a redeem, a withdraw or a repay");
+      const posted = positionRowBalance(ctx.observations, "account_collateral", ["collateral", "positions", "balances"], def.marginSymbol!, def.id, ctx.now);
+      if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
+      if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
+      const tokens = precise(shareOf(posted, share), leg.asset, name);
+      const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+      drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
       continue;
     }
     // literal — anchored to the user's own words, exactly as goal.actions requires.
@@ -516,7 +585,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     finalHealthFactor,
     amountUsd: formatWad(deployed),
     evidenceIds: plan.evidenceIds.filter((id) => evidence.has(id)),
-    amountBasis: drafts.some((d) => d.leg.sizing.kind === "literal") ? "stated" : drafts.some((d) => d.leg.sizing.kind === "to_floor") ? "derived_max_at_floor" : "stated",
+    amountBasis: drafts.some((d) => d.leg.sizing.kind === "literal" || d.leg.sizing.kind === "fraction") ? "stated" : drafts.some((d) => d.leg.sizing.kind === "to_floor") ? "derived_max_at_floor" : "stated",
     heldAmount: first.heldTokens,
     steps,
     rationale: remainingDebt?.length

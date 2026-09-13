@@ -249,7 +249,7 @@ The protocol's leverage is `borrow` against posted collateral, `deposit_and_borr
 ## 5. Gaps this exposes, ranked by what unblocks the most
 
 1. `blend_withdraw`, `swap`, `deploy_to_blend` into `WORKFLOW_OPS` (O4, O10) (each: one vocabulary line + allowlist + risk projection + a sizer branch). Turns E5, G1, G2 and the one-tx rows from 🟡 to ✅.
-2. **Fraction and multiplier sizing** ("half", "25 %", "2x" — O1) ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
+2. ~~**Fraction sizing**~~ — landed 13 Sep (`fraction{percent, of: idle|position, sourceQuote}`; B5, D8, J3). **Multiplier sizing** ("2x" — O1) still open. ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
 3. **Supply Blend from posted collateral** without a preceding deposit leg (E4).
 4. Account lifecycle on `/copilot` (N1–N3) — or keep it on the Margin page and make the refusal name it.
 5. LP — waits on the risk engine (🔒). Not a copilot task.
