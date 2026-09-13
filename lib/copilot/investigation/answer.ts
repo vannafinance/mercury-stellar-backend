@@ -172,12 +172,16 @@ export function strategyReply(input: {
      */
     if (top.steps?.length) {
       const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
-      const rate = top.netAprPct !== null
-        ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
-        : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+      // A plan that only repays earns nothing; say what it repays, not an APR on it.
+      const repays = top.steps.filter((step) => step.op === "repay");
+      const rate = repays.length && repays.length === top.steps.filter((step) => step.op !== "deposit_collateral").length
+        ? ` Repays ${repays.map((step) => `${step.amount} ${step.asset}`).join(" and ")} of margin debt from the wallet.`
+        : top.netAprPct !== null
+          ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
+          : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
-        : "";
+        : top.repaysAllDebt ? " No debt would remain." : "";
       const others = input.candidates && input.candidates.feasible.length > 1
         ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
         : "";

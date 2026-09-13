@@ -15,7 +15,7 @@
  * but the combinations are the model's to find.
  */
 
-import { resolveAssetDef } from "../registry/assets";
+import { assetForVenueSpelling, resolveAssetDef } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { WALLET_OPS, type ProposalStep } from "../workflow/types";
 import { isRecord } from "./decision";
@@ -91,9 +91,27 @@ type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true };
  * the 9,999 XLM the wallet did), sent the plan back to "proposed", and nothing ran.
  */
 function expandLegs(legs: ProposedPlan["legs"]): SizerLeg[] {
-  return legs.flatMap((leg): SizerLeg[] => leg.op === "repay" && leg.sizing.kind === "all_idle"
+  // `all_position` on a repay means the whole debt; it is still paid from the wallet through
+  // the account, so it is the same two legs, capped by the debt — partial when the wallet
+  // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
+  // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
+  return legs.flatMap((leg): SizerLeg[] => leg.op === "repay" && (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position")
     ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
     : [leg]);
+}
+
+/** The debt rows read this investigation, as `{ asset, owed }` — what a full repay must cover. */
+function debtRows(ctx: PlanContext): Array<{ asset: string; owed: string }> {
+  const read = [...ctx.observations].reverse().find((o) => o.capability === "account_debt" && o.status === "ok" && o.data && ctx.now - o.observedAt <= 60_000);
+  const rows = read?.data?.debt;
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    if (!isRecord(row) || typeof row.symbol !== "string") return [];
+    const def = assetForVenueSpelling("margin", row.symbol);
+    const owed = row.balance;
+    if (!def || typeof owed !== "string") return [];
+    try { return decimalWad(owed) > ZERO ? [{ asset: def.id, owed }] : []; } catch { return []; }
+  });
 }
 
 class Reject extends Error {
@@ -486,6 +504,25 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction`
       : "this borrows without a supply that could cover the borrow cost");
   }
+  /**
+   * After the repays, what debt remains — decided from the debt rows and the repay legs,
+   * not from USD arithmetic: the liquidation engine's debt figure and the debt read round
+   * differently, and a projection that subtracts one from the other leaves cents, and
+   * cents under a five-figure collateral print as "health factor 2495879.67" (13 Sep).
+   */
+  const repaidBy = new Map<string, bigint>();
+  for (const d of drafts) if (d.leg.op === "repay" && d.tokens) repaidBy.set(d.leg.asset, (repaidBy.get(d.leg.asset) ?? ZERO) + decimalWad(d.tokens));
+  const remainingDebt = repaidBy.size
+    ? debtRows(ctx).flatMap(({ asset, owed }) => {
+        // A debt row is stated at accounting precision (18 places); a repay is cut to the
+        // token's. Coverage is judged at the token's precision — the contract accepts no finer.
+        const places = decimals.get(asset);
+        const owedAtToken = places === undefined ? owed : truncateToDecimals(owed, places);
+        const left = decimalWad(owedAtToken) - (repaidBy.get(asset) ?? ZERO);
+        return left > ZERO ? [{ asset, left: formatWad(left) }] : [];
+      })
+    : null;
+  if (remainingDebt && remainingDebt.length === 0) finalHealthFactor = null;
   // What the plan places: the supplied total, else the final leg's amount (a redeem feeding a
   // deposit is one sum of money, not two).
   const deployed = supplied > ZERO ? supplied : decimalWad(drafts[drafts.length - 1].usd as string);
@@ -510,8 +547,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     amountBasis: drafts.some((d) => d.leg.sizing.kind === "literal") ? "stated" : drafts.some((d) => d.leg.sizing.kind === "to_floor") ? "derived_max_at_floor" : "stated",
     heldAmount: first.heldTokens,
     steps,
-    rationale: plan.rationale,
+    rationale: remainingDebt?.length
+      ? `${plan.rationale} Leaves ${remainingDebt.map((r) => `${trimAmount(r.left)} ${r.asset}`).join(" and ")} of debt — the wallet covers no more.`
+      : remainingDebt ? `${plan.rationale} No debt remains after this.` : plan.rationale,
+    ...(remainingDebt ? { repaysAllDebt: remainingDebt.length === 0 } : {}),
   };
+}
+
+function trimAmount(value: string): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 4 }) : value;
 }
 
 /**

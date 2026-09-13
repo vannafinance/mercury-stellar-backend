@@ -94,6 +94,8 @@ export interface Candidate {
   steps?: ProposalStep[];
   /** The model's reasoning for a composed plan. Copy only — every number beside it is code's. */
   rationale?: string;
+  /** A composed repay plan: true when every debt row read is covered, false when some remains. */
+  repaysAllDebt?: boolean;
 }
 
 export type DecisionFactor = "already_held" | "net_return" | "thin_margin" | "consolidation";

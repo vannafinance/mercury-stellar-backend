@@ -15,20 +15,39 @@ import type { Observation } from "./types";
 
 export type DecimalsMap = ReadonlyMap<string, number>;
 
-/** `symbol → decimals` from every row of every successful read that states both. `XLM_SAC` speaks for `XLM`. */
+/**
+ * A row whose `decimals` describes its token is one that states an amount OF that token —
+ * a balance, a raw or human figure, a supply, a redeemable amount — by the MCP's own field
+ * conventions (`balance*`, `raw*`, `*_raw`, `human`, `*_human`, `total_*`, `redeemable*`).
+ * A price row states a price, and its `decimals` is the price's.
+ */
+const AMOUNT_FIELD = /^(balance|raw|human|redeemable|total_supply|total_borrow|total_liquidity|total_assets)|(_raw|_human)$/;
+
+/**
+ * `symbol → decimals` from every row of every successful read that states a token amount
+ * beside its `decimals`. `XLM_SAC` speaks for `XLM`. A price row also says `decimals` —
+ * the PRICE's precision (the oracle reports XLM at 14) — and must not be mistaken for the
+ * token's: 13 Sep, an XLM repay was cut to 14 places, which the SAC would refuse. When
+ * reads disagree the coarsest wins: cutting to fewer places never breaks a contract.
+ */
 export function decimalsFrom(observations: readonly Observation[]): DecimalsMap {
   const found = new Map<string, number>();
+  const record = (symbol: string, decimals: number) => {
+    const known = found.get(symbol);
+    if (known === undefined || decimals < known) found.set(symbol, decimals);
+  };
   const visit = (node: unknown, depth: number) => {
     if (depth > 5) return;
     if (Array.isArray(node)) { node.forEach((item) => visit(item, depth + 1)); return; }
     if (!isRecord(node)) return;
     const decimals = Number(node.decimals);
-    if (Number.isInteger(decimals) && decimals >= 0 && decimals <= 18) {
+    const describesToken = Object.entries(node).some(([key, value]) => AMOUNT_FIELD.test(key) && value !== undefined && value !== null);
+    if (describesToken && Number.isInteger(decimals) && decimals >= 0 && decimals <= 18) {
       for (const key of ["symbol", "vtoken_symbol", "pool_symbol"]) {
         const symbol = node[key];
         if (typeof symbol !== "string" || !symbol) continue;
-        found.set(symbol, decimals);
-        if (symbol.endsWith("_SAC")) found.set(symbol.slice(0, -4), decimals);
+        record(symbol, decimals);
+        if (symbol.endsWith("_SAC")) record(symbol.slice(0, -4), decimals);
       }
     }
     for (const value of Object.values(node)) visit(value, depth + 1);
