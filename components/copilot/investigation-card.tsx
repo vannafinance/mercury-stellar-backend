@@ -381,7 +381,7 @@ export function InvestigationCard({
               {result.question && (
                 <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
-                    Answer below to continue
+                    Unresolved — answer or refine your request below to continue
                   </p>
                   <p className="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">
                     {result.question}

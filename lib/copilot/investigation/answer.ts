@@ -175,9 +175,15 @@ export function strategyReply(input: {
     return `I checked ${input.candidates.rejected.length === 1 ? "the shape" : `${input.candidates.rejected.length} shapes`} against your position and the live rates, and none could be prepared: ${reasons}. Nothing was executed.`;
   }
   if (input.status === "needs_input") {
+    /**
+     * An open question is a choice the user must make OR a gap the reads left ("no pool
+     * is available") — the model uses the same field for both, and only the first is
+     * something to answer. Say "unresolved" and let the text speak; "one choice" was a
+     * lie half the time (13 Sep: a false "no Aquarius pool" read was shown as a choice).
+     */
     return input.question
-      ? `I’ve checked the available information. One choice still changes the plan: ${input.question}`
-      : "I’ve checked the available information. One choice needs your input.";
+      ? `I’ve checked the available information. Before a plan can be prepared, this is unresolved: ${input.question}`
+      : "I’ve checked the available information. One point needs your input before a plan can be prepared.";
   }
   if (input.status === "blocked") {
     return "I couldn’t complete this investigation with the available capabilities and information.";
