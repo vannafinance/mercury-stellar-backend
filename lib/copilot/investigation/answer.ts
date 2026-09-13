@@ -90,9 +90,38 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
   for (const fact of eligibility) {
     sentences.push(`${fact.label} is ${fact.value} on the current health check.`);
   }
-  const rates = selected.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply"));
+  // One line per market: the same reserve can arrive from two reads (list + stats) and must not print twice.
+  const rates = [...new Map(selected.filter(f => ["earn", "blend"].includes(f.venue) && f.unit === "% APR" && f.label.includes("supply")).map(f => [f.label, f])).values()];
   if (rates.length) sentences.push(`The reported supply rates are ${rates.map(f => `${f.label.replace(" supply APR", "")}: ${amount(f)}`).join("; ")}.`);
   return sentences.length ? sentences.join(" ") : null;
+}
+
+/** What the wallet holds that a plan could use, from the wallet read's own rows — spendable where the read states it. */
+function idleSummary(facts: readonly ResearchFact[]): string | null {
+  const bySymbol = new Map<string, { balance?: string; spendable?: string }>();
+  for (const fact of facts) {
+    if (fact.venue !== "wallet") continue;
+    const kind = fact.label.endsWith(" wallet spendable") ? "spendable" : fact.label.endsWith(" wallet balance") ? "balance" : null;
+    if (!kind) continue;
+    const symbol = fact.label.slice(0, fact.label.indexOf(" wallet "));
+    bySymbol.set(symbol, { ...bySymbol.get(symbol), [kind]: fact.value });
+  }
+  if (!bySymbol.size) return null;
+  const usable = (entry: { balance?: string; spendable?: string }) => entry.spendable ?? entry.balance ?? "0";
+  const parts = [...bySymbol].map(([symbol, entry]) => {
+    const held = entry.spendable !== undefined && entry.balance !== undefined && entry.spendable !== entry.balance
+      ? `${trimNumber(entry.spendable)} spendable of ${trimNumber(entry.balance)}` : trimNumber(usable(entry));
+    return `${symbol} ${held}`;
+  });
+  const anything = [...bySymbol.values()].some((entry) => Number(usable(entry)) > 0);
+  return anything
+    ? `Idle in the wallet: ${parts.join(", ")}.`
+    : `Nothing idle to deploy — wallet: ${parts.join(", ")} (XLM within the minimum balance plus fee reserve does not count).`;
+}
+
+function trimNumber(value: string): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: 4 }) : value;
 }
 
 /** Display rounding only. Sizing and stored facts keep the full-precision string. */
@@ -199,7 +228,14 @@ export function strategyReply(input: {
       : `${body}. Approve to run these steps.`;
   }
   if (input.intent === "strategy") {
-    if (input.findings?.length) return input.findings.map((finding) => finding.summary).join(" ");
+    /**
+     * A strategy turn with nothing to offer and nothing ruled out is usually a wallet with
+     * nothing idle — and the card must say so, from the wallet read, or the user is left
+     * with a rate list and no reason (13 Sep: 3.97 XLM, all of it minimum balance).
+     */
+    const idle = !input.candidates?.feasible.length && !input.candidates?.rejected.length ? idleSummary(input.facts) : null;
+    const findings = input.findings?.length ? input.findings.map((finding) => finding.summary).join(" ") : null;
+    if (idle || findings) return [idle, findings].filter(Boolean).join(" ");
     return "The plan below uses the amounts in your request. Approve to run it.";
   }
   const facts = factualAnswer(input.facts, input.originalRequest);

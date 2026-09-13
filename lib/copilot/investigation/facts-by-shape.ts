@@ -15,9 +15,30 @@
  * `<field>_untrusted`. Never invent a unit.
  */
 
+import { ASSET_IDS, assetDef, type AssetDef } from "../registry/assets";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
+
+/**
+ * The asset a read was made for, when its `args.asset` is a registry id. A venue spells
+ * that asset its own way (`pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike), and
+ * a fact labelled by the venue's spelling cannot be told apart on the card — 13 Sep: three
+ * "USDC Earn" rates with no way to say which pool was which. The registry records each
+ * asset's venue spellings (`earnSymbol`, `marginSymbol`), so a row symbol that equals one
+ * of them names the requested asset, not the wire word.
+ */
+function requestedAsset(observation: Observation): AssetDef | null {
+  const asset = observation.args.asset;
+  return typeof asset === "string" && (ASSET_IDS as readonly string[]).includes(asset) ? assetDef(asset as AssetDef["id"]) : null;
+}
+
+function canonical(symbol: string, requested: AssetDef | null): string {
+  if (!requested) return symbol;
+  const upper = symbol.toUpperCase();
+  return [requested.id, requested.earnSymbol, requested.marginSymbol, requested.oracleSymbol]
+    .some((spelling) => spelling && spelling.toUpperCase() === upper) ? requested.id : symbol;
+}
 
 type Venue = ResearchFact["venue"];
 
@@ -50,7 +71,7 @@ const SKIP_SUFFIXES = ["_note", "_hint", "_address", "address", "_contract", "co
  * Suffix conventions carry the unit. Stem conventions carry it for a handful of
  * well-known fields whose unit is the row's own token or a dimensionless ratio.
  */
-function unitFor(key: string, identity: string | null, row: Record<string, unknown>): { unit: string; field: string } | null {
+function unitFor(key: string, identity: string | null, row: Record<string, unknown>, requested: AssetDef | null = null): { unit: string; field: string } | null {
   if (key.endsWith("_pct")) {
     const stem = key.slice(0, -4);
     const unit = /(^|_)apy$/.test(stem) ? "% APY" : /(^|_)apr$/.test(stem) ? "% APR" : "%";
@@ -60,24 +81,24 @@ function unitFor(key: string, identity: string | null, row: Record<string, unkno
   if (key.endsWith("_xlm")) return { unit: "XLM", field: key.slice(0, -4) };
   // A vToken payload's bare `human` is the receipt-token amount; every `<x>_human`
   // beside it (`redeemable_human`) is in the underlying.
-  if (key === "human") return { unit: tokenOf(row, identity, true), field: "balance" };
-  if (key.endsWith("_human")) return { unit: tokenOf(row, identity), field: key.slice(0, -6) };
+  if (key === "human") return { unit: tokenOf(row, identity, true, requested), field: "balance" };
+  if (key.endsWith("_human")) return { unit: tokenOf(row, identity, false, requested), field: key.slice(0, -6) };
   if (key === "health_factor" || key.endsWith("_health_factor")) return { unit: "HF", field: key };
   if (key === "ratio" || key.endsWith("_ratio") || key.endsWith("_threshold") || key === "distance_to_liquidation") return { unit: "ratio", field: key };
   if (key === "rate" || key.endsWith("_rate")) return { unit: "rate", field: key };
   if (/^(max|min)_/.test(key) && Number.isInteger(Number(row[key]))) return { unit: "", field: key };
   if (["balance", "spendable", "min_balance", "underlying_value", "total_supply", "total_borrow", "total_borrows", "total_liquidity", "total_assets", "lp_shares", "shares"].includes(key)) {
-    const unit = tokenOf(row, identity);
+    const unit = tokenOf(row, identity, false, requested);
     return unit ? { unit, field: key } : null;
   }
   return null;
 }
 
 /** The token a row is about: its own symbol fields first, then the identity the path gave it. */
-function tokenOf(row: Record<string, unknown>, identity: string | null, receipt = false): string {
+function tokenOf(row: Record<string, unknown>, identity: string | null, receipt = false, requested: AssetDef | null = null): string {
   for (const key of [...(receipt ? ["vtoken_symbol"] : []), "symbol", "asset", "pool_symbol", "token", "tracking_symbol"]) {
     const value = row[key];
-    if (typeof value === "string" && isSymbol(value)) return value;
+    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested);
   }
   return identity ?? "";
 }
@@ -86,10 +107,10 @@ function isSymbol(value: string): boolean {
   return /^[A-Za-z][A-Za-z0-9_/-]{0,23}$/.test(value);
 }
 
-function identityOf(row: Record<string, unknown>, fallback: string | null): string | null {
+function identityOf(row: Record<string, unknown>, fallback: string | null, requested: AssetDef | null = null): string | null {
   for (const key of ["symbol", "asset", "pool_symbol", "token"]) {
     const value = row[key];
-    if (typeof value === "string" && isSymbol(value)) return value;
+    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested);
   }
   if (typeof row.token_a === "string" && typeof row.token_b === "string") return `${row.token_a}/${row.token_b}`;
   if (Array.isArray(row.tokens)) {
@@ -186,15 +207,16 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
   const data = observation.data;
   if (!data) return { facts, unavailable };
   const rootIdentity = typeof observation.args.asset === "string" && isSymbol(observation.args.asset) ? observation.args.asset : null;
+  const requested = requestedAsset(observation);
 
   const walk = (node: Record<string, unknown>, path: string, segments: string[], identity: string | null, depth: number) => {
     if (depth > MAX_DEPTH || facts.length >= MAX_FACTS) return;
     if (rowUnavailable(node)) {
-      unavailable.push({ path, identity: identityOf(node, identity), message: typeof node.message === "string" ? node.message : typeof node.error === "string" ? node.error : null });
+      unavailable.push({ path, identity: identityOf(node, identity, requested), message: typeof node.message === "string" ? node.message : typeof node.error === "string" ? node.error : null });
       return;
     }
     const informational = rowInformational(node);
-    const here = identityOf(node, identity);
+    const here = identityOf(node, identity, requested);
     const venue = venueFrom(observation.capability, segments, node);
     for (const [key, raw] of Object.entries(node)) {
       if (facts.length >= MAX_FACTS) return;
@@ -225,7 +247,7 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
         push(childPath, labelFor(observation.capability, here, venue, segments, key), pct, unit, venue);
         continue;
       }
-      const meta = unitFor(key, here, node);
+      const meta = unitFor(key, here, node, requested);
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;
