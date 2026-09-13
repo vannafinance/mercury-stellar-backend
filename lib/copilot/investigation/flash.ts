@@ -8,8 +8,22 @@ import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
 import { ASSET_IDS } from "../registry/assets";
+import { WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
+import { PLAN_SIZINGS } from "./decision";
 
 const ACTION_ASSETS = ASSET_IDS.join("|");
+const ACTION_OPS = WORKFLOW_OPS.join("|");
+
+/** What each op does, for the prompt. `Record<WorkflowOp, …>` so a new op cannot ship without its sentence. */
+const OP_MEANING: Record<WorkflowOp, string> = {
+  lend: "idle wallet token into a Vanna Earn pool",
+  deposit_collateral: "idle wallet token into the margin account",
+  borrow: "from a Vanna pool against margin collateral; proceeds stay in the account",
+  repay: "margin debt from the account",
+  supply_blend: "margin-account token into Blend",
+};
+const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
+const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
 
 export const RESEARCH_SYSTEM = `You investigate Vanna Finance user goals using live read capabilities.
 You are preparing research for a later deterministic strategy evaluator. You cannot execute,
@@ -75,8 +89,26 @@ If functions are unavailable, return exactly one JSON object with one of these s
 {"kind":"research_complete","goal":{"intent":"answer|strategy","relation":"new|refine","objective":"user objective","constraints":["user constraints"],"borrowing":"unspecified|allowed|required|forbidden"},"findings":[{"summary":"concise observation-backed finding","evidenceIds":["e1"]}],"openQuestions":["unresolved choices or calculations"]}
 
 For a concrete request such as deposit, repay, borrow, lend, or supply to Blend with stated amounts,
-include goal.actions: [{"op":"deposit_collateral|borrow|repay|lend|supply_blend","asset":"${ACTION_ASSETS}","amount":"exact literal decimal from user","sourceQuote":"exact substring of the user message containing the amount"}].
+include goal.actions: [{"op":"${ACTION_OPS}","asset":"${ACTION_ASSETS}","amount":"exact literal decimal from user","sourceQuote":"exact substring of the user message containing the amount"}].
+When the user states a health-factor floor as a number ("HF stays above 1.3", "never let health dip under 1.25"), set goal.healthFactorFloor to {"value":"<their exact decimal>","sourceQuote":"<exact substring of their message containing it>"}. Never invent a floor; "avoid liquidation" with no number is not one — leave it out.
 Use an empty actions array for open-ended strategy sizing and read-only questions. Never substitute a wallet-wide allocation for a concrete action. Never substitute another operation or venue because one is unsupported. For unsupported actions explain the capability limitation. Each action amount must appear literally in sourceQuote; never use max or compute a number yourself. Borrowing needs the user's stated HF floor; deposits and wallet Earn lending do not. Set intent=strategy for requested actions.
+
+For an open-ended strategy (intent=strategy, no literal amounts), YOU compose the strategy: include plans — one to three
+ordered shapes built from these operations only: ${PLAN_OPS_TEXT}. Each leg is sized by a WORD, never a number:
+${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount). The server computes every amount,
+projects the health factor after each leg against the user's floor, rejects what does not fit, ranks what does, and
+shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
+tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
+followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
+Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays
+when the supply rate you read exceeds the borrow rate you read for the asset you borrow — compare them per asset and
+do not propose one that loses money by construction; the server rules such a shape out with the rates. Propose the
+non-borrowing shape whenever one exists, beside any levered one. Give each plan a short title and a rationale that cites the observation
+ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
+the floor") is ONE plan whose first leg is literal — do not split it into goal.actions. If the user's goal needs an
+operation not in this list (redeeming from Earn, withdrawing collateral, LP, swaps), say so in findings as a
+limitation — name the unsupported step — and still propose the best plan the list allows, never substituting
+silently.
 For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
 Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.

@@ -1,15 +1,7 @@
 import { resolveAssetDef } from "../registry/assets";
-import { allowedInvocation } from "../workflow/allowlist";
-import type { ProposalStep, WorkflowOp } from "../workflow/types";
+import { allowedInvocation, TOOLS } from "../workflow/allowlist";
+import type { ProposalStep } from "../workflow/types";
 import type { GoalUnderstanding, InvestigationScope } from "./types";
-
-const TOOLS: Record<WorkflowOp, string> = {
-  lend: "vanna_lend",
-  deposit_collateral: "vanna_deposit_collateral",
-  borrow: "vanna_borrow",
-  repay: "vanna_repay",
-  supply_blend: "vanna_blend_supply",
-};
 
 /**
  * Compile planner-nominated writes whose amounts already appear in the user text.

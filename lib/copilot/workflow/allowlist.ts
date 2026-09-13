@@ -3,7 +3,8 @@ import { decimalWad } from "../investigation/fixed";
 import type { InvestigationScope } from "../investigation/types";
 import type { ProposalStep, WorkflowOp } from "./types";
 
-const TOOLS: Record<WorkflowOp, string> = Object.freeze({ lend: "vanna_lend", deposit_collateral: "vanna_deposit_collateral",
+/** Op → MCP write tool. The one map; `plan.ts` and `requested-actions.ts` import it rather than repeating it. */
+export const TOOLS: Readonly<Record<WorkflowOp, string>> = Object.freeze({ lend: "vanna_lend", deposit_collateral: "vanna_deposit_collateral",
   borrow: "vanna_borrow", repay: "vanna_repay", supply_blend: "vanna_blend_supply" });
 
 /** Protocol operations only. Never spread model, browser, or stored arbitrary arguments. */

@@ -137,25 +137,33 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
      * Liquidation is a contract fact, so a floor on a worsening op is checked against
      * chain state alone.
      */
-    if (!proposal.floor) {
-      if (project) return "A health-factor floor is needed before moving margin assets.";
-      return null;
-    }
+    /**
+     * Without a user floor the contract's liquidation line is the stop: the sequence may
+     * not pass through a liquidatable state. Until 13 Sep a deposit-then-supply plan with
+     * no stated floor was refused outright here even though it ends where it started.
+     */
+    if (!proposal.floor && !project) return null;
     const bound = AbortSignal.any([signal, AbortSignal.timeout(READ_MS)]);
     const chain = await interruptible(
       () => readContractHealthState(proposal.scope.smartAccount!, { signal: bound }),
       bound,
     );
     if (chain.registryDiverged || chain.wasmHash !== VERIFIED_RISK_WASM) return "The current risk configuration could not be verified.";
-    const floor = decimalWad(proposal.floor);
-    if (BigInt(chain.debtWad) > BigInt(0) && BigInt(chain.balanceWad) * WAD < BigInt(chain.debtWad) * floor)
-      return "The contract-valued position is already below your health-factor floor.";
+    if (proposal.floor) {
+      const floor = decimalWad(proposal.floor);
+      if (BigInt(chain.debtWad) > BigInt(0) && BigInt(chain.balanceWad) * WAD < BigInt(chain.debtWad) * floor)
+        return "The contract-valued position is already below your health-factor floor.";
+    }
     const projected = sizeLegs(
       { grossCollateralUsd: formatWad(BigInt(chain.balanceWad)), debtUsd: formatWad(BigInt(chain.debtWad)) },
       legs,
       proposal.floor,
     );
-    if (!projected.ok) return `The proposed steps do not pass your ${proposal.floor} health-factor floor (${projected.reason}).`;
+    if (!projected.ok) {
+      return proposal.floor
+        ? `The proposed steps do not pass your ${proposal.floor} health-factor floor (${projected.reason}).`
+        : `The proposed steps would leave the account liquidatable (${projected.reason}).`;
+    }
     return null;
   } catch (error) {
     logUnexpected("workflow risk validation failed", { error });

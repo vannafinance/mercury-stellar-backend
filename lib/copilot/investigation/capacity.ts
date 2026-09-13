@@ -20,6 +20,7 @@
  */
 
 import { computeMarginSnapshot, SnapshotTimeoutError } from "@/lib/account-snapshot";
+import { statedFloorFrom } from "./floor";
 import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 import { isUsable, unavailable, usable, type ReadResult } from "@/lib/usable-read";
 import type { MCPClient } from "../mcp-client";
@@ -49,6 +50,15 @@ export type SizingOptions = {
   contract?: ContractLiquidationBasis | null;
   mcp?: Pick<MCPClient, "call">;
   trader?: string | null;
+  /** The user's floor when the caller already knows it (model-anchored); otherwise parsed from the messages. */
+  floor?: string | null;
+  /**
+   * The app snapshot when the caller already attempted it: a snapshot, or `null` meaning
+   * "tried and unavailable — do not read again". Undefined means read it here. Mirrors
+   * `contract`. Propose reads it once, bounded; reading it twice unbounded took a
+   * propose past the browser's 90s (13 Sep).
+   */
+  app?: MarginSnapshot | null;
 };
 
 /** Absolute USD band that still counts as WAD / rounding noise. */
@@ -76,6 +86,8 @@ export const SIZING_DRIFT_REL = 0.005;
  * outside this work's scope; the panel showing 0.01 on a partial read is reported separately
  * for the owner of that code.
  */
+export { statedFloorFrom };
+
 export function snapshotUsability(snapshot: MarginSnapshot): ReadResult<MarginSnapshot> {
   const debt = snapshot.totalBorrowedValue;
   const gross = snapshot.grossCollateralValue;
@@ -198,42 +210,26 @@ export async function computeBorrowCapacity(
 ): Promise<ResearchCapacity | null> {
   if (!smartAccount) return null;
 
-  // The latest explicit floor wins, the same precedence the research prompt states for
-  // any later user instruction superseding an earlier one.
-  let floor: number | null = null;
-  for (const message of messages) {
-    const parsed = parseMinHealthFactor(message);
-    if (parsed !== null) floor = parsed;
-  }
-  if (floor === null) return null;
-
-  /**
-   * Six decimals, NOT eighteen. `parseMinHealthFactor` returns a JS float, and
-   * `(1.3).toFixed(18)` is "1.300000000000000044" — binary representation noise. At 18
-   * places that noise reaches the WAD value, and a stated floor of exactly 1.1 became
-   * 1.100000000000000089, which is GREATER than the liquidation threshold and so slipped
-   * past the guard below. Truncating first discards the tail: a health-factor floor is
-   * never meaningfully specified beyond six places, and six is comfortably inside float
-   * precision for values in this range.
-   */
-  const floorWad = decimalWad(floor.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""));
+  const stated = options?.floor ?? statedFloorFrom(messages);
+  if (stated === null) return null;
+  const floorWad = decimalWad(stated);
   // A floor at or below the liquidation threshold is not headroom, it is a breach.
   if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return null;
 
-  const snapshot = shared ?? await computeMarginSnapshot(smartAccount);
-  signal?.throwIfAborted();
-  // A partially-read position produces a confidently wrong headroom figure.
-  if (!snapshotIsUsable(snapshot)) throw new Error("position_read_inconsistent");
+  const basis = await computeSizingBasis(smartAccount, shared ?? null, options, signal);
+  if (!basis) throw new Error("position_read_inconsistent");
+  if (basis.issue) throw new Error(basis.issue);
+  return capacityFromBasis(basis, formatWad(floorWad));
+}
 
-  const contract = await resolveContractBasis(smartAccount, options, signal);
-  signal?.throwIfAborted();
-  const agreed = reconcileSizingBasis(snapshot, contract);
-  if (!isUsable(agreed)) throw new Error(agreed.reason);
-
-  const grossWad = decimalWad(usd(agreed.value.collateralUsd));
-  const debtWad = decimalWad(usd(agreed.value.debtUsd));
+/** Headroom at a floor from an agreed basis. Null when the basis is disputed or the floor is not above the line. */
+export function capacityFromBasis(basis: SizingBasis, floor: string): ResearchCapacity | null {
+  if (basis.issue) return null;
+  const floorWad = decimalWad(floor);
+  if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return null;
+  const grossWad = decimalWad(basis.grossCollateralUsd);
+  const debtWad = decimalWad(basis.debtUsd);
   const maxBorrow = maxBorrowForFloorWad(grossWad, debtWad, floorWad);
-
   return {
     floor: formatWad(floorWad),
     grossCollateralUsd: formatWad(grossWad),
@@ -241,6 +237,60 @@ export async function computeBorrowCapacity(
     // Reported only when there is debt; a ratio with no denominator is not a health factor.
     healthFactor: debtWad === BigInt(0) ? null : formatWad(grossWad * WAD / debtWad),
     maxBorrowUsd: formatWad(maxBorrow),
+  };
+}
+
+/**
+ * The position a plan may be sized against, independent of any floor.
+ *
+ * The contract's liquidation snapshot is the number that decides liquidation, so sizing
+ * uses it — but only once the app snapshot agrees with it within the drift band. When
+ * the two disagree (tokens sitting in the account unposted count for the Margin page and
+ * not for the risk engine — see OWNER-collateral-definition.md) the contract figures are
+ * still returned, with the disagreement carried as data, so a caller can refuse to size
+ * anything that lowers health while still projecting a deposit honestly. Null when the
+ * position could not be read at all.
+ */
+export interface SizingBasis {
+  /** The figures to size against: the contract's, or the app's only when no contract read exists. */
+  grossCollateralUsd: string;
+  debtUsd: string;
+  source: "contract" | "app";
+  /** Why a borrow must not be sized on this basis; null when the sources agree. */
+  issue: "sizing_sources_disagree" | "sizing_contract_unavailable" | "sizing_app_unavailable" | null;
+  app: { grossCollateralUsd: string; debtUsd: string };
+  contract: { grossCollateralUsd: string; debtUsd: string } | null;
+}
+
+export async function computeSizingBasis(
+  smartAccount: string,
+  shared: MarginSnapshot | null,
+  options?: SizingOptions,
+  signal?: AbortSignal,
+): Promise<SizingBasis | null> {
+  const snapshot = shared ?? (options && Object.prototype.hasOwnProperty.call(options, "app") ? options.app ?? null : await computeMarginSnapshot(smartAccount));
+  signal?.throwIfAborted();
+  // A partially-read position produces a confidently wrong figure.
+  const appUsable = snapshot !== null && snapshotIsUsable(snapshot);
+  const app = appUsable ? { grossCollateralUsd: usd(snapshot.grossCollateralValue), debtUsd: usd(snapshot.totalBorrowedValue) } : null;
+  let contract: ContractLiquidationBasis;
+  try {
+    contract = await resolveContractBasis(smartAccount, options, signal);
+  } catch {
+    if (!app) return null;
+    return { ...app, source: "app", issue: "sizing_contract_unavailable", app, contract: null };
+  }
+  signal?.throwIfAborted();
+  const contractFigures = { grossCollateralUsd: usd(contract.collateralUsd), debtUsd: usd(contract.debtUsd) };
+  // The engine's figures stand on their own for a deposit; without the app to agree, no borrow.
+  if (!app) return { ...contractFigures, source: "contract", issue: "sizing_app_unavailable", app: contractFigures, contract: contractFigures };
+  const agreed = reconcileSizingBasis(snapshot!, contract);
+  return {
+    ...contractFigures,
+    source: "contract",
+    issue: isUsable(agreed) ? null : agreed.reason === "sizing_sources_disagree" ? "sizing_sources_disagree" : "sizing_contract_unavailable",
+    app,
+    contract: contractFigures,
   };
 }
 

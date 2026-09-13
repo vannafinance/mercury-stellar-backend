@@ -6,15 +6,18 @@ import { researchCodec } from "./continuation";
 import { runInvestigation, interruptible } from "./runtime";
 import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
-import { compareObservedRates } from "./rate-comparison";
-import { computeBorrowCapacity, computeAccountPosition } from "./capacity";
+import { analyseObservedRates } from "./rate-comparison";
+import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
+import { anchoredGoalFloor, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
+import { REQUESTED_ACTIONS_ID } from "./candidate-id";
+import { resolvePlans } from "./plan";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
 import { compileRequestedActions } from "./requested-actions";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed } from "./strategy-reads";
+import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
@@ -387,11 +390,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const outcome = result.outcome;
   if (outcome.kind === "research_complete") {
     const compiledQuestion = outcome.openQuestions[0] ?? null;
-    const earlySteps = !compiledQuestion ? compileRequestedActions(outcome.goal, messages, scope) : [];
+    /**
+     * Literal actions alone ("repay 1 XLM") compile straight to steps. A request that ALSO
+     * needs sizing ("deposit 10 XLM and borrow to the floor") arrives as plans with a
+     * literal leg, and must not be cut down to its literal part here.
+     */
+    const earlySteps = !compiledQuestion && !outcome.plans?.length ? compileRequestedActions(outcome.goal, messages, scope) : [];
     if (earlySteps.length) {
       const evidence = compactResearchEvidence(result.observations, null, Date.now());
       evidence.requestedSteps = earlySteps;
-      evidence.allowedCandidateIds = ["requested_actions"];
+      evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
       logPhase("compiled_write", { steps: earlySteps.length, op: earlySteps[0]?.op });
       return {
         status: "researched",
@@ -400,7 +408,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           intent: "strategy", originalRequest: messages[0], statedSteps: earlySteps,
         }),
         originalRequest: messages[0], refinements: messages.slice(1), question: null,
-        proposalCandidateId: "requested_actions",
+        proposalCandidateId: REQUESTED_ACTIONS_ID,
         understanding: outcome.goal, facts: [], capacity: null, candidates: null, rateComparisons: [],
         checks: result.observations.map((observation) => ({
           id: observation.id, label: observation.capability.replaceAll("_", " "),
@@ -497,7 +505,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         : "Borrowing headroom could not be computed from your current position.",
     );
   }
-  const rateComparisons = compareObservedRates(result.observations, Date.now());
+  const rateAnalysis = analyseObservedRates(result.observations, Date.now());
+  const rateComparisons = rateAnalysis.comparisons;
+  // A rate that was read but not used must be visible, or the prose (which saw the raw
+  // read) and the ranked options (which did not) will disagree with no explanation.
+  for (const dropped of rateAnalysis.excluded) warnings.push(dropped.detail);
   /**
    * Options, generated from the evidence rather than proposed by the model. Only offered
    * when the user actually stated a floor: sizing a borrow needs one, and inventing a
@@ -525,7 +537,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
-          floor: capacity?.floor ?? "1.30",
+          floor: capacity?.floor ?? null,
           idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
           idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
           idleWalletByAssetTokens: idleWalletByAssetTokensFrom(result.observations, observedNow),
@@ -543,6 +555,87 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
     warnings.push("Strategy options could not be ranked from the reads that completed.");
   }
+  /**
+   * The model's composed shapes, sized and checked in code, ranked beside the fixed
+   * shapes. A plan that does not fit is listed with the reason, never dropped silently —
+   * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
+   * from "option discarded".
+   */
+  const modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? outcome.plans ?? [] : [];
+  if (outcome.kind === "research_complete" && outcome.droppedPlans) {
+    warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
+  }
+  /**
+   * The position the plans are sized against comes from the account read, and the floor
+   * from the user's words — even when borrowing headroom could not be computed (a floor
+   * at 1.1, or none stated). A deposit needs no floor; a borrow with none is rejected
+   * with a sentence saying so, instead of every account leg claiming the position was
+   * never read (13 Sep card).
+   */
+  /**
+   * The floor the model understood and the user's words confirm comes first; the regex
+   * parser is the fallback. When it differs from what headroom was computed with (the
+   * regex missed "HF stays above 1.3" on 13 Sep), headroom is recomputed with it so the
+   * fixed shapes and the plans size against the floor the user actually stated.
+   */
+  const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, messages) : null;
+  if (goalFloor && goalFloor !== capacity?.floor && scope.smartAccount && !capacityResult.failed) {
+    try {
+      capacity = await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null, {
+        mcp: scopedMcp, trader: scope.trader, floor: goalFloor,
+      });
+      logPhase("floor", { source: "goal", floor: goalFloor, headroom: capacity?.maxBorrowUsd ?? null });
+    } catch (error) {
+      console.warn("[copilot] investigation capacity refresh with the stated floor failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+    }
+  }
+  const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages);
+  /**
+   * Plans size on the reconciled basis — the contract's figures once the app agrees — the
+   * same rule headroom uses, so a plan can never quietly borrow against the Margin page's
+   * more generous number. A disagreement is carried into the context: deposits still
+   * size, borrows are refused with both figures.
+   */
+  let planPosition: import("./plan").PlanContext["capacity"] = null;
+  if (scope.smartAccount && outcome.kind === "research_complete" && outcome.plans?.length) {
+    try {
+      const basis = await computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal);
+      if (basis) {
+        planPosition = {
+          grossCollateralUsd: basis.grossCollateralUsd, debtUsd: basis.debtUsd, floor: statedFloor,
+          issue: basis.issue ? { reason: basis.issue, app: basis.app, contract: basis.contract } : null,
+        };
+        if (basis.issue === "sizing_sources_disagree" && !warnings.includes(SIZING_SOURCES_DISAGREE_WARNING)) warnings.push(SIZING_SOURCES_DISAGREE_WARNING);
+      }
+    } catch (error) {
+      console.warn("[copilot] investigation sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
+    }
+  }
+  let planComparisons = rateComparisons;
+  if (modelPlans.length) {
+    /**
+     * Code fetches what code needs. The loop may not have read a price, a wallet balance
+     * or a market the plans depend on — a phrase list used to decide whether the market
+     * seed ran at all — so the missing reads are made here, deterministically, before
+     * sizing. They join the observations so the card, the sealed evidence and propose
+     * all see the same reads.
+     */
+    const missing = readsForPlans(modelPlans, result.observations, observedNow);
+    if (missing.length) {
+      const extra = await collectStrategyReads(scope, scopedMcp, dependencies.signal, observedNow, missing, "q");
+      result.observations.push(...extra);
+      logPhase("plan_reads", { requested: missing.map((r) => `${r.capability}${r.args.asset ? `:${r.args.asset}` : ""}`), ok: extra.filter((o) => o.status === "ok").length });
+      planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
+    }
+    const resolved = resolvePlans(modelPlans, {
+      scope, observations: result.observations, now: observedNow, messages,
+      capacity: planPosition, borrowing, comparisons: planComparisons,
+    });
+    logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
+    candidates = mergeCandidateSets(candidates, resolved);
+  }
   if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
     warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
   }
@@ -554,7 +647,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
         : outcome.kind === "stopped" ? "incomplete"
           : "needs_input";
-  const requestedSteps = outcome.kind === "research_complete" && !question
+  // Composed plans, once sized, are the offer; literal actions stand alone only when no plan sized.
+  const requestedSteps = outcome.kind === "research_complete" && !question && !candidates?.feasible.length
     ? compileRequestedActions(outcome.goal, messages, scope) : [];
   const message = strategyReply({
     status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
@@ -578,11 +672,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
   if (requestedSteps.length) {
     evidence.requestedSteps = requestedSteps;
-    evidence.allowedCandidateIds = ["requested_actions"];
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+  }
+  if (modelPlans.length) {
+    evidence.plans = modelPlans;
+    evidence.position = planPosition;
+    evidence.floor = statedFloor;
   }
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
-    proposalCandidateId: requestedSteps.length ? "requested_actions" : candidates?.feasible[0]?.id ?? null,
+    proposalCandidateId: requestedSteps.length ? REQUESTED_ACTIONS_ID : candidates?.feasible[0]?.id ?? null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
     understanding: outcome.kind === "research_complete" ? outcome.goal

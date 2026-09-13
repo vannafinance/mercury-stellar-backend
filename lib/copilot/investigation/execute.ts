@@ -161,6 +161,19 @@ export async function advanceWorkflow(input: {
   const result = { status: hash ? "signed_and_submitted" : unsigned && !build.error ? "needs_wallet_sign" : "error", build,
     submitted: null, unsigned_xdr: unsigned };
 
+  /**
+   * The MCP's error envelope (`mcp_server/error_handling.py`) attaches `reason`, `code`
+   * or `contract_diagnostic` only to failures it classified INSIDE the tool — simulation
+   * and validation, before anything was submitted — and a submitted transaction always
+   * carries its hash. Such an envelope is a rejection with a reason, and the reason is
+   * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
+   */
+  const rejection = preBroadcastRejection(build, hash);
+  if (rejection) {
+    console.warn("[copilot] write rejected before broadcast", { tool: invocation.tool, error: build.error, code: build.code, reason: build.reason, message: rejection.slice(0, 300) });
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: rejection }));
+  }
+
   if (result.status === "signed_and_submitted") {
     const txHash = hash;
     if (!txHash) {
@@ -184,6 +197,15 @@ export async function advanceWorkflow(input: {
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
+}
+
+/** The MCP's own message when its envelope proves nothing was broadcast; null otherwise. */
+export function preBroadcastRejection(build: Record<string, unknown>, hash: string | null): string | null {
+  if (hash || typeof build.error !== "string" || !build.error) return null;
+  const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
+  if (!classified) return null;
+  const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
+  return `Not submitted — the protocol rejected this step before broadcast: ${message}`;
 }
 
 export async function confirmWorkflow(input: {

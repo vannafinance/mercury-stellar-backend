@@ -6,8 +6,8 @@ describe("investigation to deterministic comparison", () => {
   it.each(["allowed", "forbidden"] as const)("publishes comparisons according to borrowing scope: %s", async (borrowing: GoalUnderstanding["borrowing"]) => {
     const mcp = { call: vi.fn(async (tool: string) => {
       if (tool === "vanna_list_my_wallet_bindings") return { sub: "user", has_assertion: true, bindings: [] };
-      if (tool === "vanna_get_pool_stats") return { supply_apy_pct: "2", borrow_apr_pct: "7" };
-      if (tool === "vanna_list_blend_reserves") return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "3", supply_apy_pct: "3.04" }] };
+      if (tool === "vanna_get_pool_stats") return { supply_apy_pct: "2", borrow_apr_pct: "7", utilization_pct: "40" };
+      if (tool === "vanna_list_blend_reserves") return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "3", supply_apy_pct: "3.04", borrow_apr_pct: "5", utilization_pct: "80" }] };
       throw new Error("Unexpected tool");
     }) };
     let turn = 0;

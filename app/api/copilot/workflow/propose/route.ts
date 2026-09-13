@@ -7,6 +7,7 @@ import { isRecord } from "@/lib/copilot/investigation/decision";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { proposeWorkflow } from "@/lib/copilot/investigation/proposal";
 import { logUnexpected } from "@/lib/copilot/log";
+import { isCandidateId } from "@/lib/copilot/investigation/candidate-id";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,7 +31,7 @@ async function inputFrom(req: NextRequest): Promise<{ continuation: string; cand
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid proposal request.", 400); }
   if (!isRecord(body) || Object.keys(body).some((key) => !["continuation", "candidateId"].includes(key)) ||
     typeof body.continuation !== "string" || !body.continuation.trim() || body.continuation.length > 65_536 ||
-    typeof body.candidateId !== "string" || !/^[a-z0-9_]{1,80}$/.test(body.candidateId)) {
+    !isCandidateId(body.candidateId)) {
     throw new ResearchError("invalid_request", "Send the investigation continuation and the option to prepare only. This route cannot accept execution instructions or approval payloads.", 400);
   }
   return { continuation: body.continuation, candidateId: body.candidateId };
@@ -67,6 +68,9 @@ export async function POST(req: NextRequest) {
       logUnexpected("proposal failed", {
         subject: bound.sub, candidateId: input.candidateId, network, error,
       });
+    } else {
+      // A refusal the user sees as one line must also be findable in the log (13 Sep: a 409 with no trace).
+      console.warn("[copilot] proposal refused", { candidateId: input.candidateId, code: known.code, status: known.status, message: known.message });
     }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "proposal_unavailable",

@@ -31,6 +31,15 @@ const MAX_OBSERVATIONS = 16;
 export interface ResearchEvidence {
   allowedCandidateIds?: string[];
   requestedSteps?: import("../workflow/types").ProposalStep[];
+  /**
+   * The model's composed shapes, sealed so propose can re-size the one the user picked
+   * from the same evidence without a second model turn — a model turn is not
+   * deterministic, and the option the user clicked must be the option that compiles.
+   */
+  plans?: import("./types").ProposedPlan[];
+  /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
+  position?: import("./plan").PlanContext["capacity"];
+  floor?: string | null;
   capturedAt: number;
   observations: Observation[];
   capacity: ResearchCapacity | null;
@@ -128,11 +137,17 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
   if (capability === "asset_price") {
     return { price_usd: data.price_usd };
   }
+  /**
+   * Rate rows keep the borrow rate and utilization alongside the supply rate: the rate
+   * comparison vouches for a supply rate only by checking it against those two, so a
+   * bundle without them would make every sealed option "no longer available" on propose.
+   */
   if (capability === "earn_market") {
     return {
       supply_apr_pct: data.supply_apr_pct,
       supply_apy_pct: data.supply_apy_pct,
       borrow_apr_pct: data.borrow_apr_pct,
+      utilization_pct: data.utilization_pct,
     };
   }
   if (capability === "wallet_balances") {
@@ -141,11 +156,14 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       return [{
         symbol: row.symbol,
         balance: row.balance,
+        ...(row.spendable !== undefined ? { spendable: row.spendable } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),
         ...(row.error !== undefined ? { error: row.error } : {}),
       }];
     }) : [];
-    return { assets };
+    // The fee reserve travels with the balances: an idle XLM amount sized on propose
+    // must equal the one sized on the card, and both leave the reserve in the wallet.
+    return { assets, ...(data.fee_reserve_xlm !== undefined ? { fee_reserve_xlm: data.fee_reserve_xlm } : {}) };
   }
   if (capability === "account_position" || capability === "account_health") {
     return {
@@ -177,6 +195,8 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
         venue: row.venue,
         symbol: row.symbol,
         supply_apr_pct: row.supply_apr_pct,
+        borrow_apr_pct: row.borrow_apr_pct,
+        utilization_pct: row.utilization_pct,
         ...(row.error !== undefined ? { error: row.error } : {}),
         ...(row.available !== undefined ? { available: row.available } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),

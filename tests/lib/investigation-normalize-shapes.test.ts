@@ -62,7 +62,7 @@ describe("normalizeResearchFacts live MCP shapes", () => {
   });
 
   it("extracts facts from a live account_health payload that has no health_factor", () => {
-    const result = normalizeResearchFacts([observation("account_health", LIVE_HEALTH)]);
+    const result = normalizeResearchFacts([observation("account_health", LIVE_HEALTH, { args: {} })]);
     expect(result.facts.length).toBeGreaterThan(0);
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
     expect(result.facts.some((fact) => fact.unit === "HF")).toBe(false);
@@ -75,7 +75,7 @@ describe("normalizeResearchFacts live MCP shapes", () => {
   });
 
   it("extracts facts from a live account_collateral payload including LP tracking rows", () => {
-    const result = normalizeResearchFacts([observation("account_collateral", LIVE_COLLATERAL)]);
+    const result = normalizeResearchFacts([observation("account_collateral", LIVE_COLLATERAL, { args: {} })]);
     expect(result.facts.length).toBeGreaterThan(0);
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
     expect(result.facts).toEqual(expect.arrayContaining([
@@ -85,12 +85,12 @@ describe("normalizeResearchFacts live MCP shapes", () => {
   });
 
   it("extracts facts from a live account_debt payload", () => {
-    const result = normalizeResearchFacts([observation("account_debt", LIVE_DEBT)]);
+    const result = normalizeResearchFacts([observation("account_debt", LIVE_DEBT, { args: {} })]);
     expect(result.facts.length).toBeGreaterThan(0);
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
     expect(result.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourcePath: "total_debt_usd", value: "1654.5299" }),
-      expect.objectContaining({ label: "XLM borrowed" }),
+      expect.objectContaining({ sourcePath: "debt[1].balance", label: "XLM debt balance", unit: "XLM" }),
     ]));
   });
 
@@ -116,10 +116,11 @@ describe("normalizeResearchFacts live MCP shapes", () => {
       debt_usd: "2705.60",
       liquidatable: false,
       source: "risk_engine.liquidation_snapshot",
-    })]);
+    }, { args: {} })]);
     expect(result.facts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ label: "Contract liquidation collateral", value: "4230.94", unit: "USD" }),
-      expect.objectContaining({ label: "Contract liquidation debt", value: "2705.60", unit: "USD" }),
+      // Named by its source, so it cannot be confused with the app-side account_health figure.
+      expect.objectContaining({ label: "Liquidation snapshot collateral", sourcePath: "collateral_usd", value: "4230.94", unit: "USD" }),
+      expect.objectContaining({ label: "Liquidation snapshot debt", sourcePath: "debt_usd", value: "2705.60", unit: "USD" }),
       expect.objectContaining({ label: "Liquidation snapshot flag", value: "not liquidatable" }),
     ]));
     expect(result.facts.some((fact) => fact.unit === "HF" || fact.sourcePath === "health_factor")).toBe(false);
@@ -132,7 +133,7 @@ describe("normalizeResearchFacts live MCP shapes", () => {
       debt_usd: "278.91",
       liquidatable: false,
       posted_health_factor: "3.42",
-    })]);
+    }, { args: {} })]);
     expect(result.facts).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourcePath: "posted_health_factor", value: "3.42", unit: "HF" }),
     ]));
@@ -193,4 +194,15 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     ]));
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
   });
+});
+
+it("shows the wallet's spendable XLM beside its balance when the MCP derives it", () => {
+  const result = normalizeResearchFacts([observation("wallet_balances", {
+    assets: [{ symbol: "XLM", balance: "10206.8356118", spendable: "10202.8356118", min_balance: "3.5", status: "ok" }],
+    fee_reserve_xlm: "0.5",
+  }, { args: {} })]);
+  expect(result.facts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ label: "XLM wallet balance", value: "10206.8356118", unit: "XLM" }),
+    expect.objectContaining({ label: "XLM wallet spendable", value: "10202.8356118", unit: "XLM" }),
+  ]));
 });

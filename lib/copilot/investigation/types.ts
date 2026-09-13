@@ -31,13 +31,60 @@ export interface InvestigationRequest {
   promptName?: string;
 }
 
+import type { WorkflowOp } from "../workflow/types";
+
 export interface GoalUnderstanding {
   intent?: "answer" | "strategy";
   relation?: "new" | "refine";
-  actions?: Array<{ op: "lend" | "deposit_collateral" | "borrow" | "repay" | "supply_blend"; asset: string; amount: string; sourceQuote: string }>;
+  actions?: Array<{ op: WorkflowOp; asset: string; amount: string; sourceQuote: string }>;
   objective: string;
   constraints: string[];
   borrowing: "unspecified" | "allowed" | "required" | "forbidden";
+  /**
+   * The health-factor floor the user stated, as their exact number with the substring
+   * of their message that contains it. Understanding which sentence states a floor is
+   * the model's job ("HF stays above 1.3", "never let health dip under 1.25"); the
+   * number is verified against the user's own words in code and never invented. Absent
+   * when no number was stated — "avoid liquidation" is not a floor.
+   */
+  healthFactorFloor?: { value: string; sourceQuote: string };
+}
+
+/** The write operations a plan may be composed from: exactly the ones the workflow can execute. */
+export type PlanOp = WorkflowOp;
+
+/**
+ * How a leg is sized — a WORD, never a number. The model says what the amount is a
+ * function of; `plan.ts` computes it from observations and the user's floor:
+ *
+ *   all_idle      the asset's idle wallet balance (less the fee reserve for XLM)
+ *   to_floor      the largest borrow that keeps the health factor at the stated floor
+ *   previous_leg  the same amount the previous leg produced (borrow → supply it)
+ *   literal       an amount the user typed, quoted verbatim so it can be anchored
+ */
+export type PlanSizing =
+  | { kind: "all_idle" }
+  | { kind: "to_floor" }
+  | { kind: "previous_leg" }
+  | { kind: "literal"; amount: string; sourceQuote: string };
+
+export interface PlanLeg {
+  op: PlanOp;
+  asset: string;
+  sizing: PlanSizing;
+}
+
+/**
+ * A strategy shape the model composed. Ordered legs, a title, and a rationale that cites
+ * observation ids. It carries no amounts and no rates: every number the user sees for it
+ * is derived in code, and a plan the code cannot size or verify is rejected with a reason
+ * the user can read.
+ */
+export interface ProposedPlan {
+  title: string;
+  rationale: string;
+  evidenceIds: string[];
+  legs: PlanLeg[];
 }
 
 export interface ReadRequest {
@@ -60,6 +107,10 @@ export type ResearchDecision =
       goal: GoalUnderstanding;
       findings: Array<{ summary: string; evidenceIds: string[] }>;
       openQuestions: string[];
+      /** Strategy shapes for the deterministic evaluator. Absent or empty for answers. */
+      plans?: ProposedPlan[];
+      /** Plans the model sent that did not fit the contract and were dropped, so the card can say so. */
+      droppedPlans?: number;
     };
 
 export interface Observation {

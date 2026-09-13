@@ -28,10 +28,11 @@ import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import { sizeLegs, type SizedLeg } from "./sizing";
 import type { RateAsset, RateComparison } from "./rate-comparison";
-import { USDC_VARIANTS } from "../registry/assets";
+import { candidateId, candidateKindTraits, type CandidateKind } from "./candidate-id";
+import type { ProposalStep } from "../workflow/types";
+import { resolveAssetDef, USDC_VARIANTS } from "../registry/assets";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
-const IDLE_ASSETS: readonly RateAsset[] = ["XLM", ...USDC_VARIANTS];
 const USDC_SET = new Set<string>(USDC_VARIANTS);
 /** APR gap (percentage points) below which we will not claim a yield winner. */
 const APR_NOISE = decimalWad("0.2");
@@ -39,7 +40,8 @@ const APR_NOISE = decimalWad("0.2");
 export interface CandidateInput {
   grossCollateralUsd: string;
   debtUsd: string;
-  floor: string;
+  /** The user's stated floor. Null when none was stated: idle shapes need none, borrow shapes are then not offered. */
+  floor: string | null;
   /** Idle wallet value the user could commit without borrowing. Null when unknown. */
   idleWalletUsd: string | null;
   /** Per-token funds. A combined USD total cannot fund every token's alternative. */
@@ -57,11 +59,15 @@ export interface CandidateInput {
 }
 
 export interface Candidate {
+  /** Minted by `candidate-id.ts` from `kind` and `asset`. Opaque everywhere else. */
   id: string;
+  /** The strategy family. Consumers branch on this, never on the id string. */
+  kind: CandidateKind;
   label: string;
   borrows: boolean;
-  asset: RateComparison["asset"];
-  venue: "blend" | "earn";
+  /** The asset the shape is about — the first leg's, for a composed plan. */
+  asset: string;
+  venue: "blend" | "earn" | "margin";
   /** Supply APR minus borrow APR, both simple APR. Null when nothing is borrowed. */
   netAprPct: string | null;
   supplyAprPct: string;
@@ -81,6 +87,13 @@ export interface Candidate {
    * composed by the model. Present only on the winner.
    */
   decision?: CandidateDecision;
+  /**
+   * Present on a composed plan: the steps `plan.ts` already sized and allowlisted, in
+   * order. The compiler passes them through; the fixed shapes derive theirs from `legs`.
+   */
+  steps?: ProposalStep[];
+  /** The model's reasoning for a composed plan. Copy only — every number beside it is code's. */
+  rationale?: string;
 }
 
 export type DecisionFactor = "already_held" | "net_return" | "thin_margin" | "consolidation";
@@ -93,7 +106,7 @@ export interface CandidateDecision {
 
 export interface CandidateSet {
   feasible: Candidate[];
-  rejected: Array<{ label: string; reason: string; asset: RateComparison["asset"] }>;
+  rejected: Array<{ label: string; reason: string; asset: string }>;
 }
 
 function aprOf(candidate: Candidate): bigint {
@@ -181,7 +194,7 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
   };
 }
 
-function rankFeasible(feasible: Candidate[]): Candidate[] {
+export function rankFeasible(feasible: Candidate[]): Candidate[] {
   const idle = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
   const borrow = feasible.filter((candidate) => candidate.borrows).sort(byNetThenSize);
   const ranked = [...idle, ...borrow];
@@ -201,6 +214,12 @@ function safeMaxBorrow(input: CandidateInput): string | null {
     input.floor,
   );
   return sized.ok ? sized.legs[0]?.amountUsd ?? null : null;
+}
+
+/** Id, kind and the kind's fixed traits for one strategy on one asset. */
+function shape(kind: CandidateKind, asset: RateComparison["asset"]): Pick<Candidate, "id" | "kind" | "asset" | "borrows" | "venue"> {
+  const traits = candidateKindTraits(kind);
+  return { id: candidateId(kind, asset), kind, asset, borrows: traits.borrows, venue: traits.venue };
 }
 
 export function generateCandidates(input: CandidateInput): CandidateSet {
@@ -230,11 +249,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       if (idle > ZERO) {
         if (supply !== null) {
           feasible.push({
-            id: `supply_idle_${comparison.asset}`,
+            ...shape("supply_idle", comparison.asset),
             label: `Supply idle ${comparison.asset} to Blend — no new borrowing`,
-            borrows: false,
-            asset: comparison.asset,
-            venue: "blend",
             netAprPct: null,
             supplyAprPct: formatWad(supply),
             // Supplying idle wallet value does not touch margin collateral or debt.
@@ -257,11 +273,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
             const earn = decimalWad(comparison.earnSupplyApr);
             if (supply === null || earn > supply) {
               feasible.push({
-                id: `lend_idle_${comparison.asset}`,
+                ...shape("lend_idle", comparison.asset),
                 label: `Lend idle ${comparison.asset} to Earn — no new borrowing`,
-                borrows: false,
-                asset: comparison.asset,
-                venue: "earn",
                 netAprPct: null,
                 supplyAprPct: formatWad(earn),
                 legs: [],
@@ -277,7 +290,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       }
     }
 
-    if (input.borrowingAllowed === false) continue;
+    // A borrow needs the user's own floor; none was stated, so no borrow shape is offered.
+    if (input.borrowingAllowed === false || input.floor === null) continue;
     if (supply === null || borrow === null) continue;
     // 2. Borrow against headroom and supply the proceeds. Only worth doing on a real
     //    positive carry; the comparison already computed that verdict from the same rates.
@@ -327,13 +341,10 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     }
 
     feasible.push({
-      id: `borrow_supply_${comparison.asset}`,
+      ...shape("borrow_supply", comparison.asset),
       label: requested
         ? `Borrow ${requested} USD of ${comparison.asset} and supply it to Blend`
         : `Borrow ${comparison.asset} to the ${input.floor} floor and supply it to Blend`,
-      borrows: true,
-      asset: comparison.asset,
-      venue: "blend",
       netAprPct: formatWad(supply - borrow),
       supplyAprPct: formatWad(supply),
       legs: sized.legs,
@@ -345,6 +356,38 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
   }
 
   return { feasible: rankFeasible(feasible), rejected };
+}
+
+/**
+ * Merge the fixed shapes with model-composed plans into one ranked set. The same steps
+ * reached two ways are one option: the composed copy wins because it carries the
+ * rationale the card shows. Rejections from both sides are listed with their reasons.
+ */
+export function mergeCandidateSets(
+  fixed: CandidateSet | null,
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string }> },
+): CandidateSet {
+  // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
+  const FIXED_OPS: Record<Exclude<CandidateKind, "composed">, (asset: string) => string[]> = {
+    supply_idle: (asset) => [`deposit_collateral:${asset}`, `supply_blend:${asset}`],
+    lend_idle: (asset) => [`lend:${asset}`],
+    borrow_supply: (asset) => [`borrow:${asset}`, `supply_blend:${asset}`],
+  };
+  const signature = (candidate: Candidate) => (candidate.steps
+    ? candidate.steps.map((s) => `${s.op}:${s.asset}`)
+    : candidate.kind === "composed" ? [] : FIXED_OPS[candidate.kind](candidate.asset)).join("|");
+  const taken = new Set(composed.candidates.map(signature));
+  const feasible = [
+    ...composed.candidates,
+    ...(fixed?.feasible ?? []).filter((candidate) => !taken.has(signature(candidate))),
+  ];
+  return {
+    feasible: rankFeasible(feasible.map((candidate) => ({ ...candidate, decision: undefined }))),
+    rejected: [
+      ...(fixed?.rejected ?? []),
+      ...composed.rejected.map((entry) => ({ label: entry.title, reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`, asset: entry.leg?.split(" ").pop() ?? "" })),
+    ],
+  };
 }
 
 /**
@@ -416,7 +459,17 @@ export function idleWalletHoldingsFrom(
   now: number,
 ): Partial<Record<RateAsset, { usd: string; tokens: string }>> {
   const result: Partial<Record<RateAsset, { usd: string; tokens: string }>> = {};
-  for (const asset of IDLE_ASSETS) {
+  // The wallet read names what is held; the registry says which of those the protocol knows.
+  const held = new Set<RateAsset>();
+  for (const observation of observations) {
+    if (observation.capability !== "wallet_balances" || !Array.isArray(observation.data?.assets)) continue;
+    for (const row of observation.data.assets) {
+      if (!isRecord(row) || typeof row.symbol !== "string" || row.symbol.endsWith("_SAC")) continue;
+      const def = resolveAssetDef(row.symbol);
+      if (def && def.id === row.symbol) held.add(def.id);
+    }
+  }
+  for (const asset of held) {
     const scoped = observations.map(observation => observation.capability !== "wallet_balances" ? observation : {
       ...observation, data: { ...observation.data, assets: Array.isArray(observation.data?.assets)
         ? observation.data.assets.filter(row => isRecord(row) && row.symbol === asset) : undefined },
@@ -462,6 +515,29 @@ export function freshPrices(observations: readonly Observation[], now: number): 
   return prices;
 }
 
+/**
+ * What a wallet line can actually spend. The wallet read names the XLM it wants kept
+ * back for transaction fees (`fee_reserve_xlm`); an "idle" amount that includes it would
+ * leave the wallet unable to pay for the very deposit that moves it. The reserve is the
+ * read's own number, applied to the native line only.
+ */
+function spendableWad(row: Record<string, unknown>, wallet: Record<string, unknown> | undefined): bigint {
+  // The MCP derives `spendable` from Horizon's reserve fields (13 Sep: a deposit sized as
+  // balance minus the fee hint failed with HostError #10 — the chain minimum balance).
+  // An older server without it falls back to balance minus the fee hint on the native line.
+  if (typeof row.spendable === "string") {
+    try { return decimalWad(row.spendable); } catch { /* fall through to the derivation */ }
+  }
+  const balance = decimalWad(String(row.balance ?? ""));
+  if (row.symbol !== "XLM") return balance;
+  try {
+    const reserve = decimalWad(String(wallet?.fee_reserve_xlm ?? ""));
+    return balance > reserve ? balance - reserve : ZERO;
+  } catch {
+    return balance;
+  }
+}
+
 function idleTokensFrom(observations: readonly Observation[], now: number, asset: string): string | null {
   const fresh = freshObservations(observations, now);
   const wallet = fresh.find((observation) => observation.capability === "wallet_balances");
@@ -470,9 +546,9 @@ function idleTokensFrom(observations: readonly Observation[], now: number, asset
   for (const row of assets) {
     if (!isRecord(row)) continue;
     if (row.symbol !== asset || row.error || (row.status !== undefined && row.status !== "ok")) continue;
-    const balance = String(row.balance ?? "");
     try {
-      if (decimalWad(balance) > ZERO) return balance;
+      const spendable = spendableWad(row, wallet?.data);
+      if (spendable > ZERO) return formatWad(spendable);
     } catch { return null; }
   }
   return null;
@@ -499,7 +575,7 @@ export function idleWalletUsdFrom(observations: readonly Observation[], now: num
     if (seen.has(symbol) || row.error || (row.status !== undefined && row.status !== "ok")) return null;
     seen.add(symbol);
     try {
-      total = total + mulDown(decimalWad(String(row.balance ?? "")), price, WAD);
+      total = total + mulDown(spendableWad(row, wallet?.data), price, WAD);
       priced += 1;
     } catch { /* an unparseable balance contributes nothing */ }
   }

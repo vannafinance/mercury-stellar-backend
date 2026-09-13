@@ -1,6 +1,13 @@
 import type { InvestigationScope } from "../investigation/types";
 
-export type WorkflowOp = "lend" | "deposit_collateral" | "borrow" | "repay" | "supply_blend";
+/**
+ * The write operations the copilot can compose, propose and execute. THE list — every
+ * other mention (plan legs, literal actions, model schemas, the allowlist's tool map, the
+ * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
+ * `Record<WorkflowOp, …>` maps the compiler then demands.
+ */
+export const WORKFLOW_OPS = ["lend", "deposit_collateral", "borrow", "repay", "supply_blend"] as const;
+export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 /**
  * Where a step's amount came from, which decides whether it may be re-derived later.
  *

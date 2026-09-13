@@ -1,6 +1,9 @@
 import type { ResearchFact, ResearchView } from "./view";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
+import { ASSET_IDS } from "../registry/assets";
+
+const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
 
 function askedIn(request: string | undefined, pattern: RegExp): boolean {
   return !!request && pattern.test(request);
@@ -14,7 +17,7 @@ function askedIn(request: string | undefined, pattern: RegExp): boolean {
 function relevantFacts(facts: readonly ResearchFact[], request?: string): readonly ResearchFact[] {
   if (!request?.trim()) return facts;
   const named = [...new Set(
-    (request.toUpperCase().match(/\b(XLM|BLUSDC|AQUSDC|SOUSDC|AQUA|EURC)\b/g) ?? []),
+    (request.toUpperCase().match(NAMED_ASSET) ?? []),
   )];
   const wantsHealth = askedIn(request, /\b(health(?:\s+factor)?|\bhf\b|liquidat|am i safe|at risk)\b/i);
   const wantsDebt = askedIn(request, /\b(debt|owe|borrowed|liabilit)/i)
@@ -33,10 +36,15 @@ function relevantFacts(facts: readonly ResearchFact[], request?: string): readon
     if (fact.sourcePath === "posted_health_factor" || fact.sourcePath === "health_factor" || fact.sourcePath === "page_debt_mismatch") {
       return wantsHealth;
     }
-    if (fact.label === "Total margin debt" || fact.label === "Reported debt value") return wantsDebt;
+    if (isDebtTotal(fact)) return wantsDebt;
     if (["earn", "blend"].includes(fact.venue) && fact.unit === "% APR") return wantsRates;
     return true;
   });
+}
+
+/** The account-level debt figure, whichever read carried it. Facts are matched by source field, never by display copy. */
+function isDebtTotal(fact: ResearchFact): boolean {
+  return fact.venue === "margin" && fact.unit === "USD" && (fact.sourcePath === "total_debt_usd" || fact.sourcePath === "debt_usd");
 }
 
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
@@ -74,7 +82,7 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
       );
     }
   }
-  const debt = selected.find(f => f.label === "Total margin debt") ?? selected.find(f => f.label === "Reported debt value");
+  const debt = selected.find(f => f.sourcePath === "total_debt_usd") ?? selected.find(isDebtTotal);
   if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
@@ -129,6 +137,23 @@ export function strategyReply(input: {
         : "";
       return `${top.decision.reason}${floor}${hf} Approve to run those steps.${alt}`;
     }
+    /**
+     * A composed plan's headline is its own title and rationale, with the numbers the
+     * sizer produced — one source for the options and the prose, so they cannot disagree.
+     */
+    if (top.steps?.length) {
+      const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
+      const rate = top.netAprPct !== null
+        ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
+        : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+      const hf = top.finalHealthFactor
+        ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
+        : "";
+      const others = input.candidates && input.candidates.feasible.length > 1
+        ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
+        : "";
+      return `${top.label}: ${legs}.${rate}${hf}${others} Approve to run those steps.`;
+    }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
       ? `Blend’s supply rate minus borrow cost is about ${Number(top.netAprPct).toFixed(2)}% APR before fees.`
@@ -145,7 +170,9 @@ export function strategyReply(input: {
     return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.`;
   }
   if (input.candidates?.rejected.length) {
-    return `I compared the live rates against your constraints. No borrowing path makes money after borrow cost. ${input.candidates.rejected[0].reason} Nothing was executed.`;
+    // Say why each shape was ruled out — the reasons are the analysis; there is no stock verdict.
+    const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ");
+    return `I checked ${input.candidates.rejected.length === 1 ? "the shape" : `${input.candidates.rejected.length} shapes`} against your position and the live rates, and none could be prepared: ${reasons}. Nothing was executed.`;
   }
   if (input.status === "needs_input") {
     return input.question

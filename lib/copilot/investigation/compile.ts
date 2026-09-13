@@ -2,9 +2,13 @@
  * Turn a ranked candidate into journal steps the user can approve.
  *
  * The candidate's `legs` are the health-factor-moving operations only. Supplying borrowed
- * proceeds into Blend is health-factor neutral, so `borrow_supply_*` has one borrow leg
- * and `supply_idle_*` has none — the Blend supply the label promises is added here. Mapping
+ * proceeds into Blend is health-factor neutral, so `borrow_supply` has one borrow leg
+ * and `supply_idle` has none — the Blend supply the label promises is added here. Mapping
  * `legs` alone would borrow and never supply.
+ *
+ * Which steps a shape implies is read from the kind's traits (`candidate-id.ts`), never
+ * from the id string: a new kind registered there compiles by what it funds from and
+ * where it supplies to, without a prefix check here learning its name.
  *
  * Amounts are display token strings, converted from USD with the oracle price read in this
  * same investigation. No fallback, no $1 peg, and rounding is down so a step cannot ask
@@ -14,6 +18,7 @@
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { freshPrices } from "./candidates";
 import type { Candidate } from "./candidates";
+import { candidateKindTraits } from "./candidate-id";
 import type { Observation, InvestigationScope } from "./types";
 import type { SizedLeg } from "./sizing";
 import type { ProposalStep, StepSizing, WorkflowOp } from "../workflow/types";
@@ -52,6 +57,18 @@ export function compileProposal(input: {
   floor: string | null;
   now: number;
 }): CompileResult {
+  /**
+   * A composed plan was sized and allowlisted in `plan.ts`; its steps are the proposal.
+   * Prices are re-checked here because propose may be compiling seconds later.
+   */
+  if (input.candidate.kind === "composed") {
+    if (!input.candidate.steps?.length) return { ok: false, reason: "unsupported_op" };
+    for (const asset of new Set(input.candidate.steps.map((step) => step.asset))) {
+      const priced = priceFor(asset, input.observations, input.now);
+      if (!priced.ok) return priced;
+    }
+    return { ok: true, steps: input.candidate.steps.map((step) => ({ ...step })) };
+  }
   if (input.candidate.venue === "earn") return compileEarn(input);
   if (input.candidate.venue !== "blend") {
     return { ok: false, reason: "unsupported_venue" };
@@ -76,7 +93,9 @@ export function compileProposal(input: {
     const usd = supplyUsd(input.candidate);
     const amount = tokensFromUsd(usd, priced.price);
     if (!amount.ok) return amount;
-    if (input.candidate.id.startsWith("supply_idle_")) {
+    // Wallet-funded Blend supply has to move the tokens into margin first; borrowed
+    // proceeds are already in the C-address.
+    if (candidateKindTraits(input.candidate.kind).funding === "wallet") {
       steps.push({ id: "s0-deposit_collateral", op: "deposit_collateral", asset: input.candidate.asset,
         amount: amount.tokens, label: `Deposit ${amount.tokens} ${input.candidate.asset} from wallet into margin`,
         tool: "vanna_deposit_collateral", args: writeArgs(input.scope, wireSymbol(input.candidate.asset), amount.tokens), sizing });
@@ -97,7 +116,8 @@ function compileEarn(input: {
   now: number;
 }): CompileResult {
   // Idle Earn only. Borrow-to-Earn would move C-address proceeds to the G-wallet.
-  if (input.candidate.borrows || input.candidate.legs.length || !input.candidate.id.startsWith("lend_idle_")) {
+  const traits = candidateKindTraits(input.candidate.kind);
+  if (input.candidate.borrows || input.candidate.legs.length || traits.venue !== "earn" || traits.funding !== "wallet") {
     return { ok: false, reason: "unsupported_op" };
   }
   const priced = priceFor(input.candidate.asset, input.observations, input.now);
@@ -123,7 +143,7 @@ function compileEarn(input: {
 }
 
 function impliesBlendSupply(candidate: Candidate): boolean {
-  return candidate.id.startsWith("borrow_supply_") || candidate.id.startsWith("supply_idle_");
+  return candidateKindTraits(candidate.kind).venue === "blend";
 }
 
 function supplyUsd(candidate: Candidate): string {
@@ -201,16 +221,16 @@ function blendSupplyStep(
   };
 }
 
-function writeArgs(scope: InvestigationScope, symbol: string, amount: string): Record<string, unknown> {
+export function writeArgs(scope: InvestigationScope, symbol: string, amount: string): Record<string, unknown> {
   return { smart_account: scope.smartAccount, symbol, amount, trader: scope.trader };
 }
 
 /** The symbol the margin contract and Blend pool want — BLUSDC is USDC on the wire. */
-function wireSymbol(asset: string): string {
+export function wireSymbol(asset: string): string {
   return resolveAssetDef(asset)?.marginSymbol ?? asset;
 }
 
-function tokensFromUsd(
+export function tokensFromUsd(
   usd: string,
   price: bigint,
 ): { ok: true; tokens: string } | { ok: false; reason: "unpriceable_amount" | "zero_amount" } {
@@ -232,7 +252,7 @@ function tokensFromUsd(
   return { ok: true, tokens: formatted };
 }
 
-function priceFor(
+export function priceFor(
   asset: string,
   observations: readonly Observation[],
   now: number,
