@@ -16,6 +16,26 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `Create a startegy in such a way that My HF will stay above the 1.1 and use USDC and XLM as collateral and deploy them in farm` (signed-in, user's own words)
+
+- **Date / commit / surface:** 2026-09-13 10:35 IST · `feat/copilot-finetune` @ Aditya's `f7413d7` + §1 candidate-id · signed-in `/copilot` · Privy `GBH5…IHA` → `CCKIT…DMC`, testnet
+- **Account / auto-sign:** collateral $6,605.84, debt $5,102.54, HF ~1.29; wallet 10,206.98 XLM idle, 0 USDC-family idle; 5,000 AqUSDC already in Earn; Blend supply ~16,185 XLM + ~876 USDC
+- **Result:** `PARTIAL` (prose correct, **zero options**, five warnings — two of them false)
+- **Returned, verbatim:**
+  > The current margin account holds $6,605.84 in collateral and $5,102.54 in debt, yielding a Health Factor of ~1.29, which is above the 1.1 threshold. Protocol collateral config allows XLM, AQUSDC, and SOUSDC as margin collateral; the wallet holds 10,206.98 spendable XLM. Blend Farm offers 425.61% supply APY for XLM and 0.91% for USDC (where the account currently holds ~16,185 XLM and ~876 USDC in Blend supply), while Aquarius currently has no available USDC/XLM LP pool. · Deploy XLM and USDC into Vanna Farm while maintaining a margin Health Factor above 1.1. · Maintain Health Factor strictly above 1.1 · Use XLM and USDC as collateral for farming · Borrowing allowed, not required · Checked in 30s · ⓘ wallet balances: some entries were unavailable. · ⓘ aquarius markets: some entries were unavailable. · ⓘ Aquarius pools were discovered; executable quotes and net returns have not been evaluated. · ⓘ collateral config: no supported display fields were available. · ⓘ farm overview: no supported display fields were available. · [Start over]
+- **Log:** request `f1efb360`; scope 2.3s; seed 4.0s (10 markets); model turn 1 6.8s (thoughts 647), turn 2 15.2s (thoughts 2,738); 5 reads (`account_collateral`, `account_debt`, `collateral_config`, `aquarius_markets`, `farm_overview`), `research_complete` at 23.9s; fact extract `collateral_config` → `no_fields`, `farm_overview` → `no_fields`; turn 30.2s.
+- **Tx:** none possible — nothing to prepare.
+- **Cause (three, all deterministic-layer, none the model's):**
+  1. `rate-comparison.ts` rejected any supply rate over **100% APR** as implausible. Testnet Blend XLM is at 89.98% utilisation → 168.6% APR / 425.6% APY, internally consistent (208.2 × 0.90 × 0.9 backstop ≈ 168.6). XLM lost its rate row → the only idle asset produced no candidate. **Silently** — the model's prose reported 425.61% while the options layer had discarded XLM.
+  2. Remaining shapes infeasible, correctly: 0 idle USDC-family (the 5K AqUSDC is vTokens in Earn, never read); borrow-BLUSDC→Blend carry = 0.9% − 32.5% < 0.
+  3. `normalize.ts` 14-case switch: `collateral_config` and `farm_overview` returned full payloads and were dropped; "wallet balances: some entries were unavailable" was the MCP's deliberate `USDC: not_resolvable` line; "aquarius markets: …" likewise a non-ok row status.
+- **Fix (13 Sep, same branch):** §1 candidate ids owned by `candidate-id.ts`; rate plausibility = `supply ≤ borrow × utilization` with excluded rates named on the card (`rate-comparison.ts`, `evidence.ts` carries the fields); facts derived from response shape (`facts-by-shape.ts`), judgement branches only in `normalize.ts`; non-ok row status is information, not failure. Suite 1679/0/3.
+- **Class:** enumerated-not-intelligent (handoff §3d) — a size cap, a capability list, and a status list each threw away real data without saying so
+- **Reveals:** the prose and the options are generated from different places and never reconciled; the user cannot tell "no good option" from "option discarded". Also: the copilot never read the Earn position, so "use USDC" could not consider the 5K AqUSDC sitting in Earn — a strategy-space gap, not a data gap (§8 of `COPILOT_MCP_FLOW_DIAGRAMS.md`).
+- **Not yet re-run after the fix.** Next entry above this one must be the same prompt, verbatim, with the new card.
+
+---
+
 ### Copilot · `repay 1 xlm from my account` (signed-in, approve consumed)
 
 - **Date / commit / surface:** 2026-09-11 14:20 IST · signed-in `/copilot` · Privy `GD4B…NPDH`
