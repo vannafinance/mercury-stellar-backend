@@ -1,6 +1,15 @@
 import type { InvestigationScope } from "../investigation/types";
 
-export type WorkflowOp = "lend" | "deposit_collateral" | "borrow" | "repay" | "supply_blend";
+/**
+ * The write operations the copilot can compose, propose and execute. THE list — every
+ * other mention (plan legs, literal actions, model schemas, the allowlist's tool map, the
+ * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
+ * `Record<WorkflowOp, …>` maps the compiler then demands.
+ */
+export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend"] as const;
+/** Ops that spend or receive on the G-wallet, never the margin account: Earn's direct pool calls. */
+export const WALLET_OPS: readonly WorkflowOp[] = ["lend", "redeem"];
+export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 /**
  * Where a step's amount came from, which decides whether it may be re-derived later.
  *

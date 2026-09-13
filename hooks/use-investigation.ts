@@ -60,7 +60,26 @@ export function useInvestigation(wallet: string | null) {
     clearStoredThread(activeWallet.current);
     applyBlank(activeWallet.current);
   }, [applyBlank]);
+  /**
+   * The wallet comes from a store that can report `null` for a render or two while it
+   * reconnects. Treating that as "wallet changed" aborted the in-flight investigation and
+   * wiped the thread — the user saw "ran out of time" eleven seconds into a healthy run
+   * (13 Sep). A change TO a wallet is acted on at once; a change to nothing waits briefly
+   * for the same wallet to come back, and only then resets.
+   */
+  const settledWallet = useRef(wallet);
+  const [effectiveWallet, setEffectiveWallet] = useState(wallet);
   useEffect(() => {
+    if (wallet !== null || settledWallet.current === null) {
+      settledWallet.current = wallet;
+      setEffectiveWallet(wallet);
+      return;
+    }
+    const timer = setTimeout(() => { settledWallet.current = null; setEffectiveWallet(null); }, 1_500);
+    return () => clearTimeout(timer);
+  }, [wallet]);
+  useEffect(() => {
+    const wallet = effectiveWallet;
     abort.current?.abort();
     sequence.current += 1;
     const stored = wallet ? readStoredThread(wallet) : null;
@@ -100,7 +119,7 @@ export function useInvestigation(wallet: string | null) {
       } catch { /* sessionStorage remains the live thread; a closed tab is the documented loss */ }
     })();
     return () => { restore.abort(); abort.current?.abort(); sequence.current += 1; };
-  }, [wallet, applyBlank]);
+  }, [effectiveWallet, applyBlank]);
   const cancel = useCallback(() => {
     abort.current?.abort();
     sequence.current += 1;
@@ -109,7 +128,7 @@ export function useInvestigation(wallet: string | null) {
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
-    abort.current?.abort("replaced");
+    abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
@@ -119,7 +138,16 @@ export function useInvestigation(wallet: string | null) {
     // Above the route's 75s guarantee: the server should always answer first, so this
     // is a backstop for a dead connection rather than the normal end of a slow run.
     // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
-    const timer = setTimeout(() => controller.abort("deadline"), 120_000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 120_000);
+    /**
+     * Two different things end a run early and they must not share a sentence: the
+     * deadline (time really ran out) and an abort (this request was replaced, cancelled,
+     * or the wallet changed under it). The second is not a failure to retry blindly.
+     */
+    const abortedCopy = () => timedOut
+      ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
+      : "This investigation was cancelled or replaced before it finished. Nothing was executed — run it again.";
     const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;
     const history = transcript.current.slice(-8);
@@ -137,10 +165,13 @@ export function useInvestigation(wallet: string | null) {
       settled = true;
       setState((previous) => ({ ...previous, loading: false, progress: null, ...patch }));
     };
-    const consume = async () => {
+    try {
       const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]));
       if (sequence.current !== id || activeWallet.current !== owner) return;
-      if (combined.aborted) return;
+      if (combined.aborted) {
+        settle({ error: abortedCopy() });
+        return;
+      }
       const response = await fetch("/api/copilot/investigate", {
         method: "POST", headers, signal: combined,
         body: JSON.stringify({
@@ -179,6 +210,7 @@ export function useInvestigation(wallet: string | null) {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
+            lastResult.current = lastResult.current;
             clearStoredThread(owner);
             writeStoredThread(owner, {
               wallet: owner ?? "",
@@ -196,28 +228,19 @@ export function useInvestigation(wallet: string | null) {
           }));
         } else setState((previous) => ({ ...previous, progress: event.event }));
       });
-    };
-    try {
-      await consume();
-      if (current() && !received && !streamError && !combined.aborted) {
-        await consume();
+      if (current() && !received && !streamError) {
+        settle({ error: "The investigation finished without an answer. Please try again." });
       }
-      if (current() && !received && !streamError) settle();
-    } catch {
+    } catch (error) {
       if (received || streamError) {
         settle();
         return;
       }
-      if (current() && !combined.aborted) {
-        try {
-          await consume();
-        } catch { /* second attempt */ }
-      }
-      if (received || streamError) {
-        settle();
-        return;
-      }
-      settle();
+      settle({
+        error: combined.aborted
+          ? abortedCopy()
+          : error instanceof Error ? error.message : "Investigation failed. Please try again.",
+      });
     } finally {
       clearTimeout(timer);
       if (!settled && sequence.current === id && activeWallet.current === owner) {

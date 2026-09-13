@@ -33,13 +33,20 @@ describe("conceptual answers without a wallet", () => {
     expect(decision).toMatchObject({ kind: "research_complete", goal: { intent: "answer" } });
   });
 
-  it("still requires evidence IDs for a strategy handoff", () => {
+  it("still requires evidence IDs behind any figure in a strategy handoff", () => {
+    // A number the user will read must trace to a read; a sentence with no figure may stand alone.
     expect(parseDecision({
       kind: "research_complete",
       goal: { intent: "strategy", objective: "Build a plan", constraints: [], borrowing: "unspecified" },
-      findings: [{ summary: "Rates were read", evidenceIds: [] }],
+      findings: [{ summary: "Blend XLM supply APR is 168.7%", evidenceIds: [] }],
       openQuestions: [],
     })).toBeNull();
+    expect(parseDecision({
+      kind: "research_complete",
+      goal: { intent: "strategy", objective: "Build a plan", constraints: [], borrowing: "unspecified" },
+      findings: [{ summary: "Adding liquidity is not an operation this copilot can execute.", evidenceIds: [] }],
+      openQuestions: [],
+    })).toMatchObject({ kind: "research_complete" });
   });
 
   it("allows empty evidence when the planner nominated stated actions", () => {

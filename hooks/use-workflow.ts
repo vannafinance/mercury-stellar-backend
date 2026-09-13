@@ -4,6 +4,7 @@ import { useCallback, useState, useEffect, useRef } from "react";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import { withClientDeadline } from "@/lib/copilot/client-deadline";
+import { useLedgerTick } from "@/contexts/ledger-subscriber";
 
 async function postJson(url: string, body: unknown, signal: AbortSignal): Promise<WorkflowView> {
   signal.throwIfAborted();
@@ -23,6 +24,11 @@ function running(view: WorkflowView): boolean {
   return view.status === "approved" || view.status === "running";
 }
 
+/** A step whose transaction is on its way to a ledger: waiting on the chain, not on a person. */
+export function inFlight(view: WorkflowView): boolean {
+  return view.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status));
+}
+
 export function useWorkflow(wallet: string | null = null) {
   const [state, setState] = useState<{
     view: WorkflowView | null; loading: boolean; error: string | null;
@@ -31,6 +37,9 @@ export function useWorkflow(wallet: string | null = null) {
   const active = useRef<AbortController | null>(null);
   const viewRef = useRef<WorkflowView | null>(null);
   viewRef.current = state.view;
+  const loadingRef = useRef(false);
+  loadingRef.current = state.loading;
+  const { tick } = useLedgerTick();
   useEffect(() => {
     active.current?.abort();
     const controller = new AbortController(); active.current = controller;
@@ -58,10 +67,35 @@ export function useWorkflow(wallet: string | null = null) {
     for (let step = 0; step < 8 && running(view); step++) {
       view = await postJson(`/api/copilot/workflow/${view.id}/advance`, {}, signal);
       if (!signal.aborted) setState({ view, loading: true, error: null });
-      if (view.steps.some(s => ["submitted", "invoking", "submitting"].includes(s.status))) break;
+      if (inFlight(view)) break;
     }
     return view;
   }, []);
+
+  /**
+   * A submitted step settles when a ledger closes, not when a person clicks. The run pauses
+   * on it above; here every ledger close asks the server once more — `advance` on such a step
+   * only looks its hash up, it never issues anything — and once the ledger has answered the
+   * run carries on to the next step by itself. 13 Sep: both steps of the first redeem →
+   * deposit had succeeded on chain while the card still said "Broadcasting…", because the
+   * only thing that ever asked again was the "Check progress" button.
+   */
+  useEffect(() => {
+    const view = viewRef.current;
+    if (tick === 0 || !view || loadingRef.current || !running(view) || !inFlight(view)) return;
+    active.current?.abort();
+    const controller = new AbortController(); active.current = controller;
+    setState(previous => ({ ...previous, loading: true, error: null }));
+    void (async () => {
+      try {
+        const next = await runUntilPaused(view, AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]));
+        if (!controller.signal.aborted && active.current === controller) setState({ view: next, loading: false, error: null });
+      } catch {
+        // The next ledger close asks again; the button remains as the manual path.
+        if (active.current === controller) setState(previous => ({ ...previous, loading: false }));
+      }
+    })();
+  }, [tick, runUntilPaused]);
 
   const propose = useCallback(async (continuation: string, candidateId: string) => {
     active.current?.abort();

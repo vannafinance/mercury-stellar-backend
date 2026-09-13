@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { InvestigationCard } from "@/components/copilot/investigation-card";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -102,7 +103,7 @@ describe("investigation card / options", () => {
 
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
-    expect(screen.getByText("25.41% APY")).toBeTruthy();
+    expect(screen.getByText("25.41% APR")).toBeTruthy();
     expect(screen.getByText("10.00% APR")).toBeTruthy();
     expect(screen.getAllByText(/\$680\.00 · no change to health factor/)).toHaveLength(2);
   });
@@ -285,11 +286,26 @@ describe("investigation card / options", () => {
     );
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Switch →" }));
-    expect(onPropose).toHaveBeenCalledWith("lend_idle_aqusdc");
+    expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 
   it("shows the server-measured duration on a finished investigation", () => {
     card(view({ elapsedMs: 12_400, message: "Your reported health factor is 3.90." }));
     expect(screen.getByText(/Checked in 12s/)).toBeTruthy();
+  });
+});
+
+describe("investigation card / in-flight state", () => {
+  it("says what is happening between a click and its result", () => {
+    const result = view();
+    const { rerender } = render(
+      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onReset={() => {}} onPropose={() => {}} workflowLoading workflow={null} />,
+    );
+    expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Preparing the plan/);
+    rerender(
+      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onReset={() => {}} onPropose={() => {}} workflowLoading
+        workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], message: "m", steps: [] }} />,
+    );
+    expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Checking funds, prices and projected health/);
   });
 });

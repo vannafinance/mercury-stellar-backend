@@ -1,18 +1,21 @@
 import { isRecord } from "./decision";
+import { extractFactsByShape } from "./facts-by-shape";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
 
-const PLUMBING = /^(duration_ms|error|message|unsigned_xdr|auth_entries|code|function|contract|note|lp_note|source|summary|warning|kind|available|status|smart_account|trader|account)$/i;
-
 /**
- * Facts come from the payload's own keys, not from the capability name.
+ * Turn observations into display facts.
  *
- * MCP already names units in the suffix (`*_human`, `*_usd`, `*_pct`, `*_wad`,
- * `*_address`, `*_ratio`). A switch over capability names silently drops any
- * successful read whose name is not on that list — live, `max_borrow` returned
- * `max_borrow_human` and the card said the number was missing.
+ * Two passes per observation. First, a small set of branches for capabilities where a
+ * real JUDGEMENT is needed that the response shape cannot express — each says why in
+ * its comment and declares which top-level keys it consumed. Second, the shape-driven
+ * extractor (`facts-by-shape.ts`) reads every remaining unit-bearing field from the
+ * MCP's own naming conventions. A capability with no branch here is the normal case,
+ * not a gap: it renders from its shape.
  *
- * Hand-written branches stay only where shape cannot express a judgement.
+ * Until 13 Sep this was a 14-case switch, and the 12 capabilities without a case —
+ * `max_borrow`, `farm_overview`, `collateral_config`, `earn_position`, … — were read,
+ * discarded, and reported to the user as "no supported display fields".
  */
 export function normalizeResearchFacts(observations: Observation[]): { facts: ResearchFact[]; warnings: string[] } {
   const facts: ResearchFact[] = [];
@@ -21,48 +24,187 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
     return /^-?\d+(?:\.\d+)?$/.test(text) && text.length <= 60 ? text : null;
   };
+  const pick = (...values: unknown[]): unknown => {
+    for (const value of values) {
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+    return undefined;
+  };
   const asBool = (raw: unknown): boolean | null => {
     if (typeof raw === "boolean") return raw;
     if (raw === 1 || raw === "1" || raw === "true") return true;
     if (raw === 0 || raw === "0" || raw === "false") return false;
     return null;
   };
-  const assetLabel = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_/-]{1,24}$/.test(value) ? value : null;
-  const venueOf = (capability: string): ResearchFact["venue"] => {
-    if (capability.includes("wallet")) return "wallet";
-    if (capability.includes("blend")) return "blend";
-    if (capability.includes("earn")) return "earn";
-    if (capability.includes("aquarius")) return "aquarius";
-    if (capability.includes("price") || capability.includes("oracle")) return "oracle";
-    if (capability.includes("sign")) return "signing";
-    return "margin";
-  };
-
   for (const observation of observations) {
     const data = observation.data;
+    const noun = observation.capability.replaceAll("_", " ");
     if (observation.status !== "ok" || !data) {
-      warnings.add(`${observation.capability.replaceAll("_", " ")}: data was unavailable. No value was assumed.`);
+      warnings.add(`${noun}: data was unavailable. No value was assumed.`);
       logDropped(observation, "unavailable");
       continue;
     }
-    const venue = venueOf(observation.capability);
-    const before = facts.length;
-    const add = (path: string, label: string, raw: unknown, unit: string, factVenue = venue) => {
+    const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"]) => {
       const value = decimal(raw);
       if (value === null) return;
+      facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt });
+    };
+    const flag = (path: string, label: string, raw: unknown, yes: string, no: string) => {
+      const bit = asBool(raw);
+      if (bit === null) return;
       facts.push({
-        id: `${observation.id}:${path}`, label, value, unit, venue: factVenue,
-        evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
+        id: `${observation.id}:${path}`, label, value: bit ? yes : no, unit: "",
+        venue: "margin", evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
       });
     };
-
     /**
-     * Shape cannot say whether `enabled: true` plus `status: session_expired` is
-     * a working session. Calling that "Active" would talk someone into approving
-     * a plan the server cannot carry out unattended.
+     * Rows a branch iterates. A row is unavailable only when it says so (`error`, or
+     * `available: false`); a non-ok `status` is information the MCP attached on purpose
+     * (`USDC: not_resolvable` — there is no plain USDC on this network) and is skipped
+     * without a warning. Until 13 Sep that line alone produced "wallet balances: some
+     * entries were unavailable" on every signed-in run.
      */
-    if (observation.capability === "signing_status") {
-      if (typeof data.enabled === "boolean") {
+    const rows = (key: string): Array<{ row: Record<string, unknown>; path: string }> => {
+      if (!Array.isArray(data[key])) return [];
+      return data[key].flatMap((row, index) => {
+        if (!isRecord(row)) return [];
+        if (row.error || row.available === false) {
+          const who = typeof row.symbol === "string" ? row.symbol : `${key}[${index}]`;
+          const why = typeof row.message === "string" ? row.message : typeof row.error === "string" ? row.error : null;
+          warnings.add(`${noun}: ${who} was unavailable${why ? ` — ${why}` : "."}`);
+          return [];
+        }
+        if (typeof row.status === "string" && row.status !== "ok") return [];
+        return [{ row, path: `${key}[${index}]` }];
+      });
+    };
+    const assetLabel = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_/-]{1,24}$/.test(value) ? value : null;
+    const consumed = new Set<string>();
+    const before = facts.length;
+
+    switch (observation.capability) {
+      /**
+       * Judgement: the wallet read reports the same Stellar asset twice — under its
+       * symbol and as `<SYMBOL>_SAC` (the Soroban wrapper for the identical holding).
+       * Shape alone would list "XLM 2781.947" and "XLM_SAC 2781.947" as two balances,
+       * which reads as twice the spendable capital. Keep the canonical line only.
+       */
+      case "wallet_balances": {
+        consumed.add("assets");
+        const walletRows = rows("assets").flatMap(({ row, path }) => {
+          const symbol = assetLabel(row.symbol);
+          return symbol ? [{ symbol, value: decimal(row.balance), spendable: decimal(row.spendable), path }] : [];
+        });
+        const canonical = new Map(walletRows.map((entry) => [entry.symbol, entry.value]));
+        for (const entry of walletRows) {
+          const base = entry.symbol.endsWith("_SAC") ? entry.symbol.slice(0, -4) : null;
+          if (base && canonical.get(base) === entry.value) continue;
+          add(`${entry.path}.balance`, `${entry.symbol} wallet balance`, entry.value, entry.symbol, "wallet");
+          if (entry.spendable !== null && entry.spendable !== entry.value) {
+            add(`${entry.path}.spendable`, `${entry.symbol} wallet spendable`, entry.spendable, entry.symbol, "wallet");
+          }
+        }
+        break;
+      }
+      /**
+       * Judgement: `is_healthy` is worded as a state ("healthy" / "at risk"), and a
+       * `page_debt_mismatch` flag means the app panel disagrees with the contract — the
+       * panel figure is then reported as a disagreement, never as the health factor.
+       * The health factor itself is never derived from collateral/debt here.
+       */
+      case "account_health":
+      case "account_position":
+      case "liquidation_snapshot": {
+        consumed.add("is_healthy").add("liquidatable").add("page_debt_mismatch").add("page_health_factor");
+        flag("is_healthy", "Account health status", data.is_healthy, "healthy", "at risk");
+        flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
+        if (data.page_debt_mismatch === true) {
+          facts.push({
+            id: `${observation.id}:page_debt_mismatch`,
+            label: "Account panel disagrees",
+            value: typeof data.page_health_factor === "string" ? data.page_health_factor : "yes",
+            unit: "",
+            venue: "margin",
+            evidenceId: observation.id,
+            sourcePath: "page_debt_mismatch",
+            readAt: observation.observedAt,
+          });
+        }
+        break;
+      }
+      /**
+       * Judgement: the fact is the verdict on the amount the user asked about, so the
+       * label is composed from the request args ("withdraw 100 XLM"), not from the
+       * response. `max_*_human` in the same payload is a plain number and comes from shape.
+       */
+      case "can_withdraw":
+      case "can_borrow": {
+        consumed.add("allowed").add("can_withdraw").add("can_borrow").add("amount");
+        const allowed = asBool(data.allowed)
+          ?? (observation.capability === "can_withdraw" ? asBool(data.can_withdraw) : null)
+          ?? (observation.capability === "can_borrow" ? asBool(data.can_borrow) : null);
+        const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
+          ?? decimal(observation.args.amount)
+          ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))
+          ?? decimal(pick(data.max_withdraw_human, data.max_borrow_human));
+        const asset = assetLabel(observation.args.asset) ?? assetLabel(data.symbol) ?? "asset";
+        const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
+        if (allowed !== null) {
+          facts.push({
+            id: `${observation.id}:allowed`,
+            label: amount ? `${verb} ${amount} ${asset}` : `${verb} ${asset}`,
+            value: allowed ? "allowed" : "not allowed",
+            unit: "",
+            venue: "margin",
+            evidenceId: observation.id,
+            sourcePath: "allowed",
+            readAt: observation.observedAt,
+          });
+        }
+        break;
+      }
+      /**
+       * Judgement: the MCP documents Earn's `supply_apy_pct` as a simple-APR alias, not a
+       * compounded APY, so it must not be shown as "% APY" and is only used when the APR
+       * field is absent. Everything else in the payload comes from shape.
+       */
+      case "earn_market": {
+        consumed.add("supply_apy_pct");
+        if (data.supply_apr_pct == null) {
+          add("supply_apy_pct", `${String(observation.args.asset)} Earn supply APR`, data.supply_apy_pct, "% APR", "earn");
+        }
+        break;
+      }
+      /**
+       * Judgement: an AMM pool is named by its PAIR, and the pair is a protocol fact the
+       * model once guessed at ("deposit AQUSDC alone, or add XLM alongside?"). The
+       * estimated API APY is withheld: it is not an evaluated net return.
+       */
+      case "aquarius_markets": {
+        consumed.add("pools");
+        for (const { row, path } of rows("pools")) {
+          const pair = Array.isArray(row.tokens)
+            ? row.tokens.filter((token): token is string => typeof token === "string").join(" + ")
+            : null;
+          if (!pair) continue;
+          add(`${path}.liquidity_usd`, `Aquarius ${pair} pool depth`, row.liquidity_usd, "USD", "aquarius");
+        }
+        warnings.add("Aquarius pools were discovered; executable quotes and net returns have not been evaluated.");
+        break;
+      }
+      /**
+       * Judgement: `enabled: true` is a configuration flag, not a working session.
+       *
+       * The Sign Service reports live failures alongside it — `session_expired`,
+       * `session_not_active`, `no_active_session`, `over_daily_cap`, `unauthorized`
+       * (see `mcp-write.ts`) — so reading only `enabled` labels a dead delegation
+       * "Active". That is the one claim here that could talk someone into approving a
+       * plan believing the server can carry it out unattended. When the status
+       * contradicts the flag, the status wins and the authority is NOT called active.
+       */
+      case "signing_status": {
+        consumed.add("enabled").add("status");
+        if (typeof data.enabled !== "boolean") break;
         const reported = typeof data.status === "string" ? data.status.trim().toLowerCase() : "";
         const usable = !reported || /^(active|enabled|on|ok|ready)$/.test(reported);
         const value = !data.enabled ? "Off" : usable ? "Active" : `Not usable (${reported.replaceAll("_", " ")})`;
@@ -72,200 +214,24 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         });
         if (data.enabled && !usable) warnings.add(
           "Server delegated signing is configured but not currently usable, so every transaction needs your wallet signature.");
-      }
-      if (facts.length === before) {
-        warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
-        logDropped(observation, "no_fields");
-      }
-      continue;
-    }
-
-    /**
-     * Eligibility is args + payload: "allowed" alone is not "withdraw 100 XLM".
-     * Shape cannot bind the model's requested size to the risk-engine answer.
-     */
-    if (observation.capability === "can_withdraw" || observation.capability === "can_borrow") {
-      const allowed = asBool(data.allowed)
-        ?? (observation.capability === "can_withdraw" ? asBool(data.can_withdraw) : null)
-        ?? (observation.capability === "can_borrow" ? asBool(data.can_borrow) : null);
-      const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
-        ?? decimal(observation.args.amount)
-        ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))
-        ?? decimal(data.max_withdraw_human)
-        ?? decimal(data.max_borrow_human);
-      const asset = assetLabel(observation.args.asset) ?? assetLabel(data.symbol) ?? "asset";
-      const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
-      if (allowed !== null) {
-        facts.push({
-          id: `${observation.id}:allowed`,
-          label: amount ? `${verb} ${amount} ${asset}` : `${verb} ${asset}`,
-          value: allowed ? "allowed" : "not allowed",
-          unit: "",
-          venue: "margin",
-          evidenceId: observation.id,
-          sourcePath: "allowed",
-          readAt: observation.observedAt,
-        });
-      }
-      if (facts.length === before) {
-        warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
-        logDropped(observation, "no_fields");
-      }
-      continue;
-    }
-
-    const emitLeaf = (path: string, key: string, raw: unknown, ctx: Record<string, unknown>, arrayKind: string | null) => {
-      const symbol = assetLabel(ctx.symbol) ?? assetLabel(ctx.asset) ?? assetLabel(observation.args.asset);
-      const bit = asBool(raw);
-      if (bit !== null && (/^is_/.test(key) || key === "allowed" || key === "liquidatable" || key === "enabled")) {
-        const yes = key === "liquidatable" ? "liquidatable" : key === "is_healthy" ? "healthy" : "yes";
-        const no = key === "liquidatable" ? "not liquidatable" : key === "is_healthy" ? "at risk" : "no";
-        facts.push({
-          id: `${observation.id}:${path}`,
-          label: key === "is_healthy" ? "Account health status"
-            : key === "liquidatable" ? "Liquidation snapshot flag"
-            : key.replaceAll("_", " "),
-          value: bit ? yes : no,
-          unit: "",
-          venue,
-          evidenceId: observation.id,
-          sourcePath: path,
-          readAt: observation.observedAt,
-        });
-        return;
-      }
-      const value = decimal(raw);
-      if (value === null) return;
-      if (key.endsWith("_wad") && Object.keys(ctx).some((k) => k === key.slice(0, -4) + "_human")) return;
-
-      let unit = "";
-      if (key.endsWith("_usd") || key === "usd") unit = "USD";
-      else if (key.endsWith("_pct")) {
-        // Earn documents supply_apy_pct as a simple APR alias, not compounded APY.
-        if (observation.capability === "earn_market" && key === "supply_apy_pct") unit = "% APR";
-        else if (/apr/i.test(key)) unit = "% APR";
-        else if (/apy/i.test(key)) unit = "% APY";
-        else unit = "%";
-      } else if (key.endsWith("_ratio")) unit = "ratio";
-      else if (key.endsWith("_address")) unit = "address";
-      else if (key.endsWith("_wad")) unit = "WAD";
-      else if (/_xlm$/i.test(key)) unit = "XLM";
-      else if (key.endsWith("_human")) unit = symbol ?? "";
-      else if (symbol && (key === "balance" || key === "amount" || key === "amount_human")) unit = symbol;
-      else if (key === "health_factor" || key.endsWith("_health_factor")) unit = "HF";
-
-      let label: string;
-      if (arrayKind === "assets" && (key === "balance" || key === "amount_human") && symbol) {
-        label = `${symbol} wallet balance`;
-      } else if (arrayKind === "collateral" && symbol) {
-        label = unit === "USD" ? `${symbol} collateral value` : `${symbol} collateral`;
-      } else if ((arrayKind === "debt" || arrayKind === "borrows") && symbol) {
-        label = unit === "USD" ? `${symbol} debt value` : `${symbol} borrowed`;
-      } else if (arrayKind === "reserves" && symbol) {
-        label = `${symbol} Blend ${key.replaceAll("_", " ").replace(/ pct$/, "")}`;
-      } else if (arrayKind === "pools") {
-        const pair = Array.isArray(ctx.tokens)
-          ? ctx.tokens.filter((t): t is string => typeof t === "string").join(" + ")
-          : null;
-        label = pair ? `Aquarius ${pair} pool depth` : key.replaceAll("_", " ");
-      } else if (key === "health_factor") label = "Current health factor";
-      else if (key === "posted_health_factor") label = "Posted-collateral health factor";
-      else if (key === "collateral_usd" && observation.capability === "liquidation_snapshot") label = "Contract liquidation collateral";
-      else if (key === "debt_usd" && observation.capability === "liquidation_snapshot") label = "Contract liquidation debt";
-      else if (key === "fee_reserve_xlm") label = "Suggested fee reserve";
-      else {
-        const stem = key.replace(/_human$|_usd$|_pct$|_wad$|_address$|_ratio$/, "").replaceAll("_", " ");
-        const titled = stem.replace(/\b(apy|apr|usd|hf|ltv)\b/gi, (m) => m.toUpperCase());
-        label = titled.charAt(0).toUpperCase() + titled.slice(1);
-        if (observation.capability === "earn_market" && symbol) label = `${symbol} Earn ${titled}`;
-        if (observation.capability === "blend_reserve" && symbol) label = `${symbol} Blend ${titled}`;
-        if (observation.capability === "asset_price") label = `${String(observation.args.asset)} oracle price`;
-      }
-      add(path, label, raw, unit);
-    };
-
-    const walk = (node: unknown, path: string, ctx: Record<string, unknown>, arrayKind: string | null) => {
-      if (Array.isArray(node)) {
-        const kind = path.split(".").pop() ?? arrayKind;
-        node.forEach((item, index) => {
-          if (!isRecord(item)) return;
-          if (item.error || item.available === false || (item.status && !["ok", "not_funded"].includes(String(item.status)))) {
-            warnings.add(`${observation.capability.replaceAll("_", " ")}: some entries were unavailable.`);
-            return;
-          }
-          walk(item, `${path}[${index}]`, item, kind);
-        });
-        return;
-      }
-      if (!isRecord(node)) {
-        const key = path.split(".").pop()?.replace(/\[\d+\]/g, "") ?? path;
-        if (!PLUMBING.test(key)) emitLeaf(path, key, node, ctx, arrayKind);
-        return;
-      }
-      for (const [key, value] of Object.entries(node)) {
-        if (PLUMBING.test(key)) continue;
-        const next = path ? `${path}.${key}` : key;
-        if (isRecord(value) || Array.isArray(value)) walk(value, next, isRecord(value) ? value : node, arrayKind);
-        else emitLeaf(next, key, value, node, arrayKind);
-      }
-    };
-
-    walk(data, "", data, null);
-
-    /**
-     * Panel vs contract debt is a judgement: the boolean flag plus the page HF
-     * must not be listed as two unrelated facts, and the panel number must not
-     * be quoted as health. Shape cannot express that.
-     */
-    if (asBool(data.page_debt_mismatch) === true) {
-      const panel = typeof data.page_health_factor === "string" || typeof data.page_health_factor === "number"
-        ? String(data.page_health_factor) : "yes";
-      for (let i = facts.length - 1; i >= 0; i--) {
-        if (facts[i].evidenceId === observation.id
-          && (facts[i].sourcePath === "page_debt_mismatch" || facts[i].sourcePath === "page_health_factor")) {
-          facts.splice(i, 1);
-        }
-      }
-      facts.push({
-        id: `${observation.id}:page_debt_mismatch`,
-        label: "Account panel disagrees",
-        value: panel,
-        unit: "",
-        venue: "margin",
-        evidenceId: observation.id,
-        sourcePath: "page_debt_mismatch",
-        readAt: observation.observedAt,
-      });
-    }
-
-    /**
-     * The wallet read reports the same Stellar asset twice — symbol and `<SYMBOL>_SAC`.
-     * Shape cannot know they are one holding. Keep the canonical symbol.
-     */
-    if (observation.capability === "wallet_balances") {
-      const walletFacts = facts.filter((f) => f.evidenceId === observation.id && f.venue === "wallet");
-      const bySymbol = new Map<string, string>();
-      for (const fact of walletFacts) {
-        const match = fact.label.match(/^([A-Za-z0-9]+) wallet balance$/);
-        if (match) bySymbol.set(match[1], fact.value);
-      }
-      for (let i = facts.length - 1; i >= 0; i--) {
-        const fact = facts[i];
-        if (fact.evidenceId !== observation.id || fact.venue !== "wallet") continue;
-        const match = fact.label.match(/^([A-Za-z0-9]+)_SAC wallet balance$/);
-        if (match && bySymbol.get(match[1]) === fact.value) facts.splice(i, 1);
+        break;
       }
     }
 
-    if (observation.capability === "aquarius_markets") {
-      warnings.add("Aquarius pools were discovered; executable quotes and net returns have not been evaluated.");
+    const shaped = extractFactsByShape(observation, consumed);
+    const taken = new Set(facts.slice(before).map((fact) => fact.sourcePath));
+    for (const fact of shaped.facts) {
+      if (taken.has(fact.path)) continue;
+      facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt });
+    }
+    for (const row of shaped.unavailable) {
+      warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` — ${row.message}` : "."}`);
     }
     if (Array.isArray(data.errors) && data.errors.length) {
-      warnings.add("Some Blend reserves could not be read; this is not a complete market comparison.");
+      warnings.add(`${noun}: ${data.errors.length} ${data.errors.length === 1 ? "entry" : "entries"} could not be read; this is not a complete picture.`);
     }
-
     if (facts.length === before && observation.capability !== "aquarius_markets") {
-      warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
+      warnings.add(`${noun}: no supported display fields were available.`);
       logDropped(observation, "no_fields");
     }
   }

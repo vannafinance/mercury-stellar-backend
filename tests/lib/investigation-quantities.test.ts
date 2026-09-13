@@ -120,6 +120,14 @@ describe("compileLeverageWrites", () => {
     expect(aq).toBeCloseTo(0.91, 2);
     expect(bl).toBeCloseTo(0.91, 2);
     expect(aq).not.toBe(2);
-    expect(result!.healthFactorAfter).not.toBeNull();
+    /**
+     * No floor was stated, so there is no projection — and that is the point. A health
+     * factor is projected against the user's own floor; the liquidation line (1.10) is
+     * not a floor, it is the threshold at which the account IS liquidatable
+     * (`margin-health.ts`: `hf <= LIQUIDATION_THRESHOLD`). Sizing to it leaves zero
+     * margin, so `capacity` returns null at or below it and nothing is projected here.
+     * Sizing above stands on its own: it comes from the deposit and the multiple.
+     */
+    expect(result!.healthFactorAfter).toBeNull();
   });
 });

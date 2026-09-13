@@ -17,6 +17,8 @@ const HEALTH_ASK =
 const PRICE_ASK =
   /\b(?:price|oracle|worth|trading at|value)\b/i;
 
+/** Assets the margin account accepts, from the registry — the fast path must not keep its own list. */
+const WITHDRAW_PATTERN = new RegExp(`\\bwithdraw\\s+(\\d+(?:\\.\\d{1,18})?)\\s+(${allAssets().filter((a) => a.marginSymbol).map((a) => a.id).join("|")})\\b`, "i");
 const WITHDRAW_ELIGIBILITY =
   /\b(can i|could i|may i|is it (?:ok|safe)|without (?:getting )?liquidat|would .{0,40}liquidat|allowed to)\b/i;
 
@@ -60,7 +62,7 @@ export function parseWithdrawCheck(message: string): { asset: AssetId; amount: s
   const text = message.trim();
   if (!text || text.length > 160) return null;
   if (MULTI_CLAUSE.test(text)) return null;
-  const match = text.match(/\bwithdraw\s+(\d+(?:\.\d{1,18})?)\s+(XLM|BLUSDC|AQUSDC|SOUSDC)\b/i);
+  const match = text.match(WITHDRAW_PATTERN);
   if (!match) return null;
   if (!WITHDRAW_ELIGIBILITY.test(text) && !/\?\s*$/.test(text)) return null;
   return { amount: match[1], asset: match[2].toUpperCase() as AssetId };

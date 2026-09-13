@@ -5,10 +5,10 @@ import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
 import { researchConfig } from "@/lib/copilot/research-config";
 import { isRecord } from "@/lib/copilot/investigation/decision";
-import { isCandidateId } from "@/lib/copilot/investigation/candidate-id";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { proposeWorkflow } from "@/lib/copilot/investigation/proposal";
 import { logUnexpected } from "@/lib/copilot/log";
+import { isCandidateId } from "@/lib/copilot/investigation/candidate-id";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ async function inputFrom(req: NextRequest): Promise<{ continuation: string; cand
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid proposal request.", 400); }
   if (!isRecord(body) || Object.keys(body).some((key) => !["continuation", "candidateId"].includes(key)) ||
     typeof body.continuation !== "string" || !body.continuation.trim() || body.continuation.length > 65_536 ||
-    typeof body.candidateId !== "string" || !isCandidateId(body.candidateId)) {
+    !isCandidateId(body.candidateId)) {
     throw new ResearchError("invalid_request", "Send the investigation continuation and the option to prepare only. This route cannot accept execution instructions or approval payloads.", 400);
   }
   return { continuation: body.continuation, candidateId: body.candidateId };
@@ -52,34 +52,29 @@ export async function POST(req: NextRequest) {
   if (!configured.ok) {
     return loaded.commit(NextResponse.json({ code: configured.code, message: configured.message }, { status: configured.status }));
   }
-  const { secret, network } = configured;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 75_000);
   const bound = loaded.bound;
   try {
     const view = await withBoundUser(bound, () => proposeWorkflow({
       continuation: input.continuation, candidateId: input.candidateId, subject: bound.sub,
-      secret, server: copilotConfig.mcpBaseUrl, network, mcp: getMcpClient(),
+      secret: configured.secret, server: copilotConfig.mcpBaseUrl, network: configured.network, mcp: getMcpClient(),
       signal: AbortSignal.any([req.signal, abort.signal]),
     }));
     return loaded.commit(NextResponse.json(view, { headers: { "Cache-Control": "no-store" } }));
   } catch (error) {
     const known = error instanceof ResearchError ? error : null;
-    if (error instanceof Error && /abort/i.test(error.name + error.message)) {
-      return loaded.commit(NextResponse.json({
-        code: "proposal_aborted",
-        message: "Preparing this plan was cancelled or timed out. Nothing was submitted.",
-      }, { status: 504 }));
-    }
     if (!known) {
       logUnexpected("proposal failed", {
-        subject: bound.sub, candidateId: input.candidateId, network, error,
+        subject: bound.sub, candidateId: input.candidateId, network: configured.network, error,
       });
+    } else {
+      // A refusal the user sees as one line must also be findable in the log (13 Sep: a 409 with no trace).
+      console.warn("[copilot] proposal refused", { candidateId: input.candidateId, code: known.code, status: known.status, message: known.message });
     }
     return loaded.commit(NextResponse.json({
       code: known?.code ?? "proposal_unavailable",
       message: known?.message ?? "A plan could not be prepared from the current investigation. Please try again.",
-      ...(known ? {} : { cause: error instanceof Error ? error.message : String(error) }),
     }, { status: known?.status ?? 409 }));
   } finally {
     clearTimeout(timer);

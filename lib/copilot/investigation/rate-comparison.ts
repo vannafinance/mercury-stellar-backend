@@ -1,8 +1,9 @@
 import type { Observation } from "./types";
 import { isRecord } from "./decision";
 import { decimalWad, formatWad, WAD } from "./fixed";
+import { ASSET_IDS, resolveAssetDef, type AssetId } from "../registry/assets";
 
-export type RateAsset = "XLM" | "BLUSDC" | "AQUSDC" | "SOUSDC";
+export type RateAsset = AssetId;
 
 export interface RateComparison {
   asset: RateAsset;
@@ -13,21 +14,38 @@ export interface RateComparison {
   spreadApr: string | null;
   verdict: "cost_exceeds_supply" | "no_spread" | "positive_before_costs" | "earn_only";
   evidenceIds: string[];
-  /**
-   * Label of the Earn field we ranked on. Earn MCP sets supply_apy_pct as an
-   * alias of simple APR (no compounding) — same number the Earn page calls APY.
-   */
-  earnRateUnit?: "APR" | "APY";
-  /** Blend ranking uses supply_apr_pct (simple). Blend supply_apy_pct is weekly-compounded and a different number. */
-  blendRateUnit?: "APR" | "APY";
 }
 
-const RATE_ASSETS: readonly RateAsset[] = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"];
+/**
+ * A supply rate that was read but not used, and why — so the card can say so. A rate
+ * that vanishes silently leaves the model's prose and the ranked options disagreeing,
+ * which is exactly what the first signed-in battery showed with Blend XLM.
+ */
+export interface ExcludedRate {
+  asset: RateAsset;
+  venue: "earn" | "blend";
+  reason: "unparsable" | "not_cross_checkable" | "inconsistent";
+  /** One sentence for the card. Names the numbers so the user can check the venue themselves. */
+  detail: string;
+  evidenceId: string;
+}
 
+export interface RateAnalysis {
+  comparisons: RateComparison[];
+  excluded: ExcludedRate[];
+}
+
+/**
+ * Rounding slack for the supply-vs-borrow cross-check. The MCP rounds percentages to
+ * four to six decimals, which moves the product by well under 0.1%; a decimals bug
+ * moves it by a factor of ten or more.
+ */
+const CROSS_CHECK_TOLERANCE = decimalWad("1.001");
+
+/** Blend's own symbol for an asset it holds a reserve for (BLUSDC is USDC on the wire), from the registry. */
 function blendReserveSymbol(asset: RateAsset): string | null {
-  if (asset === "XLM") return "XLM";
-  if (asset === "BLUSDC") return "USDC";
-  return null;
+  const def = resolveAssetDef(asset);
+  return def?.blendReserve ? (def.marginSymbol ?? def.id) : null;
 }
 
 /** Identical copies (seed + loop fulfill) collapse; disagreeing copies are a conflict. */
@@ -41,21 +59,58 @@ function dedupeBy<T>(rows: readonly T[], key: (row: T) => string): T[] {
   return [...groups.values()];
 }
 
+/** Parse a percentage as read. Rejects exponent notation, non-finite and negative values. */
+function rate(value: unknown): bigint | null {
+  try {
+    // Existing MCP Blend rates are numbers; reject exponent notation or non-finite.
+    return decimalWad(typeof value === "number" && Number.isFinite(value) ? String(value) : value);
+  } catch { return null; }
+}
+
+/**
+ * A supply rate is used only when the same read shows where it comes from: suppliers
+ * receive a share of what borrowers pay, scaled by utilization, and never more than all
+ * of it. That relationship holds on every lending venue whatever its fee take, and it
+ * is the check that distinguishes a real 168% APR on a 90%-utilised testnet pool from a
+ * 366% one produced by a decimals slip. A size cap cannot tell those apart — the old
+ * 100% ceiling silently threw away the real one.
+ *
+ * A row that does not carry the borrow rate and utilization cannot be vouched for, so it
+ * is excluded too — loudly, with the reason, never silently.
+ */
+function supplyRateOf(row: Record<string, unknown> | undefined, supplyRaw: unknown, label: string):
+  { ok: true; supply: bigint } | { ok: false; reason: ExcludedRate["reason"]; detail: string } {
+  const supply = rate(supplyRaw);
+  if (supply === null) {
+    return { ok: false, reason: "unparsable", detail: `${label}: the supply rate ${JSON.stringify(supplyRaw ?? null)} could not be read as a percentage. No rate was assumed.` };
+  }
+  const borrow = rate(row?.borrow_apr_pct);
+  const utilization = rate(row?.utilization_pct);
+  if (borrow === null || utilization === null) {
+    return { ok: false, reason: "not_cross_checkable", detail: `${label}: supply ${formatWad(supply)}% APR was read without a borrow rate and utilization to check it against, so it was not used.` };
+  }
+  // borrow% × utilization% / 100 — what borrowers pay per unit supplied, before any take.
+  const ceiling = (borrow * utilization) / (BigInt(100) * WAD);
+  const bound = (ceiling * CROSS_CHECK_TOLERANCE) / WAD;
+  if (supply > bound) {
+    return { ok: false, reason: "inconsistent", detail: `${label}: supply ${formatWad(supply)}% APR exceeds what borrowers pay (${formatWad(borrow)}% × ${formatWad(utilization)}% utilization = ${formatWad(ceiling)}%), so it was not used. Check the venue directly.` };
+  }
+  return { ok: true, supply };
+}
+
 /** Same token + same simple APR convention; never subtract APY from APR. */
 export function compareObservedRates(observations: readonly Observation[], now: number): RateComparison[] {
+  return analyseObservedRates(observations, now).comparisons;
+}
+
+export function analyseObservedRates(observations: readonly Observation[], now: number): RateAnalysis {
   const fresh = observations.filter((o) => o.status === "ok" && o.data && Number.isFinite(o.observedAt) &&
     o.observedAt <= now && now - o.observedAt <= 60_000);
-  const rate = (value: unknown): bigint | null => {
-    try {
-      // Existing MCP Blend rates are numbers; reject exponent notation or non-finite.
-      const result = decimalWad(typeof value === "number" && Number.isFinite(value) ? String(value) : value);
-      // 100% APR is already implausible for these pools. Blend XLM has reported
-      // 366% from a decimals bug; treating that as a real rate would rank it first.
-      return result <= BigInt(100) * WAD ? result : null;
-    } catch { return null; }
-  };
   const results: RateComparison[] = [];
-  for (const asset of RATE_ASSETS) {
+  const excluded: ExcludedRate[] = [];
+  // Every registry asset whose Earn market was read this investigation — no separate list of "rate assets".
+  const assets = ASSET_IDS.filter((asset) => fresh.some((o) => o.capability === "earn_market" && o.args.asset === asset));
+  for (const asset of assets) {
     const earn = fresh.filter((o) => o.capability === "earn_market" && o.args.asset === asset);
     const blendSymbol = blendReserveSymbol(asset);
     const blend = blendSymbol ? fresh.filter((o) => o.capability === "blend_markets").flatMap((o) => {
@@ -75,31 +130,39 @@ export function compareObservedRates(observations: readonly Observation[], now: 
     if (blend.length > 1 && blendRows.length !== 1) continue;
     const earnUnique = earnRows;
     const blendUnique = blendRows;
-    const earnSupplyKey = earnUnique.length === 1
-      ? (earnUnique[0].data?.supply_apy_pct != null ? "supply_apy_pct" : "supply_apr_pct")
-      : null;
-    const earnSupply = earnUnique.length === 1 ? rate(earnUnique[0].data?.[earnSupplyKey ?? ""] ?? earnUnique[0].data?.supply_apr_pct ?? earnUnique[0].data?.supply_apy_pct) : null;
+    /**
+     * Supply rates pass the cross-check or are excluded with a reason. Earn's supply rate
+     * is optional for Blend-listed tokens (the borrow shape only needs Earn's borrow rate),
+     * so an excluded Earn supply is reported but does not drop the row.
+     */
+    let earnSupply: bigint | null = null;
+    if (earnUnique.length === 1) {
+      // Earn's APY field is the simple APR under an older name; Blend's APY is compounded.
+      const checked = supplyRateOf(earnUnique[0].data ?? undefined, earnUnique[0].data?.supply_apr_pct ?? earnUnique[0].data?.supply_apy_pct, `Earn ${asset}`);
+      if (checked.ok) earnSupply = checked.supply;
+      else excluded.push({ asset, venue: "earn", reason: checked.reason, detail: checked.detail, evidenceId: earnUnique[0].id });
+    }
     const earnBorrow = earnUnique.length === 1 ? rate(earnUnique[0].data?.borrow_apr_pct) : null;
-    const blendSupply = blendUnique.length === 1 ? rate(blendUnique[0].row.supply_apr_pct) : null;
-    const earnRateUnit: RateComparison["earnRateUnit"] = earnSupplyKey === "supply_apy_pct" ? "APY" : "APR";
-    const blendRateUnit: RateComparison["blendRateUnit"] = "APR";
+    let blendSupply: bigint | null = null;
+    if (blendUnique.length === 1) {
+      const checked = supplyRateOf(blendUnique[0].row, blendUnique[0].row.supply_apr_pct, `Blend ${blendSymbol}`);
+      if (checked.ok) blendSupply = checked.supply;
+      else excluded.push({ asset, venue: "blend", reason: checked.reason, detail: checked.detail, evidenceId: blendUnique[0].observation.id });
+    }
     if (blendSymbol) {
-      // Carry ranking needs both venues. Earn ranking does not: a missing Blend
-      // read must not hide an Earn pool the account can actually fund.
-      if (earnUnique.length === 1 && blendUnique.length === 1 && blendSupply !== null && earnBorrow !== null) {
-        const spread = blendSupply - earnBorrow;
-        results.push({
-          asset,
-          earnSupplyApr: earnSupply === null ? null : formatWad(earnSupply),
-          blendSupplyApr: formatWad(blendSupply),
-          marginBorrowApr: formatWad(earnBorrow),
-          spreadApr: formatWad(spread),
-          verdict: spread < BigInt(0) ? "cost_exceeds_supply" : spread === BigInt(0) ? "no_spread" : "positive_before_costs",
-          evidenceIds: [earnUnique[0].id, blendUnique[0].observation.id],
-          earnRateUnit, blendRateUnit,
-        });
-        continue;
-      }
+      // Blend-listed tokens keep the old gate: both venues must be uniquely readable.
+      if (earnUnique.length !== 1 || blendUnique.length !== 1 || blendSupply === null || earnBorrow === null) continue;
+      const spread = blendSupply - earnBorrow;
+      results.push({
+        asset,
+        earnSupplyApr: earnSupply === null ? null : formatWad(earnSupply),
+        blendSupplyApr: formatWad(blendSupply),
+        marginBorrowApr: formatWad(earnBorrow),
+        spreadApr: formatWad(spread),
+        verdict: spread < BigInt(0) ? "cost_exceeds_supply" : spread === BigInt(0) ? "no_spread" : "positive_before_costs",
+        evidenceIds: [earnUnique[0].id, blendUnique[0].observation.id],
+      });
+      continue;
     }
     // AQUSDC / SOUSDC: Earn pool only. Never attach Blend's USDC reserve.
     if (earnUnique.length !== 1 || earnSupply === null) continue;
@@ -111,8 +174,7 @@ export function compareObservedRates(observations: readonly Observation[], now: 
       spreadApr: null,
       verdict: "earn_only",
       evidenceIds: [earnUnique[0].id],
-      earnRateUnit, blendRateUnit,
     });
   }
-  return results;
+  return { comparisons: results, excluded };
 }

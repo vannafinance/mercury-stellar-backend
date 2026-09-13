@@ -65,7 +65,7 @@ export function StrategyOptionsGrid({
                     {isTopCarry ? "Top Yield ★" : candidate.borrows ? "Leveraged" : "No Borrowing"}
                   </span>
                   <span className="font-mono text-[12px] font-bold text-emerald-600 dark:text-emerald-400">
-                    {candidate.netAprPct ? `+${candidate.netAprPct}% net APR` : `+${candidate.supplyAprPct}% ${candidate.rateUnit ?? "APR"}`}
+                    {candidate.netAprPct ? `+${candidate.netAprPct}% net APR` : `+${candidate.supplyAprPct}% supply`}
                   </span>
                 </div>
 

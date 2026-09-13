@@ -1,7 +1,8 @@
 import type { FunctionDeclaration } from "../vertex-tools";
 import { ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
-import { isRecord } from "./decision";
+import { isRecord, PLAN_SIZINGS } from "./decision";
+import { WORKFLOW_OPS } from "../workflow/types";
 import type { ReadCapability } from "./types";
 
 const CONTROL_NAMES = new Set(["research_complete", "clarify", "blocked"]);
@@ -55,6 +56,12 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         objective: { type: "string", description: "User objective in one sentence." },
         constraints: { type: "array", items: { type: "string" } },
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
+        healthFactorFloor: {
+          type: "object",
+          description: "Only when the user stated a health-factor floor as a number. value is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent a floor; 'avoid liquidation' is not one.",
+          properties: { value: { type: "string" }, sourceQuote: { type: "string" } },
+          required: ["value", "sourceQuote"],
+        },
         findings: {
           type: "array",
           items: {
@@ -72,12 +79,49 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           items: {
             type: "object",
             properties: {
-              op: { type: "string", enum: ["lend", "deposit_collateral", "borrow", "repay", "supply_blend"] },
+              op: { type: "string", enum: [...WORKFLOW_OPS] },
               asset: { type: "string", enum: [...ASSET_IDS] },
               amount: { type: "string" },
               sourceQuote: { type: "string" },
             },
             required: ["op", "asset", "amount", "sourceQuote"],
+          },
+        },
+        plans: {
+          type: "array",
+          description:
+            "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number — " +
+            "all_idle (the asset's idle wallet balance), to_floor (largest borrow at the user's health-factor floor), " +
+            "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
+            "literal (an amount the user typed, with sourceQuote). The server sizes, checks and ranks every plan.",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Short, e.g. 'Move idle XLM into Blend'." },
+              rationale: { type: "string", description: "Why this shape serves the objective, citing observation ids." },
+              evidenceIds: { type: "array", items: { type: "string" } },
+              legs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    op: { type: "string", enum: [...WORKFLOW_OPS] },
+                    asset: { type: "string", enum: [...ASSET_IDS] },
+                    sizing: {
+                      type: "object",
+                      properties: {
+                        kind: { type: "string", enum: [...PLAN_SIZINGS] },
+                        amount: { type: "string", description: "literal only: the user's exact decimal." },
+                        sourceQuote: { type: "string", description: "literal only: exact substring of the user message containing the amount." },
+                      },
+                      required: ["kind"],
+                    },
+                  },
+                  required: ["op", "asset", "sizing"],
+                },
+              },
+            },
+            required: ["title", "rationale", "evidenceIds", "legs"],
           },
         },
       },
@@ -133,11 +177,14 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.intent !== undefined) goal.intent = source.intent;
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.actions !== undefined) goal.actions = source.actions;
+  if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
+  const plans = args.plans ?? source.plans;
   return {
     kind: "research_complete",
     goal,
     findings: args.findings ?? source.findings,
     openQuestions: args.openQuestions ?? source.openQuestions,
+    ...(plans !== undefined ? { plans } : {}),
   };
 }
 

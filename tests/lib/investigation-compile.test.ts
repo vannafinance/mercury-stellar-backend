@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileProposal, DERIVED_MIN_AMOUNT_RATIO } from "@/lib/copilot/investigation/compile";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import { decimalWad, formatWad, mulDown, WAD } from "@/lib/copilot/investigation/fixed";
 import type { Candidate } from "@/lib/copilot/investigation/candidates";
 import type { Observation, InvestigationScope } from "@/lib/copilot/investigation/types";
@@ -52,8 +53,8 @@ function borrowSupply(over: Partial<Parameters<typeof generateCandidates>[0]> = 
   const { feasible } = generateCandidates({
     ...BASE, idleWalletUsd: null, comparisons: [comparison()], ...over,
   });
-  const candidate = feasible.find((entry) => entry.id === "borrow_supply_blusdc");
-  if (!candidate) throw new Error("expected borrow_supply_blusdc");
+  const candidate = feasible.find((entry) => entry.id === candidateId("borrow_supply", "BLUSDC"));
+  if (!candidate) throw new Error("expected borrow_supply on BLUSDC");
   return candidate;
 }
 
@@ -79,7 +80,7 @@ describe("compiling a candidate into proposal steps", () => {
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
       borrowingAllowed: false, comparisons: [comparison()],
     });
-    const idle = feasible.find((entry) => entry.id === "supply_idle_blusdc");
+    const idle = feasible.find((entry) => entry.id === candidateId("supply_idle", "BLUSDC"));
     expect(idle?.legs).toEqual([]);
     const result = compile(idle!, [price("BLUSDC", "1")]);
     expect(result.ok).toBe(true);
@@ -193,7 +194,7 @@ describe("compiling a candidate into proposal steps", () => {
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
       borrowingAllowed: false, comparisons: [comparison()],
     });
-    const earn = feasible.find((entry) => entry.id === "lend_idle_blusdc");
+    const earn = feasible.find((entry) => entry.id === candidateId("lend_idle", "BLUSDC"));
     expect(earn?.venue).toBe("earn");
     const result = compile(earn!, [price("BLUSDC", "1")]);
     expect(result.ok).toBe(true);

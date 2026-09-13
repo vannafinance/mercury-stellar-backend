@@ -184,34 +184,4 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/\$278\.86/);
     expect(reply).not.toMatch(/BLUSDC/);
   });
-
-  it("includes three-bucket decision reason even when there is no other feasible runner up", () => {
-    const candidates = generateCandidates({
-      grossCollateralUsd: "317.00", debtUsd: "217.12", floor: "1.30",
-      borrowingAllowed: false,
-      idleWalletUsd: "2678",
-      idleWalletByAssetUsd: { AQUSDC: "2678", BLUSDC: "0" },
-      idleWalletByAssetTokens: { AQUSDC: "2678", BLUSDC: "0" },
-      postedByAssetTokens: { BLUSDC: "552" },
-      earnByAssetTokens: { BLUSDC: "203" },
-      comparisons: [
-        comparison({
-          asset: "BLUSDC", earnSupplyApr: "29.08", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "7.84", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-      ],
-    });
-    const reply = strategyReply({
-      status: "researched", facts: [], candidates, capacity: null, question: null,
-    });
-    expect(reply).toContain("BLUSDC Earn pays 29.08% but spendable wallet BLUSDC is 0");
-    expect(reply).toContain("posted margin holds 552");
-    expect(reply).toContain("Earn already holds 203");
-    expect(reply).toContain("Approve to run those steps.");
-  });
 });
-

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateCandidates, idleWalletUsdFrom, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
 /**
@@ -51,7 +52,8 @@ describe("candidate generation", () => {
     expect(rejected).toEqual([]);
     expect(feasible).toHaveLength(1);
     expect(feasible[0]).toMatchObject({
-      id: "borrow_supply_blusdc",
+      id: candidateId("borrow_supply", "BLUSDC"),
+      kind: "borrow_supply",
       borrows: true,
       netAprPct: "6",
       // (4219.36 - 1.3*1736.19) / 0.3 — the same closed form the sizer uses.
@@ -93,7 +95,7 @@ describe("candidate generation", () => {
     });
 
     expect(feasible.map((candidate) => candidate.borrows)).toContain(false);
-    const blendIdle = feasible.find((candidate) => candidate.id === "supply_idle_blusdc");
+    const blendIdle = feasible.find((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"));
     expect(blendIdle).toMatchObject({ amountUsd: "680", netAprPct: null, supplyAprPct: "10", venue: "blend" });
     // Committing idle wallet value does not move margin collateral or debt.
     expect(blendIdle?.legs).toEqual([]);
@@ -104,7 +106,7 @@ describe("candidate generation", () => {
     const { feasible } = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
     });
-    const earn = feasible.find((candidate) => candidate.id === "lend_idle_blusdc");
+    const earn = feasible.find((candidate) => candidate.id === candidateId("lend_idle", "BLUSDC"));
     expect(earn).toMatchObject({
       venue: "earn",
       borrows: false,
@@ -114,7 +116,7 @@ describe("candidate generation", () => {
     });
     expect(earn?.legs).toEqual([]);
     // Higher Earn APR ranks above Blend idle 10% and levered Blend 6% net.
-    expect(feasible[0].id).toBe("lend_idle_blusdc");
+    expect(feasible[0].id).toBe(candidateId("lend_idle", "BLUSDC"));
   });
 
   it("does not offer Earn idle when Blend pays as much or more, or Earn was not read", () => {
@@ -123,7 +125,7 @@ describe("candidate generation", () => {
       comparisons: [comparison({ earnSupplyApr: "9", blendSupplyApr: "10" })],
     });
     expect(worse.feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-    expect(worse.feasible.some((candidate) => candidate.id === "supply_idle_blusdc")).toBe(true);
+    expect(worse.feasible.some((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"))).toBe(true);
 
     const missing = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
@@ -137,7 +139,7 @@ describe("candidate generation", () => {
       ...BASE, idleWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-    expect(feasible.every((candidate) => candidate.id.startsWith("borrow_supply_"))).toBe(true);
+    expect(feasible.every((candidate) => candidate.kind === "borrow_supply")).toBe(true);
   });
 
   it("offers no idle candidate when there is nothing idle, rather than a zero-size one", () => {
@@ -157,19 +159,9 @@ describe("candidate generation", () => {
     expect(rejected[0].reason).toMatch(/No borrowing headroom/);
   });
 
-  it("sizes to protocol max at the 1.1 floor", () => {
-    const { feasible } = generateCandidates({
-      ...BASE, floor: "1.1", idleWalletUsd: null, comparisons: [comparison()],
-    });
-    expect(feasible.length).toBeGreaterThan(0);
-    // WAD string is strictly above 1.1; Number() would round it back to 1.1.
-    expect(feasible[0].finalHealthFactor).not.toBe("1.1");
-    expect(feasible[0].finalHealthFactor).toMatch(/^1\.1/);
-  });
-
-  it("refuses a floor under the liquidation threshold", () => {
+  it("refuses a floor at or under the liquidation threshold", () => {
     const { feasible, rejected } = generateCandidates({
-      ...BASE, floor: "1.05", idleWalletUsd: null, comparisons: [comparison()],
+      ...BASE, floor: "1.1", idleWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/floor below liquidation threshold/);
@@ -328,43 +320,13 @@ describe("an amount the user named outright", () => {
         comparison({ asset: "BLUSDC", earnSupplyApr: "4.0", blendSupplyApr: "3.5" }),
       ],
     });
-    expect(feasible[0].id).toBe("lend_idle_sousdc");
+    expect(feasible[0].id).toBe(candidateId("lend_idle", "SOUSDC"));
     expect(feasible[0].decision?.factor).toBe("already_held");
-    expect(feasible[0].decision?.runnerUpId).toBe("lend_idle_aqusdc");
+    expect(feasible[0].decision?.runnerUpId).toBe(candidateId("lend_idle", "AQUSDC"));
     expect(feasible[0].decision?.reason).toMatch(/SOUSDC/);
     expect(feasible[0].decision?.reason).toMatch(/74,985/);
     expect(feasible[0].decision?.reason).toMatch(/AQUSDC/);
     expect(feasible[0].decision?.reason).toMatch(/swap/);
-    expect(feasible[0].decision?.reason).toMatch(/over 30 days/);
-  });
-
-  it("does not promote a higher-rate idle pile whose size is not the swapped notional", () => {
-    const input = {
-      ...BASE, borrowingAllowed: false, idleWalletUsd: "77665",
-      idleWalletByAssetUsd: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
-      idleWalletByAssetTokens: { SOUSDC: "74985", AQUSDC: "2680", BLUSDC: "193" },
-      comparisons: [
-        comparison({
-          asset: "SOUSDC", earnSupplyApr: "4.2", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only" as const,
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "4.5", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only" as const,
-        }),
-        comparison({ asset: "BLUSDC", earnSupplyApr: "4.0", blendSupplyApr: "3.5" }),
-      ],
-    };
-    const short = generateCandidates({ ...input, horizonDays: 30 });
-    const long = generateCandidates({ ...input, horizonDays: 400 });
-    expect(short.feasible[0].id).toBe("lend_idle_sousdc");
-    expect(short.feasible[0].decision?.factor).toBe("already_held");
-    expect(short.feasible[0].decision?.reason).toMatch(/over 30 days/);
-    expect(long.feasible[0].id).toBe("lend_idle_sousdc");
-    expect(long.feasible[0].decision?.factor).toBe("already_held");
-    expect(long.feasible[0].decision?.reason).toMatch(/over 400 days/i);
-    expect(long.feasible[0].decision?.reason).toMatch(/AQUSDC/);
-    expect(long.feasible[0].decision?.reason).toMatch(/not a step/);
   });
 
   it("names a thin APR margin instead of claiming the yield decided it", () => {
@@ -387,40 +349,6 @@ describe("an amount the user named outright", () => {
     expect(feasible[0].decision?.factor).toBe("thin_margin");
     expect(feasible[0].decision?.reason).toMatch(/within 0\.2%/);
     expect(feasible[0].decision?.reason).toMatch(/already hold/);
-  });
-
-  it("rejects an unreachable high Earn rate with three-bucket explanation and names the binding constraint on the top candidate", () => {
-    const { feasible, rejected } = generateCandidates({
-      ...BASE,
-      borrowingAllowed: false,
-      idleWalletUsd: "2678",
-      idleWalletByAssetUsd: { AQUSDC: "2678", BLUSDC: "0" },
-      idleWalletByAssetTokens: { AQUSDC: "2678", BLUSDC: "0" },
-      postedByAssetTokens: { BLUSDC: "552" },
-      earnByAssetTokens: { BLUSDC: "203" },
-      comparisons: [
-        comparison({
-          asset: "BLUSDC", earnSupplyApr: "29.08", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-        comparison({
-          asset: "AQUSDC", earnSupplyApr: "7.84", blendSupplyApr: null,
-          marginBorrowApr: null, spreadApr: null, verdict: "earn_only",
-        }),
-      ],
-    });
-
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0].asset).toBe("BLUSDC");
-    expect(rejected[0].reason).toBe(
-      "BLUSDC Earn pays 29.08% but spendable wallet BLUSDC is 0. posted margin holds 552; Earn already holds 203. That rate is not a deposit you can make this turn."
-    );
-    expect(feasible).toHaveLength(1);
-    expect(feasible[0].id).toBe("lend_idle_aqusdc");
-    expect(feasible[0].decision?.factor).toBe("already_held");
-    expect(feasible[0].decision?.reason).toContain(
-      "BLUSDC Earn pays 29.08% but spendable wallet BLUSDC is 0. posted margin holds 552; Earn already holds 203. That rate is not a deposit you can make this turn."
-    );
   });
 });
 

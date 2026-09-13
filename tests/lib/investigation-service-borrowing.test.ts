@@ -58,9 +58,9 @@ describe("unspecified borrowing with a stated floor", () => {
 
     const mcp = {
       call: vi.fn(async (tool: string) => {
-        if (tool === "vanna_get_pool_stats") return { supply_apy_pct: "2", borrow_apr_pct: "4" };
+        if (tool === "vanna_get_pool_stats") return { supply_apy_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
         if (tool === "vanna_list_blend_reserves") {
-          return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" }] };
+          return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" }] };
         }
         throw new Error(`Unexpected tool ${tool}`);
       }),
@@ -122,9 +122,9 @@ describe("unspecified borrowing with a stated floor", () => {
 
     const mcp = {
       call: vi.fn(async (tool: string) => {
-        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "2", borrow_apr_pct: "4" };
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
         if (tool === "vanna_list_blend_reserves") {
-          return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" }] };
+          return { reserves: [{ venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" }] };
         }
         throw new Error(`Unexpected tool ${tool}`);
       }),

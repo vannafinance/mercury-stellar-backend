@@ -462,7 +462,8 @@ export function ammLpStable(venue: AmmVenue): "AQUSDC" | "SOUSDC" {
  * claimed. The regexes live here only — `parseMinHealthFactor` reads its value from
  * this, so the two can never disagree about what counts as a floor.
  */
-export type MinHealthFactorMatch = { value: number; start: number; end: number };
+/** `soft` marks a value the user never said (a liquidation-avoidance phrase); investigation ignores those. */
+export type MinHealthFactorMatch = { value: number; start: number; end: number; soft?: boolean };
 
 /** “keep HF above 1.5” / “health factor over 2” / “never liquidate” */
 export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null {
@@ -500,7 +501,9 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
     text.match(/\bdon'?t\s+(?:get\s+)?liquidat\w*/i) ||
     text.match(/\bprotect\s+(?:me|my\s+account)\s+from\s+liquidat\w*/i);
   if (soft && soft.index != null) {
-    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length };
+    // A number the user did NOT say. Legacy callers keep it; the investigation flow
+    // (`statedFloorFrom`) treats a soft match as "no floor stated" and asks.
+    return { value: 1.3, start: soft.index, end: soft.index + soft[0].length, soft: true };
   }
   return null;
 }

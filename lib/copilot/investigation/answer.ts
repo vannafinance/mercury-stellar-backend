@@ -1,6 +1,9 @@
 import type { ResearchFact, ResearchView } from "./view";
 import type { CandidateSet } from "./candidates";
 import type { ResearchCapacity } from "./view";
+import { ASSET_IDS } from "../registry/assets";
+
+const NAMED_ASSET = new RegExp(`\\b(${ASSET_IDS.join("|")})\\b`, "g");
 
 function askedIn(request: string | undefined, pattern: RegExp): boolean {
   return !!request && pattern.test(request);
@@ -14,7 +17,7 @@ function askedIn(request: string | undefined, pattern: RegExp): boolean {
 function relevantFacts(facts: readonly ResearchFact[], request?: string): readonly ResearchFact[] {
   if (!request?.trim()) return facts;
   const named = [...new Set(
-    (request.toUpperCase().match(/\b(XLM|BLUSDC|AQUSDC|SOUSDC|AQUA|EURC)\b/g) ?? []),
+    (request.toUpperCase().match(NAMED_ASSET) ?? []),
   )];
   const wantsHealth = askedIn(request, /\b(health(?:\s+factor)?|\bhf\b|liquidat|am i safe|at risk)\b/i);
   const wantsDebt = askedIn(request, /\b(debt|owe|borrowed|liabilit)/i)
@@ -33,10 +36,15 @@ function relevantFacts(facts: readonly ResearchFact[], request?: string): readon
     if (fact.sourcePath === "posted_health_factor" || fact.sourcePath === "health_factor" || fact.sourcePath === "page_debt_mismatch") {
       return wantsHealth;
     }
-    if (fact.label === "Total margin debt" || fact.label === "Reported debt value") return wantsDebt;
+    if (isDebtTotal(fact)) return wantsDebt;
     if (["earn", "blend"].includes(fact.venue) && fact.unit === "% APR") return wantsRates;
     return true;
   });
+}
+
+/** The account-level debt figure, whichever read carried it. Facts are matched by source field, never by display copy. */
+function isDebtTotal(fact: ResearchFact): boolean {
+  return fact.venue === "margin" && fact.unit === "USD" && (fact.sourcePath === "total_debt_usd" || fact.sourcePath === "debt_usd");
 }
 
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
@@ -74,7 +82,7 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
       );
     }
   }
-  const debt = selected.find(f => f.label === "Total margin debt") ?? selected.find(f => f.label === "Reported debt value");
+  const debt = selected.find(f => f.sourcePath === "total_debt_usd") ?? selected.find(isDebtTotal);
   if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
@@ -114,13 +122,10 @@ export function strategyReply(input: {
   findings?: ReadonlyArray<{ summary: string }>;
   originalRequest?: string;
   statedSteps?: ReadonlyArray<{ label: string }>;
-  stopReason?: "cancelled" | "deadline" | "model_unavailable" | string;
-  healthFactorBefore?: string | null;
-  healthFactorAfter?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
-    if (top.decision?.reason && (top.decision.runnerUpId || /not a deposit you can make this turn/i.test(top.decision.reason))) {
+    if (top.decision?.runnerUpId && top.decision.reason) {
       const alt = input.candidates && input.candidates.feasible.length > 1
         ? " Switch → to use the next option instead."
         : "";
@@ -131,6 +136,23 @@ export function strategyReply(input: {
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : "";
       return `${top.decision.reason}${floor}${hf} Approve to run those steps.${alt}`;
+    }
+    /**
+     * A composed plan's headline is its own title and rationale, with the numbers the
+     * sizer produced — one source for the options and the prose, so they cannot disagree.
+     */
+    if (top.steps?.length) {
+      const legs = top.steps.map((step) => step.label.charAt(0).toLowerCase() + step.label.slice(1)).join(", then ");
+      const rate = top.netAprPct !== null
+        ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
+        : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+      const hf = top.finalHealthFactor
+        ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
+        : "";
+      const others = input.candidates && input.candidates.feasible.length > 1
+        ? ` ${input.candidates.feasible.length - 1} other option${input.candidates.feasible.length > 2 ? "s" : ""} below.`
+        : "";
+      return `${top.label}: ${legs}.${rate}${hf}${others} Approve to run those steps.`;
     }
     const rates = top.venue === "earn" ? "Earn and Blend supply rates" : "live farm rates";
     const carry = top.netAprPct
@@ -148,37 +170,33 @@ export function strategyReply(input: {
     return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.`;
   }
   if (input.candidates?.rejected.length) {
-    const blocked = input.candidates.rejected[0];
-    return input.candidates.feasible.length
-      ? `I compared the live rates against your constraints. ${blocked.reason} Nothing was executed.`
-      : `I compared live rates against what you can actually fund. ${blocked.reason} Nothing was executed.`;
+    // Say why each shape was ruled out — the reasons are the analysis; there is no stock verdict.
+    const reasons = input.candidates.rejected.slice(0, 3).map((entry) => `${entry.label} — ${entry.reason.replace(/\.$/, "")}`).join("; ");
+    return `I checked ${input.candidates.rejected.length === 1 ? "the shape" : `${input.candidates.rejected.length} shapes`} against your position and the live rates, and none could be prepared: ${reasons}. Nothing was executed.`;
   }
   if (input.status === "needs_input") {
+    /**
+     * An open question is a choice the user must make OR a gap the reads left ("no pool
+     * is available") — the model uses the same field for both, and only the first is
+     * something to answer. Say "unresolved" and let the text speak; "one choice" was a
+     * lie half the time (13 Sep: a false "no Aquarius pool" read was shown as a choice).
+     */
     return input.question
-      ? `I’ve checked the available information. One choice still changes the plan: ${input.question}`
-      : "I’ve checked the available information. One choice needs your input.";
+      ? `I’ve checked the available information. Before a plan can be prepared, this is unresolved: ${input.question}`
+      : "I’ve checked the available information. One point needs your input before a plan can be prepared.";
   }
   if (input.status === "blocked") {
     return "I couldn’t complete this investigation with the available capabilities and information.";
   }
   if (input.status === "incomplete") {
-    if (input.stopReason === "cancelled") {
-      return "This investigation was replaced or cancelled. Nothing was executed — send the prompt again if you still want it.";
-    }
-    if (input.stopReason === "deadline") {
-      return "The investigation ran out of time before it could finish. Nothing was executed — please try again.";
-    }
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
   if (input.statedSteps?.length) {
     const list = input.statedSteps.map((step) => step.label).join(", then ");
     const body = list.charAt(0).toUpperCase() + list.slice(1);
-    const hf = input.healthFactorBefore && input.healthFactorAfter
-      ? ` Health factor ${input.healthFactorBefore} → ${Number(input.healthFactorAfter).toFixed(2)} after.`
-      : "";
     return input.statedSteps.length === 1
-      ? `${body}. Approve to run this step.${hf}`
-      : `${body}. Approve to run these steps.${hf}`;
+      ? `${body}. Approve to run this step.`
+      : `${body}. Approve to run these steps.`;
   }
   if (input.intent === "strategy") {
     if (input.findings?.length) return input.findings.map((finding) => finding.summary).join(" ");

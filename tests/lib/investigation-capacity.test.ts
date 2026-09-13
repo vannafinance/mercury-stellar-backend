@@ -152,19 +152,11 @@ describe("borrow capacity", () => {
     expect(capacity?.maxBorrowUsd).toBe("746.98");
   });
 
-  it("treats a 1.1 floor as protocol max, not a refusal", async () => {
+  it("refuses a floor at or under the liquidation threshold", async () => {
     snapshot(4219.36, 1736.19);
-    const capacity = await computeBorrowCapacity(
-      ACCOUNT, ["keep health factor above 1.1"], undefined, undefined,
-      contract(4219.36, 1736.19),
-    );
-    expect(capacity).not.toBeNull();
-    expect(capacity?.floor).toBe("1.1");
-    expect(Number(capacity?.maxBorrowUsd)).toBeGreaterThan(0);
-  });
-
-  it("refuses a floor under the liquidation threshold", async () => {
-    expect(await computeBorrowCapacity(ACCOUNT, ["keep health factor above 1.05"])).toBeNull();
+    for (const message of ["keep health factor above 1.1", "keep health factor above 1.05"]) {
+      expect(await computeBorrowCapacity(ACCOUNT, [message])).toBeNull();
+    }
     expect(mocks.computeMarginSnapshot).not.toHaveBeenCalled();
   });
 

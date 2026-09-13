@@ -42,6 +42,11 @@ export type AssetId = (typeof ASSET_IDS)[number];
 /** The three tokens a bare "USDC" could mean. */
 export const USDC_VARIANTS = ["BLUSDC", "AQUSDC", "SOUSDC"] as const satisfies readonly AssetId[];
 
+/** Where a token can go. The two LP venues each pair XLM with their own USDC. */
+export const VENUES = ["margin", "earn", "blend", "aquarius", "soroswap"] as const;
+export type Venue = (typeof VENUES)[number];
+export type LpVenue = Extract<Venue, "aquarius" | "soroswap">;
+
 export interface AssetDef {
   id: AssetId;
   /**
@@ -57,6 +62,8 @@ export interface AssetDef {
   earnSymbol: string | null;
   /** Whether the registered Blend pool holds a reserve for it. */
   blendReserve: boolean;
+  /** The LP venue whose XLM pool pairs with this token, if any — checked against `chain-facts.json`. */
+  lpVenue: LpVenue | null;
   /** What the user is shown. Keeps BLUSDC visible even though the wire says USDC. */
   displayLabel: string;
 }
@@ -71,6 +78,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "XLM",
     earnSymbol: "XLM",
     blendReserve: true,
+    lpVenue: null,
     displayLabel: "XLM",
   },
   BLUSDC: {
@@ -85,6 +93,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "USDC",
     earnSymbol: "USDC",
     blendReserve: true,
+    lpVenue: null,
     displayLabel: "BLUSDC",
   },
   AQUSDC: {
@@ -94,6 +103,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "AQUSDC",
     earnSymbol: "AQUSDC",
     blendReserve: false,
+    lpVenue: "aquarius",
     displayLabel: "AQUSDC",
   },
   SOUSDC: {
@@ -103,6 +113,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: "SOUSDC",
     earnSymbol: "SOUSDC",
     blendReserve: false,
+    lpVenue: "soroswap",
     displayLabel: "SOUSDC",
   },
   AQUA: {
@@ -112,6 +123,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "AQUA",
   },
   EURC: {
@@ -124,6 +136,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "EURC",
   },
   /**
@@ -143,6 +156,7 @@ const DEFS: Record<AssetId, AssetDef> = {
     marginSymbol: null,
     earnSymbol: null,
     blendReserve: false,
+    lpVenue: null,
     displayLabel: "USDT",
   },
 };
@@ -283,6 +297,38 @@ export function earnPoolSymbols(): string[] {
 /** Symbols the registered Blend pool holds reserves for. */
 export function blendReserveSymbols(): string[] {
   return [...new Set(allAssets().filter((d) => d.blendReserve).map((d) => d.marginSymbol ?? d.id))];
+}
+
+/** The LP pools the routers resolve: each LP venue pairs XLM with its own USDC. */
+export function lpPairs(): Array<{ venue: LpVenue; tokens: [AssetId, AssetId] }> {
+  return allAssets().filter((d) => d.lpVenue).map((d) => ({ venue: d.lpVenue!, tokens: ["XLM", d.id] }));
+}
+
+/** Every venue this asset can sit in, from its own fields — nothing is listed twice. */
+export function venuesOf(def: AssetDef): Venue[] {
+  const venues: Venue[] = [];
+  if (def.marginSymbol) venues.push("margin");
+  if (def.earnSymbol) venues.push("earn");
+  if (def.blendReserve) venues.push("blend");
+  if (def.lpVenue) venues.push(def.lpVenue);
+  if (def.id === "XLM") venues.push(...lpPairs().map((p) => p.venue));
+  return [...new Set(venues)];
+}
+
+/** venue → the assets it takes. The prompt prints this instead of a hand-written list. */
+export function venueTable(): Array<{ venue: Venue; assets: AssetId[] }> {
+  return VENUES.map((venue) => ({ venue, assets: allAssets().filter((d) => venuesOf(d).includes(venue)).map((d) => d.id) }));
+}
+
+/**
+ * The venues that settle "which USDC" by themselves: those that take exactly one variant.
+ * Naming such a venue is naming the token — there is nothing left to ask.
+ */
+export function venueUsdc(): Array<{ venue: Venue; usdc: AssetId }> {
+  return venueTable().flatMap(({ venue, assets }) => {
+    const variants = assets.filter((a) => (USDC_VARIANTS as readonly AssetId[]).includes(a));
+    return variants.length === 1 ? [{ venue, usdc: variants[0] }] : [];
+  });
 }
 
 /** Oracle feeds worth requesting — three stables collapse to one. */

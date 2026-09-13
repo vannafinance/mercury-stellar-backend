@@ -17,10 +17,12 @@ import { appendAudit } from "../audit-log";
 import { checkpointFromJournal, saveCheckpoint } from "../checkpoint";
 import { ResearchError, resolveInvestigationScope } from "./scope";
 import { workflowJournal } from "./proposal";
+import { TOOLS } from "../workflow/allowlist";
+import { WALLET_OPS } from "../workflow/types";
 
-const WRITE_TOOLS = new Set([
-  "vanna_deposit_collateral", "vanna_borrow", "vanna_repay", "vanna_blend_supply", "vanna_lend",
-]);
+/** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
+const WRITE_TOOLS = new Set(Object.values(TOOLS));
+const WALLET_TOOLS = new Set(WALLET_OPS.map((op) => TOOLS[op]));
 
 export type LedgerLookup = (hash: string) => Promise<
   { found: true; success: boolean; ledger: number } | { found: false }
@@ -133,7 +135,7 @@ export async function advanceWorkflow(input: {
     throw error;
   }
 
-  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (step.tool !== "vanna_lend" && !scope.smartAccount)) {
+  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (!WALLET_TOOLS.has(step.tool) && !scope.smartAccount)) {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "failed", message: "This step is not an allowed write for the connected account. Nothing was submitted.",
     });
@@ -161,6 +163,19 @@ export async function advanceWorkflow(input: {
   const result = { status: hash ? "signed_and_submitted" : unsigned && !build.error ? "needs_wallet_sign" : "error", build,
     submitted: null, unsigned_xdr: unsigned };
 
+  /**
+   * The MCP's error envelope (`mcp_server/error_handling.py`) attaches `reason`, `code`
+   * or `contract_diagnostic` only to failures it classified INSIDE the tool — simulation
+   * and validation, before anything was submitted — and a submitted transaction always
+   * carries its hash. Such an envelope is a rejection with a reason, and the reason is
+   * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
+   */
+  const rejection = preBroadcastRejection(build, hash);
+  if (rejection) {
+    console.warn("[copilot] write rejected before broadcast", { tool: invocation.tool, error: build.error, code: build.code, reason: build.reason, message: rejection.slice(0, 300) });
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: rejection }));
+  }
+
   if (result.status === "signed_and_submitted") {
     const txHash = hash;
     if (!txHash) {
@@ -184,6 +199,15 @@ export async function advanceWorkflow(input: {
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
+}
+
+/** The MCP's own message when its envelope proves nothing was broadcast; null otherwise. */
+export function preBroadcastRejection(build: Record<string, unknown>, hash: string | null): string | null {
+  if (hash || typeof build.error !== "string" || !build.error) return null;
+  const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
+  if (!classified) return null;
+  const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
+  return `Not submitted — the protocol rejected this step before broadcast: ${message}`;
 }
 
 export async function confirmWorkflow(input: {
@@ -263,7 +287,7 @@ function journalMessage(code: string): string {
  * on the G-wallet and rejects the margin overlay Blend writes need.
  */
 export function invocationArgs(step: ProposalStep, scope: { trader: string | null; smartAccount: string | null }): Record<string, unknown> {
-  if (step.tool === "vanna_lend") {
+  if (WALLET_TOOLS.has(step.tool)) {
     return { symbol: step.args.symbol, amount: step.amount, lender: scope.trader };
   }
   return { ...step.args, amount: step.amount, smart_account: scope.smartAccount, trader: scope.trader };

@@ -47,5 +47,28 @@
       "EURC",
       "AQUA"
     ]
+  },
+  "lpPools": {
+    "_source": [
+      "aquarius: the pool the Farm page uses, read back from amm-api-testnet.aqua.network/pools/{address}/ and its",
+      "tokens_addresses matched to the SACs vanna_get_wallet_balance reports (XLM_SAC, AQUSDC). The MCP's own",
+      "vanna_get_aquarius_pool_stats could not find it on 13 Sep 2026 (page-1 scan by code) - fix pending in vanna_mcp.",
+      "soroswap: vanna_get_lp_balance { venue: soroswap } -> soroswap_router.router_pair_for(XLM, get_soroswap_usdc_addr)."
+    ],
+    "recordedAt": "2026-09-13",
+    "aquarius": {
+      "pool": "CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX",
+      "tokens": [
+        "XLM",
+        "AQUSDC"
+      ]
+    },
+    "soroswap": {
+      "pair": "CBR76WMT6J733CCVBP23M2EL5QGP5HXLPEFNFZGZ7IB6QHOJAHP7YM3V",
+      "tokens": [
+        "XLM",
+        "SOUSDC"
+      ]
+    }
   }
 }

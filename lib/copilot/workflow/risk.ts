@@ -17,7 +17,8 @@ const TOKENS: Record<string, string> = {
 };
 const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
 const READ_MS = 15_000;
-const FLOOR_EXEMPT: ReadonlySet<WorkflowOp> = new Set(["deposit_collateral", "repay", "lend"]);
+/** Ops that cannot lower health: wallet-only Earn calls, and the two that only raise it. */
+const FLOOR_EXEMPT: ReadonlySet<WorkflowOp> = new Set(["deposit_collateral", "repay", "lend", "redeem"]);
 
 /** RPC/timeout copy must not consume the proposal — the user can Approve again. */
 const RETRYABLE = /abort|timeout|ECONNRESET|EPIPE|fetch failed|network|unavailable|could not be verified|could not be re-read|timed out/i;
@@ -36,7 +37,8 @@ function holdersFor(proposal: WorkflowProposal): string[] {
     if (step.op === "lend" || step.op === "deposit_collateral") {
       if (proposal.scope.trader) holders.add(proposal.scope.trader);
     }
-    if (step.op !== "lend" && step.op !== "borrow" && proposal.scope.smartAccount) {
+    // A redeem's funds are vTokens, checked by their own read below; nothing to read here.
+    if (step.op !== "lend" && step.op !== "redeem" && step.op !== "borrow" && proposal.scope.smartAccount) {
       holders.add(proposal.scope.smartAccount);
     }
   }
@@ -61,6 +63,8 @@ function explain(error: unknown): string {
   }
   if (/price_unavailable/.test(text)) return "A live oracle price could not be read. Nothing was submitted — approve again.";
   if (/balance_unavailable/.test(text)) return "A live token balance could not be read. Nothing was submitted — approve again.";
+  const precision = /amount_precision:([A-Za-z0-9_/-]+):(\d+)/.exec(text);
+  if (precision) return `A step's ${precision[1]} amount has more decimal places than the token carries on chain (${precision[2]}). No transaction was requested — prepare the plan again.`;
   if (/asset_not_validated|amount_precision|invalid_decimal/.test(text)) {
     return "Fresh balances, prices, token precision or projected health could not be verified. No transaction was requested.";
   }
@@ -102,7 +106,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         if (balance.error || reportedHolder !== holder || reportedContract !== contract ||
           !Number.isInteger(decimals) || decimals < 0 || decimals > 18) fail("balance_unavailable");
         for (const step of proposal.steps.filter(s => s.asset === asset)) {
-          if ((step.amount.split(".")[1]?.length ?? 0) > decimals) fail("amount_precision");
+          if ((step.amount.split(".")[1]?.length ?? 0) > decimals) fail(`amount_precision:${asset}:${decimals}`);
         }
         funds.set(`${holder}:${asset}`, decimalWad(String(balance.human)));
       }));
@@ -111,6 +115,20 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     for (const step of proposal.steps) {
       const amount = decimalWad(step.amount);
       const walletKey = `${proposal.scope.trader}:${step.asset}`, accountKey = `${proposal.scope.smartAccount}:${step.asset}`;
+      if (step.op === "redeem") {
+        /**
+         * A redeem spends vTokens and lands the underlying in the wallet, where a later
+         * step may deposit it. The vToken read gives both the balance and what the whole
+         * of it redeems for; a partial amount redeems pro rata.
+         */
+        const vtoken = asRecord(await read("vanna_get_vtoken_balance", { holder: proposal.scope.trader, symbol: String(step.args.symbol) }));
+        const held = decimalWad(String(vtoken.human ?? "0"));
+        const redeemable = decimalWad(String(vtoken.redeemable_human ?? "0"));
+        if (vtoken.error || held < amount) return `There are not enough ${step.asset} vTokens in Earn for the approved step.`;
+        const underlying = held > BigInt(0) ? (redeemable * amount) / held : BigInt(0);
+        funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + underlying);
+        continue;
+      }
       const source = ["lend", "deposit_collateral"].includes(step.op) ? walletKey : accountKey;
       if (step.op !== "borrow") {
         const available = funds.get(source);
@@ -118,6 +136,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         funds.set(source, available - amount);
       }
       if (step.op === "deposit_collateral" || step.op === "borrow") funds.set(accountKey, (funds.get(accountKey) ?? BigInt(0)) + amount);
+      if (step.op === "withdraw_collateral") funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + amount);
       if (step.op === "lend") continue;
       if (!project && !proposal.floor) continue;
       const price = prices.get(step.asset);
@@ -137,25 +156,33 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
      * Liquidation is a contract fact, so a floor on a worsening op is checked against
      * chain state alone.
      */
-    if (!proposal.floor) {
-      if (project) return "A health-factor floor is needed before moving margin assets.";
-      return null;
-    }
+    /**
+     * Without a user floor the contract's liquidation line is the stop: the sequence may
+     * not pass through a liquidatable state. Until 13 Sep a deposit-then-supply plan with
+     * no stated floor was refused outright here even though it ends where it started.
+     */
+    if (!proposal.floor && !project) return null;
     const bound = AbortSignal.any([signal, AbortSignal.timeout(READ_MS)]);
     const chain = await interruptible(
       () => readContractHealthState(proposal.scope.smartAccount!, { signal: bound }),
       bound,
     );
     if (chain.registryDiverged || chain.wasmHash !== VERIFIED_RISK_WASM) return "The current risk configuration could not be verified.";
-    const floor = decimalWad(proposal.floor);
-    if (BigInt(chain.debtWad) > BigInt(0) && BigInt(chain.balanceWad) * WAD < BigInt(chain.debtWad) * floor)
-      return "The contract-valued position is already below your health-factor floor.";
+    if (proposal.floor) {
+      const floor = decimalWad(proposal.floor);
+      if (BigInt(chain.debtWad) > BigInt(0) && BigInt(chain.balanceWad) * WAD < BigInt(chain.debtWad) * floor)
+        return "The contract-valued position is already below your health-factor floor.";
+    }
     const projected = sizeLegs(
       { grossCollateralUsd: formatWad(BigInt(chain.balanceWad)), debtUsd: formatWad(BigInt(chain.debtWad)) },
       legs,
       proposal.floor,
     );
-    if (!projected.ok) return `The proposed steps do not pass your ${proposal.floor} health-factor floor (${projected.reason}).`;
+    if (!projected.ok) {
+      return proposal.floor
+        ? `The proposed steps do not pass your ${proposal.floor} health-factor floor (${projected.reason}).`
+        : `The proposed steps would leave the account liquidatable (${projected.reason}).`;
+    }
     return null;
   } catch (error) {
     logUnexpected("workflow risk validation failed", { error });

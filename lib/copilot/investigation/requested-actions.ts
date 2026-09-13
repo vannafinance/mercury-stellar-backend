@@ -1,23 +1,13 @@
 import { resolveAssetDef } from "../registry/assets";
+import { allowedInvocation, TOOLS } from "../workflow/allowlist";
+import type { ProposalStep } from "../workflow/types";
 import { isTokenAmountIn } from "./quantities";
-import { allowedInvocation } from "../workflow/allowlist";
-import type { ProposalStep, WorkflowOp } from "../workflow/types";
 import type { GoalUnderstanding, InvestigationScope } from "./types";
-
-const TOOLS: Record<WorkflowOp, string> = {
-  lend: "vanna_lend",
-  deposit_collateral: "vanna_deposit_collateral",
-  borrow: "vanna_borrow",
-  repay: "vanna_repay",
-  supply_blend: "vanna_blend_supply",
-};
-
-export type StatedAction = NonNullable<GoalUnderstanding["actions"]>[number];
 
 /**
  * Compile planner-nominated writes whose amounts already appear in the user text.
- * The model maps language onto the catalog; this does not parse verbs. Unanchored
- * or unsupported rows fall through as an empty list so the loop can keep researching.
+ * Not a planner: `goal.actions` comes from the investigation loop. Unanchored or
+ * unsupported rows fall through as an empty list so the loop can keep researching.
  */
 export function compileRequestedActions(
   goal: GoalUnderstanding,
@@ -27,8 +17,16 @@ export function compileRequestedActions(
   if (goal.intent !== "strategy" || !goal.actions?.length) return [];
   try {
     return goal.actions.map((action, index) => {
+      /**
+       * The quote must be the user's own text AND the number must be a token quantity
+       * in it — not the coefficient of `Nx` or `N%`. Digit membership alone is not
+       * enough: "borrow 2x aqusdc" contains "2", so a model that read the leverage
+       * multiple as an amount compiled a borrow of 2 AQUSDC against a 2x request.
+       * `isTokenAmountIn` rejects a number whose span sits inside a leverage or
+       * percent span, so a coefficient can never become a quantity.
+       */
       if (!messages.some((message) => message.includes(action.sourceQuote)) ||
-        !isTokenAmountIn(action.sourceQuote, action.amount) && !isTokenAmountIn(messages.join("\n"), action.amount)) {
+        !isTokenAmountIn(action.sourceQuote, action.amount)) {
         throw new Error("unanchored_amount");
       }
       if (action.op === "borrow" && !["allowed", "required"].includes(goal.borrowing)) {
