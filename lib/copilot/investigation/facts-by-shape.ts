@@ -33,6 +33,36 @@ function requestedAsset(observation: Observation): AssetDef | null {
   return typeof asset === "string" && (ASSET_IDS as readonly string[]).includes(asset) ? assetDef(asset as AssetDef["id"]) : null;
 }
 
+/**
+ * Translate a read's rows into registry ids ONCE, where the observation is born, so the
+ * model, the facts, the sealed evidence and the sizer all see the same `asset` beside the
+ * venue's `symbol`. The model reads observations raw (`JSON.stringify(turn)`), so a label
+ * fixed only in the facts never reaches it — 13 Sep: shown `{ symbol: "USDC" }` on a debt
+ * row, it named AQUSDC, then SOUSDC, for a BLUSDC debt. Rows that already carry `asset`
+ * are left alone; a symbol no venue spelling resolves stays as it is.
+ */
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args"> & { data: Record<string, unknown> }): Record<string, unknown>;
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args" | "data">): Observation["data"];
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args" | "data">): Observation["data"] {
+  const data = observation.data;
+  if (!data) return data;
+  const requested = requestedAsset(observation as Observation);
+  const walk = (node: unknown, segments: string[], depth: number): unknown => {
+    if (depth > MAX_DEPTH) return node;
+    if (Array.isArray(node)) return node.map((item) => walk(item, segments, depth + 1));
+    if (!isRecord(node)) return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) out[key] = walk(value, [...segments, key], depth + 1);
+    if (typeof node.symbol === "string" && isSymbol(node.symbol) && typeof node.asset !== "string") {
+      const venue = venueFrom(observation.capability, segments, node);
+      const asset = canonical(node.symbol, requested, venue);
+      if (asset !== node.symbol || (ASSET_IDS as readonly string[]).includes(asset)) out.asset = asset;
+    }
+    return out;
+  };
+  return walk(data, [], 0) as Observation["data"];
+}
+
 function canonical(symbol: string, requested: AssetDef | null, venue: Venue | null = null): string {
   const upper = symbol.toUpperCase();
   if (requested && [requested.id, requested.earnSymbol, requested.marginSymbol, requested.oracleSymbol]

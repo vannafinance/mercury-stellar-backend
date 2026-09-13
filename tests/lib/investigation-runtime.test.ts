@@ -50,6 +50,23 @@ describe("adaptive investigation", () => {
     expect(result).not.toHaveProperty("approved_plan");
   });
 
+  it("hands the model the registry asset beside a venue's wire symbol (13 Sep: a 'USDC' debt row guessed as AQUSDC, then SOUSDC)", async () => {
+    // The exact debt payload the MCP returned for the test account; the model reads observations raw.
+    const mcp = { call: vi.fn(async () => ({
+      smart_account: "CCKIT", total_debt_usd: "5076.8601",
+      debt: [{ symbol: "USDC", balance: "2559.566080757051806242", value_usd: "2559.9473" }, { symbol: "XLM", balance: "14113.311211804998648290", value_usd: "2516.9128" }],
+    })) };
+    const seen: unknown[] = [];
+    const model: ResearchModel = async (turn) => {
+      if (!turn.observations.length) return inspect("account_debt");
+      seen.push(turn.observations[0].data);
+      return complete(["e1"]);
+    };
+    await runInvestigation({ ...request, message: "I want zero debt but keep all my collateral" }, { model, mcp });
+    const rows = (seen[0] as { debt: Array<Record<string, unknown>> }).debt;
+    expect(rows.map((r) => [r.symbol, r.asset])).toEqual([["USDC", "BLUSDC"], ["XLM", "XLM"]]);
+  });
+
   it("asks a material clarification without calling MCP or creating a plan", async () => {
     const mcp = read();
     const decision = { kind: "clarify", question: "What amount should this strategy invest?" };
