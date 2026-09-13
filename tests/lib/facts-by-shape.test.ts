@@ -111,7 +111,7 @@ describe("facts by shape — the reads that had no case", () => {
     const result = normalizeResearchFacts([
       read("earn_market", { pool_symbol: "USDC", supply_apr_pct: "20.179294", borrow_apr_pct: "25.1", utilization_pct: "80.3" }, { asset: "AQUSDC" }),
       read("earn_market", { pool_symbol: "USDC", supply_apr_pct: "29.084267", borrow_apr_pct: "32.5", utilization_pct: "89.5" }, { asset: "BLUSDC" }),
-    ], Date.now()).facts;
+    ]).facts;
     const labels = result.filter((f) => f.label.includes("supply APR")).map((f) => f.label).sort();
     expect(labels).toEqual(["AQUSDC Earn supply APR", "BLUSDC Earn supply APR"]);
   });

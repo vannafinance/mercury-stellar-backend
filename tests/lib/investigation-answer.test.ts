@@ -55,7 +55,7 @@ describe("strategyReply", () => {
   });
 
   it("says what is idle when a strategy turn has no option and nothing ruled out (13 Sep: 3.97 XLM, all minimum balance)", () => {
-    const wallet = (label: string, value: string) => ({ id: label, label, value, unit: label.split(" ")[0], venue: "wallet", evidenceId: "e1", sourcePath: label, readAt: 0 });
+    const wallet = (label: string, value: string) => ({ id: label, label, value, unit: label.split(" ")[0], venue: "wallet" as const, evidenceId: "e1", sourcePath: label, readAt: 0 });
     const reply = strategyReply({
       status: "researched",
       facts: [wallet("XLM wallet balance", "3.9736786"), wallet("XLM wallet spendable", "0"), wallet("AQUSDC wallet balance", "0.0003729")],
@@ -70,7 +70,7 @@ describe("strategyReply", () => {
   });
 
   it("prints each market's supply rate once even when two reads carried it", () => {
-    const rate = (label: string, value: string, id: string) => ({ id, label, value, unit: "% APR", venue: "blend", evidenceId: id, sourcePath: id, readAt: 0 });
+    const rate = (label: string, value: string, id: string) => ({ id, label, value, unit: "% APR", venue: "blend" as const, evidenceId: id, sourcePath: id, readAt: 0 });
     const reply = strategyReply({
       status: "researched",
       facts: [rate("XLM Blend supply APR", "168.6584", "e1:reserves[0].supply_apr_pct"), rate("XLM Blend supply APR", "168.6584", "e2:supply_apr_pct")],
