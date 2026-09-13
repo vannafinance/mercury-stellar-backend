@@ -264,12 +264,24 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let position: Awaited<ReturnType<typeof computeAccountPosition>> = null;
   const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
   const positionStarted = Date.now();
-  const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
+  /**
+   * The seed budget bounds how long we WAIT for the position, not how long the read may
+   * take. Those were the same signal until 13 Sep, so a position that ran past 8s was
+   * cancelled outright — and the loop, which needs the same figures, started it again
+   * from nothing. One slow RPC was paid for twice, and the second payment came out of the
+   * 45s loop budget: `position ms: 8010, seeded: false` followed by a timed-out turn.
+   *
+   * Now the read keeps running on the request's own signal and its in-flight promise is
+   * reused (`computeMarginSnapshot` de-duplicates by account), so a late position still
+   * arrives instead of being thrown away. Nothing waits longer than the budget; the work
+   * simply is not destroyed.
+   */
+  const positionWait = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
   const positionTask = haveCarriedPosition
     ? Promise.resolve({ value: null as Awaited<ReturnType<typeof computeAccountPosition>>, error: null as unknown })
     : interruptible(
-        () => computeAccountPosition(scope.smartAccount, positionSignal),
-        positionSignal,
+        () => computeAccountPosition(scope.smartAccount, dependencies.signal),
+        positionWait,
       ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
   const withdrawTask = withdrawAsk
     ? interruptible(
