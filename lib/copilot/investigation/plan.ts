@@ -256,7 +256,21 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const numbersInQuote: string[] = sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? [];
     const quoted = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) && numbersInQuote.includes(sizing.amount);
     if (!quoted) throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
-    if (leg.op === "supply_blend") throw new Reject(name, "Blend supply takes what a deposit or borrow put in the account — size that leg instead");
+    if (leg.op === "supply_blend") {
+      /**
+       * A Blend supply spends what an earlier leg put into the account. A stated amount is
+       * fine when that leg put in at least that much — the user who says "deposit 10000 XLM
+       * and deploy it in the Blend farm" has named 10000 for both legs, and the model writes
+       * it on both (13 Sep: the composed plan was refused for exactly that, and the run fell
+       * through to the literal-only path with no rationale or projection).
+       */
+      const feeder = drafts.slice(0, index).reverse().find((d) => d.leg.asset === leg.asset && (d.leg.op === "deposit_collateral" || d.leg.op === "borrow"));
+      if (!feeder) throw new Reject(name, "Blend supply takes what a deposit or borrow put in the account — add that leg before it");
+      if (feeder.produces === null) throw new Reject(name, "a Blend supply after a borrow sized to the floor takes what the borrow yields — size it as previous_leg");
+      if (decimalWad(feeder.produces) < decimalWad(sizing.amount)) {
+        throw new Reject(name, `only ${feeder.produces} ${leg.asset} is put into the account by the ${feeder.leg.op === "borrow" ? "borrow" : "deposit"} before it`);
+      }
+    }
     if (leg.op === "redeem") {
       // The user names the underlying; the tool takes vTokens, converted at the position's own rate.
       const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);

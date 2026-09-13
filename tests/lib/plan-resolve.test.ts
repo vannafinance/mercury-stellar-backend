@@ -116,10 +116,26 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(bad.rejected[0]).toEqual({ title: "Lend 100 XLM", leg: "lend XLM", reason: "the amount 100 does not appear in your request" });
   });
 
+  it("accepts a literal Blend supply covered by the deposit before it (13 Sep: 'deposit 10000 XLM … deploy it in the Blend farm')", () => {
+    const legs: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10000", sourceQuote: "Deposit 10000 XLM" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "10000", sourceQuote: "Deposit 10000 XLM" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Deposit XLM Collateral and Supply to Blend", legs)],
+      ctx({ messages: ["Deposit 10000 XLM as collateral and deploy it in the Blend farm, keep my HF above 1.15"] }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps.map((s) => [s.op, s.amount, s.tool])).toEqual([
+      ["deposit_collateral", "10000", "vanna_deposit_collateral"],
+      ["supply_blend", "10000", "vanna_blend_supply"],
+    ]);
+  });
+
   it.each([
     ["borrowing forbidden", { borrowing: "forbidden" as const }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], "borrow XLM", "you said no new borrowing"],
     ["floor at the liquidation line", { capacity: { ...CAPACITY, floor: "1.1" } }, [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }], null, /floor at or below 1.1 is the liquidation line/],
     ["Blend supply from the wallet directly", {}, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } }], "supply blend XLM", /deposit the idle tokens as collateral first/],
+    ["a literal Blend supply with nothing put in before it", { messages: ["supply 100 XLM to Blend"] }, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }], "supply blend XLM", /add that leg before it/],
+    ["a literal Blend supply larger than the deposit before it", { messages: ["deposit 100 XLM and supply 200 XLM to Blend"] }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "supply 200 XLM" } }], "supply blend XLM", "only 100 XLM is put into the account by the deposit before it"],
     ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "no idle AQUSDC in the wallet"],
     ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
     ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
