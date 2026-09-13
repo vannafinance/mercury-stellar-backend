@@ -124,7 +124,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     const { candidates, rejected } = resolvePlans([plan("Deposit XLM Collateral and Supply to Blend", legs)],
       ctx({ messages: ["Deposit 10000 XLM as collateral and deploy it in the Blend farm, keep my HF above 1.15"] }));
     expect(rejected).toEqual([]);
-    expect(candidates[0]?.steps.map((s) => [s.op, s.amount, s.tool])).toEqual([
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount, s.tool])).toEqual([
       ["deposit_collateral", "10000", "vanna_deposit_collateral"],
       ["supply_blend", "10000", "vanna_blend_supply"],
     ]);
