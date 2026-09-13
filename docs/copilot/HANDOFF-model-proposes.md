@@ -2,7 +2,7 @@
 
 **For any agent.** Branch `feat/copilot-finetune` in `mercury-stellar-backend`, from Aditya's
 `copilot-upgrade` @ `f7413d7`. Companion MCP change in `vanna_mcp` (`wallet_tools.py`).
-**Baseline at handoff:** `tsc` clean · vitest **1749 / 0 / 3** · MCP pytest **564** ·
+**Baseline at handoff:** `tsc` clean · vitest **1759 / 0 / 3** · MCP pytest **564** ·
 eslint 0 errors (one pre-existing warning, one pre-existing React-19 effect error in
 `investigation-card.tsx:86`, both Aditya's code).
 
@@ -79,10 +79,13 @@ malformed plan drops that plan and says so; it never voids the research.
 2. **Collateral disagreement on the test account:** ~883 XLM inside `CCKIT…DMC` unposted.
    Margin page $6,594.61 vs engine $6,435.97 (debt agrees). No MCP op posts account-held
    tokens. App/protocol question; until resolved no borrow is sized on this account — correctly.
-3. **Vocabulary:** `redeem`, `withdraw_collateral`, `blend_withdraw`, `swap`, `deploy_to_blend`
-   are mechanical (op → `WORKFLOW_OPS`, tool + args → `allowlist.ts`, HF projection, executor
-   `WRITE_TOOLS`, Sign Service policy). `add_liquidity`/`remove_liquidity` wait on the risk
-   engine valuing LP receipts — owner decision recorded in `candidates.ts`.
+3. **Vocabulary:** `redeem` and `withdraw_collateral` landed (`681ad90`) with the sizing word
+   `all_position`; the Sign Service already allowlists `redeem_vtokens`, `withdraw_collateral`,
+   `deposit_borrow_and_deploy_blend` and `execute`. Remaining and mechanical: `blend_withdraw`,
+   `swap` (value the output at oracle less slippage), `deploy_to_blend` (one tx for
+   deposit+borrow+supply). `add_liquidity`/`remove_liquidity` wait on the risk engine valuing
+   LP receipts — owner decision recorded in `candidates.ts`. Not yet live-tested: the
+   redeem → deposit path; first prompt to try is the owner's "use my AqUSDC in Earn as collateral".
 4. **Runway on the card:** time to the liquidation line at today's borrow rate, derived. Small.
 5. **Three-turn refinement**, and the battery in `PROMPT-LIBRARY.md` with the owner's words.
 6. Pre-existing and untouched: `evidence.ts` capability whitelist (a size bound), the asset
