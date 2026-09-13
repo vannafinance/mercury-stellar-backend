@@ -94,6 +94,9 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 | C5 | withdraw all my collateral | **REFUSED-CORRECTLY** with debt outstanding — says what to repay first; or WORKS if no debt | debt-aware withdraw |
 | C6 | take out as much xlm as I can without going under 1.2 | **WORKS** — closed-form max withdraw at 1.2, projection shown | to-floor withdraw sizing |
 | C7 | can I withdraw 100 xlm without getting liquidated ★ | **WORKS / ANSWER** — yes/no from `can_withdraw` + projected HF | preflight read |
+| C8 | how much xlm can i withdraw as i dont have an xlm balance in my margin account to deposit so withdraw some so i can deposit it ★ | **WORKS / CLARIFY** — three-bucket read (wallet, margin, earn); explains contradiction, offers earn redeem if held | circular intent, multi-bucket disambiguation |
+| C9 | withdraw 5k xlm ★ | **WORKS / REFUSED-CORRECTLY** — compiles '5k' to 5,000; checks withdrawable collateral against floor/disagreement rule | unit multiplier 'k', literal withdraw |
+| C10 | how much xlm can i withdraw? ★ | **WORKS / ANSWER** — accurately reads posted XLM collateral (70.91 XLM), never sums borrowed debt (68.48 XLM); correctly states withdrawable balance bounded by min(posted, max_withdrawable_at_floor) | collateral hallucination / debt summation bug |
 
 ### D. Borrow / repay
 
@@ -108,6 +111,9 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 | D7 | repay all my debt | **WORKS** — per asset, from the debt read; wallet shortfall named | all_position repay |
 | D8 | pay back half of what I owe | **WORKS / CLARIFY** — fraction; record which | fraction sizing |
 | D9 | I want zero debt but keep my collateral | **WORKS** — repay-all plan, collateral untouched | intent → op |
+| D10 | clear all my current debt but keep my collateral and then deposit 2 xlm ★ | **WORKS** — repays outstanding debt (186.73 BLUSDC) directly from available margin account balance (502.40 BLUSDC) without demanding wallet BLUSDC; deposits 2 XLM collateral from spendable wallet | repay from margin balance vs wallet deposit, multi-leg composition |
+| D11 | clear all my debt ★ | **WORKS** — clears debt across all positions (BLUSDC, XLM, AQUSDC) using margin account balances where available without injecting false wallet deposit requirements | all_position repay, multi-asset debt clearance |
+| D12 | Hey, can you use the funds sitting in my margin account to pay off what I owe, and deposit 2 XLM from my wallet as extra buffer? ★ | **WORKS** — parses explicit instruction to use margin account funds; clears debt from internal margin balance; deposits 2 XLM from wallet without demanding wallet BLUSDC | explicit venue selection, conversational multi-leg composition |
 
 ### E. Farm — Blend
 

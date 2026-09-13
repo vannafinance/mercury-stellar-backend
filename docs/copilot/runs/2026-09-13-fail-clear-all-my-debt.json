@@ -1,0 +1,35 @@
+﻿{
+  "timestamp": "2026-09-13T18:05:00Z",
+  "commit": "4448475",
+  "branch": "copilot-upgrade",
+  "prompt": "clear all my debt",
+  "classification": "REFUSED-WRONGLY",
+  "headline": "Repay all outstanding debt across BLUSDC, XLM, and AQUSDC positions.",
+  "badges": [
+    "No new borrowing"
+  ],
+  "latency": "Checked in 23s · 22s this device",
+  "ruled_out_reason": "Ruled out — Repay all outstanding BLUSDC, XLM, and AQUSDC debt. deposit collateral BLUSDC: you owe 186.7342581 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7342581 BLUSDC to the wallet, or redeem it from Earn first.",
+  "footnote_warning": "The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.",
+  "ground_truth": {
+    "margin_page": {
+      "positions": {
+        "BLUSDC_debt": "186.7342581 BLUSDC (~$186.76)",
+        "XLM_debt": "68.48 XLM (~$12.30)",
+        "AQUSDC_debt": "11.50 AQUSDC (~$11.50)",
+        "total_borrowed": "$210.55"
+      },
+      "margin_account_internal_balance": {
+        "BLUSDC": "502.40 BLUSDC (~$502.49)"
+      },
+      "wallet_balance": {
+        "BLUSDC": "0.00 BLUSDC",
+        "XLM": "3.8553269 XLM"
+      }
+    }
+  },
+  "root_cause": {
+    "code_location": "lib/copilot/investigation/plan.ts:expandLegs",
+    "mechanism_failure": "expandLegs unconditionally rewrote the multi-asset repay legs for all_position debt clearance into wallet deposit_collateral (all_idle) legs followed by repay legs. When the sizer evaluated the first repay leg (BLUSDC), it checked the spendable wallet balance (0 BLUSDC), completely ignoring that the margin smart account already held 502.40 BLUSDC (which covers the 186.73 BLUSDC debt by 269%). The sizer threw Reject, ruling out the entire repayment plan and preventing the user from clearing debt."
+  }
+}

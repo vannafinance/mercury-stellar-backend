@@ -1,0 +1,30 @@
+﻿{
+  "timestamp": "2026-09-13T18:35:00Z",
+  "commit": "4448475",
+  "branch": "copilot-upgrade",
+  "prompt": "Hey, can you use the funds sitting in my margin account to pay off what I owe, and deposit 2 XLM from my wallet as extra buffer?",
+  "classification": "REFUSED-WRONGLY",
+  "headline": "Deposit 2 XLM from the wallet into the margin account and repay all outstanding margin debts using account collateral.",
+  "badges": [
+    "Pay off outstanding margin debt with margin account funds",
+    "Deposit 2 XLM from wallet as extra buffer",
+    "No new borrowing"
+  ],
+  "latency": "Checked in 28s · 27s this device",
+  "ruled_out_reason": "Ruled out — Deposit 2 XLM buffer and repay all debt. deposit collateral BLUSDC: you owe 186.7376392 BLUSDC (~$186.77) and the wallet holds no spendable BLUSDC — add 186.7376392 BLUSDC to the wallet, or redeem it from Earn first.",
+  "footnote_warning": "The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.",
+  "ground_truth": {
+    "margin_page": {
+      "BLUSDC_debt": "186.7376392 BLUSDC (~$186.77)",
+      "margin_account_internal_balance": "502.40 BLUSDC (~$502.49)",
+      "wallet_balance": {
+        "BLUSDC": "0.00 BLUSDC",
+        "XLM": "3.8553269 XLM"
+      }
+    }
+  },
+  "root_cause": {
+    "code_location": "lib/copilot/investigation/plan.ts:expandLegs",
+    "mechanism_failure": "Even when the user explicitly instructed the copilot to 'use the funds sitting in my margin account to pay off what I owe' and the NLU model successfully recognized this and added the badge 'Pay off outstanding margin debt with margin account funds', expandLegs() still unconditionally forced a wallet deposit leg (all_idle) for BLUSDC. The sizer evaluated this against the external wallet (0 BLUSDC), throwing Reject and refusing a 100% solvent plan."
+  }
+}

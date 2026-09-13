@@ -1,0 +1,23 @@
+﻿{
+  "prompt": "how much xlm can i withdraw?",
+  "timestamp": "2026-09-13T23:11:57+05:30",
+  "surface": "signed-in /copilot (Privy testnet)",
+  "branch": "copilot-upgrade",
+  "commit": "4448475",
+  "classification": "WRONG",
+  "verbatimResponse": "Posted XLM collateral in the margin account is ~139.39 XLM ($25.03 USD). The margin account has existing debt totaling $210.55 USD (including 68.48 XLM debt) against total collateral of $4,360.32 USD, with an LTV of 4.83% and liquidation threshold of 90.9%. Because total collateral value ($4,360.32 USD) heavily exceeds total debt ($210.55 USD) due to other posted collateral, the full posted XLM collateral balance of ~139.39 XLM is available for withdrawal without breaching the margin health/liquidation threshold.",
+  "marginPageValues": {
+    "collateralDepositedXLM": "70.91 XLM ($12.73)",
+    "borrowedAssetsXLM": "68.48 XLM ($12.30)",
+    "totalDebtUsd": "$210.55",
+    "netAvailableCollateral": "$4.28K",
+    "totalValue": "$4,494.11",
+    "netHealthFactor": "21.34",
+    "netBorrowRate": "33.60%"
+  },
+  "mathematicalDiscrepancy": {
+    "formula": "Posted Collateral (70.91 XLM) + Borrowed Debt (68.48 XLM) = 139.39 XLM ($25.03 USD)",
+    "errorType": "Debt Conflation / False Withdrawable Collateral Hallucination",
+    "impact": "Copilot told user that 139.39 XLM is posted collateral and available for withdrawal, when actual posted XLM collateral is only 70.91 XLM. Attempting to withdraw 139.39 XLM would revert on chain."
+  }
+}

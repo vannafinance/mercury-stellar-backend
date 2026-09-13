@@ -1,0 +1,35 @@
+﻿{
+  "prompt": "how much xlm can i withdraw as i dont have an xlm balance in my margin account to deposit so withdraw some so i can deposit it",
+  "timestamp": "2026-09-13T23:02:40+05:30",
+  "surface": "signed-in /copilot (Privy testnet)",
+  "branch": "copilot-upgrade",
+  "commit": "4448475",
+  "metrics": {
+    "checkedSeconds": 21,
+    "deviceSeconds": 61,
+    "elapsedMs": 21000,
+    "deviceElapsedMs": 61000
+  },
+  "uiState": {
+    "findings": [
+      "Your wallet holds 3.8553269 XLM."
+    ],
+    "notice": "This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.",
+    "headline": "Determine withdrawable XLM amount and clarify existing margin collateral and wallet balances.",
+    "statusIndicator": "Checked in 21s · 1m 01s this device",
+    "buttons": [
+      "Start over"
+    ],
+    "planCandidates": 0,
+    "openQuestionsRendered": 0
+  },
+  "classification": "PARTIAL / REFUSED-WRONGLY",
+  "verbatimResponse": "Your wallet holds 3.8553269 XLM. · This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved. · Determine withdrawable XLM amount and clarify existing margin collateral and wallet balances. · Checked in 21s · 1m 01s this device · [Start over]",
+  "analysis": {
+    "unansweredQuery": "Prompt asked how much XLM can be withdrawn; no withdrawable amount or capacity range was calculated or provided.",
+    "internalObjectiveLeak": "Headline displayed raw investigation objective instead of user-facing synthesis or actionable proposal.",
+    "circularUserContradiction": "User conflated withdraw and deposit: 'as i dont have an xlm balance in my margin account to deposit so withdraw some so i can deposit it'.",
+    "threeBucketFailure": "Copilot only inspected spendable wallet (3.8553269 XLM); failed to fan out reads to vanna_margin_read (can_withdraw / collateral) or vanna_earn_position (vTokens).",
+    "deadlock": "Zero plan options, zero interactive questions, deadlocked on Start over button."
+  }
+}

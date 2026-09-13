@@ -1,0 +1,32 @@
+﻿{
+  "timestamp": "2026-09-13T17:58:00Z",
+  "commit": "4448475",
+  "branch": "copilot-upgrade",
+  "prompt": "clear all my current debt but keep my collateral and then deposit 2 xlm",
+  "classification": "REFUSED-WRONGLY",
+  "headline": "Repay all existing margin debt positions and deposit 2 XLM as margin collateral.",
+  "badges": [
+    "Keep existing collateral intact",
+    "Clear all outstanding margin debt",
+    "Deposit 2 XLM collateral",
+    "No new borrowing"
+  ],
+  "ruled_out_reason": "Ruled out — Clear all margin debt and deposit 2 XLM collateral. deposit collateral BLUSDC: you owe 186.7329819 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7329819 BLUSDC to the wallet, or redeem it from Earn first.",
+  "footnote_warning": "The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.",
+  "ground_truth": {
+    "margin_page": {
+      "repay_loan_tab": {
+        "net_outstanding_amount_to_repay": "186.73 BLUSDC ($186.77)",
+        "available_balance_in_margin_account": "502.40 BLUSDC ($502.49)"
+      },
+      "wallet_balance": {
+        "BLUSDC": "0.00 BLUSDC",
+        "XLM": "> 2.0 XLM"
+      }
+    }
+  },
+  "root_cause": {
+    "code_location": "lib/copilot/investigation/plan.ts:expandLegs",
+    "mechanism_failure": "expandLegs unconditionally transforms any repay leg (including all_position) into deposit_collateral (all_idle from wallet) followed by repay. When user has 0 spendable token in wallet, sizer throws Reject, even though the margin smart account itself holds 502.40 BLUSDC which is more than enough to repay the 186.73 BLUSDC debt directly on-chain."
+  }
+}

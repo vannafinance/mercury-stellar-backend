@@ -16,6 +16,159 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `Hey, can you use the funds sitting in my margin account to pay off what I owe, and deposit 2 XLM from my wallet as extra buffer?` (signed-in testnet)
+
+- **Date / commit / surface:** 2026-09-13 18:35 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · testnet · Margin page: 186.73 BLUSDC debt, 502.40 BLUSDC in margin account, 0 BLUSDC in wallet, 3.85 XLM in wallet
+- **Result:** `REFUSED-WRONGLY` — plan ruled out demanding spendable wallet BLUSDC, even when prompt explicitly specified using margin account funds and model displayed badge `[Pay off outstanding margin debt with margin account funds]`
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Deposit 2 XLM buffer and repay all debt — deposit collateral BLUSDC: you owe 186.7376392 BLUSDC (~$186.77) and the wallet holds no spendable BLUSDC — add 186.7376392 BLUSDC to the wallet, or redeem it from Earn first. Nothing was executed.
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > **Deposit 2 XLM from the wallet into the margin account and repay all outstanding margin debts using account collateral.**
+  > `[Pay off outstanding margin debt with margin account funds]` `[Deposit 2 XLM from wallet as extra buffer]` `[No new borrowing]`
+  > Checked in 28s · 27s this device
+  > **OPTIONS**
+  > Ruled out — Deposit 2 XLM buffer and repay all debt. deposit collateral BLUSDC: you owe 186.7376392 BLUSDC (~$186.77) and the wallet holds no spendable BLUSDC — add 186.7376392 BLUSDC to the wallet, or redeem it from Earn first.
+  > Sizes are calculated from your position at your stated floor, before fees and price movement. Rates are the ones read above, not a projected return.
+  > ⓘ The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.
+  > `[Start over]`
+- **Margin page actual state (ground truth):**
+  - Net Outstanding Debt: `186.7376392 BLUSDC` (~$186.77).
+  - Available Balance in Margin Account: `502.40 BLUSDC` (~$502.49).
+  - Spendable Wallet Balance: `0.00 BLUSDC`, `3.8553269 XLM`.
+- **Evidence artifacts:** `docs/copilot/runs/fail-prompt-use-margin-funds-repay-deposit-2xlm.png`, `docs/copilot/runs/2026-09-14-fail-use-margin-funds-repay.json`.
+- **Critical Architectural Proof:**
+  - The model NLU accurately decoded the user's conversational intent, generating the explicit badge `[Pay off outstanding margin debt with margin account funds]` and headline `Deposit 2 XLM from the wallet into the margin account and repay all outstanding margin debts using account collateral.`
+  - However, in `lib/copilot/investigation/plan.ts:98`, `expandLegs()` unconditionally intercepted the repay leg and converted it into a wallet `deposit_collateral` leg (`all_idle`).
+  - The deterministic sizer evaluated this injected deposit against the external wallet (0 BLUSDC), throwing `Reject`.
+  - This proves that prompt engineering cannot fix this issue; the deterministic compiler pipeline in `plan.ts` must be fixed to check margin smart account balances before injecting wallet deposits.
+- **Battery:** D12 ★.
+
+---
+
+### Copilot · `clear all my debt` (signed-in testnet)
+
+- **Date / commit / surface:** 2026-09-13 18:05 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · testnet · Margin page: 186.73 BLUSDC debt, 68.48 XLM debt, 11.50 AQUSDC debt; 502.40 BLUSDC in margin account, 0 BLUSDC in wallet
+- **Result:** `REFUSED-WRONGLY` — plan ruled out claiming spendable wallet BLUSDC required to repay debt, completely ignoring 502.40 BLUSDC available balance in margin smart account
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Repay all outstanding BLUSDC, XLM, and AQUSDC debt — deposit collateral BLUSDC: you owe 186.7342581 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7342581 BLUSDC to the wallet, or redeem it from Earn first. Nothing was executed.
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > **Repay all outstanding debt across BLUSDC, XLM, and AQUSDC positions.**
+  > `[No new borrowing]`
+  > Checked in 23s · 22s this device
+  > **OPTIONS**
+  > Ruled out — Repay all outstanding BLUSDC, XLM, and AQUSDC debt. deposit collateral BLUSDC: you owe 186.7342581 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7342581 BLUSDC to the wallet, or redeem it from Earn first.
+  > Sizes are calculated from your position at your stated floor, before fees and price movement. Rates are the ones read above, not a projected return.
+  > ⓘ The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.
+  > `[Start over]`
+- **Margin page actual state (ground truth):**
+  - Positions / Debt:
+    - BLUSDC Debt: `186.7342581 BLUSDC` (~$186.76).
+    - XLM Debt: `68.48 XLM` (~$12.30).
+    - AQUSDC Debt: `11.50 AQUSDC` (~$11.50).
+    - Total Debt: `$210.55`.
+  - Available Balance in Margin Account (smart account C-address): `502.40 BLUSDC` (~$502.49).
+  - External Wallet (Freighter G-address): `0.00 BLUSDC`, `3.8553269 XLM`.
+- **Evidence artifacts:** `docs/copilot/runs/fail-prompt-clear-all-my-debt.png`, `docs/copilot/runs/2026-09-13-fail-clear-all-my-debt.json`.
+- **Root cause:**
+  1. `expandLegs` in `lib/copilot/investigation/plan.ts` (commit `9232cc9b`) unconditionally injected a `deposit_collateral` leg (with `all_idle` sizing from the external wallet) prior to every repay leg with `sizing: "all_position"`.
+  2. When evaluating repayment of the first liability (BLUSDC), the sizer evaluated the injected `deposit_collateral` leg against `holdings["BLUSDC"]` (the external wallet), observed 0 spendable BLUSDC, and threw `Reject`: `"you owe 186.7342581 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7342581 BLUSDC to the wallet, or redeem it from Earn first"`.
+  3. The margin smart account already held `502.40 BLUSDC` directly in its contract balance (269% coverage of the 186.73 BLUSDC debt). `vanna_repay` natively debits tokens from inside the margin smart account and does NOT require external wallet tokens unless there is an un-hedged funding deficit.
+  4. The copilot erroneously rejected a valid, fully solvent multi-asset debt repayment plan.
+- **Fix:** In `plan.ts`, decouple `all_position` repay from mandatory wallet deposits. Execute `vanna_repay` natively against internal margin account token balances; only inject wallet `deposit_collateral` for real funding deficits ($\max(0, \text{debt} - \text{margin\_balance})$).
+- **Battery:** D11 ★.
+
+---
+
+### Copilot · `clear all my current debt but keep my collateral and then deposit 2 xlm` (signed-in testnet)
+
+- **Date / commit / surface:** 2026-09-13 17:58 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · testnet · Margin page: 186.73 BLUSDC debt, 502.40 BLUSDC in margin account, 0 BLUSDC in wallet
+- **Result:** `REFUSED-WRONGLY` — plan ruled out claiming spendable wallet BLUSDC required to repay debt, ignoring 502.40 BLUSDC balance in margin smart account
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Clear all margin debt and deposit 2 XLM collateral — deposit collateral BLUSDC: you owe 186.7329819 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7329819 BLUSDC to the wallet, or redeem it from Earn first. Nothing was executed.
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > **Repay all existing margin debt positions and deposit 2 XLM as margin collateral.**
+  > `[Keep existing collateral intact]` `[Clear all outstanding margin debt]` `[Deposit 2 XLM collateral]` `[No new borrowing]`
+  > Checked in 25s · 25s this device
+  > **OPTIONS**
+  > Ruled out — Clear all margin debt and deposit 2 XLM collateral. deposit collateral BLUSDC: you owe 186.7329819 BLUSDC (~$186.76) and the wallet holds no spendable BLUSDC — add 186.7329819 BLUSDC to the wallet, or redeem it from Earn first.
+  > Sizes are calculated from your position at your stated floor, before fees and price movement. Rates are the ones read above, not a projected return.
+  > ⓘ The Margin page snapshot and the contract liquidation snapshot disagree, so I did not quote a borrow size. Tokens sitting in the margin account that are not posted as collateral count toward the figure shown on the Margin page, but not toward what the liquidation engine sees.
+  > `[Start over]`
+- **Margin page actual state (ground truth):**
+  - Repay Loan Tab:
+    - Net Outstanding Amount to Repay: `186.73 BLUSDC` (~$186.77).
+    - Available Balance in Margin Account: `502.40 BLUSDC` (~$502.49).
+  - External Wallet (Freighter): `0 BLUSDC`, `> 2 XLM` spendable.
+- **Evidence artifacts:** `docs/copilot/runs/margin-repay-loan-available-blusdc.png`, `docs/copilot/runs/fail-prompt-clear-debt-deposit-2xlm.png`, `docs/copilot/runs/2026-09-13-fail-clear-debt-deposit-2xlm.json`.
+- **Root cause:**
+  1. `vanna_repay` operates directly on the margin smart account (`smart_account: C...`), debiting tokens held inside the smart account. It does NOT draw from the user's external wallet.
+  2. The user has `502.40 BLUSDC` sitting in their margin account contract, which comfortably covers the entire `186.73 BLUSDC` debt.
+  3. However, in `lib/copilot/investigation/plan.ts` (commit `9232cc9b`), `expandLegs()` was rewritten to unconditionally transform any repay leg with `sizing: "all_position"` into `deposit_collateral` (`all_idle` from wallet) followed by `repay` (`previous_leg`).
+  4. The sizer evaluated the injected `deposit_collateral` leg against `holdings["BLUSDC"]` (the external wallet), saw 0 spendable BLUSDC, and threw `Reject`: `"you owe 186.7329819 BLUSDC and the wallet holds no spendable BLUSDC — add 186.7329819 BLUSDC to the wallet, or redeem it from Earn first"`.
+  5. The valid 2-step plan (Repay 186.73 BLUSDC from margin account + Deposit 2 XLM from wallet) was erroneously ruled out, leaving the user deadlocked.
+- **Fix:** In `plan.ts`, repay legs (`op: "repay"`) with `all_position` (full debt payoff) must not be forced into a wallet `deposit_collateral` when the margin smart account itself holds sufficient token balance. A wallet deposit leg is only needed if the smart account has a funding deficit, or if the user explicitly asked to repay from wallet idle funds (`all_idle`).
+- **Battery:** C11 ★.
+
+---
+
+### Copilot · `how much xlm can i withdraw?` (signed-in testnet, margin page discrepancy)
+
+- **Date / commit / surface:** 2026-09-13 17:42 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · testnet · Margin page: 70.91 XLM collateral, 68.48 XLM debt
+- **Result:** `WRONG` — confident false calculation: summed posted collateral (70.91 XLM) and borrowed debt (68.48 XLM) to claim ~139.39 XLM is posted collateral available for withdrawal
+- **Returned, verbatim:**
+  > Posted XLM collateral in the margin account is ~139.39 XLM ($25.03 USD). The margin account has existing debt totaling $210.55 USD (including 68.48 XLM debt) against total collateral of $4,360.32 USD, with an LTV of 4.83% and liquidation threshold of 90.9%. Because total collateral value ($4,360.32 USD) heavily exceeds total debt ($210.55 USD) due to other posted collateral, the full posted XLM collateral balance of ~139.39 XLM is available for withdrawal without breaching the margin health/liquidation threshold.
+- **Margin page actual state (ground truth):**
+  - Collateral Deposited: `315.63 BLUSDC` ($315.68), `29.81 AQUSDC` ($29.82), `70.91 XLM` ($12.73), `0.316 SOUSDC` ($0.32).
+  - Borrowed Assets: `186.73 BLUSDC` ($186.75), `68.48 XLM` ($12.30), `11.50 AQUSDC` ($11.50). Total borrowed: $210.55. Net HF: 21.34.
+- **Evidence artifacts:** `docs/copilot/runs/fail-prompt-how-much-xlm-withdraw.png`, `docs/copilot/runs/margin-page-positions-discrepancy.png`, `docs/copilot/runs/margin-account-info.png`, `docs/copilot/runs/2026-09-13-fail-how-much-xlm-withdraw.json`.
+- **Mathematical proof of defect:**
+  $$70.91\text{ (Posted XLM Collateral)} + 68.48\text{ (Borrowed XLM Debt)} = 139.39\text{ XLM}$$
+  The copilot conflated the smart account's total XLM balance (or summed asset collateral with asset debt) and asserted that 139.39 XLM was posted collateral available for withdrawal. The account only has 70.91 XLM in posted collateral; withdrawing 139.39 XLM would revert on chain with insufficient collateral balance.
+- **Class:** confident wrong answer — outranks all other bug classes; caught by live comparison against the Margin page.
+- **Fix:** Ensure read tools distinguish `account_collateral` (posted balance in `AccountManager`) from total contract balance or debt obligations. When reporting withdrawable collateral for an asset, the ceiling is $\min(\text{posted\_collateral}, \text{max\_withdrawable\_at\_floor})$, NEVER total balance or collateral + debt.
+- **Battery:** C7/C10.
+
+---
+
+### Copilot · `withdraw 5k xlm` (signed-in testnet)
+
+- **Date / commit / surface:** 2026-09-13 17:34 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · hosted/local MCP
+- **Result:** `PARTIAL / REFUSED-WRONGLY` — literal action silently dropped by unit parser, zero steps prepared, deadlocked UI
+- **Returned, verbatim:**
+  > User requested withdrawal of 5,000 XLM collateral from margin account. · This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved. · Withdraw 5,000 XLM from margin collateral. · Checked in 12s · 22s this device · [Start over]
+- **Log:** investigation turn 1 (12s checked, 22s device); `compileRequestedActions` threw `unanchored_amount` and caught to `[]`; `plans: proposed 0, sized 0`; zero options prepared; solitary `Start over` button rendered.
+- **Evidence artifact:** `docs/copilot/runs/fail-prompt-withdraw-5k-xlm.png`, `docs/copilot/runs/2026-09-13-fail-withdraw-5k-xlm.json`.
+- **Root cause:**
+  1. The user entered `"5k xlm"` (common financial notation for 5,000). The model correctly normalized the amount to `"5000"` with `sourceQuote: "5k xlm"`.
+  2. In `lib/copilot/investigation/quantities.ts`, `isTokenAmountIn(sourceQuote, amount)` executes `sourceQuote.includes(amount)`. Because `"5k xlm".includes("5000")` is false, it threw `unanchored_amount`.
+  3. In `lib/copilot/investigation/requested-actions.ts`, `compileRequestedActions` catches all errors and returns `[]`. The action was silently discarded.
+  4. With no literal steps and no fallback strategy candidate, the copilot rendered the findings and headline with 0 options and deadlocked on `Start over`.
+  5. The protocol-level refusal check (collateral figure divergence or $HF \le 1.10$ floor validation) was never reached because the request died at string anchoring.
+- **Fix:** Update `quantities.ts` to parse metric suffix multipliers (`k` / `m`, e.g. `5k` = 5,000, `1.5m` = 1,500,000) when validating token amount spans, or anchor against the evaluated numeric value rather than raw string containment.
+- **Battery:** C1/C4 + L (numbers/units).
+
+---
+
+### Copilot · `how much xlm can i withdraw as i dont have an xlm balance in my margin account to deposit so withdraw some so i can deposit it` (signed-in testnet)
+
+- **Date / commit / surface:** 2026-09-13 17:32 UTC · `copilot-upgrade` @ `4448475` · signed-in `/copilot` · hosted/local MCP · wallet 3.8553269 XLM
+- **Result:** `PARTIAL / REFUSED-WRONGLY` — question unanswered, internal goal leaked as card title, deadlocked UI
+- **Returned, verbatim:**
+  > Your wallet holds 3.8553269 XLM. · This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved. · Determine withdrawable XLM amount and clarify existing margin collateral and wallet balances. · Checked in 21s · 1m 01s this device · [Start over]
+- **Log:** wallet balance read (`3.8553269 XLM`); checked in 21s (1m 01s device); `plans: proposed 0, sized 0`; zero options prepared; no clarifying question presented; only `Start over` button rendered.
+- **Evidence artifact:** `docs/copilot/runs/fail-prompt-withdraw-xlm.png`, `docs/copilot/runs/2026-09-13-fail-withdraw-xlm-margin.json`.
+- **Three defects exposed:**
+  1. **Unanswered inquiry**: Prompt asks "how much xlm can i withdraw"; no calculation of withdrawable XLM or redeemable vTokens was performed or reported.
+  2. **Planner objective leakage**: The internal intent statement `"Determine withdrawable XLM amount and clarify existing margin collateral and wallet balances."` was rendered as the card's user-facing title instead of being resolved or queried.
+  3. **Circular user intent dropped without clarification**: The user expressed circular multi-bucket confusion ("i dont have an xlm balance in my margin account to deposit so withdraw some so i can deposit it"). The planner did not read margin collateral (`vanna_margin_read · can_withdraw` / `account_collateral`) or Earn positions (`vanna_earn_position · balance`), and did not prompt a clarifying question to resolve whether the user wanted to redeem from Earn or withdraw excess margin collateral.
+- **Protocol & Invariant Analysis:**
+  - Hard protocol liquidation threshold: $HF \le 1.10$ (`LIQUIDATION_THRESHOLD_WAD`). Any margin collateral withdrawal must prove post-tx $HF > 1.10$.
+  - User preference floor: Sizing a withdrawal against a health factor requires checking if the user stated a floor; if not, withdrawal is either bounded by maximum withdrawable collateral down to protocol law ($HF > 1.10$) or prompts the user.
+  - Three-bucket balance isolation: Distinguish spendable wallet balance (3.8553 XLM, near zero spendable after base reserve + fee buffer), posted margin collateral, and earn pool vTokens.
+- **Battery:** C6/C7 + I3/I4.
+
+---
+
 ### Copilot · `I want zero debt but keep all my collateral` (signed-in, local MCP loop)
 
 - **Date / commit / surface:** 2026-09-13 16:05 UTC · `feat/copilot-finetune` @ `83781f3` · signed-in `/copilot` · local MCP · debt ~$5,077 in XLM; wallet 0 spendable XLM

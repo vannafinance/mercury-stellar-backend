@@ -1,0 +1,34 @@
+﻿{
+  "prompt": "withdraw 5k xlm",
+  "timestamp": "2026-09-13T23:04:02+05:30",
+  "surface": "signed-in /copilot (Privy testnet)",
+  "branch": "copilot-upgrade",
+  "commit": "4448475",
+  "metrics": {
+    "checkedSeconds": 12,
+    "deviceSeconds": 22,
+    "elapsedMs": 12000,
+    "deviceElapsedMs": 22000
+  },
+  "uiState": {
+    "findings": [
+      "User requested withdrawal of 5,000 XLM collateral from margin account."
+    ],
+    "notice": "This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.",
+    "headline": "Withdraw 5,000 XLM from margin collateral.",
+    "statusIndicator": "Checked in 12s · 22s this device",
+    "buttons": [
+      "Start over"
+    ],
+    "planCandidates": 0,
+    "openQuestionsRendered": 0
+  },
+  "classification": "PARTIAL / WRONG / REFUSED-WRONGLY",
+  "verbatimResponse": "User requested withdrawal of 5,000 XLM collateral from margin account. · This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved. · Withdraw 5,000 XLM from margin collateral. · Checked in 12s · 22s this device · [Start over]",
+  "analysis": {
+    "unanchoredAmountBug": "User typed '5k xlm'. Model normalized amount to '5000' with sourceQuote '5k xlm' or '5k'. In requested-actions.ts, isTokenAmountIn(sourceQuote, amount) requires sourceQuote.includes('5000'), which evaluates to false. Throws unanchored_amount error.",
+    "silentDrop": "compileRequestedActions caught the unanchored_amount exception silently and returned an empty step array [].",
+    "deadlock": "No fixed strategy candidate exists for withdraw. With earlySteps empty and candidates null, copilot rendered findings and headline with zero plan options and a deadlocked Start over button.",
+    "refusalBypass": "Even if the test account suffered from the known collateral figures disagreement, that refusal check was never reached because the action was killed at compile time by the unit parser."
+  }
+}
