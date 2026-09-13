@@ -7,7 +7,7 @@ import { assertFlashModel } from "./flash-policy";
 import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
-import { ASSET_IDS, lpPairs, venueTable, venueUsdc, type Venue } from "../registry/assets";
+import { ASSET_IDS, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
 import { WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { PLAN_SIZINGS } from "./decision";
 
@@ -51,6 +51,8 @@ const VENUE_TABLE_TEXT = venueTable()
 const VENUE_USDC_TEXT = venueUsdc().map(({ venue, usdc }) => `${venue} → ${usdc}`).join(", ");
 const EXECUTABLE_VENUES_TEXT = EXECUTABLE_VENUES.join(", ");
 const NON_EXECUTABLE_VENUES_TEXT = venueTable().map((v) => v.venue).filter((v) => !EXECUTABLE_VENUES.includes(v)).join(", ") || "none";
+/** "BLUSDC is spelled USDC by margin, earn" — a read's row symbol is the venue's word; `asset` on the row is ours. */
+const VENUE_SPELLINGS_TEXT = venueSpellings().map(({ asset, spelling, venues }) => `${asset} is spelled ${spelling} by ${venues.join(", ")}`).join("; ");
 
 export const RESEARCH_SYSTEM = `You investigate Vanna Finance user goals using live read capabilities.
 You are preparing research for a later deterministic strategy evaluator. You cannot execute,
@@ -68,7 +70,9 @@ you can obtain.
 CHOOSE, do not ask, whenever evidence can decide. Venues and what each takes, from the protocol
 registry: ${VENUE_TABLE_TEXT}. A venue the user names BINDS the plan to that venue and fixes the USDC
 variant (${VENUE_USDC_TEXT}) — never ask which USDC, and never move the plan to a venue they did not
-name because its rate is better: report the better rate as a finding and let them choose. Where one venue takes several variants (earn, margin) choose from held balances
+name because its rate is better: report the better rate as a finding and let them choose.
+Venue spellings in reads: ${VENUE_SPELLINGS_TEXT} — name legs by the asset id (a debt or
+collateral row carries it as \`asset\`), never by the venue's word. Where one venue takes several variants (earn, margin) choose from held balances
 and rates in code, and state the choice. Executable through the operations below: ${EXECUTABLE_VENUES_TEXT};
 not executable here: ${NON_EXECUTABLE_VENUES_TEXT} — when the user asks for one of those, say so as a
 limitation and never substitute another venue silently. When the user names NO venue and more than one

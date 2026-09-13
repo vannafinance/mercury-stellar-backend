@@ -15,7 +15,7 @@
  * `<field>_untrusted`. Never invent a unit.
  */
 
-import { ASSET_IDS, assetDef, type AssetDef } from "../registry/assets";
+import { ASSET_IDS, assetDef, assetForVenueSpelling, type AssetDef } from "../registry/assets";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
@@ -33,11 +33,43 @@ function requestedAsset(observation: Observation): AssetDef | null {
   return typeof asset === "string" && (ASSET_IDS as readonly string[]).includes(asset) ? assetDef(asset as AssetDef["id"]) : null;
 }
 
-function canonical(symbol: string, requested: AssetDef | null): string {
-  if (!requested) return symbol;
+/**
+ * Translate a read's rows into registry ids ONCE, where the observation is born, so the
+ * model, the facts, the sealed evidence and the sizer all see the same `asset` beside the
+ * venue's `symbol`. The model reads observations raw (`JSON.stringify(turn)`), so a label
+ * fixed only in the facts never reaches it — 13 Sep: shown `{ symbol: "USDC" }` on a debt
+ * row, it named AQUSDC, then SOUSDC, for a BLUSDC debt. Rows that already carry `asset`
+ * are left alone; a symbol no venue spelling resolves stays as it is.
+ */
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args"> & { data: Record<string, unknown> }): Record<string, unknown>;
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args" | "data">): Observation["data"];
+export function annotateVenueAssets(observation: Pick<Observation, "capability" | "args" | "data">): Observation["data"] {
+  const data = observation.data;
+  if (!data) return data;
+  const requested = requestedAsset(observation as Observation);
+  const walk = (node: unknown, segments: string[], depth: number): unknown => {
+    if (depth > MAX_DEPTH) return node;
+    if (Array.isArray(node)) return node.map((item) => walk(item, segments, depth + 1));
+    if (!isRecord(node)) return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) out[key] = walk(value, [...segments, key], depth + 1);
+    if (typeof node.symbol === "string" && isSymbol(node.symbol) && typeof node.asset !== "string") {
+      const venue = venueFrom(observation.capability, segments, node);
+      const asset = canonical(node.symbol, requested, venue);
+      if (asset !== node.symbol || (ASSET_IDS as readonly string[]).includes(asset)) out.asset = asset;
+    }
+    return out;
+  };
+  return walk(data, [], 0) as Observation["data"];
+}
+
+function canonical(symbol: string, requested: AssetDef | null, venue: Venue | null = null): string {
   const upper = symbol.toUpperCase();
-  return [requested.id, requested.earnSymbol, requested.marginSymbol, requested.oracleSymbol]
-    .some((spelling) => spelling && spelling.toUpperCase() === upper) ? requested.id : symbol;
+  if (requested && [requested.id, requested.earnSymbol, requested.marginSymbol, requested.oracleSymbol]
+    .some((spelling) => spelling && spelling.toUpperCase() === upper)) return requested.id;
+  // No requested asset (a debt or collateral listing): the venue's own spelling decides, when unique.
+  if (venue === "margin" || venue === "earn") return assetForVenueSpelling(venue, symbol)?.id ?? symbol;
+  return symbol;
 }
 
 type Venue = ResearchFact["venue"];
@@ -71,7 +103,7 @@ const SKIP_SUFFIXES = ["_note", "_hint", "_address", "address", "_contract", "co
  * Suffix conventions carry the unit. Stem conventions carry it for a handful of
  * well-known fields whose unit is the row's own token or a dimensionless ratio.
  */
-function unitFor(key: string, identity: string | null, row: Record<string, unknown>, requested: AssetDef | null = null): { unit: string; field: string } | null {
+function unitFor(key: string, identity: string | null, row: Record<string, unknown>, requested: AssetDef | null = null, venue: Venue | null = null): { unit: string; field: string } | null {
   if (key.endsWith("_pct")) {
     const stem = key.slice(0, -4);
     const unit = /(^|_)apy$/.test(stem) ? "% APY" : /(^|_)apr$/.test(stem) ? "% APR" : "%";
@@ -81,24 +113,24 @@ function unitFor(key: string, identity: string | null, row: Record<string, unkno
   if (key.endsWith("_xlm")) return { unit: "XLM", field: key.slice(0, -4) };
   // A vToken payload's bare `human` is the receipt-token amount; every `<x>_human`
   // beside it (`redeemable_human`) is in the underlying.
-  if (key === "human") return { unit: tokenOf(row, identity, true, requested), field: "balance" };
-  if (key.endsWith("_human")) return { unit: tokenOf(row, identity, false, requested), field: key.slice(0, -6) };
+  if (key === "human") return { unit: tokenOf(row, identity, true, requested, venue), field: "balance" };
+  if (key.endsWith("_human")) return { unit: tokenOf(row, identity, false, requested, venue), field: key.slice(0, -6) };
   if (key === "health_factor" || key.endsWith("_health_factor")) return { unit: "HF", field: key };
   if (key === "ratio" || key.endsWith("_ratio") || key.endsWith("_threshold") || key === "distance_to_liquidation") return { unit: "ratio", field: key };
   if (key === "rate" || key.endsWith("_rate")) return { unit: "rate", field: key };
   if (/^(max|min)_/.test(key) && Number.isInteger(Number(row[key]))) return { unit: "", field: key };
   if (["balance", "spendable", "min_balance", "underlying_value", "total_supply", "total_borrow", "total_borrows", "total_liquidity", "total_assets", "lp_shares", "shares"].includes(key)) {
-    const unit = tokenOf(row, identity, false, requested);
+    const unit = tokenOf(row, identity, false, requested, venue);
     return unit ? { unit, field: key } : null;
   }
   return null;
 }
 
 /** The token a row is about: its own symbol fields first, then the identity the path gave it. */
-function tokenOf(row: Record<string, unknown>, identity: string | null, receipt = false, requested: AssetDef | null = null): string {
+function tokenOf(row: Record<string, unknown>, identity: string | null, receipt = false, requested: AssetDef | null = null, venue: Venue | null = null): string {
   for (const key of [...(receipt ? ["vtoken_symbol"] : []), "symbol", "asset", "pool_symbol", "token", "tracking_symbol"]) {
     const value = row[key];
-    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested);
+    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested, venue);
   }
   return identity ?? "";
 }
@@ -107,10 +139,10 @@ function isSymbol(value: string): boolean {
   return /^[A-Za-z][A-Za-z0-9_/-]{0,23}$/.test(value);
 }
 
-function identityOf(row: Record<string, unknown>, fallback: string | null, requested: AssetDef | null = null): string | null {
+function identityOf(row: Record<string, unknown>, fallback: string | null, requested: AssetDef | null = null, venue: Venue | null = null): string | null {
   for (const key of ["symbol", "asset", "pool_symbol", "token"]) {
     const value = row[key];
-    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested);
+    if (typeof value === "string" && isSymbol(value)) return canonical(value, requested, venue);
   }
   if (typeof row.token_a === "string" && typeof row.token_b === "string") return `${row.token_a}/${row.token_b}`;
   if (Array.isArray(row.tokens)) {
@@ -216,8 +248,8 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       return;
     }
     const informational = rowInformational(node);
-    const here = identityOf(node, identity, requested);
     const venue = venueFrom(observation.capability, segments, node);
+    const here = identityOf(node, identity, requested, venue);
     for (const [key, raw] of Object.entries(node)) {
       if (facts.length >= MAX_FACTS) return;
       if (depth === 0 && consumed.has(key)) continue;
@@ -247,7 +279,7 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
         push(childPath, labelFor(observation.capability, here, venue, segments, key), pct, unit, venue);
         continue;
       }
-      const meta = unitFor(key, here, node, requested);
+      const meta = unitFor(key, here, node, requested, venue);
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;

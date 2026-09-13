@@ -331,6 +331,34 @@ export function venueUsdc(): Array<{ venue: Venue; usdc: AssetId }> {
   });
 }
 
+/**
+ * The asset a venue means by a symbol: the margin account and the Earn pools spell BLUSDC
+ * as "USDC" (`marginSymbol` / `earnSymbol`). A row from those venues carrying that word is
+ * BLUSDC, and only BLUSDC — the mapping is unique or it is not used. 13 Sep: a debt row
+ * `{ symbol: "USDC" }` was read as AQUSDC by the model, and a repay was sized against a
+ * debt that did not exist.
+ */
+export function assetForVenueSpelling(venue: "margin" | "earn", symbol: string): AssetDef | null {
+  const upper = symbol.toUpperCase();
+  const field = venue === "margin" ? "marginSymbol" : "earnSymbol";
+  const direct = allAssets().find((d) => d.id === upper);
+  if (direct) return direct;
+  const matches = allAssets().filter((d) => d[field]?.toUpperCase() === upper);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** The venue spellings that differ from the asset id, for the prompt: "BLUSDC is USDC to the margin account and Earn". */
+export function venueSpellings(): Array<{ asset: AssetId; spelling: string; venues: Array<"margin" | "earn"> }> {
+  const out: Array<{ asset: AssetId; spelling: string; venues: Array<"margin" | "earn"> }> = [];
+  for (const def of allAssets()) {
+    const bySpelling = new Map<string, Array<"margin" | "earn">>();
+    if (def.marginSymbol && def.marginSymbol !== def.id) bySpelling.set(def.marginSymbol, [...(bySpelling.get(def.marginSymbol) ?? []), "margin"]);
+    if (def.earnSymbol && def.earnSymbol !== def.id) bySpelling.set(def.earnSymbol, [...(bySpelling.get(def.earnSymbol) ?? []), "earn"]);
+    for (const [spelling, venues] of bySpelling) out.push({ asset: def.id, spelling, venues });
+  }
+  return out;
+}
+
 /** Oracle feeds worth requesting — three stables collapse to one. */
 export function oracleSymbols(): string[] {
   return [...new Set(allAssets().map((d) => d.oracleSymbol))];

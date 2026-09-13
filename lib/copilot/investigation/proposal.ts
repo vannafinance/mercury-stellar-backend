@@ -14,7 +14,7 @@ import { interruptible } from "./runtime";
 import {
   generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, requestedBorrowFrom,
 } from "./candidates";
-import { collectStrategyReads } from "./strategy-reads";
+import { collectStrategyReads, readsForPlans, STRATEGY_READS } from "./strategy-reads";
 import { parseCandidateId, requiresMarginAccount, REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { statedFloorFrom } from "./floor";
 import { planCandidateId, resolvePlans } from "./plan";
@@ -112,9 +112,16 @@ export async function proposeWorkflow(input: {
    * The bundle itself still expires 60s after capture (researchEvidenceReusable).
    */
   const now = wallNow;
+  /**
+   * A stale bundle is re-read. The market set alone is not enough for a composed plan: a
+   * repay needs the debt, a withdraw the posted collateral, a redeem the Earn position —
+   * without them the plan re-resolves as "no XLM debt was read" and the card says the
+   * option "is no longer available" (13 Sep, one minute after it was offered).
+   */
   const observations = reused
     ? prior.evidence!.observations
-    : await collectStrategyReads(scope, input.mcp, input.signal, now);
+    : await collectStrategyReads(scope, input.mcp, input.signal, now,
+        sealedPlan ? [...STRATEGY_READS, ...readsForPlans([sealedPlan], [], now).filter((r) => !STRATEGY_READS.some((s) => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)))] : STRATEGY_READS);
   /**
    * On a stale bundle the floor is the one sealed at investigation (model-anchored to the
    * user's words), not a fresh regex pass over the messages — the regex missed "stays
@@ -179,16 +186,24 @@ export async function proposeWorkflow(input: {
     : liveBasis
       ? { grossCollateralUsd: liveBasis.grossCollateralUsd, debtUsd: liveBasis.debtUsd, floor: liveFloor, issue: liveBasis.issue ? { reason: liveBasis.issue, app: liveBasis.app, contract: liveBasis.contract } : null }
       : null;
-  const candidate = sealedPlan
+  const resolved = sealedPlan
     ? resolvePlans([sealedPlan], {
         scope, observations, now, messages: prior.messages,
         capacity: planPosition,
         // Only shapes that sized under the user's real permission were sealed as proposable.
         borrowing: "allowed", comparisons,
-      }).candidates.find((entry) => entry.id === input.candidateId)
+      })
+    : null;
+  const candidate = resolved
+    ? resolved.candidates.find((entry) => entry.id === input.candidateId)
     : candidates?.feasible.find((entry) => entry.id === input.candidateId);
   if (!candidate) {
-    throw new ResearchError("candidate_unavailable", "That option is no longer available at the current rates and position. Start a new investigation.");
+    // The reason the plan no longer sizes is the fact the user needs; never swallow it.
+    const why = resolved?.rejected.map((r) => `${r.leg}: ${r.reason}`).join("; ");
+    console.warn("[copilot] proposal candidate no longer resolves", { candidateId: input.candidateId, reused, why: why ?? null });
+    throw new ResearchError("candidate_unavailable", why
+      ? `That option no longer sizes on the current reads — ${why}. Start a new investigation.`
+      : "That option is no longer available at the current rates and position. Start a new investigation.");
   }
 
   const compiled = compileProposal({

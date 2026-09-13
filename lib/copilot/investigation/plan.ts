@@ -78,6 +78,24 @@ function opCode(op: PlanLeg["op"]): string {
   return words.length > 1 ? words.map((w) => w[0]).join("") : op.slice(0, 2);
 }
 
+/** A leg as the sizer walks it: the model's leg, plus a marker the expansion below sets. */
+type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true };
+
+/**
+ * The account is what repays — `vanna_repay` draws on the smart account's balance, and
+ * "to repay from the trader's wallet, deposit first" (MCP). So a repay the model sizes
+ * from idle wallet funds (`all_idle`) is two protocol legs: deposit the asset, capped by
+ * the debt, then repay what that deposit put in. The plan's id stays the model's; the
+ * steps, the projection and the approval-time risk check all see the two real legs.
+ * 13 Sep: sized as one leg, the approve-time check read the account (which held none of
+ * the 9,999 XLM the wallet did), sent the plan back to "proposed", and nothing ran.
+ */
+function expandLegs(legs: ProposedPlan["legs"]): SizerLeg[] {
+  return legs.flatMap((leg): SizerLeg[] => leg.op === "repay" && leg.sizing.kind === "all_idle"
+    ? [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }]
+    : [leg]);
+}
+
 class Reject extends Error {
   constructor(readonly leg: string | null, message: string) { super(message); }
 }
@@ -193,7 +211,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     heldTokens: string | null;
   }
   const drafts: Draft[] = [];
-  for (const [index, leg] of plan.legs.entries()) {
+  for (const [index, leg] of expandLegs(plan.legs).entries()) {
     const name = `${leg.op.replaceAll("_", " ")} ${leg.asset}`;
     const def = resolveAssetDef(leg.asset);
     if (!def) throw new Reject(name, `${leg.asset} is not a supported asset`);
@@ -235,15 +253,38 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (leg.op !== "lend" && leg.op !== "deposit_collateral") {
         throw new Reject(name, leg.op === "supply_blend"
           ? "Blend supply spends the margin account — deposit the idle tokens as collateral first"
-          : "an idle wallet balance does not size a borrow, repay, redeem or withdraw");
+          : "an idle wallet balance does not size a borrow, redeem or withdraw");
       }
       const held = holdings[leg.asset as keyof typeof holdings];
+      /**
+       * A deposit that exists to fund a repay ("repay from what I have") is capped by what
+       * is owed, and when the wallet holds none of the asset the refusal says what is owed —
+       * 13 Sep, "I want zero debt but keep all my collateral": the sizer's answer was "an
+       * idle wallet balance does not size a repay", and the debt never appeared.
+       */
+      const owed = leg.fundsRepay ? positionRowBalance(ctx.observations, "account_debt", ["debt", "borrows", "positions"], def.marginSymbol!, def.id, ctx.now) : null;
+      if (leg.fundsRepay) {
+        if (owed === null) throw new Reject(name, `no ${leg.asset} debt was read this investigation`);
+        if (decimalWad(owed) <= ZERO) throw new Reject(name, `you owe no ${leg.asset}`);
+      }
       if (!held || decimalWad(held.tokens) <= ZERO) {
+        if (leg.fundsRepay && owed !== null) {
+          const owedTokens = precise(owed, leg.asset, name);
+          const owedUsd = Number(formatWad(mulDown(decimalWad(owedTokens), price.price, WAD))).toFixed(2);
+          throw new Reject(name, `you owe ${owedTokens} ${leg.asset} (~$${owedUsd}) and the wallet holds no spendable ${leg.asset} — add ${owedTokens} ${leg.asset} to the wallet, or redeem it from Earn first`);
+        }
         const speck = dust[leg.asset as keyof typeof dust];
         if (speck && txFloor !== null) {
           throw new Reject(name, `${speck.tokens} ${leg.asset} ($${Number(speck.usd).toFixed(2)}) is worth less than the fee reserve one transaction needs ($${Number(formatWad(txFloor)).toFixed(2)}) — not worth moving`);
         }
         throw new Reject(name, `no idle ${leg.asset} in the wallet`);
+      }
+      if (leg.fundsRepay && owed !== null) {
+        const owedTokens = precise(owed, leg.asset, name);
+        const tokens = decimalWad(held.tokens) < decimalWad(owedTokens) ? held.tokens : owedTokens;
+        const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
+        continue;
       }
       drafts.push({ leg, name, usd: held.usd, tokens: held.tokens, produces: held.tokens, heldTokens: held.tokens });
       continue;

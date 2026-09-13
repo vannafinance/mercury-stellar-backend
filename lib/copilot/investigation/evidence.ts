@@ -7,6 +7,7 @@
  * sizer uses for prices. Stale or missing evidence falls back to live reads.
  */
 
+import { assetForVenueSpelling } from "../registry/assets";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { Observation } from "./types";
@@ -187,9 +188,12 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
     };
   }
   if (capability === "account_debt") {
+    // `asset` is the registry id the wire symbol means here (BLUSDC for "USDC"); the model
+    // names legs by it, and must never have to guess it from the venue's spelling.
     const debt = Array.isArray(data.debt) ? data.debt.flatMap((row) => {
       if (!isRecord(row) || typeof row.symbol !== "string") return [];
-      return [{ symbol: row.symbol, balance: row.balance }];
+      const asset = assetForVenueSpelling("margin", row.symbol)?.id;
+      return [{ symbol: row.symbol, ...(asset ? { asset } : {}), balance: row.balance }];
     }) : undefined;
     return {
       ...(data.total_debt_usd !== undefined ? { total_debt_usd: data.total_debt_usd } : {}),
@@ -202,7 +206,8 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
     // Posted rows travel too: a withdraw sized as `all_position` re-sizes from them on propose.
     const collateral = Array.isArray(data.collateral) ? data.collateral.flatMap((row) => {
       if (!isRecord(row) || typeof row.symbol !== "string") return [];
-      return [{ symbol: row.symbol, balance: row.balance, ...(row.balance_untrusted !== undefined ? { balance_untrusted: row.balance_untrusted } : {}) }];
+      const asset = assetForVenueSpelling("margin", row.symbol)?.id;
+      return [{ symbol: row.symbol, ...(asset ? { asset } : {}), balance: row.balance, ...(row.balance_untrusted !== undefined ? { balance_untrusted: row.balance_untrusted } : {}) }];
     }) : undefined;
     return {
       ...(data.total_value_usd !== undefined ? { total_value_usd: data.total_value_usd } : {}),

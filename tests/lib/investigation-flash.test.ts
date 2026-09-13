@@ -71,6 +71,8 @@ describe("Flash research adapter", () => {
     expect(RESEARCH_SYSTEM).not.toMatch(/Venue selection is yours/);
     expect(RESEARCH_SYSTEM).toMatch(/names NO venue and more than one\s+executable venue fits/);
     expect(RESEARCH_SYSTEM).not.toMatch(/AQUSDC for Aquarius, SOUSDC for Soroswap/);
+    // The venue's own word for an asset is printed from the registry, so the model never has to guess it.
+    expect(RESEARCH_SYSTEM).toContain("BLUSDC is spelled USDC by margin, earn");
   });
 
   it("rejects non-Flash configuration before provider or MCP calls", () => {

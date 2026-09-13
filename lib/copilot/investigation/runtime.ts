@@ -2,6 +2,7 @@ import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
 import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
+import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
   InvestigationLimits, InvestigationOutcome, InvestigationRequest, InvestigationResult,
@@ -203,7 +204,10 @@ export async function runInvestigation(
    * and is not entered in `seen`: no MCP call was spent on it, and it is not something a
    * retry could re-fetch.
    */
-  const observations: Observation[] = (request.seed ?? []).map((seed) => structuredClone(seed));
+  const observations: Observation[] = (request.seed ?? []).map((seed) => {
+    const copy = structuredClone(seed);
+    return { ...copy, data: annotateVenueAssets(copy) };
+  });
   let modelTurns = 0;
   let toolCalls = 0;
   const controller = new AbortController();
@@ -394,7 +398,7 @@ export async function runInvestigation(
         const fromSeed = snapshotBackedData(request.capability, request.args, observations);
         if (fromSeed) {
           try {
-            observation.data = observationData(fromSeed.data, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(fromSeed.data, limits.maxObservationBytes) });
             observation.status = "ok";
             observation.observedAt = fromSeed.observedAt;
           } catch {
@@ -414,7 +418,7 @@ export async function runInvestigation(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {
           try {
-            observation.data = observationData(response, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(response, limits.maxObservationBytes) });
             observation.status = toolFailed(observation.data) ? "error" : "ok";
             if (observation.status === "error") {
               observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";

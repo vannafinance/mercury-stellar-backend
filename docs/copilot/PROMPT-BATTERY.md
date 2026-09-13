@@ -211,6 +211,25 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 | N2 | close my account | **REFUSED-CORRECTLY** — debt/collateral state explained; 🟡 | `close_account` |
 | N3 | settle my account | 🟡 same | `settle_account` |
 
+### O. Leverage — what the protocol offers
+
+The protocol's leverage is `borrow` against posted collateral, `deposit_and_borrow` (same asset) / `deposit_and_borrow_cross` (borrow a different asset), and `deposit_borrow_and_deploy_blend` (one transaction into Blend). The copilot composes these as legs: deposit → borrow (to a stated floor, or a literal with a floor) → supply_blend. Borrowed funds stay in the margin account. "Leveraged spot" (borrow → swap) needs `swap`, which is 🟡.
+
+**Test-account wall:** on `GBH5…IHA` the Margin page and the liquidation engine disagree on collateral (unposted XLM inside the account), so every borrow is refused with both figures. Prompts O1–O3, O9, O10 prove the refusal and the shortfall advice here; their *sizing* needs an account where the two figures agree.
+
+| # | Prompt | Must | Probes |
+|---|---|---|---|
+| O1 | leverage my xlm 2x into blend, keep HF above 1.3 | **CLARIFY / REFUSED-CORRECTLY** today — "2x" is not a sizing the copilot can compute (no multiplier word); it must ask for an amount or a floor, never invent one | gap: multiplier sizing |
+| O2 | borrow as much xlm as i safely can against my collateral and put it in blend, floor 1.25 | **WORKS** on a healthy account — closed-form max borrow at 1.25, then supply_blend; carry shown. Here: refused with both collateral figures | to_floor + supply |
+| O3 | deposit 5000 xlm and borrow usdc against it, floor 1.5 | **CLARIFY** (one question) — which USDC pool to borrow from, with the three borrow APRs read; or the cheapest picked and stated | cross-asset; venue-less USDC |
+| O4 | go 3x long xlm | **REFUSED-CORRECTLY** — leveraged spot needs a swap, not executable on `/copilot`; Trade › Spot named; no borrow proposed on its own | 🟡 swap |
+| O5 | is borrowing blusdc to farm blend worth it right now | **ANSWER** — BLUSDC borrow APR vs Blend USDC supply APR, the sign of the carry, no plan | carry arithmetic from reads |
+| O6 | what is my current leverage and my liquidation price | **ANSWER** — leverage from the read collateral and debt (say which definition); liquidation price only if the collateral mix was read, else "not derivable from what I read" | no invented price |
+| O7 | reduce my leverage, target HF 2 | **WORKS / REFUSED-CORRECTLY** — repay from the wallet sized to reach 2.0; with an empty wallet: the debt figure and what to add; **no** withdraw-to-repay substitute | deleverage sizing |
+| O8 | borrow 1000 blusdc against my xlm and lend it to earn | **REFUSED-CORRECTLY** — borrowed funds stay in the margin account; Earn lends from the wallet; say so, do not route through a withdraw | account vs wallet boundary |
+| O9 | max leverage into the blend farm but never let HF drop below 1.2, and show me the liquidation price after | **WORKS** on a healthy account — borrow to 1.2 + supply; HF after; liquidation price derived from the post-plan mix, or declined | to_floor + derived price |
+| O10 | deposit 5000 xlm, borrow 2000 xlm and put all of it into blend in one transaction | **WORKS as three legs, says one-tx isn't available** (`deploy_to_blend` 🟡); needs a floor → asks once | one-tx composite |
+
 ---
 
 ## 3. What the battery is designed to find
@@ -229,8 +248,8 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 
 ## 5. Gaps this exposes, ranked by what unblocks the most
 
-1. `blend_withdraw`, `swap`, `deploy_to_blend` into `WORKFLOW_OPS` (each: one vocabulary line + allowlist + risk projection + a sizer branch). Turns E5, G1, G2 and the one-tx rows from 🟡 to ✅.
-2. **Fraction sizing** ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
+1. `blend_withdraw`, `swap`, `deploy_to_blend` into `WORKFLOW_OPS` (O4, O10) (each: one vocabulary line + allowlist + risk projection + a sizer branch). Turns E5, G1, G2 and the one-tx rows from 🟡 to ✅.
+2. **Fraction and multiplier sizing** ("half", "25 %", "2x" — O1) ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
 3. **Supply Blend from posted collateral** without a preceding deposit leg (E4).
 4. Account lifecycle on `/copilot` (N1–N3) — or keep it on the Margin page and make the refusal name it.
 5. LP — waits on the risk engine (🔒). Not a copilot task.

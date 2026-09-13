@@ -17,7 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
-import { extractFactsByShape } from "@/lib/copilot/investigation/facts-by-shape";
+import { annotateVenueAssets, extractFactsByShape } from "@/lib/copilot/investigation/facts-by-shape";
 import type { Observation } from "@/lib/copilot/investigation/types";
 
 const read = (capability: string, data: Observation["data"], args: Record<string, unknown> = {}): Observation => ({
@@ -114,6 +114,36 @@ describe("facts by shape — the reads that had no case", () => {
     ]).facts;
     const labels = result.filter((f) => f.label.includes("supply APR")).map((f) => f.label).sort();
     expect(labels).toEqual(["AQUSDC Earn supply APR", "BLUSDC Earn supply APR"]);
+  });
+
+  it("labels a debt row by the asset the margin account means, not its wire word", () => {
+    const result = normalizeResearchFacts([
+      read("account_debt", { debt: [{ symbol: "USDC", balance: "2559.56", value_usd: "2559.94" }, { symbol: "XLM", balance: "14113.31", value_usd: "2516.91" }], total_debt_usd: "5076.86" }),
+    ]).facts;
+    const labels = result.map((f) => f.label);
+    expect(labels.some((l) => l.startsWith("BLUSDC "))).toBe(true);
+    expect(labels.some((l) => l.startsWith("USDC "))).toBe(false);
+  });
+
+  it("annotates what the MODEL sees: a debt row's wire symbol carries the registry asset (13 Sep: AQUSDC, then SOUSDC, guessed for a BLUSDC debt)", () => {
+    // The exact payload the local MCP returned for the test account on 13 Sep.
+    const data = annotateVenueAssets({ capability: "account_debt", args: {}, data: {
+      smart_account: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
+      debt: [
+        { symbol: "USDC", balance: "2559.566080757051806242", price_usd: "1.00014894063026", value_usd: "2559.9473" },
+        { symbol: "XLM", balance: "14113.311211804998648290", price_usd: "0.17833609293201", value_usd: "2516.9128" },
+      ],
+      total_debt_usd: "5076.8601",
+    } });
+    expect((data.debt as Array<Record<string, unknown>>).map((r) => [r.symbol, r.asset])).toEqual([["USDC", "BLUSDC"], ["XLM", "XLM"]]);
+    // The row keeps its wire symbol — the sizer matches `marginSymbol` on it — and gains the id the model must use.
+  });
+
+  it("annotates an Earn pool row by the asset the read was for, not the venue-unique spelling", () => {
+    const data = annotateVenueAssets({ capability: "earn_market", args: { asset: "AQUSDC" }, data: { pool_symbol: "USDC", symbol: "USDC", supply_apr_pct: "20.18" } });
+    expect(data.asset).toBe("AQUSDC");
+    const blend = annotateVenueAssets({ capability: "blend_markets", args: {}, data: { reserves: [{ symbol: "USDC", supply_apr_pct: "0.92" }] } });
+    expect((blend.reserves as Array<Record<string, unknown>>)[0].asset).toBeUndefined();
   });
 
   it("renders a prices_batch keyed by symbol", () => {
