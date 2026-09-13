@@ -4,6 +4,7 @@
  */
 
 import { isVerboseSignServiceDump } from "./execution-copy";
+import { parseHealthPayload } from "./protocol-health";
 
 function num(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -77,17 +78,10 @@ export function explainRead(tool: string, data: Record<string, unknown>, questio
     }
     case "vanna_get_account_health": {
       // Live MCP returns collateral_usd / debt_usd / ltv_ratio / is_healthy —
-      // not always a bare `health_factor`. Derive HF when missing.
-      const col = num(pick(data, ["collateral_usd", "total_collateral_usd", "collateral", "gross_collateral_usd"]));
-      const debt = num(pick(data, ["debt_usd", "total_debt_usd", "debt"]));
+      // not always a bare `health_factor`. HF is C/D (testnet RiskEngine), never
+      // collateral × liquidation_threshold — that field is max LTV ≈ 0.909.
+      const { collateral: col, debt, hf } = parseHealthPayload(data);
       const ltv = num(pick(data, ["ltv_ratio", "ltv"]));
-      const lt = num(pick(data, ["liquidation_threshold"])) ?? 0.909;
-      let hf = num(pick(data, ["health_factor", "hf", "avg_health_factor"]));
-      if (hf == null && col != null && debt != null && debt > 0) {
-        hf = (col * lt) / debt;
-      } else if (hf == null && (debt == null || debt === 0)) {
-        hf = null; // ∞
-      }
       const healthy = data.is_healthy;
       const dist = num(pick(data, ["distance_to_liquidation"]));
       const parts: string[] = [];
@@ -108,8 +102,8 @@ export function explainRead(tool: string, data: Record<string, unknown>, questio
       } else if (debt === 0 || debt == null) {
         parts.push("no debt (health factor effectively ∞)");
       }
-      if (col != null) parts.push(`collateral ~$${fmt(col, 2)}`);
-      if (debt != null) parts.push(`debt ~$${fmt(debt, 2)}`);
+      if (col > 0) parts.push(`collateral ~$${fmt(col, 2)}`);
+      if (debt > 0 || (col > 0 && debt === 0)) parts.push(`debt ~$${fmt(debt, 2)}`);
       if (ltv != null) parts.push(`LTV ${(ltv * 100).toFixed(1)}%`);
       if (typeof healthy === "boolean") parts.push(healthy ? "healthy" : "at risk");
       if (dist != null) parts.push(`distance to liquidation ${(dist * 100).toFixed(1)}%`);
@@ -296,13 +290,12 @@ const PLUMBING_FACT_KEY =
 export function factsForUi(data: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
 
-  // Prefer human fields from live MCP health payload
-  const col = num(pick(data, ["collateral_usd", "total_collateral_usd", "total_value_usd"]));
-  const debt = num(pick(data, ["debt_usd", "total_debt_usd"]));
+  // Prefer human fields from live MCP health payload. HF is C/D, never × 0.909 LTV.
+  const parsed = parseHealthPayload(data);
+  const col = parsed.collateral > 0 ? parsed.collateral : num(pick(data, ["collateral_usd", "total_collateral_usd", "total_value_usd"]));
+  const debt = parsed.debt > 0 ? parsed.debt : num(pick(data, ["debt_usd", "total_debt_usd"]));
   const ltv = num(pick(data, ["ltv_ratio", "ltv"]));
-  const lt = num(pick(data, ["liquidation_threshold"])) ?? 0.909;
-  let hf = num(pick(data, ["health_factor", "hf", "avg_health_factor"]));
-  if (hf == null && col != null && debt != null && debt > 0) hf = (col * lt) / debt;
+  const hf = parsed.hf ?? (col != null && debt != null && debt > 0 ? col / debt : null);
   if (hf != null) out["health factor"] = Number(hf.toFixed(3));
   else if (debt === 0 || (debt == null && col != null)) out["health factor"] = "∞";
   if (col != null) out["collateral usd"] = Number(col.toFixed(2));

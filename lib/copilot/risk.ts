@@ -6,30 +6,12 @@
 import { copilotConfig } from "./config";
 import type { MCPClient } from "./mcp-client";
 import type { CopilotAction, RiskResult, Simulation } from "./types";
-
-const LIQ_THRESHOLD = 1.0; // HF < 1.0 = liquidatable
-/**
- * The product's own health factor is a plain ratio — `avgHealthFactor =
- * grossCollateralValue / effectiveDebtValue` in lib/margin-health.ts, confirmed by the
- * Margin page's own displayed number ("Collateral / Debt", no discount). This constant
- * used to be 0.9, silently multiplying collateral by 90% in every before→after
- * projection — since `hf_before` almost always comes straight from a real MCP/snapshot
- * read (bypassing this), only `hf_after` ever hit the discount, so EVERY write's
- * projected health factor after a deposit/withdraw/borrow/repay was ~10% off from what
- * the exact same formula would show once the write actually landed — e.g. a deposit
- * projected to WORSEN health factor (1.50 → 1.35) when adding collateral can only ever
- * help or leave it unchanged. No test caught it because this module had zero coverage.
- */
-const DEFAULT_LT = 1.0;
-
-function n(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const x = Number(v);
-    if (Number.isFinite(x)) return x;
-  }
-  return null;
-}
+import {
+  healthFactorFromUsd,
+  isOnChainLiquidatable,
+  LIQUIDATION_THRESHOLD,
+} from "@/lib/margin-health";
+import { n, parseHealthPayload } from "./protocol-health";
 
 async function fetchPriceUsd(mcp: MCPClient, asset: string): Promise<number> {
   try {
@@ -85,17 +67,7 @@ async function fetchHealth(
     if (trader) args.trader = trader;
     // Some MCP builds take only smart_account; others also accept account.
     const r = await mcp.call("vanna_get_account_health", args);
-    const collateral =
-      n(r.collateral_usd) ??
-      n(r.total_collateral_usd) ??
-      n(r.gross_collateral_usd) ??
-      n(r.collateral) ??
-      0;
-    const debt = n(r.debt_usd) ?? n(r.total_debt_usd) ?? n(r.debt) ?? 0;
-    const lt = n(r.liquidation_threshold) ?? DEFAULT_LT;
-    let hf = n(r.health_factor) ?? n(r.hf) ?? n(r.avg_health_factor);
-    // Live MCP often omits health_factor and only returns collateral/debt/ltv.
-    if (hf == null && debt > 0 && collateral > 0) hf = (collateral * lt) / debt;
+    const { collateral, debt, hf } = parseHealthPayload(r as Record<string, unknown>);
 
     /**
      * A Soroban budget overrun arrives as a SUCCESSFUL response carrying an error field —
@@ -145,9 +117,8 @@ async function fetchHealth(
   }
 }
 
-function hfFrom(collateral: number, debt: number, lt = DEFAULT_LT): number | null {
-  if (debt <= 0) return null; // ∞
-  return (collateral * lt) / debt;
+function hfFrom(collateral: number, debt: number): number | null {
+  return healthFactorFromUsd(collateral, debt);
 }
 
 export interface RiskSimInput {
@@ -202,7 +173,7 @@ export async function evaluateWriteRisk(
             debt_after: 0,
             ltv_before: 0,
             ltv_after: 0,
-            liquidation_threshold: LIQ_THRESHOLD,
+            liquidation_threshold: LIQUIDATION_THRESHOLD,
             amount_usd: 0,
             asset,
             // Nothing failed here — this op simply does not move margin collateral or debt.
@@ -290,7 +261,7 @@ export async function evaluateWriteRisk(
     debt_after: debtAfter,
     ltv_before: ltvBefore,
     ltv_after: ltvAfter,
-    liquidation_threshold: LIQ_THRESHOLD,
+    liquidation_threshold: LIQUIDATION_THRESHOLD,
     amount_usd: amountUsd,
     asset,
   };
@@ -300,47 +271,31 @@ export async function evaluateWriteRisk(
     action.min_hf != null && Number.isFinite(action.min_hf) && action.min_hf > 0
       ? action.min_hf
       : null;
-  const policyFloor = copilotConfig.minHealthFactor;
-  const hardFloor = 1.0;
+  const hardFloor = LIQUIDATION_THRESHOLD;
 
-  // Already close to liquidation — warn before any debt-increasing write.
   if (
-    hfBefore != null &&
-    hfBefore < 1.2 &&
+    isOnChainLiquidatable(hfBefore, before.debt) &&
     (action.op === "borrow" ||
       action.op === "deposit_and_borrow" ||
       action.op === "withdraw_collateral" ||
       action.op === "deploy_to_blend")
   ) {
-    reasons.unshift(
-      `Account HF is already ${hfBefore.toFixed(2)} (near liquidation). Prefer repay or add collateral before increasing risk.`,
-    );
-    if (hfBefore < hardFloor) {
-      decision = "block";
-      reasons.unshift(`HF ${hfBefore.toFixed(2)} < 1.00 — liquidatable now. Repay debt or deposit collateral first.`);
-    } else {
-      // No `decision !== "block"` guard: nothing above this point can have set "block",
-      // so TS narrows it away and the comparison fails `next build`. The escalation is
-      // one-directional anyway — a later block below still wins.
-      decision = "needs_confirmation";
-    }
-  }
-
-  if (hfAfter != null && hfAfter < hardFloor) {
     decision = "block";
     reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} < 1.00 — would be instantly liquidatable`,
+      `HF ${hfBefore!.toFixed(2)} <= ${hardFloor.toFixed(2)} — liquidatable on-chain now. Repay debt or deposit collateral first.`,
+    );
+  }
+
+  if (hfAfter != null && hfAfter <= hardFloor) {
+    decision = "block";
+    reasons.unshift(
+      `projected health factor ${hfAfter.toFixed(2)} <= ${hardFloor.toFixed(2)} — would be instantly liquidatable on-chain`,
     );
   } else if (userFloor != null && hfAfter != null && hfAfter < userFloor) {
     decision = "block";
     reasons.unshift(
       `projected HF ${hfAfter.toFixed(2)} would breach your floor of ${userFloor.toFixed(2)} ` +
         `(“keep health factor above ${userFloor}”). Lower size, add collateral, or raise your floor.`,
-    );
-  } else if (hfAfter != null && hfAfter < policyFloor) {
-    if (decision !== "block") decision = "needs_confirmation";
-    reasons.unshift(
-      `projected health factor ${hfAfter.toFixed(2)} below safety floor ${policyFloor}`,
     );
   }
 

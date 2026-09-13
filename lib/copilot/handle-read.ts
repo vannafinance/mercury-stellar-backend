@@ -28,6 +28,12 @@ import { mcpErrorResponse } from "./mcp-error-response";
 import { logCopilotEvent } from "./log";
 import { isTrackingSymbol } from "@/lib/account-snapshot";
 import { readFarmAmmLpShares } from "./farm-lp";
+import {
+  healthFactorFromUsd,
+  isOnChainLiquidatable,
+  LIQUIDATION_THRESHOLD,
+  xlmLiquidationPriceUsd,
+} from "@/lib/margin-health";
 import { vertexExplain, vertexExplainStructured } from "./vertex";
 import { buildToolArgs } from "./tool-args";
 import { resolveAsset, resolveAssetDef, USDC_VARIANTS } from "./registry/assets";
@@ -418,10 +424,10 @@ export function withHfGuardrails(
    * is how a fresh account got "URGENT: this account is liquidatable".
    */
   if (!(Number(debtUsd) > 0.01)) return message;
-  if (hf < 1.0) {
+  if (isOnChainLiquidatable(hf, Number(debtUsd))) {
     return (
-      `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is below 1.00 — this account is ` +
-      `liquidatable. Repay debt or deposit collateral now.`
+      `${message}\n\nURGENT: health factor ${hf.toFixed(2)} is at or below ${LIQUIDATION_THRESHOLD.toFixed(2)} — this account is ` +
+      `liquidatable on-chain. Repay debt or deposit collateral now.`
     );
   }
   if (hf < floor) {
@@ -470,12 +476,8 @@ export function liquidationPriceLine(pos: {
     .filter((r) => !sameAsset(r.symbol, "XLM"))
     .reduce((s, r) => s + r.usd, 0);
 
-  // Derived from the live pair, so it cannot disagree with the health factor shown above.
-  const lt = (pos.hf * debt) / collateral;
-  if (!(lt > 0)) return "I couldn't derive your liquidation threshold from the current position.";
-
-  const p = (debt / lt - stableUsd) / xlmQty;
-  if (!(p > 0)) {
+  const p = xlmLiquidationPriceUsd({ debtUsd: debt, xlmQty, stableCollateralUsd: stableUsd });
+  if (p == null) {
     return (
       `Your stable collateral (${money(stableUsd)}) already covers the debt on its own, so no ` +
       `XLM price liquidates this position.`
@@ -544,20 +546,26 @@ async function projectHealthFactor(
   }
 
   const usdDelta = hypo.amount * price;
-  const nextCollateral =
-    hypo.op === "deposit" ? collateral + usdDelta : hypo.op === "withdraw" ? collateral - usdDelta : collateral;
-  const nextDebt =
-    hypo.op === "borrow" ? debt + usdDelta : hypo.op === "repay" ? Math.max(0, debt - usdDelta) : debt;
+  // Borrowed proceeds credit the collateral ledger (is_borrow_allowed projects both sides).
+  let nextCollateral = collateral;
+  let nextDebt = debt;
+  if (hypo.op === "deposit") nextCollateral = collateral + usdDelta;
+  else if (hypo.op === "withdraw") nextCollateral = collateral - usdDelta;
+  else if (hypo.op === "borrow") {
+    nextCollateral = collateral + usdDelta;
+    nextDebt = debt + usdDelta;
+  } else if (hypo.op === "repay") {
+    nextCollateral = Math.max(0, collateral - usdDelta);
+    nextDebt = Math.max(0, debt - usdDelta);
+  }
 
   if (nextDebt <= 0) {
     return `After repaying ${hypo.amount} ${ui} you'd have no debt left, so the health factor becomes ∞ — nothing to liquidate.`;
   }
-  // Derived, not assumed: whatever threshold the snapshot used stays used.
-  if (!(debt > 0) || !(collateral > 0)) {
-    return `You have no debt yet, so there's no live ratio to derive your liquidation threshold from — I'd be guessing the projected figure. Ask again once the position has debt, or state the borrow and I'll size it against the risk gate.`;
+  const nextHf = healthFactorFromUsd(nextCollateral, nextDebt);
+  if (nextHf == null) {
+    return `I couldn't project a health factor for that move.`;
   }
-  const lt = (pos.hf * debt) / collateral;
-  const nextHf = (nextCollateral * lt) / nextDebt;
   const verb =
     hypo.op === "borrow"
       ? `borrowing ${hypo.amount} ${ui}`
@@ -566,13 +574,16 @@ async function projectHealthFactor(
         : hypo.op === "deposit"
           ? `depositing ${hypo.amount} ${ui}`
           : `withdrawing ${hypo.amount} ${ui}`;
+  const before =
+    pos.hf > 0 && Number.isFinite(pos.hf)
+      ? ` — ${nextHf >= pos.hf ? "up" : "down"} from ${pos.hf.toFixed(2)}.`
+      : ".";
   return (
     `After ${verb} (${money(usdDelta)}), your health factor would be about ` +
-    `${nextHf.toFixed(2)} — down from ${pos.hf.toFixed(2)}.`.replace(
-      "down from",
-      nextHf >= pos.hf ? "up from" : "down from",
-    ) +
-    (nextHf < 1.3 ? ` That is close to the ${nextHf < 1.1 ? "liquidation" : "caution"} band.` : "")
+    `${nextHf.toFixed(2)}${before}` +
+    (nextHf <= LIQUIDATION_THRESHOLD
+      ? ` That is at or below the on-chain liquidation gate (${LIQUIDATION_THRESHOLD.toFixed(2)}).`
+      : "")
   );
 }
 
@@ -708,11 +719,8 @@ async function snapshotPositionAnswer(
      * a hypothetical and an amount; answering with today's figure looks like an answer and
      * is not one.
      *
-     * The liquidation threshold is DERIVED from the live pair rather than assumed, so this
-     * projection can never disagree with the snapshot it is based on. With no debt there is
-     * nothing to derive it from, so the projection is declined rather than guessed — an
-     * invented threshold on the number that decides liquidation is the worst thing to be
-     * confidently wrong about.
+     * Projection uses the on-chain formula HF = collateral / debt (borrow credits both
+     * sides). Liquidation is HF <= 1.1, not a reverse-engineered haircut from the live pair.
      */
     const hypo = parseHypotheticalMove(ctx.message);
     if (hypo) {
@@ -724,9 +732,9 @@ async function snapshotPositionAnswer(
      * "What's my liquidation price?" — the XLM price at which this position is liquidated.
      *
      * Only XLM moves; the USDC variants are dollar stables, so the question reduces to:
-     * at what P does `(stables + xlmQty × P) × lt / debt` reach 1?
+     * at what P does `(stables + xlmQty × P) / debt` reach the on-chain gate 1.1?
      *
-     *     P* = (debt / lt − stables) / xlmQty
+     *     P* = (1.1 × debt − stables) / xlmQty
      *
      * A negative or zero P* means the stable collateral alone already covers the debt —
      * no XLM price can liquidate this position, and saying so is the honest answer rather

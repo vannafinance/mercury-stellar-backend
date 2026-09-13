@@ -14,7 +14,9 @@ describe("investigation thread continuation", () => {
       understanding: { intent: "strategy" as const },
     };
     expect(shouldContinueInvestigation("make it 1.4 instead", last)).toBe(true);
+    expect(shouldContinueInvestigation("hold for 90 days", last)).toBe(true);
     expect(isRefinement("make it 1.4 instead")).toBe(true);
+    expect(isRefinement("90 days")).toBe(true);
     expect(shouldReplacePlan("make it 1.4 instead", last)).toBe(true);
   });
 
@@ -34,6 +36,12 @@ describe("investigation thread continuation", () => {
     })).toBe(false);
     expect(shouldReplacePlan("what's my health factor", {
       question: "Which USDC variant?", status: "needs_input",
+    })).toBe(false);
+  });
+
+  it("does not continue a timed-out run", () => {
+    expect(shouldContinueInvestigation("hold for 90 days", {
+      question: null, status: "incomplete", understanding: { intent: "strategy" },
     })).toBe(false);
   });
 });

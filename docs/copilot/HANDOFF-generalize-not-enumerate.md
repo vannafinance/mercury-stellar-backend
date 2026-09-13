@@ -217,6 +217,11 @@ Use the Langfuse traces. Name the dominant span with a number before touching it
 - **P3 Cloud SQL** — schema written, no instance provisioned, threads do not survive a deploy.
   Do not invent an instance.
 - **P4 / P5 / P6** — as last reported.
+- **Research env-var hygiene & single-source network guard** (7 route files: `app/api/copilot/investigate/route.ts` and `app/api/copilot/workflow/**/route.ts`):
+  - **`COPILOT_RESEARCH_NETWORK` — delete it.** Never let two variables answer "what network am I on." Derive the testnet guard directly from `NETWORK_PASSPHRASE` in `@/lib/stellar-utils` (which already knows the truth: `'Test SDF Network ; September 2015'`).
+  - **`COPILOT_RESEARCH_SECRET` — keep length check ($\ge 32$ chars).** A short signing key on the continuation token is a real vulnerability, and failing closed is correct. Document in `.env.example` to generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Set it explicitly so rotating `COPILOT_SESSION_SECRET` does not kill open user investigations.
+  - **`COPILOT_RESEARCH_ENABLED` — make the panic switch visible.** An incident kill switch has real value; an invisible one costs a day of debugging. When `"false"`, log an explicit warning (`[copilot] research disabled via COPILOT_RESEARCH_ENABLED`) and return a distinct diagnostic code/error rather than silently masquerading as an unconfigured secret.
+  - **Deduplicate:** All 7 route files currently copy-paste this identical 3-line check. Consolidate into a single shared helper (e.g. `assertResearchConfigured()`) so policy changes happen in one place.
 
 `.env.local` currently points `MCP_BASE_URL` at the direct Cloud Run URL as a temporary local
 workaround. **Do not commit it and do not change `cloudbuild.yaml`**, which correctly uses
@@ -232,7 +237,7 @@ workaround. **Do not commit it and do not change `cloudbuild.yaml`**, which corr
 4. **§3 clarify-vs-rank** and **§4 horizon** — these two are one coherent change to how a
    decision is explained.
 5. **§6 latency**, re-measured after §2.
-6. **§7** leftovers.
+6. **§7** leftovers (including research env hygiene & single-source network guard).
 
 Then run the battery yourself before reporting: the owner paragraph, a bare
 `supply my USDC to the best pool`, a three-turn refinement, and one small write with

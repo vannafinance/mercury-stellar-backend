@@ -30,7 +30,7 @@ export function isRefinement(message: string): boolean {
   if (isIndependentGoal(text) && !/instead|make it|change (the )?(floor|budget)|also use|use \S+ too/i.test(text)) {
     return false;
   }
-  return /instead|make it|change (the )?(floor|budget|hf|health)|use \S+ too|also use|don'?t borrow|no (new )?borrow|you can borrow|may borrow|switch|higher floor|lower floor|\b1\.\d\b/i.test(text);
+  return /instead|make it|change (the )?(floor|budget|hf|health)|use \S+ too|also use|don'?t borrow|no (new )?borrow|you can borrow|may borrow|switch|higher floor|lower floor|\b1\.\d\b|\b\d{1,4}\s*(days?|weeks?|months?)\b/i.test(text);
 }
 
 /** Health / price / "am I safe" — a new objective that must not inherit the last plan. */
@@ -54,6 +54,7 @@ export function shouldContinueInvestigation(
   last: LastInvestigation | null,
 ): boolean {
   if (!last) return false;
+  if (last.status === "incomplete") return false;
   if (isIndependentGoal(message)) return false;
   if (last.question) return true;
   if (last.understanding?.intent === "strategy" || last.status === "researched") {

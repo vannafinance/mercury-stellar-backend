@@ -15,6 +15,7 @@ import type { ResearchCapacity } from "./view";
 const KEEP = new Set([
   "wallet_balances", "asset_price", "earn_market", "blend_markets",
   "account_position", "account_health", "account_debt", "account_collateral",
+  "earn_position",
 ]);
 const PRIORITY: Record<string, number> = {
   account_position: 0,
@@ -25,8 +26,9 @@ const PRIORITY: Record<string, number> = {
   asset_price: 5,
   earn_market: 6,
   blend_markets: 7,
+  earn_position: 8,
 };
-const MAX_OBSERVATIONS = 16;
+const MAX_OBSERVATIONS = 24;
 
 export interface ResearchEvidence {
   allowedCandidateIds?: string[];

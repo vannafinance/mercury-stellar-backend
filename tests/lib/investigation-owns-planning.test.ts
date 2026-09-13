@@ -19,6 +19,20 @@ describe("Copilot surface does not keyword-plan", () => {
     expect(res.intent?.template_id).toBe("investigation_owns_planning");
   });
 
+  it("reports investigation as the copilot planner and surfaces research gates", async () => {
+    const { getBrainHealth } = await import("@/lib/copilot/handle");
+    const health = getBrainHealth();
+    expect(health.copilot_planner).toBe("investigation");
+    expect(health.research_gate).toBeTruthy();
+    expect(health.brains_served).toEqual(
+      expect.objectContaining({
+        investigation: expect.any(Number),
+        keyword_router: expect.any(Number),
+        copilot_shim: expect.any(Number),
+      }),
+    );
+  });
+
   it("still accepts an approved-plan payload on the Copilot surface", async () => {
     const res = await handleChat({
       ...base,

@@ -1,5 +1,139 @@
 # Prompt library — what the copilot actually does
 
+## Resume battery — 2026-09-13, measured baseline (not complete)
+
+### Copilot · `where should I farm for the best yield right now`
+
+- **Date / commit / surface:** 2026-09-13T07:14:06.032253+00:00 · `f7413d7` + working diff · signed-in `/copilot`, testnet G `GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH`
+- **Auto-sign:** OFF.
+- **Result:** `PARTIAL`.
+- **Returned, verbatim (card):**
+  > The reported supply rates are XLM Blend supply apr: 168.6578 % APR; USDC Blend supply apr: 0.9057 % APR; XLM Earn: 5.186452 % APR; XLM Earn supply APY: 5.186452 % APR; BLUSDC Earn: 29.081285 % APR; BLUSDC Earn supply APY: 29.081285 % APR; AQUSDC Earn: 7.843466 % APR; AQUSDC Earn supply APY: 7.843466 % APR; SOUSDC Earn: 0.438367 % APR; SOUSDC Earn supply APY: 0.438367 % APR.
+  > 
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > 
+  > Compare farming and lending yields across Aquarius, Blend, and Vanna Earn to identify top yield opportunities.
+  > 
+  > Checked in 25s · 25s this device
+  > 
+  > aquarius markets: some entries were unavailable.
+  > Aquarius pools were discovered; executable quotes and net returns have not been evaluated.
+  > wallet balances: some entries were unavailable.
+  > earn market: data was unavailable. No value was assumed.
+  > Start over
+- **Trace:** `docs/copilot/runs/trace-farm-baseline.json`; matching PNG.
+- **Brain counter delta:** `{"investigation": 1, "keyword_router": 0, "copilot_shim": 0}`.
+- **Tx:** none. No successful execution claimed.
+
+### Copilot · `invest into earn pool where i can get good returns?`
+
+- **Date / commit / surface:** 2026-09-13T07:12:31.757358+00:00 · `f7413d7` + working diff · signed-in `/copilot`, testnet G `GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH`
+- **Auto-sign:** OFF.
+- **Result:** `PARTIAL`.
+- **Returned, verbatim (card):**
+  > Wallet spendable balances are 19,351.45 XLM, 0 BLUSDC, 2,678 AQUSDC, and 74,985 SOUSDC. BLUSDC Earn pool offers the highest supply APY at 29.08%, but spendable BLUSDC balance is 0. AQUSDC Earn pool yields 7.84% supply APY, where 2,678 AQUSDC is available to deposit. XLM Earn pool yields 5.19% supply APY, where 19,351.45 XLM is available. SOUSDC Earn pool yields 0.44% supply APY, holding 74,985 SOUSDC.
+  > 
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > 
+  > Identify and allocate to the highest-yielding Vanna Earn pool suited to available wallet balances.
+  > 
+  > Checked in 18s · 47s this device
+  > 
+  > wallet balances: some entries were unavailable.
+  > Start over
+- **Trace:** `docs/copilot/runs/trace-earn-baseline.json`; matching PNG.
+- **Brain counter delta:** `{"investigation": 1, "keyword_router": 0, "copilot_shim": 0}`.
+- **Tx:** none. No successful execution claimed.
+
+### Copilot · `put 10 xlm in and lever 3x into sousdc`
+
+- **Date / commit / surface:** 2026-09-13T07:09:56.338799+00:00 · `f7413d7` + working diff · signed-in `/copilot`, testnet G `GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH`
+- **Auto-sign:** OFF.
+- **Result:** `REFUSED-WRONGLY`.
+- **Returned, verbatim (card):**
+  > Deposit collateral 10 XLM, then borrow 3.5928521 SOUSDC. Approve to run these steps.
+  > 
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > 
+  > Deposit 10 XLM as collateral and lever 3x into SOUSDC.
+  > 
+  > lever 3x into sousdc
+  > Borrowing required
+  > 
+  > Checked in 6s · 6s this device
+  > 
+  > NOT EXECUTED
+  > 
+  > put 10 xlm in and lever 3x into sousdc
+  > 
+  > A borrowing proposal needs an explicit health-factor floor.
+  > 
+  > deposit collateral 10 XLM · 10 XLM
+  > borrow 3.5928521 SOUSDC · 3.5928521 SOUSDC
+  > Start over
+- **Trace:** `docs/copilot/runs/trace-3x-approve.json`; matching PNG.
+- **Brain counter delta:** `{"investigation": 1, "keyword_router": 0, "copilot_shim": 0}`.
+- **Tx:** none. No successful execution claimed.
+
+### Copilot · `put 10 xlm in and lever 3x into sousdc`
+
+- **Date / commit / surface:** 2026-09-13T07:07:54.393709+00:00 · `f7413d7` + working diff · signed-in `/copilot`, testnet G `GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH`
+- **Auto-sign:** OFF.
+- **Result:** `PARTIAL`.
+- **Returned, verbatim (card):**
+  > Deposit collateral 10 XLM, then borrow 3.5928521 SOUSDC. Approve to run these steps.
+  > 
+  > This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
+  > 
+  > Deposit 10 XLM collateral and lever 3x into SOUSDC.
+  > 
+  > lever 3x into sousdc
+  > Borrowing required
+  > 
+  > Checked in 8s · 8s this device
+  > 
+  > PLAN FOR APPROVAL
+  > 
+  > put 10 xlm in and lever 3x into sousdc
+  > 
+  > Review the amounts and steps before approving.
+  > 
+  > deposit collateral 10 XLM · 10 XLM
+  > borrow 3.5928521 SOUSDC · 3.5928521 SOUSDC
+  > Cancel remaining stepsApprove and run
+  > Start over
+- **Trace:** `docs/copilot/runs/trace-3x-live.json`; matching PNG.
+- **Brain counter delta:** `{"investigation": 1, "keyword_router": 0, "copilot_shim": 0}`.
+- **Tx:** none. No successful execution claimed.
+
+### Copilot · `put 10 xlm in and lever 3x into sousdc`
+
+- **Date / commit / surface:** 2026-09-13T07:04:40.964501+00:00 · `f7413d7` + working diff · signed-in `/copilot`, testnet G `GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH`
+- **Auto-sign:** OFF.
+- **Result:** `ERROR`.
+- **Returned, verbatim (card):**
+  > Portfolio
+  > Earn
+  > Margin
+  > Trade
+  > Farm
+  > Analytics
+  > Copilot
+  > Faucet
+  > GD4BQR...NPDH
+  > 
+  > AGENT-NATIVE · ORCHESTRATOR
+  > 
+  > Vanna Copilot
+  > Prompts
+  > Run
+- **Trace:** `docs/copilot/runs/trace-3x-before.json`; matching PNG.
+- **Brain counter delta:** `{"investigation": 0, "keyword_router": 0, "copilot_shim": 0}`.
+- **Tx:** none. No successful execution claimed.
+
+---
+
+
 Every prompt fired at the **running** copilot, what came back verbatim, why, and what it
 reveals. Maintained by the `stress-test-copilot` skill.
 
@@ -13,6 +147,159 @@ is the worst outcome and outranks everything, however rare.
 
 Maintained by `.cursor/skills/stress-test-vanna` (MCP + copilot) and `stress-test-copilot`.
 Raw run JSON: `docs/copilot/runs/`.
+
+---
+
+### Copilot · `invest into earn pool where i can get good returns?` (signed-in UI)
+
+- **Date / surface:** 2026-09-13 ~11:25 IST · Playwright `/copilot` · G `GD4BQR…` · auto-approve OFF
+- **Result:** `PARTIAL`
+- **Returned, verbatim:**
+  > BLUSDC Earn pool offers the highest yield at 29.08% supply APR, but the wallet holds 0.00 BLUSDC. AQUSDC Earn pool offers 7.84% supply APR, and the wallet holds 2,678.00 AQUSDC available to supply. XLM Earn pool offers 5.19% supply APR, with 19,351.45 XLM held. SOUSDC Earn pool offers 0.44% supply APR, with 74,985.00 SOUSDC held. · Identify and allocate into the highest-yielding Vanna Earn pool matching available wallet funds. · Checked in 28s
+- **Tx:** none. No Approve card. Did not pick executable AQUSDC or ask which pool.
+- **Reveals:** live per-pool APR + balances exist; ranking-why + sized plan + closed pick still missing.
+
+### Copilot · `where should I farm for the best yield right now` (signed-in UI)
+
+- **Date / surface:** 2026-09-13 · Playwright `/copilot`
+- **Result:** `ERROR`
+- **Returned:** Preparing your session · 1m 29s (UI). Server: `POST /investigate` 200 in 23.5s, loop `stopped`, status `incomplete`, position seed `ResponseAborted`.
+- **Tx:** none
+
+### Copilot · `put 10 xlm in and lever 3x into sousdc` (signed-in UI)
+
+- **Date / surface:** 2026-09-13 11:17 IST · Playwright CDP `/copilot` · G `GD4BQR…NPDH` · auto-approve OFF
+- **Result:** `WRONG`
+- **Returned, verbatim:**
+  > Deposit collateral 10 XLM. Approve to run this step. · Deposit 10 XLM as collateral and achieve 3x leverage into SOUSDC. · Initial deposit of 10 XLM · Leverage 3x into SOUSDC · Borrowing required · Checked in 5s · PLAN FOR APPROVAL · deposit collateral 10 XLM · 10 XLM
+- **Tx:** none yet. Plan has **deposit only** — no SOUSDC borrow sized as `10 × price × (3−1)`.
+- **Cause:** model restated 3× in prose; compiler did not emit the borrow leg. Earlier vanish was `vanna_get_max_borrow` 15s timeout ×2 in the research loop.
+- **Reveals:** card can hold a plan in 5s; 3× dual/cross sizing still not on the Approve card.
+
+### Battery · guest `POST /api/copilot/investigate` (no wallet) · 2026-09-12 ~23:00 IST
+
+CDP Chrome after restart showed **Connect Wallet** (Privy session gone). UI battery blocked.
+Server-only NDJSON below. Raw: `docs/copilot/runs/battery-guest.json`.
+
+| Prompt | ms | Class | Returned (verbatim) |
+|---|---:|---|---|
+| `lend 2 AQUSDC` | 4970 | PARTIAL | User requested to lend 2 AQUSDC to Vanna Earn. |
+| `repay 1 xlm` | 2058 | PARTIAL | User requested to repay 1 XLM. |
+| `deposit 5 xlm as collateral` | 2974 | PARTIAL | User requested to deposit 5 XLM as collateral. |
+| `deposit me 5xlm and borrow 2x aqusdc and blusdc` | 6052 | ERROR | The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed. |
+| `put 10 xlm in and lever 3x into sousdc` | 3766 | PARTIAL | User requests depositing 10 XLM collateral with 3x leverage into SOUSDC. |
+| `borrow 50% of my max against xlm` | 2310 | ERROR | The investigation stopped before it could finish. … |
+| `what's my health factor` | 20 | REFUSED-CORRECTLY | I could not read a live figure for that just now. |
+| `supply my USDC to the best pool` | 15964 | WRONG | One choice still changes the plan: Exact idle USDC balance and variant held in user wallet… |
+| `yeet 1 xlm into earn` | 2843 | PARTIAL | User requested depositing 1 XLM into Vanna Earn. |
+| `unwind 0.5 xlm of debt` | 3646 | PARTIAL | User requested to repay 0.5 XLM of debt. |
+
+**Cause:** no trader/smart_account, so `allowedInvocation` cannot compile a plan card. Guest HF cannot read. §3 rank still asked which USDC when no wallet. 2× dual did not size ~0.45+0.45. Signed-in UI is required to prove leverage/HF.
+
+**UI:** Playwright CDP `Connect Wallet` click did not open Privy (button outside viewport / no iframe). Cannot complete login from here.
+
+### Copilot · `lend 2 AQUSDC` (localhost live, settled)
+
+- **Date / commit / surface:** 2026-09-12 21:49 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF, then user approved
+- **Result:** `WORKS`
+- **Returned, verbatim:**
+  > Lend 2 AQUSDC. Approve to run this step. · All approved transactions were confirmed on chain. · lend 2 AQUSDC · Settled · tx 054a1b86… · ledger #4641265
+- **Tx:** `054a1b86de0cd133` (Horizon testnet) ledger 4641265. Late UI settle.
+- **Class:** Earn lend — no HF change
+
+### Copilot · `deposit me 5xlm and borrow 2x aqusdc and blusdc` (WRONG sizing)
+
+- **Date / surface:** 2026-09-12 21:52 IST · `/copilot`
+- **Result:** `WRONG`
+- **Returned, verbatim:**
+  > Deposit collateral 5 XLM, then borrow 2 AQUSDC, then borrow 2 BLUSDC.
+- **Cause:** `2x` parsed as 2 tokens. Margin Dual Borrow at 2× on 5 XLM (~$0.91) borrows ~0.45 AQUSDC + ~0.45 BLUSDC, HF 3.90 → 3.89. Fix: unit kinds (Nx=leverage, N%=percent, N+ticker=tokens) + `borrowUsd = depositUsd × (L−1)` split across named borrow assets.
+- **Class:** leverage coefficient treated as token amount
+
+### Copilot · `lend 2 AQUSDC` (localhost live, auto-approve OFF)
+
+- **Date / commit / surface:** 2026-09-12 ~19:20 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF (manual signing, `aria-checked=false`)
+- **Result:** `WORKS` (plan only — no tx)
+- **Returned, verbatim:**
+  > Lend 2 AQUSDC. Approve to run this step. · Lend 2 AQUSDC into the Vanna Earn pool. · No new borrowing · Checked in 6s · 6s this device · PLAN FOR APPROVAL · lend 2 AQUSDC
+- **Tx:** none. Did not click Approve.
+- **Cause:** Planner first turn compiled a catalog write. No research-timeout copy. Screenshot `docs/copilot/runs/battery-live.png`.
+- **Class:** sized catalog write → plan card in 6s
+- **Reveals:** un-enumerated `lend 2 AQUSDC` (not repay) takes the same compile path; auto-approve off leaves execution to the user.
+
+### Copilot · `repay 1xlm from my account` (signed-in, auto-approve OFF)
+
+- **Date / commit / surface:** 2026-09-12 18:30 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF (manual signing)
+- **Result:** `ERROR`
+- **Returned, verbatim:**
+  > The investigation ran out of time before it could finish. Nothing was executed — please try again.
+- **Tx:** none. Next recent log had no `POST /investigate` (poll GET /api/pools + /api/account 5–10s). Client sat on Preparing your session then the 120s backstop.
+- **Cause:** Hung fetch / no first byte, mislabelled as a research deadline. Verb-regex compile was the enumerated trap (handoff §0). Mechanism: planner first turn compiles catalog steps; no snapshot/market seed before that turn; client first-byte 25s is `unreachable`, not deadline.
+- **Class:** connection hang reported as investigation timeout
+- **Reveals:** Auto-approve OFF never executes; a dead connection must not say the investigation ran out of time.
+
+### Copilot · `repay 1 xlm` (signed-in, plan card)
+
+- **Date / commit / surface:** 2026-09-12 18:10 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF (manual signing)
+- **Result:** `PARTIAL`
+- **Returned, verbatim:**
+  > Repay 1 XLM. Approve to run this step. · Checked in 3s · 1m 30s this device · PLAN FOR APPROVAL · repay 1 XLM · 1 XLM · Cancel remaining steps · Approve and run
+- **Tx:** none. Approve and run was **disabled** (`workflowLoading`). Auto-approve is off, so even an enabled click would wait for a wallet signature — nothing is supposed to hit the chain until that.
+- **Cause:** Stated-write compile worked (3s, no research loop). Auto-propose then held `loading: true`, which greys Approve. Journal create is supposed to be local; `resolveInvestigationScope` on propose can still block the button.
+- **Class:** plan shown · execute gated on a disabled Approve
+- **Reveals:** a compiled repay is not an execution. Manual signing + a stuck loading flag looks like “nothing happens”.
+
+### Copilot · `repay 1 xlm` (signed-in, auto-approve OFF)
+
+- **Date / commit / surface:** 2026-09-12 17:04 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF (manual signing)
+- **Result:** `ERROR`
+- **Returned, verbatim:**
+  > The investigation ran out of time before it could finish. Nothing was executed — please try again.
+- **Tx:** none
+- **Cause:** Investigation surface 120s client backstop. A one-amount repay should not need the research loop (earlier keyword/stated-write path). Live it sat until deadline.
+- **Class:** timeout on a sized repay
+- **Reveals:** `/copilot` investigation still owns concrete writes; the fast stated-write skip is not firing here.
+
+### Copilot · `supply my USDC to the best pool` (signed-in, auto-approve ON)
+
+- **Date / commit / surface:** 2026-09-12 16:20 IST · `f7413d7` + uncommitted copilot-upgrade · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** ON
+- **Result:** `PARTIAL`
+- **Returned, verbatim:**
+  > Using BLUSDC — over 30 days the extra 10.4% APR on 2,680 beats a 0.3% swap. AQUSDC stays listed if you want to skip the swap. Approve to run those steps. · Lend idle BLUSDC to Earn — 30.59% · $193.00 · Lend idle AQUSDC to Earn — 20.18% · $2,679.99 · Lend idle SOUSDC to Earn — 0.44% · $74,984.62 · EXECUTION Lend 193 BLUSDC to Earn · tx b9e7c22a… Broadcasting…
+- **Tx:** `b9e7c22a…` submitted under auto-approve (Horizon not confirmed in-session). Size was **193 BLUSDC**, not a 2,680 swap.
+- **Cause:** Horizon math reordered the winner to BLUSDC because swapping AQUSDC→BLUSDC would pay over 30 days, but the only executable idle candidate for BLUSDC is the **193** already held. `lib/copilot/investigation/candidates.ts` `variantDecision`.
+- **Class:** ranked without asking (good) · executable size disagreed with the swap sentence (wrong)
+- **Reveals:** never promote a swap the plan cannot execute. Ranked card first row must match the step that Approve runs.
+
+### Copilot · `use USDC and BLUSDC so my health factor stays above 1.3 you may take loans`
+
+- **Date / commit / surface:** 2026-09-12 16:18 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** ON
+- **Result:** `PARTIAL`
+- **Returned, verbatim:**
+  > Wallet has 193.00 spendable BLUSDC available, alongside 2,680.00 AQUSDC, 74,985.00 SOUSDC, and 19,351.69 XLM. Account health is strong at 3.41 HF ($953.94 collateral vs $279.46 debt), well above the required 1.3 floor. Vanna Earn USDC/BLUSDC yields 30.59% supply APR … · Checked in 17s
+- **Tx:** none
+- **Cause:** Research dump, no ranked options. 17s (was 1m51s on earlier passes).
+- **Class:** facts returned · no plan card
+- **Reveals:** owner paragraph still does not always emit candidates; latency after §2 is fine.
+
+### Copilot · three-turn `supply my USDC to the best pool` → `hold for 90 days` → `use sousdc` (auto-approve OFF)
+
+- **Date / commit / surface:** 2026-09-12 16:25 IST · signed-in `/copilot` · G `GD4BQR…NPDH`
+- **Account / auto-sign:** OFF
+- **Result:** `PARTIAL`
+- **Returned, verbatim:**
+  > Turn 1: Using BLUSDC — over 30 days … · Turn 2: Vanna Earn BLUSDC … Over a 90-day horizon, the higher APR in BLUSDC comfortably exceeds one-time swap fees. Checked in 15s · Turn 3: Wallet holds 74,985.0 SOUSDC … Earn SOUSDC pool offers a supply APR of 0.44%. Checked in 8s · understanding: use SOUSDC directly without swapping / hold for 90 days / No new borrowing
+- **Tx:** none
+- **Cause:** Thread continued. Ranked option list was **not** rebuilt on the refinement.
+- **Class:** continuation works · ranking does not follow the refinement
+- **Reveals:** `shouldContinueInvestigation` is fine; candidate generation must re-run on a horizon/variant refinement.
 
 ---
 

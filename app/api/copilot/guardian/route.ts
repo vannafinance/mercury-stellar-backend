@@ -6,9 +6,13 @@
  *     "user_id": "…",
  *     "trader": "G…",
  *     "smart_account": "C…",   // optional
- *     "min_hf": 1.3,
+ *     "min_hf": 1.1,          // optional; default is the on-chain gate (HF > 1.1)
  *     "dry_run": true
  *   }
+ *
+ * HF is collateral/debt (RiskEngine testnet). Never haircut by MCP's
+ * liquidation_threshold (that field is max LTV ≈ 0.909, not a collateral factor).
+ * Default min_hf is LIQUIDATION_THRESHOLD (1.1). No extra 1.3 buffer.
  *
  * Batch (all opted-in targets) — POST { "batch": true, "dry_run": true }
  *   or GET ?batch=1&dry_run=1
@@ -21,6 +25,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { executeMcpWrite, mapOpToMcpStep } from "@/lib/copilot/mcp-write";
+import { n, parseHealthPayload } from "@/lib/copilot/protocol-health";
+import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,15 +38,6 @@ type GuardianTarget = {
   smart_account?: string | null;
   min_hf?: number;
 };
-
-function n(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v === "string" && v.trim() !== "") {
-    const x = Number(v);
-    if (Number.isFinite(x)) return x;
-  }
-  return null;
-}
 
 function authOk(req: NextRequest): boolean {
   const secret = (process.env.COPILOT_GUARDIAN_SECRET || process.env.CRON_SECRET || "").trim();
@@ -106,15 +103,7 @@ async function runOneCheck(opts: {
     { smart_account: smartAccount, trader },
     userId,
   );
-  const collateral =
-    n(health.collateral_usd) ??
-    n(health.total_collateral_usd) ??
-    n(health.gross_collateral_usd) ??
-    0;
-  const debt = n(health.debt_usd) ?? n(health.total_debt_usd) ?? 0;
-  const lt = n(health.liquidation_threshold) ?? 0.9;
-  let hf = n(health.health_factor) ?? n(health.hf) ?? n(health.avg_health_factor);
-  if (hf == null && debt > 0 && collateral > 0) hf = (collateral * lt) / debt;
+  const { debt, hf } = parseHealthPayload(health as Record<string, unknown>);
 
   if (debt < 0.5) {
     return {
@@ -128,7 +117,10 @@ async function runOneCheck(opts: {
       trader,
     };
   }
-  if (hf == null || hf >= minHf) {
+  if (
+    hf == null ||
+    (hf > LIQUIDATION_THRESHOLD && (minHf <= LIQUIDATION_THRESHOLD || hf >= minHf))
+  ) {
     return {
       ok: true,
       action: "none",
@@ -259,7 +251,7 @@ export async function POST(req: NextRequest) {
             trader: t.trader,
             userId: t.user_id || t.trader,
             smartAccount: t.smart_account ?? null,
-            minHf: t.min_hf ?? 1.3,
+            minHf: t.min_hf ?? LIQUIDATION_THRESHOLD,
             dryRun,
           }),
         );
@@ -277,7 +269,7 @@ export async function POST(req: NextRequest) {
   const trader = String(body.trader || "").trim();
   const userId = String(body.user_id || body.userId || trader || "").trim();
   const smartAccount = String(body.smart_account || body.smartAccount || "").trim() || null;
-  const minHf = n(body.min_hf ?? body.minHf) ?? 1.3;
+  const minHf = n(body.min_hf ?? body.minHf) ?? LIQUIDATION_THRESHOLD;
 
   if (!trader || !/^G[A-Z0-9]{55}$/.test(trader)) {
     return NextResponse.json(
@@ -325,7 +317,7 @@ export async function GET(req: NextRequest) {
             trader: t.trader,
             userId: t.user_id || t.trader,
             smartAccount: t.smart_account ?? null,
-            minHf: t.min_hf ?? 1.3,
+            minHf: t.min_hf ?? LIQUIDATION_THRESHOLD,
             dryRun,
           }),
         );

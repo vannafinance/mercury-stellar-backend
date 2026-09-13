@@ -16,7 +16,7 @@ function specSchema(spec: ArgSpec): JsonSchema {
   if (spec.type === "decimal") {
     return {
       type: "string",
-      description: "Positive decimal amount as a string (for example \"10.5\"). Never invent an amount.",
+      description: "Positive decimal amount as a string. Never invent an amount.",
     };
   }
   return {
@@ -90,8 +90,16 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
       "Ask ONE material question that no read can settle and that changes what would be executed.",
     parameters: {
       type: "object",
-      properties: { question: { type: "string" } },
-      required: ["question"],
+      properties: {
+        question: { type: "string" },
+        kind: {
+          type: "string",
+          enum: ["preference", "resolvable"],
+          description:
+            "preference: no read can settle it. resolvable: ranking or a read can settle it.",
+        },
+      },
+      required: ["question", "kind"],
     },
   },
   {
@@ -160,7 +168,10 @@ export function decisionFromFunctionCalls(calls: readonly ModelFunctionCall[]): 
   const control = calls.find((call) => CONTROL_NAMES.has(call.name));
   if (!control) return { kind: "invalid_function" };
   const args = isRecord(control.args) ? control.args : {};
-  if (control.name === "clarify") return { kind: "clarify", question: args.question };
+  if (control.name === "clarify") {
+    const questionKind = args.kind === "preference" || args.kind === "resolvable" ? args.kind : undefined;
+    return { kind: "clarify", question: args.question, ...(questionKind ? { questionKind } : {}) };
+  }
   if (control.name === "blocked") return { kind: "blocked", reason: args.reason };
   return wrapComplete(args);
 }

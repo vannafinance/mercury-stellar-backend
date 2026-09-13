@@ -17,13 +17,24 @@ describe("evidence-based borrowing economics", () => {
     expect(compareObservedRates([earn(), blend()], now)).toEqual([{
       asset: "XLM", earnSupplyApr: "2", blendSupplyApr: "3.123456789", marginBorrowApr: "7",
       spreadApr: "-3.876543211", verdict: "cost_exceeds_supply", evidenceIds: ["e1", "e2"],
+      earnRateUnit: "APY", blendRateUnit: "APR",
     }]);
   });
   it.each([["7", "no_spread"], ["7.000000000000000001", "positive_before_costs"]])("classifies %s without inventing net profit", (value, verdict) => {
     expect(compareObservedRates([earn(), blend({ supply_apr_pct: value })], now)[0].verdict).toBe(verdict);
   });
   it("does not compare APR to APY when the simple APR is missing", () => {
-    expect(compareObservedRates([earn(), blend({ supply_apr_pct: undefined })], now)).toEqual([]);
+    expect(compareObservedRates([earn(), blend({ supply_apr_pct: undefined })], now)).toEqual([{
+      asset: "XLM",
+      earnSupplyApr: "2",
+      blendSupplyApr: null,
+      marginBorrowApr: "7",
+      spreadApr: null,
+      verdict: "earn_only",
+      evidenceIds: ["e1"],
+      earnRateUnit: "APY",
+      blendRateUnit: "APR",
+    }]);
   });
   it("maps Blend's USDC to BLUSDC, and allows earn-only AQUSDC without attaching that reserve", () => {
     expect(compareObservedRates([{ ...earn(), args: { asset: "BLUSDC" } }, blend({ symbol: "USDC" })], now)[0].asset).toBe("BLUSDC");
@@ -36,6 +47,7 @@ describe("evidence-based borrowing economics", () => {
       spreadApr: null,
       verdict: "earn_only",
       evidenceIds: ["e1"],
+      earnRateUnit: "APY", blendRateUnit: "APR",
     }]);
   });
   it("rejects failed, stale, future and conflicting duplicate reads", () => {
@@ -53,7 +65,17 @@ describe("evidence-based borrowing economics", () => {
   it("collapses identical copies of the same read so a seed plus a loop fulfill still compares", () => {
     expect(compareObservedRates([earn(), { ...earn(), id: "e9" }, blend(), { ...blend(), id: "e8" }], now)).toHaveLength(1);
   });
-  it.each([{ error: "unavailable" }, { venue: "earn" }, { supply_apr_pct: "NaN" }, { supply_apr_pct: -1 }, { supply_apr_pct: "1001" }, { supply_apr_pct: "366.53" }])("rejects unusable reserve %o", (row) => {
-    expect(compareObservedRates([earn(), blend(row)], now)).toEqual([]);
+  it.each([{ error: "unavailable" }, { venue: "earn" }, { supply_apr_pct: "NaN" }, { supply_apr_pct: -1 }, { supply_apr_pct: "1001" }, { supply_apr_pct: "366.53" }])("does not treat an unusable Blend reserve as a carry, and still ranks Earn", (row) => {
+    expect(compareObservedRates([earn(), blend(row)], now)).toEqual([{
+      asset: "XLM",
+      earnSupplyApr: "2",
+      blendSupplyApr: null,
+      marginBorrowApr: "7",
+      spreadApr: null,
+      verdict: "earn_only",
+      evidenceIds: ["e1"],
+      earnRateUnit: "APY",
+      blendRateUnit: "APR",
+    }]);
   });
 });

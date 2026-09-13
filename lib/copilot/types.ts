@@ -571,6 +571,15 @@ export interface BrainHealth {
     | "service_account"
     | "attached_service_account"
     | "developer_login";
+  /** /copilot free-text planner. Keyword router is not this. */
+  copilot_planner?: "investigation";
+  /** Distinct researchConfig() code, or "ok". */
+  research_gate?: string;
+  brains_served?: {
+    investigation: number;
+    keyword_router: number;
+    copilot_shim: number;
+  };
 }
 
 export type RoutedIntent =

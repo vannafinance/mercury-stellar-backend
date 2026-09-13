@@ -1,0 +1,71 @@
+{
+  "at": "2026-09-13T07:04:24.533088+00:00",
+  "prompt": null,
+  "requests": [],
+  "responses": [
+    {
+      "url": "http://localhost:3000/api/copilot",
+      "status": 200,
+      "data": {
+        "kind": "answer",
+        "message": "Auto-sign is off for GD4BQRQP... No Sign Service policy session. Writes return unsigned XDR.",
+        "data": {
+          "status": "disabled",
+          "enabled": false,
+          "duration ms": 100.72,
+          "max_per_tx_usd": null,
+          "max_per_day_usd": null,
+          "session_id": null,
+          "error": null
+        },
+        "request_id": "c0151827-d722-45b2-a66a-025e3948f592"
+      }
+    }
+  ],
+  "failures": [],
+  "before": {
+    "elapsedMs": 442,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 0,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  },
+  "initialBody": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\nYOUR ACCOUNT\n\nNo margin account yet \u2014 open one and the dial appears here.\n\nWALLET\nGD4BQR\u2026NPDH\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "url": "http://localhost:3000/copilot",
+  "body": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\nYOUR ACCOUNT\n\nNo margin account yet \u2014 open one and the dial appears here.\n\nWALLET\nGD4BQR\u2026NPDH\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "after": {
+    "elapsedMs": 180,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 0,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  }
+}

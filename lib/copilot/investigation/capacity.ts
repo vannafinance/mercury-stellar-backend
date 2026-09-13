@@ -27,8 +27,11 @@ import { parseMinHealthFactor } from "../router";
 import { readLiquidationSnapshot } from "./contract-health";
 import { isRecord } from "./decision";
 import { formatWad, decimalWad, WAD } from "./fixed";
-import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
+import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad, maxBorrowForProtocolWad } from "./sizing";
+import { statedFloorFrom } from "./quantities";
 import type { ResearchCapacity } from "./view";
+
+export { statedFloorFrom };
 
 /** Two decimals is the precision the rest of the surface shows USD at. */
 function usd(value: number): string {
@@ -184,7 +187,7 @@ async function resolveContractBasis(
 }
 
 export async function computeBorrowCapacity(
-  smartAccount: string | null,
+  smartAccount: string | null | undefined,
   messages: readonly string[],
   signal?: AbortSignal,
   /**
@@ -198,14 +201,9 @@ export async function computeBorrowCapacity(
 ): Promise<ResearchCapacity | null> {
   if (!smartAccount) return null;
 
-  // The latest explicit floor wins, the same precedence the research prompt states for
-  // any later user instruction superseding an earlier one.
-  let floor: number | null = null;
-  for (const message of messages) {
-    const parsed = parseMinHealthFactor(message);
-    if (parsed !== null) floor = parsed;
-  }
-  if (floor === null) return null;
+  const stated = statedFloorFrom(messages);
+  if (stated === null) return null;
+  const floor = Number(stated);
 
   /**
    * Six decimals, NOT eighteen. `parseMinHealthFactor` returns a JS float, and
@@ -218,7 +216,7 @@ export async function computeBorrowCapacity(
    */
   const floorWad = decimalWad(floor.toFixed(6).replace(/0+$/, "").replace(/\.$/, ""));
   // A floor at or below the liquidation threshold is not headroom, it is a breach.
-  if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return null;
+  if (floorWad < LIQUIDATION_THRESHOLD_WAD) return null;
 
   const snapshot = shared ?? await computeMarginSnapshot(smartAccount);
   signal?.throwIfAborted();
@@ -232,7 +230,10 @@ export async function computeBorrowCapacity(
 
   const grossWad = decimalWad(usd(agreed.value.collateralUsd));
   const debtWad = decimalWad(usd(agreed.value.debtUsd));
-  const maxBorrow = maxBorrowForFloorWad(grossWad, debtWad, floorWad);
+  const maxBorrow =
+    floorWad === LIQUIDATION_THRESHOLD_WAD
+      ? maxBorrowForProtocolWad(grossWad, debtWad)
+      : maxBorrowForFloorWad(grossWad, debtWad, floorWad);
 
   return {
     floor: formatWad(floorWad),

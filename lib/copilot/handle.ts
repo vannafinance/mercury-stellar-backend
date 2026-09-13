@@ -12,6 +12,8 @@
 
 import { randomUUID } from "crypto";
 import { copilotConfig, TEMPLATE_COUNT } from "./config";
+import { researchConfig } from "./research-config";
+import { brainCounts, noteBrain } from "./brain-served";
 import { explainRead, factsForUi } from "./explain";
 import { cleanExecutionCopy, farmReceiptLine, fmtLpAmt, shortWriteLabel, stripAutoSignPlumbing } from "./execution-copy";
 import { getMcpClient, type MCPClient } from "./mcp-client";
@@ -143,6 +145,8 @@ import { handleAutoSignAction, bindAutoSignResume } from "./handle-autosign";
 export { allPositionsStructured, liquidationPriceLine, parseHypotheticalMove, withHfGuardrails } from "./handle-read";
 
 export function getBrainHealth(): BrainHealth {
+  const research = researchConfig();
+  const served = brainCounts();
   return {
     status: "ok",
     llm_provider: "vertex",
@@ -151,6 +155,9 @@ export function getBrainHealth(): BrainHealth {
     in_process: true,
     execution_mode: "mcp+auto-sign",
     vertex_auth: vertexAuthMode(),
+    copilot_planner: "investigation",
+    research_gate: research.ok ? "ok" : research.code,
+    brains_served: served,
   };
 }
 
@@ -813,6 +820,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
    * already returned above.
    */
   if (req.surface === "copilot") {
+    noteBrain("copilot_shim");
     return {
       kind: "blocked",
       message:
@@ -829,6 +837,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
    * the remaining decision path this peel removes.
    */
   if (req.surface === "assistant") {
+    noteBrain("keyword_router");
     const kw = routeMessage(message);
     if (
       kw.kind === "write" ||

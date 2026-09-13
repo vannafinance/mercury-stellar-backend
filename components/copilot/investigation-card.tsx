@@ -221,7 +221,7 @@ export function InvestigationCard({
                           </p>
                           <p className="shrink-0 font-mono text-[15px] tabular-nums text-violet-500">
                             {candidate.netAprPct === null
-                              ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR`
+                              ? `${Number(candidate.supplyAprPct).toFixed(2)}% ${candidate.rateUnit}`
                               : `+${Number(candidate.netAprPct).toFixed(2)}% net APR`}
                           </p>
                         </div>
@@ -315,7 +315,6 @@ export function InvestigationCard({
                     <button
                       type="button"
                       onClick={onApprove}
-                      disabled={workflowLoading}
                       className="mt-3 rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
                     >
                       Approve and run

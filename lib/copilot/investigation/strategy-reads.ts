@@ -10,6 +10,12 @@ import { resolveRead } from "./capabilities";
 import { interruptible } from "./runtime";
 import { isRecord } from "./decision";
 import type { InvestigationScope, Observation } from "./types";
+const EARN_MARKET_READS = [
+  { capability: "earn_market", args: { asset: "XLM" } },
+  { capability: "earn_market", args: { asset: "BLUSDC" } },
+  { capability: "earn_market", args: { asset: "AQUSDC" } },
+  { capability: "earn_market", args: { asset: "SOUSDC" } },
+] as const;
 
 export const STRATEGY_READS = [
   { capability: "wallet_balances", args: {} },
@@ -17,24 +23,12 @@ export const STRATEGY_READS = [
   { capability: "asset_price", args: { asset: "BLUSDC" } },
   { capability: "asset_price", args: { asset: "AQUSDC" } },
   { capability: "asset_price", args: { asset: "SOUSDC" } },
-  { capability: "earn_market", args: { asset: "XLM" } },
-  { capability: "earn_market", args: { asset: "BLUSDC" } },
-  { capability: "earn_market", args: { asset: "AQUSDC" } },
-  { capability: "earn_market", args: { asset: "SOUSDC" } },
+  ...EARN_MARKET_READS,
   { capability: "blend_markets", args: {} },
+  { capability: "account_collateral", args: {} },
+  // Position for every Earn market already listed — not a second asset enum.
+  ...EARN_MARKET_READS.map((read) => ({ capability: "earn_position", args: { asset: read.args.asset } })),
 ] as const;
-
-export function looksLikeStatedWrite(message: string): boolean {
-  const text = message.trim();
-  return /^(repay|lend|deposit|withdraw|borrow)\s+\d/i.test(text)
-    || /\b(repay|lend|deposit|withdraw)\s+\d+(\.\d+)?\s*(xlm|blusdc|aqusdc|sousdc|usdc)\b/i.test(text);
-}
-
-/** Ranking evidence is only worth the round-trip on an allocation question. */
-export function needsMarketSeed(message: string): boolean {
-  if (looksLikeStatedWrite(message)) return false;
-  return /\b(strateg|allocat|best (pool|rate|apy)|supply my|lend my|deploy|invest|yield|compare|use both|take new loan|borrow as much|as much as possible|health factor (doesn'?t|does not) go below)\b/i.test(message);
-}
 
 export async function collectStrategyReads(
   scope: InvestigationScope,

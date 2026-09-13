@@ -102,7 +102,7 @@ describe("investigation card / options", () => {
 
     expect(screen.getByText(/Supply idle BLUSDC to Blend — no new borrowing/)).toBeTruthy();
     expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
-    expect(screen.getByText("25.41% APR")).toBeTruthy();
+    expect(screen.getByText("25.41% APY")).toBeTruthy();
     expect(screen.getByText("10.00% APR")).toBeTruthy();
     expect(screen.getAllByText(/\$680\.00 · no change to health factor/)).toHaveLength(2);
   });
@@ -285,7 +285,7 @@ describe("investigation card / options", () => {
     );
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Switch →" }));
-    expect(onPropose).toHaveBeenCalledWith("lend_idle_AQUSDC");
+    expect(onPropose).toHaveBeenCalledWith("lend_idle_aqusdc");
   });
 
   it("shows the server-measured duration on a finished investigation", () => {

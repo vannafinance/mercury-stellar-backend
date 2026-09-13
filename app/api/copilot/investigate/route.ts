@@ -4,6 +4,7 @@ import { withBoundUser } from "@/lib/copilot/user-context";
 import { withTokenSubject } from "@/lib/copilot/token-budget";
 import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
+import { researchConfig } from "@/lib/copilot/research-config";
 import { createFlashResearchModel } from "@/lib/copilot/investigation/flash";
 import { researchTurn, type ResearchInput } from "@/lib/copilot/investigation/service";
 import "@/lib/copilot/investigation/proposal";
@@ -12,6 +13,8 @@ import { isRecord } from "@/lib/copilot/investigation/decision";
 import { logUnexpected } from "@/lib/copilot/log";
 import { appendSessionTurn } from "@/lib/copilot/session-store";
 import type { ResearchStreamEvent } from "@/lib/copilot/investigation/view";
+import { investigationStopCopy, isAbortError, RESEARCH_DEADLINE_MESSAGE } from "@/lib/copilot/investigation/abort-copy";
+import { noteBrain } from "@/lib/copilot/brain-served";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,8 +62,8 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
 
 function deadlineBody() {
   return {
-    code: "research_deadline",
-    message: "The investigation ran out of time before it could finish. Nothing was executed — please try again.",
+    code: "research_deadline" as const,
+    message: RESEARCH_DEADLINE_MESSAGE,
   };
 }
 
@@ -68,6 +71,7 @@ export async function POST(req: NextRequest) {
   const request_id = crypto.randomUUID();
   const startedAt = Date.now();
   console.info("[copilot] investigate start", { request_id });
+  noteBrain("investigation");
   const abort = new AbortController();
   const signal = AbortSignal.any([req.signal, abort.signal]);
   // Covers body parse and auth, not only the stream. When this sat inside start(),
@@ -100,12 +104,12 @@ export async function POST(req: NextRequest) {
     }
     const bound = loaded.bound;
     const subject = bound?.sub ?? "guest";
-    const secret = process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
-    const network = process.env.COPILOT_RESEARCH_NETWORK?.trim() || "testnet";
-    if (process.env.COPILOT_RESEARCH_ENABLED === "false" || secret.length < 32 || network !== "testnet") {
+    const configured = researchConfig();
+    if (!configured.ok) {
       clearTimeout(timer);
-      return loaded.commit(NextResponse.json({ code: "research_not_configured", message: "Investigation is not available on this deployment yet." }, { status: 503 }));
+      return loaded.commit(NextResponse.json({ code: configured.code, message: configured.message }, { status: configured.status }));
     }
+    const { secret, network } = configured;
     console.info("[copilot] investigate accepted", {
       request_id, signed_in: !!bound, has_wallet: Boolean(input.wallet), ms: elapsed(),
     });
@@ -123,9 +127,9 @@ export async function POST(req: NextRequest) {
         onDeadline = () => {
           enqueue({
             type: "error", code: "research_deadline",
-            message: deadlineBody().message,
+            message: RESEARCH_DEADLINE_MESSAGE,
           });
-          abort.abort();
+          abort.abort("deadline");
           if (!closed) {
             closed = true;
             try { controller.close(); } catch { /* cancelled reader */ }
@@ -148,6 +152,16 @@ export async function POST(req: NextRequest) {
             void appendSessionTurn({ subject, user: input.message, result });
             console.info("[copilot] investigate done", { request_id, status: result.status, ms: elapsed() });
           } catch (error) {
+            if (isAbortError(error) || signal.aborted) {
+              const stop = investigationStopCopy(
+                abort.signal.reason === "deadline" || abort.signal.aborted && !req.signal.aborted
+                  ? "deadline"
+                  : abort.signal.reason ?? "replaced",
+              );
+              send({ type: "error", code: stop.code, message: stop.message });
+              console.info("[copilot] investigate done", { request_id, status: stop.code, ms: elapsed() });
+              return;
+            }
             const known = error instanceof ResearchError ? error : null;
             if (!known) {
               logUnexpected("investigation failed", { request_id, subject, network, error });
@@ -160,7 +174,7 @@ export async function POST(req: NextRequest) {
           }
         }));
       },
-      cancel() { clearTimeout(timer); abort.abort(); },
+      cancel() { clearTimeout(timer); abort.abort("replaced"); },
     });
     return loaded.commit(new NextResponse(stream, { headers: {
       "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "X-Accel-Buffering": "no",

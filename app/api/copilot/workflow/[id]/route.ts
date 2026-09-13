@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { copilotConfig } from "@/lib/copilot/config";
+import { researchConfig } from "@/lib/copilot/research-config";
 import { workflowJournal } from "@/lib/copilot/investigation/proposal";
 import { workflowView } from "@/lib/copilot/workflow/types";
 
@@ -14,8 +15,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const loaded = await loadUserFromRequest(req);
   if (!loaded.bound) return loaded.commit(NextResponse.json({ message: "Sign in to restore your plan." }, { status: 401 }));
   try {
-    const secret = process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
-    const stored = await workflowJournal(secret).lookup(id, loaded.bound.sub);
+    const configured = researchConfig();
+    if (!configured.ok) {
+      return loaded.commit(NextResponse.json({ code: configured.code, message: configured.message }, { status: configured.status }));
+    }
+    const stored = await workflowJournal(configured.secret).lookup(id, loaded.bound.sub);
     if (stored.value.proposal.server !== copilotConfig.mcpBaseUrl || stored.value.proposal.scope.network !== "testnet")
       throw new Error("environment_changed");
     return loaded.commit(NextResponse.json(workflowView(stored.value), { headers: { "Cache-Control": "no-store" } }));
@@ -33,8 +37,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const loaded = await loadUserFromRequest(req);
   if (!loaded.bound) return loaded.commit(NextResponse.json({ message: "Sign in to cancel this plan." }, { status: 401 }));
   try {
-    const secret = process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
-    const journal = workflowJournal(secret);
+    const configured = researchConfig();
+    if (!configured.ok) {
+      return loaded.commit(NextResponse.json({ code: configured.code, message: configured.message }, { status: configured.status }));
+    }
+    const journal = workflowJournal(configured.secret);
     const stored = await journal.lookup(id, loaded.bound.sub);
     if (stored.value.proposal.server !== copilotConfig.mcpBaseUrl) throw new Error("environment_changed");
     const record = await journal.cancel(id, { scope: stored.value.proposal.scope, server: copilotConfig.mcpBaseUrl });

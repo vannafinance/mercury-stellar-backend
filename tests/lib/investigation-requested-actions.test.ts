@@ -40,4 +40,19 @@ describe("compileRequestedActions", () => {
       actions: [{ op: "repay", asset: "NOTCOIN", amount: "1", sourceQuote: "repay 1 NOTCOIN" }],
     }, ["repay 1 NOTCOIN"], SCOPE)).toEqual([]);
   });
+
+  it("compiles a planner-nominated deposit whose amount is in the user text", () => {
+    const message = "deposit 3 SOUSDC as collateral";
+    const steps = compileRequestedActions({
+      intent: "strategy",
+      objective: message,
+      constraints: [],
+      borrowing: "unspecified",
+      actions: [{ op: "deposit_collateral", asset: "SOUSDC", amount: "3", sourceQuote: message }],
+    }, [message], SCOPE);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({
+      op: "deposit_collateral", asset: "SOUSDC", amount: "3", tool: "vanna_deposit_collateral",
+    });
+  });
 });

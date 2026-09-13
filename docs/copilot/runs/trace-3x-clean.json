@@ -1,0 +1,62 @@
+{
+  "at": "2026-09-13T07:06:30.453889+00:00",
+  "prompt": "put 10 xlm in and lever 3x into sousdc",
+  "requests": [
+    {
+      "url": "http://localhost:3000/api/copilot",
+      "method": "POST",
+      "body": {
+        "user_id": "GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH",
+        "tier": "paid",
+        "surface": "copilot",
+        "auto_sign": {
+          "action": "status"
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "url": "http://localhost:3000/api/copilot",
+      "status": 200,
+      "data": {
+        "kind": "answer",
+        "message": "Auto-sign is off for GD4BQRQP... No Sign Service policy session. Writes return unsigned XDR.",
+        "data": {
+          "status": "disabled",
+          "enabled": false,
+          "duration ms": 1118.67,
+          "max_per_tx_usd": null,
+          "max_per_day_usd": null,
+          "session_id": null,
+          "error": null
+        },
+        "request_id": "497eb664-3a3c-4544-8843-998b29a99434"
+      }
+    }
+  ],
+  "failures": [],
+  "before": {
+    "elapsedMs": 875,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 1,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  },
+  "initialBody": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nConnect Wallet\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nSESSION LOG\n\n0 turns\n\nNothing yet \u2014 every intent you run lands here as one card, with its tool call and outcome.\n\nYOUR ACCOUNT\n\nConnect your wallet for account actions.\n\nAUTONOMY\nmanual signing\nAuto-approve\nNeeds a Privy embedded wallet \u2014 tap for why\n\nEvery write is signed in your wallet. Session signing (and HF guardian) needs a Privy embedded wallet \u2014 Freighter signs in its own popup, which this app cannot skip.\n\nRECENT ON-CHAIN\n\nno writes yet \u2014 signed transactions appear here with their hash, and stay after a reload.\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.",
+  "url": "http://localhost:3000/copilot"
+}

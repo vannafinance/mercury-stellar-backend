@@ -193,4 +193,31 @@ describe("normalizeResearchFacts live MCP shapes", () => {
     ]));
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
   });
+
+  it("extracts max_borrow_human without a capability case", () => {
+    const result = normalizeResearchFacts([observation("max_borrow", {
+      max_borrow_human: "421.50",
+      limiting_factor: "collateral",
+      duration_ms: 8500,
+    })]);
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourcePath: "max_borrow_human", value: "421.50" }),
+    ]));
+    expect(result.facts.some((fact) => fact.sourcePath === "duration_ms")).toBe(false);
+    expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
+  });
+
+  it("extracts a capability that has never had a branch from suffix shape", () => {
+    const result = normalizeResearchFacts([observation("pool_utilization", {
+      utilization_pct: "67.2",
+      total_liquidity_usd: "22119.19",
+      duration_ms: 120,
+    })]);
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourcePath: "utilization_pct", value: "67.2" }),
+      expect.objectContaining({ sourcePath: "total_liquidity_usd", value: "22119.19", unit: "USD" }),
+    ]));
+    expect(result.facts.some((fact) => fact.sourcePath === "duration_ms")).toBe(false);
+    expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);
+  });
 });

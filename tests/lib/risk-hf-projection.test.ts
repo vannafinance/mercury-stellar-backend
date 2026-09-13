@@ -142,4 +142,29 @@ describe("deposit-collateral health-factor projection matches the real formula",
     expect(simulation!.debt_after).toBeCloseTo(expectedDebtAfter, 2);
     expect(simulation!.hf_after).toBeCloseTo(expectedHfAfter, 3);
   });
+
+  it("does not haircut HF by MCP liquidation_threshold 0.909 when snapshot is unavailable", async () => {
+    const mcp: MCPClient = {
+      async call(tool: string) {
+        if (tool === "vanna_get_price") return { price_usd: String(XLM_PRICE) };
+        if (tool === "vanna_get_account_health") {
+          return {
+            collateral_usd: "1400",
+            debt_usd: "1000",
+            liquidation_threshold: "0.909",
+            ltv_ratio: "0.714",
+          };
+        }
+        return {};
+      },
+    };
+    const { simulation } = await evaluateWriteRisk(mcp, {
+      action: depositAction,
+      trader: "GTESTACCOUNTHEALTHPAYLOADONLY0000000000000000000000000",
+      amount: 5,
+    });
+    expect(simulation).not.toBeNull();
+    expect(simulation!.hf_before).toBeCloseTo(1.4, 6);
+    expect(simulation!.hf_before).not.toBeCloseTo(1.4 * 0.909, 3);
+  });
 });

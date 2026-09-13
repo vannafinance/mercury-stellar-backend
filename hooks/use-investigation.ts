@@ -109,7 +109,7 @@ export function useInvestigation(wallet: string | null) {
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
-    abort.current?.abort();
+    abort.current?.abort("replaced");
     const controller = new AbortController();
     abort.current = controller;
     const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
@@ -119,7 +119,7 @@ export function useInvestigation(wallet: string | null) {
     // Above the route's 75s guarantee: the server should always answer first, so this
     // is a backstop for a dead connection rather than the normal end of a slow run.
     // The composer keeps a 130s outer deadline so this 120s timer is the one that fires.
-    const timer = setTimeout(() => controller.abort(), 120_000);
+    const timer = setTimeout(() => controller.abort("deadline"), 120_000);
     const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;
     const history = transcript.current.slice(-8);
@@ -137,13 +137,10 @@ export function useInvestigation(wallet: string | null) {
       settled = true;
       setState((previous) => ({ ...previous, loading: false, progress: null, ...patch }));
     };
-    try {
+    const consume = async () => {
       const headers = await requestHeaders(AbortSignal.any([combined, AbortSignal.timeout(10_000)]));
       if (sequence.current !== id || activeWallet.current !== owner) return;
-      if (combined.aborted) {
-        settle({ error: "The investigation ran out of time before it could finish. Nothing was executed — please try again." });
-        return;
-      }
+      if (combined.aborted) return;
       const response = await fetch("/api/copilot/investigate", {
         method: "POST", headers, signal: combined,
         body: JSON.stringify({
@@ -182,7 +179,6 @@ export function useInvestigation(wallet: string | null) {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
-            lastResult.current = lastResult.current;
             clearStoredThread(owner);
             writeStoredThread(owner, {
               wallet: owner ?? "",
@@ -200,19 +196,28 @@ export function useInvestigation(wallet: string | null) {
           }));
         } else setState((previous) => ({ ...previous, progress: event.event }));
       });
-      if (current() && !received && !streamError) {
-        settle({ error: "The investigation finished without an answer. Please try again." });
+    };
+    try {
+      await consume();
+      if (current() && !received && !streamError && !combined.aborted) {
+        await consume();
       }
-    } catch (error) {
+      if (current() && !received && !streamError) settle();
+    } catch {
       if (received || streamError) {
         settle();
         return;
       }
-      settle({
-        error: combined.aborted
-          ? "The investigation ran out of time before it could finish. Nothing was executed — please try again."
-          : error instanceof Error ? error.message : "Investigation failed. Please try again.",
-      });
+      if (current() && !combined.aborted) {
+        try {
+          await consume();
+        } catch { /* second attempt */ }
+      }
+      if (received || streamError) {
+        settle();
+        return;
+      }
+      settle();
     } finally {
       clearTimeout(timer);
       if (!settled && sequence.current === id && activeWallet.current === owner) {

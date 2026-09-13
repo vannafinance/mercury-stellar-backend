@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 
 import {
   deriveMarginHealth,
+  healthFactorFromUsd,
+  isOnChainLiquidatable,
   LIQUIDATION_THRESHOLD,
+  maxBorrowForProtocolUsd,
+  xlmLiquidationPriceUsd,
   HEALTH_FACTOR_INFINITY_SENTINEL,
 } from "@/lib/margin-health";
 
@@ -71,5 +75,34 @@ describe("deriveMarginHealth", () => {
     const { debtLimit } = derive(gross, 0, 0);
     const atLimit = derive(gross, debtLimit, debtLimit);
     expect(atLimit.avgHealthFactor).toBeCloseTo(LIQUIDATION_THRESHOLD, 6);
+  });
+});
+
+describe("protocol helpers match RiskEngine testnet", () => {
+  it("healthFactorFromUsd is collateral/debt with no haircut", () => {
+    expect(healthFactorFromUsd(1400, 1000)).toBeCloseTo(1.4, 10);
+    expect(healthFactorFromUsd(1400, 1000)).not.toBeCloseTo(1.4 * 0.909, 3);
+    expect(healthFactorFromUsd(1000, 0)).toBeNull();
+  });
+
+  it("isOnChainLiquidatable is HF <= 1.1 with debt (strict gate is HF > 1.1)", () => {
+    expect(isOnChainLiquidatable(1.1, 1000)).toBe(true);
+    expect(isOnChainLiquidatable(1.08, 1000)).toBe(true);
+    expect(isOnChainLiquidatable(1.100001, 1000)).toBe(false);
+    expect(isOnChainLiquidatable(0, 0)).toBe(false);
+  });
+
+  it("xlmLiquidationPriceUsd solves (stables + xlmQty*P)/debt = 1.1", () => {
+    // 2000 XLM + $200 stables, $400 debt → P = (1.1*400 - 200)/2000 = 0.12
+    expect(xlmLiquidationPriceUsd({ debtUsd: 400, xlmQty: 2000, stableCollateralUsd: 200 })).toBeCloseTo(0.12, 10);
+  });
+
+  it("maxBorrowForProtocolUsd is exclusive of the 1.1 gate", () => {
+    // At-gate closed form for G=100, D=0: 100/0.1 = 1000 → HF = 1.1 (unhealthy).
+    // Protocol max shrinks so HF > 1.1.
+    const max = maxBorrowForProtocolUsd(100, 0);
+    expect(max).toBeGreaterThan(0);
+    expect(max).toBeLessThan(1000);
+    expect((100 + max) / max).toBeGreaterThan(1.1);
   });
 });

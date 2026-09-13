@@ -100,6 +100,25 @@ function compileEarn(input: {
   if (input.candidate.borrows || input.candidate.legs.length || !input.candidate.id.startsWith("lend_idle_")) {
     return { ok: false, reason: "unsupported_op" };
   }
+  const held = input.candidate.heldAmount?.trim();
+  if (held && POSITIVE_DECIMAL.test(held) && decimalWad(held) > ZERO) {
+    const symbol = resolveAssetDef(input.candidate.asset)?.earnSymbol;
+    if (!symbol) return { ok: false, reason: "unsupported_venue" };
+    const label = resolveAssetDef(input.candidate.asset)?.displayLabel ?? input.candidate.asset;
+    return {
+      ok: true,
+      steps: [{
+        id: "s0-lend",
+        op: "lend",
+        asset: input.candidate.asset,
+        amount: held,
+        label: `Lend ${held} ${label} to Earn`,
+        tool: "vanna_lend",
+        args: { symbol, amount: held, lender: input.scope.trader },
+        sizing: stepSizing(input.candidate, input.floor),
+      }],
+    };
+  }
   const priced = priceFor(input.candidate.asset, input.observations, input.now);
   if (!priced.ok) return priced;
   const amount = tokensFromUsd(input.candidate.amountUsd, priced.price);

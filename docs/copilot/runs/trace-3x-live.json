@@ -1,0 +1,126 @@
+{
+  "at": "2026-09-13T07:07:54.393709+00:00",
+  "prompt": "put 10 xlm in and lever 3x into sousdc",
+  "requests": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "method": "POST",
+      "body": {
+        "message": "put 10 xlm in and lever 3x into sousdc",
+        "wallet": "GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH",
+        "continuation": "[redacted]",
+        "session": "[redacted]",
+        "history": []
+      }
+    },
+    {
+      "url": "http://localhost:3000/api/copilot/workflow/propose",
+      "method": "POST",
+      "body": {
+        "continuation": "[redacted]",
+        "candidateId": "requested_actions"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "status": 200,
+      "contentType": "application/x-ndjson; charset=utf-8",
+      "error": "Response.text: Protocol error (Network.getResponseBody): No data found for resource with given identifier\nResponse body is not available for a response that was navigated away from. Read response.body() before triggering any navigation."
+    },
+    {
+      "url": "http://localhost:3000/api/copilot/workflow/propose",
+      "status": 200,
+      "data": {
+        "id": "106e778a-1b84-430f-ab20-5cd3086a028a",
+        "revision": 1,
+        "digest": "0e094f71e75074ad50a65c9f5a0379f240a2cd3ea4c35b234b79b96f6de45c36",
+        "status": "proposed",
+        "objective": "put 10 xlm in and lever 3x into sousdc",
+        "expiresAt": 1789283588454,
+        "assumptions": [
+          "Amounts are the literal token amounts in your request. No automatic resizing is allowed."
+        ],
+        "constraints": [],
+        "message": "Review the amounts and steps before approving.",
+        "steps": [
+          {
+            "id": "requested-0",
+            "op": "deposit_collateral",
+            "asset": "XLM",
+            "amount": "10",
+            "label": "deposit collateral 10 XLM",
+            "sizing": {
+              "basis": "stated"
+            },
+            "status": "pending"
+          },
+          {
+            "id": "requested-1",
+            "op": "borrow",
+            "asset": "SOUSDC",
+            "amount": "3.5928521",
+            "label": "borrow 3.5928521 SOUSDC",
+            "sizing": {
+              "basis": "stated"
+            },
+            "status": "pending"
+          }
+        ]
+      }
+    }
+  ],
+  "failures": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "before": {
+    "elapsedMs": 391,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 1,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  },
+  "initialBody": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nYOU \u00b7 deposit me 5xlm and borrow 2x aqusdc and blusdc\n\nDeposit collateral 5 XLM, then borrow 2 AQUSDC, then borrow 2 BLUSDC. Approve to run these steps.\n\nYOU \u00b7 repay 1 xlm\n\nRepay 1 XLM. Approve to run this step.\n\nYOU \u00b7 deposit 5 xlm as collateral\n\nDeposit collateral 5 XLM. Approve to run this step.\n\nYOU \u00b7 deposit me 5xlm and borrow 2x aqusdc and blusdc\n\nThe investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.\n\nYOU \u00b7 put 10 xlm in and lever 3x into sousdc\n\nDeposit collateral 10 XLM. Approve to run this step.\n\nYOU \u00b7 put 10 xlm in and lever 3x into sousdc\n\nDeposit collateral 10 XLM. Approve to run this step.\n\nYOU \u00b7 invest into earn pool where i can get good returns?\n\nBLUSDC Earn pool offers the highest yield at 29.08% supply APR, but the wallet holds 0.00 BLUSDC. AQUSDC Earn pool offers 7.84% supply APR, and the wallet holds 2,678.00 AQUSDC available to supply. XLM Earn pool offers 5.19% supply APR, with 19,351.45 XLM held in the wallet. SOUSDC Earn pool offers 0.44% supply APR, with 74,985.00 SOUSDC held in the wallet.\n\nYOU \u00b7 put my idle usdc where it earns most\n\nThis investigation was replaced or cancelled. Nothing was executed \u2014 send the prompt again if you still want it.\n\nThis thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.\n\nChecked in 24s\n\nwallet balances: some entries were unavailable.\nBorrowing headroom could not be computed from your current position.\nResearch stopped: cancelled.\nStart over\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\n\nYOUR ACCOUNT\n\nHEALTHY\n1.10\n3.0+\n\nHEALTH FACTOR\n\n3.89\n\nincludes unposted \u00b7 risk engine uses posted (unsafe at 1.10)\n\nyour floor 1.30\n\nCOLLATERAL\n$1,087.49\nBORROWED \u00b7 DEPLOYED\n$279.44\n\nOPEN POSITIONS\n\n4 supplied \u00b7 3 borrowed\nSUPPLIED\n$489.79\nMARGIN\nBLUSDC\n315.7599281\n$315.80\nMARGIN\nXLM\n773.9957435\n$139.04\nMARGIN\nAQUSDC\n34.6249135\n$34.63\nMARGIN\nSOUSDC\n0.3163653\n$0.32\nBORROWED\n$279.43\nMARGIN\nBLUSDC\n236.64048\n$236.66\nMARGIN\nAQUSDC\n21.491987\n$21.49\nMARGIN\nXLM\n118.460665\n$21.28\n\nMargin account only \u2014 same balances as the Margin page. Blend supplies and Aquarius LP shares stay on Farm.\n\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "url": "http://localhost:3000/copilot",
+  "elapsedMs": 16071,
+  "body": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nYOU \u00b7 put 10 xlm in and lever 3x into sousdc\n\nDeposit collateral 10 XLM, then borrow 3.5928521 SOUSDC. Approve to run these steps.\n\nThis thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.\n\nDeposit 10 XLM collateral and lever 3x into SOUSDC.\n\nlever 3x into sousdc\nBorrowing required\n\nChecked in 8s \u00b7 8s this device\n\nPLAN FOR APPROVAL\n\nput 10 xlm in and lever 3x into sousdc\n\nReview the amounts and steps before approving.\n\ndeposit collateral 10 XLM \u00b7 10 XLM\nborrow 3.5928521 SOUSDC \u00b7 3.5928521 SOUSDC\nCancel remaining stepsApprove and run\nStart over\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\n\nYOUR ACCOUNT\n\nHEALTHY\n1.10\n3.0+\n\nHEALTH FACTOR\n\n3.89\n\nincludes unposted \u00b7 risk engine uses posted (unsafe at 1.10)\n\nyour floor 1.30\n\nCOLLATERAL\n$1,087.49\nBORROWED \u00b7 DEPLOYED\n$279.44\n\nOPEN POSITIONS\n\n4 supplied \u00b7 3 borrowed\nSUPPLIED\n$489.79\nMARGIN\nBLUSDC\n315.7598791\n$315.80\nMARGIN\nXLM\n773.9957325\n$139.04\nMARGIN\nAQUSDC\n34.6249115\n$34.63\nMARGIN\nSOUSDC\n0.3163653\n$0.32\nBORROWED\n$279.43\nMARGIN\nBLUSDC\n236.640529\n$236.66\nMARGIN\nAQUSDC\n21.491989\n$21.49\nMARGIN\nXLM\n118.460676\n$21.28\n\nMargin account only \u2014 same balances as the Margin page. Blend supplies and Aquarius LP shares stay on Farm.\n\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "after": {
+    "elapsedMs": 25,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 2,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  }
+}

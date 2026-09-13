@@ -1,0 +1,34 @@
+[
+  {
+    "prompt": "repay 1 xlm",
+    "ms": 6141,
+    "gd4": true,
+    "approve": true,
+    "timeout": false,
+    "snippet": "repay 1 XLM \u00b7 1 XLM Cancel remaining stepsApprove and run Start over"
+  },
+  {
+    "prompt": "deposit 5 xlm as collateral",
+    "ms": 4109,
+    "gd4": true,
+    "approve": true,
+    "timeout": false,
+    "snippet": "deposit 5 xlm as collateral Review the amounts and steps before approving. deposit collateral 5 XLM \u00b7 5 XLM Cancel remaining stepsApprove and run Start over"
+  },
+  {
+    "prompt": "deposit me 5xlm and borrow 2x aqusdc and blusdc",
+    "ms": 12147,
+    "gd4": true,
+    "approve": false,
+    "timeout": false,
+    "snippet": "deposit me 5xlm and borrow 2x aqusdc and blusdc The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed. This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved. Checked in 12s \u00b7 11s this device Research stopped: invalid decision. Start over"
+  },
+  {
+    "prompt": "put 10 xlm in and lever 3x into sousdc",
+    "ms": 5148,
+    "gd4": true,
+    "approve": true,
+    "timeout": false,
+    "snippet": "put 10 xlm in and lever 3x into sousdc Review the amounts and steps before approving. deposit collateral 10 XLM \u00b7 10 XLM Cancel remaining stepsApprove and run Start over"
+  }
+]

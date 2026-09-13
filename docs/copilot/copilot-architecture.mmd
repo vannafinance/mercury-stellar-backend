@@ -1,0 +1,91 @@
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 30, "rankSpacing": 40, "htmlLabels": false}, "themeVariables": {"fontSize": "13px"}} }%%
+flowchart TB
+
+  U["User prompt<br/>free text"]
+
+  subgraph P1["PHASE 1 - SURFACES"]
+    direction LR
+    CP["Copilot page<br/>/copilot"]
+    PA["Page assistant<br/>sidebar - reads only"]
+    API["HTTP API<br/>POST /api/copilot"]
+    CP ~~~ PA ~~~ API
+  end
+
+  subgraph P2["PHASE 2 - ADMISSION"]
+    direction LR
+    SG["Surface gate<br/>investigation_owns_planning"]
+    RG["Research gate<br/>secret 32+ - testnet only"]
+    ID["Identity<br/>Privy / WorkOS sub"]
+    CAP["Daily token cap<br/>per subject"]
+    SG --> RG --> ID --> CAP
+  end
+
+  subgraph P3["PHASE 3 - UNDERSTANDING"]
+    direction LR
+    TH["Thread<br/>transcript + evidence"]
+    GOAL["Goal extraction<br/>objective + constraints"]
+    ASK["Typed question<br/>preference or resolvable"]
+    TH --> GOAL
+  end
+
+  subgraph P4["PHASE 4 - INVESTIGATION"]
+    LOOP["Flash decision loop<br/>24 reads - 12 turns - 45s"]
+    MCP["MCP reads<br/>18 tools"]
+    EV["Evidence ledger<br/>ids - 60s staleness"]
+    NORM["Normalize by shape<br/>suffix units - no case list"]
+    LOOP --> MCP --> EV --> NORM
+    EV -.-> LOOP
+  end
+
+  subgraph P5["PHASE 5 - DECISION"]
+    RATE["Rate comparison<br/>net of cost over horizon"]
+    CAND["Candidates<br/>ranked + rejected"]
+    WHY["Reason<br/>binding constraint named"]
+    RATE --> CAND --> WHY
+  end
+
+  subgraph P6["PHASE 6 - DETERMINISTIC CORE"]
+    SIZE["Sizing<br/>integer WAD - no floats"]
+    RISK["Risk validator<br/>HF floor - drift guard"]
+    CID["Candidate id<br/>one owner - mint + validate"]
+    SIZE --> RISK --> CID
+  end
+
+  subgraph P7["PHASE 7 - APPROVAL"]
+    PROP["Propose<br/>plan + projected HF"]
+    APPR["Approval<br/>fingerprint - 5 min TTL"]
+    SIGN["Sign Service<br/>policy + spend caps"]
+    PROP --> APPR --> SIGN
+  end
+
+  subgraph P8["PHASE 8 - SETTLEMENT"]
+    EXEC["Leg executor<br/>idempotent - resumable"]
+    CHAIN["Soroban<br/>RiskEngine - SmartAccount"]
+    VER["Verify<br/>Horizon - session log"]
+    EXEC --> CHAIN --> VER
+  end
+
+  %% Ingress connections
+  U --> CP
+  U --> PA
+  U --> API
+  CP --> SG
+  API --> SG
+  CAP --> TH
+
+  %% Deliberation flow (Right Track)
+  GOAL --> LOOP
+  NORM --> RATE
+  WHY --> ASK
+
+  %% Deterministic execution flow (Left Track)
+  ASK --> SIZE
+  CID --> PROP
+  SIGN --> EXEC
+
+  %% Fast path: sidebar read-only
+  PA --> RTR["Keyword router<br/>router.ts - reads only"]
+  RTR --> MCP
+
+  %% Session ledger loopback (Central Gutter)
+  VER -. "ledger update" .-> TH

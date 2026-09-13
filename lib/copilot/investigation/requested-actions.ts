@@ -1,4 +1,5 @@
 import { resolveAssetDef } from "../registry/assets";
+import { isTokenAmountIn } from "./quantities";
 import { allowedInvocation } from "../workflow/allowlist";
 import type { ProposalStep, WorkflowOp } from "../workflow/types";
 import type { GoalUnderstanding, InvestigationScope } from "./types";
@@ -11,10 +12,12 @@ const TOOLS: Record<WorkflowOp, string> = {
   supply_blend: "vanna_blend_supply",
 };
 
+export type StatedAction = NonNullable<GoalUnderstanding["actions"]>[number];
+
 /**
  * Compile planner-nominated writes whose amounts already appear in the user text.
- * Not a planner: `goal.actions` comes from the investigation loop. Unanchored or
- * unsupported rows fall through as an empty list so the loop can keep researching.
+ * The model maps language onto the catalog; this does not parse verbs. Unanchored
+ * or unsupported rows fall through as an empty list so the loop can keep researching.
  */
 export function compileRequestedActions(
   goal: GoalUnderstanding,
@@ -25,7 +28,7 @@ export function compileRequestedActions(
   try {
     return goal.actions.map((action, index) => {
       if (!messages.some((message) => message.includes(action.sourceQuote)) ||
-        !action.sourceQuote.match(/\d+(?:\.\d+)?/g)?.includes(action.amount)) {
+        !isTokenAmountIn(action.sourceQuote, action.amount) && !isTokenAmountIn(messages.join("\n"), action.amount)) {
         throw new Error("unanchored_amount");
       }
       if (action.op === "borrow" && !["allowed", "required"].includes(goal.borrowing)) {

@@ -1,0 +1,22 @@
+{
+  "baseline": {
+    "investigation": 1,
+    "keyword_router": 0,
+    "copilot_shim": 0
+  },
+  "final": {
+    "investigation": 5,
+    "keyword_router": 0,
+    "copilot_shim": 0
+  },
+  "accepted_ui_requests": 4,
+  "distinct_prompts": 3,
+  "keyword_router_ui_delta": 0,
+  "keyword_router_fraction": 0.0,
+  "notes": [
+    "Final count includes 1 invalid-request readiness probe; subtract baseline=1.",
+    "Pre-cache-recovery 3x got two 404s; no planner.",
+    "Hydration attempt submitted native GET /copilot?; did not reach planner.",
+    "No transaction submitted. No commit/push authorized."
+  ]
+}

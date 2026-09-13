@@ -114,10 +114,13 @@ export function strategyReply(input: {
   findings?: ReadonlyArray<{ summary: string }>;
   originalRequest?: string;
   statedSteps?: ReadonlyArray<{ label: string }>;
+  stopReason?: "cancelled" | "deadline" | "model_unavailable" | string;
+  healthFactorBefore?: string | null;
+  healthFactorAfter?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
-    if (top.decision?.runnerUpId && top.decision.reason) {
+    if (top.decision?.reason && (top.decision.runnerUpId || /not a deposit you can make this turn/i.test(top.decision.reason))) {
       const alt = input.candidates && input.candidates.feasible.length > 1
         ? " Switch → to use the next option instead."
         : "";
@@ -145,7 +148,10 @@ export function strategyReply(input: {
     return `I compared ${rates} against your position. Best path: ${top.label} for ${money(top.amountUsd)}. ${carry}${floor}${hf}${alt} Approve to run those steps.`;
   }
   if (input.candidates?.rejected.length) {
-    return `I compared the live rates against your constraints. No borrowing path makes money after borrow cost. ${input.candidates.rejected[0].reason} Nothing was executed.`;
+    const blocked = input.candidates.rejected[0];
+    return input.candidates.feasible.length
+      ? `I compared the live rates against your constraints. ${blocked.reason} Nothing was executed.`
+      : `I compared live rates against what you can actually fund. ${blocked.reason} Nothing was executed.`;
   }
   if (input.status === "needs_input") {
     return input.question
@@ -156,14 +162,23 @@ export function strategyReply(input: {
     return "I couldn’t complete this investigation with the available capabilities and information.";
   }
   if (input.status === "incomplete") {
+    if (input.stopReason === "cancelled") {
+      return "This investigation was replaced or cancelled. Nothing was executed — send the prompt again if you still want it.";
+    }
+    if (input.stopReason === "deadline") {
+      return "The investigation ran out of time before it could finish. Nothing was executed — please try again.";
+    }
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
   if (input.statedSteps?.length) {
     const list = input.statedSteps.map((step) => step.label).join(", then ");
     const body = list.charAt(0).toUpperCase() + list.slice(1);
+    const hf = input.healthFactorBefore && input.healthFactorAfter
+      ? ` Health factor ${input.healthFactorBefore} → ${Number(input.healthFactorAfter).toFixed(2)} after.`
+      : "";
     return input.statedSteps.length === 1
-      ? `${body}. Approve to run this step.`
-      : `${body}. Approve to run these steps.`;
+      ? `${body}. Approve to run this step.${hf}`
+      : `${body}. Approve to run these steps.${hf}`;
   }
   if (input.intent === "strategy") {
     if (input.findings?.length) return input.findings.map((finding) => finding.summary).join(" ");

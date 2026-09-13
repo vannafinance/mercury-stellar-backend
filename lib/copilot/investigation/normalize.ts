@@ -2,7 +2,18 @@ import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import type { ResearchFact } from "./view";
 
-/** Display only fields whose units/meaning have been audited against the MCP source. */
+const PLUMBING = /^(duration_ms|error|message|unsigned_xdr|auth_entries|code|function|contract|note|lp_note|source|summary|warning|kind|available|status|smart_account|trader|account)$/i;
+
+/**
+ * Facts come from the payload's own keys, not from the capability name.
+ *
+ * MCP already names units in the suffix (`*_human`, `*_usd`, `*_pct`, `*_wad`,
+ * `*_address`, `*_ratio`). A switch over capability names silently drops any
+ * successful read whose name is not on that list — live, `max_borrow` returned
+ * `max_borrow_human` and the card said the number was missing.
+ *
+ * Hand-written branches stay only where shape cannot express a judgement.
+ */
 export function normalizeResearchFacts(observations: Observation[]): { facts: ResearchFact[]; warnings: string[] } {
   const facts: ResearchFact[] = [];
   const warnings = new Set<string>();
@@ -10,18 +21,23 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     const text = typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "string" ? value.trim() : "";
     return /^-?\d+(?:\.\d+)?$/.test(text) && text.length <= 60 ? text : null;
   };
-  const pick = (...values: unknown[]): unknown => {
-    for (const value of values) {
-      if (value !== undefined && value !== null && value !== "") return value;
-    }
-    return undefined;
-  };
   const asBool = (raw: unknown): boolean | null => {
     if (typeof raw === "boolean") return raw;
     if (raw === 1 || raw === "1" || raw === "true") return true;
     if (raw === 0 || raw === "0" || raw === "false") return false;
     return null;
   };
+  const assetLabel = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_/-]{1,24}$/.test(value) ? value : null;
+  const venueOf = (capability: string): ResearchFact["venue"] => {
+    if (capability.includes("wallet")) return "wallet";
+    if (capability.includes("blend")) return "blend";
+    if (capability.includes("earn")) return "earn";
+    if (capability.includes("aquarius")) return "aquarius";
+    if (capability.includes("price") || capability.includes("oracle")) return "oracle";
+    if (capability.includes("sign")) return "signing";
+    return "margin";
+  };
+
   for (const observation of observations) {
     const data = observation.data;
     if (observation.status !== "ok" || !data) {
@@ -29,205 +45,24 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       logDropped(observation, "unavailable");
       continue;
     }
-    const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"]) => {
+    const venue = venueOf(observation.capability);
+    const before = facts.length;
+    const add = (path: string, label: string, raw: unknown, unit: string, factVenue = venue) => {
       const value = decimal(raw);
       if (value === null) return;
-      facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt });
-    };
-    const flag = (path: string, label: string, raw: unknown, yes: string, no: string) => {
-      const bit = asBool(raw);
-      if (bit === null) return;
       facts.push({
-        id: `${observation.id}:${path}`, label, value: bit ? yes : no, unit: "",
-        venue: "margin", evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
+        id: `${observation.id}:${path}`, label, value, unit, venue: factVenue,
+        evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt,
       });
     };
-    const rows = (key: string): Array<{ row: Record<string, unknown>; path: string }> => {
-      if (!Array.isArray(data[key])) return [];
-      return data[key].flatMap((row, index) => {
-        if (!isRecord(row)) return [];
-        if (row.error || row.available === false || row.status && !["ok", "not_funded"].includes(String(row.status))) {
-          warnings.add(`${observation.capability.replaceAll("_", " ")}: some entries were unavailable.`);
-          return [];
-        }
-        return [{ row, path: `${key}[${index}]` }];
-      });
-    };
-    const listed = (...keys: string[]) => {
-      for (const key of keys) {
-        const found = rows(key);
-        if (found.length) return found;
-      }
-      return [];
-    };
-    const assetLabel = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_/-]{1,24}$/.test(value) ? value : null;
-    const before = facts.length;
-    switch (observation.capability) {
-      case "wallet_balances": {
-        const walletRows = rows("assets").flatMap(({ row, path }) => {
-          const symbol = assetLabel(row.symbol);
-          return symbol ? [{ symbol, value: decimal(row.balance), path }] : [];
-        });
-        /**
-         * The wallet read reports the same Stellar asset twice — once under its symbol and
-         * once as `<SYMBOL>_SAC` (the Soroban contract wrapper for the identical holding).
-         * Listing both showed "XLM 2781.947" and "XLM_SAC 2781.947" as separate balances,
-         * which reads as twice the spendable capital. Keep the canonical symbol.
-         */
-        const canonical = new Map(walletRows.map((entry) => [entry.symbol, entry.value]));
-        for (const entry of walletRows) {
-          const base = entry.symbol.endsWith("_SAC") ? entry.symbol.slice(0, -4) : null;
-          if (base && canonical.get(base) === entry.value) continue;
-          add(`${entry.path}.balance`, `${entry.symbol} wallet balance`, entry.value, entry.symbol, "wallet");
-        }
-        add("fee_reserve_xlm", "Suggested fee reserve", data.fee_reserve_xlm, "XLM", "wallet");
-        break;
-      }
-      case "account_health":
-        add("health_factor", "Current health factor", data.health_factor, "HF", "margin");
-        add("collateral_usd", "Reported collateral value", pick(data.collateral_usd, data.total_collateral_usd), "USD", "margin");
-        add("debt_usd", "Reported debt value", pick(data.debt_usd, data.total_debt_usd), "USD", "margin");
-        add("ltv_ratio", "Loan-to-value ratio", data.ltv_ratio, "ratio", "margin");
-        flag("is_healthy", "Account health status", data.is_healthy, "healthy", "at risk");
-        add("distance_to_liquidation", "Distance to liquidation", data.distance_to_liquidation, "ratio", "margin");
-        add("net_available_collateral_usd", "Net available collateral", data.net_available_collateral_usd, "USD", "margin");
-        add("net_borrow_rate_pct", "Net borrow rate", data.net_borrow_rate_pct, "% APR", "margin");
-        add("borrow_threshold", "Borrow LTV threshold", data.borrow_threshold, "ratio", "margin");
-        add("liquidation_threshold", "Liquidation LTV threshold", data.liquidation_threshold, "ratio", "margin");
-        // Do not derive the app's HF from these fields: contract/UI semantics differ.
-        break;
-      case "account_position":
-        add("health_factor", "Current health factor", data.health_factor, "HF", "margin");
-        add("collateral_usd", "Reported collateral value", data.collateral_usd, "USD", "margin");
-        add("debt_usd", "Reported debt value", data.debt_usd, "USD", "margin");
-        break;
-      case "liquidation_snapshot":
-        add("collateral_usd", "Contract liquidation collateral", data.collateral_usd, "USD", "margin");
-        add("debt_usd", "Contract liquidation debt", data.debt_usd, "USD", "margin");
-        flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
-        // Only when the fast-path attached a ratio from this same tuple. Never inferred
-        // here from collateral/debt — that would silently synthesize a health factor on
-        // every inspect of this capability.
-        add("posted_health_factor", "Posted-collateral health factor", data.posted_health_factor, "HF", "margin");
-        if (data.page_debt_mismatch === true) {
-          facts.push({
-            id: `${observation.id}:page_debt_mismatch`,
-            label: "Account panel disagrees",
-            value: typeof data.page_health_factor === "string" ? data.page_health_factor : "yes",
-            unit: "",
-            venue: "margin",
-            evidenceId: observation.id,
-            sourcePath: "page_debt_mismatch",
-            readAt: observation.observedAt,
-          });
-        }
-        break;
-      case "can_withdraw":
-      case "can_borrow": {
-        const allowed = asBool(data.allowed)
-          ?? (observation.capability === "can_withdraw" ? asBool(data.can_withdraw) : null)
-          ?? (observation.capability === "can_borrow" ? asBool(data.can_borrow) : null);
-        const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
-          ?? decimal(observation.args.amount)
-          ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))
-          ?? decimal(pick(data.max_withdraw_human, data.max_borrow_human));
-        const asset = assetLabel(observation.args.asset) ?? assetLabel(data.symbol) ?? "asset";
-        const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
-        if (allowed !== null) {
-          facts.push({
-            id: `${observation.id}:allowed`,
-            label: amount ? `${verb} ${amount} ${asset}` : `${verb} ${asset}`,
-            value: allowed ? "allowed" : "not allowed",
-            unit: "",
-            venue: "margin",
-            evidenceId: observation.id,
-            sourcePath: "allowed",
-            readAt: observation.observedAt,
-          });
-        }
-        break;
-      }
-      case "account_debt":
-        add("total_debt_usd", "Total margin debt", pick(data.total_debt_usd, data.debt_usd), "USD", "margin");
-        for (const { row, path } of listed("debt", "borrows", "positions")) {
-          const symbol = assetLabel(row.symbol);
-          if (!symbol) continue;
-          add(`${path}.balance`, `${symbol} borrowed`, pick(row.balance, row.amount_human, row.amount), symbol, "margin");
-          add(`${path}.value_usd`, `${symbol} debt value`, pick(row.value_usd, row.usd), "USD", "margin");
-        }
-        break;
-      case "account_collateral":
-        add("total_value_usd", "Posted collateral value", pick(data.total_value_usd, data.total_collateral_usd, data.collateral_usd), "USD", "margin");
-        for (const { row, path } of listed("collateral", "positions", "balances")) {
-          const symbol = assetLabel(row.symbol);
-          if (!symbol) continue;
-          const usd = pick(row.value_usd, row.usd);
-          if (decimal(usd) !== null) add(`${path}.value_usd`, `${symbol} collateral value`, usd, "USD", "margin");
-          else add(`${path}.balance`, `${symbol} collateral`, pick(row.balance, row.amount_human, row.amount), symbol, "margin");
-        }
-        break;
-      case "asset_price":
-        add("price_usd", `${String(observation.args.asset)} oracle price`, data.price_usd, "USD", "oracle");
-        break;
-      case "earn_market": {
-        const asset = String(observation.args.asset);
-        // MCP's supply_apy_pct is documented as a simple APR alias, not compounded APY.
-        add(data.supply_apr_pct == null ? "supply_apy_pct" : "supply_apr_pct", `${asset} Earn supply APR`, data.supply_apr_pct ?? data.supply_apy_pct, "% APR", "earn");
-        add("borrow_apr_pct", `${asset} Earn borrow APR`, data.borrow_apr_pct, "% APR", "earn");
-        add("total_liquidity_human", `${asset} Earn available liquidity`, data.total_liquidity_human, asset, "earn");
-        break;
-      }
-      case "blend_markets":
-        for (const { row, path } of rows("reserves")) {
-          const symbol = assetLabel(row.symbol);
-          if (!symbol) continue;
-          add(`${path}.supply_apy_pct`, `${symbol} Blend supply APY`, row.supply_apy_pct, "% APY", "blend");
-          add(`${path}.supply_apr_pct`, `${symbol} Blend supply APR`, row.supply_apr_pct, "% APR", "blend");
-          add(`${path}.borrow_apy_pct`, `${symbol} Blend borrow APY`, row.borrow_apy_pct, "% APY", "blend");
-        }
-        if (Array.isArray(data.errors) && data.errors.length) warnings.add("Some Blend reserves could not be read; this is not a complete market comparison.");
-        break;
-      case "blend_reserve": {
-        const symbol = assetLabel(data.symbol) ?? assetLabel(observation.args.asset);
-        const label = symbol ?? "Blend";
-        add("supply_apy_pct", `${label} Blend supply APY`, data.supply_apy_pct, "% APY", "blend");
-        add("supply_apr_pct", `${label} Blend supply APR`, data.supply_apr_pct, "% APR", "blend");
-        add("borrow_apy_pct", `${label} Blend borrow APY`, data.borrow_apy_pct, "% APY", "blend");
-        break;
-      }
-      case "aquarius_markets": {
-        /**
-         * Surface each pool's PAIR and depth. The pair is a protocol fact the model was
-         * previously left to guess at — and it guessed by asking the user "deposit the
-         * AQUSDC alone, or add XLM alongside it?", which is not a user choice: an AMM add
-         * is always both sides at the live ratio, exactly as the Farm form does it.
-         *
-         * The estimated API APY is still withheld: it is not an evaluated net return, and
-         * this read carries no reserves, so the paired amount is derived at execution
-         * rather than computed here.
-         */
-        for (const { row, path } of rows("pools")) {
-          const pair = Array.isArray(row.tokens)
-            ? row.tokens.filter((token): token is string => typeof token === "string").join(" + ")
-            : null;
-          if (!pair) continue;
-          add(`${path}.liquidity_usd`, `Aquarius ${pair} pool depth`, row.liquidity_usd, "USD", "aquarius");
-        }
-        warnings.add("Aquarius pools were discovered; executable quotes and net returns have not been evaluated.");
-        break;
-      }
-      /**
-       * `enabled: true` is a configuration flag, not a working session.
-       *
-       * The Sign Service reports live failures alongside it — `session_expired`,
-       * `session_not_active`, `no_active_session`, `over_daily_cap`, `unauthorized`
-       * (see `mcp-write.ts`) — so reading only `enabled` labels a dead delegation
-       * "Active". That is the one claim here that could talk someone into approving a
-       * plan believing the server can carry it out unattended. When the status
-       * contradicts the flag, the status wins and the authority is NOT called active.
-       */
-      case "signing_status": {
-        if (typeof data.enabled !== "boolean") break;
+
+    /**
+     * Shape cannot say whether `enabled: true` plus `status: session_expired` is
+     * a working session. Calling that "Active" would talk someone into approving
+     * a plan the server cannot carry out unattended.
+     */
+    if (observation.capability === "signing_status") {
+      if (typeof data.enabled === "boolean") {
         const reported = typeof data.status === "string" ? data.status.trim().toLowerCase() : "";
         const usable = !reported || /^(active|enabled|on|ok|ready)$/.test(reported);
         const value = !data.enabled ? "Off" : usable ? "Active" : `Not usable (${reported.replaceAll("_", " ")})`;
@@ -237,9 +72,198 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         });
         if (data.enabled && !usable) warnings.add(
           "Server delegated signing is configured but not currently usable, so every transaction needs your wallet signature.");
-        break;
+      }
+      if (facts.length === before) {
+        warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
+        logDropped(observation, "no_fields");
+      }
+      continue;
+    }
+
+    /**
+     * Eligibility is args + payload: "allowed" alone is not "withdraw 100 XLM".
+     * Shape cannot bind the model's requested size to the risk-engine answer.
+     */
+    if (observation.capability === "can_withdraw" || observation.capability === "can_borrow") {
+      const allowed = asBool(data.allowed)
+        ?? (observation.capability === "can_withdraw" ? asBool(data.can_withdraw) : null)
+        ?? (observation.capability === "can_borrow" ? asBool(data.can_borrow) : null);
+      const amount = (typeof observation.args.amount === "string" ? observation.args.amount : null)
+        ?? decimal(observation.args.amount)
+        ?? (typeof data.amount === "string" ? data.amount : decimal(data.amount))
+        ?? decimal(data.max_withdraw_human)
+        ?? decimal(data.max_borrow_human);
+      const asset = assetLabel(observation.args.asset) ?? assetLabel(data.symbol) ?? "asset";
+      const verb = observation.capability === "can_withdraw" ? "withdraw" : "borrow";
+      if (allowed !== null) {
+        facts.push({
+          id: `${observation.id}:allowed`,
+          label: amount ? `${verb} ${amount} ${asset}` : `${verb} ${asset}`,
+          value: allowed ? "allowed" : "not allowed",
+          unit: "",
+          venue: "margin",
+          evidenceId: observation.id,
+          sourcePath: "allowed",
+          readAt: observation.observedAt,
+        });
+      }
+      if (facts.length === before) {
+        warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
+        logDropped(observation, "no_fields");
+      }
+      continue;
+    }
+
+    const emitLeaf = (path: string, key: string, raw: unknown, ctx: Record<string, unknown>, arrayKind: string | null) => {
+      const symbol = assetLabel(ctx.symbol) ?? assetLabel(ctx.asset) ?? assetLabel(observation.args.asset);
+      const bit = asBool(raw);
+      if (bit !== null && (/^is_/.test(key) || key === "allowed" || key === "liquidatable" || key === "enabled")) {
+        const yes = key === "liquidatable" ? "liquidatable" : key === "is_healthy" ? "healthy" : "yes";
+        const no = key === "liquidatable" ? "not liquidatable" : key === "is_healthy" ? "at risk" : "no";
+        facts.push({
+          id: `${observation.id}:${path}`,
+          label: key === "is_healthy" ? "Account health status"
+            : key === "liquidatable" ? "Liquidation snapshot flag"
+            : key.replaceAll("_", " "),
+          value: bit ? yes : no,
+          unit: "",
+          venue,
+          evidenceId: observation.id,
+          sourcePath: path,
+          readAt: observation.observedAt,
+        });
+        return;
+      }
+      const value = decimal(raw);
+      if (value === null) return;
+      if (key.endsWith("_wad") && Object.keys(ctx).some((k) => k === key.slice(0, -4) + "_human")) return;
+
+      let unit = "";
+      if (key.endsWith("_usd") || key === "usd") unit = "USD";
+      else if (key.endsWith("_pct")) {
+        // Earn documents supply_apy_pct as a simple APR alias, not compounded APY.
+        if (observation.capability === "earn_market" && key === "supply_apy_pct") unit = "% APR";
+        else if (/apr/i.test(key)) unit = "% APR";
+        else if (/apy/i.test(key)) unit = "% APY";
+        else unit = "%";
+      } else if (key.endsWith("_ratio")) unit = "ratio";
+      else if (key.endsWith("_address")) unit = "address";
+      else if (key.endsWith("_wad")) unit = "WAD";
+      else if (/_xlm$/i.test(key)) unit = "XLM";
+      else if (key.endsWith("_human")) unit = symbol ?? "";
+      else if (symbol && (key === "balance" || key === "amount" || key === "amount_human")) unit = symbol;
+      else if (key === "health_factor" || key.endsWith("_health_factor")) unit = "HF";
+
+      let label: string;
+      if (arrayKind === "assets" && (key === "balance" || key === "amount_human") && symbol) {
+        label = `${symbol} wallet balance`;
+      } else if (arrayKind === "collateral" && symbol) {
+        label = unit === "USD" ? `${symbol} collateral value` : `${symbol} collateral`;
+      } else if ((arrayKind === "debt" || arrayKind === "borrows") && symbol) {
+        label = unit === "USD" ? `${symbol} debt value` : `${symbol} borrowed`;
+      } else if (arrayKind === "reserves" && symbol) {
+        label = `${symbol} Blend ${key.replaceAll("_", " ").replace(/ pct$/, "")}`;
+      } else if (arrayKind === "pools") {
+        const pair = Array.isArray(ctx.tokens)
+          ? ctx.tokens.filter((t): t is string => typeof t === "string").join(" + ")
+          : null;
+        label = pair ? `Aquarius ${pair} pool depth` : key.replaceAll("_", " ");
+      } else if (key === "health_factor") label = "Current health factor";
+      else if (key === "posted_health_factor") label = "Posted-collateral health factor";
+      else if (key === "collateral_usd" && observation.capability === "liquidation_snapshot") label = "Contract liquidation collateral";
+      else if (key === "debt_usd" && observation.capability === "liquidation_snapshot") label = "Contract liquidation debt";
+      else if (key === "fee_reserve_xlm") label = "Suggested fee reserve";
+      else {
+        const stem = key.replace(/_human$|_usd$|_pct$|_wad$|_address$|_ratio$/, "").replaceAll("_", " ");
+        const titled = stem.replace(/\b(apy|apr|usd|hf|ltv)\b/gi, (m) => m.toUpperCase());
+        label = titled.charAt(0).toUpperCase() + titled.slice(1);
+        if (observation.capability === "earn_market" && symbol) label = `${symbol} Earn ${titled}`;
+        if (observation.capability === "blend_reserve" && symbol) label = `${symbol} Blend ${titled}`;
+        if (observation.capability === "asset_price") label = `${String(observation.args.asset)} oracle price`;
+      }
+      add(path, label, raw, unit);
+    };
+
+    const walk = (node: unknown, path: string, ctx: Record<string, unknown>, arrayKind: string | null) => {
+      if (Array.isArray(node)) {
+        const kind = path.split(".").pop() ?? arrayKind;
+        node.forEach((item, index) => {
+          if (!isRecord(item)) return;
+          if (item.error || item.available === false || (item.status && !["ok", "not_funded"].includes(String(item.status)))) {
+            warnings.add(`${observation.capability.replaceAll("_", " ")}: some entries were unavailable.`);
+            return;
+          }
+          walk(item, `${path}[${index}]`, item, kind);
+        });
+        return;
+      }
+      if (!isRecord(node)) {
+        const key = path.split(".").pop()?.replace(/\[\d+\]/g, "") ?? path;
+        if (!PLUMBING.test(key)) emitLeaf(path, key, node, ctx, arrayKind);
+        return;
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (PLUMBING.test(key)) continue;
+        const next = path ? `${path}.${key}` : key;
+        if (isRecord(value) || Array.isArray(value)) walk(value, next, isRecord(value) ? value : node, arrayKind);
+        else emitLeaf(next, key, value, node, arrayKind);
+      }
+    };
+
+    walk(data, "", data, null);
+
+    /**
+     * Panel vs contract debt is a judgement: the boolean flag plus the page HF
+     * must not be listed as two unrelated facts, and the panel number must not
+     * be quoted as health. Shape cannot express that.
+     */
+    if (asBool(data.page_debt_mismatch) === true) {
+      const panel = typeof data.page_health_factor === "string" || typeof data.page_health_factor === "number"
+        ? String(data.page_health_factor) : "yes";
+      for (let i = facts.length - 1; i >= 0; i--) {
+        if (facts[i].evidenceId === observation.id
+          && (facts[i].sourcePath === "page_debt_mismatch" || facts[i].sourcePath === "page_health_factor")) {
+          facts.splice(i, 1);
+        }
+      }
+      facts.push({
+        id: `${observation.id}:page_debt_mismatch`,
+        label: "Account panel disagrees",
+        value: panel,
+        unit: "",
+        venue: "margin",
+        evidenceId: observation.id,
+        sourcePath: "page_debt_mismatch",
+        readAt: observation.observedAt,
+      });
+    }
+
+    /**
+     * The wallet read reports the same Stellar asset twice — symbol and `<SYMBOL>_SAC`.
+     * Shape cannot know they are one holding. Keep the canonical symbol.
+     */
+    if (observation.capability === "wallet_balances") {
+      const walletFacts = facts.filter((f) => f.evidenceId === observation.id && f.venue === "wallet");
+      const bySymbol = new Map<string, string>();
+      for (const fact of walletFacts) {
+        const match = fact.label.match(/^([A-Za-z0-9]+) wallet balance$/);
+        if (match) bySymbol.set(match[1], fact.value);
+      }
+      for (let i = facts.length - 1; i >= 0; i--) {
+        const fact = facts[i];
+        if (fact.evidenceId !== observation.id || fact.venue !== "wallet") continue;
+        const match = fact.label.match(/^([A-Za-z0-9]+)_SAC wallet balance$/);
+        if (match && bySymbol.get(match[1]) === fact.value) facts.splice(i, 1);
       }
     }
+
+    if (observation.capability === "aquarius_markets") {
+      warnings.add("Aquarius pools were discovered; executable quotes and net returns have not been evaluated.");
+    }
+    if (Array.isArray(data.errors) && data.errors.length) {
+      warnings.add("Some Blend reserves could not be read; this is not a complete market comparison.");
+    }
+
     if (facts.length === before && observation.capability !== "aquarius_markets") {
       warnings.add(`${observation.capability.replaceAll("_", " ")}: no supported display fields were available.`);
       logDropped(observation, "no_fields");

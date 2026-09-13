@@ -10,8 +10,7 @@ function calcLTV(collateralUsd: number, debtUsd: number): number {
 
 function getHFStatus(hf: number): "safe" | "warning" | "danger" {
   if (!Number.isFinite(hf)) return "safe";
-  if (hf < 1) return "danger";
-  if (hf < 1.3) return "warning";
+  if (hf <= 1.1) return "danger";
   return "safe";
 }
 

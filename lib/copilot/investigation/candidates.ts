@@ -27,14 +27,19 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { isRecord } from "./decision";
 import type { Observation } from "./types";
 import { sizeLegs, type SizedLeg } from "./sizing";
+import { candidateId } from "./candidate-id";
 import type { RateAsset, RateComparison } from "./rate-comparison";
-import { USDC_VARIANTS } from "../registry/assets";
+import { allAssets, USDC_VARIANTS } from "../registry/assets";
 import { findAsset, findBorrowAmount, findBorrowAsset } from "../router";
 
 const IDLE_ASSETS: readonly RateAsset[] = ["XLM", ...USDC_VARIANTS];
 const USDC_SET = new Set<string>(USDC_VARIANTS);
 /** APR gap (percentage points) below which we will not claim a yield winner. */
 const APR_NOISE = decimalWad("0.2");
+/** Preference default. Named in every cost-vs-gain sentence so a swap is never rejected "forever". */
+export const DEFAULT_HOLDING_HORIZON_DAYS = 30;
+/** Stated DEX friction used when no quote was read this turn, as a percent of notional. */
+export const DEFAULT_SWAP_FRICTION_PCT = "0.3";
 
 export interface CandidateInput {
   grossCollateralUsd: string;
@@ -46,6 +51,10 @@ export interface CandidateInput {
   idleWalletByAssetUsd?: Partial<Record<RateComparison["asset"], string>>;
   /** Token balances matching `idleWalletByAssetUsd`, for the computed decision copy. */
   idleWalletByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
+  /** Posted margin collateral, not G-wallet spendable. */
+  postedByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
+  /** Already-supplied Earn vToken underlying, not G-wallet spendable. */
+  earnByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
   borrowingAllowed?: boolean;
   /**
    * A borrow size the user named outright ("borrow 500 USDC"), in USD. When present it
@@ -54,6 +63,8 @@ export interface CandidateInput {
    */
   requestedBorrowUsd?: string | null;
   comparisons: readonly RateComparison[];
+  /** Holding period for net-return vs swap cost. Default 30 days; the thread can change it. */
+  horizonDays?: number;
 }
 
 export interface Candidate {
@@ -65,6 +76,8 @@ export interface Candidate {
   /** Supply APR minus borrow APR, both simple APR. Null when nothing is borrowed. */
   netAprPct: string | null;
   supplyAprPct: string;
+  /** Display unit of `supplyAprPct`, taken from the MCP key suffix we ranked on. */
+  rateUnit: "APR" | "APY";
   legs: SizedLeg[];
   finalHealthFactor: string | null;
   amountUsd: string;
@@ -100,10 +113,22 @@ function aprOf(candidate: Candidate): bigint {
   return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct);
 }
 
-/** Expected USD return at this size: amount × APR. Ranking uses this, not APR alone. */
+function rankingNotional(candidate: Candidate): bigint {
+  try {
+    const usd = decimalWad(candidate.amountUsd);
+    if (usd > ZERO) return usd;
+  } catch { /* unpriced */ }
+  try {
+    return decimalWad(candidate.heldAmount ?? "0");
+  } catch {
+    return ZERO;
+  }
+}
+
+/** Expected return at this size: notional × APR. Ranking uses this, not APR alone. */
 function expectedReturn(candidate: Candidate): bigint {
   try {
-    return mulDown(decimalWad(candidate.amountUsd), aprOf(candidate), WAD);
+    return mulDown(rankingNotional(candidate), aprOf(candidate), WAD);
   } catch {
     return ZERO;
   }
@@ -113,8 +138,8 @@ function byExpectedReturn(a: Candidate, b: Candidate): number {
   const retA = expectedReturn(a);
   const retB = expectedReturn(b);
   if (retA !== retB) return retA > retB ? -1 : 1;
-  const heldA = decimalWad(a.heldAmount ?? a.amountUsd);
-  const heldB = decimalWad(b.heldAmount ?? b.amountUsd);
+  const heldA = rankingNotional(a);
+  const heldB = rankingNotional(b);
   if (heldA !== heldB) return heldA > heldB ? -1 : 1;
   return a.id.localeCompare(b.id);
 }
@@ -141,56 +166,115 @@ function formatApr(value: bigint): string {
   return `${Number(formatWad(value)).toFixed(1)}%`;
 }
 
-function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): CandidateDecision {
-  if (!runnerUp) {
-    const held = winner.heldAmount ?? winner.amountUsd;
+function extraYieldUsd(notional: bigint, aprDeltaPct: bigint, days: number): bigint {
+  const rate = mulDown(aprDeltaPct, WAD, decimalWad("100"));
+  const yearFraction = mulDown(decimalWad(String(days)), WAD, decimalWad("365"));
+  return mulDown(mulDown(notional, rate), yearFraction);
+}
+
+function swapCostUsd(notional: bigint, frictionPct: bigint): bigint {
+  return mulDown(notional, mulDown(frictionPct, WAD, decimalWad("100")));
+}
+
+function variantDecision(
+  held: Candidate,
+  challenger: Candidate | undefined,
+  horizonDays: number,
+): { winner: Candidate; decision: CandidateDecision } {
+  if (!challenger) {
+    const amount = held.heldAmount ?? held.amountUsd;
     return {
-      factor: "already_held",
-      runnerUpId: null,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(held)} of it, so no swap is needed.`,
+      winner: held,
+      decision: {
+        factor: "already_held",
+        runnerUpId: null,
+        reason: `Using ${held.asset} — you hold ${formatHeld(amount)} of it, so no swap is needed.`,
+      },
     };
   }
-  let aprDelta = aprOf(runnerUp) - aprOf(winner);
+  let aprDelta = aprOf(challenger) - aprOf(held);
   if (aprDelta < ZERO) aprDelta = -aprDelta;
-  const winnerHeld = decimalWad(winner.heldAmount ?? winner.amountUsd);
-  const runnerHeld = decimalWad(runnerUp.heldAmount ?? runnerUp.amountUsd);
-  if (aprDelta <= APR_NOISE && winnerHeld >= runnerHeld) {
+  const heldNotional = decimalWad(held.heldAmount ?? held.amountUsd);
+  const challengerHeld = decimalWad(challenger.heldAmount ?? challenger.amountUsd);
+  if (aprDelta <= APR_NOISE && heldNotional >= challengerHeld) {
     return {
-      factor: "thin_margin",
-      runnerUpId: runnerUp.id,
-      reason: `within 0.2%; picked ${winner.asset} because you already hold it`,
+      winner: held,
+      decision: {
+        factor: "thin_margin",
+        runnerUpId: challenger.id,
+        reason: `within 0.2%; picked ${held.asset} because you already hold it`,
+      },
     };
   }
-  const runnerApr = aprOf(runnerUp);
-  const winnerApr = aprOf(winner);
-  if (runnerApr > winnerApr && winnerHeld > runnerHeld) {
-    const extra = runnerApr - winnerApr;
-    const net = winner.borrows
-      ? `Net ${formatApr(winnerApr)} after borrow cost.`
-      : `Net ${formatApr(winnerApr)}.`;
+  const heldApr = aprOf(held);
+  const challengerApr = aprOf(challenger);
+  if (challengerApr > heldApr && heldNotional > challengerHeld) {
+    const extra = challengerApr - heldApr;
+    const friction = decimalWad(DEFAULT_SWAP_FRICTION_PCT);
+    const extraUsd = extraYieldUsd(heldNotional, extra, horizonDays);
+    const costUsd = swapCostUsd(heldNotional, friction);
+    const net = held.borrows
+      ? `Net ${formatApr(heldApr)} after borrow cost.`
+      : `Net ${formatApr(heldApr)}.`;
+    if (extraUsd > costUsd) {
+      return {
+        winner: held,
+        decision: {
+          factor: "already_held",
+          runnerUpId: challenger.id,
+          reason: `Using ${held.asset} — you hold ${formatHeld(held.heldAmount ?? held.amountUsd)} of it, so this plan supplies that balance. Over ${horizonDays} days ${challenger.asset} would earn an extra ${formatApr(extra)} after a ${DEFAULT_SWAP_FRICTION_PCT}% swap, but a swap is not a step here. ${challenger.asset} stays listed.`,
+        },
+      };
+    }
     return {
-      factor: "already_held",
-      runnerUpId: runnerUp.id,
-      reason: `Using ${winner.asset} — you hold ${formatHeld(winner.heldAmount ?? winner.amountUsd)} of it, so no swap is needed. ${net} ${runnerUp.asset} pays ${formatApr(extra)} more but you'd swap ${formatHeld(runnerUp.heldAmount ?? runnerUp.amountUsd)} first, which costs more than it gains.`,
+      winner: held,
+      decision: {
+        factor: "already_held",
+        runnerUpId: challenger.id,
+        reason: `Using ${held.asset} — you hold ${formatHeld(held.heldAmount ?? held.amountUsd)} of it, so no swap is needed. ${net} ${challenger.asset} pays ${formatApr(extra)} more but over ${horizonDays} days a ${DEFAULT_SWAP_FRICTION_PCT}% swap costs more than it gains.`,
+      },
     };
   }
   return {
-    factor: "net_return",
-    runnerUpId: runnerUp.id,
-    reason: `Using ${winner.asset} — net return at your size is higher than ${runnerUp.asset}.`,
+    winner: held,
+    decision: {
+      factor: "net_return",
+      runnerUpId: challenger.id,
+      reason: `Using ${held.asset} — net return over ${horizonDays} days at your size is higher than ${challenger.asset}.`,
+    },
   };
 }
 
-function rankFeasible(feasible: Candidate[]): Candidate[] {
+function rankFeasible(feasible: Candidate[], horizonDays: number): Candidate[] {
   const idle = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
   const borrow = feasible.filter((candidate) => candidate.borrows).sort(byNetThenSize);
-  const ranked = [...idle, ...borrow];
   const usdcIdle = idle.filter((candidate) => USDC_SET.has(candidate.asset));
-  const winner = usdcIdle[0];
-  if (!winner) return ranked;
-  const runnerUp = usdcIdle.find((candidate) => candidate.asset !== winner.asset);
-  const decision = variantDecision(winner, runnerUp);
-  return ranked.map((candidate) => candidate.id === winner.id ? { ...candidate, decision } : candidate);
+  const held = usdcIdle[0];
+  if (!held) return [...idle, ...borrow];
+  const challenger = [...usdcIdle]
+    .filter((candidate) => candidate.id !== held.id && candidate.asset !== held.asset)
+    .sort((a, b) => {
+      const delta = aprOf(b) - aprOf(a);
+      if (delta === ZERO) return 0;
+      return delta > ZERO ? 1 : -1;
+    })[0];
+  const { winner, decision } = variantDecision(held, challenger, horizonDays);
+  const rest = [...idle.filter((candidate) => candidate.id !== winner.id), ...borrow];
+  return [{ ...winner, decision }, ...rest];
+}
+
+export function holdingHorizonDaysFrom(messages: readonly string[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const match = messages[i].match(/\b(\d{1,4})\s*(days?|weeks?|months?)\b/i);
+    if (!match) continue;
+    const n = Number(match[1]);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const unit = match[2].toLowerCase();
+    if (unit.startsWith("week")) return n * 7;
+    if (unit.startsWith("month")) return n * 30;
+    return n;
+  }
+  return DEFAULT_HOLDING_HORIZON_DAYS;
 }
 
 /** Headroom at the floor, for telling the user what WOULD fit. Never used to re-size. */
@@ -217,26 +301,28 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       if (comparison.marginBorrowApr) borrow = decimalWad(comparison.marginBorrowApr);
     } catch { borrow = null; }
 
-    // 1. No new debt: commit what is already idle. Offered whenever anything is idle.
+    // 1. No new debt: commit what is already idle in the G-wallet. Posted margin
+    //    and Earn vTokens are held, but they are not this turn's lendable amount.
     const assetIdle = input.idleWalletByAssetUsd?.[comparison.asset];
     const heldAmount = input.idleWalletByAssetTokens?.[comparison.asset] ?? null;
+    const postedAmount = input.postedByAssetTokens?.[comparison.asset] ?? null;
+    const earnHeld = input.earnByAssetTokens?.[comparison.asset] ?? null;
+    let idle = ZERO;
     if (assetIdle !== undefined) {
-      let idle = ZERO;
-      try {
-        idle = decimalWad(assetIdle);
-      } catch {
-        idle = ZERO;
-      }
-      if (idle > ZERO) {
+      try { idle = decimalWad(assetIdle); } catch { idle = ZERO; }
+    }
+    const spendable = positiveAmount(heldAmount) || idle > ZERO;
+    if (spendable) {
         if (supply !== null) {
           feasible.push({
-            id: `supply_idle_${comparison.asset}`,
+            id: candidateId("supply_idle", comparison.asset),
             label: `Supply idle ${comparison.asset} to Blend — no new borrowing`,
             borrows: false,
             asset: comparison.asset,
             venue: "blend",
             netAprPct: null,
             supplyAprPct: formatWad(supply),
+            rateUnit: comparison.blendRateUnit ?? "APR",
             // Supplying idle wallet value does not touch margin collateral or debt.
             legs: [],
             finalHealthFactor: null,
@@ -257,13 +343,14 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
             const earn = decimalWad(comparison.earnSupplyApr);
             if (supply === null || earn > supply) {
               feasible.push({
-                id: `lend_idle_${comparison.asset}`,
+                id: candidateId("lend_idle", comparison.asset),
                 label: `Lend idle ${comparison.asset} to Earn — no new borrowing`,
                 borrows: false,
                 asset: comparison.asset,
                 venue: "earn",
                 netAprPct: null,
                 supplyAprPct: formatWad(earn),
+                rateUnit: comparison.earnRateUnit ?? "APY",
                 legs: [],
                 finalHealthFactor: null,
                 amountUsd: formatWad(idle),
@@ -274,7 +361,12 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
             }
           } catch { /* an unparseable Earn rate is not a candidate */ }
         }
-      }
+    } else if (comparison.earnSupplyApr && (heldAmount != null || positiveAmount(postedAmount) || positiveAmount(earnHeld))) {
+      rejected.push({
+        label: `Lend ${comparison.asset} to Earn`,
+        asset: comparison.asset,
+        reason: unreachableEarnReason(comparison, heldAmount, postedAmount, earnHeld),
+      });
     }
 
     if (input.borrowingAllowed === false) continue;
@@ -327,7 +419,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     }
 
     feasible.push({
-      id: `borrow_supply_${comparison.asset}`,
+      id: candidateId("borrow_supply", comparison.asset),
       label: requested
         ? `Borrow ${requested} USD of ${comparison.asset} and supply it to Blend`
         : `Borrow ${comparison.asset} to the ${input.floor} floor and supply it to Blend`,
@@ -336,6 +428,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       venue: "blend",
       netAprPct: formatWad(supply - borrow),
       supplyAprPct: formatWad(supply),
+      rateUnit: comparison.blendRateUnit ?? "APR",
       legs: sized.legs,
       finalHealthFactor: sized.finalHealthFactor,
       amountUsd: sized.legs[0]?.amountUsd ?? "0",
@@ -344,7 +437,22 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     });
   }
 
-  return { feasible: rankFeasible(feasible), rejected };
+  const horizonDays = input.horizonDays ?? DEFAULT_HOLDING_HORIZON_DAYS;
+  const ranked = rankFeasible(feasible, horizonDays);
+  const top = ranked[0];
+  const blocked = rejected.find((row) => /not a deposit you can make this turn/i.test(row.reason));
+  if (top && !top.borrows && blocked && top.asset !== blocked.asset) {
+    const prefix = top.decision?.reason ?? `Using ${top.asset}.`;
+    ranked[0] = {
+      ...top,
+      decision: {
+        factor: top.decision?.factor ?? "already_held",
+        runnerUpId: top.decision?.runnerUpId ?? null,
+        reason: `${prefix} ${blocked.reason}`,
+      },
+    };
+  }
+  return { feasible: ranked, rejected };
 }
 
 /**
@@ -403,10 +511,10 @@ export function idleWalletByAssetUsdFrom(observations: readonly Observation[], n
 }
 
 export function idleWalletByAssetTokensFrom(observations: readonly Observation[], now: number): Partial<Record<RateComparison["asset"], string>> {
-  const holdings = idleWalletHoldingsFrom(observations, now);
-  const result: Partial<Record<RateComparison["asset"], string>> = {};
-  for (const [asset, holding] of Object.entries(holdings) as Array<[RateAsset, { usd: string; tokens: string }]>) {
-    result[asset] = holding.tokens;
+  const result: Partial<Record<RateAsset, string>> = {};
+  for (const asset of IDLE_ASSETS) {
+    const tokens = walletTokenBalanceFrom(observations, now, asset);
+    if (tokens !== null) result[asset] = tokens;
   }
   return result;
 }
@@ -463,19 +571,121 @@ export function freshPrices(observations: readonly Observation[], now: number): 
 }
 
 function idleTokensFrom(observations: readonly Observation[], now: number, asset: string): string | null {
+  const balance = walletTokenBalanceFrom(observations, now, asset);
+  if (balance === null) return null;
+  try {
+    return decimalWad(balance) > ZERO ? balance : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Wallet row for this asset, including a verified 0. Null when the wallet read did not include it. */
+function walletTokenBalanceFrom(observations: readonly Observation[], now: number, asset: string): string | null {
   const fresh = freshObservations(observations, now);
   const wallet = fresh.find((observation) => observation.capability === "wallet_balances");
   const assets = wallet?.data?.assets;
   if (!Array.isArray(assets)) return null;
   for (const row of assets) {
     if (!isRecord(row)) continue;
-    if (row.symbol !== asset || row.error || (row.status !== undefined && row.status !== "ok")) continue;
+    if (rateAssetFromObservedSymbol(String(row.symbol ?? "")) !== asset) continue;
+    if (row.error || (row.status !== undefined && row.status !== "ok")) continue;
     const balance = String(row.balance ?? "");
     try {
-      if (decimalWad(balance) > ZERO) return balance;
-    } catch { return null; }
+      decimalWad(balance);
+      return balance;
+    } catch {
+      return null;
+    }
   }
   return null;
+}
+
+function positiveAmount(value: string | null | undefined): value is string {
+  if (value == null) return false;
+  try {
+    return decimalWad(value) > ZERO;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Map an observed wire symbol onto a ranking asset using the registry, not a
+ * phrase list. Margin `USDC` is BLUSDC's contract name; a user saying "USDC"
+ * stays ambiguous and never reaches this function.
+ */
+export function rateAssetFromObservedSymbol(symbol: string): RateAsset | null {
+  const upper = symbol.trim().toUpperCase();
+  if (!upper || upper.endsWith("_SAC")) return null;
+  if ((IDLE_ASSETS as readonly string[]).includes(upper)) return upper as RateAsset;
+  const matches = allAssets().filter((def) =>
+    def.marginSymbol === upper || def.earnSymbol === upper);
+  if (matches.length === 1 && (IDLE_ASSETS as readonly string[]).includes(matches[0].id)) {
+    return matches[0].id as RateAsset;
+  }
+  return null;
+}
+
+export function postedTokensFrom(
+  observations: readonly Observation[],
+  now: number,
+): Partial<Record<RateAsset, string>> {
+  const result: Partial<Record<RateAsset, string>> = {};
+  const fresh = freshObservations(observations, now);
+  const observation = fresh.find((row) => row.capability === "account_collateral");
+  const rows = observation?.data?.collateral;
+  if (!Array.isArray(rows)) return result;
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const asset = rateAssetFromObservedSymbol(String(row.symbol ?? ""));
+    if (!asset) continue;
+    const balance = String(row.balance ?? "");
+    try {
+      if (decimalWad(balance) > ZERO) result[asset] = balance;
+    } catch { /* unparseable posted balance is not held */ }
+  }
+  return result;
+}
+
+export function earnTokensFrom(
+  observations: readonly Observation[],
+  now: number,
+): Partial<Record<RateAsset, string>> {
+  const result: Partial<Record<RateAsset, string>> = {};
+  for (const observation of freshObservations(observations, now)) {
+    if (observation.capability !== "earn_position" || observation.status !== "ok") continue;
+    const asset = rateAssetFromObservedSymbol(String(observation.args.asset ?? ""))
+      ?? rateAssetFromObservedSymbol(String(observation.data?.symbol ?? ""));
+    if (!asset) continue;
+    const amount = observation.data?.redeemable_human ?? observation.data?.human;
+    if (amount == null) continue;
+    try {
+      if (decimalWad(String(amount)) > ZERO) result[asset] = String(amount);
+    } catch { /* unparseable earn balance is not held */ }
+  }
+  return result;
+}
+
+function unreachableEarnReason(
+  comparison: RateComparison,
+  wallet: string | null,
+  posted: string | null,
+  earn: string | null,
+): string {
+  const rate = comparison.earnSupplyApr
+    ? `${Number(comparison.earnSupplyApr).toFixed(2)}%`
+    : "a higher rate";
+  const walletText = wallet != null
+    ? `spendable wallet ${comparison.asset} is ${formatHeld(wallet)}`
+    : `spendable wallet ${comparison.asset} was not in the wallet read`;
+  const postedText = positiveAmount(posted)
+    ? `posted margin holds ${formatHeld(posted)}`
+    : "posted margin holds none";
+  const earnText = positiveAmount(earn)
+    ? `Earn already holds ${formatHeld(earn)}`
+    : "Earn already holds none";
+  return `${comparison.asset} Earn pays ${rate} but ${walletText}. ${postedText}; ${earnText}. That rate is not a deposit you can make this turn.`;
 }
 
 export function idleWalletUsdFrom(observations: readonly Observation[], now: number): string | null {

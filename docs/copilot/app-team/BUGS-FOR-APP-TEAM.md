@@ -158,3 +158,14 @@ A minimal, targeted fix for the three shared-library issues described above has 
 A clean patch containing exactly these changes is available at:
 [`docs/copilot/app-team/shared-file-fixes.patch`](shared-file-fixes.patch)
 
+---
+
+## Update (13 Sep 2026 14:14 IST): Measured Latencies on Live Dev Server
+
+Live empirical timings measured against the local Next.js dev server with real testnet connectivity:
+
+| Endpoint | HTTP Status | Total Latency | Application Time | Framework Time | Notes |
+|---|---|---|---|---|---|
+| `GET /api/analytics/accounts` | 200 | **35.0s** | 34.9s | 111ms | Exceeds ordinary 30s client timeout budgets |
+| `GET /api/account/GD4BQR…NPDH` | 200 | **22.2s** | 21.3s | 886ms | Bound by Soroban testnet RPC simulation latency |
+

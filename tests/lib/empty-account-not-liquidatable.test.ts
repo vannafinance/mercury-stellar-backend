@@ -31,5 +31,17 @@ describe("empty account is not liquidatable", () => {
     const out = withHfGuardrails("Health factor 0.80", 0.8, "what's my health factor?", 100);
     expect(out).toMatch(/URGENT/);
     expect(out).toMatch(/liquidatable/i);
+    expect(out).toMatch(/1\.10/);
+  });
+
+  it("HF 1.08 with debt is liquidatable on-chain (gate is 1.10, not 1.00)", () => {
+    const out = withHfGuardrails("Health factor 1.08", 1.08, "what's my health factor?", 100);
+    expect(out).toMatch(/URGENT/);
+    expect(out).toMatch(/liquidatable/i);
+  });
+
+  it("HF 1.15 with debt is not the URGENT liquidatable warning", () => {
+    const out = withHfGuardrails("Health factor 1.15", 1.15, "what's my health factor?", 100);
+    expect(out).not.toMatch(/URGENT/);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad, sizeLegs,
+  LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad, maxBorrowForProtocolWad, sizeLegs,
   type LegRequest,
 } from "@/lib/copilot/investigation/sizing";
 import { decimalWad, formatWad, WAD } from "@/lib/copilot/investigation/fixed";
@@ -61,6 +61,28 @@ describe("maxBorrowForFloorWad", () => {
     const max = maxBorrowForFloorWad(decimalWad("100"), BigInt(0), decimalWad("1.50"));
     expect(formatWad(max)).toBe("200");
     expect((decimalWad("100") + max) * WAD / max).toBe(decimalWad("1.5"));
+  });
+});
+
+describe("maxBorrowForProtocolWad", () => {
+  it("sizes so HF is strictly above 1.1, never equal", () => {
+    const gross = decimalWad("100");
+    const debt = BigInt(0);
+    const max = maxBorrowForProtocolWad(gross, debt);
+    expect(max > BigInt(0)).toBe(true);
+    const hf = (gross + max) * WAD / max;
+    expect(hf > LIQUIDATION_THRESHOLD_WAD).toBe(true);
+    const oneMore = max + BigInt(1);
+    const hfMore = (gross + oneMore) * WAD / oneMore;
+    expect(hfMore <= hf).toBe(true);
+  });
+
+  it("sizeLegs at floor 1.1 is protocol max, not a rejected floor", () => {
+    const result = sizeLegs({ grossCollateralUsd: "110", debtUsd: "0" }, [leg("borrow", "max", "max")], "1.1");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const hf = decimalWad(result.finalHealthFactor!);
+    expect(hf > LIQUIDATION_THRESHOLD_WAD).toBe(true);
   });
 });
 
@@ -125,12 +147,9 @@ describe("sizeLegs", () => {
     expect(result).toMatchObject({ ok: false, reason: "health_floor_breached" });
   });
 
-  it("treats a floor at or under the liquidation threshold as no margin at all", () => {
-    // 1.1 is the threshold itself, and the contract is already unhealthy AT 1.1.
-    for (const floor of ["1.1", "1.05"]) {
-      expect(sizeLegs(BASE, [leg("borrow", "100")], floor))
-        .toMatchObject({ ok: false, reason: "floor_below_liquidation_threshold" });
-    }
+  it("rejects a floor under the liquidation threshold", () => {
+    expect(sizeLegs(BASE, [leg("borrow", "100")], "1.05"))
+      .toMatchObject({ ok: false, reason: "floor_below_liquidation_threshold" });
     expect(formatWad(LIQUIDATION_THRESHOLD_WAD)).toBe("1.1");
   });
 

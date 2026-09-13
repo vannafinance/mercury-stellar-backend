@@ -21,7 +21,7 @@ export default function PriceSimulator({ collateralUsd, debtUsd, ethCollateralPo
     const newColl = stableColl + ethColl * (1 + ethChange / 100);
     const newHF = marginCalc.calcHF(newColl, debtUsd);
     const newLTV = marginCalc.calcLTV(newColl, debtUsd);
-    return { newCollateral: newColl, newHF, newLTV, hfStatus: marginCalc.getHFStatus(newHF), isLiquidatable: newHF <= 1.0 };
+    return { newCollateral: newColl, newHF, newLTV, hfStatus: marginCalc.getHFStatus(newHF), isLiquidatable: newHF <= 1.1 };
   }, [collateralUsd, debtUsd, ethCollateralPortion, ethChange]);
 
   const cardBg = isDark ? 'bg-[#141419] border-[#1E1E26]' : 'bg-white border-[#E5E7EB]';

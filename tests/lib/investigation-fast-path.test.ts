@@ -137,6 +137,33 @@ describe("postedHealthFactorFromSnapshot", () => {
 });
 
 describe("researchTurn fast path", () => {
+  it("compiles a catalog write from the planner's first turn, not a verb list", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    mocks.computeBorrowCapacity.mockResolvedValue(null);
+    const model = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: {
+        intent: "strategy",
+        objective: "lend 2 AQUSDC",
+        constraints: [],
+        borrowing: "unspecified",
+        actions: [{ op: "lend", asset: "AQUSDC", amount: "2", sourceQuote: "lend 2 AQUSDC" }],
+      },
+      findings: [{ summary: "The amount is the one in the request.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    const result = await researchTurn(
+      { message: "lend 2 AQUSDC", wallet: SCOPE.trader, continuation: null },
+      deps({ model }),
+    );
+    expect(model).toHaveBeenCalledOnce();
+    expect(result.status).toBe("researched");
+    expect(result.proposalCandidateId).toBe("requested_actions");
+    expect(result.message).toMatch(/lend 2 AQUSDC/i);
+    expect(result.executionAllowed).toBe(false);
+  });
+
   it("answers a price question from one public read without the investigation loop", async () => {
     const mcp = { call: vi.fn(async () => ({ price_usd: "0.11" })) };
     const result = await researchTurn(

@@ -145,13 +145,13 @@ Each tool takes an `action` parameter plus that action's own arguments.
 | Symbol | Decimals | Role |
 |---|---|---|
 | XLM | 7 | Native asset — margin, collateral, Earn, farm, swap, LP |
-| USDC | 6 | Oracle/lending alias — see below |
-| BLUSDC | 6 | Vanna's own USDC lending/margin pool |
-| AQUSDC | 6 | Aquarius USDC pool |
-| SOUSDC | 6 | Soroswap USDC pool |
-| EURC | 6 | Euro-pegged stablecoin — lending pool and vToken exist; typically **not** collateral-eligible on testnet |
+| USDC | 7 | Oracle/lending alias (Stellar Classic SAC wrapper) — see below |
+| BLUSDC | 7 | Vanna's own USDC lending/margin pool (Stellar Classic SAC wrapper) |
+| AQUSDC | 7 | Aquarius USDC pool (Stellar Classic SAC wrapper) |
+| SOUSDC | 7 | Soroswap USDC pool (Stellar Classic SAC wrapper) |
+| EURC | 7 | Euro-pegged stablecoin (Stellar Classic SAC wrapper) — lending pool and vToken exist; typically **not** collateral-eligible on testnet |
 
-vToken forms (Earn receipt tokens): `VXLM`, `VBLUSDC`, `VAQUSDC`, `VSOUSDC`, `VEURC`.
+vToken forms (Earn receipt tokens): `VXLM` (7 decimals), `VBLUSDC` (6 decimals), `VAQUSDC` (6 decimals), `VSOUSDC` (6 decimals), `VEURC` (6 decimals). Note: underlying SACs have 7 decimals while USDC vToken receipts have 6 decimals; conversions must read decimals per contract.
 
 LP pairs (Aquarius/Soroswap; no standalone oracle price — priced only as a pair): `AQ_XLM_USDC`, `SS_XLM_USDC`, `AQ_XLM_AQUA`, `AQ_XLM_USDT`. AQUA and USDT only exist as legs of these pairs — neither is independently lendable, borrowable, or usable as collateral.
 

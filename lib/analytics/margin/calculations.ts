@@ -1,15 +1,17 @@
-// Margin calculation utilities — aligned with Vanna Risk Explorer simulation
+// Margin calculation utilities — Protocol_V1_Soroban testnet RiskEngine.
+// HF = collateral / debt. Liquidatable when HF <= 1.1. Max LTV = 1/1.1.
+
+import { LIQUIDATION_THRESHOLD, MAX_LTV } from "@/lib/margin-health";
 
 const PROTOCOL_CONSTANTS = {
-  COLLATERAL_FACTOR: 0.9,
-  MAX_LTV: 0.9,
-  MIN_HEALTH_FACTOR: 1.0,
+  MAX_LTV,
+  MIN_HEALTH_FACTOR: LIQUIDATION_THRESHOLD,
 };
 
 const calcHF = (collUsd: number, debtUsd: number): number => {
   if (debtUsd <= 0) return Infinity;
   if (collUsd <= 0) return 0;
-  return (collUsd * PROTOCOL_CONSTANTS.COLLATERAL_FACTOR) / debtUsd;
+  return collUsd / debtUsd;
 };
 
 const calcLeverage = (collUsd: number, debtUsd: number): number => {

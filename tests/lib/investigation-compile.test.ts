@@ -52,8 +52,8 @@ function borrowSupply(over: Partial<Parameters<typeof generateCandidates>[0]> = 
   const { feasible } = generateCandidates({
     ...BASE, idleWalletUsd: null, comparisons: [comparison()], ...over,
   });
-  const candidate = feasible.find((entry) => entry.id === "borrow_supply_BLUSDC");
-  if (!candidate) throw new Error("expected borrow_supply_BLUSDC");
+  const candidate = feasible.find((entry) => entry.id === "borrow_supply_blusdc");
+  if (!candidate) throw new Error("expected borrow_supply_blusdc");
   return candidate;
 }
 
@@ -79,7 +79,7 @@ describe("compiling a candidate into proposal steps", () => {
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
       borrowingAllowed: false, comparisons: [comparison()],
     });
-    const idle = feasible.find((entry) => entry.id === "supply_idle_BLUSDC");
+    const idle = feasible.find((entry) => entry.id === "supply_idle_blusdc");
     expect(idle?.legs).toEqual([]);
     const result = compile(idle!, [price("BLUSDC", "1")]);
     expect(result.ok).toBe(true);
@@ -193,7 +193,7 @@ describe("compiling a candidate into proposal steps", () => {
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
       borrowingAllowed: false, comparisons: [comparison()],
     });
-    const earn = feasible.find((entry) => entry.id === "lend_idle_BLUSDC");
+    const earn = feasible.find((entry) => entry.id === "lend_idle_blusdc");
     expect(earn?.venue).toBe("earn");
     const result = compile(earn!, [price("BLUSDC", "1")]);
     expect(result.ok).toBe(true);

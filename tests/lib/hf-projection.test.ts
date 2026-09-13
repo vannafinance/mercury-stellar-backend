@@ -21,12 +21,12 @@ describe("liquidationPriceLine — the XLM price that liquidates the position", 
     ],
   };
 
-  it("solves for the price where HF reaches 1", () => {
-    // lt = 1.3 × 400 / 520 = 1.0 ⇒ P* = (400/1 − 200)/2000 = $0.10
+  it("solves for the price where HF reaches 1.1", () => {
+    // P* = (1.1 × 400 − 200) / 2000 = $0.12
     const line = liquidationPriceLine(pos);
-    expect(line).toMatch(/\$0\.1000/);
-    // $0.10 is 37.5% below the current $0.16.
-    expect(line).toMatch(/38%|37%/);
+    expect(line).toMatch(/\$0\.1200/);
+    // $0.12 is 25% below the current $0.16.
+    expect(line).toMatch(/25%/);
   });
 
   it("says so plainly when stables alone already cover the debt", () => {

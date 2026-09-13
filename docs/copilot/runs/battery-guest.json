@@ -1,0 +1,62 @@
+[
+  {
+    "prompt": "lend 2 AQUSDC",
+    "ms": 4970,
+    "code": 200,
+    "msg": "User requested to lend 2 AQUSDC to Vanna Earn."
+  },
+  {
+    "prompt": "repay 1 xlm",
+    "ms": 2058,
+    "code": 200,
+    "msg": "User requested to repay 1 XLM."
+  },
+  {
+    "prompt": "deposit 5 xlm as collateral",
+    "ms": 2974,
+    "code": 200,
+    "msg": "User requested to deposit 5 XLM as collateral."
+  },
+  {
+    "prompt": "deposit me 5xlm and borrow 2x aqusdc and blusdc",
+    "ms": 6052,
+    "code": 200,
+    "msg": "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed."
+  },
+  {
+    "prompt": "put 10 xlm in and lever 3x into sousdc",
+    "ms": 3766,
+    "code": 200,
+    "msg": "User requests depositing 10 XLM collateral with 3x leverage into SOUSDC."
+  },
+  {
+    "prompt": "borrow 50% of my max against xlm",
+    "ms": 2310,
+    "code": 200,
+    "msg": "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed."
+  },
+  {
+    "prompt": "what's my health factor",
+    "ms": 20,
+    "code": 200,
+    "msg": "I could not read a live figure for that just now."
+  },
+  {
+    "prompt": "supply my USDC to the best pool",
+    "ms": 15964,
+    "code": 200,
+    "msg": "I\u2019ve checked the available information. One choice still changes the plan: Exact idle USDC balance and variant held in user wallet to size the supply action."
+  },
+  {
+    "prompt": "yeet 1 xlm into earn",
+    "ms": 2843,
+    "code": 200,
+    "msg": "User requested depositing 1 XLM into Vanna Earn."
+  },
+  {
+    "prompt": "unwind 0.5 xlm of debt",
+    "ms": 3646,
+    "code": 200,
+    "msg": "User requested to repay 0.5 XLM of debt."
+  }
+]

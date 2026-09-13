@@ -44,8 +44,16 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     if (new Set(keys).size !== keys.length) return null;
     return { kind: "inspect", reads };
   }
-  if (raw.kind === "clarify" && exactKeys(raw, ["kind", "question"]) && text(raw.question)) {
-    return { kind: "clarify", question: raw.question };
+  if (raw.kind === "clarify" && text(raw.question)) {
+    const extra = Object.keys(raw).filter((key) => !["kind", "question", "questionKind"].includes(key));
+    if (extra.length) return null;
+    const qk = raw.questionKind;
+    if (qk !== undefined && qk !== "preference" && qk !== "resolvable") return null;
+    return {
+      kind: "clarify",
+      question: raw.question,
+      ...(qk === "preference" || qk === "resolvable" ? { questionKind: qk } : {}),
+    };
   }
   if (raw.kind === "blocked" && exactKeys(raw, ["kind", "reason"]) && text(raw.reason)) {
     return { kind: "blocked", reason: raw.reason };

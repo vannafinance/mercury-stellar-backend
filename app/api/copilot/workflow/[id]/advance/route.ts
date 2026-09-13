@@ -3,6 +3,7 @@ import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { withBoundUser } from "@/lib/copilot/user-context";
 import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
+import { researchConfig } from "@/lib/copilot/research-config";
 import { ResearchError } from "@/lib/copilot/investigation/scope";
 import { WorkflowConflict } from "@/lib/copilot/workflow/journal";
 import { advanceWorkflow } from "@/lib/copilot/investigation/execute";
@@ -33,11 +34,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   const loaded = await loadUserFromRequest(req);
   if (!loaded.bound) return loaded.commit(NextResponse.json({ code: "sign_in_required", message: "Sign in to run a plan for your connected account." }, { status: 401 }));
-  const secret = process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
-  const network = process.env.COPILOT_RESEARCH_NETWORK?.trim() || "testnet";
-  if (process.env.COPILOT_RESEARCH_ENABLED === "false" || secret.length < 32 || network !== "testnet") {
-    return loaded.commit(NextResponse.json({ code: "research_not_configured", message: "Investigation is not available on this deployment yet." }, { status: 503 }));
+  const configured = researchConfig();
+  if (!configured.ok) {
+    return loaded.commit(NextResponse.json({ code: configured.code, message: configured.message }, { status: configured.status }));
   }
+  const { secret, network } = configured;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), 75_000);
   const bound = loaded.bound;

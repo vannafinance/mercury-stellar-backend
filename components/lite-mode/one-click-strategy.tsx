@@ -18,6 +18,7 @@ import {
   distanceToLiquidationPct,
   RISK_ENGINE_LIQUIDATION_HF,
 } from "@/components/lite-mode/lite-position-math";
+import { maxBorrowForProtocolUsd } from "@/lib/margin-health";
 import { usePoolData } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AquariusService } from "@/lib/aquarius-utils";
@@ -477,7 +478,12 @@ export const OneClickStrategy = () => {
   const newHF = totalBorrowUsd > 0 ? grossCollateralUsd / totalBorrowUsd : 0;
   /** Debt as % of gross balance-sheet assets — matches HF⁻¹ view (HF = gross / debt). */
   const newLTV = grossCollateralUsd > 0 ? (totalBorrowUsd / grossCollateralUsd) * 100 : 0;
-  const maxBorrowUsd = collateralUsd * 0.8 + Math.max(0, totalCollateralValue - totalBorrowedValue) * 0.8;
+  // Protocol max: (G+x)/(D+x) > 1.1. Equality is liquidatable.
+  const existingGross = totalCollateralValue + totalBorrowedValue;
+  const maxBorrowUsd = maxBorrowForProtocolUsd(
+    existingGross + collateralUsd,
+    totalBorrowedValue,
+  );
   /**
    * Implied liq. oracle price for the **deposit asset** only when borrow ≠ collateral
    * (e.g. XLM collateral / USDC debt): solve gross(P) ≈ 1.1 × debt with
@@ -579,7 +585,7 @@ export const OneClickStrategy = () => {
     collateralNum > 0 &&
     collateralNum <= maxDeposit &&
     !lpReservesNotReady &&
-    (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > 1.2)) &&
+    (borrowedAmount <= 0 || (borrowUsd <= maxBorrowUsd && newHF > RISK_ENGINE_LIQUIDATION_HF)) &&
     !!userAddress &&
     !!marginAccountAddress;
 
@@ -593,7 +599,7 @@ export const OneClickStrategy = () => {
         : "Insufficient Balance";
     if (lpReservesNotReady) return "Loading Pool Data...";
     if (borrowedAmount > 0 && borrowUsd > maxBorrowUsd) return "Exceeds Borrow Limit";
-    if (borrowedAmount > 0 && newHF > 0 && newHF <= 1.2) return "Position Too Risky";
+    if (borrowedAmount > 0 && newHF > 0 && newHF <= RISK_ENGINE_LIQUIDATION_HF) return "Would be liquidatable";
     if (loading) return "Processing...";
     return leverage > 1 ? "Deploy Strategy" : "Deposit Margin";
   };
@@ -605,7 +611,7 @@ export const OneClickStrategy = () => {
   const labelText = isDark ? "text-[#919191]" : "text-[#76737B]";
   const headingText = isDark ? "text-white" : "text-[#111111]";
   const subtleCard = isDark ? "bg-[#151515] border-[#2C2C2C]" : "bg-[#FAFAFA] border-[#F4F4F4]";
-  const hfColor = newHF >= 1.5 ? "#703AE6" : newHF >= 1.2 ? "#F59E0B" : "#FC5457";
+  const hfColor = newHF > RISK_ENGINE_LIQUIDATION_HF ? "#703AE6" : "#FC5457";
 
   return (
       <div className="w-full h-fit flex flex-col lg:flex-row gap-5">

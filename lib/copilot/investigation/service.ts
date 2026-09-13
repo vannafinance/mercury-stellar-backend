@@ -1,5 +1,5 @@
 import type { MCPClient } from "../mcp-client";
-import type { ResearchModel, InvestigationProgress, InvestigationLimits } from "./types";
+import type { ResearchModel, InvestigationProgress, InvestigationLimits, GoalUnderstanding } from "./types";
 import type { ResearchView } from "./view";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { researchCodec } from "./continuation";
@@ -9,12 +9,14 @@ import { normalizeResearchFacts } from "./normalize";
 import { compareObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition } from "./capacity";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, postedTokensFrom, earnTokensFrom, requestedBorrowFrom, holdingHorizonDaysFrom } from "./candidates";
+import { simplifyQuestion } from "./ask";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
 import { compileRequestedActions } from "./requested-actions";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed } from "./strategy-reads";
+import { compileLeverageWrites } from "./leverage-compile";
+import { leverageFrom, statedFloorFrom } from "./quantities";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
@@ -67,6 +69,37 @@ function optionalConversation(
     }
     throw error;
   }
+}
+
+async function compilePlanWrites(input: {
+  goal: GoalUnderstanding;
+  messages: readonly string[];
+  scope: Parameters<typeof compileRequestedActions>[2];
+  mcp: Pick<MCPClient, "call">;
+  grossCollateralUsd?: string;
+  debtUsd?: string;
+}): Promise<{ steps: ReturnType<typeof compileRequestedActions>; healthFactorBefore: string | null; healthFactorAfter: string | null }> {
+  const joined = input.messages.join("\n");
+  if (leverageFrom(joined)) {
+    const sized = await compileLeverageWrites({
+      goal: input.goal, messages: input.messages, scope: input.scope, mcp: input.mcp,
+      grossCollateralUsd: input.grossCollateralUsd, debtUsd: input.debtUsd,
+    });
+    if (sized?.steps.length) {
+      return {
+        steps: sized.steps,
+        healthFactorBefore: sized.healthFactorBefore,
+        healthFactorAfter: sized.healthFactorAfter,
+      };
+    }
+    // Nx was named: never emit the deposit leg alone as if that were the plan.
+    return { steps: [], healthFactorBefore: null, healthFactorAfter: null };
+  }
+  return {
+    steps: compileRequestedActions(input.goal, input.messages, input.scope),
+    healthFactorBefore: null,
+    healthFactorAfter: null,
+  };
 }
 
 export async function researchTurn(input: ResearchInput, dependencies: {
@@ -245,29 +278,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
   }
   /**
-   * The authoritative position, read BEFORE the loop and handed to the model as evidence.
-   *
-   * Two problems this solves at once. Measured live on "what's my health factor?": MCP's
-   * `account_health` returned debt positions but no scalar ratio, so the card said "account
-   * health: data was unavailable" beside a rail showing 2.43 — computed from this very
-   * snapshot. And the model spent five reads and several turns fetching collateral, debt and
-   * health that the app already had, which is most of why one health question took half a
-   * minute. Refusing to invent the number was right; not reaching for the one the product
-   * computes was not.
-   *
-   * Same source as the Margin page (owner decision: dev is authoritative), so the copilot
-   * and the rest of the product cannot show different numbers.
+   * The planner's first turn is allowed to compile a catalog write with no snapshot.
+   * Starting computeAccountPosition (5–12s RPC) before that turn is what turned every
+   * explicit action into the client's 120s abort. Health already returned above.
+   * Ranking pays for the snapshot after the planner says it needs capacity.
    */
   let position: Awaited<ReturnType<typeof computeAccountPosition>> = null;
   const withdrawAsk = !prior && scope.smartAccount ? parseWithdrawCheck(input.message) : null;
   const positionStarted = Date.now();
-  const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
-  const positionTask = haveCarriedPosition
-    ? Promise.resolve({ value: null as Awaited<ReturnType<typeof computeAccountPosition>>, error: null as unknown })
-    : interruptible(
-        () => computeAccountPosition(scope.smartAccount, positionSignal),
-        positionSignal,
-      ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const loadPosition = () => {
+    const positionSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(POSITION_BUDGET_MS)]);
+    return interruptible(
+      () => computeAccountPosition(scope.smartAccount, positionSignal),
+      positionSignal,
+    ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  };
   const withdrawTask = withdrawAsk
     ? interruptible(
         () => withdrawObservation(withdrawAsk.asset, withdrawAsk.amount, scope, scopedMcp),
@@ -315,7 +340,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
   }
   if (withdrawAsk && withdrawObs && withdrawObs.status === "ok") {
-    const positionResult = await positionTask;
+    const positionResult = haveCarriedPosition
+      ? { value: null as Awaited<ReturnType<typeof computeAccountPosition>>, error: null as unknown }
+      : await loadPosition();
     position = positionResult.value;
     return fastPathView({
       message: input.message, scope,
@@ -327,47 +354,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
   }
   /**
-   * The planner's first turn can compile a fully specified write with no account
-   * snapshot. Waiting on the snapshot here is what turned "repay 1 XLM" into a 40s
-   * research loop. Seed ranking evidence only when this is not a stated write.
+   * First planner turn runs against carried evidence only. Speculative market/position
+   * seeds before that turn are an enumerated "this looks like ranking" gate — they also
+   * spend the route budget so an explicit catalog write never gets a model turn.
    */
-  const statedWrite = looksLikeStatedWrite(input.message);
-  const seedMarkets = needsMarketSeed(input.message);
   let seed: Awaited<ReturnType<typeof healthObservations>> = [...carriedObs];
   let positionAwaited = haveCarriedPosition;
-  const haveCarriedMarkets = carriedObs.some((observation) =>
-    (observation.capability === "earn_market" || observation.capability === "blend_markets"
-      || observation.capability === "wallet_balances") && observation.status === "ok");
-  if (!statedWrite && seedMarkets && !(haveCarriedPosition && haveCarriedMarkets)) {
-    const marketSignal = AbortSignal.any([dependencies.signal, AbortSignal.timeout(12_000)]);
-    const [pos, markets] = await withInvestigationPhase("position", () => Promise.all([
-      positionTask,
-      collectStrategyReads(scope, scopedMcp, marketSignal, Date.now()).catch((error) => {
-        console.warn("[copilot] investigation market seed failed", {
-          error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
-        });
-        return [];
-      }),
-    ]));
-    if (pos.error) {
-      console.warn("[copilot] investigation position seed failed", {
-        error: pos.error instanceof Error
-          ? { name: pos.error.name, message: pos.error.message }
-          : String(pos.error),
-      });
-    }
-    position = pos.value;
-    positionAwaited = true;
-    const positionMs = Date.now() - positionStarted;
-    setSpanAttr("vanna.position.ms", positionMs);
-    setSpanAttr("vanna.position.seeded", !!position || haveCarriedPosition);
-    logPhase("position", { ms: positionMs, seeded: !!position || haveCarriedPosition, markets: markets.length });
-    seed = [
-      ...carriedObs,
-      ...(position ? healthObservations(position) : []),
-      ...markets,
-    ];
-  } else if (haveCarriedPosition) {
+  if (haveCarriedPosition) {
     logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
   }
   const loopStarted = Date.now();
@@ -387,8 +380,36 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const outcome = result.outcome;
   if (outcome.kind === "research_complete") {
     const compiledQuestion = outcome.openQuestions[0] ?? null;
-    const earlySteps = !compiledQuestion ? compileRequestedActions(outcome.goal, messages, scope) : [];
+    const compiled = !compiledQuestion
+      ? await compilePlanWrites({
+          goal: outcome.goal, messages, scope, mcp: scopedMcp,
+        })
+      : { steps: [], healthFactorBefore: null, healthFactorAfter: null };
+    const earlySteps = compiled.steps;
     if (earlySteps.length) {
+      const statedFloor = statedFloorFrom(messages);
+      if (earlySteps.some((step) => step.op === "borrow") && !statedFloor) {
+        const floorQuestion = "What minimum health-factor floor would you like to maintain for this leveraged position? (e.g. 1.30 or higher)";
+        const evidence = compactResearchEvidence(result.observations, null, Date.now());
+        logPhase("compiled_write_needs_floor", { steps: earlySteps.length });
+        return {
+          status: "needs_input",
+          message: strategyReply({
+            status: "needs_input", facts: [], candidates: null, capacity: null, question: floorQuestion,
+            intent: "strategy", originalRequest: messages[0],
+          }),
+          originalRequest: messages[0], refinements: messages.slice(1), question: floorQuestion,
+          proposalCandidateId: null,
+          understanding: outcome.goal, facts: [], capacity: null, candidates: null, rateComparisons: [],
+          checks: result.observations.map((observation) => ({
+            id: observation.id, label: observation.capability.replaceAll("_", " "),
+            status: observation.status, readAt: observation.observedAt,
+          })),
+          warnings: [],
+          scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
+          continuation: codec.seal(scope, messages, floorQuestion, evidence), executionAllowed: false,
+        };
+      }
       const evidence = compactResearchEvidence(result.observations, null, Date.now());
       evidence.requestedSteps = earlySteps;
       evidence.allowedCandidateIds = ["requested_actions"];
@@ -398,6 +419,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         message: strategyReply({
           status: "researched", facts: [], candidates: null, capacity: null, question: null,
           intent: "strategy", originalRequest: messages[0], statedSteps: earlySteps,
+          healthFactorBefore: compiled.healthFactorBefore,
+          healthFactorAfter: compiled.healthFactorAfter,
         }),
         originalRequest: messages[0], refinements: messages.slice(1), question: null,
         proposalCandidateId: "requested_actions",
@@ -413,8 +436,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
   if (!positionAwaited) {
-    const [positionResult] = await withInvestigationPhase("position", () =>
-      Promise.all([positionTask]));
+    const positionResult = await withInvestigationPhase("position", () => loadPosition());
     if (positionResult.error) {
       console.warn("[copilot] investigation position seed failed", {
         error: positionResult.error instanceof Error
@@ -521,7 +543,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const borrowing = outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified";
   let candidates = null;
   try {
-    candidates = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
+    const isStrategy = outcome.kind === "research_complete" && (outcome.goal.intent === "strategy" || rateComparisons.length > 0);
+    candidates = isStrategy && rateComparisons.length > 0 && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
@@ -529,12 +552,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
           idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
           idleWalletByAssetTokens: idleWalletByAssetTokensFrom(result.observations, observedNow),
+          postedByAssetTokens: postedTokensFrom(result.observations, observedNow),
+          earnByAssetTokens: earnTokensFrom(result.observations, observedNow),
           // A failed capacity (dropped-leg debt, sources disagree) must not
           // invent headroom from $0 / a default 1.30 floor.
           borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
           requestedBorrowUsd:
             capacity && !capacityResult.failed ? (requestedBorrow?.usd ?? null) : null,
           comparisons: rateComparisons,
+          horizonDays: holdingHorizonDaysFrom(messages),
         })
       : null;
   } catch (error) {
@@ -548,20 +574,39 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
-  question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
+  const questionKind = outcome.kind === "clarify" ? outcome.questionKind : undefined;
+  question = simplifyQuestion(question, {
+    hasRankedOptions: Boolean(candidates?.feasible.length),
+    borrowing,
+    questionKind,
+  });
+  const compiledWrites = outcome.kind === "research_complete" && !question
+    ? await compilePlanWrites({
+        goal: outcome.goal, messages, scope, mcp: scopedMcp,
+        grossCollateralUsd: capacity?.grossCollateralUsd,
+        debtUsd: capacity?.debtUsd,
+      })
+    : { steps: [] as ReturnType<typeof compileRequestedActions>, healthFactorBefore: null, healthFactorAfter: null };
+  let requestedSteps = compiledWrites.steps;
+  const statedFloor = statedFloorFrom(messages);
+  if (requestedSteps.some((step) => step.op === "borrow") && !statedFloor) {
+    question = "What minimum health-factor floor would you like to maintain for this leveraged position? (e.g. 1.30 or higher)";
+    requestedSteps = [];
+  }
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
     : question ? "needs_input"
       : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
         : outcome.kind === "stopped" ? "incomplete"
           : "needs_input";
-  const requestedSteps = outcome.kind === "research_complete" && !question
-    ? compileRequestedActions(outcome.goal, messages, scope) : [];
   const message = strategyReply({
     status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
     intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
     findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
     originalRequest: messages[0],
     statedSteps: requestedSteps,
+    stopReason: outcome.kind === "stopped" ? outcome.reason : undefined,
+    healthFactorBefore: compiledWrites.healthFactorBefore,
+    healthFactorAfter: compiledWrites.healthFactorAfter,
   });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
@@ -598,28 +643,4 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,
   };
-}
-
-function decidedWithoutUser(question: string): boolean {
-  return /how much|budget|allocat|which (venue|pool|market)|spot or farm|earn or farm|which usdc|which (of )?(the )?(two )?(usdc )?variant/i.test(question);
-}
-
-const BORROW_AUTHORITY =
-  "May I borrow against your margin account, or should this use idle funds only?";
-
-function simplifyQuestion(
-  question: string | null,
-  hasCandidates: boolean,
-  borrowing: string,
-): string | null {
-  if (!question) return null;
-  const asksAuthority = /may i borrow|borrow against|permission to borrow|new (debt|borrow)|should (i|we) borrow/i.test(question);
-  if (hasCandidates && decidedWithoutUser(question)) {
-    if (asksAuthority && borrowing === "unspecified") return BORROW_AUTHORITY;
-    return null;
-  }
-  if (asksAuthority && decidedWithoutUser(question) && borrowing === "unspecified") {
-    return BORROW_AUTHORITY;
-  }
-  return question;
 }

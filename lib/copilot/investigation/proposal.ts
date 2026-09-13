@@ -9,8 +9,9 @@
 
 import type { MCPClient } from "../mcp-client";
 import { computeBorrowCapacity } from "./capacity";
+import { statedFloorFrom } from "./quantities";
 import {
-  generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, requestedBorrowFrom,
+  generateCandidates, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, idleWalletUsdFrom, postedTokensFrom, earnTokensFrom, requestedBorrowFrom, holdingHorizonDaysFrom,
 } from "./candidates";
 import { collectStrategyReads } from "./strategy-reads";
 import { compareObservedRates } from "./rate-comparison";
@@ -60,7 +61,7 @@ export async function proposeWorkflow(input: {
     const steps = prior.evidence?.requestedSteps;
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
     for (const step of steps) allowedInvocation(step, scope);
-    const floor = prior.evidence?.capacity?.floor ?? null;
+    const floor = prior.evidence?.capacity?.floor ?? statedFloorFrom(prior.messages) ?? null;
     const draft = { scope, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
       constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps };
@@ -104,6 +105,8 @@ export async function proposeWorkflow(input: {
   const idleWalletUsd = idleWalletUsdFrom(observations, now);
   const idleWalletByAssetUsd = idleWalletByAssetUsdFrom(observations, now);
   const idleWalletByAssetTokens = idleWalletByAssetTokensFrom(observations, now);
+  const postedByAssetTokens = postedTokensFrom(observations, now);
+  const earnByAssetTokens = earnTokensFrom(observations, now);
   const idleOnly = input.candidateId.startsWith("supply_idle_") || earnIdle;
   /**
    * Same gates as `researchTurn`: an unvalued stated amount must not fall through to
@@ -115,17 +118,19 @@ export async function proposeWorkflow(input: {
         grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
         debtUsd: capacity?.debtUsd ?? "0",
         floor: capacity?.floor ?? "1.30",
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, borrowingAllowed: false, comparisons,
+          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, postedByAssetTokens, earnByAssetTokens, borrowingAllowed: false, comparisons,
+          horizonDays: holdingHorizonDaysFrom(prior.messages),
       })
     : capacity && comparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity.grossCollateralUsd,
           debtUsd: capacity.debtUsd,
           floor: capacity.floor,
-          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens,
+          idleWalletUsd, idleWalletByAssetUsd, idleWalletByAssetTokens, postedByAssetTokens, earnByAssetTokens,
           borrowingAllowed: true,
           requestedBorrowUsd: requestedBorrow?.usd ?? null,
           comparisons,
+          horizonDays: holdingHorizonDaysFrom(prior.messages),
         })
       : null;
   const candidate = candidates?.feasible.find((entry) => entry.id === input.candidateId);

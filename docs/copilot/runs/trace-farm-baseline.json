@@ -1,0 +1,1114 @@
+{
+  "at": "2026-09-13T07:14:06.032253+00:00",
+  "prompt": "where should I farm for the best yield right now",
+  "requests": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "method": "POST",
+      "body": {
+        "message": "where should I farm for the best yield right now",
+        "wallet": "GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH",
+        "continuation": "[redacted]",
+        "session": "[redacted]",
+        "history": []
+      }
+    }
+  ],
+  "responses": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "status": 200,
+      "contentType": "application/x-ndjson; charset=utf-8",
+      "error": "Response.text: Protocol error (Network.getResponseBody): No data found for resource with given identifier\nResponse body is not available for a response that was navigated away from. Read response.body() before triggering any navigation."
+    }
+  ],
+  "failures": [
+    {
+      "url": "http://localhost:3000/api/copilot/investigate",
+      "failure": "net::ERR_ABORTED"
+    }
+  ],
+  "before": {
+    "elapsedMs": 360,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 4,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  },
+  "initialBody": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nYOU \u00b7 invest into earn pool where i can get good returns?\n\nWallet spendable balances are 19,351.45 XLM, 0 BLUSDC, 2,678 AQUSDC, and 74,985 SOUSDC. BLUSDC Earn pool offers the highest supply APY at 29.08%, but spendable BLUSDC balance is 0. AQUSDC Earn pool yields 7.84% supply APY, where 2,678 AQUSDC is available to deposit. XLM Earn pool yields 5.19% supply APY, where 19,351.45 XLM is available. SOUSDC Earn pool yields 0.44% supply APY, holding 74,985 SOUSDC.\n\nThis thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.\n\nIdentify and allocate to the highest-yielding Vanna Earn pool suited to available wallet balances.\n\nChecked in 18s \u00b7 47s this device\n\nwallet balances: some entries were unavailable.\nStart over\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\n\nYOUR ACCOUNT\n\nHEALTHY\n1.10\n3.0+\n\nHEALTH FACTOR\n\n3.89\n\nincludes unposted \u00b7 risk engine uses posted (unsafe at 1.10)\n\nyour floor 1.30\n\nCOLLATERAL\n$1,087.68\nBORROWED \u00b7 DEPLOYED\n$279.47\n\nOPEN POSITIONS\n\n4 supplied \u00b7 3 borrowed\nSUPPLIED\n$489.93\nMARGIN\nBLUSDC\n315.7590031\n$315.80\nMARGIN\nXLM\n773.9955515\n$139.18\nMARGIN\nAQUSDC\n34.6248705\n$34.63\nMARGIN\nSOUSDC\n0.3163653\n$0.32\nBORROWED\n$279.46\nMARGIN\nBLUSDC\n236.641405\n$236.67\nMARGIN\nAQUSDC\n21.49203\n$21.49\nMARGIN\nXLM\n118.460857\n$21.30\n\nMargin account only \u2014 same balances as the Margin page. Blend supplies and Aquarius LP shares stay on Farm.\n\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "url": "http://localhost:3000/copilot",
+  "elapsedMs": 32196,
+  "body": "Portfolio\nEarn\nMargin\nTrade\nFarm\nAnalytics\nCopilot\nFaucet\nGD4BQR...NPDH\n\nAGENT-NATIVE \u00b7 ORCHESTRATOR\n\nVanna Copilot\nPrompts\nRun\n\nYOU \u00b7 where should I farm for the best yield right now\n\nThe reported supply rates are XLM Blend supply apr: 168.6578 % APR; USDC Blend supply apr: 0.9057 % APR; XLM Earn: 5.186452 % APR; XLM Earn supply APY: 5.186452 % APR; BLUSDC Earn: 29.081285 % APR; BLUSDC Earn supply APY: 29.081285 % APR; AQUSDC Earn: 7.843466 % APR; AQUSDC Earn supply APY: 7.843466 % APR; SOUSDC Earn: 0.438367 % APR; SOUSDC Earn supply APY: 0.438367 % APR.\n\nThis thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.\n\nCompare farming and lending yields across Aquarius, Blend, and Vanna Earn to identify top yield opportunities.\n\nChecked in 25s \u00b7 25s this device\n\naquarius markets: some entries were unavailable.\nAquarius pools were discovered; executable quotes and net returns have not been evaluated.\nwallet balances: some entries were unavailable.\nearn market: data was unavailable. No value was assumed.\nStart over\n\nSESSION LOG\n\n22 turns\n\nclear\nDisable auto-sign\nREAD\nrouter\n20h\n\nanswered\n\nAuthorize Vanna as an additional signer\nTURN\nrouter\n914h\n\nnot completed\n\nEnable auto-sign (MCP defaults)\nTURN\nrouter\n914h\n\nnot completed\n\nDeposit 5 XLM as collateral\nTURN\nvanna_deposit_collateral\n914h\n\nnot completed\n\nopen a margin account\nWRITE\nvanna_open_account\n932h\n\nexecuted\n\nLend 15 XLM\nWRITE\nvanna_lend\n934h\n\nexecuted\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\nSTRATEGY\nmulti_leg\n934h\n\nDeposit 50 BLUSDC as collateral \u00b7 done \u2192 Borrow XLM \u00b7 clarification \u2192 Lend XLM on Earn \u00b7 clarification \u2192 Borrow 12 XLM \u00b7 done \u2192 Lend 15 XLM on Earn \u00b7 not signed\n\nnot completed\n\nBlend USDC reserve APY\nREAD\nvanna_get_blend_reserve_stats\n934h\n\nanswered\n\nshow all 22 turns\n\nYOUR ACCOUNT\n\nHEALTHY\n1.10\n3.0+\n\nHEALTH FACTOR\n\n3.89\n\nincludes unposted \u00b7 risk engine uses posted (unsafe at 1.10)\n\nyour floor 1.30\n\nCOLLATERAL\n$1,087.68\nBORROWED \u00b7 DEPLOYED\n$279.47\n\nOPEN POSITIONS\n\n4 supplied \u00b7 3 borrowed\nSUPPLIED\n$489.93\nMARGIN\nBLUSDC\n315.7589301\n$315.80\nMARGIN\nXLM\n773.9955355\n$139.18\nMARGIN\nAQUSDC\n34.6248675\n$34.63\nMARGIN\nSOUSDC\n0.3163653\n$0.32\nBORROWED\n$279.46\nMARGIN\nBLUSDC\n236.641478\n$236.67\nMARGIN\nAQUSDC\n21.492033\n$21.49\nMARGIN\nXLM\n118.460873\n$21.30\n\nMargin account only \u2014 same balances as the Margin page. Blend supplies and Aquarius LP shares stay on Farm.\n\nAUTONOMY\nmanual signing\nAuto-approve\nTurn on \u2192 choose MCP defaults or custom caps\n\nEvery write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay.\n\nRECENT ON-CHAIN\n\nLend 15 XLM\n\n435f8cc071\u2026ef7fa0\n\n934h\n\nLend 15 XLM\n\n81f094eca3\u2026ce3e1f\n\n934h\n\nLend 15 XLM\n\n5c53d4cb7f\u2026a76389\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\ne927b6d40d\u2026fb29fe\n\n934h\n\nDeposit my 50 BLUSDC and run a delta-neutral XLM carry, keep me above 1.4 health\n\nbf47947a0b\u2026f939aa\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n452d145d7a\u202668aca8\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n5fa643f279\u20261d08f5\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\ne143bb1114\u2026021bd2\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n3c1771418e\u202692e656\n\n934h\n\nSwap 10 XLM to BLUSDC then farm Blend at 2x with 10 BLUSDC\n\n0b64291c02\u2026f25ce2\n\n934h\n\nEvery action runs the same safety checks \u2014 nothing touches the chain until policy passes.\n\nAssistant",
+  "researchState": [
+    {
+      "status": "researched",
+      "message": "The reported supply rates are XLM Blend supply apr: 168.6578 % APR; USDC Blend supply apr: 0.9057 % APR; XLM Earn: 5.186452 % APR; XLM Earn supply APY: 5.186452 % APR; BLUSDC Earn: 29.081285 % APR; BLUSDC Earn supply APY: 29.081285 % APR; AQUSDC Earn: 7.843466 % APR; AQUSDC Earn supply APY: 7.843466 % APR; SOUSDC Earn: 0.438367 % APR; SOUSDC Earn supply APY: 0.438367 % APR.",
+      "originalRequest": "where should I farm for the best yield right now",
+      "refinements": [],
+      "question": null,
+      "proposalCandidateId": null,
+      "understanding": {
+        "intent": "answer",
+        "relation": "new",
+        "objective": "Compare farming and lending yields across Aquarius, Blend, and Vanna Earn to identify top yield opportunities.",
+        "constraints": [],
+        "borrowing": "unspecified"
+      },
+      "facts": [
+        {
+          "id": "e1:count",
+          "label": "Count",
+          "value": "2",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "count",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].supply_apy_pct",
+          "label": "XLM Blend supply apy",
+          "value": "425.83",
+          "unit": "% APY",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].supply_apy_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].borrow_apy_pct",
+          "label": "XLM Blend borrow apy",
+          "value": "697.63",
+          "unit": "% APY",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].borrow_apy_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].supply_apr_pct",
+          "label": "XLM Blend supply apr",
+          "value": "168.6578",
+          "unit": "% APR",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].supply_apr_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].borrow_apr_pct",
+          "label": "XLM Blend borrow apr",
+          "value": "208.2394",
+          "unit": "% APR",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].borrow_apr_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].utilization_pct",
+          "label": "XLM Blend utilization",
+          "value": "89.99",
+          "unit": "%",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].utilization_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].total_supply",
+          "label": "XLM Blend total supply",
+          "value": "105393950.5538",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].total_supply",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].total_borrow",
+          "label": "XLM Blend total borrow",
+          "value": "94845462.8740",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].total_borrow",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].b_rate",
+          "label": "XLM Blend b rate",
+          "value": "2.0073566",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].b_rate",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[0].decimals",
+          "label": "XLM Blend decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[0].decimals",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].supply_apy_pct",
+          "label": "USDC Blend supply apy",
+          "value": "0.91",
+          "unit": "% APY",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].supply_apy_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].borrow_apy_pct",
+          "label": "USDC Blend borrow apy",
+          "value": "1.32",
+          "unit": "% APY",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].borrow_apy_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].supply_apr_pct",
+          "label": "USDC Blend supply apr",
+          "value": "0.9057",
+          "unit": "% APR",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].supply_apr_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].borrow_apr_pct",
+          "label": "USDC Blend borrow apr",
+          "value": "1.3113",
+          "unit": "% APR",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].borrow_apr_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].utilization_pct",
+          "label": "USDC Blend utilization",
+          "value": "76.75",
+          "unit": "%",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].utilization_pct",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].total_supply",
+          "label": "USDC Blend total supply",
+          "value": "129251.2172",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].total_supply",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].total_borrow",
+          "label": "USDC Blend total borrow",
+          "value": "99196.0556",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].total_borrow",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].b_rate",
+          "label": "USDC Blend b rate",
+          "value": "1.0561821",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].b_rate",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e1:reserves[1].decimals",
+          "label": "USDC Blend decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "blend",
+          "evidenceId": "e1",
+          "sourcePath": "reserves[1].decimals",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e2:count",
+          "label": "Count",
+          "value": "3",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "count",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].fee",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "0.0010",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].fee",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].apy_pct",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "0.00",
+          "unit": "% APY",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].apy_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].total_apy_pct",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "2252.24",
+          "unit": "% APY",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].total_apy_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].liquidity_usd",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "3146.42",
+          "unit": "USD",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].liquidity_usd",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].volume_usd",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "0.00",
+          "unit": "USD",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].volume_usd",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].liquidity_usd_raw",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "31464236633.9836950",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].liquidity_usd_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[1].volume_usd_raw",
+          "label": "Aquarius XLM + AQUA pool depth",
+          "value": "0.0000000",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[1].volume_usd_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].fee",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.0010",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].fee",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].apy_pct",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.00",
+          "unit": "% APY",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].apy_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].total_apy_pct",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.00",
+          "unit": "% APY",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].total_apy_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].liquidity_usd",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.36",
+          "unit": "USD",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].liquidity_usd",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].volume_usd",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.00",
+          "unit": "USD",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].volume_usd",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].liquidity_usd_raw",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "3572020.3620825",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].liquidity_usd_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e2:pools[2].volume_usd_raw",
+          "label": "Aquarius USDT + XLM pool depth",
+          "value": "0.0000000",
+          "unit": "",
+          "venue": "aquarius",
+          "evidenceId": "e2",
+          "sourcePath": "pools[2].volume_usd_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[0].balance",
+          "label": "XLM wallet balance",
+          "value": "19351.4554574",
+          "unit": "XLM",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[0].balance",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[2].decimals",
+          "label": "Decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[2].decimals",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[2].balance_raw",
+          "label": "Balance raw",
+          "value": "193514554574",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[2].balance_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[3].balance",
+          "label": "BLUSDC wallet balance",
+          "value": "0.0000000",
+          "unit": "BLUSDC",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[3].balance",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[3].decimals",
+          "label": "Decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[3].decimals",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[3].balance_raw",
+          "label": "Balance raw",
+          "value": "0",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[3].balance_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[4].balance",
+          "label": "AQUSDC wallet balance",
+          "value": "2678.0000000",
+          "unit": "AQUSDC",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[4].balance",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[4].decimals",
+          "label": "Decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[4].decimals",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[4].balance_raw",
+          "label": "Balance raw",
+          "value": "26780000000",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[4].balance_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[5].balance",
+          "label": "SOUSDC wallet balance",
+          "value": "74985.0000000",
+          "unit": "SOUSDC",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[5].balance",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[5].decimals",
+          "label": "Decimals",
+          "value": "7",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[5].decimals",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:assets[5].balance_raw",
+          "label": "Balance raw",
+          "value": "749850000000",
+          "unit": "",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "assets[5].balance_raw",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3:fee_reserve_xlm",
+          "label": "Suggested fee reserve",
+          "value": "0.5",
+          "unit": "XLM",
+          "venue": "wallet",
+          "evidenceId": "e3",
+          "sourcePath": "fee_reserve_xlm",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:utilization_pct",
+          "label": "XLM Earn utilization",
+          "value": "38.494700",
+          "unit": "%",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "utilization_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:borrow_apr_pct",
+          "label": "XLM Earn borrow APR",
+          "value": "13.47315996527373600",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "borrow_apr_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:supply_apr_pct",
+          "label": "XLM Earn supply APR",
+          "value": "5.186452",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "supply_apr_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:supply_apy_pct",
+          "label": "XLM Earn supply APY",
+          "value": "5.186452",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "supply_apy_pct",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_liquidity",
+          "label": "XLM Earn total liquidity",
+          "value": "56600499203900000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_liquidity",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_liquidity_human",
+          "label": "XLM Earn total liquidity",
+          "value": "56600.499203900000000000",
+          "unit": "XLM",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_liquidity_human",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_borrows",
+          "label": "XLM Earn total borrows",
+          "value": "35424966169240144346457",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_borrows",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_borrows_human",
+          "label": "XLM Earn total borrows",
+          "value": "35424.966169240144346457",
+          "unit": "XLM",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_borrows_human",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_assets",
+          "label": "XLM Earn total assets",
+          "value": "92025464617760514110115",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_assets",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:total_assets_human",
+          "label": "XLM Earn total assets",
+          "value": "92025.464617760514110115",
+          "unit": "XLM",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "total_assets_human",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4:origination_fee",
+          "label": "XLM Earn origination fee",
+          "value": "10000000000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e4",
+          "sourcePath": "origination_fee",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e5:utilization_pct",
+          "label": "BLUSDC Earn utilization",
+          "value": "89.566500",
+          "unit": "%",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "utilization_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:borrow_apr_pct",
+          "label": "BLUSDC Earn borrow APR",
+          "value": "32.468931433759665600",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "borrow_apr_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:supply_apr_pct",
+          "label": "BLUSDC Earn supply APR",
+          "value": "29.081285",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "supply_apr_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:supply_apy_pct",
+          "label": "BLUSDC Earn supply APY",
+          "value": "29.081285",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "supply_apy_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_liquidity",
+          "label": "BLUSDC Earn total liquidity",
+          "value": "1401699859400000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_liquidity",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_liquidity_human",
+          "label": "BLUSDC Earn total liquidity",
+          "value": "1401.699859400000000000",
+          "unit": "BLUSDC",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_liquidity_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_borrows",
+          "label": "BLUSDC Earn total borrows",
+          "value": "12032955636844632239700",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_borrows",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_borrows_human",
+          "label": "BLUSDC Earn total borrows",
+          "value": "12032.955636844632239700",
+          "unit": "BLUSDC",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_borrows_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_assets",
+          "label": "BLUSDC Earn total assets",
+          "value": "13434655496244632239700",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_assets",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:total_assets_human",
+          "label": "BLUSDC Earn total assets",
+          "value": "13434.655496244632239700",
+          "unit": "BLUSDC",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "total_assets_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e5:origination_fee",
+          "label": "BLUSDC Earn origination fee",
+          "value": "10000000000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e5",
+          "sourcePath": "origination_fee",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:utilization_pct",
+          "label": "AQUSDC Earn utilization",
+          "value": "47.339100",
+          "unit": "%",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "utilization_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:borrow_apr_pct",
+          "label": "AQUSDC Earn borrow APR",
+          "value": "16.568685976159749600",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "borrow_apr_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:supply_apr_pct",
+          "label": "AQUSDC Earn supply APR",
+          "value": "7.843466",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "supply_apr_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:supply_apy_pct",
+          "label": "AQUSDC Earn supply APY",
+          "value": "7.843466",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "supply_apy_pct",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_liquidity",
+          "label": "AQUSDC Earn total liquidity",
+          "value": "6995637323500000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_liquidity",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_liquidity_human",
+          "label": "AQUSDC Earn total liquidity",
+          "value": "6995.637323500000000000",
+          "unit": "AQUSDC",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_liquidity_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_borrows",
+          "label": "AQUSDC Earn total borrows",
+          "value": "6288673605028404449055",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_borrows",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_borrows_human",
+          "label": "AQUSDC Earn total borrows",
+          "value": "6288.673605028404449055",
+          "unit": "AQUSDC",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_borrows_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_assets",
+          "label": "AQUSDC Earn total assets",
+          "value": "13284310928528404449055",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_assets",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:total_assets_human",
+          "label": "AQUSDC Earn total assets",
+          "value": "13284.310928528404449055",
+          "unit": "AQUSDC",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "total_assets_human",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6:origination_fee",
+          "label": "AQUSDC Earn origination fee",
+          "value": "10000000000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e6",
+          "sourcePath": "origination_fee",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e8:utilization_pct",
+          "label": "SOUSDC Earn utilization",
+          "value": "11.191400",
+          "unit": "%",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "utilization_pct",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:borrow_apr_pct",
+          "label": "SOUSDC Earn borrow APR",
+          "value": "3.917006925767006400",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "borrow_apr_pct",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:supply_apr_pct",
+          "label": "SOUSDC Earn supply APR",
+          "value": "0.438367",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "supply_apr_pct",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:supply_apy_pct",
+          "label": "SOUSDC Earn supply APY",
+          "value": "0.438367",
+          "unit": "% APR",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "supply_apy_pct",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_liquidity",
+          "label": "SOUSDC Earn total liquidity",
+          "value": "85462769374800000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_liquidity",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_liquidity_human",
+          "label": "SOUSDC Earn total liquidity",
+          "value": "85462.769374800000000000",
+          "unit": "SOUSDC",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_liquidity_human",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_borrows",
+          "label": "SOUSDC Earn total borrows",
+          "value": "10769820613623923743252",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_borrows",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_borrows_human",
+          "label": "SOUSDC Earn total borrows",
+          "value": "10769.820613623923743252",
+          "unit": "SOUSDC",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_borrows_human",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_assets",
+          "label": "SOUSDC Earn total assets",
+          "value": "96232589988423923743252",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_assets",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:total_assets_human",
+          "label": "SOUSDC Earn total assets",
+          "value": "96232.589988423923743252",
+          "unit": "SOUSDC",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "total_assets_human",
+          "readAt": 1789283660464
+        },
+        {
+          "id": "e8:origination_fee",
+          "label": "SOUSDC Earn origination fee",
+          "value": "10000000000000000",
+          "unit": "",
+          "venue": "earn",
+          "evidenceId": "e8",
+          "sourcePath": "origination_fee",
+          "readAt": 1789283660464
+        }
+      ],
+      "capacity": null,
+      "candidates": null,
+      "rateComparisons": [
+        {
+          "asset": "BLUSDC",
+          "earnSupplyApr": "29.081285",
+          "blendSupplyApr": "0.9057",
+          "marginBorrowApr": "32.4689314337596656",
+          "spreadApr": "-31.5632314337596656",
+          "verdict": "cost_exceeds_supply",
+          "evidenceIds": [
+            "e5",
+            "e1"
+          ],
+          "earnRateUnit": "APY",
+          "blendRateUnit": "APR"
+        },
+        {
+          "asset": "AQUSDC",
+          "earnSupplyApr": "7.843466",
+          "blendSupplyApr": null,
+          "marginBorrowApr": "16.5686859761597496",
+          "spreadApr": null,
+          "verdict": "earn_only",
+          "evidenceIds": [
+            "e6"
+          ],
+          "earnRateUnit": "APY",
+          "blendRateUnit": "APR"
+        },
+        {
+          "asset": "SOUSDC",
+          "earnSupplyApr": "0.438367",
+          "blendSupplyApr": null,
+          "marginBorrowApr": "3.9170069257670064",
+          "spreadApr": null,
+          "verdict": "earn_only",
+          "evidenceIds": [
+            "e8"
+          ],
+          "earnRateUnit": "APY",
+          "blendRateUnit": "APR"
+        }
+      ],
+      "checks": [
+        {
+          "id": "e1",
+          "label": "blend markets",
+          "status": "ok",
+          "readAt": 1789283653979
+        },
+        {
+          "id": "e2",
+          "label": "aquarius markets",
+          "status": "ok",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e3",
+          "label": "wallet balances",
+          "status": "ok",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e4",
+          "label": "earn market",
+          "status": "ok",
+          "readAt": 1789283653980
+        },
+        {
+          "id": "e5",
+          "label": "earn market",
+          "status": "ok",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e6",
+          "label": "earn market",
+          "status": "ok",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e7",
+          "label": "earn market",
+          "status": "error",
+          "readAt": 1789283653981
+        },
+        {
+          "id": "e8",
+          "label": "earn market",
+          "status": "ok",
+          "readAt": 1789283660464
+        }
+      ],
+      "warnings": [
+        "aquarius markets: some entries were unavailable.",
+        "Aquarius pools were discovered; executable quotes and net returns have not been evaluated.",
+        "wallet balances: some entries were unavailable.",
+        "earn market: data was unavailable. No value was assumed."
+      ],
+      "scope": {
+        "wallet": "GD4BQRQPYLVM7YS57V4USR265UFZFEXIVDJJBIK3BAFQJ3F6SCA5NPDH",
+        "smartAccount": "CBOQAN5NFII4P5HD73M2IRSFYZSXC5XC76FQWQ5JU7LJAO66TFFPG5XY",
+        "network": "testnet"
+      },
+      "continuation": "[redacted]",
+      "executionAllowed": false,
+      "elapsedMs": 25015
+    }
+  ],
+  "after": {
+    "elapsedMs": 11,
+    "data": {
+      "health": {
+        "status": "ok",
+        "llm_provider": "vertex",
+        "mcp_mode": "live",
+        "templates": 14,
+        "in_process": true,
+        "execution_mode": "mcp+auto-sign",
+        "vertex_auth": "service_account",
+        "copilot_planner": "investigation",
+        "research_gate": "ok",
+        "brains_served": {
+          "investigation": 5,
+          "keyword_router": 0,
+          "copilot_shim": 0
+        }
+      }
+    }
+  }
+}

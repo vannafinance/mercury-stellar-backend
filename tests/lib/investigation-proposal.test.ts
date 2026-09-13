@@ -93,7 +93,7 @@ function evidenceObservations(): Observation[] {
 function continuation(capturedAt = NOW) {
   const codec = researchCodec(SECRET, SERVER, () => NOW);
   const evidence = compactResearchEvidence(evidenceObservations(), CAPACITY, capturedAt);
-  evidence.allowedCandidateIds = ["borrow_supply_BLUSDC", "lend_idle_BLUSDC"];
+  evidence.allowedCandidateIds = ["borrow_supply_blusdc", "lend_idle_blusdc"];
   return codec.seal(SCOPE, ["Keep HF above 1.3. You can take new loans."], null, evidence);
 }
 
@@ -110,7 +110,7 @@ describe("proposeWorkflow evidence reuse", () => {
   it("compiles from sealed evidence without a second market or snapshot read", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
     const view = await proposeWorkflow({
-      continuation: continuation(), candidateId: "borrow_supply_BLUSDC",
+      continuation: continuation(), candidateId: "borrow_supply_blusdc",
       subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
       mcp, signal: new AbortController().signal, now: NOW,
     });
@@ -125,7 +125,7 @@ describe("proposeWorkflow evidence reuse", () => {
   it("prepares an Earn idle plan from the same sealed bundle", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("MCP should not be called when evidence is fresh"); }) };
     const view = await proposeWorkflow({
-      continuation: continuation(), candidateId: "lend_idle_BLUSDC",
+      continuation: continuation(), candidateId: "lend_idle_blusdc",
       subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
       mcp, signal: new AbortController().signal, now: NOW,
     });
@@ -148,7 +148,7 @@ describe("proposeWorkflow evidence reuse", () => {
       }),
     };
     const view = await proposeWorkflow({
-      continuation: continuation(NOW - 61_000), candidateId: "borrow_supply_BLUSDC",
+      continuation: continuation(NOW - 61_000), candidateId: "borrow_supply_blusdc",
       subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
       mcp, signal: new AbortController().signal, now: NOW,
     });

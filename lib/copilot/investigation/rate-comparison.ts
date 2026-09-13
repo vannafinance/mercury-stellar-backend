@@ -13,6 +13,13 @@ export interface RateComparison {
   spreadApr: string | null;
   verdict: "cost_exceeds_supply" | "no_spread" | "positive_before_costs" | "earn_only";
   evidenceIds: string[];
+  /**
+   * Label of the Earn field we ranked on. Earn MCP sets supply_apy_pct as an
+   * alias of simple APR (no compounding) — same number the Earn page calls APY.
+   */
+  earnRateUnit?: "APR" | "APY";
+  /** Blend ranking uses supply_apr_pct (simple). Blend supply_apy_pct is weekly-compounded and a different number. */
+  blendRateUnit?: "APR" | "APY";
 }
 
 const RATE_ASSETS: readonly RateAsset[] = ["XLM", "BLUSDC", "AQUSDC", "SOUSDC"];
@@ -68,23 +75,31 @@ export function compareObservedRates(observations: readonly Observation[], now: 
     if (blend.length > 1 && blendRows.length !== 1) continue;
     const earnUnique = earnRows;
     const blendUnique = blendRows;
-    const earnSupply = earnUnique.length === 1 ? rate(earnUnique[0].data?.supply_apr_pct ?? earnUnique[0].data?.supply_apy_pct) : null;
+    const earnSupplyKey = earnUnique.length === 1
+      ? (earnUnique[0].data?.supply_apy_pct != null ? "supply_apy_pct" : "supply_apr_pct")
+      : null;
+    const earnSupply = earnUnique.length === 1 ? rate(earnUnique[0].data?.[earnSupplyKey ?? ""] ?? earnUnique[0].data?.supply_apr_pct ?? earnUnique[0].data?.supply_apy_pct) : null;
     const earnBorrow = earnUnique.length === 1 ? rate(earnUnique[0].data?.borrow_apr_pct) : null;
     const blendSupply = blendUnique.length === 1 ? rate(blendUnique[0].row.supply_apr_pct) : null;
+    const earnRateUnit: RateComparison["earnRateUnit"] = earnSupplyKey === "supply_apy_pct" ? "APY" : "APR";
+    const blendRateUnit: RateComparison["blendRateUnit"] = "APR";
     if (blendSymbol) {
-      // Blend-listed tokens keep the old gate: both venues must be uniquely readable.
-      if (earnUnique.length !== 1 || blendUnique.length !== 1 || blendSupply === null || earnBorrow === null) continue;
-      const spread = blendSupply - earnBorrow;
-      results.push({
-        asset,
-        earnSupplyApr: earnSupply === null ? null : formatWad(earnSupply),
-        blendSupplyApr: formatWad(blendSupply),
-        marginBorrowApr: formatWad(earnBorrow),
-        spreadApr: formatWad(spread),
-        verdict: spread < BigInt(0) ? "cost_exceeds_supply" : spread === BigInt(0) ? "no_spread" : "positive_before_costs",
-        evidenceIds: [earnUnique[0].id, blendUnique[0].observation.id],
-      });
-      continue;
+      // Carry ranking needs both venues. Earn ranking does not: a missing Blend
+      // read must not hide an Earn pool the account can actually fund.
+      if (earnUnique.length === 1 && blendUnique.length === 1 && blendSupply !== null && earnBorrow !== null) {
+        const spread = blendSupply - earnBorrow;
+        results.push({
+          asset,
+          earnSupplyApr: earnSupply === null ? null : formatWad(earnSupply),
+          blendSupplyApr: formatWad(blendSupply),
+          marginBorrowApr: formatWad(earnBorrow),
+          spreadApr: formatWad(spread),
+          verdict: spread < BigInt(0) ? "cost_exceeds_supply" : spread === BigInt(0) ? "no_spread" : "positive_before_costs",
+          evidenceIds: [earnUnique[0].id, blendUnique[0].observation.id],
+          earnRateUnit, blendRateUnit,
+        });
+        continue;
+      }
     }
     // AQUSDC / SOUSDC: Earn pool only. Never attach Blend's USDC reserve.
     if (earnUnique.length !== 1 || earnSupply === null) continue;
@@ -96,6 +111,7 @@ export function compareObservedRates(observations: readonly Observation[], now: 
       spreadApr: null,
       verdict: "earn_only",
       evidenceIds: [earnUnique[0].id],
+      earnRateUnit, blendRateUnit,
     });
   }
   return results;

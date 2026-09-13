@@ -5,6 +5,8 @@
  * Production defaults for this app: Vertex (gemini-3.7-flash) + live MCP.
  */
 
+import { LIQUIDATION_THRESHOLD } from "@/lib/margin-health";
+
 function env(key: string, fallback = ""): string {
   return (process.env[key] ?? fallback).trim();
 }
@@ -242,9 +244,12 @@ export const copilotConfig = {
    * Local risk env vars are NO LONGER enforced by the copilot.
    * Health factor, leverage, and spend caps are enforced by the MCP server
    * and the Sign Service auto-sign policy. Kept as optional informational defaults only.
+   *
+   * Default is the on-chain gate (1.1). There is no extra 1.3 client buffer.
+   * A user-stated floor ("keep HF above 1.5") is still honored at the call site.
    */
   get minHealthFactor(): number {
-    return envFloat("MIN_HEALTH_FACTOR", 1.3);
+    return envFloat("MIN_HEALTH_FACTOR", LIQUIDATION_THRESHOLD);
   },
   get maxLeverage(): number {
     return envFloat("MAX_LEVERAGE", 10);
