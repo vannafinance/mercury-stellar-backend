@@ -124,6 +124,7 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 | E3 | deposit usdc into farm | **WORKS, says so** — Blend is the only executable farm venue today, so it resolves to Blend and states that LP isn't executable; once LP ops land: CLARIFY Blend vs LP | venue rule |
 | E4 | supply 300 xlm to blend from my collateral | **WORKS** — supply_blend of posted XLM (no deposit leg) | supply from posted balance — currently needs a preceding deposit/borrow leg; record |
 | E5 | take my xlm out of blend | **REFUSED-CORRECTLY** — "Blend withdraw isn't an operation I can execute yet"; Farm page named | 🟡 `blend_withdraw` |
+| E5b | Remove 10k XLM liquidity from Blend pool. ★ | **REFUSED-CORRECTLY / UX DEADLOCK** — accurately parsed venue (Blend) and asset (XLM), refused unexecutable write, but deadlocked on `[Start over]` without Farm page link | 🟡 `blend_withdraw`, UX navigation |
 | E6 | what am I earning in blend | **WORKS** — position + reserve APY | reads |
 | E7 | is blend xlm really paying 400 percent | **WORKS / ANSWER** — APY vs APR, utilization, the plausibility rule; says testnet | rate explanation |
 
