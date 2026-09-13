@@ -235,13 +235,14 @@ export function wireSymbol(asset: string): string {
 export function tokensFromUsd(
   usd: string,
   price: bigint,
+  decimals = 6,
 ): { ok: true; tokens: string } | { ok: false; reason: "unpriceable_amount" | "zero_amount" } {
   let tokens: bigint;
   try {
     tokens = mulDown(decimalWad(usd), WAD, price);
-    // Supported protocol tokens use at least six decimals; the live risk validator
-    // independently checks actual token decimals before approving or building a write.
-    const quantum = BigInt(10) ** BigInt(12);
+    // Cut to the token's precision when the caller read it; the fixed shapes' legacy
+    // default of six places is re-checked by the live risk validator before any write.
+    const quantum = BigInt(10) ** BigInt(18 - Math.min(18, Math.max(0, decimals)));
     tokens = tokens / quantum * quantum;
   } catch {
     return { ok: false, reason: "unpriceable_amount" };

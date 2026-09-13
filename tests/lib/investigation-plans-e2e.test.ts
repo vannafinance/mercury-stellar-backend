@@ -75,7 +75,7 @@ const POSITION = {
 /** The 13 Sep account, recorded. */
 const mcp = {
   call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
-    if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "10206.8356118", status: "ok" }, { symbol: "USDC", status: "not_resolvable", balance: null }, { symbol: "AQUSDC", balance: "0", status: "ok" }], fee_reserve_xlm: "0.5" };
+    if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "XLM", balance: "10206.8356118", status: "ok" }, { symbol: "XLM_SAC", balance: "10206.8356118", decimals: 7, status: "ok" }, { symbol: "USDC", status: "not_resolvable", balance: null }, { symbol: "AQUSDC", balance: "0", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" };
     if (tool === "vanna_get_price") return { price_usd: String(args.symbol).includes("USDC") ? "1" : "0.18" };
     if (tool === "vanna_get_pool_stats") return String(args.symbol) === "XLM"
       ? { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" }

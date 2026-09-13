@@ -46,6 +46,8 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
     if (fresh(capability, asset)) return;
     wanted.set(`${capability}:${asset ?? ""}`, { capability, args: asset ? { asset } : {} });
   };
+  // The wallet read states every protocol token's decimals; every emitted amount is cut to them.
+  if (plans.some((plan) => plan.legs.length)) want("wallet_balances");
   for (const plan of plans) {
     for (const leg of plan.legs) {
       want("asset_price", leg.asset);

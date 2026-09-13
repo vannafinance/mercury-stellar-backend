@@ -32,10 +32,12 @@ const obs = (id: string, capability: string, data: Record<string, unknown>, args
 /** The 13 Sep account, as read: 10,206 idle XLM, no idle USDC-family, testnet Blend XLM at 168.6% APR. */
 const OBSERVATIONS: Observation[] = [
   obs("e1", "wallet_balances", { assets: [
+    // As the MCP reports them: every SAC line carries the contract's decimals; XLM_SAC speaks for native XLM.
     { symbol: "XLM", balance: "10206.8356118", status: "ok" },
     { symbol: "USDC", status: "not_resolvable", balance: null },
-    { symbol: "AQUSDC", balance: "0.0000000", status: "ok" },
-    { symbol: "BLUSDC", balance: "0.0000000", status: "ok" },
+    { symbol: "XLM_SAC", balance: "10206.8356118", decimals: 7, status: "ok" },
+    { symbol: "AQUSDC", balance: "0.0000000", decimals: 7, status: "ok" },
+    { symbol: "BLUSDC", balance: "0.0000000", decimals: 7, status: "ok" },
   ], fee_reserve_xlm: "0.5" }),
   obs("e2", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
   obs("e3", "asset_price", { price_usd: "1" }, { asset: "BLUSDC" }),
@@ -252,7 +254,7 @@ describe("resolvePlans — negative carry and spendable balance", () => {
     const observations = OBSERVATIONS.map((o) => o.id !== "e1" ? o : {
       ...o, data: { ...o.data, assets: [
         // Horizon balance 10,206.84; chain minimum 3.5 + fee 0.5 → the MCP says 10,202.84 can move.
-        { symbol: "XLM", balance: "10206.8356118", spendable: "10202.8356118", min_balance: "3.5", status: "ok" },
+        { symbol: "XLM", balance: "10206.8356118", spendable: "10202.8356118", min_balance: "3.5", decimals: 7, status: "ok" },
       ] },
     });
     const { candidates } = resolvePlans([plan("Deposit", [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }])], ctx({ observations }));
@@ -299,7 +301,7 @@ describe("resolvePlans — redeem and withdraw", () => {
     ...OBSERVATIONS,
     obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
     // 4,918.27 vTokens redeem for 5,000.79 AQUSDC — the 13 Sep position.
-    obs("e8", "earn_position", { symbol: "AQUSDC", vtoken_symbol: "VAQUSDC", human: "4918.2651397", redeemable_human: "5000.786863027758031020" }, { asset: "AQUSDC" }),
+    obs("e8", "earn_position", { symbol: "AQUSDC", vtoken_symbol: "VAQUSDC", decimals: 7, human: "4918.2651397", redeemable_human: "5000.786863027758031020" }, { asset: "AQUSDC" }),
     obs("e9", "account_collateral", { collateral: [
       { symbol: "XLM", balance: "720", value_usd: "129.38" },
       { symbol: "AQ_XLM_USDC", balance: "0", balance_untrusted: true },
@@ -370,5 +372,16 @@ describe("resolvePlans — redeem and withdraw", () => {
   it("names what is missing when the position was not read", () => {
     const { rejected } = resolvePlans([plan("Bring AqUSDC", [{ op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }));
     expect(rejected[0].reason).toBe("no AQUSDC position in Earn was read this investigation");
+  });
+});
+
+describe("resolvePlans — precision comes from the protocol", () => {
+  it("refuses to emit an amount for a token whose precision no read stated, rather than guess", () => {
+    const noDecimals = OBSERVATIONS.map((o) => o.id !== "e1" ? o : { ...o, data: { assets: [{ symbol: "XLM", balance: "10206.8356118", status: "ok" }], fee_reserve_xlm: "0.5" } });
+    const { rejected } = resolvePlans([plan("Lever", [
+      { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ])], ctx({ observations: noDecimals }));
+    expect(rejected[0].reason).toBe("the on-chain precision of XLM was not read this investigation");
   });
 });

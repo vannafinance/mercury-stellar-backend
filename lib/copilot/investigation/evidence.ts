@@ -155,6 +155,7 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
     return {
       ...(data.symbol !== undefined ? { symbol: data.symbol } : {}),
       ...(data.vtoken_symbol !== undefined ? { vtoken_symbol: data.vtoken_symbol } : {}),
+      ...(data.decimals !== undefined ? { decimals: data.decimals } : {}),
       ...(data.human !== undefined ? { human: data.human } : {}),
       ...(data.redeemable_human !== undefined ? { redeemable_human: data.redeemable_human } : {}),
     };
@@ -165,6 +166,7 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       return [{
         symbol: row.symbol,
         balance: row.balance,
+        ...(row.decimals !== undefined ? { decimals: row.decimals } : {}),
         ...(row.spendable !== undefined ? { spendable: row.spendable } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),
         ...(row.error !== undefined ? { error: row.error } : {}),

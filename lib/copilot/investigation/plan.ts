@@ -25,6 +25,7 @@ import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
+import { decimalsFrom, truncateToDecimals } from "./precision";
 import type { InvestigationScope, Observation, PlanLeg, ProposedPlan } from "./types";
 
 export interface PlanContext {
@@ -135,6 +136,17 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   const prices = freshPrices(ctx.observations, ctx.now);
   const evidence = new Set(ctx.observations.filter((o) => o.status === "ok").map((o) => o.id));
   const collateralAllowed = liveCollateralAllowed(ctx.observations);
+  /**
+   * Every amount this plan emits is cut to the precision the protocol reported for that
+   * token. A token whose precision no read stated is a rejection, not a guess —
+   * `readsForPlans` asks for the wallet read so this is rare.
+   */
+  const decimals = decimalsFrom(ctx.observations);
+  const precise = (amount: string, symbol: string, name: string): string => {
+    const places = decimals.get(symbol);
+    if (places === undefined) throw new Reject(name, `the on-chain precision of ${symbol} was not read this investigation`);
+    return truncateToDecimals(amount, places);
+  };
 
   /**
    * Pass 1 — resolve what each leg is sized FROM. Margin legs go to the sizer as USD (or
@@ -210,16 +222,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
         if (!position) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
         if (decimalWad(position.vtokens) <= ZERO) throw new Reject(name, `you hold no ${leg.asset} in Earn`);
-        const usd = formatWad(mulDown(decimalWad(position.underlying), price.price, WAD));
-        drafts.push({ leg, name, usd, tokens: position.vtokens, produces: position.underlying, heldTokens: position.underlying });
+        const vtokens = precise(position.vtokens, position.vtokenSymbol ?? leg.asset, name);
+        const underlying = precise(position.underlying, leg.asset, name);
+        const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
+        drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
         continue;
       }
       const rowsOf = leg.op === "withdraw_collateral" ? ["account_collateral", ["collateral", "positions", "balances"]] as const
         : leg.op === "repay" ? ["account_debt", ["debt", "borrows", "positions"]] as const : null;
       if (!rowsOf) throw new Reject(name, "all_position applies to a redeem, a withdraw or a repay");
-      const balance = positionRowBalance(ctx.observations, rowsOf[0], rowsOf[1], def.marginSymbol!, def.id, ctx.now);
-      if (balance === null) throw new Reject(name, `no ${leg.asset} ${leg.op === "repay" ? "debt" : "posted collateral"} was read this investigation`);
-      if (decimalWad(balance) <= ZERO) throw new Reject(name, leg.op === "repay" ? `you owe no ${leg.asset}` : `no ${leg.asset} is posted as collateral`);
+      const raw = positionRowBalance(ctx.observations, rowsOf[0], rowsOf[1], def.marginSymbol!, def.id, ctx.now);
+      if (raw === null) throw new Reject(name, `no ${leg.asset} ${leg.op === "repay" ? "debt" : "posted collateral"} was read this investigation`);
+      if (decimalWad(raw) <= ZERO) throw new Reject(name, leg.op === "repay" ? `you owe no ${leg.asset}` : `no ${leg.asset} is posted as collateral`);
+      const balance = precise(raw, leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(balance), price.price, WAD));
       drafts.push({ leg, name, usd, tokens: balance, produces: balance, heldTokens: null });
       continue;
@@ -248,7 +263,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (!position || decimalWad(position.underlying) <= ZERO) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
       const underlying = decimalWad(sizing.amount);
       if (underlying > decimalWad(position.underlying)) throw new Reject(name, `only ${position.underlying} ${leg.asset} is redeemable from Earn`);
-      const vtokens = onChainAmount(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), undefined);
+      const vtokens = precise(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), position.vtokenSymbol ?? leg.asset, name);
       const usd = formatWad(mulDown(underlying, price.price, WAD));
       drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null });
       continue;
@@ -301,7 +316,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     marginDrafts.forEach((draft, i) => {
       if (draft.usd === "max") {
         draft.usd = sized[i].amountUsd;
-        const tokens = tokensFromUsd(sized[i].amountUsd, prices.get(draft.leg.asset)!);
+        const tokens = tokensFromUsd(sized[i].amountUsd, prices.get(draft.leg.asset)!, decimals.get(draft.leg.asset) ?? 6);
+        if (decimals.get(draft.leg.asset) === undefined) throw new Reject(draft.name, `the on-chain precision of ${draft.leg.asset} was not read this investigation`);
         if (!tokens.ok) throw new Reject(draft.name, "the sized amount rounds to nothing in token units");
         draft.tokens = tokens.tokens;
         draft.produces = tokens.tokens;
@@ -449,27 +465,13 @@ function shortfallAdvice(
 }
 
 /** The user's Earn position for an asset, from the `earn_position` read: vTokens held and what they redeem for. */
-function earnPositionOf(observations: readonly Observation[], asset: string, now: number): { vtokens: string; underlying: string } | null {
+function earnPositionOf(observations: readonly Observation[], asset: string, now: number): { vtokens: string; underlying: string; vtokenSymbol: string | null } | null {
   const read = [...observations].reverse().find((o) => o.capability === "earn_position" && o.status === "ok" && o.data && o.args.asset === asset && now - o.observedAt <= 60_000);
   const vtokens = read?.data?.human, underlying = read?.data?.redeemable_human;
   if (typeof vtokens !== "string" || typeof underlying !== "string") return null;
   try { decimalWad(vtokens); decimalWad(underlying); } catch { return null; }
-  // The read states the token's precision; the redeemable figure it also states is WAD (18 places).
-  return { vtokens: onChainAmount(vtokens, read?.data?.decimals), underlying: onChainAmount(underlying, read?.data?.decimals) };
-}
-
-/**
- * An amount a transaction can carry. Reads report some figures at WAD precision
- * (`redeemable_human: 5000.948562526353068375`, posted collateral balances); a Stellar
- * asset carries at most 7 decimal places, and the approval-time gate refuses anything
- * finer (`amount_precision`, seen 13 Sep on the first redeem → deposit). Truncated — never
- * rounded up — to the precision the read states, else to Stellar's 7.
- */
-function onChainAmount(amount: string, decimals: unknown): string {
-  const places = Number.isInteger(Number(decimals)) && Number(decimals) >= 0 && Number(decimals) <= 18 ? Number(decimals) : 7;
-  const [whole, fraction = ""] = amount.split(".");
-  const kept = fraction.slice(0, places).replace(/0+$/, "");
-  return kept ? `${whole}.${kept}` : whole;
+  // Raw figures: `redeemable_human` is WAD (18 places); the caller cuts to the precision the reads state.
+  return { vtokens, underlying, vtokenSymbol: typeof read?.data?.vtoken_symbol === "string" ? read.data.vtoken_symbol : null };
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */
@@ -483,7 +485,7 @@ function positionRowBalance(observations: readonly Observation[], capability: st
       if (!isRecord(row) || (row.symbol !== symbol && row.symbol !== id) || row.balance_untrusted === true) continue;
       const balance = row.balance ?? row.amount_human ?? row.amount;
       if (typeof balance !== "string" && typeof balance !== "number") continue;
-      try { decimalWad(String(balance)); return onChainAmount(String(balance), row.decimals); } catch { return null; }
+      try { decimalWad(String(balance)); return String(balance); } catch { return null; }
     }
   }
   return null;
