@@ -89,6 +89,21 @@ export interface ProposedPlan {
   rationale: string;
   evidenceIds: string[];
   legs: PlanLeg[];
+  /**
+   * The venue the user named, quoted verbatim from their own message.
+   *
+   * A venue the user names is a CONSTRAINT, not a hint. On 13 Sep "invest into earn
+   * pool" was composed as a Blend supply because the registry's named-venue rule only
+   * fixed which USDC to use, leaving the venue itself open — so the highest rate won and
+   * 19,353 XLM went somewhere the user had not asked for. The quote is anchored the same
+   * way an amount or a floor is (`anchoredGoalFloor`): the model locates the phrase, the
+   * user's own text vouches for it, and a plan whose legs act on another venue is
+   * rejected with a reason rather than silently substituted.
+   *
+   * Absent when the user named no venue — then the choice really is the model's, and the
+   * card offers the alternatives instead of committing.
+   */
+  venueQuote?: string;
 }
 
 export interface ReadRequest {

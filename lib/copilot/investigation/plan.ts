@@ -19,6 +19,7 @@ import { resolveAssetDef } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { WALLET_OPS, type ProposalStep } from "../workflow/types";
 import { isRecord } from "./decision";
+import { OP_VENUE } from "./flash";
 import { candidateId } from "./candidate-id";
 import { freshPrices, idleWalletHoldingsFrom, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
@@ -142,6 +143,33 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * `readsForPlans` asks for the wallet read so this is rare.
    */
   const decimals = decimalsFrom(ctx.observations);
+
+  /**
+   * A venue the user named binds the plan to it. The model reports the phrase; the user's
+   * own text vouches for it, exactly as `anchoredGoalFloor` vouches for a floor — an
+   * unanchored quote is discarded rather than trusted, so the model cannot invent a
+   * constraint any more than it can invent an amount.
+   *
+   * When the quote holds, a leg acting anywhere else is a rejection with a readable
+   * reason. On 13 Sep "invest into earn pool" was composed as a Blend supply because a
+   * named venue only fixed the USDC variant: 19,353 XLM went to the venue with the better
+   * rate rather than the one that was asked for. A better rate is a finding, not a
+   * licence to substitute.
+   */
+  const namedVenue = (() => {
+    const quote = plan.venueQuote?.trim();
+    if (!quote || !ctx.messages.some((message) => message.includes(quote))) return null;
+    const said = quote.toLowerCase();
+    const hits = [...new Set(Object.values(OP_VENUE))].filter((venue) => said.includes(venue));
+    return hits.length === 1 ? hits[0] : null;
+  })();
+  if (namedVenue) {
+    const stray = plan.legs.find((leg) => OP_VENUE[leg.op] !== namedVenue && OP_VENUE[leg.op] !== "margin");
+    if (stray) {
+      throw new Reject(stray.op, `you asked for ${namedVenue}, and this shape acts on ${OP_VENUE[stray.op]} instead`);
+    }
+  }
+
   const precise = (amount: string, symbol: string, name: string): string => {
     const places = decimals.get(symbol);
     if (places === undefined) throw new Reject(name, `the on-chain precision of ${symbol} was not read this investigation`);

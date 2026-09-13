@@ -28,7 +28,7 @@ const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
 
 /** The venue each op acts on. `Record<WorkflowOp, …>` so a new op cannot ship without saying where it goes. */
-const OP_VENUE: Record<WorkflowOp, Venue> = {
+export const OP_VENUE: Record<WorkflowOp, Venue> = {
   lend: "earn",
   redeem: "earn",
   deposit_collateral: "margin",
@@ -66,8 +66,9 @@ Permission to borrow is optional, not an instruction to borrow. A generic strate
 not specify a budget or optimization objective. Read available facts before asking for facts
 you can obtain.
 CHOOSE, do not ask, whenever evidence can decide. Venues and what each takes, from the protocol
-registry: ${VENUE_TABLE_TEXT}. A venue the user names fixes the USDC variant (${VENUE_USDC_TEXT}) —
-never ask which USDC. Where one venue takes several variants (earn, margin) choose from held balances
+registry: ${VENUE_TABLE_TEXT}. A venue the user names BINDS the plan to that venue and fixes the USDC
+variant (${VENUE_USDC_TEXT}) — never ask which USDC, and never move the plan to a venue they did not
+name because its rate is better: report the better rate as a finding and let them choose. Where one venue takes several variants (earn, margin) choose from held balances
 and rates in code, and state the choice. Executable through the operations below: ${EXECUTABLE_VENUES_TEXT};
 not executable here: ${NON_EXECUTABLE_VENUES_TEXT} — when the user asks for one of those, say so as a
 limitation and never substitute another venue silently. When the user names NO venue and more than one
@@ -137,7 +138,11 @@ Tokens sitting in Earn come back to the wallet with redeem (all_position) and ca
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays
 when the supply rate you read exceeds the borrow rate you read for the asset you borrow — compare them per asset and
 do not propose one that loses money by construction; the server rules such a shape out with the rates. Propose the
-non-borrowing shape whenever one exists, beside any levered one. Give each plan a short title and a rationale that cites the observation
+A venue the user NAMES is a constraint, not a preference. When their message names one of ${EXECUTABLE_VENUES_TEXT} (by that
+word or the product's own name for it), set plan.venueQuote to the exact substring they used, and build every leg of that plan
+on that venue only. Do not move the plan to a different venue because its rate is better: say in findings that the other venue
+pays more and let them choose. Leave venueQuote out when they named none — then the venue is yours to pick.
+Give each plan a short title and a rationale that cites the observation
 ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
 the floor") is ONE plan whose first leg is literal — do not split it into goal.actions. If the user's goal needs an
 operation not in this list, say so in findings as a limitation — name the unsupported step — and still propose the

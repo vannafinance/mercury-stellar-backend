@@ -401,3 +401,58 @@ describe("resolvePlans — precision comes from the protocol", () => {
     expect(rejected[0].reason).toBe("the on-chain precision of XLM was not read this investigation");
   });
 });
+
+/**
+ * A venue the user NAMES is a constraint, not a hint.
+ *
+ * 13 Sep, signed in: *"invest into earn pool where i can get good returns?"* The registry
+ * rule said a named venue fixes the USDC variant and left the venue itself open, so the
+ * model compared every venue, found Blend XLM at 168% against Earn XLM at 5%, and composed
+ * a Blend supply. 19,353 XLM moved to a product the user had not asked for. A better rate
+ * is a finding; it is not permission to substitute.
+ *
+ * The quote is anchored the same way an amount or a floor is: the model locates the phrase,
+ * the user's own text vouches for it. An unanchored quote is discarded, so the model cannot
+ * invent a constraint any more than it can invent a number.
+ */
+describe("resolvePlans — a named venue binds the plan", () => {
+  const earnMessages = ["invest into earn pool where i can get good returns?"];
+
+  it("rejects a Blend shape when the user said earn, and names both venues in the reason", () => {
+    const { candidates, rejected } = resolvePlans([{
+      ...plan("Supply idle XLM to Blend", [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ]),
+      venueQuote: "earn pool",
+    }], ctx({ messages: earnMessages }));
+    expect(candidates).toEqual([]);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toContain("earn");
+    expect(rejected[0].reason).toContain("blend");
+  });
+
+  it("keeps an Earn shape when the user said earn", () => {
+    const { candidates, rejected } = resolvePlans([{
+      ...plan("Lend idle XLM into Vanna Earn", [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }]),
+      venueQuote: "earn pool",
+    }], ctx({ messages: earnMessages }));
+    expect(rejected).toEqual([]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].venue).toBe("earn");
+  });
+
+  /** The model cannot manufacture a constraint: a quote that is not in the user's text is ignored. */
+  it("ignores a venueQuote the user never typed", () => {
+    const { candidates, rejected } = resolvePlans([{
+      ...plan("Supply idle XLM to Blend", [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ]),
+      venueQuote: "earn pool",
+    }], ctx({ messages: ["put my idle XLM somewhere sensible"] }));
+    expect(rejected).toEqual([]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].venue).toBe("blend");
+  });
+});
