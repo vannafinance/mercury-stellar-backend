@@ -110,9 +110,8 @@ do not propose one that loses money by construction; the server rules such a sha
 non-borrowing shape whenever one exists, beside any levered one. Give each plan a short title and a rationale that cites the observation
 ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
 the floor") is ONE plan whose first leg is literal — do not split it into goal.actions. If the user's goal needs an
-operation not in this list (redeeming from Earn, withdrawing collateral, LP, swaps), say so in findings as a
-limitation — name the unsupported step — and still propose the best plan the list allows, never substituting
-silently.
+operation not in this list, say so in findings as a limitation — name the unsupported step — and still propose the
+best plan the list allows, never substituting silently.
 For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
 Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.
