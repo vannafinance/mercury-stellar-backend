@@ -61,6 +61,18 @@ describe("Flash research adapter", () => {
     }))).toBe("MEDIUM");
   });
 
+  it("tells the model about venues from the registry, not a hand-written list", async () => {
+    const { RESEARCH_SYSTEM } = await import("@/lib/copilot/investigation/flash");
+    const { venueTable, venueUsdc, lpPairs } = await import("@/lib/copilot/registry/assets");
+    for (const { venue, assets } of venueTable()) expect(RESEARCH_SYSTEM).toContain(`${venue} takes ${assets.join(", ")}`);
+    for (const { venue, usdc } of venueUsdc()) expect(RESEARCH_SYSTEM).toContain(`${venue} → ${usdc}`);
+    for (const { venue, tokens } of lpPairs()) expect(RESEARCH_SYSTEM).toContain(`${venue}: ${tokens.join(" + ")}`);
+    // A venue the user leaves open is their choice when several executable venues fit — not a rate pick.
+    expect(RESEARCH_SYSTEM).not.toMatch(/Venue selection is yours/);
+    expect(RESEARCH_SYSTEM).toMatch(/names NO venue and more than one\s+executable venue fits/);
+    expect(RESEARCH_SYSTEM).not.toMatch(/AQUSDC for Aquarius, SOUSDC for Soroswap/);
+  });
+
   it("rejects non-Flash configuration before provider or MCP calls", () => {
     vi.stubEnv("VERTEX_MODEL", "gemini-3.8-pro");
     expect(createFlashResearchModel).toThrow("Gemini Flash");

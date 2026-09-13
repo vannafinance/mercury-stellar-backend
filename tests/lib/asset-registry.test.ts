@@ -31,9 +31,11 @@ import {
   blendReserveSymbols,
   earnPoolSymbols,
   isDollarStable,
+  lpPairs,
   marginCollateralSymbols,
   resolveAsset,
   USDC_VARIANTS,
+  venueUsdc,
 } from "@/lib/copilot/registry/assets";
 
 describe("the registry agrees with the recorded chain reads", () => {
@@ -63,6 +65,19 @@ describe("the registry agrees with the recorded chain reads", () => {
         [],
       );
     }
+  });
+
+  it("pairs each LP venue with exactly the USDC its router's pool holds", () => {
+    const recorded = Object.entries(chainFacts.lpPools)
+      .filter(([venue]) => !venue.startsWith("_") && venue !== "recordedAt")
+      .map(([venue, pool]) => ({ venue, tokens: [...(pool as { tokens: string[] }).tokens].sort() }));
+    expect(lpPairs().map((p) => ({ venue: p.venue, tokens: [...p.tokens].sort() })).sort((a, b) => a.venue.localeCompare(b.venue)))
+      .toEqual(recorded.sort((a, b) => a.venue.localeCompare(b.venue)));
+  });
+
+  it("names the one USDC a venue takes, and stays silent where a venue takes several", () => {
+    // Blend's reserve is BLUSDC; each LP venue has its own; Earn and margin take all three and decide nothing.
+    expect(Object.fromEntries(venueUsdc().map((v) => [v.venue, v.usdc]))).toEqual({ blend: "BLUSDC", aquarius: "AQUSDC", soroswap: "SOUSDC" });
   });
 
   it("lists exactly the Blend reserves the pool reports", () => {

@@ -7,7 +7,7 @@ import { assertFlashModel } from "./flash-policy";
 import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
-import { ASSET_IDS } from "../registry/assets";
+import { ASSET_IDS, lpPairs, venueTable, venueUsdc, type Venue } from "../registry/assets";
 import { WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { PLAN_SIZINGS } from "./decision";
 
@@ -27,6 +27,31 @@ const OP_MEANING: Record<WorkflowOp, string> = {
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
 
+/** The venue each op acts on. `Record<WorkflowOp, …>` so a new op cannot ship without saying where it goes. */
+const OP_VENUE: Record<WorkflowOp, Venue> = {
+  lend: "earn",
+  redeem: "earn",
+  deposit_collateral: "margin",
+  withdraw_collateral: "margin",
+  borrow: "margin",
+  repay: "margin",
+  supply_blend: "blend",
+};
+const EXECUTABLE_VENUES = [...new Set(WORKFLOW_OPS.map((op) => OP_VENUE[op]))];
+/**
+ * What the model is told about venues comes from the registry, the same tables the
+ * evaluator sizes from — never a hand-written "AQUSDC for Aquarius". A venue the user
+ * names fixes the token; a venue the user leaves open is theirs to choose when more than
+ * one executable venue fits, because a lending reserve and an LP position are different
+ * products and a rate does not settle which one somebody wants.
+ */
+const VENUE_TABLE_TEXT = venueTable()
+  .map(({ venue, assets }) => `${venue} takes ${assets.join(", ")}${lpPairs().some((p) => p.venue === venue) ? " (an LP pool: XLM paired with that USDC)" : ""}`)
+  .join("; ");
+const VENUE_USDC_TEXT = venueUsdc().map(({ venue, usdc }) => `${venue} → ${usdc}`).join(", ");
+const EXECUTABLE_VENUES_TEXT = EXECUTABLE_VENUES.join(", ");
+const NON_EXECUTABLE_VENUES_TEXT = venueTable().map((v) => v.venue).filter((v) => !EXECUTABLE_VENUES.includes(v)).join(", ") || "none";
+
 export const RESEARCH_SYSTEM = `You investigate Vanna Finance user goals using live read capabilities.
 You are preparing research for a later deterministic strategy evaluator. You cannot execute,
 approve, sign, or declare any strategy safe. Never invent amounts or tools. For an explicit action with a literal user amount, call research_complete on the first turn with goal.actions and do not inspect markets or the account first — compilation and execution preflight verify funds. Findings for that handoff may use empty evidenceIds.
@@ -40,14 +65,19 @@ execution now, explain that this investigation surface cannot execute, instead o
 Permission to borrow is optional, not an instruction to borrow. A generic strategy request does
 not specify a budget or optimization objective. Read available facts before asking for facts
 you can obtain.
-CHOOSE, do not ask, whenever evidence can decide. Venue selection is yours: pick the venue
-whose read rate best serves the stated objective. USDC variants (BLUSDC, AQUSDC, SOUSDC) are
-ranked in code from held balances and rates — never ask which variant. Default how-much to
-the idle amount of the chosen variant and state it; do not ask. Slippage, pool pair, paired
-amounts and routing are yours too. Clarify ONLY a choice that no read can settle and that
-changes what would be executed — typically whether new borrowing is allowed, when the user
-has not said. Ask at most ONE closed question. Asking the user to pick a venue, a pair, a
-USDC variant, or a tolerance is a failure to decide, not diligence.
+CHOOSE, do not ask, whenever evidence can decide. Venues and what each takes, from the protocol
+registry: ${VENUE_TABLE_TEXT}. A venue the user names fixes the USDC variant (${VENUE_USDC_TEXT}) —
+never ask which USDC. Where one venue takes several variants (earn, margin) choose from held balances
+and rates in code, and state the choice. Executable through the operations below: ${EXECUTABLE_VENUES_TEXT};
+not executable here: ${NON_EXECUTABLE_VENUES_TEXT} — when the user asks for one of those, say so as a
+limitation and never substitute another venue silently. When the user names NO venue and more than one
+executable venue fits the request, that is the user's choice, not a rate comparison: ask ONE closed
+question naming those venues with the rates you read. When exactly one executable venue fits, use it and
+say so in findings. Default how-much to the idle amount of the chosen variant and state it; do not ask.
+Slippage, pool pair, paired amounts and routing are yours too. Otherwise clarify ONLY a choice that no
+read can settle and that changes what would be executed — typically whether new borrowing is allowed,
+when the user has not said. Ask at most ONE closed question. Asking which USDC, which pair, or what
+tolerance is a failure to decide, not diligence.
 Use only the read functions declared for this turn and their exact argument vocabularies.
 Never call a write, never pass a wallet or account address — identity is bound server-side.
 
@@ -60,8 +90,8 @@ Skip those reads when the user already named the operation, a literal amount, an
 Compare borrowing and non-borrowing approaches only if supported by evidence and user scope.
 Earn rates are not Blend rates; USDC variants are not interchangeable. A signing-status read
 is not permission to execute and does not establish whether this deployment permits writes.
-Aquarius and Soroswap liquidity is ALWAYS the pool's own pair — XLM plus that venue's USDC
-(AQUSDC for Aquarius, SOUSDC for Soroswap) — sized at the live reserve ratio, exactly as the
+LP liquidity is ALWAYS the pool's own pair — ${lpPairs().map((p) => `${p.venue}: ${p.tokens.join(" + ")}`).join(", ")} —
+sized at the live reserve ratio, exactly as the
 Farm add-liquidity form does: one side fills the other, and depositing one side alone is not
 a valid AMM add. That composition is a protocol fact, and the paired amount is DERIVED from
 the ratio at execution time, not chosen. Never ask the user which side to deposit, whether
