@@ -13,6 +13,7 @@ p4_repay = Path("docs/copilot/runs/margin-repay-loan-available-blusdc.png")
 p4_copilot = Path("docs/copilot/runs/fail-prompt-clear-debt-deposit-2xlm.png")
 p5_copilot = Path("docs/copilot/runs/fail-prompt-clear-all-my-debt.png")
 p6_copilot = Path("docs/copilot/runs/fail-prompt-use-margin-funds-repay-deposit-2xlm.png")
+p7_copilot = Path("docs/copilot/runs/refusal-blend-pool-remove-10k-xlm.png")
 
 with open(p1, "rb") as f:
     img1_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -32,6 +33,8 @@ with open(p5_copilot, "rb") as f:
     img5_c_b64 = base64.b64encode(f.read()).decode("utf-8")
 with open(p6_copilot, "rb") as f:
     img6_c_b64 = base64.b64encode(f.read()).decode("utf-8")
+with open(p7_copilot, "rb") as f:
+    img7_c_b64 = base64.b64encode(f.read()).decode("utf-8")
 
 DESKTOP_PDF = Path(r"C:/Users/akgam/Desktop/Failed_Prompt_Tests_Comprehensive_Report.pdf")
 
@@ -43,7 +46,7 @@ html = f"""<!DOCTYPE html>
 <style>
   @page {{
     size: A4;
-    margin: 12mm 14mm 12mm 14mm;
+    margin: 10mm 12mm 10mm 12mm;
   }}
   * {{
     box-sizing: border-box;
@@ -52,8 +55,8 @@ html = f"""<!DOCTYPE html>
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     color: #0f172a;
     background-color: #ffffff;
-    line-height: 1.42;
-    font-size: 11.5px;
+    line-height: 1.40;
+    font-size: 11.2px;
     margin: 0;
     padding: 0;
   }}
@@ -62,17 +65,17 @@ html = f"""<!DOCTYPE html>
     justify-content: space-between;
     align-items: flex-start;
     border-bottom: 2px solid #e2e8f0;
-    padding-bottom: 10px;
-    margin-bottom: 12px;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
   }}
   .logo-title {{
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 800;
     letter-spacing: -0.02em;
     color: #0f172a;
   }}
   .logo-subtitle {{
-    font-size: 10px;
+    font-size: 9.5px;
     color: #64748b;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -86,44 +89,44 @@ html = f"""<!DOCTYPE html>
     padding: 3px 8px;
     border-radius: 6px;
     font-weight: 800;
-    font-size: 10.5px;
+    font-size: 10px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }}
   .meta-grid {{
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
+    gap: 7px;
     background: #f8fafc;
     border: 1px solid #e2e8f0;
     border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 14px;
+    padding: 7px 9px;
+    margin-bottom: 10px;
   }}
   .meta-item {{
     display: flex;
     flex-direction: column;
   }}
   .meta-label {{
-    font-size: 8.5px;
+    font-size: 8px;
     font-weight: 700;
     color: #64748b;
     text-transform: uppercase;
   }}
   .meta-val {{
-    font-size: 10.5px;
+    font-size: 10px;
     font-weight: 600;
     color: #1e293b;
     font-family: 'JetBrains Mono', Consolas, monospace;
   }}
   .section-title {{
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 700;
     color: #0f172a;
     border-bottom: 1px solid #cbd5e1;
-    padding-bottom: 3px;
-    margin-top: 14px;
-    margin-bottom: 8px;
+    padding-bottom: 2px;
+    margin-top: 10px;
+    margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }}
@@ -131,18 +134,18 @@ html = f"""<!DOCTYPE html>
     background: #f1f5f9;
     border-left: 4px solid #3b82f6;
     border-radius: 0 6px 6px 0;
-    padding: 8px 12px;
-    margin-bottom: 10px;
+    padding: 7px 10px;
+    margin-bottom: 8px;
   }}
   .prompt-tag {{
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 800;
     color: #2563eb;
     text-transform: uppercase;
     margin-bottom: 2px;
   }}
   .prompt-text {{
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 700;
     color: #0f172a;
     font-family: 'JetBrains Mono', Consolas, monospace;
@@ -152,8 +155,8 @@ html = f"""<!DOCTYPE html>
     border-radius: 6px;
     overflow: hidden;
     background: #090d16;
-    padding: 5px;
-    margin-bottom: 4px;
+    padding: 4px;
+    margin-bottom: 3px;
     text-align: center;
   }}
   .screenshot-img {{
@@ -164,33 +167,33 @@ html = f"""<!DOCTYPE html>
     margin: 0 auto;
   }}
   .caption {{
-    font-size: 9.5px;
+    font-size: 9px;
     color: #64748b;
     text-align: center;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
     font-style: italic;
   }}
   table.data-table {{
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 12px;
-    font-size: 10.5px;
+    margin-bottom: 10px;
+    font-size: 10px;
     page-break-inside: avoid;
   }}
   table.data-table th {{
     background: #f1f5f9;
     color: #475569;
     text-align: left;
-    padding: 5px 7px;
+    padding: 4px 6px;
     font-weight: 700;
     border-bottom: 1px solid #cbd5e1;
     border-top: 1px solid #e2e8f0;
     text-transform: uppercase;
-    font-size: 9px;
+    font-size: 8.5px;
     letter-spacing: 0.03em;
   }}
   table.data-table td {{
-    padding: 5px 7px;
+    padding: 4px 6px;
     border-bottom: 1px solid #e2e8f0;
     vertical-align: top;
   }}
@@ -198,33 +201,33 @@ html = f"""<!DOCTYPE html>
     background: #fef2f2;
     color: #b91c1c;
     font-weight: 700;
-    padding: 1px 5px;
+    padding: 1px 4px;
     border-radius: 3px;
     border: 1px solid #fca5a5;
-    font-size: 9px;
+    font-size: 8.5px;
     display: inline-block;
   }}
   .pass-tag {{
     background: #f0fdf4;
     color: #15803d;
     font-weight: 700;
-    padding: 1px 5px;
+    padding: 1px 4px;
     border-radius: 3px;
     border: 1px solid #86efac;
-    font-size: 9px;
+    font-size: 8.5px;
     display: inline-block;
   }}
   .card {{
     background: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
+    padding: 7px 9px;
+    margin-bottom: 6px;
     page-break-inside: avoid;
   }}
   .card-title {{
     font-weight: 700;
-    font-size: 11px;
+    font-size: 10.5px;
     color: #1e293b;
     margin-bottom: 3px;
     display: flex;
@@ -235,30 +238,30 @@ html = f"""<!DOCTYPE html>
     border: 1px solid #fcd34d;
     border-left: 4px solid #f59e0b;
     border-radius: 0 6px 6px 0;
-    padding: 7px 9px;
-    margin-bottom: 10px;
-    font-size: 10.5px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    font-size: 10px;
     page-break-inside: avoid;
   }}
   .discrepancy-card {{
     background: #fef2f2;
     border: 1.5px solid #f87171;
     border-radius: 6px;
-    padding: 8px 12px;
-    margin-bottom: 10px;
+    padding: 7px 10px;
+    margin-bottom: 8px;
     page-break-inside: avoid;
   }}
   .math-formula {{
     background: #ffffff;
     border: 1px solid #fca5a5;
     border-radius: 5px;
-    padding: 6px 10px;
+    padding: 5px 8px;
     font-family: 'JetBrains Mono', Consolas, monospace;
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 700;
     color: #b91c1c;
     text-align: center;
-    margin: 5px 0;
+    margin: 4px 0;
   }}
   .page-break {{
     page-break-before: always;
@@ -268,23 +271,23 @@ html = f"""<!DOCTYPE html>
     padding: 1px 3px;
     border-radius: 3px;
     font-family: 'JetBrains Mono', Consolas, monospace;
-    font-size: 10.5px;
+    font-size: 10px;
     color: #0f172a;
   }}
   ul {{
-    margin: 3px 0 6px 14px;
+    margin: 2px 0 5px 12px;
     padding: 0;
   }}
   li {{
     margin-bottom: 2px;
   }}
   .footer-note {{
-    margin-top: 14px;
-    padding-top: 6px;
+    margin-top: 10px;
+    padding-top: 4px;
     border-top: 1px solid #e2e8f0;
     display: flex;
     justify-content: space-between;
-    font-size: 9.5px;
+    font-size: 9px;
     color: #94a3b8;
   }}
 </style>
@@ -295,10 +298,10 @@ html = f"""<!DOCTYPE html>
 <div class="header-bar">
   <div>
     <div class="logo-title">VANNA COPILOT ORCHESTRATOR</div>
-    <div class="logo-subtitle">Comprehensive Prompt Battery Audit Report · All 6 Incidents Unified</div>
+    <div class="logo-subtitle">Comprehensive Prompt Battery Audit Report · All 7 Incidents Unified</div>
   </div>
   <div>
-    <span class="badge-failed">STATUS: FAILED · 6 INCIDENTS AUDITED</span>
+    <span class="badge-failed">STATUS: AUDITED · 7 INCIDENTS INVESTIGATED</span>
   </div>
 </div>
 
@@ -321,15 +324,15 @@ html = f"""<!DOCTYPE html>
   </div>
 </div>
 
-<div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 6px 9px; margin-bottom: 8px;">
-  <div style="font-weight: 700; color: #1e40af; font-size: 10.5px; margin-bottom: 2px;">Executive Summary</div>
-  <div style="font-size: 10px;">
-    This unified audit report details six consecutive prompt test failures on the running <code>/copilot</code> orchestrator, investigating XLM withdrawal, margin collateral valuation, debt repayment, and account funding. The findings reveal critical mechanistic defects in:
-    (1) Multi-bucket read fan-out and circular intent resolution; (2) String-based unit quantity anchoring rejecting standard financial abbreviations like <code>5k</code>; (3) A critical mathematical hallucination where borrowed debt was added directly to posted collateral ($70.91 + 68.48 = 139.39$ XLM), creating an immediate contract revert risk; (4) An erroneous assumption in the planner forcing multi-leg debt repayments to be funded from the external wallet; (5) Erroneous rejection of all-debt clearance across multiple assets, refusing to spend available margin account funds (502.40 BLUSDC) to pay off 186.73 BLUSDC debt; and (6) Conversational margin debt repayment refusal where despite explicit user instruction and perfect NLU intent recognition (<code>[Pay off outstanding margin debt with margin account funds]</code>), the deterministic compiler still rejected the solvent plan demanding external wallet funds.
+<div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 5px 8px; margin-bottom: 6px;">
+  <div style="font-weight: 700; color: #1e40af; font-size: 10px; margin-bottom: 1px;">Executive Summary</div>
+  <div style="font-size: 9.5px; line-height: 1.35;">
+    This unified audit report details seven consecutive prompt test investigations on the running <code>/copilot</code> orchestrator, covering XLM withdrawal, margin collateral valuation, debt repayment, and Blend pool liquidity removal. The findings reveal critical mechanistic defects in:
+    (1) Multi-bucket read fan-out and circular intent resolution; (2) String-based unit quantity anchoring rejecting standard financial abbreviations like <code>5k</code>; (3) A critical mathematical hallucination where borrowed debt was added directly to posted collateral ($70.91 + 68.48 = 139.39$ XLM), creating an immediate contract revert risk; (4) An erroneous assumption in the planner forcing multi-leg debt repayments to be funded from the external wallet; (5) Erroneous rejection of all-debt clearance across multiple assets, refusing to spend available margin account funds (502.40 BLUSDC) to pay off 186.73 BLUSDC debt; (6) Conversational margin debt repayment refusal where despite explicit user instruction and perfect NLU intent recognition (<code>[Pay off outstanding margin debt with margin account funds]</code>), the deterministic compiler still rejected the solvent plan demanding external wallet funds; and (7) Unexecutable action refusal on Blend liquidity removal (<code>Remove 10k XLM liquidity from Blend pool.</code>) where despite on-chain capability in <code>BlendService.withdrawFromBlendPool</code> and on the <code>/farm</code> UI, the compiler omitted <code>withdraw_from_blend</code> from <code>WORKFLOW_OPS</code>, resulting in an unresolved capability limitation and a deadlocked <code>[Start over]</code> screen without navigation guidance.
   </div>
 </div>
 
-<div class="section-title">Master Executive Test Matrix (All 6 Evaluated Prompts)</div>
+<div class="section-title">Master Executive Test Matrix (All 7 Evaluated Prompts)</div>
 <table class="data-table">
   <thead>
     <tr>
@@ -383,6 +386,13 @@ html = f"""<!DOCTYPE html>
       <td>Model accurately assigns badge <code>[Pay off outstanding margin debt with margin account funds]</code>, but compiler still rules out plan demanding 186.73 BLUSDC from wallet.</td>
       <td><code>plan.ts:expandLegs</code>: Downstream deterministic compiler unconditionally forces wallet deposit leg (all_idle), ignoring margin account balance and overriding NLU intent. (Direct link to Incidents 4 &amp; 5).</td>
     </tr>
+    <tr>
+      <td><strong>7</strong></td>
+      <td><code>Remove 10k XLM liquidity from Blend pool.</code></td>
+      <td><span class="fail-tag">UNRESOLVED / UX DEADLOCK</span></td>
+      <td>Identifies venue (Blend), asset (XLM), and remove action, but states withdrawing from Blend is not an executable write operation; deadlocks at <code>[Start over]</code>.</td>
+      <td><code>workflow/types.ts</code>: <code>withdraw_from_blend</code> omitted from <code>WORKFLOW_OPS</code>; missing from <code>allowlist.ts</code>; UX lacks redirect to <code>/farm</code>.</td>
+    </tr>
   </tbody>
 </table>
 
@@ -393,12 +403,13 @@ html = f"""<!DOCTYPE html>
   (2) Safety floors belong exclusively to the user (arbitrary defaults like 1.30 must never be injected);
   (3) Three-bucket liquidity (Spendable Wallet, Posted Margin, Earn Pools) must never be conflated;
   (4) Liabilities (debt) must NEVER be added to assets (collateral);
-  (5) The margin smart account spends its own internal token balance on <code>vanna_repay</code>; wallet deposits are only required if there is a verified funding deficit.
+  (5) The margin smart account spends its own internal token balance on <code>vanna_repay</code>; wallet deposits are only required if there is a verified funding deficit;
+  (6) Unsupported protocol operations must offer transparent navigation fallbacks to the corresponding Web UI page.
 </div>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 1 of 10</span>
+  <span>Page 1 of 11</span>
 </div>
 
 <!-- ================= PAGE 2: INCIDENT 1 DEEP-DIVE ================= -->
@@ -474,7 +485,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 2 of 10</span>
+  <span>Page 2 of 11</span>
 </div>
 
 <!-- ================= PAGE 3: INCIDENT 2 DEEP-DIVE ================= -->
@@ -537,7 +548,7 @@ html = f"""<!DOCTYPE html>
 <div class="card">
   <div class="card-title"><span>Tracing quantities.ts line 50 & requested-actions.ts</span><span class="fail-tag">COMPILER DEFECT</span></div>
   <p>The model produced <code>amount: "5000"</code> and <code>sourceQuote: "5k xlm"</code>. In <code>requested-actions.ts:29</code>, the compiler verified token quantity anchoring via <code>isTokenAmountIn(action.sourceQuote, action.amount)</code>.</p>
-  <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px 10px; margin: 4px 0; font-family: monospace; font-size: 10.5px;">
+  <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 5px 8px; margin: 3px 0; font-family: monospace; font-size: 10px;">
     // lib/copilot/investigation/quantities.ts line 50<br>
     export function isTokenAmountIn(text: string, amount: string): boolean {{<br>
     &nbsp;&nbsp;if (!amount || !text.includes(amount)) return false; // &larr; FAILS on '5k xlm'
@@ -547,7 +558,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 3 of 10</span>
+  <span>Page 3 of 11</span>
 </div>
 
 <!-- ================= PAGE 4: INCIDENT 3 GROUND TRUTH COMPARISON ================= -->
@@ -586,7 +597,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 4 of 10</span>
+  <span>Page 4 of 11</span>
 </div>
 
 <!-- ================= PAGE 5: MATHEMATICAL PROOF & PROTOCOL INVARIANTS ================= -->
@@ -602,7 +613,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="section-title">4.1 Mathematical Proof of Defect: Debt Added to Collateral</div>
 <div class="discrepancy-card">
-  <div style="font-weight: 800; color: #991b1b; font-size: 11.5px; margin-bottom: 4px;">
+  <div style="font-weight: 800; color: #991b1b; font-size: 11px; margin-bottom: 3px;">
     EXACT MATHEMATICAL RECONSTRUCTION
   </div>
   <p>Comparing the live Margin page positions table against the Copilot response proves the exact mathematical bug:</p>
@@ -613,7 +624,7 @@ html = f"""<!DOCTYPE html>
   <div class="math-formula">
     70.91 XLM (Deposited Collateral) + 68.48 XLM (Borrowed Debt) = 139.39 XLM ($25.03 USD)
   </div>
-  <p style="font-size: 11px; color: #991b1b; margin-top: 4px;">
+  <p style="font-size: 10.5px; color: #991b1b; margin-top: 3px;">
     <strong>Conclusion:</strong> The Copilot computed total account tokens by adding the user's collateral <em>plus</em> their debt, and stated that this entire sum (139.39 XLM) was posted collateral available for withdrawal.
   </p>
 </div>
@@ -686,7 +697,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 5 of 10</span>
+  <span>Page 5 of 11</span>
 </div>
 
 <!-- ================= PAGE 6: INCIDENT 4 EVIDENCE & CHAT REFUSAL ================= -->
@@ -747,7 +758,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 6 of 10</span>
+  <span>Page 6 of 11</span>
 </div>
 
 <!-- ================= PAGE 7: INCIDENT 5 DEEP-DIVE ================= -->
@@ -822,7 +833,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 7 of 10</span>
+  <span>Page 7 of 11</span>
 </div>
 
 <!-- ================= PAGE 8: INCIDENT 6 DEEP-DIVE ================= -->
@@ -898,10 +909,102 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 8 of 10</span>
+  <span>Page 8 of 11</span>
 </div>
 
-<!-- ================= PAGE 9: THREE-BUCKET ARCHITECTURE & REPAYMENT MECHANICS ================= -->
+<!-- ================= PAGE 9: INCIDENT 7 DEEP-DIVE ================= -->
+<div class="page-break"></div>
+
+<div class="header-bar">
+  <div>
+    <div class="logo-title">INCIDENT 7: BLEND POOL LIQUIDITY REMOVAL REFUSAL & UX DEADLOCK</div>
+    <div class="logo-subtitle">Battery Case E5 · Capability Allowlist Boundary & Missing Web Navigation</div>
+  </div>
+  <div><span class="fail-tag">UNRESOLVED · CAPABILITY BOUNDARY</span></div>
+</div>
+
+<div class="prompt-box">
+  <div class="prompt-tag">Evaluated User Prompt</div>
+  <div class="prompt-text">Remove 10k XLM liquidity from Blend pool.</div>
+</div>
+
+<div class="section-title" style="margin-top: 6px; margin-bottom: 4px;">8.1 Copilot Chat Response & Capability Refusal Screenshot</div>
+<div class="screenshot-container" style="padding: 3px; margin-bottom: 3px;">
+  <img class="screenshot-img" style="max-height: 125px; width: auto;" src="data:image/png;base64,{img7_c_b64}" alt="Incident 7 Blend Removal Refusal Screenshot" />
+</div>
+<div class="caption" style="margin-bottom: 5px;">Figure 7.1: Verbatim screenshot on /copilot showing perfect intent classification ([Venue requested: Blend], [Asset: XLM], [Requested action: remove/withdraw liquidity from Blend pool]), followed by capability limitation refusal and terminal deadlock at [Start over].</div>
+
+<div class="section-title" style="margin-top: 6px; margin-bottom: 4px;">8.2 Verbatim Telemetry Audit for Incident 7</div>
+<table class="data-table" style="margin-bottom: 6px;">
+  <thead>
+    <tr>
+      <th style="width: 25%;">UI Field</th>
+      <th style="width: 45%;">Rendered Value (Verbatim)</th>
+      <th style="width: 30%;">Audit Verdict</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Plan Badges</strong></td>
+      <td><code>[Venue requested: Blend]</code> <code>[Asset: XLM]</code> <code>[Requested action: remove/withdraw liquidity from Blend pool]</code> <code>[No new borrowing]</code></td>
+      <td><span class="pass-tag">100% NLU ACCURACY</span> Venue, asset, and action parsed flawlessly</td>
+    </tr>
+    <tr>
+      <td><strong>Card Headline / Banner</strong></td>
+      <td><code>"UNRESOLVED — ANSWER OR REFINE YOUR REQUEST BELOW TO CONTINUE"</code></td>
+      <td><span class="fail-tag">UNRESOLVED</span> Dropped execution plan; zero steps compiled</td>
+    </tr>
+    <tr>
+      <td><strong>Stated Limitation</strong></td>
+      <td><code>"Withdrawing or unsupplying liquidity from Blend is currently not an executable write operation."</code></td>
+      <td><span class="pass-tag">SAFETY REFUSAL</span> Correctly enforces system capability boundary</td>
+    </tr>
+    <tr>
+      <td><strong>Latency Banner</strong></td>
+      <td><code>"Checked in 18s · 17s this device"</code></td>
+      <td><span class="pass-tag">EMPIRICAL</span> Runtime logged accurately</td>
+    </tr>
+    <tr>
+      <td><strong>Execution Outcome</strong></td>
+      <td><code>[Start over]</code> (Zero execution buttons, no deep-link to /farm)</td>
+      <td><span class="fail-tag">TERMINAL DEADLOCK</span> Traps user with no alternative path or UI guide</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="section-title" style="margin-top: 6px; margin-bottom: 4px;">8.3 Architectural Root Cause: Why Is Blend Removal Not An Executable Action?</div>
+<div class="card" style="padding: 6px 10px; margin-bottom: 6px;">
+  <div class="card-title"><span>Four-Layer Capability Boundary Breakdown</span><span class="fail-tag">ENGINEERING ANALYSIS</span></div>
+  <ul>
+    <li>
+      <strong>1. Investigation Allowlist Omission (<code>lib/copilot/workflow/types.ts:9</code>):</strong>
+      The multi-turn orchestrator strictly limits compiled proposals to <code>WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend"]</code>. While <code>supply_blend</code> (putting funds in) was ported, <code>withdraw_from_blend</code> (pulling funds out) was never added to the allowed operations set.
+    </li>
+    <li>
+      <strong>2. MCP Tool Whitelist Gatekeeper (<code>lib/copilot/workflow/allowlist.ts:7-11</code>):</strong>
+      The multi-turn write validator <code>TOOLS</code> maps allowed ops to MCP tools (e.g. <code>supply_blend &rarr; vanna_blend_supply</code>). It contains no entry for <code>vanna_blend_withdraw</code>. Calling <code>allowedInvocation()</code> on a Blend withdrawal throws an immediate <code>write_not_allowed</code> runtime exception.
+    </li>
+    <li>
+      <strong>3. NLU Model Adherence to System Prompt (<code>lib/copilot/investigation/flash.ts:151-153</code>):</strong>
+      The model prompt explicitly commands: <em>"If the user's goal needs an operation not in this list, say so in findings as a limitation — name the unsupported step — and still propose the best plan the list allows... For unsupported actions explain the capability limitation."</em> The model faithfully followed protocol law by refusing to compile an unsupported write.
+    </li>
+    <li>
+      <strong>4. On-Chain Capability Exists, Disconnected in Multi-Turn:</strong>
+      On Soroban, smart contract execution is 100% operational via <code>BlendService.withdrawFromBlendPool()</code> (<code>lib/blend-utils.ts:384</code>) and live on the <strong>Farm</strong> web page (<code>/farm</code>). In the legacy single-turn router (<code>mcp-write.ts:976</code>), <code>withdraw_from_blend</code> was mapped to <code>vanna_blend_withdraw</code>. When the multi-turn architecture was built, it was deferred as a known capability boundary (Battery Case <code>E5</code>: <code>take my xlm out of blend | REFUSED-CORRECTLY</code>).
+    </li>
+    <li>
+      <strong>5. The UX Defect (Terminal Deadlock):</strong>
+      While refusing an unexecutable write is safety-correct to prevent misrouting funds, leaving the user on an <code>UNRESOLVED</code> screen with only <code>[Start over]</code> violates production copilot standards. The agent must provide an actionable exit: a direct interactive button to <code>[Open Farm Page (/farm)]</code> and step-by-step manual withdrawal instructions.
+    </li>
+  </ul>
+</div>
+
+<div class="footer-note">
+  <span>Vanna Copilot QA & Audit Suite · Master Document</span>
+  <span>Page 9 of 11</span>
+</div>
+
+<!-- ================= PAGE 10: THREE-BUCKET ARCHITECTURE & REPAYMENT MECHANICS ================= -->
 <div class="page-break"></div>
 
 <div class="header-bar">
@@ -912,7 +1015,7 @@ html = f"""<!DOCTYPE html>
   <div><span class="fail-tag">ARCHITECTURE DEEP-DIVE</span></div>
 </div>
 
-<div class="section-title">8.1 Architectural Distinction: Spendable Wallet vs Margin Smart Account</div>
+<div class="section-title">9.1 Architectural Distinction: Spendable Wallet vs Margin Smart Account</div>
 <div class="card">
   <div class="card-title"><span>Three-Bucket Liquidity Segregation</span><span class="pass-tag">SYSTEM INVARIANT</span></div>
   <p>The user asked why the <strong>Repay Loan</strong> section shows <strong>502.40 BLUSDC</strong> available in the margin account, but the <strong>Deposit</strong> section shows <strong>0 BLUSDC</strong>. The architectural explanation is fundamental to Soroban smart contracts:</p>
@@ -926,7 +1029,7 @@ html = f"""<!DOCTYPE html>
   </ul>
 </div>
 
-<div class="section-title">8.2 Mathematical Solvency Breakdown</div>
+<div class="section-title">9.2 Mathematical Solvency Breakdown</div>
 <table class="data-table">
   <thead>
     <tr>
@@ -969,11 +1072,11 @@ html = f"""<!DOCTYPE html>
   </tbody>
 </table>
 
-<div class="section-title">8.3 Code Root Cause in lib/copilot/investigation/plan.ts</div>
+<div class="section-title">9.3 Code Root Cause in lib/copilot/investigation/plan.ts</div>
 <div class="card">
   <div class="card-title"><span>expandLegs Flawed Assumption (commit 9232cc9b)</span><span class="fail-tag">CODE DEFECT</span></div>
   <p>In commit <code>9232cc9b</code> (13 Sep), <code>expandLegs()</code> was modified to rewrite any repay leg:</p>
-  <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 5px 8px; font-family: monospace; font-size: 9.5px; margin-bottom: 5px;">
+  <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 5px 8px; font-family: monospace; font-size: 9px; margin-bottom: 4px;">
     return legs.flatMap((leg): SizerLeg[] =&gt; leg.op === "repay" &amp;&amp; (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position")<br>
     &nbsp;&nbsp;? [&#123; op: "deposit_collateral", asset: leg.asset, sizing: &#123; kind: "all_idle" &#125;, fundsRepay: true &#125;, &#123; op: "repay", asset: leg.asset, sizing: &#123; kind: "previous_leg" &#125; &#125;]<br>
     &nbsp;&nbsp;: [leg]);
@@ -987,10 +1090,10 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 9 of 10</span>
+  <span>Page 10 of 11</span>
 </div>
 
-<!-- ================= PAGE 10: PIPELINE RCA & PRODUCTION REMEDIATION ================= -->
+<!-- ================= PAGE 11: PIPELINE RCA & PRODUCTION REMEDIATION ================= -->
 <div class="page-break"></div>
 
 <div class="header-bar">
@@ -1001,7 +1104,7 @@ html = f"""<!DOCTYPE html>
   <div><span class="pass-tag">ACTIONABLE REMEDIATION SPEC</span></div>
 </div>
 
-<div class="section-title">9.1 Code-Level Tracing Across lib/copilot/</div>
+<div class="section-title">10.1 Code-Level Tracing Across lib/copilot/</div>
 <ul>
   <li>
     <strong>Unit Parser Multipliers (<code>lib/copilot/investigation/quantities.ts</code>):</strong>
@@ -1023,9 +1126,13 @@ html = f"""<!DOCTYPE html>
     <strong>Repayment Wallet Ingestion Fallacy (<code>lib/copilot/investigation/plan.ts:expandLegs</code>):</strong>
     In commit <code>9232cc9b</code>, <code>expandLegs</code> unconditionally forced <code>all_position</code> repay legs to be preceded by a wallet <code>deposit_collateral</code> leg with <code>all_idle</code> sizing. This crashed on any account holding sufficient margin balance to repay directly if their external wallet held 0 tokens.
   </li>
+  <li>
+    <strong>Blend Liquidity Removal Boundary (<code>lib/copilot/workflow/types.ts</code> &amp; <code>allowlist.ts</code>):</strong>
+    <code>WORKFLOW_OPS</code> and <code>TOOLS</code> omit <code>withdraw_from_blend</code> / <code>unsupply_blend</code>, leaving the copilot unable to compile liquidity removal from Blend despite on-chain support, deadlocking on <code>[Start over]</code> without linking to <code>/farm</code>.
+  </li>
 </ul>
 
-<div class="section-title">9.2 Institutional Production Remediation Plan (Never Hardcode)</div>
+<div class="section-title">10.2 Institutional Production Remediation Plan (Never Hardcode)</div>
 <div class="card">
   <div class="card-title"><span>Required Code Fixes</span><span class="pass-tag">FIX ROADMAP</span></div>
   <ul>
@@ -1034,23 +1141,27 @@ html = f"""<!DOCTYPE html>
       In <code>lib/copilot/investigation/plan.ts</code>, decouple <code>all_position</code> repay from mandatory wallet deposits. Allow <code>vanna_repay</code> to execute directly using the margin smart account's internal token balance. Only inject a wallet <code>deposit_collateral</code> leg when the account has a verified funding deficit: <code>max(0, debt - margin_balance)</code>. This single generalized fix resolves Incidents 4, 5, and 6 for any token or debt amount without hardcoded rules.
     </li>
     <li>
-      <strong>Fix 2: Metric Multiplier Support in quantities.ts:</strong>
+      <strong>Fix 2: First-Class Blend Liquidity Removal &amp; Interactive UI Deep-Link (Resolves Incident 7):</strong>
+      Add <code>withdraw_from_blend</code> to <code>WORKFLOW_OPS</code> and map it to <code>vanna_blend_withdraw</code> in <code>allowlist.ts</code>. In <code>flash.ts</code> and <code>requested-actions.ts</code>, compile Blend unsupplies verified against <code>BlendService.getPoolUserPosition</code>. Whenever an unsupported operation is encountered, never deadlock on <code>[Start over]</code>: render an interactive navigation button (e.g. <code>[Open Farm Page (/farm)]</code>) with step-by-step guidance.
+    </li>
+    <li>
+      <strong>Fix 3: Metric Multiplier Support in quantities.ts (Resolves Incident 2):</strong>
       Update <code>quantities.ts</code> to parse standard financial multipliers (<code>k</code> = &times; 10<sup>3</sup>, <code>m</code> = &times; 10<sup>6</sup>, <code>b</code> = &times; 10<sup>9</sup>). In <code>isTokenAmountIn</code>, evaluate numeric equivalence after multiplier expansion rather than strict substring containment.
     </li>
     <li>
-      <strong>Fix 3: Deterministic Collateral Ceiling:</strong>
+      <strong>Fix 4: Deterministic Collateral Ceiling (Resolves Incident 3):</strong>
       Enforce the invariant formula in <code>facts-by-shape.ts</code> and <code>handle-read.ts</code>:
-      <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 4px 7px; margin: 3px 0; font-family: monospace; font-size: 10.5px;">
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; padding: 3px 6px; margin: 2px 0; font-family: monospace; font-size: 10px;">
         withdrawable = min(posted_collateral, max_withdrawable_at_hf_floor)
       </div>
       Never sum borrowed debt with collateral assets. The withdrawable ceiling for XLM on this account is strictly <strong>70.91 XLM</strong>.
     </li>
     <li>
-      <strong>Fix 4: Multi-Bucket Read Fan-Out & Disambiguation:</strong>
-      Any withdrawal or balance query must fan out parallel reads across Spendable Wallet, Margin Collateral, and Earn Pools. When a user states a circular request ("withdraw so I can deposit"), present an active clarification dialogue: <em>"You hold 70.91 XLM collateral in Margin and 3.85 XLM in your wallet. Would you like to redeem from Earn or withdraw excess margin collateral?"</em>
+      <strong>Fix 5: Multi-Bucket Read Fan-Out &amp; Disambiguation (Resolves Incident 1):</strong>
+      Any withdrawal or balance query must fan out parallel reads across Spendable Wallet, Margin Collateral, and Earn Pools. When a user states a circular request, present an active clarification dialogue with clear options.
     </li>
     <li>
-      <strong>Fix 5: Transparent Error Feedback:</strong>
+      <strong>Fix 6: Transparent Error Feedback:</strong>
       Replace silent <code>try/catch</code> blocks in <code>compileRequestedActions</code> with detailed warnings on the card, preventing empty terminal screens with only <code>[Start over]</code>.
     </li>
   </ul>
@@ -1058,7 +1169,7 @@ html = f"""<!DOCTYPE html>
 
 <div class="footer-note">
   <span>Vanna Copilot QA & Audit Suite · Master Document</span>
-  <span>Page 10 of 10 · Document Generated: September 14, 2026</span>
+  <span>Page 11 of 11 · Document Generated: September 14, 2026</span>
 </div>
 
 </body>
