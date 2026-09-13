@@ -565,6 +565,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
     warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
   }
+  if (outcome.kind === "research_complete" && outcome.droppedFindings) {
+    warnings.push(`${outcome.droppedFindings} ${outcome.droppedFindings === 1 ? "statement" : "statements"} from the model quoted a figure with no read behind it and ${outcome.droppedFindings === 1 ? "was" : "were"} left out.`);
+  }
   /**
    * The position the plans are sized against comes from the account read, and the floor
    * from the user's words — even when borrowing headroom could not be computed (a floor

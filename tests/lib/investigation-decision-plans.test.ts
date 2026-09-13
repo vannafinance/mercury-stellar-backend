@@ -91,9 +91,40 @@ describe("a malformed literal action", () => {
 
   it("leaves a readable reason when a decision really is refused", async () => {
     const { lastDecisionRefusal } = await import("@/lib/copilot/investigation/decision");
-    expect(parseDecision({ ...base, findings: [{ summary: "s", evidenceIds: [] }] })).toBeNull();
-    expect(lastDecisionRefusal()).toMatch(/^finding: keys=summary,evidenceIds evidence=0$/);
+    expect(parseDecision({ ...base, findings: [{ summary: "you hold 5000 AQUSDC in Earn", evidenceIds: [] }] })).toBeNull();
+    expect(lastDecisionRefusal()).toMatch(/^findings: every finding stated a figure with no evidence \(1\)$/);
+    expect(parseDecision({ ...base, findings: [{ summary: "s" }] })).toBeNull();
+    expect(lastDecisionRefusal()).toMatch(/^finding: keys=summary evidence=\?$/);
     expect(parseDecision({ kind: "research_complete", goal: base.goal, findings: base.findings })).toBeNull();
     expect(lastDecisionRefusal()).toMatch(/^unknown kind or keys/);
+  });
+});
+
+describe("a finding with nothing to cite", () => {
+  /**
+   * 13 Sep, "put my XLM and USDC into the Aquarius XLM/USDC LP": the model wrote the
+   * limitation the prompt asks for — prose, no observation behind it — and the parser
+   * refused the whole decision for the missing evidence id. The card said "invalid decision".
+   */
+  it("is kept when it states no figure — a limitation is prose, not a claim about the position", () => {
+    const decision = parseDecision({ ...base, findings: [
+      { summary: "Adding liquidity to the Aquarius XLM/USDC pool is not an operation this copilot can execute; LP receipts are not valued by the risk engine.", evidenceIds: [] },
+      ...base.findings,
+    ] });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(decision.findings).toHaveLength(base.findings.length + 1);
+    expect(decision.droppedFindings).toBeUndefined();
+  });
+
+  it("is dropped and counted when it states a figure — a number needs a read behind it", () => {
+    const decision = parseDecision({ ...base, findings: [
+      { summary: "The pool holds 136024 XLM and 1546 AQUSDC.", evidenceIds: [] },
+      ...base.findings,
+    ] });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(decision.findings).toEqual(base.findings);
+    expect(decision.droppedFindings).toBe(1);
   });
 });

@@ -108,15 +108,27 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    */
   const parsedPlans = raw.plans === undefined ? { plans: [], dropped: 0 } : parsePlans(raw.plans);
   const findings: Array<{ summary: string; evidenceIds: string[] }> = [];
+  /**
+   * What the evidence rule protects is figures: a balance, a rate or a health number the
+   * user reads must trace to a read. Prose does not — and the prompt asks for prose with
+   * nothing to cite when the goal needs an operation outside the vocabulary ("say so in
+   * findings as a limitation"). So an uncited finding is kept when it states no figure,
+   * and an uncited figure is dropped and counted, like a malformed plan; it voids the
+   * research only when nothing else remains. 13 Sep: "put my XLM and USDC into the
+   * Aquarius LP" produced exactly the limitation asked for, and the whole turn died as
+   * "invalid decision" because that sentence had no evidence id.
+   */
   const allowEmptyEvidence = goal.intent === "answer" || validActions.length > 0;
+  let droppedFindings = 0;
   for (const finding of raw.findings) {
     if (!isRecord(finding) || !exactKeys(finding, ["summary", "evidenceIds"]) ||
-      !text(finding.summary) || !texts(finding.evidenceIds) ||
-      (!allowEmptyEvidence && finding.evidenceIds.length === 0)) {
+      !text(finding.summary) || !texts(finding.evidenceIds)) {
       return refuse(`finding: ${isRecord(finding) ? `keys=${Object.keys(finding).join(",")} evidence=${Array.isArray(finding.evidenceIds) ? finding.evidenceIds.length : "?"}` : typeof finding}`);
     }
+    if (!allowEmptyEvidence && finding.evidenceIds.length === 0 && /\d/.test(finding.summary)) { droppedFindings += 1; continue; }
     findings.push({ summary: finding.summary, evidenceIds: [...finding.evidenceIds] });
   }
+  if (!findings.length) return refuse(`findings: every finding stated a figure with no evidence (${droppedFindings})`);
   return {
     kind: "research_complete",
     goal: {
@@ -132,6 +144,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     openQuestions: [...raw.openQuestions],
     ...(parsedPlans.plans.length ? { plans: parsedPlans.plans } : {}),
     ...(parsedPlans.dropped + droppedActions ? { droppedPlans: parsedPlans.dropped + droppedActions } : {}),
+    ...(droppedFindings ? { droppedFindings } : {}),
   };
 }
 

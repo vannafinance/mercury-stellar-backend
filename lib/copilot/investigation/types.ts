@@ -115,6 +115,8 @@ export type ResearchDecision =
       plans?: ProposedPlan[];
       /** Plans the model sent that did not fit the contract and were dropped, so the card can say so. */
       droppedPlans?: number;
+      /** Findings that stated a figure with no read behind it; left out, and the card says so. */
+      droppedFindings?: number;
     };
 
 export interface Observation {
