@@ -85,6 +85,8 @@ const mcp = {
       { venue: "blend", symbol: "USDC", supply_apr_pct: "0.9035", borrow_apr_pct: "1.3081", utilization_pct: "76.75" },
     ] };
     if (tool === "vanna_get_farm_overview") return { blend: { positions: { positions: [] } }, aquarius_lp: { lp_shares_human: "0" } };
+    // The test account's debt as the MCP reports it: the margin account spells BLUSDC "USDC".
+    if (tool === "vanna_get_debt") return { debt: [{ symbol: "USDC", balance: "2559.566080757051806242" }, { symbol: "XLM", balance: "14113.311211804998648290" }], total_debt_usd: "5076.86" };
     throw new Error(`Unexpected tool ${tool}`);
   }),
 };
@@ -285,6 +287,34 @@ describe("model proposes, code disposes — end to end", () => {
     expect(proposal.steps.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
     // Sized to the sealed 1.14 floor after the deposit: (8442.98 − 1.14·5102.54)/0.14 ≈ 18,747 USD → /0.18 XLM.
     expect(Number(proposal.steps[2].amount)).toBeCloseTo(104209.71, 0);
+  });
+
+  it("re-sizes a wallet-funded repay from a stale bundle: the debt is re-read, the plan is deposit → repay (13 Sep 409)", async () => {
+    // "I want zero debt": the model sizes the repay from idle XLM. The account is what repays,
+    // so the sizer expands it to deposit (capped by the debt) → repay. Two minutes later the
+    // bundle is stale; propose must re-read the debt too, not only the market set.
+    let turn = 0;
+    const view = await researchTurn(
+      { message: "I want zero debt but keep all my collateral", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "account_debt", args: {} }] }
+          : { ...modelComplete, goal: { ...modelComplete.goal, objective: "Repay all debt without withdrawing collateral", borrowing: "forbidden" },
+              plans: [{ title: "Repay XLM debt using idle wallet XLM", rationale: "Wallet XLM covers part of the XLM debt (e1, e2).", evidenceIds: ["e1", "e2"],
+                legs: [{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }] }] },
+      },
+    );
+    const target = "composed:re.XLM";
+    const option = view.candidates?.feasible.find((c) => c.id === target);
+    expect(option?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "10206.3356118"], ["repay", "10206.3356118"]]);
+    const proposal = await proposeWorkflow({
+      continuation: view.continuation, candidateId: target, subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
+      network: "testnet", mcp, signal: new AbortController().signal, now: Date.now() + 120_000,
+    });
+    expect(proposal.status).toBe("proposed");
+    expect(proposal.steps.map((s) => s.op)).toEqual(["deposit_collateral", "repay"]);
+    expect(mcp.call.mock.calls.map((c) => c[0])).toContain("vanna_get_debt");
   });
 
   it("when the Margin page and the liquidation engine disagree, sizes the deposit but refuses the borrow with both figures", async () => {

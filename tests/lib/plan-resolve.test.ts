@@ -256,7 +256,9 @@ describe("resolvePlans — repay from what the wallet has", () => {
   /**
    * 13 Sep, "I want zero debt but keep all my collateral": the model sized the repay
    * `all_idle` — repay from the wallet — and the card said only "an idle wallet balance
-   * does not size a repay". What was owed never appeared.
+   * does not size a repay". What was owed never appeared. And the account is what repays
+   * (`vanna_repay` draws on the smart account; "to repay from the wallet, deposit first"),
+   * so the plan is two protocol legs: deposit, capped by the debt, then repay it.
    */
   const withDebt = (walletXlm: string) => ({
     observations: [
@@ -270,12 +272,14 @@ describe("resolvePlans — repay from what the wallet has", () => {
   });
   const legs: ProposedPlan["legs"] = [{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }];
 
-  it("repays what the wallet can cover, capped by the debt", () => {
+  it("deposits what the wallet can cover, capped by the debt, then repays it — two protocol legs", () => {
     const partial = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("100")));
     expect(partial.rejected).toEqual([]);
-    expect(partial.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "repay", amount: "100" }));
+    expect(partial.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "100"], ["repay", "100"]]);
     const whole = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("12000")));
-    expect(whole.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "repay", amount: "5000" }));
+    expect(whole.candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["deposit_collateral", "5000"], ["repay", "5000"]]);
+    // The option's id is the model's plan, not the expanded legs — propose re-resolves by it.
+    expect(whole.candidates[0]?.id).toBe(partial.candidates[0]?.id);
   });
 
   it("names the debt and what to add when the wallet holds none of it", () => {
