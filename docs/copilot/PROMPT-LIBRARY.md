@@ -16,6 +16,48 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `put my XLM and USDC into the Aquarius XLM/USDC LP` (local MCP, after the fixes)
+
+- **Date / commit / surface:** 2026-09-13 19:08 UTC · `feat/copilot-finetune` @ `d700d02` · `/copilot` against a **local** MCP (`vanna_mcp` main + PR #3 + PR #4) · wallet connected, Privy session dropped by a reload (`signed_in: false`)
+- **Result:** `REFUSED-CORRECTLY`
+- **Returned, verbatim:**
+  > Aquarius XLM/USDC pool CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX was found, but depositing liquidity into Aquarius AMM pools is an unsupported action on this platform. · Deposit XLM and AQUSDC into the Aquarius XLM/USDC LP pool. · Aquarius LP deposit operations are not executable through Vanna strategy plans · No new borrowing · Checked in 19s
+- **Log:** model turn 1 6.4s; `aquarius_markets` read 3.6s (router `get_pools` → API by address); turn 2 8.7s; `research_complete`, no plan.
+- **Three fixes met here:** the pool is found (MCP PR #4); the limitation finding is kept although it cites no observation (`ebb47e5`); a non-executable venue is named, never substituted (`00068f3`).
+- **Still shown:** "Aquarius pools were discovered; executable quotes and net returns have not been evaluated." — pre-existing normalize warning, now noise on a refused LP prompt. Not fixed yet.
+
+---
+
+### Copilot · `put my XLM and USDC into the Aquarius XLM/USDC LP` (hosted MCP, three runs)
+
+- **Date / commit / surface:** 2026-09-13 16:1x–16:5x UTC · `feat/copilot-finetune` @ `126292d` → `ebb47e5` · signed-in `/copilot` · hosted `mcp.vanna.finance`
+- **Run 1 result:** `ERROR` — > Research stopped: invalid decision. · aquarius markets: pools[0] was unavailable — No Aquarius pool for USDC/XLM in API.
+  - **Cause:** the model wrote the limitation the prompt asks for ("say so in findings") with `evidenceIds: []`; `decision.ts` refused every uncited finding on a strategy turn (`finding: keys=evidenceIds,summary evidence=0` in the log after `56deaa2`). Prompt and parser contradicted each other. **Fix `ebb47e5`:** an uncited finding is kept when it states no figure; an uncited figure is dropped and counted.
+- **Run 2 result:** `WRONG` — > I've checked the available information. One choice still changes the plan: No Aquarius XLM/USDC pool is currently available on this network. · ANSWER BELOW TO CONTINUE
+  - **Cause (two):** the hosted MCP's `vanna_list_aquarius_pools` scans page 1 of the Aquarius API for the code "USDC" — the Farm pool is on page 4 of 177 pools, and six XLM/USDC pools exist across three issuers (**MCP PR #4**); and the card rendered a data-gap `openQuestion` as a user choice (**fix `d700d02`**: "this is unresolved: …").
+- **Run 3 result:** `ERROR` — > The investigation ran out of time before it could finish. — the request never reached the server: a full vitest run + `tsc` were hogging the machine while the dev server recompiled. Not a copilot defect; recorded so the copy is not blamed.
+
+---
+
+### Copilot · `Deposit 10000 XLM as collateral and deploy it in the Blend farm, keep my HF above 1.15` (signed-in)
+
+- **Date / commit / surface:** 2026-09-13 10:35 UTC · `feat/copilot-finetune` @ `f7c3218` · signed-in `/copilot` · hosted MCP · Privy `GBH5…IHA`
+- **Result:** `WORKS` (executed) with one defect underneath
+- **Returned / executed:** Deposit 10000 XLM as collateral — tx `bf7efcb3…` 10:35:17 · Supply 10000 XLM to Blend (`execute`) — tx `a7d29509…` 10:35:32 · both settled with no click between them (ledger-close polling, `f7c3218`).
+- **Defect:** log `phase: 'plans', proposed: 1, sized: 0, rejected: ["… Blend supply takes what a deposit or borrow put in the account — size that leg instead"]`. The model wrote `10000` on both legs (the user's words); `plan.ts` refused any literal on `supply_blend`, the composed plan died, and the run fell through to the literal-only `goal.actions` path — executed, but without rationale or projection. **Fix `1557a3b`:** a literal Blend supply is accepted when the deposit/borrow before it put in at least that much.
+
+---
+
+### Copilot · `use my AqUSDC sitting in Earn as collateral, keep HF above 1.15` (signed-in, executed)
+
+- **Date / commit / surface:** 2026-09-13 10:15 UTC · `feat/copilot-finetune` @ `1fd0ccc` · signed-in `/copilot` · hosted MCP
+- **Result:** `WORKS` (executed) — first live redeem → deposit
+- **Executed:** Redeem 4918.2651397 VAQUSDC (`redeem_vtokens`, u256 `4918265139700000000000`) — tx `e5e75d39…` 10:15:57 · Deposit 5000.9718044 AQUSDC — tx `86f5bc5c…` 10:19:37. Dust left in wallet 0.0003729 AQUSDC = interest accrued between estimate and execution; the estimate was conservative.
+- **Defect:** the card sat on "Broadcasting…" through both settlements. `use-workflow.ts` asked the server once, immediately after submit (ledger not yet closed → NOT_FOUND) and then waited for "Check progress". **Fix `f7c3218`:** a submitted step is re-asked about at every ledger close (`useLedgerTick`), and the run continues by itself.
+- **Also seen:** "Prepare this plan" re-clicked after the redeem → 409 `candidate_unavailable` — correct; the propose path re-read the position and refused a second redeem.
+
+---
+
 ### Copilot · `Create a startegy in such a way that My HF will stay above the 1.1 and use USDC and XLM as collateral and deploy them in farm` (signed-in, user's own words)
 
 - **Date / commit / surface:** 2026-09-13 10:35 IST · `feat/copilot-finetune` @ Aditya's `f7413d7` + §1 candidate-id · signed-in `/copilot` · Privy `GBH5…IHA` → `CCKIT…DMC`, testnet
