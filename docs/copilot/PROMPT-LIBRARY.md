@@ -16,6 +16,33 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `invest into earn pool where i can get the best/good returns` — re-run after `99fe08c`, before Faucet (signed-in, local MCP loop, executed)
+
+- **Date / commit / surface:** 2026-09-13 15:50 UTC · `feat/copilot-finetune` @ `99fe08c` · signed-in `/copilot` · local MCP · wallet 3.97 XLM (0 spendable), 0.0003729 AQUSDC
+- **Result:** `WRONG` — a dust transaction offered, approved and executed
+- **Returned, verbatim:**
+  > Lend idle AQUSDC in Earn: lend 0.0003729 AQUSDC to Earn. About 20.18% APR on $0.00, using idle funds only. Approve to run those steps. · OPTIONS · Lend idle AQUSDC in Earn · $0.00 · no change to health factor · 1 Lend 0.0003729 AQUSDC to Earn · Lend idle AQUSDC into the AQUSDC Earn pool, which offers 20.18% supply APY (p8). · Using AQUSDC — you hold 0 of it, so no swap is needed. · Ruled out — Lend idle BLUSDC in Earn. lend BLUSDC: no idle BLUSDC in the wallet.
+- **Executed:** tx `98c285fd…`, ledger 4658216, **fee 0.0964 XLM** to deposit $0.00007 of AQUSDC.
+- **Log:** investigate 26.9s (model 17.3s; 9,512 in / 382 out / 2,976 thinking); propose 0.4s; approve 1.4s; advance 2.8s; submit 3.0s; 4 ledger polls ≤ 0.5s. Nothing slow server-side — the wait was signing + ledger.
+- **Cause:** the sizer's only test for an idle line was amount > 0; nothing asked whether the leg was worth a transaction. Label fix from `99fe08c` visible (pool named AQUSDC); the "Idle in the wallet" line did not show because a candidate existed.
+- **Fix `82feeb4`:** a line worth less than the wallet read's own fee reserve at the read XLM price is dust — not idle for the fixed shapes, and a plan leg on it is ruled out as "0.0003729 AQUSDC ($0.00) is worth less than the fee reserve one transaction needs ($0.09) — not worth moving". No threshold of ours; nothing is dust when the reserve or the price was not read.
+- **Class:** confident wrong action — the worst class; caught by the battery before the founder.
+- **Next entry:** same prompt after Faucet.
+
+### Copilot · `invest into earn pool where i can get the best/good returns` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-13 15:40 UTC · `feat/copilot-finetune` @ `7c5d0df` · signed-in `/copilot` · local MCP (main + #3 + #4) · wallet 3.97 XLM (all minimum balance + fee reserve), 0.0004 AQUSDC; everything else posted or in Blend
+- **Result:** `PARTIAL` — every number real, nothing invented; question unanswered; the reason for "no option" hidden
+- **Returned, verbatim:**
+  > The reported supply rates are XLM Earn: 5.187282 % APR; USDC Earn: 29.084267 % APR; USDC Earn: 20.179294 % APR; USDC Earn: 0.377295 % APR; XLM Blend: 168.6584 % APR; USDC Blend: 0.9232 % APR. · Invest idle assets into Vanna Earn pools offering the highest returns. · Focus on Vanna Earn pools · Maximize supply APY · Checked in 23s
+- **Log:** 13 reads (4 × pool_stats, 4 × price, blend reserves, wallet), model turn 1 14.2s (9,511 in / 444 out / 2,212 thinking), `research_complete`, no plans, no `plans` phase.
+- **Cause (three):**
+  1. `pool_stats` answers `pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike; `facts-by-shape` labelled by the row's own symbol → three indistinguishable "USDC Earn" rates.
+  2. Nothing spendable in the wallet, and no line said so — the model's findings were the rate list; the deterministic layer had the wallet read and stayed silent.
+  3. The model proposed no plan (defensible with nothing idle) and did not name the best pool.
+- **Fix `99fe08c`:** (1) a row symbol equal to the requested asset's venue spelling (`earnSymbol`/`marginSymbol`, registry) is labelled with the asset id; (2) a strategy turn with nothing feasible and nothing ruled out opens with "Idle in the wallet: XLM 0 spendable of 3.9737, AQUSDC 0.0004."; (3) duplicate rate lines collapse. Not fixed: the model still has to say which pool is best — re-run pending.
+- **Battery:** B6 + B2. **Re-run after Faucet is the next entry.**
+
 ### Copilot · `put my XLM and USDC into the Aquarius XLM/USDC LP` (local MCP, after the fixes)
 
 - **Date / commit / surface:** 2026-09-13 19:08 UTC · `feat/copilot-finetune` @ `d700d02` · `/copilot` against a **local** MCP (`vanna_mcp` main + PR #3 + PR #4) · wallet connected, Privy session dropped by a reload (`signed_in: false`)

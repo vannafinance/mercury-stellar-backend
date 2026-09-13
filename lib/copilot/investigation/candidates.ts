@@ -458,7 +458,46 @@ export function idleWalletHoldingsFrom(
   observations: readonly Observation[],
   now: number,
 ): Partial<Record<RateAsset, { usd: string; tokens: string }>> {
+  return walletHoldingsFrom(observations, now).idle;
+}
+
+/**
+ * Wallet lines worth less than one transaction: held, but not worth moving. 13 Sep, live:
+ * "lend 0.0003729 AQUSDC to Earn — about 20.18 % APR on $0.00" was offered, approved and
+ * paid 0.096 XLM in fees to deposit $0.00007. A plan leg names these with the reason
+ * instead of sizing them.
+ */
+export function dustWalletHoldingsFrom(
+  observations: readonly Observation[],
+  now: number,
+): Partial<Record<RateAsset, { usd: string; tokens: string }>> {
+  return walletHoldingsFrom(observations, now).dust;
+}
+
+/**
+ * What one transaction needs, in USD: the wallet read's own fee reserve (`fee_reserve_xlm`)
+ * at the XLM price read this investigation. Null when either was not read — then nothing
+ * is called dust, because the floor would be a guess.
+ */
+export function transactionFloorUsdWad(observations: readonly Observation[], now: number): bigint | null {
+  const wallet = freshObservations(observations, now).find((observation) => observation.capability === "wallet_balances");
+  const price = freshPrices(observations, now).get("XLM");
+  if (!wallet || !price) return null;
+  try {
+    const reserve = decimalWad(String(wallet.data?.fee_reserve_xlm ?? ""));
+    return reserve > ZERO ? mulDown(reserve, price, WAD) : null;
+  } catch {
+    return null;
+  }
+}
+
+function walletHoldingsFrom(
+  observations: readonly Observation[],
+  now: number,
+): { idle: Partial<Record<RateAsset, { usd: string; tokens: string }>>; dust: Partial<Record<RateAsset, { usd: string; tokens: string }>> } {
   const result: Partial<Record<RateAsset, { usd: string; tokens: string }>> = {};
+  const dust: Partial<Record<RateAsset, { usd: string; tokens: string }>> = {};
+  const floor = transactionFloorUsdWad(observations, now);
   // The wallet read names what is held; the registry says which of those the protocol knows.
   const held = new Set<RateAsset>();
   for (const observation of observations) {
@@ -477,9 +516,11 @@ export function idleWalletHoldingsFrom(
       || (USDC_SET.has(asset) && USDC_SET.has(String(observation.args.asset ?? ""))));
     const value = idleWalletUsdFrom(scoped, now);
     const tokens = idleTokensFrom(scoped, now, asset);
-    if (value !== null && tokens !== null) result[asset] = { usd: value, tokens };
+    if (value === null || tokens === null) continue;
+    if (floor !== null && decimalWad(value) < floor) dust[asset] = { usd: value, tokens };
+    else result[asset] = { usd: value, tokens };
   }
-  return result;
+  return { idle: result, dust };
 }
 
 /** Reads no older than a minute. A price outside that window prices nothing. */

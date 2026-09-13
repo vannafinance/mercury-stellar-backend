@@ -21,7 +21,7 @@ import { WALLET_OPS, type ProposalStep } from "../workflow/types";
 import { isRecord } from "./decision";
 import { OP_VENUE } from "./flash";
 import { candidateId } from "./candidate-id";
-import { freshPrices, idleWalletHoldingsFrom, type Candidate } from "./candidates";
+import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
@@ -134,6 +134,8 @@ function liveCollateralAllowed(observations: readonly Observation[]): Map<string
 
 function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   const holdings = idleWalletHoldingsFrom(ctx.observations, ctx.now);
+  const dust = dustWalletHoldingsFrom(ctx.observations, ctx.now);
+  const txFloor = transactionFloorUsdWad(ctx.observations, ctx.now);
   const prices = freshPrices(ctx.observations, ctx.now);
   const evidence = new Set(ctx.observations.filter((o) => o.status === "ok").map((o) => o.id));
   const collateralAllowed = liveCollateralAllowed(ctx.observations);
@@ -236,7 +238,13 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : "an idle wallet balance does not size a borrow, repay, redeem or withdraw");
       }
       const held = holdings[leg.asset as keyof typeof holdings];
-      if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`);
+      if (!held || decimalWad(held.tokens) <= ZERO) {
+        const speck = dust[leg.asset as keyof typeof dust];
+        if (speck && txFloor !== null) {
+          throw new Reject(name, `${speck.tokens} ${leg.asset} ($${Number(speck.usd).toFixed(2)}) is worth less than the fee reserve one transaction needs ($${Number(formatWad(txFloor)).toFixed(2)}) — not worth moving`);
+        }
+        throw new Reject(name, `no idle ${leg.asset} in the wallet`);
+      }
       drafts.push({ leg, name, usd: held.usd, tokens: held.tokens, produces: held.tokens, heldTokens: held.tokens });
       continue;
     }

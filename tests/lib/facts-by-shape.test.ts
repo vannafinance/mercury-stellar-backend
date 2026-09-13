@@ -105,6 +105,17 @@ describe("facts by shape — the reads that had no case", () => {
     expect(fact(result, "redeemable")).toBeUndefined();
   });
 
+  it("names an Earn pool by the asset the read was for, not the venue's wire spelling (13 Sep: three 'USDC Earn' rates)", () => {
+    // The pool answers `pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike; the registry
+    // records that spelling as each asset's `earnSymbol`, so the label carries the asset id.
+    const result = normalizeResearchFacts([
+      read("earn_market", { pool_symbol: "USDC", supply_apr_pct: "20.179294", borrow_apr_pct: "25.1", utilization_pct: "80.3" }, { asset: "AQUSDC" }),
+      read("earn_market", { pool_symbol: "USDC", supply_apr_pct: "29.084267", borrow_apr_pct: "32.5", utilization_pct: "89.5" }, { asset: "BLUSDC" }),
+    ]).facts;
+    const labels = result.filter((f) => f.label.includes("supply APR")).map((f) => f.label).sort();
+    expect(labels).toEqual(["AQUSDC Earn supply APR", "BLUSDC Earn supply APR"]);
+  });
+
   it("renders a prices_batch keyed by symbol", () => {
     const result = normalizeResearchFacts([read("prices_batch", {
       prices: { XLM: { price_usd: "0.18085576397841", decimals: 14, price_wad: "180855763978410000" }, USDC: { price_usd: "1", decimals: 14, price_wad: "1000000000000000000" } },

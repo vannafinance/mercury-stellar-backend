@@ -252,6 +252,41 @@ describe("resolvePlans — an account already under its floor", () => {
   });
 });
 
+describe("resolvePlans — dust is not idle", () => {
+  /**
+   * 13 Sep, live: "Lend 0.0003729 AQUSDC to Earn — about 20.18 % APR on $0.00" was offered,
+   * approved, and paid 0.096 XLM in fees to deposit $0.00007. The wallet read states the fee
+   * reserve a transaction needs; a line worth less than that is named, not sized.
+   */
+  it("rules out lending a wallet line worth less than one transaction's fee reserve, with the figures", () => {
+    const observations = OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+      { symbol: "XLM", balance: "3.9736786", spendable: "0", status: "ok" },
+      { symbol: "XLM_SAC", balance: "3.9736786", decimals: 7, status: "ok" },
+      { symbol: "AQUSDC", balance: "0.0003729", decimals: 7, status: "ok" },
+    ], fee_reserve_xlm: "0.5" }));
+    const { candidates, rejected } = resolvePlans(
+      [plan("Lend idle AQUSDC in Earn", [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }])],
+      ctx({ observations: [...observations, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }),
+    );
+    expect(candidates).toEqual([]);
+    // 0.5 XLM at $0.18 = $0.09 is what a transaction needs; $0.0004 of AQUSDC is not worth it.
+    expect(rejected[0]?.reason).toBe("0.0003729 AQUSDC ($0.00) is worth less than the fee reserve one transaction needs ($0.09) — not worth moving");
+  });
+
+  it("calls nothing dust when the wallet read states no fee reserve — the floor would be a guess", () => {
+    const observations = OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+      { symbol: "XLM", balance: "0.01", spendable: "0.01", status: "ok" },
+      { symbol: "XLM_SAC", balance: "0.01", decimals: 7, status: "ok" },
+    ] }));
+    const { candidates } = resolvePlans(
+      [plan("Lend idle XLM in Earn", [{ op: "lend", asset: "XLM", sizing: { kind: "all_idle" } }])],
+      ctx({ observations }),
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.steps?.[0]?.amount).toBe("0.01");
+  });
+});
+
 describe("resolvePlans — negative carry and spendable balance", () => {
   it("rules out borrowing BLUSDC at 32% to supply Blend at 0.9%, with the rates (13 Sep live card)", () => {
     const { candidates, rejected } = resolvePlans([plan("Lever BLUSDC", [
