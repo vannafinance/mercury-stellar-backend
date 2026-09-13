@@ -72,6 +72,13 @@ export function InvestigationCard({
           : `${progress.label}: ${progress.status === "ok" ? "read complete" : "unavailable"}`;
 
   const stance = result?.understanding ? BORROWING[result.understanding.borrowing] : null;
+  /**
+   * Another option may be prepared once the current plan can no longer submit anything:
+   * blocked before broadcast, finished, or cancelled. While a plan is proposed, approved,
+   * running, awaiting a signature — or uncertain, where a transaction may be in flight —
+   * a second plan would race it, so the buttons wait.
+   */
+  const planInFlight = !!workflow && !["blocked", "completed", "cancelled"].includes(workflow.status);
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
     if (!loading) return;
@@ -153,7 +160,7 @@ export function InvestigationCard({
                   <p className="text-[16.5px] leading-6 text-vgray-900">{result.understanding.objective}</p>
                   {(result.understanding.constraints.length > 0 || stance) && (
                     <ul className="mt-2.5 flex flex-wrap gap-2">
-                      {result.understanding.constraints.map((constraint, index) => (
+                      {result.understanding.constraints.filter((constraint) => constraint.trim().toLowerCase() !== stance?.toLowerCase()).map((constraint, index) => (
                         <li
                           key={index}
                           className="rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[12px] text-violet-500"
@@ -222,7 +229,7 @@ export function InvestigationCard({
                           <p className="shrink-0 font-mono text-[15px] tabular-nums text-violet-500">
                             {candidate.netAprPct === null
                               ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR`
-                              : `+${Number(candidate.netAprPct).toFixed(2)}% net APR`}
+                              : `${Number(candidate.netAprPct) >= 0 ? "+" : ""}${Number(candidate.netAprPct).toFixed(2)}% net APR`}
                           </p>
                         </div>
                         <p className="mt-1.5 font-mono text-[12px] tabular-nums text-vgray-500">
@@ -231,6 +238,20 @@ export function InvestigationCard({
                             ? ` · health factor ${Number(candidate.finalHealthFactor).toFixed(2)} after`
                             : " · no change to health factor"}
                         </p>
+                        {/* A composed plan shows its legs in order — every amount here was sized in code. */}
+                        {!!candidate.steps?.length && (
+                          <ol className="mt-2 space-y-0.5 text-[12.5px] leading-5 text-vgray-700" data-testid="plan-steps">
+                            {candidate.steps.map((step, stepIndex) => (
+                              <li key={step.id} className="flex gap-2">
+                                <span className="shrink-0 font-mono text-[11px] text-vgray-400">{stepIndex + 1}</span>
+                                <span className="min-w-0 break-words">{step.label}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                        {candidate.rationale && (
+                          <p className="mt-2 text-[13px] leading-5 text-vgray-600">{candidate.rationale}</p>
+                        )}
                         {index === 0 && candidate.decision?.reason && (
                           <p className="mt-2 text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>
                         )}
@@ -238,7 +259,7 @@ export function InvestigationCard({
                           <button
                             type="button"
                             onClick={() => onPropose(candidate.id)}
-                            disabled={workflowLoading || !!workflow}
+                            disabled={workflowLoading || planInFlight}
                             className="mt-3 rounded-lg bg-gradient px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50"
                           >
                             Prepare this plan
@@ -271,6 +292,19 @@ export function InvestigationCard({
                 </div>
               )}
 
+              {/* Between a click and its result the user must see the state, not a frozen card. */}
+              {workflowLoading && (
+                <p role="status" aria-live="polite" className="mt-4 flex items-center gap-2 font-mono text-[12px] text-violet-500" data-testid="workflow-progress">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" />
+                  {!workflow
+                    ? "Preparing the plan — sizing every step from the sealed reads…"
+                    : workflow.status === "proposed" || workflow.status === "validating"
+                      ? "Checking funds, prices and projected health before anything is submitted…"
+                      : workflow.status === "awaiting_signature"
+                        ? "Waiting for your wallet signature…"
+                        : `Running step ${Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1)} of ${workflow.steps.length}…`}
+                </p>
+              )}
               {workflow && (
                 <div className="mt-5 rounded-xl border border-violet-100 px-4 py-3.5">
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
