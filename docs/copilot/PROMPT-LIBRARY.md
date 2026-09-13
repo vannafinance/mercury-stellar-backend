@@ -16,6 +16,18 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `I want zero debt but keep all my collateral` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-13 16:05 UTC · `feat/copilot-finetune` @ `83781f3` · signed-in `/copilot` · local MCP · debt ~$5,077 in XLM; wallet 0 spendable XLM
+- **Result:** `REFUSED-WRONGLY` — refusal true but content-free; the debt figure never shown
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Repay debt using wallet balances — repay XLM: an idle wallet balance does not size a borrow, repay, redeem or withdraw. Nothing was executed. · Eliminate all margin debt while preserving current posted collateral. · Zero debt · Keep all collateral intact · No new borrowing · Ruled out — Repay debt using wallet balances. repay XLM: an idle wallet balance does not size a borrow, repay, redeem or withdraw. · Unresolved — answer or refine your request below to continue · Deposit sufficient XLM and USDC into the wallet to execute repayment without reducing posted collateral.
+- **Log:** reads debt, collateral, wallet, liquidation snapshot, prices; model 1 turn; `plans: proposed 1, sized 0`.
+- **Right about:** no substitute offered (no withdraw-to-repay); "keep collateral" honoured; the model's suggestion (add funds) is sound.
+- **Cause:** the model chose `all_idle` for the repay — "repay from what I have", a natural reading — and the sizer knew only `all_position` for repay. The rejection named the sizing rule, not the debt.
+- **Fix `bc9884b`:** repay + `all_idle` = min(spendable, owed); every repay leg reads the debt; the refusal reads "you owe N XLM (~$X) and the wallet holds no spendable XLM — add N XLM to the wallet, or redeem it from Earn first".
+- **Battery:** D7/D9.
+
 ### Copilot · `invest into earn pool where i can get the best/good returns` — re-run after `99fe08c`, before Faucet (signed-in, local MCP loop, executed)
 
 - **Date / commit / surface:** 2026-09-13 15:50 UTC · `feat/copilot-finetune` @ `99fe08c` · signed-in `/copilot` · local MCP · wallet 3.97 XLM (0 spendable), 0.0003729 AQUSDC
