@@ -116,6 +116,15 @@ describe("facts by shape — the reads that had no case", () => {
     expect(labels).toEqual(["AQUSDC Earn supply APR", "BLUSDC Earn supply APR"]);
   });
 
+  it("labels a debt row by the asset the margin account means, not its wire word", () => {
+    const result = normalizeResearchFacts([
+      read("account_debt", { debt: [{ symbol: "USDC", balance: "2559.56", value_usd: "2559.94" }, { symbol: "XLM", balance: "14113.31", value_usd: "2516.91" }], total_debt_usd: "5076.86" }),
+    ]).facts;
+    const labels = result.map((f) => f.label);
+    expect(labels.some((l) => l.startsWith("BLUSDC "))).toBe(true);
+    expect(labels.some((l) => l.startsWith("USDC "))).toBe(false);
+  });
+
   it("renders a prices_batch keyed by symbol", () => {
     const result = normalizeResearchFacts([read("prices_batch", {
       prices: { XLM: { price_usd: "0.18085576397841", decimals: 14, price_wad: "180855763978410000" }, USDC: { price_usd: "1", decimals: 14, price_wad: "1000000000000000000" } },

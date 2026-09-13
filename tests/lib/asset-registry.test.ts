@@ -30,11 +30,13 @@ import {
   assetDef,
   blendReserveSymbols,
   earnPoolSymbols,
+  assetForVenueSpelling,
   isDollarStable,
   lpPairs,
   marginCollateralSymbols,
   resolveAsset,
   USDC_VARIANTS,
+  venueSpellings,
   venueUsdc,
 } from "@/lib/copilot/registry/assets";
 
@@ -73,6 +75,15 @@ describe("the registry agrees with the recorded chain reads", () => {
       .map(([venue, pool]) => ({ venue, tokens: [...(pool as { tokens: string[] }).tokens].sort() }));
     expect(lpPairs().map((p) => ({ venue: p.venue, tokens: [...p.tokens].sort() })).sort((a, b) => a.venue.localeCompare(b.venue)))
       .toEqual(recorded.sort((a, b) => a.venue.localeCompare(b.venue)));
+  });
+
+  it("resolves a venue's own spelling to the one asset it means (13 Sep: a 'USDC' debt row guessed as AQUSDC)", () => {
+    expect(assetForVenueSpelling("margin", "USDC")?.id).toBe("BLUSDC");
+    expect(assetForVenueSpelling("earn", "USDC")?.id).toBe("BLUSDC");
+    expect(assetForVenueSpelling("margin", "AQUSDC")?.id).toBe("AQUSDC");
+    expect(assetForVenueSpelling("margin", "XLM")?.id).toBe("XLM");
+    expect(assetForVenueSpelling("margin", "DOGE")).toBeNull();
+    expect(venueSpellings()).toEqual([{ asset: "BLUSDC", spelling: "USDC", venues: ["margin", "earn"] }]);
   });
 
   it("names the one USDC a venue takes, and stays silent where a venue takes several", () => {
