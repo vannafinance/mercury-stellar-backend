@@ -252,6 +252,39 @@ describe("resolvePlans — an account already under its floor", () => {
   });
 });
 
+describe("resolvePlans — repay from what the wallet has", () => {
+  /**
+   * 13 Sep, "I want zero debt but keep all my collateral": the model sized the repay
+   * `all_idle` — repay from the wallet — and the card said only "an idle wallet balance
+   * does not size a repay". What was owed never appeared.
+   */
+  const withDebt = (walletXlm: string) => ({
+    observations: [
+      ...OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+        { symbol: "XLM", balance: walletXlm, spendable: walletXlm, status: "ok" },
+        { symbol: "XLM_SAC", balance: walletXlm, decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" })),
+      obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "5000" }] }),
+    ],
+    messages: ["I want zero debt but keep all my collateral"],
+  });
+  const legs: ProposedPlan["legs"] = [{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }];
+
+  it("repays what the wallet can cover, capped by the debt", () => {
+    const partial = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("100")));
+    expect(partial.rejected).toEqual([]);
+    expect(partial.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "repay", amount: "100" }));
+    const whole = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("12000")));
+    expect(whole.candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "repay", amount: "5000" }));
+  });
+
+  it("names the debt and what to add when the wallet holds none of it", () => {
+    const { candidates, rejected } = resolvePlans([plan("Repay from wallet", legs)], ctx(withDebt("0")));
+    expect(candidates).toEqual([]);
+    expect(rejected[0]?.reason).toBe("you owe 5000 XLM (~$900.00) and the wallet holds no spendable XLM — add 5000 XLM to the wallet, or redeem it from Earn first");
+  });
+});
+
 describe("resolvePlans — dust is not idle", () => {
   /**
    * 13 Sep, live: "Lend 0.0003729 AQUSDC to Earn — about 20.18 % APR on $0.00" was offered,

@@ -202,12 +202,33 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     }
 
     const sizing = leg.sizing;
+    if (sizing.kind === "all_idle" && leg.op === "repay") {
+      /**
+       * "Repay from what I have": the wallet's spendable balance of the debt asset, capped by
+       * what is owed. 13 Sep, "I want zero debt but keep all my collateral": the model wrote
+       * exactly this and the sizer refused it as "an idle wallet balance does not size a
+       * repay" — true, and useless, because the card never said what was owed.
+       */
+      const owedRaw = positionRowBalance(ctx.observations, "account_debt", ["debt", "borrows", "positions"], def.marginSymbol!, def.id, ctx.now);
+      if (owedRaw === null) throw new Reject(name, `no ${leg.asset} debt was read this investigation`);
+      const owed = precise(owedRaw, leg.asset, name);
+      if (decimalWad(owed) <= ZERO) throw new Reject(name, `you owe no ${leg.asset}`);
+      const owedUsd = Number(formatWad(mulDown(decimalWad(owed), price.price, WAD))).toFixed(2);
+      const held = holdings[leg.asset as keyof typeof holdings];
+      if (!held || decimalWad(held.tokens) <= ZERO) {
+        throw new Reject(name, `you owe ${owed} ${leg.asset} (~$${owedUsd}) and the wallet holds no spendable ${leg.asset} — add ${owed} ${leg.asset} to the wallet, or redeem it from Earn first`);
+      }
+      const tokens = decimalWad(held.tokens) < decimalWad(owed) ? held.tokens : owed;
+      const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+      drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
+      continue;
+    }
     // An idle wallet balance feeds a lend or a deposit; `all_position` on those is the same thing.
     if (sizing.kind === "all_idle" || (sizing.kind === "all_position" && (leg.op === "lend" || leg.op === "deposit_collateral"))) {
       if (leg.op !== "lend" && leg.op !== "deposit_collateral") {
         throw new Reject(name, leg.op === "supply_blend"
           ? "Blend supply spends the margin account — deposit the idle tokens as collateral first"
-          : "an idle wallet balance does not size a borrow, repay, redeem or withdraw");
+          : "an idle wallet balance does not size a borrow, redeem or withdraw");
       }
       const held = holdings[leg.asset as keyof typeof holdings];
       if (!held || decimalWad(held.tokens) <= ZERO) {

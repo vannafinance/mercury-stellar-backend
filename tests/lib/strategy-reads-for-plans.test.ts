@@ -11,6 +11,13 @@ import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/type
 const NOW = 1_000_000;
 const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 
+describe("readsForPlans — a repay reads the debt whatever its sizing word", () => {
+  it("asks for account_debt on an all_idle repay", () => {
+    const reads = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }])], [], NOW);
+    expect(reads.map((r) => r.capability)).toEqual(expect.arrayContaining(["account_debt", "wallet_balances"]));
+  });
+});
+
 describe("readsForPlans", () => {
   it("asks for the price, the wallet and the Blend reserves a deposit-then-supply plan needs", () => {
     const reads = readsForPlans([plan([

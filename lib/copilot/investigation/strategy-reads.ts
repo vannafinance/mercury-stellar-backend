@@ -58,7 +58,8 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // `all_position` draws on what the op spends: the Earn position, the posted collateral, the debt.
       if (leg.sizing.kind === "all_position" && leg.op === "redeem") want("earn_position", leg.asset);
       if (leg.sizing.kind === "all_position" && leg.op === "withdraw_collateral") want("account_collateral");
-      if (leg.sizing.kind === "all_position" && leg.op === "repay") want("account_debt");
+      // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
+      if (leg.op === "repay") want("account_debt");
     }
   }
   return [...wanted.values()];
