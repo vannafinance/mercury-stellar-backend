@@ -288,3 +288,84 @@ describe("resolvePlans — borrowing permission", () => {
     expect(candidates).toHaveLength(1);
   });
 });
+
+/**
+ * Two ops the MCP always had and the copilot could not compose: redeem (Earn → wallet) and
+ * withdraw_collateral. The owner's own scenario: "use the AqUSDC sitting in Earn as
+ * collateral" — redeem all of it, deposit what comes back.
+ */
+describe("resolvePlans — redeem and withdraw", () => {
+  const withEarn = [
+    ...OBSERVATIONS,
+    obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
+    // 4,918.27 vTokens redeem for 5,000.79 AQUSDC — the 13 Sep position.
+    obs("e8", "earn_position", { symbol: "AQUSDC", vtoken_symbol: "VAQUSDC", human: "4918.2651397", redeemable_human: "5000.786863027758031020" }, { asset: "AQUSDC" }),
+    obs("e9", "account_collateral", { collateral: [
+      { symbol: "XLM", balance: "720", value_usd: "129.38" },
+      { symbol: "AQ_XLM_USDC", balance: "0", balance_untrusted: true },
+    ] }),
+    obs("e10", "account_debt", { debt: [{ symbol: "USDC", balance: "256.64" }] }),
+  ];
+
+  it("redeems the whole Earn position, then deposits the underlying it returned", () => {
+    const { candidates, rejected } = resolvePlans([plan("Bring AqUSDC from Earn into margin", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+      { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "previous_leg" } },
+    ])], ctx({ observations: withEarn }));
+    expect(rejected).toEqual([]);
+    const c = candidates[0];
+    expect(c.id).toBe("composed:re.AQUSDC+dc.AQUSDC");
+    // The tool takes vTokens; the deposit takes the underlying that comes back.
+    expect(c.steps!.map((s) => [s.op, s.amount, s.tool])).toEqual([
+      ["redeem", "4918.2651397", "vanna_redeem"],
+      ["deposit_collateral", "5000.786863027758031020", "vanna_deposit_collateral"],
+    ]);
+    expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", amount: "4918.2651397", lender: SCOPE.trader });
+    expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
+    expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863027758031020", trader: SCOPE.trader });
+    // Collateral rises by the deposit; nothing lowers health, so no floor was needed.
+    expect(Number(c.finalHealthFactor)).toBeCloseTo((6605.84 + 5000.79) / 5102.54, 3);
+    expect(c.borrows).toBe(false);
+  });
+
+  it("converts a literal redeem amount from the underlying the user named into vTokens", () => {
+    const { candidates } = resolvePlans([plan("Redeem some", [
+      { op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "1000", sourceQuote: "redeem 1000 AQUSDC" } },
+    ])], ctx({ observations: withEarn, messages: ["redeem 1000 AQUSDC from earn"] }));
+    // 1000 / 5000.79 of the position → 983.5 vTokens.
+    expect(Number(candidates[0].steps![0].amount)).toBeCloseTo(983.50, 1);
+  });
+
+  it("withdraws the posted collateral against the stated floor, and refuses when it would breach it", () => {
+    const ok = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn, capacity: { ...CAPACITY, floor: "1.2" } }));
+    expect(ok.rejected).toEqual([]);
+    expect(ok.candidates[0].steps![0]).toMatchObject({ op: "withdraw_collateral", amount: "720", tool: "vanna_withdraw_collateral", args: { smart_account: SCOPE.smartAccount, symbol: "XLM", amount: "720", trader: SCOPE.trader } });
+    // (6605.84 − 129.6) / 5102.54 = 1.269 — still above 1.2.
+    expect(Number(ok.candidates[0].finalHealthFactor)).toBeCloseTo(1.269, 2);
+    const breach = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn, capacity: { ...CAPACITY, floor: "1.28" } }));
+    expect(breach.rejected[0].reason).toMatch(/^this would take the health factor below your floor/);
+  });
+
+  it("with no stated floor, a withdraw is held to the liquidation line only", () => {
+    const { candidates } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn, capacity: { ...CAPACITY, floor: null } }));
+    expect(candidates).toHaveLength(1);
+  });
+
+  it("refuses a withdraw while the sizing sources disagree — it lowers health like a borrow", () => {
+    const { rejected } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({
+      observations: withEarn,
+      capacity: { ...CAPACITY, issue: { reason: "sizing_sources_disagree", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: { grossCollateralUsd: "1", debtUsd: "1" } } },
+    }));
+    expect(rejected[0].reason).toMatch(/disagree on your position, so nothing that lowers health is sized/);
+  });
+
+  it("repays the whole debt of an asset from the debt read", () => {
+    const { candidates } = resolvePlans([plan("Clear USDC debt", [{ op: "repay", asset: "BLUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: withEarn }));
+    expect(candidates[0].steps![0]).toMatchObject({ op: "repay", amount: "256.64", args: expect.objectContaining({ symbol: "USDC" }) });
+  });
+
+  it("names what is missing when the position was not read", () => {
+    const { rejected } = resolvePlans([plan("Bring AqUSDC", [{ op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }));
+    expect(rejected[0].reason).toBe("no AQUSDC position in Earn was read this investigation");
+  });
+});

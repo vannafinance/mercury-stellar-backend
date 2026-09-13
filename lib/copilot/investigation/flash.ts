@@ -17,7 +17,9 @@ const ACTION_OPS = WORKFLOW_OPS.join("|");
 /** What each op does, for the prompt. `Record<WorkflowOp, …>` so a new op cannot ship without its sentence. */
 const OP_MEANING: Record<WorkflowOp, string> = {
   lend: "idle wallet token into a Vanna Earn pool",
+  redeem: "Earn vTokens back to the wallet as the underlying token",
   deposit_collateral: "idle wallet token into the margin account",
+  withdraw_collateral: "posted collateral out of the margin account to the wallet; lowers health",
   borrow: "from a Vanna pool against margin collateral; proceeds stay in the account",
   repay: "margin debt from the account",
   supply_blend: "margin-account token into Blend",
@@ -100,6 +102,8 @@ projects the health factor after each leg against the user's floor, rejects what
 shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
 tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
 followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
+Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
+(deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays
 when the supply rate you read exceeds the borrow rate you read for the asset you borrow — compare them per asset and
 do not propose one that loses money by construction; the server rules such a shape out with the rates. Propose the

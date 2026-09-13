@@ -43,11 +43,13 @@ export const DERIVED_MIN_AMOUNT_RATIO = "0.95";
 const POSITIVE_DECIMAL = /^\d+(\.\d+)?$/;
 
 const OP_RANK: Record<WorkflowOp, number> = {
-  deposit_collateral: 0,
-  repay: 1,
-  borrow: 2,
-  lend: 3,
-  supply_blend: 4,
+  redeem: 0,
+  deposit_collateral: 1,
+  repay: 2,
+  borrow: 3,
+  lend: 4,
+  supply_blend: 5,
+  withdraw_collateral: 6,
 };
 
 export function compileProposal(input: {

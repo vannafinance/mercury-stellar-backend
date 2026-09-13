@@ -17,10 +17,12 @@ import { appendAudit } from "../audit-log";
 import { checkpointFromJournal, saveCheckpoint } from "../checkpoint";
 import { ResearchError, resolveInvestigationScope } from "./scope";
 import { workflowJournal } from "./proposal";
+import { TOOLS } from "../workflow/allowlist";
+import { WALLET_OPS } from "../workflow/types";
 
-const WRITE_TOOLS = new Set([
-  "vanna_deposit_collateral", "vanna_borrow", "vanna_repay", "vanna_blend_supply", "vanna_lend",
-]);
+/** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
+const WRITE_TOOLS = new Set(Object.values(TOOLS));
+const WALLET_TOOLS = new Set(WALLET_OPS.map((op) => TOOLS[op]));
 
 export type LedgerLookup = (hash: string) => Promise<
   { found: true; success: boolean; ledger: number } | { found: false }
@@ -133,7 +135,7 @@ export async function advanceWorkflow(input: {
     throw error;
   }
 
-  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (step.tool !== "vanna_lend" && !scope.smartAccount)) {
+  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (!WALLET_TOOLS.has(step.tool) && !scope.smartAccount)) {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "failed", message: "This step is not an allowed write for the connected account. Nothing was submitted.",
     });
@@ -285,7 +287,7 @@ function journalMessage(code: string): string {
  * on the G-wallet and rejects the margin overlay Blend writes need.
  */
 export function invocationArgs(step: ProposalStep, scope: { trader: string | null; smartAccount: string | null }): Record<string, unknown> {
-  if (step.tool === "vanna_lend") {
+  if (WALLET_TOOLS.has(step.tool)) {
     return { symbol: step.args.symbol, amount: step.amount, lender: scope.trader };
   }
   return { ...step.args, amount: step.amount, smart_account: scope.smartAccount, trader: scope.trader };

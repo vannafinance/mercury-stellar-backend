@@ -58,12 +58,16 @@ export type PlanOp = WorkflowOp;
  * function of; `plan.ts` computes it from observations and the user's floor:
  *
  *   all_idle      the asset's idle wallet balance (less the fee reserve for XLM)
+ *   all_position  the whole of what the op draws on: the Earn position for a redeem, the
+ *                 posted collateral for a withdraw, the outstanding debt for a repay
  *   to_floor      the largest borrow that keeps the health factor at the stated floor
- *   previous_leg  the same amount the previous leg produced (borrow → supply it)
+ *   previous_leg  the same amount the previous leg produced (borrow → supply it;
+ *                 redeem → deposit the underlying it returned)
  *   literal       an amount the user typed, quoted verbatim so it can be anchored
  */
 export type PlanSizing =
   | { kind: "all_idle" }
+  | { kind: "all_position" }
   | { kind: "to_floor" }
   | { kind: "previous_leg" }
   | { kind: "literal"; amount: string; sourceQuote: string };

@@ -53,6 +53,10 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       if (leg.op === "lend" || leg.op === "borrow" || leg.op === "supply_blend") want("earn_market", leg.asset);
       if (leg.op === "supply_blend") want("blend_markets");
       if (leg.sizing.kind === "all_idle") want("wallet_balances");
+      // `all_position` draws on what the op spends: the Earn position, the posted collateral, the debt.
+      if (leg.sizing.kind === "all_position" && leg.op === "redeem") want("earn_position", leg.asset);
+      if (leg.sizing.kind === "all_position" && leg.op === "withdraw_collateral") want("account_collateral");
+      if (leg.sizing.kind === "all_position" && leg.op === "repay") want("account_debt");
     }
   }
   return [...wanted.values()];

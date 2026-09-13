@@ -13,7 +13,7 @@ import type { Observation } from "./types";
 import type { ResearchCapacity } from "./view";
 
 const KEEP = new Set([
-  "wallet_balances", "asset_price", "earn_market", "blend_markets",
+  "wallet_balances", "asset_price", "earn_market", "blend_markets", "earn_position",
   "account_position", "account_health", "account_debt", "account_collateral",
 ]);
 const PRIORITY: Record<string, number> = {
@@ -25,6 +25,7 @@ const PRIORITY: Record<string, number> = {
   asset_price: 5,
   earn_market: 6,
   blend_markets: 7,
+  earn_position: 8,
 };
 const MAX_OBSERVATIONS = 16;
 
@@ -150,6 +151,14 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       utilization_pct: data.utilization_pct,
     };
   }
+  if (capability === "earn_position") {
+    return {
+      ...(data.symbol !== undefined ? { symbol: data.symbol } : {}),
+      ...(data.vtoken_symbol !== undefined ? { vtoken_symbol: data.vtoken_symbol } : {}),
+      ...(data.human !== undefined ? { human: data.human } : {}),
+      ...(data.redeemable_human !== undefined ? { redeemable_human: data.redeemable_human } : {}),
+    };
+  }
   if (capability === "wallet_balances") {
     const assets = Array.isArray(data.assets) ? data.assets.flatMap((row) => {
       if (!isRecord(row) || typeof row.symbol !== "string") return [];
@@ -175,17 +184,28 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
     };
   }
   if (capability === "account_debt") {
+    const debt = Array.isArray(data.debt) ? data.debt.flatMap((row) => {
+      if (!isRecord(row) || typeof row.symbol !== "string") return [];
+      return [{ symbol: row.symbol, balance: row.balance }];
+    }) : undefined;
     return {
       ...(data.total_debt_usd !== undefined ? { total_debt_usd: data.total_debt_usd } : {}),
       ...(data.debt_usd !== undefined ? { debt_usd: data.debt_usd } : {}),
       ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(debt ? { debt } : {}),
     };
   }
   if (capability === "account_collateral") {
+    // Posted rows travel too: a withdraw sized as `all_position` re-sizes from them on propose.
+    const collateral = Array.isArray(data.collateral) ? data.collateral.flatMap((row) => {
+      if (!isRecord(row) || typeof row.symbol !== "string") return [];
+      return [{ symbol: row.symbol, balance: row.balance, ...(row.balance_untrusted !== undefined ? { balance_untrusted: row.balance_untrusted } : {}) }];
+    }) : undefined;
     return {
       ...(data.total_value_usd !== undefined ? { total_value_usd: data.total_value_usd } : {}),
       ...(data.collateral_usd !== undefined ? { collateral_usd: data.collateral_usd } : {}),
       ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(collateral ? { collateral } : {}),
     };
   }
   if (capability === "blend_markets") {

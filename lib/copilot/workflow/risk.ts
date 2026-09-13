@@ -17,7 +17,8 @@ const TOKENS: Record<string, string> = {
 };
 const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
 const READ_MS = 15_000;
-const FLOOR_EXEMPT: ReadonlySet<WorkflowOp> = new Set(["deposit_collateral", "repay", "lend"]);
+/** Ops that cannot lower health: wallet-only Earn calls, and the two that only raise it. */
+const FLOOR_EXEMPT: ReadonlySet<WorkflowOp> = new Set(["deposit_collateral", "repay", "lend", "redeem"]);
 
 /** RPC/timeout copy must not consume the proposal — the user can Approve again. */
 const RETRYABLE = /abort|timeout|ECONNRESET|EPIPE|fetch failed|network|unavailable|could not be verified|could not be re-read|timed out/i;
@@ -36,7 +37,8 @@ function holdersFor(proposal: WorkflowProposal): string[] {
     if (step.op === "lend" || step.op === "deposit_collateral") {
       if (proposal.scope.trader) holders.add(proposal.scope.trader);
     }
-    if (step.op !== "lend" && step.op !== "borrow" && proposal.scope.smartAccount) {
+    // A redeem's funds are vTokens, checked by their own read below; nothing to read here.
+    if (step.op !== "lend" && step.op !== "redeem" && step.op !== "borrow" && proposal.scope.smartAccount) {
       holders.add(proposal.scope.smartAccount);
     }
   }
@@ -111,6 +113,20 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     for (const step of proposal.steps) {
       const amount = decimalWad(step.amount);
       const walletKey = `${proposal.scope.trader}:${step.asset}`, accountKey = `${proposal.scope.smartAccount}:${step.asset}`;
+      if (step.op === "redeem") {
+        /**
+         * A redeem spends vTokens and lands the underlying in the wallet, where a later
+         * step may deposit it. The vToken read gives both the balance and what the whole
+         * of it redeems for; a partial amount redeems pro rata.
+         */
+        const vtoken = asRecord(await read("vanna_get_vtoken_balance", { holder: proposal.scope.trader, symbol: String(step.args.symbol) }));
+        const held = decimalWad(String(vtoken.human ?? "0"));
+        const redeemable = decimalWad(String(vtoken.redeemable_human ?? "0"));
+        if (vtoken.error || held < amount) return `There are not enough ${step.asset} vTokens in Earn for the approved step.`;
+        const underlying = held > BigInt(0) ? (redeemable * amount) / held : BigInt(0);
+        funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + underlying);
+        continue;
+      }
       const source = ["lend", "deposit_collateral"].includes(step.op) ? walletKey : accountKey;
       if (step.op !== "borrow") {
         const available = funds.get(source);
@@ -118,6 +134,7 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         funds.set(source, available - amount);
       }
       if (step.op === "deposit_collateral" || step.op === "borrow") funds.set(accountKey, (funds.get(accountKey) ?? BigInt(0)) + amount);
+      if (step.op === "withdraw_collateral") funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + amount);
       if (step.op === "lend") continue;
       if (!project && !proposal.floor) continue;
       const price = prices.get(step.asset);
