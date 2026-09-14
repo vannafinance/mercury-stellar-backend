@@ -281,6 +281,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       throw new Reject(name, `${leg.asset} is not accepted as collateral on-chain right now (collateral_config)`);
     }
     if (leg.op === "supply_blend" && !def.blendReserve) throw new Reject(name, `Blend has no ${leg.asset} reserve`);
+    /**
+     * A swap buys a second asset. The account must accept it as collateral — buying
+     * something the RiskEngine does not price would drop the account's backing without
+     * the health projection seeing it — and the DEX must be one the protocol routes to.
+     */
+    const bought = leg.op === "swap" ? resolveAssetDef(leg.assetOut ?? "") : null;
+    if (leg.op === "swap") {
+      if (!leg.assetOut || !bought) throw new Reject(name, "a swap needs the asset you want to receive");
+      if (bought.id === def.id) throw new Reject(name, `a swap has to change the asset — ${def.id} for ${bought.id} is the same token`);
+      if (!bought.marginSymbol) throw new Reject(name, `${bought.id} is not accepted by the margin account, so the swap would leave it unbacked`);
+      const boughtPrice = priceFor(bought.id, ctx.observations, ctx.now);
+      if (!boughtPrice.ok) throw new Reject(name, `no ${bought.id} price was read this investigation`);
+    }
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
     if (!walletOp && !ctx.capacity) throw new Reject(name, "the margin position was not read, so nothing touching the account can be sized");
     // A withdraw lowers health exactly as a borrow does, so it carries the same two gates.
@@ -377,19 +390,28 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       }
       if (flow.positionRead === null) throw new Reject(name, `all_position applies to ${positionOps()}`);
       const raw = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
-      if (raw === null) throw new Reject(name, `no ${leg.asset} ${flow.positionRead === "account_debt" ? "debt" : "posted collateral"} was read this investigation`);
-      if (decimalWad(raw) <= ZERO) throw new Reject(name, flow.positionRead === "account_debt" ? `you owe no ${leg.asset}` : `no ${leg.asset} is posted as collateral`);
-      const pocket = flow.positionRead === "account_debt" ? "debt" : "account";
+      const holds = flow.positionRead === "account_debt" ? "debt"
+        : flow.positionRead === "blend_position" ? "Blend supply" : "posted collateral";
+      if (raw === null) throw new Reject(name, `no ${leg.asset} ${holds} was read this investigation`);
+      if (decimalWad(raw) <= ZERO) {
+        throw new Reject(name, flow.positionRead === "account_debt" ? `you owe no ${leg.asset}`
+          : flow.positionRead === "blend_position" ? `you have no ${leg.asset} supplied to Blend`
+            : `no ${leg.asset} is posted as collateral`);
+      }
+      const pocket = flow.positionRead === "account_debt" ? "debt"
+        : flow.positionRead === "blend_position" ? "blend" : "account";
       const left = pocketBalance(pocket, decimalWad(raw), drafts, leg.asset);
       if (left.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
       if (left.available <= ZERO) {
         throw new Reject(name, pocket === "debt"
           ? `the legs before this one already repay the whole ${raw} ${leg.asset} debt`
-          : `the legs before this one already use all ${raw} ${leg.asset} in the margin account`);
+          : pocket === "blend"
+            ? `the legs before this one already withdraw the whole ${raw} ${leg.asset} Blend supply`
+            : `the legs before this one already use all ${raw} ${leg.asset} in the margin account`);
       }
       const balance = precise(formatWad(left.available), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(balance), price.price, WAD));
-      drafts.push({ leg, name, usd, tokens: balance, produces: balance, heldTokens: null });
+      drafts.push({ leg, name, usd, tokens: balance, produces: leg.op === "swap" ? null : balance, heldTokens: null });
       continue;
     }
     if (sizing.kind === "to_floor") {
@@ -425,6 +447,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const prev = drafts[index - 1];
       if (!prev || prev.leg.asset !== leg.asset) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
       // What the previous leg leaves behind must be what this one spends (the op-flow table).
+      if (prev.leg.op === "swap") throw new Reject(name, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
       drafts.push({ leg, name, usd: { previous: index - 1 }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
       continue;
@@ -494,6 +517,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         throw new Reject(name, posted === null && !earlier.length
           ? `${verbOf(leg.op)} takes what a deposit or borrow put in the account — add that leg before it`
           : `only ${formatWad(available)} ${leg.asset} is in the margin account${earlier.length ? " after the legs before it" : ""}`);
+      }
+    }
+    if (flow.from === "blend") {
+      const supplied = positionRowBalance(ctx.observations, "blend_position", POSITION_ROWS.blend_position, def.marginSymbol!, def.id, ctx.now);
+      if (supplied === null) throw new Reject(name, `no ${leg.asset} Blend supply was read this investigation`);
+      const { available } = pocketBalance("blend", decimalWad(supplied), drafts, leg.asset);
+      if (available < amountWad) {
+        throw new Reject(name, available <= ZERO
+          ? `you have no ${leg.asset} supplied to Blend`
+          : `only ${formatWad(available)} ${leg.asset} is supplied to Blend${earlier.length ? " after the legs before it" : ""}`);
       }
     }
     if (flow.to === "debt" || leg.fundsRepay) {
@@ -593,9 +626,13 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const def = resolveAssetDef(d.leg.asset)!;
     const venue = OP_FLOW[d.leg.op].venue;
     const symbol = venue === "earn" ? def.earnSymbol! : venue === "blend" ? (def.marginSymbol ?? def.id) : wireSymbol(d.leg.asset);
+    const out = d.leg.op === "swap" ? resolveAssetDef(d.leg.assetOut ?? "") : null;
+    const dex = d.leg.op === "swap" ? (d.leg.venue ?? out?.lpVenue ?? def.lpVenue ?? "soroswap") : null;
     const label = d.leg.op === "redeem"
       ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
-      : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
+      : d.leg.op === "swap" && out
+        ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for ${out.displayLabel ?? out.id} on ${dex === "aquarius" ? "Aquarius" : "Soroswap"}`
+        : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
       op: d.leg.op,
@@ -603,7 +640,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       amount: d.tokens!,
       label,
       tool: TOOLS[d.leg.op],
-      args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope),
+      args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
+        out ? { tokenOut: out.marginSymbol ?? out.id, venue: dex ?? "soroswap" } : undefined),
       // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
       sizing: { basis: "stated" },
     };
@@ -773,7 +811,8 @@ function positionRowBalance(observations: readonly Observation[], capability: st
     if (!Array.isArray(rows)) continue;
     for (const row of rows) {
       if (!isRecord(row) || (row.symbol !== symbol && row.symbol !== id) || row.balance_untrusted === true) continue;
-      const balance = row.balance ?? row.amount_human ?? row.amount;
+      // `underlying_value` is how a Blend position states its size; the account reads use `balance`.
+      const balance = row.balance ?? row.amount_human ?? row.amount ?? row.underlying_value;
       if (typeof balance !== "string" && typeof balance !== "number") continue;
       try { decimalWad(String(balance)); return String(balance); } catch { return null; }
     }
@@ -797,7 +836,7 @@ function positionRowBalance(observations: readonly Observation[], capability: st
  *
  * `debt` runs the other way: it is what is still OWED, so a repay reduces it.
  */
-const CREDITABLE: ReadonlySet<Pocket> = new Set<Pocket>(["wallet", "account"]);
+const CREDITABLE: ReadonlySet<Pocket> = new Set<Pocket>(["wallet", "account", "blend"]);
 function pocketBalance(
   pocket: Pocket,
   starting: bigint,
@@ -807,17 +846,26 @@ function pocketBalance(
   let available = starting;
   let consumed = false, credited = false, unsized = false;
   for (const draft of drafts) {
-    if (draft.leg.asset !== asset) continue;
     const flow = OP_FLOW[draft.leg.op];
-    if (flow.from === pocket) {
+    // What a leg spends and what it produces are the same asset everywhere but a swap.
+    const spends = draft.leg.asset === asset;
+    const produces = (draft.leg.assetOut ?? draft.leg.asset) === asset;
+    if (!spends && !produces) continue;
+    if (flow.from === pocket && spends) {
       // A borrow sized to the floor has no amount yet; a later leg cannot be checked against it.
       if (draft.tokens === null) unsized = true;
       else { available -= decimalWad(draft.tokens); consumed = true; }
     }
-    if (flow.to === pocket) {
+    if (flow.to === pocket && produces) {
+      /**
+       * What a swap fills at is not known until it runs: the oracle gives a price, the
+       * pool gives the trade. Rather than credit a number the chain may not honour, the
+       * pocket is marked unsized and a later leg must state its own amount.
+       */
+      if (draft.leg.op === "swap") { unsized = true; continue; }
       if (draft.produces === null) unsized = true;
       // A lend's output is underlying but the Earn pocket is vTokens: crediting it would
-      // compare unlike units, so only token pockets take a credit.
+      // compare unlike units. Blend is safe — a supply and a withdraw are both in underlying.
       else if (CREDITABLE.has(pocket)) { available += decimalWad(draft.produces); credited = true; }
       else if (pocket === "debt") { available -= decimalWad(draft.produces); consumed = true; }
     }
@@ -884,6 +932,7 @@ function grossSupplyApr(drafts: ReadonlyArray<{ leg: PlanLeg; usd: string | "max
 
 /** The row set each position read carries its balances under (the MCP's shapes, as normalised). */
 const POSITION_ROWS: Record<Exclude<NonNullable<OpFlow["positionRead"]>, "earn_position">, readonly string[]> = {
+  blend_position: ["positions"],
   account_collateral: ["collateral", "positions", "balances"],
   account_debt: ["debt", "borrows", "positions"],
 };

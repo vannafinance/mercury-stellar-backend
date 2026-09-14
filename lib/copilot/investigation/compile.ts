@@ -50,6 +50,10 @@ const OP_RANK: Record<WorkflowOp, number> = {
   lend: 4,
   supply_blend: 5,
   withdraw_collateral: 6,
+  // Leaving Blend frees tokens the later legs may use, so it ranks with the other exits.
+  blend_withdraw: 0,
+  // A swap converts what the account already holds, before anything is put to work with it.
+  swap: 1,
 };
 
 export function compileProposal(input: {

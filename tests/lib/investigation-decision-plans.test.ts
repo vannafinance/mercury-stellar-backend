@@ -43,7 +43,13 @@ describe("research_complete plans", () => {
     ["a literal without its quote", [leg("borrow", "XLM", { kind: "literal", amount: "500" })]],
     ["a literal that is not a decimal", [leg("borrow", "XLM", { kind: "literal", amount: "max", sourceQuote: "borrow max" })]],
     ["an unknown sizing word", [leg("borrow", "XLM", { kind: "half" })]],
-    ["an op outside the vocabulary", [leg("swap")]],
+    ["an op outside the vocabulary", [leg("bridge")]],
+    ["a leg that is not an object", [null]],
+    ["a swap with no assetOut", [leg("swap")]],
+    ["a swap into an asset outside the registry", [{ ...leg("swap"), assetOut: "DOGE" }]],
+    ["a swap into the asset it spends", [{ ...leg("swap"), assetOut: "XLM" }]],
+    ["a swap through a venue the protocol does not route to", [{ ...leg("swap"), assetOut: "BLUSDC", venue: "uniswap" }]],
+    ["assetOut on a leg that is not a swap", [{ ...leg("lend"), assetOut: "BLUSDC" }]],
     ["an asset outside the registry", [leg("lend", "DOGE")]],
     ["seven legs", Array.from({ length: 7 }, () => leg("lend"))],
     ["no legs", []],
@@ -75,6 +81,17 @@ describe("research_complete plans", () => {
       plans: [plan([leg("deposit_collateral"), leg("supply_blend", "XLM", { kind: "previous_leg" })])],
     } }]));
     expect(decision?.kind === "research_complete" && decision.plans?.[0].legs.length).toBe(2);
+  });
+});
+
+describe("a swap leg", () => {
+  it("parses with the asset it buys, and with a venue only when the user named one", () => {
+    const bare = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC" }])] });
+    expect(bare?.kind === "research_complete" && bare.plans?.[0]?.legs[0]).toEqual({
+      op: "swap", asset: "XLM", sizing: { kind: "all_idle" }, assetOut: "BLUSDC",
+    });
+    const routed = parseDecision({ ...base, plans: [plan([{ ...leg("swap"), assetOut: "BLUSDC", venue: "aquarius" }])] });
+    expect(routed?.kind === "research_complete" && routed.plans?.[0]?.legs[0]).toMatchObject({ venue: "aquarius" });
   });
 });
 

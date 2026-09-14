@@ -39,10 +39,19 @@ const SUMMARIES = [
 function server(results: Array<{ result: ResearchView; conversationId?: string }>) {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];
   let turn = 0;
+  // The server owns the list. A recorded turn changes what the next GET returns, which is
+  // what the hook re-reads rather than assembling a summary of its own.
+  const listed = [...SUMMARIES];
+  const record = (id: string, title: string) => {
+    const at = 3_000 + turn * 1_000;
+    const existing = listed.findIndex((entry) => entry.id === id);
+    if (existing >= 0) listed[existing] = { ...listed[existing], updatedAt: at };
+    else listed.push({ id, title, createdAt: at, updatedAt: at });
+  };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string; method?: string }) => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body) : undefined });
     if (url === "/api/copilot/session" && (init?.method ?? "GET") === "GET") {
-      return { ok: true, json: async () => ({ conversations: SUMMARIES, activeId: "c-newer", turns: [
+      return { ok: true, json: async () => ({ conversations: [...listed], activeId: "c-newer", turns: [
         { role: "user", text: "repay 25% of my debt" }, { role: "assistant", text: "Repay …", question: null },
       ], continuation: "r-newer", result: view("Repay …", "r-newer") }) } as unknown as Response;
     }
@@ -56,6 +65,7 @@ function server(results: Array<{ result: ResearchView; conversationId?: string }
   }));
   mocks.consume.mockImplementation(async (_res: unknown, emit: (event: unknown) => void) => {
     const next = results[Math.min(turn++, results.length - 1)];
+    if (next.conversationId) record(next.conversationId, next.result.message);
     emit({ type: "result", result: next.result, ...(next.conversationId ? { conversationId: next.conversationId } : {}) });
   });
   return calls;
@@ -90,9 +100,10 @@ describe("useInvestigation — conversations", () => {
     await act(async () => { await result.current.run("what's my health?"); });
     const second = calls.filter((c) => c.url === "/api/copilot/investigate")[1].body as { conversationId?: string };
     expect(second.conversationId).toBeUndefined();
-    // … and the server's new id is adopted and shown at the top of the list.
+    // … and the server's new id is adopted, with the list re-read from the server rather
+    // than guessed locally, so its order and titles are the ones a reload would show.
     expect(result.current.conversationId).toBe("c-fresh");
-    expect(result.current.conversations[0]).toMatchObject({ id: "c-fresh", title: "what's my health?" });
+    await waitFor(() => expect(result.current.conversations[0]).toMatchObject({ id: "c-fresh" }));
     expect(sessionStorage.getItem(`vanna.copilot.thread.${WALLET}`)).toContain("c-fresh");
   });
 

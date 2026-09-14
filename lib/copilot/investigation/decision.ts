@@ -172,12 +172,30 @@ function parsePlan(plan: unknown): ProposedPlan | null {
     !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return null;
   const legs: PlanLeg[] = [];
   for (const leg of plan.legs) {
-    if (!isRecord(leg) || !exactKeys(leg, ["op", "asset", "sizing"]) ||
+    /**
+     * A swap is the one leg that ends in a different asset, so it alone may carry
+     * `assetOut` and the DEX `venue`. Any other leg carrying them is malformed, not
+     * tolerated: the plan is dropped and counted, as with every other unknown key.
+     */
+    if (!isRecord(leg)) return null;
+    const swaps = String(leg.op) === "swap";
+    // `venue` is the one optional key on a leg: absent means the registry picks the DEX.
+    const allowed = swaps
+      ? (Object.hasOwn(leg, "venue") ? ["op", "asset", "sizing", "assetOut", "venue"] : ["op", "asset", "sizing", "assetOut"])
+      : ["op", "asset", "sizing"];
+    if (!exactKeys(leg, allowed) ||
       !(PLAN_OPS as readonly string[]).includes(String(leg.op)) ||
       !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
     const sizing = parseSizing(leg.sizing);
     if (!sizing) return null;
-    legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing });
+    if (!swaps) { legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing }); continue; }
+    // What it buys must be a known asset, and not the one it is selling.
+    if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
+    if (leg.venue !== undefined && leg.venue !== "soroswap" && leg.venue !== "aquarius") return null;
+    legs.push({
+      op: leg.op as PlanOp, asset: String(leg.asset), sizing, assetOut: String(leg.assetOut),
+      ...(leg.venue ? { venue: leg.venue as "soroswap" | "aquarius" } : {}),
+    });
   }
   return { title: plan.title, rationale: plan.rationale, evidenceIds: [...plan.evidenceIds], legs };
 }

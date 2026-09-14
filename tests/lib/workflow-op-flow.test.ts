@@ -13,9 +13,13 @@ import { compareObservedRates } from "@/lib/copilot/investigation/rate-compariso
 import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
 
 describe("OP_FLOW", () => {
-  it("has a row for every op and every row moves value between two different pockets", () => {
+  it("has a row for every op, and every row either moves value between pockets or converts the asset in place", () => {
     expect(Object.keys(OP_FLOW).sort()).toEqual([...WORKFLOW_OPS].sort());
-    for (const op of WORKFLOW_OPS) expect(OP_FLOW[op].from, op).not.toBe(OP_FLOW[op].to);
+    for (const op of WORKFLOW_OPS) {
+      // A swap is the one op that ends where it started: it changes the asset, not the pocket.
+      if (op === "swap") expect(OP_FLOW[op].from).toBe(OP_FLOW[op].to);
+      else expect(OP_FLOW[op].from, op).not.toBe(OP_FLOW[op].to);
+    }
   });
 
   it("derives the wallet ops: the ones whose pockets are all the G-wallet's", () => {
@@ -56,7 +60,7 @@ describe("OP_FLOW", () => {
   });
 
   it("names a position read for exactly the ops 'all of it' can size, and a rate for exactly the ops that carry one", () => {
-    expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].positionRead !== null).sort()).toEqual(["redeem", "repay", "withdraw_collateral"]);
+    expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].positionRead !== null).sort()).toEqual(["blend_withdraw", "redeem", "repay", "swap", "withdraw_collateral"]);
     expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].rate !== null).sort()).toEqual(["borrow", "lend", "supply_blend"]);
     expect(OP_FLOW.borrow.rate).toBe("earn_borrow");
   });
@@ -67,7 +71,7 @@ describe("OP_FLOW", () => {
       const venue = OP_FLOW[op].venue;
       if (venue === "earn") expect(tool, op).toMatch(/^vanna_(lend|redeem)$/);
       if (venue === "blend") expect(tool, op).toMatch(/blend/);
-      if (venue === "margin") expect(tool, op).toMatch(/^vanna_(deposit_collateral|withdraw_collateral|borrow|repay)$/);
+      if (venue === "margin") expect(tool, op).toMatch(/^vanna_(deposit_collateral|withdraw_collateral|borrow|repay|swap)$/);
     }
   });
 });
@@ -128,6 +132,7 @@ describe("what the table decides downstream", () => {
       { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
       { op: "borrow", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], { ...ctx(rows("500", "0", "0"), ["deposit and borrow, HF above 1.3"]), capacity: { grossCollateralUsd: "144", debtUsd: "54", floor: "1.3" } });
-    expect(rejected[0]?.reason).toBe("a deposit puts tokens in the account — withdraw, repay or supply them next, not a borrow");
+    // The list of takers is read from the table, so a new account-drawing op joins it by itself.
+    expect(rejected[0]?.reason).toMatch(/^a deposit puts tokens in the account — .* them next, not a borrow$/);
   });
 });

@@ -42,13 +42,14 @@ const ACCOUNT_STATES = ["none", "floor", "no_floor"] as const;
 interface World {
   wallet: (typeof WALLET_STATES)[number];
   earnPosition: boolean;
+  blendPosition: boolean;
   collateral: boolean;
   debt: boolean;
   account: (typeof ACCOUNT_STATES)[number];
 }
 const WORLDS: World[] = WALLET_STATES.flatMap((wallet) => [false, true].flatMap((earnPosition) =>
-  [false, true].flatMap((collateral) => [false, true].flatMap((debt) => ACCOUNT_STATES.map((account) =>
-    ({ wallet, earnPosition, collateral, debt, account }))))));
+  [false, true].flatMap((blendPosition) => [false, true].flatMap((collateral) => [false, true].flatMap((debt) =>
+    ACCOUNT_STATES.map((account) => ({ wallet, earnPosition, blendPosition, collateral, debt, account })))))));
 
 /** A price per oracle feed — the registry says which feed prices each asset. */
 const FEED_PRICE = { XLM: "0.18", USDC: "1", AQUA: "0.002", EURC: "1.1" } as const;
@@ -56,6 +57,7 @@ const FUNDED = "1000";        // tokens in the wallet
 const DUST = "0.01";          // worth less than the 0.5 XLM fee reserve at any feed price above
 const POSTED = "800";         // tokens posted as collateral
 const OWED = "300";           // tokens owed
+const BLEND_SUPPLIED = "600";                 // what the account has sitting in the Blend farm
 const VTOKENS = "500", UNDERLYING = "510.5"; // the Earn position, as the vToken read states it
 
 const obs = (id: string, capability: string, data: Record<string, unknown>, args: Record<string, unknown> = {}): Observation =>
@@ -83,6 +85,9 @@ function observations(asset: AssetId, world: World): Observation[] {
   if (world.earnPosition && def.earnSymbol) {
     rows.push(obs("ep", "earn_position", { symbol: def.earnSymbol, vtoken_symbol: `V${def.earnSymbol}`, decimals: 7, human: VTOKENS, redeemable_human: UNDERLYING }, { asset }));
   }
+  if (world.blendPosition && def.blendReserve) {
+    rows.push(obs("bp", "blend_position", { positions: [{ venue: "blend", symbol: def.marginSymbol, underlying_value: BLEND_SUPPLIED }] }));
+  }
   if (world.account !== "none") {
     rows.push(obs("ac", "account_collateral", { collateral: world.collateral && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: POSTED }] : [] }));
     rows.push(obs("ad", "account_debt", { debt: world.debt && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: OWED }] : [] }));
@@ -93,7 +98,7 @@ function observations(asset: AssetId, world: World): Observation[] {
 /** One world is read once; only the user's words differ from cell to cell. */
 const worlds = new Map<string, Omit<PlanContext, "messages">>();
 function context(asset: AssetId, world: World, messages: string[]): PlanContext {
-  const key = `${asset}|${world.wallet}|${world.earnPosition}|${world.collateral}|${world.debt}|${world.account}`;
+  const key = `${asset}|${world.wallet}|${world.earnPosition}|${world.blendPosition}|${world.collateral}|${world.debt}|${world.account}`;
   let base = worlds.get(key);
   if (!base) {
     const rows = observations(asset, world);
@@ -141,15 +146,26 @@ function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; sa
   return { sizing: { kind: "literal", amount: "100", sourceQuote: `100 ${asset}` }, said: `100 ${asset}` };
 }
 
+/**
+ * A swap needs the asset it buys. Any other margin-accepted asset will do — the point of
+ * the grid is the sizing and funding rules, not which pair was chosen.
+ */
+function withOut(op: WorkflowOp, asset: AssetId): { assetOut?: string } {
+  if (op !== "swap") return {};
+  const other = ASSET_IDS.find((id) => id !== asset && resolveAssetDef(id)!.marginSymbol);
+  return other ? { assetOut: other } : {};
+}
+
 interface Cell { title: string; legs: PlanLeg[]; said: string }
 function cells(asset: AssetId): Cell[] {
   const single = WORKFLOW_OPS.flatMap((op) => PLAN_SIZINGS.flatMap((kind) => sizingsOf(kind, asset).map(({ sizing, said, tag }) =>
-    ({ title: `${op} ${asset} ${tag}`, legs: [{ op, asset, sizing }], said }))));
+    ({ title: `${op} ${asset} ${tag}`, legs: [{ op, asset, sizing, ...withOut(op, asset) }], said }))));
   // Every ordered pair, the second leg taking what the first leaves: `previous_leg` in every position it can appear.
   const pairs = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.map((second) => {
     const natural = naturalSizing(first, asset);
     return { title: `${first} → ${second} ${asset}`, said: natural.said,
-      legs: [{ op: first, asset, sizing: natural.sizing }, { op: second, asset, sizing: { kind: "previous_leg" } as PlanSizing }] };
+      legs: [{ op: first, asset, sizing: natural.sizing, ...withOut(first, asset) },
+             { op: second, asset, sizing: { kind: "previous_leg" } as PlanSizing, ...withOut(second, asset) }] };
   }));
   /**
    * Every ordered pair where BOTH legs size themselves from the same source, rather than
@@ -160,7 +176,8 @@ function cells(asset: AssetId): Cell[] {
   const sameSource = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.flatMap((second) => {
     const a = naturalSizing(first, asset), b = naturalSizing(second, asset);
     return [{ title: `${first} + ${second} ${asset} (both from source)`, said: `${a.said} ${b.said}`,
-      legs: [{ op: first, asset, sizing: a.sizing }, { op: second, asset, sizing: b.sizing }] }];
+      legs: [{ op: first, asset, sizing: a.sizing, ...withOut(first, asset) },
+             { op: second, asset, sizing: b.sizing, ...withOut(second, asset) }] }];
   }));
   return [...single, ...pairs, ...sameSource];
 }
@@ -179,16 +196,17 @@ function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
   return {
     wallet: spendable,
     earn: world.earnPosition ? decimalWad(VTOKENS) : BigInt(0),
+    blend: world.blendPosition && resolveAssetDef(asset)!.blendReserve ? decimalWad(BLEND_SUPPLIED) : BigInt(0),
+    lp: BigInt(0),
     account: world.account !== "none" && world.collateral ? decimalWad(POSTED) : BigInt(0),
     debt: world.account !== "none" && world.debt ? decimalWad(OWED) : BigInt(0),
-    blend: BigInt(0),
   };
 }
 
 function checkCell(asset: AssetId, world: World, cell: Cell): "plan" | "refusal" {
   const ctx = context(asset, world, [`${cell.said} — ${cell.title}`]);
   const plan: ProposedPlan = { title: cell.title, rationale: "matrix", evidenceIds: ["w"], legs: cell.legs };
-  const label = `${cell.title} | wallet=${world.wallet} earn=${world.earnPosition} coll=${world.collateral} debt=${world.debt} account=${world.account}`;
+  const label = `${cell.title} | wallet=${world.wallet} earn=${world.earnPosition} blend=${world.blendPosition} coll=${world.collateral} debt=${world.debt} account=${world.account}`;
   const { candidates, rejected } = resolvePlans([plan], ctx);
   expect(candidates.length + rejected.length, label).toBe(1);
 

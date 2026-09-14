@@ -7,7 +7,7 @@ import type { Venue } from "../registry/assets";
  * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
  * `Record<WorkflowOp, …>` maps the compiler then demands.
  */
-export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend"] as const;
+export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "blend_withdraw", "swap"] as const;
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
@@ -15,18 +15,22 @@ export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
  * `blend` and `debt` are positions. Each is held by one key — the G-wallet signs for its
  * own tokens and its Earn vTokens; the smart account holds everything margin-side.
  */
-export const POCKET_HOLDER = { wallet: "trader", earn: "trader", account: "smartAccount", blend: "smartAccount", debt: "smartAccount" } as const;
+export const POCKET_HOLDER = { wallet: "trader", earn: "trader", account: "smartAccount", blend: "smartAccount", lp: "smartAccount", debt: "smartAccount" } as const;
 export type Pocket = keyof typeof POCKET_HOLDER;
 
 export interface OpFlow {
-  /** The product whose write tool builds the step; also which symbol spelling it takes. */
+  /**
+   * The product whose write tool builds the step, and so which spelling of the asset it
+   * takes. Not the DEX a swap routes through: a swap spends and receives margin-account
+   * tokens, so it spells them the margin way and carries its `venue` on the leg.
+   */
   venue: Venue;
   /** Where the tokens come from: the balance that caps the step. `debt` is borrowing capacity — nothing is spent. */
   from: Pocket;
   /** Where they land. `debt` means the debt shrinks; `earn` / `blend` mean a position grows. */
   to: Pocket;
   /** The read whose row states the whole of what the op draws on — what "all of it" and "a share of it" size from. */
-  positionRead: "earn_position" | "account_collateral" | "account_debt" | null;
+  positionRead: "earn_position" | "account_collateral" | "account_debt" | "blend_position" | null;
   /**
    * How the margin account's health moves. `lowers` is what the user's floor guards;
    * `neutral` legs are not sizer legs. A Blend supply is neutral because the RiskEngine
@@ -53,6 +57,20 @@ export const OP_FLOW = Object.freeze({
   borrow:              { venue: "margin", from: "debt",    to: "account", positionRead: null,                 health: "lowers",  rate: "earn_borrow" },
   repay:               { venue: "margin", from: "account", to: "debt",    positionRead: "account_debt",       health: "raises",  rate: null },
   supply_blend:        { venue: "blend",  from: "account", to: "blend",   positionRead: null,                 health: "neutral", rate: "blend_supply" },
+  /**
+   * The way out of Blend: the b-token receipt burns and the underlying returns to the
+   * margin account. Health-neutral in both directions — the RiskEngine already values the
+   * receipt at underlying × oracle, so what comes back is worth what it replaced. No rate,
+   * because the position stops earning.
+   */
+  blend_withdraw:      { venue: "blend",  from: "blend",   to: "account", positionRead: "blend_position",     health: "neutral", rate: null },
+  /**
+   * One margin-account token for another, through Soroswap or Aquarius. Both sides are
+   * collateral the RiskEngine prices from the same oracle, so a swap is health-neutral up
+   * to slippage — and it is refused outright when the token it buys is not accepted as
+   * collateral, because that would quietly drop the account's backing.
+   */
+  swap:                { venue: "margin", from: "account", to: "account", positionRead: "account_collateral", health: "neutral", rate: null },
 } as const satisfies Record<WorkflowOp, OpFlow>);
 
 /** Ops whose every pocket is the G-wallet's: they never touch the margin account. */

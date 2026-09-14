@@ -23,6 +23,8 @@ const OP_MEANING: Record<WorkflowOp, string> = {
   borrow: "from a Vanna pool against margin collateral; proceeds stay in the account",
   repay: "margin debt from the account",
   supply_blend: "margin-account token into Blend",
+  blend_withdraw: "a Blend supply back out to the margin account; the way OUT of the Blend farm",
+  swap: "one margin-account token for another through a DEX; carries assetOut (what you receive) and may carry venue",
 };
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
@@ -129,6 +131,10 @@ shows the user why. Build from what the user actually holds (read the wallet, po
 tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
 followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
 "How much can I withdraw / withdraw as much as keeps HF above X" is withdraw_collateral (to_floor) — never a question back.
+Leaving a position is an op like any other: blend_withdraw (all_position) takes a Blend supply back to the account, and
+redeem (all_position) takes an Earn position back to the wallet. "Get me out of X" is that op, not a refusal.
+A swap leg names what it SPENDS as asset and what it RECEIVES as assetOut, both from the asset list, and may name venue
+("soroswap" or "aquarius") when the user did. It spends the margin account, so the tokens must already be in it.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays

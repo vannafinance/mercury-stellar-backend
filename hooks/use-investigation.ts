@@ -74,6 +74,22 @@ export function useInvestigation(wallet: string | null) {
   const activeWallet = useRef(wallet);
   activeWallet.current = wallet;
 
+  /**
+   * The list always comes from the server. The client used to append a summary it built
+   * itself — its own clock and its own truncated title — so ordering and titles could
+   * disagree with what a reload showed. One source, fetched after a turn lands.
+   */
+  const refreshConversations = useCallback(async (owner: string | null) => {
+    if (!owner) return;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000));
+      const response = await fetch("/api/copilot/session", { headers, cache: "no-store" });
+      if (!response.ok || activeWallet.current !== owner) return;
+      const remote = await response.json() as SessionPayload;
+      if (Array.isArray(remote.conversations)) setConversations(sortedByActivity(remote.conversations));
+    } catch { /* the list refreshes on the next turn or the next load */ }
+  }, []);
+
   const applyBlank = useCallback((owner: string | null) => {
     continuation.current = null;
     conversationId.current = null;
@@ -283,19 +299,8 @@ export function useInvestigation(wallet: string | null) {
             { role: "assistant", text: event.result.message },
           ];
           transcript.current = next.slice(-8);
-          // The list reflects the turn at once: a new conversation appears at the top,
-          // an existing one moves there.
-          if (landedIn) {
-            const now = Date.now();
-            setConversations((items) => {
-              const known = items.find((item) => item.id === landedIn);
-              const title = known?.title ?? prompt.replace(/\s+/g, " ").trim().slice(0, 80);
-              return sortedByActivity([
-                { id: landedIn, title, createdAt: known?.createdAt ?? now, updatedAt: now },
-                ...items.filter((item) => item.id !== landedIn),
-              ]);
-            });
-          }
+          // The server has just recorded this turn; ask it what the list looks like now.
+          if (landedIn) void refreshConversations(owner);
           setState((previous) => {
             const priorTurns: ThreadTurn[] = previous.turns.some((turn, index) =>
               turn.role === "user" && turn.text === prompt && index === previous.turns.length - 1)
@@ -353,7 +358,7 @@ export function useInvestigation(wallet: string | null) {
         setState((previous) => ({ ...previous, loading: false, progress: null }));
       }
     }
-  }, [wallet]);
+  }, [wallet, refreshConversations]);
 
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null };
