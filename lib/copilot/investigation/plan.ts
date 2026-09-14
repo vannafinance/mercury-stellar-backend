@@ -20,13 +20,13 @@ import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
-import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, type Candidate } from "./candidates";
+import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import type { InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
+import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
 export interface PlanContext {
@@ -311,7 +311,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           const owedUsd = Number(formatWad(mulDown(decimalWad(owedTokens), price.price, WAD))).toFixed(2);
           throw new Reject(name, `you owe ${owedTokens} ${leg.asset} (~$${owedUsd}) and the wallet holds no spendable ${leg.asset} — add ${owedTokens} ${leg.asset} to the wallet, or redeem it from Earn first`);
         }
-        throw new Reject(name, noIdleReason(leg.asset, dust, txFloor));
+        throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
       }
       if (leg.fundsRepay && owed !== null) {
         const target = precise(leg.repayShare ? shareOf(owed, anchoredShare(leg.repayShare, ctx.messages, name)) : owed, leg.asset, name);
@@ -417,7 +417,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     };
     if (flow.from === "wallet") {
       const held = holdings[leg.asset as keyof typeof holdings];
-      if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, noIdleReason(leg.asset, dust, txFloor));
+      if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
       const { credited, debited } = flowOf("wallet");
       const available = decimalWad(held.tokens) + credited - debited;
       if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${earlier.length ? " after the legs before it" : ""}`);
@@ -516,7 +516,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (!draft.tokens) throw new Reject(draft.name, "the amount could not be resolved");
   }
 
-  /** Pass 3 — steps, exactly as `compileRequestedActions` builds them, then the allowlist. */
+  /** Pass 3 — steps, then the allowlist. */
   const steps: ProposalStep[] = drafts.map((d, index) => {
     const def = resolveAssetDef(d.leg.asset)!;
     const venue = OP_FLOW[d.leg.op].venue;
@@ -709,13 +709,38 @@ function positionRowBalance(observations: readonly Observation[], capability: st
   return null;
 }
 
-/** Why the wallet cannot fund a leg: a dust line is named with its worth, an empty one plainly. */
-function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string; tokens: string }>>, txFloor: bigint | null): string {
+/**
+ * Why the wallet cannot fund a leg: a dust line is named with its worth, a held-but-locked
+ * line with the read's own minimum balance and fee reserve, an empty one plainly.
+ */
+function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string; tokens: string }>>, txFloor: bigint | null, ctx: PlanContext): string {
   const speck = dust[asset];
   if (speck && txFloor !== null) {
     return `${speck.tokens} ${asset} ($${Number(speck.usd).toFixed(2)}) is worth less than the fee reserve one transaction needs ($${Number(formatWad(txFloor)).toFixed(2)}) — not worth moving`;
   }
+  const locked = unspendableWalletLine(ctx.observations, ctx.now, asset);
+  if (locked) {
+    const why = [locked.minBalance ? `${locked.minBalance} ${asset} is the chain's minimum balance` : null, locked.feeReserve ? `${locked.feeReserve} ${asset} is the fee reserve` : null].filter(Boolean);
+    return `${locked.balance} ${asset} is held, but ${why.length ? `${why.join(" and ")} — ` : ""}nothing is spendable`;
+  }
   return `no idle ${asset} in the wallet`;
+}
+
+/**
+ * A stated write ("lend 1 xlm to earn") is a plan of literal legs, sized, funded and
+ * checked exactly as a model plan is — the same reads, the same pockets, the same refusal
+ * that names the figure. 14 Sep: stated actions compiled straight to steps with nothing
+ * checked against a balance; "lend 1 xlm" was offered from a wallet with nothing
+ * spendable, approved, and refused by the contract after the fact.
+ */
+export function planFromStatedActions(actions: NonNullable<GoalUnderstanding["actions"]>, objective: string): ProposedPlan | null {
+  if (!actions.length) return null;
+  return {
+    title: actions.map((a) => `${verbOf(a.op)} ${a.amount} ${a.asset}`).join(", then "),
+    rationale: objective,
+    evidenceIds: [],
+    legs: actions.map((a) => ({ op: a.op, asset: a.asset, sizing: { kind: "literal", amount: a.amount, sourceQuote: a.sourceQuote } })),
+  };
 }
 
 /** Supply-side APR alone, weighted by amount, for the "supply APR" column when a plan also borrows. */

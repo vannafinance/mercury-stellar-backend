@@ -178,6 +178,9 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_get_debt: { tool: "vanna_margin_status", action: "debt" },
   vanna_get_max_borrow: { tool: "vanna_margin_status", action: "max_borrow" },
   vanna_get_liquidation_snapshot: { tool: "vanna_margin_status", action: "liquidation_snapshot" },
+  // Propose-time simulation (simulate.ts): the read dispatcher's `preview` — RiskEngine snapshot
+  // arithmetic plus the contract's is_borrow_allowed / is_withdraw_allowed and the pool ceiling.
+  vanna_preview_margin: { tool: "vanna_margin_status", action: "preview" },
   // margin writes + preflights
   vanna_can_borrow: { tool: "vanna_margin_trade", action: "can_borrow" },
   vanna_can_withdraw: { tool: "vanna_margin_trade", action: "can_withdraw" },
@@ -190,6 +193,7 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   // earn
   vanna_get_pool_stats: { tool: "vanna_earn_market", action: "pool_stats" },
   vanna_get_vtoken_exchange_rate: { tool: "vanna_earn_market", action: "exchange_rate" },
+  vanna_preview_earn: { tool: "vanna_earn_market", action: "preview" },
   vanna_get_vtoken_balance: { tool: "vanna_earn_position", action: "balance" },
   vanna_lend: { tool: "vanna_earn_write", action: "lend" },
   vanna_redeem: { tool: "vanna_earn_write", action: "redeem" },

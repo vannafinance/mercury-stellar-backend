@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   resolveInvestigationScope: vi.fn(),
   computeAccountPosition: vi.fn(),
   computeBorrowCapacity: vi.fn(),
+  computeSizingBasis: vi.fn(),
 }));
 
 vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
@@ -20,6 +21,7 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
 vi.mock("@/lib/copilot/investigation/capacity", () => ({
   computeAccountPosition: mocks.computeAccountPosition,
   computeBorrowCapacity: mocks.computeBorrowCapacity,
+  computeSizingBasis: mocks.computeSizingBasis,
 }));
 
 const { researchTurn } = await import("@/lib/copilot/investigation/service");
@@ -307,36 +309,66 @@ describe("researchTurn fast path", () => {
     expect(result.message).toMatch(/Mandate /);
   });
 
-  it("compiles a fully specified write from the planner without waiting on the snapshot", async () => {
+  it("sizes a stated write from live reads and refuses it with the wallet's own figures when nothing is spendable (14 Sep: 'lend 1 xlm to earn')", async () => {
+    /**
+     * Until 14 Sep a stated write compiled straight to a step, nothing checked against a
+     * balance. "lend 1 xlm to earn" was offered from 3.94 XLM of which 3.5 was the chain's
+     * minimum balance and 0.5 the fee reserve; the user approved; the contract answered
+     * "HostError #10: resulting balance is not within the allowed range". The wallet read
+     * had said spendable = 0 all along.
+     */
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
-    mocks.computeAccountPosition.mockImplementation(() => new Promise(() => {}));
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "XLM", balance: "3.94", spendable: "0", min_balance: "3.5", status: "ok" },
+        { symbol: "XLM_SAC", balance: "3.94", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" };
+      if (tool === "vanna_get_price") return { price_usd: "0.18" };
+      if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) };
     const model = vi.fn(async () => ({
       kind: "research_complete",
-      goal: {
-        intent: "strategy",
-        relation: "new",
-        objective: "repay 1xlm from my account",
-        constraints: [],
-        borrowing: "forbidden",
-        actions: [{
-          op: "repay",
-          asset: "XLM",
-          amount: "1",
-          sourceQuote: "repay 1xlm from my account",
-        }],
-      },
-      findings: [{ summary: "User named a complete repay.", evidenceIds: [] }],
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 xlm to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "XLM", amount: "1", sourceQuote: "lend 1 xlm to earn" }] },
+      findings: [{ summary: "User named a complete lend.", evidenceIds: [] }],
       openQuestions: [],
     }));
-    const result = await researchTurn(
-      { message: "repay 1xlm from my account", wallet: SCOPE.trader, continuation: null },
-      deps({ model }),
-    );
-    expect(model).toHaveBeenCalled();
+    const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
+    expect(result.proposalCandidateId).not.toBe("requested_actions");
+    expect(result.candidates?.feasible).toEqual([]);
+    expect(result.candidates?.rejected[0]?.reason).toBe("lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve — nothing is spendable.");
+    expect(result.message).toMatch(/3\.94 XLM is held/);
+    expect(result.executionAllowed).toBe(false);
+  });
+
+  it("offers a stated write as the steps to approve once the reads cover it", async () => {
+    mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    const mcp = { call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "XLM", balance: "50", spendable: "46", min_balance: "3.5", status: "ok" },
+        { symbol: "XLM_SAC", balance: "50", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" };
+      if (tool === "vanna_get_price") return { price_usd: "0.18" };
+      if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" };
+      // An older server without the preview: the option stays, labelled not simulated.
+      if (tool === "vanna_preview_earn") return { error: "invalid_input", message: "Unknown action 'preview' for vanna_earn_market." };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) };
+    const model = vi.fn(async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "lend 1 xlm to earn", constraints: [], borrowing: "forbidden",
+        actions: [{ op: "lend", asset: "XLM", amount: "1", sourceQuote: "lend 1 xlm to earn" }] },
+      findings: [{ summary: "User named a complete lend.", evidenceIds: [] }],
+      openQuestions: [],
+    }));
+    const result = await researchTurn({ message: "lend 1 xlm to earn", wallet: SCOPE.trader, continuation: null }, deps({ model, mcp }));
     expect(result.status).toBe("researched");
     expect(result.proposalCandidateId).toBe("requested_actions");
-    expect(result.message).toMatch(/repay 1 XLM/i);
-    expect(result.message).not.toMatch(/wallet holds/i);
+    expect(result.message).toMatch(/^Lend 1 XLM to Earn\. Approve to run this step\./);
+    expect(result.candidates?.feasible ?? []).toEqual([]);
     expect(result.executionAllowed).toBe(false);
   });
 
@@ -358,43 +390,35 @@ describe("researchTurn fast path", () => {
     expect(result.executionAllowed).toBe(false);
   });
 
-  it("seeds a stated repay from carried position instead of a live health read", async () => {
+  it("sizes a stated repay against the account it draws from: the account's own balance covers it, or the wallet puts it in first", async () => {
     mocks.resolveInvestigationScope.mockResolvedValue(SCOPE);
-    const now = Date.now();
-    const evidence = compactResearchEvidence(healthObservations({
-      grossCollateralUsd: "317.00", debtUsd: "217.12", healthFactor: "1.46",
-    }), null, now);
-    const session = researchCodec("a".repeat(32), "mcp-test", () => now).seal(SCOPE, ["previous"], null, evidence);
-    const mcp = {
-      call: vi.fn(async (tool: string) => {
-        throw new Error(`Unexpected tool ${tool}`);
-      }),
-    };
-    let turn = 0;
-    const result = await researchTurn(
-      { message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null, session },
-      deps({
-        mcp,
-        model: async () => {
-          if (turn++ === 0) {
-            return { kind: "inspect", reads: [{ capability: "account_health", args: {} }] };
-          }
-          return {
-            kind: "research_complete",
-            goal: {
-              intent: "strategy", relation: "new", objective: "repay 1 XLM",
-              constraints: [], borrowing: "unspecified",
-              actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }],
-            },
-            findings: [{ summary: "Named repay.", evidenceIds: ["e0"] }],
-            openQuestions: [],
-          };
-        },
-      }),
-    );
-    expect(mcp.call).not.toHaveBeenCalled();
-    expect(mocks.computeAccountPosition).not.toHaveBeenCalled();
-    expect(result.status).toBe("researched");
-    expect(result.proposalCandidateId).toBe("requested_actions");
+    mocks.computeAccountPosition.mockResolvedValue(null);
+    mocks.computeSizingBasis.mockResolvedValue({ grossCollateralUsd: "144", debtUsd: "54", source: "app", issue: null, app: null, contract: null });
+    const world = (posted: string, wallet: string) => ({ call: vi.fn(async (tool: string) => {
+      if (tool === "vanna_get_wallet_balance") return { assets: [
+        { symbol: "XLM", balance: wallet, spendable: wallet, status: "ok" }, { symbol: "XLM_SAC", balance: wallet, decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" };
+      if (tool === "vanna_get_price") return { price_usd: "0.18" };
+      if (tool === "vanna_get_debt") return { debt: [{ symbol: "XLM", balance: "300" }] };
+      if (tool === "vanna_get_collateral") return { collateral: posted === "0" ? [] : [{ symbol: "XLM", balance: posted }] };
+      if (tool === "vanna_preview_margin") return { error: "invalid_input", message: "Unknown action 'preview' for vanna_margin_status." };
+      throw new Error(`Unexpected tool ${tool}`);
+    }) });
+    const model = async () => ({
+      kind: "research_complete",
+      goal: { intent: "strategy", relation: "new", objective: "repay 1 XLM", constraints: [], borrowing: "unspecified",
+        actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }] },
+      findings: [{ summary: "Named repay.", evidenceIds: [] }],
+      openQuestions: [],
+    });
+    const fromAccount = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("800", "0"), model }));
+    expect(fromAccount.proposalCandidateId).toBe("requested_actions");
+    expect(fromAccount.message).toMatch(/^Repay 1 XLM\. Approve to run this step\./);
+    const fromWallet = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "100"), model }));
+    expect(fromWallet.proposalCandidateId).toBe("requested_actions");
+    expect(fromWallet.message).toMatch(/^Deposit 1 XLM as collateral, then Repay 1 XLM\. Approve to run these steps\./);
+    const nothing = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "0"), model }));
+    expect(nothing.proposalCandidateId).not.toBe("requested_actions");
+    expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: no idle XLM in the wallet.");
   });
 });
