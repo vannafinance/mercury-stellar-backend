@@ -15,7 +15,7 @@
  * but the combinations are the model's to find.
  */
 
-import { assetForVenueSpelling, resolveAssetDef } from "../registry/assets";
+import { assetForVenueSpelling, DEFAULT_SWAP_VENUE, resolveAssetDef } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
@@ -627,11 +627,11 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const venue = OP_FLOW[d.leg.op].venue;
     const symbol = venue === "earn" ? def.earnSymbol! : venue === "blend" ? (def.marginSymbol ?? def.id) : wireSymbol(d.leg.asset);
     const out = d.leg.op === "swap" ? resolveAssetDef(d.leg.assetOut ?? "") : null;
-    const dex = d.leg.op === "swap" ? (d.leg.venue ?? out?.lpVenue ?? def.lpVenue ?? "soroswap") : null;
+    const dex = d.leg.op === "swap" ? (d.leg.venue ?? out?.lpVenue ?? def.lpVenue ?? DEFAULT_SWAP_VENUE) : null;
     const label = d.leg.op === "redeem"
       ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
       : d.leg.op === "swap" && out
-        ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for ${out.displayLabel ?? out.id} on ${dex === "aquarius" ? "Aquarius" : "Soroswap"}`
+        ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for ${out.displayLabel ?? out.id} on ${venueLabel(dex ?? DEFAULT_SWAP_VENUE)}`
         : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
@@ -641,7 +641,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       label,
       tool: TOOLS[d.leg.op],
       args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
-        out ? { tokenOut: out.marginSymbol ?? out.id, venue: dex ?? "soroswap" } : undefined),
+        out ? { tokenOut: out.marginSymbol ?? out.id, venue: dex ?? DEFAULT_SWAP_VENUE } : undefined),
       // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
       sizing: { basis: "stated" },
     };
@@ -951,6 +951,11 @@ function suppliesAtRate(op: WorkflowOp): boolean {
   const rate = OP_FLOW[op].rate;
   return rate !== null && rate !== "earn_borrow";
 }
+/** A venue as a person writes it, from its own name rather than a table of two. */
+function venueLabel(venue: string): string {
+  return venue.charAt(0).toUpperCase() + venue.slice(1);
+}
+
 /** "Deposit", "Withdraw", "Supply", "Lend" … — the op's verb for labels and refusals. */
 function verbOf(op: WorkflowOp): string {
   const verb = op === "supply_blend" ? "supply" : op.split("_")[0];

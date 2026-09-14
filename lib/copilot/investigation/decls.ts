@@ -1,5 +1,5 @@
 import type { FunctionDeclaration } from "../vertex-tools";
-import { ASSET_IDS } from "../registry/assets";
+import { lpVenues, ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
 import { isRecord, PLAN_SIZINGS } from "./decision";
 import { WORKFLOW_OPS } from "../workflow/types";
@@ -109,6 +109,14 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                   properties: {
                     op: { type: "string", enum: [...WORKFLOW_OPS] },
                     asset: { type: "string", enum: [...ASSET_IDS] },
+                    assetOut: {
+                      type: "string", enum: [...ASSET_IDS],
+                      description: "swap only: the asset the swap RECEIVES. Required on a swap leg; never set on any other op.",
+                    },
+                    venue: {
+                      type: "string", enum: [...lpVenues()],
+                      description: "swap only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
+                    },
                     sizing: {
                       type: "object",
                       properties: {

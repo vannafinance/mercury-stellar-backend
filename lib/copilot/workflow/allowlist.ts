@@ -1,4 +1,4 @@
-import { resolveAssetDef } from "../registry/assets";
+import { DEFAULT_SWAP_VENUE, lpVenues, resolveAssetDef } from "../registry/assets";
 import { decimalWad } from "../investigation/fixed";
 import type { InvestigationScope } from "../investigation/types";
 import { OP_FLOW, WALLET_OPS, type ProposalStep, type WorkflowOp } from "./types";
@@ -27,7 +27,7 @@ export function writeArgsFor(
     // vanna_swap(smart_account, token_in, token_out, amount_in, trader, venue)
     return {
       smart_account: scope.smartAccount, token_in: symbol, token_out: extra?.tokenOut ?? "",
-      amount_in: amount, trader: scope.trader, venue: extra?.venue ?? "soroswap",
+      amount_in: amount, trader: scope.trader, venue: extra?.venue ?? DEFAULT_SWAP_VENUE,
     };
   }
   return WALLET_OPS.includes(op)
@@ -48,7 +48,7 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
   if (step.op === "swap") {
     const out = typeof step.args.token_out === "string" ? resolveAssetDef(step.args.token_out) : null;
     const venue = typeof step.args.venue === "string" ? step.args.venue : "";
-    if (!out?.marginSymbol || out.id === asset.id || !["soroswap", "aquarius"].includes(venue)) throw new Error("write_not_allowed");
+    if (!out?.marginSymbol || out.id === asset.id || !(lpVenues() as readonly string[]).includes(venue)) throw new Error("write_not_allowed");
     extra = { tokenOut: out.marginSymbol, venue };
   }
   const args = writeArgsFor(step.op, symbol, step.amount, scope, extra);

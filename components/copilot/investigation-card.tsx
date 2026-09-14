@@ -151,12 +151,22 @@ export function InvestigationCard({
                   {turn.role === "user" ? (
                     <p className="max-w-[85%] rounded-r2 bg-violet-50 px-3.5 py-2 text-[14px] leading-6 text-vgray-900">{turn.text}</p>
                   ) : (
-                    <div className="max-w-[68ch]">
-                      <p className="text-[14px] leading-6 text-vgray-700">{turn.text}</p>
+                    /*
+                     * An earlier reply is context, not the answer. Rendered in full it stacked
+                     * wall on wall — two long paragraphs reading as one — so it is clamped to
+                     * two lines and opens on click. Only the current reply stays expanded.
+                     */
+                    <details className="group max-w-[68ch]">
+                      <summary className="cursor-pointer list-none text-[13.5px] leading-6 text-vgray-500 transition-colors hover:text-vgray-700 [&::-webkit-details-marker]:hidden">
+                        <span className="group-open:hidden" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {turn.text}
+                        </span>
+                        <span className="hidden group-open:inline">{turn.text}</span>
+                      </summary>
                       {turn.question && index < priorTurns.length - 1 && (
                         <p className="mt-1 text-[13px] leading-5 text-violet-500">{turn.question}</p>
                       )}
-                    </div>
+                    </details>
                   )}
                 </li>
               ))}
@@ -177,7 +187,7 @@ export function InvestigationCard({
           )}
 
           {result && (
-            <article aria-label="Copilot reply" className="space-y-5">
+            <article aria-label="Copilot reply" className={`space-y-5${priorTurns.length ? " border-t border-vgray-100 pt-5" : ""}`}>
               {/* The reply, then what was understood — the one line the user needs, not a list of reads. */}
               <div className="max-w-[68ch]">
                 <p className="text-[15px] leading-7 text-vgray-900">{result.message}</p>

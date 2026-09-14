@@ -1,4 +1,4 @@
-import { ASSET_IDS } from "../registry/assets";
+import { lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
 
@@ -191,10 +191,10 @@ function parsePlan(plan: unknown): ProposedPlan | null {
     if (!swaps) { legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing }); continue; }
     // What it buys must be a known asset, and not the one it is selling.
     if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
-    if (leg.venue !== undefined && leg.venue !== "soroswap" && leg.venue !== "aquarius") return null;
+    if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return null;
     legs.push({
       op: leg.op as PlanOp, asset: String(leg.asset), sizing, assetOut: String(leg.assetOut),
-      ...(leg.venue ? { venue: leg.venue as "soroswap" | "aquarius" } : {}),
+      ...(leg.venue ? { venue: leg.venue as LpVenue } : {}),
     });
   }
   return { title: plan.title, rationale: plan.rationale, evidenceIds: [...plan.evidenceIds], legs };

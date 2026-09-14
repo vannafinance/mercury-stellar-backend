@@ -93,7 +93,7 @@ export interface PlanLeg {
    * "aquarius". Absent means the registry decides: an asset that names its venue
    * (AQUSDC is Aquarius's USDC, SOUSDC is Soroswap's) fixes it.
    */
-  venue?: "soroswap" | "aquarius";
+  venue?: import("../registry/assets").LpVenue;
 }
 
 /**

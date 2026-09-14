@@ -304,6 +304,21 @@ export function lpPairs(): Array<{ venue: LpVenue; tokens: [AssetId, AssetId] }>
   return allAssets().filter((d) => d.lpVenue).map((d) => ({ venue: d.lpVenue!, tokens: ["XLM", d.id] }));
 }
 
+/**
+ * The DEX venues the protocol routes through, from the assets that name one — never a
+ * hand-kept list. A `vanna_swap` or an LP write takes one of these as its `venue`.
+ */
+export function lpVenues(): LpVenue[] {
+  return [...new Set(allAssets().flatMap((d) => (d.lpVenue ? [d.lpVenue] : [])))].sort();
+}
+
+/**
+ * The venue a swap routes through when neither asset names one (XLM for BLUSDC, say) and
+ * the user did not either. This mirrors `vanna_swap`'s own default rather than choosing
+ * for the protocol; it is stated once so no caller invents its own.
+ */
+export const DEFAULT_SWAP_VENUE: LpVenue = "soroswap";
+
 /** Every venue this asset can sit in, from its own fields — nothing is listed twice. */
 export function venuesOf(def: AssetDef): Venue[] {
   const venues: Venue[] = [];
