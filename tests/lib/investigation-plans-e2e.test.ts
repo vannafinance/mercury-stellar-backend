@@ -386,4 +386,33 @@ describe("model proposes, code disposes — end to end", () => {
       network: "testnet", mcp, signal: new AbortController().signal,
     })).rejects.toThrow(/not proposed by the completed investigation/);
   });
+
+  it("an option the code sized can be prepared even when the model left a note as an open question (14 Sep)", async () => {
+    /**
+     * "Repay XLM debt with idle wallet XLM" was sized and shown with its button; the model's
+     * open question "No BLUSDC balance is available to repay the BLUSDC debt directly" made
+     * the turn needs_input, the sealed allow-list empty, and Prepare answered "not proposed
+     * by the completed investigation". A sized option is an answer; the note is an open
+     * point beside it.
+     */
+    let turn = 0;
+    const view = await researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }] }
+          : { ...modelComplete, openQuestions: ["No BLUSDC balance is currently available in the wallet to repay the BLUSDC debt directly; AQUSDC or SOUSDC would need to be converted or alternative funds acquired."] },
+      },
+    );
+    expect(view.status).toBe("researched");
+    expect(view.question).toMatch(/No BLUSDC balance/);
+    const target = "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM";
+    expect(view.candidates?.feasible.map((c) => c.id)).toContain(target);
+    const proposal = await proposeWorkflow({
+      continuation: view.continuation, candidateId: target, subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
+      network: "testnet", mcp, signal: new AbortController().signal,
+    });
+    expect(proposal.status).toBe("proposed");
+  });
 });

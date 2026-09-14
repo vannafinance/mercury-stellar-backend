@@ -645,14 +645,24 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
+  /**
+   * An option the code sized is an answer. A question the model left open beside it is
+   * shown as an open point the user MAY refine — it does not take the option away. 14 Sep:
+   * "Repay XLM debt with idle wallet XLM" was sized, shown with its button, and Prepare
+   * answered "This option was not proposed by the completed investigation", because the
+   * model's note "No BLUSDC balance is available to repay the BLUSDC debt directly" had
+   * been sealed as a blocking question.
+   */
+  const offered = Boolean(candidates?.feasible.length);
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
-    : question ? "needs_input"
-      : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
-        : outcome.kind === "stopped" ? "incomplete"
-          : "needs_input";
+    : offered ? "researched"
+      : question ? "needs_input"
+        : outcome.kind === "research_complete" ? "researched"
+          : outcome.kind === "stopped" ? "incomplete"
+            : "needs_input";
   // A stated write, once sized and simulated, is offered as the steps to approve — not as a ranked option.
   const statedId = statedPlan ? planCandidateId(statedPlan) : null;
-  const statedCandidate = statedId && !question ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
+  const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
   const requestedSteps = statedCandidate?.steps ?? [];
   if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
   const message = strategyReply({
@@ -673,7 +683,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? "The language model was unavailable. No keyword plan was substituted."
     : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
-  evidence.allowedCandidateIds = outcome.kind === "research_complete" && !question
+  // Every option shown can be prepared; the sealed list is exactly the shown list.
+  evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
   if (requestedSteps.length) {
     evidence.requestedSteps = requestedSteps;
