@@ -24,7 +24,9 @@ import { checked, decimalWad, formatWad, WAD, ZERO } from "./fixed";
 /** The contract's own liquidation threshold, 1.1 WAD. Exclusive: HF <= this is unsafe. */
 export const LIQUIDATION_THRESHOLD_WAD = BigInt(11) * WAD / BigInt(10);
 
-export type SizedOp = "deposit_collateral" | "borrow" | "repay" | "withdraw_collateral";
+/** The ops the sizer projects are the ones the op-flow table says move health. */
+export type { SizedOp } from "../workflow/types";
+import type { SizedOp } from "../workflow/types";
 
 export interface SizingBase {
   /** Authoritative gross collateral in USD, as a decimal string. */

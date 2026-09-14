@@ -9,7 +9,7 @@ import { sizeLegs, type LegRequest } from "../investigation/sizing";
 import { RETRY, withRetry } from "../retry-policy";
 import { logUnexpected } from "../log";
 import { allowedInvocation } from "./allowlist";
-import type { WorkflowOp, WorkflowProposal } from "./types";
+import { OP_FLOW, POCKET_HOLDER, SIZED_OPS, type SizedOp, type WorkflowProposal } from "./types";
 
 const TOKENS: Record<string, string> = {
   XLM: Asset.native().contractId(Networks.TESTNET), BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC_TOKEN,
@@ -17,8 +17,6 @@ const TOKENS: Record<string, string> = {
 };
 const VERIFIED_RISK_WASM = "3e9d1180d2fb4efa4629bbd0f06d5de00835246604d45555a4ba9224c741c960";
 const READ_MS = 15_000;
-/** Ops that cannot lower health: wallet-only Earn calls, and the two that only raise it. */
-const FLOOR_EXEMPT: ReadonlySet<WorkflowOp> = new Set(["deposit_collateral", "repay", "lend", "redeem"]);
 
 /** RPC/timeout copy must not consume the proposal — the user can Approve again. */
 const RETRYABLE = /abort|timeout|ECONNRESET|EPIPE|fetch failed|network|unavailable|could not be verified|could not be re-read|timed out/i;
@@ -27,20 +25,23 @@ export function isRetryableRiskReason(reason: string): boolean {
   return RETRYABLE.test(reason);
 }
 
+/** Only a step the op-flow table says LOWERS health needs the projection; the rest cannot fail a floor. */
 function needsHealthProjection(proposal: WorkflowProposal): boolean {
-  return proposal.steps.some((step) => !FLOOR_EXEMPT.has(step.op));
+  return proposal.steps.some((step) => OP_FLOW[step.op].health === "lowers");
 }
 
+/**
+ * The keys whose token balances the steps spend, from the table's source pockets: the
+ * wallet's tokens (trader), the account's (smart account). An Earn position is vTokens with
+ * its own read below; borrowing capacity is no balance at all.
+ */
 function holdersFor(proposal: WorkflowProposal): string[] {
   const holders = new Set<string>();
   for (const step of proposal.steps) {
-    if (step.op === "lend" || step.op === "deposit_collateral") {
-      if (proposal.scope.trader) holders.add(proposal.scope.trader);
-    }
-    // A redeem's funds are vTokens, checked by their own read below; nothing to read here.
-    if (step.op !== "lend" && step.op !== "redeem" && step.op !== "borrow" && proposal.scope.smartAccount) {
-      holders.add(proposal.scope.smartAccount);
-    }
+    const from = OP_FLOW[step.op].from;
+    if (from === "earn" || from === "debt") continue;
+    const holder = proposal.scope[POCKET_HOLDER[from]];
+    if (holder) holders.add(holder);
   }
   return [...holders];
 }
@@ -129,22 +130,22 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + underlying);
         continue;
       }
-      const source = ["lend", "deposit_collateral"].includes(step.op) ? walletKey : accountKey;
-      if (step.op !== "borrow") {
-        const available = funds.get(source);
-        if (available === undefined || available < amount) return `There is not enough ${step.asset} in the ${source === walletKey ? "wallet" : "margin account"} for the approved step.`;
-        funds.set(source, available - amount);
+      // Funds flow exactly as the op-flow table says: debit the source pocket, credit the destination.
+      const { from, to } = OP_FLOW[step.op];
+      const keyOf = { wallet: walletKey, account: accountKey } as const;
+      if (from === "wallet" || from === "account") {
+        const available = funds.get(keyOf[from]);
+        if (available === undefined || available < amount) return `There is not enough ${step.asset} in the ${from === "wallet" ? "wallet" : "margin account"} for the approved step.`;
+        funds.set(keyOf[from], available - amount);
       }
-      if (step.op === "deposit_collateral" || step.op === "borrow") funds.set(accountKey, (funds.get(accountKey) ?? BigInt(0)) + amount);
-      if (step.op === "withdraw_collateral") funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + amount);
-      if (step.op === "lend") continue;
+      if (to === "wallet" || to === "account") funds.set(keyOf[to], (funds.get(keyOf[to]) ?? BigInt(0)) + amount);
+      // A health-neutral step (an Earn lend, a Blend supply the RiskEngine values at par) is not a projection leg.
+      if (!(SIZED_OPS as readonly string[]).includes(step.op)) continue;
       if (!project && !proposal.floor) continue;
       const price = prices.get(step.asset);
       if (price === undefined) fail("price_unavailable");
       const amountUsd = formatWad((amount * price + WAD - BigInt(1)) / WAD);
-      // Until post-supply receipt valuation is verified, charge the full outflow.
-      // Crediting an assumed receipt would overstate collateral during a multi-leg run.
-      legs.push({ op: step.op === "supply_blend" ? "withdraw_collateral" : step.op, amountUsd, label: step.label });
+      legs.push({ op: step.op as SizedOp, amountUsd, label: step.label });
     }
     if (!margin) return null;
     if (!proposal.scope.smartAccount) return "This proposal requires a verified margin account.";

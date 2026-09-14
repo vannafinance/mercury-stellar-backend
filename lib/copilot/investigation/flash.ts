@@ -8,7 +8,7 @@ import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
 import { ASSET_IDS, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
-import { WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
+import { OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { PLAN_SIZINGS } from "./decision";
 
 const ACTION_ASSETS = ASSET_IDS.join("|");
@@ -27,17 +27,8 @@ const OP_MEANING: Record<WorkflowOp, string> = {
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
 
-/** The venue each op acts on. `Record<WorkflowOp, …>` so a new op cannot ship without saying where it goes. */
-const OP_VENUE: Record<WorkflowOp, Venue> = {
-  lend: "earn",
-  redeem: "earn",
-  deposit_collateral: "margin",
-  withdraw_collateral: "margin",
-  borrow: "margin",
-  repay: "margin",
-  supply_blend: "blend",
-};
-const EXECUTABLE_VENUES = [...new Set(WORKFLOW_OPS.map((op) => OP_VENUE[op]))];
+/** The venues the ops act on, from the op-flow table. */
+const EXECUTABLE_VENUES: Venue[] = [...new Set(WORKFLOW_OPS.map((op) => OP_FLOW[op].venue))];
 /**
  * What the model is told about venues comes from the registry, the same tables the
  * evaluator sizes from — never a hand-written "AQUSDC for Aquarius". A venue the user

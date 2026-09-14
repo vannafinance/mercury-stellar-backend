@@ -46,10 +46,22 @@ describe("deterministic execution risk", () => {
     expect(await validate(proposal("50"))).toMatch(/already below/);
     expect(mocks.app).not.toHaveBeenCalled();
   });
-  it("does not credit unvalidated future Blend receipts", async () => {
+  it("values a Blend supply at par, as the RiskEngine does, so it neither passes nor fails a floor", async () => {
+    /**
+     * Until 14 Sep a Blend supply was charged as a full withdrawal "until post-supply receipt
+     * valuation is verified". Verified: BlendController mints a TrackingToken receipt by the
+     * measured b-token delta and syncs it into the account's collateral list
+     * (BlendControllerContract/src/controller.rs), and RiskEngine values that receipt at
+     * underlying × oracle price (risk_engine.rs, `BlendUnderlying`). The op-flow table says
+     * `neutral`; the sizer and this validator now agree. A borrow that lands exactly on the
+     * 1.5 floor stays there after the supply — and the supply still must be funded.
+     */
     const p = proposal("100");
     p.steps.push({ ...p.steps[0], id: "supply", op: "supply_blend", tool: "vanna_blend_supply" });
-    expect(await validate(p)).toMatch(/do not pass/);
+    expect(await validate(p)).toBeNull();
+    const unfunded = proposal("100");
+    unfunded.steps.push({ ...unfunded.steps[0], id: "supply", op: "supply_blend", tool: "vanna_blend_supply", amount: "1200", args: { ...unfunded.steps[0].args, amount: "1200" } });
+    expect(await validate(unfunded)).toMatch(/not enough XLM in the margin account/);
   });
   it("rejects unsupported tools, inconsistent amounts and extra arguments", () => {
     const p = proposal("50");
