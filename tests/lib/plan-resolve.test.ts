@@ -314,6 +314,67 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
   });
 });
 
+describe("resolvePlans — two legs may not spend the same idle balance twice (14 Sep)", () => {
+  const wallet = obs("e1", "wallet_balances", { assets: [
+    { symbol: "XLM", balance: "3316.1252875", spendable: "3315.6252875", status: "ok" },
+    { symbol: "XLM_SAC", balance: "3316.1252875", decimals: 7, status: "ok" },
+  ], fee_reserve_xlm: "0.5" });
+  const debt = obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "14113.4967211" }] });
+  const observations = [...OBSERVATIONS.map((o) => (o.id === "e1" ? wallet : o)), debt];
+
+  /**
+   * "can you repay all the debt and increase my HF, if i dont have the fund please deposit
+   * in my margin acc" — the model wrote the funding deposit itself, and the repay expanded
+   * into a second one. The plan deposited 3,315.63 XLM, deposited it again, then repaid it;
+   * the approve-time funds check blocked the run with "not enough XLM in the wallet".
+   */
+  it("collapses a repay that follows the model's own funding deposit, instead of asking the wallet twice", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Deposit then repay", [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "repay", asset: "XLM", sizing: { kind: "all_position" } },
+      ])],
+      ctx({ observations, messages: ["repay all the debt, if i dont have the fund please deposit in my margin acc"] }),
+    );
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.map((step) => [step.op, step.amount])).toEqual([
+      ["deposit_collateral", "3315.6252875"],
+      ["repay", "3315.6252875"],
+    ]);
+  });
+
+  it("refuses a second leg that draws on an idle balance the first already spent", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Lend it and deposit it", [
+        { op: "lend", asset: "XLM", sizing: { kind: "all_idle" } },
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      ])],
+      ctx({ observations, messages: ["lend all my idle XLM and deposit all my idle XLM"] }),
+    );
+    expect(candidates).toEqual([]);
+    expect(rejected[0]?.reason).toBe("the legs before this one already use all 3315.6252875 XLM the wallet can spend");
+  });
+
+  it("counts what an earlier leg puts BACK into the wallet: a redeem funds the deposit after it", () => {
+    const position = obs("e8", "earn_position", {
+      symbol: "AQUSDC", vtoken_symbol: "VAQUSDC", decimals: 7, human: "500", redeemable_human: "510.5",
+    }, { asset: "AQUSDC" });
+    const { candidates, rejected } = resolvePlans(
+      [plan("Redeem then deposit", [
+        { op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } },
+        { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "all_idle" } },
+      ])],
+      ctx({ observations: [...observations, position], messages: ["move my AQUSDC from Earn into collateral"] }),
+    );
+    expect(rejected).toEqual([]);
+    // The wallet held no AQUSDC; the redeem lands 510.5 and the deposit spends exactly that.
+    expect(candidates[0]?.steps?.map((step) => [step.op, step.amount])).toEqual([
+      ["redeem", "500"],
+      ["deposit_collateral", "510.5"],
+    ]);
+  });
+});
+
 describe("resolvePlans — withdraw to the floor (14 Sep: 'how much xlm can i withdraw', 'withdraw all … keep my HF > 2.5')", () => {
   const posted = [...OBSERVATIONS, obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "20000" }] })];
 

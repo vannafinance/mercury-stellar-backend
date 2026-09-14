@@ -17,7 +17,7 @@
 
 import { assetForVenueSpelling, resolveAssetDef } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
@@ -90,13 +90,31 @@ type SizerLeg = ProposedPlan["legs"][number] & { fundsRepay?: true; repayShare?:
  * 13 Sep: sized as one leg, the approve-time check read the account (which held none of
  * the 9,999 XLM the wallet did), sent the plan back to "proposed", and nothing ran.
  */
+/** Whether a sizing word takes its amount from the wallet's idle balance. */
+function drawsOnWallet(sizing: PlanSizing): boolean {
+  return sizing.kind === "all_idle" || sizing.kind === "all_position"
+    || (sizing.kind === "fraction" && sizing.of === "idle") || sizing.kind === "literal";
+}
+
 function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
   // `all_position` on a repay means the whole debt; it is still paid from the wallet through
   // the account, so it is the same two legs, capped by the debt — partial when the wallet
   // covers less, and the card says what remains. 13 Sep: "Repay 14113 XLM, then 2559 BLUSDC"
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
-  return legs.flatMap((leg): SizerLeg[] => {
+  return legs.flatMap((leg, index): SizerLeg[] => {
     if (leg.op !== "repay") return [leg];
+    /**
+     * The model may have written the funding deposit itself — "repay my debt, and if I
+     * don't have the funds deposit into my margin account" is one instruction that reads
+     * as two legs. Expanding the repay as well would spend the same idle balance twice:
+     * 14 Sep, a plan deposited 3,315.63 XLM, deposited it again, then repaid it, and the
+     * approve-time funds check blocked the run. When the leg before it already moves this
+     * asset from the wallet, the repay takes what that deposit put in.
+     */
+    const before = legs[index - 1];
+    if (before && before.op === "deposit_collateral" && before.asset === leg.asset && drawsOnWallet(before.sizing)) {
+      return [{ op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
+    }
     if (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position") {
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
@@ -295,7 +313,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           ? `${verbOf(leg.op)} spends the margin account — deposit the idle tokens as collateral first`
           : `an idle wallet balance does not size a ${verbOf(leg.op).toLowerCase()}`);
       }
-      const held = holdings[leg.asset as keyof typeof holdings];
+      /**
+       * What the wallet can still fund, not what it held before this plan started: two legs
+       * that both draw on the idle balance may not each take all of it. Legs that LAND in
+       * the wallet (a redeem, a withdraw) add to it in the same pass.
+       */
+      const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
+      const held = idle.tokens === null ? null : { tokens: idle.tokens, usd: formatWad(mulDown(decimalWad(idle.tokens), price.price, WAD)) };
+      if (idle.spent && (!held || decimalWad(held.tokens) <= ZERO)) {
+        throw new Reject(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`);
+      }
       /**
        * A deposit that exists to fund a repay ("repay from what I have") is capped by what
        * is owed, and when the wallet holds none of the asset the refusal says what is owed —
@@ -316,7 +343,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
       }
       if (leg.fundsRepay && owed !== null) {
-        const target = precise(leg.repayShare ? shareOf(owed, anchoredShare(leg.repayShare, ctx.messages, name)) : owed, leg.asset, name);
+        const stillOwed = pocketBalance("debt", decimalWad(owed), drafts, leg.asset);
+        if (stillOwed.available <= ZERO) throw new Reject(name, `the legs before this one already repay the whole ${owed} ${leg.asset} debt`);
+        const remainingDebtTokens = formatWad(stillOwed.available);
+        const target = precise(leg.repayShare ? shareOf(remainingDebtTokens, anchoredShare(leg.repayShare, ctx.messages, name)) : remainingDebtTokens, leg.asset, name);
         const tokens = decimalWad(held.tokens) < decimalWad(target) ? held.tokens : target;
         const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
         drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: held.tokens });
@@ -335,8 +365,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
         if (!position) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
         if (decimalWad(position.vtokens) <= ZERO) throw new Reject(name, `you hold no ${leg.asset} in Earn`);
-        const vtokens = precise(position.vtokens, position.vtokenSymbol ?? leg.asset, name);
-        const underlying = precise(position.underlying, leg.asset, name);
+        const left = pocketBalance("earn", decimalWad(position.vtokens), drafts, leg.asset);
+        if (left.available <= ZERO) throw new Reject(name, `the legs before this one already redeem the whole ${position.vtokens} ${leg.asset} position in Earn`);
+        // A partial position redeems its underlying pro rata, at the position's own rate.
+        const share = (left.available * WAD) / decimalWad(position.vtokens);
+        const vtokens = precise(formatWad(left.available), position.vtokenSymbol ?? leg.asset, name);
+        const underlying = precise(formatWad(mulDown(decimalWad(position.underlying), share, WAD)), leg.asset, name);
         const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
         drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
         continue;
@@ -345,7 +379,15 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const raw = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
       if (raw === null) throw new Reject(name, `no ${leg.asset} ${flow.positionRead === "account_debt" ? "debt" : "posted collateral"} was read this investigation`);
       if (decimalWad(raw) <= ZERO) throw new Reject(name, flow.positionRead === "account_debt" ? `you owe no ${leg.asset}` : `no ${leg.asset} is posted as collateral`);
-      const balance = precise(raw, leg.asset, name);
+      const pocket = flow.positionRead === "account_debt" ? "debt" : "account";
+      const left = pocketBalance(pocket, decimalWad(raw), drafts, leg.asset);
+      if (left.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (left.available <= ZERO) {
+        throw new Reject(name, pocket === "debt"
+          ? `the legs before this one already repay the whole ${raw} ${leg.asset} debt`
+          : `the legs before this one already use all ${raw} ${leg.asset} in the margin account`);
+      }
+      const balance = precise(formatWad(left.available), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(balance), price.price, WAD));
       drafts.push({ leg, name, usd, tokens: balance, produces: balance, heldTokens: null });
       continue;
@@ -360,7 +402,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
-      const capUsd = formatWad(mulDown(decimalWad(posted), price.price, WAD));
+      const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
+      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
+      const capUsd = formatWad(mulDown(stillPosted.available, price.price, WAD));
       /**
        * "How much can I withdraw?" with no floor stated: the liquidation line is the only
        * stop the chain enforces, so the figure AT the line is named — and the floor they
@@ -400,8 +445,11 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (flow.positionRead === "earn_position") {
         const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
         if (!position || decimalWad(position.underlying) <= ZERO) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
-        const vtokens = precise(shareOf(position.vtokens, share), position.vtokenSymbol ?? leg.asset, name);
-        const underlying = precise(shareOf(position.underlying, share), leg.asset, name);
+        const left = pocketBalance("earn", decimalWad(position.vtokens), drafts, leg.asset);
+        if (left.available <= ZERO) throw new Reject(name, `the legs before this one already redeem the whole ${position.vtokens} ${leg.asset} position in Earn`);
+        const remaining = (left.available * WAD) / decimalWad(position.vtokens);
+        const vtokens = precise(shareOf(formatWad(left.available), share), position.vtokenSymbol ?? leg.asset, name);
+        const underlying = precise(shareOf(formatWad(mulDown(decimalWad(position.underlying), remaining, WAD)), share), leg.asset, name);
         const usd = formatWad(mulDown(decimalWad(underlying), price.price, WAD));
         drafts.push({ leg, name, usd, tokens: vtokens, produces: underlying, heldTokens: underlying });
         continue;
@@ -410,7 +458,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const posted = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead], def.marginSymbol!, def.id, ctx.now);
       if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
       if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
-      const tokens = precise(shareOf(posted, share), leg.asset, name);
+      const stillPosted = pocketBalance("account", decimalWad(posted), drafts, leg.asset);
+      if (stillPosted.unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
+      if (stillPosted.available <= ZERO) throw new Reject(name, `the legs before this one already use all ${posted} ${leg.asset} in the margin account`);
+      const tokens = precise(shareOf(formatWad(stillPosted.available), share), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
       drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
       continue;
@@ -429,26 +480,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      */
     const amountWad = decimalWad(sizing.amount);
     const earlier = drafts.slice(0, index).filter((d) => d.leg.asset === leg.asset);
-    const flowOf = (pocket: typeof flow.from) => {
-      let credited = ZERO, debited = ZERO, unsized = false;
-      for (const d of earlier) {
-        if (OP_FLOW[d.leg.op].to === pocket) { if (d.produces === null) unsized = true; else credited += decimalWad(d.produces); }
-        if (OP_FLOW[d.leg.op].from === pocket && d.tokens !== null) debited += decimalWad(d.tokens);
-      }
-      return { credited, debited, unsized };
-    };
     if (flow.from === "wallet") {
-      const held = holdings[leg.asset as keyof typeof holdings];
-      if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
-      const { credited, debited } = flowOf("wallet");
-      const available = decimalWad(held.tokens) + credited - debited;
+      const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
+      if (idle.tokens === null) throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
+      const available = decimalWad(idle.tokens);
       if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${earlier.length ? " after the legs before it" : ""}`);
     }
     if (flow.from === "account") {
-      const { credited, debited, unsized } = flowOf("account");
-      if (unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
-      const available = (posted === null ? ZERO : decimalWad(posted)) + credited - debited;
+      const { available, unsized } = pocketBalance("account", posted === null ? ZERO : decimalWad(posted), drafts, leg.asset);
+      if (unsized) throw new Reject(name, `${verbOf(leg.op)} after a borrow sized to the floor takes what the borrow yields — size it as previous_leg`);
       if (available < amountWad) {
         throw new Reject(name, posted === null && !earlier.length
           ? `${verbOf(leg.op)} takes what a deposit or borrow put in the account — add that leg before it`
@@ -459,14 +500,22 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const owed = positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol!, def.id, ctx.now);
       if (owed === null) throw new Reject(name, `no ${leg.asset} debt was read this investigation`);
       if (decimalWad(owed) <= ZERO) throw new Reject(name, `you owe no ${leg.asset}`);
-      if (decimalWad(owed) < amountWad) throw new Reject(name, `you owe only ${precise(owed, leg.asset, name)} ${leg.asset}`);
+      const { available } = pocketBalance("debt", decimalWad(owed), drafts, leg.asset);
+      if (available < amountWad) {
+        throw new Reject(name, available <= ZERO
+          ? `the legs before this one already repay the whole ${owed} ${leg.asset} debt`
+          : `you owe only ${precise(formatWad(available), leg.asset, name)} ${leg.asset}${earlier.length ? " after the legs before it" : ""}`);
+      }
     }
     if (flow.positionRead === "earn_position") {
       // The user names the underlying; the tool takes vTokens, converted at the position's own rate.
       const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
       if (!position || decimalWad(position.underlying) <= ZERO) throw new Reject(name, `no ${leg.asset} position in Earn was read this investigation`);
+      const left = pocketBalance("earn", decimalWad(position.vtokens), drafts, leg.asset);
+      if (left.available <= ZERO) throw new Reject(name, `the legs before this one already redeem the whole ${position.vtokens} ${leg.asset} position in Earn`);
+      const redeemable = mulDown(decimalWad(position.underlying), (left.available * WAD) / decimalWad(position.vtokens), WAD);
       const underlying = decimalWad(sizing.amount);
-      if (underlying > decimalWad(position.underlying)) throw new Reject(name, `only ${position.underlying} ${leg.asset} is redeemable from Earn`);
+      if (underlying > redeemable) throw new Reject(name, `only ${formatWad(redeemable)} ${leg.asset} is redeemable from Earn${earlier.length ? " after the legs before it" : ""}`);
       const vtokens = precise(formatWad((underlying * decimalWad(position.vtokens)) / decimalWad(position.underlying)), position.vtokenSymbol ?? leg.asset, name);
       const usd = formatWad(mulDown(underlying, price.price, WAD));
       drafts.push({ leg, name, usd, tokens: vtokens, produces: sizing.amount, heldTokens: null });
@@ -736,6 +785,59 @@ function positionRowBalance(observations: readonly Observation[], capability: st
  * Why the wallet cannot fund a leg: a dust line is named with its worth, a held-but-locked
  * line with the read's own minimum balance and fee reserve, an empty one plainly.
  */
+/**
+ * What a pocket can still supply, after the legs already sized in this plan.
+ *
+ * One prompt is often several instructions — "repay my debt, and if I don't have the funds
+ * deposit into my margin account" is two. Every leg used to size itself from the READ, as
+ * though it were the only leg, so two legs drawing on one balance each took all of it. On
+ * 14 Sep that produced a plan depositing the same 3,315.63 XLM twice; the shape matrix
+ * then found the same flaw in the Earn position and the margin account. A pocket carries
+ * a running balance instead.
+ *
+ * `debt` runs the other way: it is what is still OWED, so a repay reduces it.
+ */
+const CREDITABLE: ReadonlySet<Pocket> = new Set<Pocket>(["wallet", "account"]);
+function pocketBalance(
+  pocket: Pocket,
+  starting: bigint,
+  drafts: ReadonlyArray<{ leg: PlanLeg; tokens: string | null; produces: string | null }>,
+  asset: string,
+): { available: bigint; consumed: boolean; credited: boolean; unsized: boolean } {
+  let available = starting;
+  let consumed = false, credited = false, unsized = false;
+  for (const draft of drafts) {
+    if (draft.leg.asset !== asset) continue;
+    const flow = OP_FLOW[draft.leg.op];
+    if (flow.from === pocket) {
+      // A borrow sized to the floor has no amount yet; a later leg cannot be checked against it.
+      if (draft.tokens === null) unsized = true;
+      else { available -= decimalWad(draft.tokens); consumed = true; }
+    }
+    if (flow.to === pocket) {
+      if (draft.produces === null) unsized = true;
+      // A lend's output is underlying but the Earn pocket is vTokens: crediting it would
+      // compare unlike units, so only token pockets take a credit.
+      else if (CREDITABLE.has(pocket)) { available += decimalWad(draft.produces); credited = true; }
+      else if (pocket === "debt") { available -= decimalWad(draft.produces); consumed = true; }
+    }
+  }
+  return { available, consumed, credited, unsized };
+}
+
+/** The idle balance a leg may still draw on, as tokens. */
+function walletAfterEarlierLegs(
+  held: { usd: string; tokens: string } | undefined,
+  drafts: ReadonlyArray<{ leg: PlanLeg; tokens: string | null; produces: string | null }>,
+  asset: string,
+): { tokens: string | null; spent: boolean; startedWith: string | null } {
+  const { available, consumed, credited } = pocketBalance("wallet", held ? decimalWad(held.tokens) : ZERO, drafts, asset);
+  // No wallet line is not "nothing available": an earlier redeem or withdraw may land some
+  // in this same plan, and a deposit after it is fundable by exactly that.
+  if (!held && !credited) return { tokens: null, spent: false, startedWith: null };
+  return { tokens: available > ZERO ? formatWad(available) : "0", spent: consumed, startedWith: held?.tokens ?? "0" };
+}
+
 function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string; tokens: string }>>, txFloor: bigint | null, ctx: PlanContext): string {
   const speck = dust[asset];
   if (speck && txFloor !== null) {

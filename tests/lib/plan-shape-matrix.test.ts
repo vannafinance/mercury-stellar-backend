@@ -151,7 +151,18 @@ function cells(asset: AssetId): Cell[] {
     return { title: `${first} → ${second} ${asset}`, said: natural.said,
       legs: [{ op: first, asset, sizing: natural.sizing }, { op: second, asset, sizing: { kind: "previous_leg" } as PlanSizing }] };
   }));
-  return [...single, ...pairs];
+  /**
+   * Every ordered pair where BOTH legs size themselves from the same source, rather than
+   * the second taking what the first produced. 14 Sep: the matrix had only `previous_leg`
+   * pairs, so it never generated "deposit all idle XLM, then repay all the debt" — a plan
+   * that spent the same 3,315 XLM twice and was caught only at approve time.
+   */
+  const sameSource = WORKFLOW_OPS.flatMap((first) => WORKFLOW_OPS.flatMap((second) => {
+    const a = naturalSizing(first, asset), b = naturalSizing(second, asset);
+    return [{ title: `${first} + ${second} ${asset} (both from source)`, said: `${a.said} ${b.said}`,
+      legs: [{ op: first, asset, sizing: a.sizing }, { op: second, asset, sizing: b.sizing }] }];
+  }));
+  return [...single, ...pairs, ...sameSource];
 }
 
 // ── the invariant ───────────────────────────────────────────────────────────────────────
