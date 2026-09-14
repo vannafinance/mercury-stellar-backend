@@ -61,7 +61,6 @@ const card = (result: ResearchView) =>
       progress={null}
       loading={false}
       error={null}
-      onReset={() => {}}
     />,
   );
 
@@ -73,13 +72,14 @@ describe("investigation card / options", () => {
     });
     card(view({ candidates }));
 
-    expect(screen.getByText("Options")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
     expect(screen.getByText(/Borrow BLUSDC to the 1.30 floor and supply it to Blend/)).toBeTruthy();
     expect(screen.getByText("+6.00% net APR")).toBeTruthy();
     // The full-precision $6,541.043333… reads at the precision a person uses, and the
     // projected floor is shown next to it — a size with no health consequence beside it
     // is the number that gets approved without being understood.
-    expect(screen.getByText(/\$6,541\.04 · health factor 1\.30 after/)).toBeTruthy();
+    expect(screen.getByText("$6,541.04")).toBeTruthy();
+    expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
   });
 
   it("shows a ruled-out shape WITH its reason, never as a silent omission", () => {
@@ -89,7 +89,7 @@ describe("investigation card / options", () => {
     });
     card(view({ candidates }));
 
-    expect(screen.getByText(/Ruled out — Borrow BLUSDC to supply to Blend/)).toBeTruthy();
+    expect(screen.getByText(/Ruled out: Borrow BLUSDC to supply to Blend/)).toBeTruthy();
     expect(screen.getByText(/loses money before any fees/)).toBeTruthy();
   });
 
@@ -105,7 +105,9 @@ describe("investigation card / options", () => {
     expect(screen.getByText(/Lend idle BLUSDC to Earn — no new borrowing/)).toBeTruthy();
     expect(screen.getByText("25.41% APR")).toBeTruthy();
     expect(screen.getByText("10.00% APR")).toBeTruthy();
-    expect(screen.getAllByText(/\$680\.00 · no change to health factor/)).toHaveLength(2);
+    expect(screen.getAllByText("$680.00")).toHaveLength(2);
+    // Two idle options leave health untouched; the levered third is the only one with a figure.
+    expect(screen.getAllByText("Health factor after").map((dt) => dt.nextElementSibling?.textContent)).toEqual(["unchanged", "unchanged", "1.30"]);
   });
 
   it("renders only the no-debt option when the user forbade borrowing", () => {
@@ -158,7 +160,6 @@ describe("investigation card / options", () => {
         progress={null}
         loading={false}
         error={null}
-        onReset={() => {}}
         workflowLoading
         workflow={{
           id: "11111111-1111-1111-1111-111111111111",
@@ -177,8 +178,8 @@ describe("investigation card / options", () => {
         }}
       />,
     );
-    expect(screen.getByText("Options")).toBeTruthy();
-    expect(screen.getByText("Execution")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Running" })).toBeTruthy();
   });
 
   it("offers Approve and run on a proposed plan, and Sign in wallet when an XDR is waiting", () => {
@@ -206,7 +207,6 @@ describe("investigation card / options", () => {
         progress={null}
         loading={false}
         error={null}
-        onReset={() => {}}
         workflow={proposed}
         onApprove={onApprove}
         onSign={onSign}
@@ -222,7 +222,6 @@ describe("investigation card / options", () => {
         progress={null}
         loading={false}
         error={null}
-        onReset={() => {}}
         workflow={{
           ...proposed,
           status: "awaiting_signature",
@@ -249,7 +248,6 @@ describe("investigation card / options", () => {
         progress={{ kind: "reading", capability: "can_withdraw", label: "can withdraw" }}
         loading
         error={null}
-        onReset={() => {}}
       />,
     );
     expect(screen.getByRole("status").textContent).toMatch(/Reading can withdraw/);
@@ -280,12 +278,11 @@ describe("investigation card / options", () => {
         progress={null}
         loading={false}
         error={null}
-        onReset={() => {}}
         onPropose={onPropose}
       />,
     );
     expect(screen.getByText(/Using SOUSDC/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Switch →" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use the other option" }));
     expect(onPropose).toHaveBeenCalledWith(candidateId("lend_idle", "AQUSDC"));
   });
 
@@ -299,11 +296,11 @@ describe("investigation card / in-flight state", () => {
   it("says what is happening between a click and its result", () => {
     const result = view();
     const { rerender } = render(
-      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onReset={() => {}} onPropose={() => {}} workflowLoading workflow={null} />,
+      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading workflow={null} />,
     );
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Preparing the plan/);
     rerender(
-      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onReset={() => {}} onPropose={() => {}} workflowLoading
+      <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading
         workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], message: "m", steps: [] }} />,
     );
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Checking funds, prices and projected health/);

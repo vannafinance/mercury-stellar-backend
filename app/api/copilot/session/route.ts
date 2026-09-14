@@ -1,25 +1,40 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
-import { loadSession } from "@/lib/copilot/session-store";
+import { activeConversation, closeActiveConversation, listConversations, loadSession } from "@/lib/copilot/session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Restore transcript + last evidence token after a tab close on this host. */
+const NO_STORE = { headers: { "Cache-Control": "no-store" } };
+
+/**
+ * The conversation list and the one that is open — what the page paints on load. The
+ * open conversation's transcript, evidence token and last view come along so the thread
+ * is restored in one round-trip, as it was when the store held a single thread.
+ */
 export async function GET(req: NextRequest) {
   const loaded = await loadUserFromRequest(req);
   if (!loaded.bound) {
-    return loaded.commit(NextResponse.json({ message: "Sign in to restore this thread." }, { status: 401 }));
+    return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
   }
   const session = await loadSession(loaded.bound.sub);
-  if (!session) {
-    return loaded.commit(NextResponse.json({ turns: [], continuation: null, result: null }, {
-      headers: { "Cache-Control": "no-store" },
-    }));
-  }
+  const { conversations, activeId } = await listConversations(loaded.bound.sub);
+  const active = activeConversation(session);
   return loaded.commit(NextResponse.json({
-    turns: session.turns,
-    continuation: session.continuation,
-    result: session.result,
-  }, { headers: { "Cache-Control": "no-store" } }));
+    conversations,
+    activeId,
+    turns: active?.turns ?? [],
+    continuation: active?.continuation ?? null,
+    result: active?.result ?? null,
+  }, NO_STORE));
+}
+
+/** "New chat": close the open conversation. Nothing is created until the first turn. */
+export async function DELETE(req: NextRequest) {
+  const loaded = await loadUserFromRequest(req);
+  if (!loaded.bound) {
+    return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
+  }
+  await closeActiveConversation(loaded.bound.sub);
+  return loaded.commit(NextResponse.json({ activeId: null }, NO_STORE));
 }

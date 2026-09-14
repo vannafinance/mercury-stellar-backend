@@ -6,6 +6,7 @@ import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import {
+  type ConversationSummary,
   type ThreadTurn,
   shouldContinueInvestigation,
   readStoredThread,
@@ -27,14 +28,42 @@ async function requestHeaders(signal: AbortSignal) {
   } finally { signal.removeEventListener("abort", stop); }
 }
 
+interface SessionPayload {
+  conversations?: ConversationSummary[];
+  activeId?: string | null;
+  turns?: ThreadTurn[];
+  continuation?: string | null;
+  result?: ResearchView | null;
+}
+
+interface ConversationPayload {
+  id: string;
+  turns: ThreadTurn[];
+  continuation: string | null;
+  result: ResearchView | null;
+}
+
+/** The list is only ever sorted by last activity, newest first. */
+function sortedByActivity(items: readonly ConversationSummary[]): ConversationSummary[] {
+  return [...items].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * One conversation at a time on screen; every conversation the signed-in user has had,
+ * kept by the server, listed beside it. The live thread is mirrored into sessionStorage so
+ * a reload paints instantly; the server copy is what "open" and a fresh tab read.
+ */
 export function useInvestigation(wallet: string | null) {
   const [state, setState] = useState<{
     wallet: string | null; loading: boolean; prompt: string; result: ResearchView | null;
     progress: InvestigationProgress | null; error: string | null; turns: ThreadTurn[];
-  }>({ wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [] });
+    conversationId: string | null;
+  }>({ wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null });
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const abort = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const continuation = useRef<string | null>(null);
+  const conversationId = useRef<string | null>(null);
   /**
    * Bounded chat window sent with every turn so a refinement like "make it 1.4"
    * still has context when no question is open. Distinct from `continuation`, which
@@ -47,19 +76,27 @@ export function useInvestigation(wallet: string | null) {
 
   const applyBlank = useCallback((owner: string | null) => {
     continuation.current = null;
+    conversationId.current = null;
     lastResult.current = null;
     transcript.current = [];
     setState({
-      wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
+      wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null,
     });
   }, []);
 
-  const reset = useCallback(() => {
-    abort.current?.abort();
-    sequence.current += 1;
-    clearStoredThread(activeWallet.current);
-    applyBlank(activeWallet.current);
-  }, [applyBlank]);
+  /** Paint a thread — from storage, the session payload or an opened conversation. */
+  const applyThread = useCallback((owner: string | null, thread: { turns: ThreadTurn[]; continuation: string | null; result: ResearchView | null; conversationId: string | null }) => {
+    continuation.current = thread.continuation;
+    conversationId.current = thread.conversationId;
+    lastResult.current = thread.result;
+    transcript.current = thread.turns.map((turn) => ({ role: turn.role, text: turn.text }));
+    const lastUser = [...thread.turns].reverse().find((turn) => turn.role === "user");
+    setState({
+      wallet: owner, loading: false, prompt: lastUser?.text ?? "", result: thread.result,
+      progress: null, error: null, turns: thread.turns, conversationId: thread.conversationId,
+    });
+  }, []);
+
   /**
    * The wallet comes from a store that can report `null` for a render or two while it
    * reconnects. Treating that as "wallet changed" aborted the in-flight investigation and
@@ -78,24 +115,20 @@ export function useInvestigation(wallet: string | null) {
     const timer = setTimeout(() => { settledWallet.current = null; setEffectiveWallet(null); }, 1_500);
     return () => clearTimeout(timer);
   }, [wallet]);
+
   useEffect(() => {
     const wallet = effectiveWallet;
     abort.current?.abort();
     sequence.current += 1;
+    setConversations([]);
     const stored = wallet ? readStoredThread(wallet) : null;
     if (stored?.turns.length) {
-      continuation.current = stored.continuation;
-      lastResult.current = stored.result;
-      transcript.current = stored.turns.map((turn) => ({ role: turn.role, text: turn.text }));
-      const lastUser = [...stored.turns].reverse().find((turn) => turn.role === "user");
-      setState({
-        wallet, loading: false, prompt: lastUser?.text ?? "", result: stored.result,
-        progress: null, error: null, turns: stored.turns,
-      });
-      return () => { abort.current?.abort(); sequence.current += 1; };
+      applyThread(wallet, { turns: stored.turns, continuation: stored.continuation, result: stored.result, conversationId: stored.conversationId ?? null });
+    } else {
+      applyBlank(wallet);
     }
-    applyBlank(wallet);
     if (!wallet) return () => { abort.current?.abort(); sequence.current += 1; };
+    // The server holds the list and, when this tab has nothing, the open conversation.
     const restore = new AbortController();
     void (async () => {
       try {
@@ -103,28 +136,79 @@ export function useInvestigation(wallet: string | null) {
         if (restore.signal.aborted || activeWallet.current !== wallet) return;
         const response = await fetch("/api/copilot/session", { headers, signal: restore.signal, cache: "no-store" });
         if (!response.ok || restore.signal.aborted || activeWallet.current !== wallet) return;
-        const remote = await response.json() as { turns?: ThreadTurn[]; continuation?: string | null; result?: ResearchView | null };
+        const remote = await response.json() as SessionPayload;
+        if (Array.isArray(remote.conversations)) setConversations(sortedByActivity(remote.conversations));
+        if (stored?.turns.length) return;
         if (!Array.isArray(remote.turns) || !remote.turns.length) return;
-        continuation.current = remote.continuation ?? null;
-        lastResult.current = remote.result ?? null;
-        transcript.current = remote.turns.map((turn) => ({ role: turn.role, text: turn.text }));
-        writeStoredThread(wallet, {
-          wallet, continuation: remote.continuation ?? null, turns: remote.turns, result: remote.result ?? null,
-        });
-        const lastUser = [...remote.turns].reverse().find((turn) => turn.role === "user");
-        setState({
-          wallet, loading: false, prompt: lastUser?.text ?? "", result: remote.result ?? null,
-          progress: null, error: null, turns: remote.turns,
-        });
-      } catch { /* sessionStorage remains the live thread; a closed tab is the documented loss */ }
+        const thread = {
+          turns: remote.turns, continuation: remote.continuation ?? null, result: remote.result ?? null,
+          conversationId: remote.activeId ?? null,
+        };
+        writeStoredThread(wallet, { wallet, ...thread });
+        applyThread(wallet, thread);
+      } catch { /* sessionStorage remains the live thread; the list appears on the next load */ }
     })();
     return () => { restore.abort(); abort.current?.abort(); sequence.current += 1; };
-  }, [effectiveWallet, applyBlank]);
+  }, [effectiveWallet, applyBlank, applyThread]);
+
   const cancel = useCallback(() => {
     abort.current?.abort();
     sequence.current += 1;
     setState((previous) => ({ ...previous, loading: false, progress: null, error: "Investigation cancelled. No transactions were requested." }));
   }, []);
+
+  /** Start a new chat: the screen clears; the conversation stays in the list; nothing is created until the first turn. */
+  const newChat = useCallback(() => {
+    abort.current?.abort();
+    sequence.current += 1;
+    const owner = activeWallet.current;
+    clearStoredThread(owner);
+    applyBlank(owner);
+    if (!owner) return;
+    void (async () => {
+      try {
+        const headers = await requestHeaders(AbortSignal.timeout(8_000));
+        await fetch("/api/copilot/session", { method: "DELETE", headers, cache: "no-store" });
+      } catch { /* the pointer clears on the next turn anyway */ }
+    })();
+  }, [applyBlank]);
+
+  /** Open a conversation from the list. */
+  const open = useCallback(async (id: string) => {
+    const owner = activeWallet.current;
+    if (!owner || id === conversationId.current) return;
+    abort.current?.abort();
+    sequence.current += 1;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000));
+      const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { headers, cache: "no-store" });
+      if (!response.ok || activeWallet.current !== owner) return;
+      const conversation = await response.json() as ConversationPayload;
+      const thread = { turns: conversation.turns, continuation: conversation.continuation, result: conversation.result, conversationId: conversation.id };
+      writeStoredThread(owner, { wallet: owner, ...thread });
+      applyThread(owner, thread);
+    } catch {
+      setState((previous) => ({ ...previous, error: "That conversation could not be opened. Try again." }));
+    }
+  }, [applyThread]);
+
+  /** Delete a conversation. If it is the one on screen, the screen clears. */
+  const remove = useCallback(async (id: string) => {
+    const owner = activeWallet.current;
+    if (!owner) return;
+    setConversations((items) => items.filter((item) => item.id !== id));
+    if (id === conversationId.current) {
+      abort.current?.abort();
+      sequence.current += 1;
+      clearStoredThread(owner);
+      applyBlank(owner);
+    }
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000));
+      await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { method: "DELETE", headers, cache: "no-store" });
+    } catch { /* it is gone from the list; the server copy goes on the next successful delete or expiry */ }
+  }, [applyBlank]);
+
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
@@ -151,11 +235,13 @@ export function useInvestigation(wallet: string | null) {
     const followUp = shouldContinueInvestigation(prompt, lastResult.current) ? continuation.current : null;
     const session = continuation.current;
     const history = transcript.current.slice(-8);
+    const startedIn = conversationId.current;
     setState((previous) => ({
       wallet: owner, loading: true, prompt: followUp ? previous.prompt || prompt : prompt,
       result: previous.result,
       turns: [...previous.turns, { role: "user" as const, text: prompt }].slice(-16),
       progress: { kind: "scope", label: "Preparing your session" }, error: null,
+      conversationId: previous.conversationId,
     }));
     let received = false;
     let streamError = false;
@@ -180,6 +266,7 @@ export function useInvestigation(wallet: string | null) {
         method: "POST", headers, signal: combined,
         body: JSON.stringify({
           message: prompt, wallet: owner, continuation: followUp, session, history,
+          ...(startedIn ? { conversationId: startedIn } : {}),
         }),
       });
       await consumeResearchStream(response, (event) => {
@@ -188,12 +275,27 @@ export function useInvestigation(wallet: string | null) {
           received = true;
           continuation.current = event.result.continuation;
           lastResult.current = event.result;
+          const landedIn = event.conversationId ?? startedIn;
+          conversationId.current = landedIn;
           const next: Array<{ role: "user" | "assistant"; text: string }> = [
             ...transcript.current,
             { role: "user", text: prompt },
             { role: "assistant", text: event.result.message },
           ];
           transcript.current = next.slice(-8);
+          // The list reflects the turn at once: a new conversation appears at the top,
+          // an existing one moves there.
+          if (landedIn) {
+            const now = Date.now();
+            setConversations((items) => {
+              const known = items.find((item) => item.id === landedIn);
+              const title = known?.title ?? prompt.replace(/\s+/g, " ").trim().slice(0, 80);
+              return sortedByActivity([
+                { id: landedIn, title, createdAt: known?.createdAt ?? now, updatedAt: now },
+                ...items.filter((item) => item.id !== landedIn),
+              ]);
+            });
+          }
           setState((previous) => {
             const priorTurns: ThreadTurn[] = previous.turns.some((turn, index) =>
               turn.role === "user" && turn.text === prompt && index === previous.turns.length - 1)
@@ -206,15 +308,14 @@ export function useInvestigation(wallet: string | null) {
             writeStoredThread(owner, {
               wallet: owner ?? "",
               continuation: event.result.continuation,
-              turns, result: event.result,
+              turns, result: event.result, conversationId: landedIn,
             });
-            return { ...previous, result: event.result, turns, progress: null, loading: false };
+            return { ...previous, result: event.result, turns, progress: null, loading: false, conversationId: landedIn };
           });
         } else if (event.type === "error") {
           streamError = true;
           if (event.code === "context_expired" || event.code === "context_full") {
             continuation.current = null;
-            lastResult.current = lastResult.current;
             clearStoredThread(owner);
             writeStoredThread(owner, {
               wallet: owner ?? "",
@@ -223,6 +324,7 @@ export function useInvestigation(wallet: string | null) {
                 role: turn.role, text: turn.text,
               })),
               result: null,
+              conversationId: conversationId.current,
             });
           }
           setState((previous) => ({
@@ -254,6 +356,7 @@ export function useInvestigation(wallet: string | null) {
   }, [wallet]);
 
   // Do not expose the previous wallet's state during the render before its effect resets.
-  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [] };
-  return { ...visible, run, cancel, reset };
+  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null };
+  /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
+  return { ...visible, conversations, run, cancel, reset: newChat, newChat, open, remove };
 }

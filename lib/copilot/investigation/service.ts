@@ -52,6 +52,8 @@ export interface ResearchInput {
    */
   session?: string | null;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** The conversation this turn belongs to; absent on the first turn of a new chat. */
+  conversationId?: string | null;
   /** Named eval fixture for traces. Never the user message. */
   promptName?: string;
 }

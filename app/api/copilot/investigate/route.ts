@@ -33,11 +33,12 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
   } finally { reader.releaseLock(); }
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ResearchError("invalid_request", "Invalid research request.", 400); }
-  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history"].includes(key)) ||
+  if (!isRecord(body) || Object.keys(body).some((key) => !["message", "wallet", "continuation", "session", "history", "conversationId"].includes(key)) ||
     typeof body.message !== "string" || !body.message.trim() || body.message.length > 8000 ||
     !(body.wallet == null || typeof body.wallet === "string" && body.wallet.length <= 56) ||
     !(body.continuation == null || typeof body.continuation === "string" && body.continuation.length <= 65_536) ||
     !(body.session == null || typeof body.session === "string" && body.session.length <= 65_536) ||
+    !(body.conversationId == null || typeof body.conversationId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(body.conversationId)) ||
     !(body.history == null || Array.isArray(body.history) && body.history.length <= 8 && body.history.every((entry) =>
       isRecord(entry) && (entry.role === "user" || entry.role === "assistant") &&
       typeof entry.text === "string" && entry.text.trim() && entry.text.length <= 2000))) {
@@ -54,6 +55,7 @@ async function inputFrom(req: NextRequest): Promise<ResearchInput> {
     continuation: body.continuation as string | null ?? null,
     session: body.session as string | null ?? null,
     history,
+    conversationId: body.conversationId as string | null ?? null,
   };
 }
 
@@ -144,8 +146,10 @@ export async function POST(req: NextRequest) {
               mcp: getMcpClient(), model: createFlashResearchModel(), signal,
               onProgress: (event) => send({ type: "progress", event }),
             });
-            send({ type: "result", result });
-            void appendSessionTurn({ subject, user: input.message, result });
+            // The turn is recorded before the result goes out, so the client learns which
+            // conversation it landed in and carries that id on the next turn.
+            const recorded = bound ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result }).catch(() => null) : null;
+            send({ type: "result", result, ...(recorded ? { conversationId: recorded.id } : {}) });
             console.info("[copilot] investigate done", { request_id, status: result.status, ms: elapsed() });
           } catch (error) {
             const known = error instanceof ResearchError ? error : null;

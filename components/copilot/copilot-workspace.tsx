@@ -88,6 +88,7 @@ import { useInvestigation } from "@/hooks/use-investigation";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
+import { ConversationMenu } from "./conversation-menu";
 import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
@@ -590,14 +591,16 @@ function Eyebrow({
   as?: "h2" | "p";
   children: React.ReactNode;
 }) {
+  /**
+   * Sentence case, the page's own face, no tracking: an all-caps monospace eyebrow with a
+   * middle dot is the commonest tell of a generated page, and it made every panel label
+   * look like a data readout. The stage number stays where the panels are a sequence.
+   */
+  const text = typeof children === "string" ? children.charAt(0).toUpperCase() + children.slice(1) : children;
   return (
-    <Tag className="font-mono text-[11px] font-normal uppercase tracking-[0.25em] text-vgray-400">
-      {n ? (
-        <>
-          <span className="text-violet-500">{n}</span> ·{" "}
-        </>
-      ) : null}
-      {children}
+    <Tag className="text-[12px] font-semibold text-vgray-500">
+      {n ? <span className="mr-1.5 tabular-nums text-violet-500">{n.replace(/^0/, "")}</span> : null}
+      {text}
     </Tag>
   );
 }
@@ -1420,6 +1423,7 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   const investigation = useInvestigation(address);
+
   const workflow = useWorkflow(address);
   const proposedRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
@@ -1441,6 +1445,20 @@ export function CopilotWorkspace() {
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [signingJournal, setSigningJournal] = useState(false);
+  /**
+   * "New chat" and "open a conversation" both leave the current plan card behind: the
+   * journal keeps every proposal server-side, the screen shows one conversation at a time.
+   */
+  const leavePlanCard = useCallback(() => {
+    proposedRef.current = null;
+    signedWorkflowStepRef.current = null;
+    approvedJournalRef.current = null;
+    setSigningJournal(false);
+    workflow.reset();
+    setIntentText("");
+  }, [workflow]);
+  const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
+  const openConversation = useCallback((id: string) => { leavePlanCard(); void investigation.open(id); }, [leavePlanCard, investigation]);
   /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
   const originalIntentRef = useRef("");
   /** Collateral/debt tail paused because HF dropped below the stated floor. */
@@ -4924,14 +4942,21 @@ export function CopilotWorkspace() {
       {/* Page header */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
         <div className="flex flex-col gap-1.5">
-          <Eyebrow as="p">
-            <span className="text-violet-500">agent-native</span> · orchestrator
-          </Eyebrow>
           <h1 className="text-h5 font-semibold text-vgray-900">
             Vanna <span className="bg-gradient bg-clip-text text-transparent">Copilot</span>
           </h1>
+          <p className="text-[14px] leading-6 text-vgray-500">Say what you want to do. The plan is sized from live reads and shown before anything runs.</p>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <ConversationMenu
+            items={investigation.conversations}
+            activeId={investigation.conversationId}
+            wallet={address}
+            busy={investigation.loading}
+            onNew={startNewChat}
+            onOpen={openConversation}
+            onDelete={(id) => { void investigation.remove(id); }}
+          />
           {/* The provider/mcp/tool-count chip was build detail, not product: it told the
               user nothing they could act on, and its "brain offline" state fired on any
               transient health fetch (a dev-server recompile, a cold start) which reads as
@@ -4957,8 +4982,8 @@ export function CopilotWorkspace() {
             </div>
           )}
           {sessionSigning && (
-            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500">
-              <ShieldCheck size={13} /> auto-approve on
+            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] text-[12px] font-semibold text-violet-500">
+              <ShieldCheck size={13} aria-hidden="true" /> Auto-approve on
             </div>
           )}
         </div>
@@ -5128,15 +5153,6 @@ export function CopilotWorkspace() {
             && (!loading || workflow.loading || signingJournal || !!workflow.view) && (
             <InvestigationCard
               {...investigation}
-              onReset={() => {
-                proposedRef.current = null;
-                signedWorkflowStepRef.current = null;
-                approvedJournalRef.current = null;
-                setSigningJournal(false);
-                investigation.reset();
-                workflow.reset();
-                setIntentText("");
-              }}
               onPropose={investigation.result?.continuation
                 ? (candidateId) => {
                     const continuation = investigation.result!.continuation;
@@ -6501,7 +6517,7 @@ export function CopilotWorkspace() {
           </div>
 
           <p className="text-center text-body-3 text-vgray-400">
-            Every action runs the same safety checks — nothing touches the chain until policy passes.
+            Every action runs the same safety checks. Nothing touches the chain until policy passes.
           </p>
         </div>
       </div>
