@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { strategyReply } from "@/lib/copilot/investigation/answer";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
@@ -115,6 +116,19 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/\$278\.9886/);
     expect(debt.value).toBe("278.9886");
     expect(tokens.value).toBe("2781.9471234");
+  });
+
+  it("names every debt row the read returned, not the total alone (14 Sep: 'what are the debt tokens I am holding')", () => {
+    const { facts } = normalizeResearchFacts([{
+      id: "e2", capability: "account_debt", args: {}, observedAt: 1, status: "ok",
+      data: { debt: [{ symbol: "XLM", balance: "14113.4967211", value_usd: "2540.43" }, { symbol: "USDC", balance: "772", value_usd: "772" }], total_debt_usd: "3312.43" },
+    }]);
+    const reply = strategyReply({
+      status: "researched", facts, candidates: null, capacity: null, question: null, intent: "answer",
+      originalRequest: "what are the debt tokens currently i am holding",
+      findings: [{ summary: "Your reported margin debt is $3,312.43." }],
+    });
+    expect(reply).toBe("Debt: XLM 14,113.4967211 ($2,540.43), BLUSDC 772 ($772.00); total $3,312.43.");
   });
 
   it("rounds a health factor to two decimals without changing the stored fact", () => {

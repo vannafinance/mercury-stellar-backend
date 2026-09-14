@@ -140,6 +140,8 @@ operation not in this list, say so in findings as a limitation — name the unsu
 best plan the list allows, never substituting silently.
 For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
 Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.
+A finding answers the question as asked: when the user asks WHICH tokens or positions, name every row the read
+returned (asset and balance) — a total alone is not an answer.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.
 Do not promise a permanent health floor or claim transactions ran. Clarifications and blockers
 are not financial recommendations. Use inspect args exactly as declared (e.g. {"asset":"XLM"}).`;
