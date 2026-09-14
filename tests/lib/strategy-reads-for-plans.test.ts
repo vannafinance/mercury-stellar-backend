@@ -11,6 +11,17 @@ import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/type
 const NOW = 1_000_000;
 const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 
+describe("readsForPlans — a share reads the base it is a share of", () => {
+  it("of=idle wants the wallet; of=position wants the position the op spends", () => {
+    const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "25% of xlm" } }])], [], NOW);
+    expect(idle.map((r) => r.capability)).toContain("wallet_balances");
+    const redeem = readsForPlans([plan([{ op: "redeem", asset: "AQUSDC", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "half" } }])], [], NOW);
+    expect(redeem.map((r) => r.capability)).toContain("earn_position");
+    const withdraw = readsForPlans([plan([{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "10", of: "position", sourceQuote: "10%" } }])], [], NOW);
+    expect(withdraw.map((r) => r.capability)).toContain("account_collateral");
+  });
+});
+
 describe("readsForPlans — a repay reads the debt whatever its sizing word", () => {
   it("asks for account_debt on an all_idle repay", () => {
     const reads = readsForPlans([plan([{ op: "repay", asset: "XLM", sizing: { kind: "all_idle" } }])], [], NOW);

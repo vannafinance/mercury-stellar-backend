@@ -78,6 +78,23 @@ describe("research_complete plans", () => {
   });
 });
 
+describe("a fraction sizing", () => {
+  it("is accepted with a percent, a base and a quote, and dropped when malformed", () => {
+    const ok = parseDecision({ ...base, plans: [plan([leg("repay", "XLM", { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" })])] });
+    expect(ok?.kind === "research_complete" && ok.plans?.[0]?.legs[0]?.sizing).toEqual({ kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" });
+    for (const bad of [
+      { kind: "fraction", percent: "0", of: "idle", sourceQuote: "q" },
+      { kind: "fraction", percent: "150", of: "idle", sourceQuote: "q" },
+      { kind: "fraction", percent: "25", of: "debt", sourceQuote: "q" },
+      { kind: "fraction", percent: "25", of: "idle" },
+    ]) {
+      const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", bad as never)])] });
+      expect(decision?.kind === "research_complete" && decision.plans).toBeFalsy();
+      expect(decision?.kind === "research_complete" && decision.droppedPlans).toBe(1);
+    }
+  });
+});
+
 describe("a malformed literal action", () => {
   it("is dropped and counted, and no longer voids the research or the plans beside it", () => {
     const decision = parseDecision({ ...base, goal: { ...base.goal, actions: [{ op: "redeem", asset: "AQUSDC", amount: "all", sourceQuote: "use my AqUSDC" }] },

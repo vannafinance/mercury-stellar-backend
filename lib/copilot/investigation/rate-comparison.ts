@@ -113,6 +113,7 @@ export function analyseObservedRates(observations: readonly Observation[], now: 
   for (const asset of assets) {
     const earn = fresh.filter((o) => o.capability === "earn_market" && o.args.asset === asset);
     const blendSymbol = blendReserveSymbol(asset);
+    const blendRead = fresh.some((o) => o.capability === "blend_markets");
     const blend = blendSymbol ? fresh.filter((o) => o.capability === "blend_markets").flatMap((o) => {
       const reserves = o.data?.reserves;
       return Array.isArray(reserves) ? reserves.filter((r) => isRecord(r) && !r.error && r.available !== false &&
@@ -149,8 +150,8 @@ export function analyseObservedRates(observations: readonly Observation[], now: 
       if (checked.ok) blendSupply = checked.supply;
       else excluded.push({ asset, venue: "blend", reason: checked.reason, detail: checked.detail, evidenceId: blendUnique[0].observation.id });
     }
-    if (blendSymbol) {
-      // Blend-listed tokens keep the old gate: both venues must be uniquely readable.
+    if (blendSymbol && blendRead) {
+      // Blend was read: both venues must be uniquely readable, or the asset gets no row.
       if (earnUnique.length !== 1 || blendUnique.length !== 1 || blendSupply === null || earnBorrow === null) continue;
       const spread = blendSupply - earnBorrow;
       results.push({
@@ -164,7 +165,13 @@ export function analyseObservedRates(observations: readonly Observation[], now: 
       });
       continue;
     }
-    // AQUSDC / SOUSDC: Earn pool only. Never attach Blend's USDC reserve.
+    /**
+     * Earn only: AQUSDC / SOUSDC have no Blend reserve, and a Blend-listed token whose Blend
+     * market was NOT read this investigation still has an Earn rate. Until 14 Sep the second
+     * case produced no row at all, so a plain lend of XLM — which fetches only earn_market —
+     * was refused for "no usable Earn supply rate". A Blend market that WAS read but whose
+     * reserve is unusable keeps the gate above: an excluded reserve is not quietly forgotten.
+     */
     if (earnUnique.length !== 1 || earnSupply === null) continue;
     results.push({
       asset,

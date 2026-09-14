@@ -1,4 +1,5 @@
 import type { InvestigationScope } from "../investigation/types";
+import type { Venue } from "../registry/assets";
 
 /**
  * The write operations the copilot can compose, propose and execute. THE list — every
@@ -7,9 +8,70 @@ import type { InvestigationScope } from "../investigation/types";
  * `Record<WorkflowOp, …>` maps the compiler then demands.
  */
 export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend"] as const;
-/** Ops that spend or receive on the G-wallet, never the margin account: Earn's direct pool calls. */
-export const WALLET_OPS: readonly WorkflowOp[] = ["lend", "redeem"];
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
+
+/**
+ * The places a step moves value between. `wallet` and `account` hold tokens; `earn`,
+ * `blend` and `debt` are positions. Each is held by one key — the G-wallet signs for its
+ * own tokens and its Earn vTokens; the smart account holds everything margin-side.
+ */
+export const POCKET_HOLDER = { wallet: "trader", earn: "trader", account: "smartAccount", blend: "smartAccount", debt: "smartAccount" } as const;
+export type Pocket = keyof typeof POCKET_HOLDER;
+
+export interface OpFlow {
+  /** The product whose write tool builds the step; also which symbol spelling it takes. */
+  venue: Venue;
+  /** Where the tokens come from: the balance that caps the step. `debt` is borrowing capacity — nothing is spent. */
+  from: Pocket;
+  /** Where they land. `debt` means the debt shrinks; `earn` / `blend` mean a position grows. */
+  to: Pocket;
+  /** The read whose row states the whole of what the op draws on — what "all of it" and "a share of it" size from. */
+  positionRead: "earn_position" | "account_collateral" | "account_debt" | null;
+  /**
+   * How the margin account's health moves. `lowers` is what the user's floor guards;
+   * `neutral` legs are not sizer legs. A Blend supply is neutral because the RiskEngine
+   * values the b-token receipt at underlying × oracle price, exactly as the collateral it
+   * replaced (Protocol_V1_Soroban RiskEngineContract/src/risk_engine.rs, `BlendUnderlying`).
+   */
+  health: "raises" | "lowers" | "neutral";
+  /** The rate that labels the leg, from the rate rows; null for a leg that earns and costs nothing. */
+  rate: "earn_supply" | "earn_borrow" | "blend_supply" | null;
+}
+
+/**
+ * THE op-flow table. Where each op draws from, where it puts the tokens, what caps it and
+ * how it moves health. The sizer (which sizing words fit an op, which leg may feed the
+ * next), the reads a plan needs, the risk validator's funds flow and holders, the prompt's
+ * venue list and the propose-time simulation all derive from these rows — one truth, so
+ * the sizer and the validator cannot disagree about what a step does.
+ */
+export const OP_FLOW = Object.freeze({
+  lend:                { venue: "earn",   from: "wallet",  to: "earn",    positionRead: null,                 health: "neutral", rate: "earn_supply" },
+  redeem:              { venue: "earn",   from: "earn",    to: "wallet",  positionRead: "earn_position",      health: "neutral", rate: null },
+  deposit_collateral:  { venue: "margin", from: "wallet",  to: "account", positionRead: null,                 health: "raises",  rate: null },
+  withdraw_collateral: { venue: "margin", from: "account", to: "wallet",  positionRead: "account_collateral", health: "lowers",  rate: null },
+  borrow:              { venue: "margin", from: "debt",    to: "account", positionRead: null,                 health: "lowers",  rate: "earn_borrow" },
+  repay:               { venue: "margin", from: "account", to: "debt",    positionRead: "account_debt",       health: "raises",  rate: null },
+  supply_blend:        { venue: "blend",  from: "account", to: "blend",   positionRead: null,                 health: "neutral", rate: "blend_supply" },
+} as const satisfies Record<WorkflowOp, OpFlow>);
+
+/** Ops whose every pocket is the G-wallet's: they never touch the margin account. */
+export const WALLET_OPS: readonly WorkflowOp[] = WORKFLOW_OPS.filter((op) =>
+  POCKET_HOLDER[OP_FLOW[op].from] === "trader" && POCKET_HOLDER[OP_FLOW[op].to] === "trader");
+/** Ops the closed-form sizer projects: every one that moves the account's health. */
+export type SizedOp = { [K in WorkflowOp]: (typeof OP_FLOW)[K]["health"] extends "neutral" ? never : K }[WorkflowOp];
+export const SIZED_OPS: readonly SizedOp[] = WORKFLOW_OPS.filter((op): op is SizedOp => OP_FLOW[op].health !== "neutral");
+/** The pockets that hold tokens a later leg can take as "what the previous leg produced". */
+const TOKEN_POCKETS: readonly Pocket[] = ["wallet", "account"];
+/**
+ * Whether what `earlier` leaves behind is what `later` spends — the whole meaning of
+ * `previous_leg`. Only tokens hand over: a position (Earn vTokens, a Blend receipt, a
+ * shrunken debt) is not an amount the next tool is called with.
+ */
+export function feeds(earlier: WorkflowOp, later: WorkflowOp): boolean {
+  const left = OP_FLOW[earlier].to;
+  return TOKEN_POCKETS.includes(left) && left === OP_FLOW[later].from;
+}
 /**
  * Where a step's amount came from, which decides whether it may be re-derived later.
  *

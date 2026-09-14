@@ -70,7 +70,14 @@ export type PlanSizing =
   | { kind: "all_position" }
   | { kind: "to_floor" }
   | { kind: "previous_leg" }
-  | { kind: "literal"; amount: string; sourceQuote: string };
+  | { kind: "literal"; amount: string; sourceQuote: string }
+  /**
+   * A share of what the leg draws on, as the user said it: `of: "idle"` is the wallet's
+   * spendable balance, `of: "position"` the position the op spends (the Earn position, the
+   * posted collateral, the debt). `percent` is the user's figure ("25") or the figure a word
+   * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
+   */
+  | { kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string };
 
 export interface PlanLeg {
   op: PlanOp;

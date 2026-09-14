@@ -289,6 +289,31 @@ describe("model proposes, code disposes — end to end", () => {
     expect(Number(proposal.steps[2].amount)).toBeCloseTo(104209.71, 0);
   });
 
+  it("uses the rate a plan read fetched after the clock was taken (14 Sep: 'lend 25% of xlm' refused for no Earn rate)", async () => {
+    // The seed carries no earn_market:XLM; the plan needs it; readsForPlans fetches it AFTER
+    // observedNow was stamped. It must still count as fresh for the rate row and the sizer.
+    let turn = 0;
+    const view = await researchTurn(
+      { message: "lend 25% of xlm that i hold and also repay 25% of xlm debt", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }, { capability: "account_debt", args: {} }] }
+          : { ...modelComplete, goal: { ...modelComplete.goal, objective: "Lend a quarter of the XLM and repay a quarter of the XLM debt", borrowing: "forbidden" },
+              plans: [{ title: "Lend 25% XLM and Repay 25% XLM Debt", rationale: "A quarter each way (e1, e2).", evidenceIds: ["e1", "e2"],
+                legs: [
+                  { op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "lend 25% of xlm that i hold" } },
+                  { op: "repay", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "position", sourceQuote: "repay 25% of xlm debt" } },
+                ] }] },
+      },
+    );
+    expect(view.candidates?.rejected).toEqual([]);
+    // 25% of the SPENDABLE balance (10,206.8356118 − 0.5 fee reserve), not of the gross balance.
+    const option = view.candidates?.feasible.find((c) => c.id === "composed:le.XLM+re.XLM");
+    expect(option?.steps?.map((s) => [s.op, s.amount])).toEqual([["lend", "2551.5839029"], ["deposit_collateral", "3528.3278029"], ["repay", "3528.3278029"]]);
+    expect(Number(option?.supplyAprPct)).toBeCloseTo(5, 0);
+  });
+
   it("re-sizes a wallet-funded repay from a stale bundle: the debt is re-read, the plan is deposit → repay (13 Sep 409)", async () => {
     // "I want zero debt": the model sizes the repay from idle XLM. The account is what repays,
     // so the sizer expands it to deposit (capped by the debt) → repay. Two minutes later the
@@ -360,5 +385,34 @@ describe("model proposes, code disposes — end to end", () => {
       continuation: view.continuation, candidateId: "composed:bo.XLM+bo.XLM+bo.XLM", subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
       network: "testnet", mcp, signal: new AbortController().signal,
     })).rejects.toThrow(/not proposed by the completed investigation/);
+  });
+
+  it("an option the code sized can be prepared even when the model left a note as an open question (14 Sep)", async () => {
+    /**
+     * "Repay XLM debt with idle wallet XLM" was sized and shown with its button; the model's
+     * open question "No BLUSDC balance is available to repay the BLUSDC debt directly" made
+     * the turn needs_input, the sealed allow-list empty, and Prepare answered "not proposed
+     * by the completed investigation". A sized option is an answer; the note is an open
+     * point beside it.
+     */
+    let turn = 0;
+    const view = await researchTurn(
+      { message: PROMPT, wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }] }
+          : { ...modelComplete, openQuestions: ["No BLUSDC balance is currently available in the wallet to repay the BLUSDC debt directly; AQUSDC or SOUSDC would need to be converted or alternative funds acquired."] },
+      },
+    );
+    expect(view.status).toBe("researched");
+    expect(view.question).toMatch(/No BLUSDC balance/);
+    const target = "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM";
+    expect(view.candidates?.feasible.map((c) => c.id)).toContain(target);
+    const proposal = await proposeWorkflow({
+      continuation: view.continuation, candidateId: target, subject: SCOPE.subject, secret: SECRET, server: "mcp-test",
+      network: "testnet", mcp, signal: new AbortController().signal,
+    });
+    expect(proposal.status).toBe("proposed");
   });
 });

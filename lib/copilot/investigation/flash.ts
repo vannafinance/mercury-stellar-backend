@@ -8,7 +8,7 @@ import { runInvestigation } from "./runtime";
 import type { InvestigationLimits, InvestigationRequest, ResearchModel, ResearchTurn } from "./types";
 
 import { ASSET_IDS, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
-import { WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
+import { OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
 import { PLAN_SIZINGS } from "./decision";
 
 const ACTION_ASSETS = ASSET_IDS.join("|");
@@ -27,17 +27,14 @@ const OP_MEANING: Record<WorkflowOp, string> = {
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
 
-/** The venue each op acts on. `Record<WorkflowOp, …>` so a new op cannot ship without saying where it goes. */
-export const OP_VENUE: Record<WorkflowOp, Venue> = {
-  lend: "earn",
-  redeem: "earn",
-  deposit_collateral: "margin",
-  withdraw_collateral: "margin",
-  borrow: "margin",
-  repay: "margin",
-  supply_blend: "blend",
-};
-const EXECUTABLE_VENUES = [...new Set(WORKFLOW_OPS.map((op) => OP_VENUE[op]))];
+/** The venues the ops act on, from the op-flow table. */
+/**
+ * The venue each op acts on, derived from the op-flow table so there is ONE source.
+ * `plan.ts` uses it to hold a plan to the venue the user named.
+ */
+export const OP_VENUE: Record<WorkflowOp, Venue> =
+  Object.fromEntries(WORKFLOW_OPS.map((op) => [op, OP_FLOW[op].venue])) as Record<WorkflowOp, Venue>;
+const EXECUTABLE_VENUES: Venue[] = [...new Set(WORKFLOW_OPS.map((op) => OP_FLOW[op].venue))];
 /**
  * What the model is told about venues comes from the registry, the same tables the
  * evaluator sizes from — never a hand-written "AQUSDC for Aquarius". A venue the user
@@ -68,10 +65,8 @@ Permission to borrow is optional, not an instruction to borrow. A generic strate
 not specify a budget or optimization objective. Read available facts before asking for facts
 you can obtain.
 CHOOSE, do not ask, whenever evidence can decide. Venues and what each takes, from the protocol
-registry: ${VENUE_TABLE_TEXT}. A venue the user names BINDS the plan to that venue and fixes the USDC
-variant (${VENUE_USDC_TEXT}) — never ask which USDC, and never move the plan to a venue they did not
-name because its rate is better: report the better rate as a finding and let them choose.
-Venue spellings in reads: ${VENUE_SPELLINGS_TEXT} — name legs by the asset id (a debt or
+registry: ${VENUE_TABLE_TEXT}. A venue the user names fixes the USDC variant (${VENUE_USDC_TEXT}) —
+never ask which USDC. Venue spellings in reads: ${VENUE_SPELLINGS_TEXT} — name legs by the asset id (a debt or
 collateral row carries it as \`asset\`), never by the venue's word. Where one venue takes several variants (earn, margin) choose from held balances
 and rates in code, and state the choice. Executable through the operations below: ${EXECUTABLE_VENUES_TEXT};
 not executable here: ${NON_EXECUTABLE_VENUES_TEXT} — when the user asks for one of those, say so as a
@@ -132,27 +127,28 @@ Use an empty actions array for open-ended strategy sizing and read-only question
 
 For an open-ended strategy (intent=strategy, no literal amounts), YOU compose the strategy: include plans — one to three
 ordered shapes built from these operations only: ${PLAN_OPS_TEXT}. Each leg is sized by a WORD, never a number:
-${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount). The server computes every amount,
+${PLAN_SIZINGS_TEXT} (literal carries the user's own quoted amount; fraction carries the share the user stated — "25%" as
+percent "25", "half" as "50" — with of=idle for a share of the wallet balance and of=position for a share of the Earn
+position, the posted collateral or the debt, and the user's quote). The server computes every amount,
 projects the health factor after each leg against the user's floor, rejects what does not fit, ranks what does, and
 shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
 tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
 followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
+"How much can I withdraw / withdraw as much as keeps HF above X" is withdraw_collateral (to_floor) — never a question back.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays
 when the supply rate you read exceeds the borrow rate you read for the asset you borrow — compare them per asset and
 do not propose one that loses money by construction; the server rules such a shape out with the rates. Propose the
-A venue the user NAMES is a constraint, not a preference. When their message names one of ${EXECUTABLE_VENUES_TEXT} (by that
-word or the product's own name for it), set plan.venueQuote to the exact substring they used, and build every leg of that plan
-on that venue only. Do not move the plan to a different venue because its rate is better: say in findings that the other venue
-pays more and let them choose. Leave venueQuote out when they named none — then the venue is yours to pick.
-Give each plan a short title and a rationale that cites the observation
+non-borrowing shape whenever one exists, beside any levered one. Give each plan a short title and a rationale that cites the observation
 ids it rests on. A request that mixes a literal amount with anything that needs sizing ("deposit 10 XLM and borrow to
 the floor") is ONE plan whose first leg is literal — do not split it into goal.actions. If the user's goal needs an
 operation not in this list, say so in findings as a limitation — name the unsupported step — and still propose the
 best plan the list allows, never substituting silently.
 For conceptual product questions (what a health factor is, how liquidation works) set intent=answer and complete without reads. Findings may use an empty evidenceIds array when no observation was needed. Never invent balances, prices, or health figures in those findings.
 Each finding that cites live data must use existing successful observation IDs. Never invent IDs or cite failed data.
+A finding answers the question as asked: when the user asks WHICH tokens or positions, name every row the read
+returned (asset and balance) — a total alone is not an answer.
 research_complete means the research handoff is ready, NOT that the user's strategy is complete.
 Do not promise a permanent health floor or claim transactions ran. Clarifications and blockers
 are not financial recommendations. Use inspect args exactly as declared (e.g. {"asset":"XLM"}).`;

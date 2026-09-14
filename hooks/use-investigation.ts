@@ -172,6 +172,10 @@ export function useInvestigation(wallet: string | null) {
         settle({ error: abortedCopy() });
         return;
       }
+      // Three follow-up prompts on 13 Sep sat on "Preparing your session" until the deadline with
+      // nothing reaching the server. The label must say which half stalled: the sign-in token
+      // (above) or the request itself (below).
+      setState((previous) => (sequence.current === id ? { ...previous, progress: { kind: "scope", label: "Sending your request" } } : previous));
       const response = await fetch("/api/copilot/investigate", {
         method: "POST", headers, signal: combined,
         body: JSON.stringify({

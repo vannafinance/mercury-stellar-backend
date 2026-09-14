@@ -12,6 +12,7 @@ import { interruptible } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
+import { OP_FLOW } from "../workflow/types";
 
 export interface StrategyRead { capability: string; args: Record<string, unknown> }
 
@@ -51,15 +52,19 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
   for (const plan of plans) {
     for (const leg of plan.legs) {
       want("asset_price", leg.asset);
-      // A rate row pairs an asset's Earn market with its Blend reserve, so a Blend leg needs both.
-      if (leg.op === "lend" || leg.op === "borrow" || leg.op === "supply_blend") want("earn_market", leg.asset);
-      if (leg.op === "supply_blend") want("blend_markets");
-      if (leg.sizing.kind === "all_idle") want("wallet_balances");
-      // `all_position` draws on what the op spends: the Earn position, the posted collateral, the debt.
-      if (leg.sizing.kind === "all_position" && leg.op === "redeem") want("earn_position", leg.asset);
-      if (leg.sizing.kind === "all_position" && leg.op === "withdraw_collateral") want("account_collateral");
+      const flow = OP_FLOW[leg.op];
+      // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
+      if (flow.rate !== null) want("earn_market", leg.asset);
+      if (flow.rate === "blend_supply") want("blend_markets");
+      const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
+      const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
+      if (ofIdle) want("wallet_balances");
+      // A position share — or a withdraw to the floor — draws on what the op spends: the read the op-flow table names for it.
+      if ((ofPosition || leg.sizing.kind === "to_floor") && flow.positionRead) want(flow.positionRead, flow.positionRead === "earn_position" ? leg.asset : undefined);
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
-      if (leg.op === "repay") want("account_debt");
+      if (flow.to === "debt" && flow.positionRead) want(flow.positionRead);
+      // A leg the account funds is checked against the account's balance, whatever its sizing word.
+      if (flow.from === "account") want("account_collateral");
     }
   }
   return [...wanted.values()];

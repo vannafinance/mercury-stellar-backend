@@ -255,8 +255,17 @@ The protocol's leverage is `borrow` against posted collateral, `deposit_and_borr
 
 ## 5. Gaps this exposes, ranked by what unblocks the most
 
+**How gaps are found now (14 Sep).** The battery is no longer the only net. `tests/lib/plan-shape-matrix.test.ts`
+generates every op × sizing word × asset × funding state (52,920 cells on 14 Sep) from the vocabulary
+constants, the registry and the op-flow table, and asserts one invariant per cell: a fundable,
+precision-correct, allowlisted plan, or a refusal a person can read that never came from a crash.
+Its first run found a cell no prompt had reached ("lend 100 XLM" from an empty wallet). A prompt
+in this battery that fails is now a *second* bug: the one the matrix cannot see (model facts,
+reads, wording) — so record which.
+
+
 1. `blend_withdraw`, `swap`, `deploy_to_blend` into `WORKFLOW_OPS` (O4, O10) (each: one vocabulary line + allowlist + risk projection + a sizer branch). Turns E5, G1, G2 and the one-tx rows from 🟡 to ✅.
-2. **Fraction and multiplier sizing** ("half", "25 %", "2x" — O1) ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
-3. **Supply Blend from posted collateral** without a preceding deposit leg (E4).
+2. ~~**Fraction sizing**~~ — landed 13 Sep (`fraction{percent, of: idle|position, sourceQuote}`; B5, D8, J3). **Multiplier sizing** ("2x" — O1) still open. ("half", "a third", "25 %") — B5, D8, J3 have no sizing word today. A sixth word, `fraction`, anchored to the quote.
+3. ~~**Supply Blend from posted collateral** without a preceding deposit leg (E4).~~ — landed 14 Sep (`728dba4`): a stated amount is funded from the pocket the op-flow table names; the account's own balance covers a Blend supply.
 4. Account lifecycle on `/copilot` (N1–N3) — or keep it on the Margin page and make the refusal name it.
 5. LP — waits on the risk engine (🔒). Not a copilot task.

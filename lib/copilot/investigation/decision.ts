@@ -4,7 +4,7 @@ import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDe
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
-export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal"] as const;
+export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal", "fraction"] as const;
 const MAX_PLANS = 3;
 const MAX_LEGS = 6;
 
@@ -194,6 +194,12 @@ function parseSizing(raw: unknown): PlanSizing | null {
   // The declared schema sends sizing as a flat object; a bare word is accepted too.
   const value = typeof raw === "string" ? { kind: raw } : raw;
   if (!isRecord(value) || !(PLAN_SIZINGS as readonly string[]).includes(String(value.kind))) return null;
+  if (value.kind === "fraction") {
+    if (!exactKeys(value, ["kind", "percent", "of", "sourceQuote"]) || typeof value.percent !== "string" ||
+      !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
+      (value.of !== "idle" && value.of !== "position") || !text(value.sourceQuote, 1600)) return null;
+    return { kind: "fraction", percent: value.percent, of: value.of, sourceQuote: value.sourceQuote };
+  }
   if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : null;
   if (!exactKeys(value, ["kind", "amount", "sourceQuote"]) || typeof value.amount !== "string" ||
     value.amount.length > 60 || !/^\d+(\.\d{1,18})?$/.test(value.amount) || !text(value.sourceQuote, 1600)) return null;

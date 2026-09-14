@@ -47,6 +47,46 @@ function isDebtTotal(fact: ResearchFact): boolean {
   return fact.venue === "margin" && fact.unit === "USD" && (fact.sourcePath === "total_debt_usd" || fact.sourcePath === "debt_usd");
 }
 
+/**
+ * One sentence per read that returned rows: "Debt: XLM 14,113.4967 ($2,540.43),
+ * BLUSDC 772 ($772); total $3,312.25." Rows are recognised by their source path
+ * (`<list>[<index>].<field>`), the asset by the label the fact carries (the registry's
+ * spelling, not the wire's), the money by the unit. Nothing is named here by capability.
+ */
+function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: string; sentence: string }> {
+  interface Row { asset: string; amounts: string[]; usd: string | null }
+  const groups = new Map<string, { evidenceId: string; name: string; rows: Map<string, Row>; total: string | null }>();
+  const money = (value: string) => `$${Number(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const tokens = (value: string) => Number(value).toLocaleString("en-US", { maximumFractionDigits: 7 });
+  for (const fact of facts) {
+    const row = /^([a-z_]+)\[(\d+)\]\.([a-z_]+)$/i.exec(fact.sourcePath);
+    if (!row || !Number.isFinite(Number(fact.value))) continue;
+    const [, list, index, field] = row;
+    const words = fact.label.split(" ");
+    const asset = /^[A-Z0-9]{2,12}$/.test(words[0]) ? words[0] : null;
+    if (!asset) continue;
+    // The group's name is the label with the asset and the field's words removed: "margin debt".
+    const fieldWords = field.split("_").map((w) => w.toLowerCase());
+    const name = words.slice(1).filter((w) => !fieldWords.includes(w.toLowerCase())).join(" ").trim();
+    const key = `${fact.evidenceId}:${list}`;
+    const group = groups.get(key) ?? { evidenceId: fact.evidenceId, name: name || list.replaceAll("_", " "), rows: new Map<string, Row>(), total: null };
+    const entry = group.rows.get(`${index}:${asset}`) ?? { asset, amounts: [], usd: null };
+    if (fact.unit === "USD") entry.usd = entry.usd ?? money(fact.value);
+    else entry.amounts.push(tokens(fact.value));
+    group.rows.set(`${index}:${asset}`, entry);
+    groups.set(key, group);
+  }
+  for (const fact of facts) {
+    if (!/^total_.*usd$/i.test(fact.sourcePath) || !Number.isFinite(Number(fact.value))) continue;
+    for (const group of groups.values()) if (group.evidenceId === fact.evidenceId && group.total === null) group.total = money(fact.value);
+  }
+  return [...groups.values()].filter((group) => group.rows.size).map((group) => {
+    const rows = [...group.rows.values()].map((row) => `${row.asset} ${row.amounts[0] ?? ""}${row.usd ? ` (${row.usd})` : ""}`.trim());
+    const name = group.name.charAt(0).toUpperCase() + group.name.slice(1);
+    return { evidenceId: group.evidenceId, sentence: `${name}: ${rows.join(", ")}${group.total ? `; total ${group.total}` : ""}.` };
+  });
+}
+
 /** Conversational factual answers use audited fields; model prose cannot invent balances. */
 export function factualAnswer(facts: readonly ResearchFact[], request?: string): string | null {
   const amount = (fact: ResearchFact) => {
@@ -82,8 +122,16 @@ export function factualAnswer(facts: readonly ResearchFact[], request?: string):
       );
     }
   }
+  /**
+   * Every read that came back as ROWS — a debt per asset, a collateral line, an Earn or
+   * Blend position — is printed row by row, from the facts themselves. 14 Sep: "what are
+   * the debt tokens I am holding" was answered with the USD total alone, because only the
+   * total had a sentence here while the two debt rows the read returned had none.
+   */
+  const rowLines = rowSentences(selected.filter((f) => f.venue !== "wallet"));
+  sentences.push(...rowLines.map((line) => line.sentence));
   const debt = selected.find(f => f.sourcePath === "total_debt_usd") ?? selected.find(isDebtTotal);
-  if (debt) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
+  if (debt && !rowLines.some((line) => line.evidenceId === debt.evidenceId)) sentences.push(`Your reported margin debt is ${amount(debt)}.`);
   const prices = selected.filter(f => f.venue === "oracle");
   for (const price of prices) sentences.push(`${price.label}: ${amount(price)}.`);
   const eligibility = selected.filter(f => f.sourcePath === "allowed" && f.venue === "margin");
@@ -178,7 +226,9 @@ export function strategyReply(input: {
         ? ` Repays ${repays.map((step) => `${step.amount} ${step.asset}`).join(" and ")} of margin debt from the wallet.`
         : top.netAprPct !== null
           ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
-          : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+          : top.supplyAprPct === null
+            ? ` ${money(top.amountUsd)} using idle funds only; the supply rate could not be read this time.`
+            : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : top.repaysAllDebt ? " No debt would remain." : "";

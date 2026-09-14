@@ -12,11 +12,11 @@ import { anchoredGoalFloor, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { resolvePlans } from "./plan";
+import { planCandidateId, planFromStatedActions, resolvePlans } from "./plan";
+import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
-import { compileRequestedActions } from "./requested-actions";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
@@ -400,38 +400,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     loopElapsedMs: result.usage.elapsedMs,
   });
   const outcome = result.outcome;
-  if (outcome.kind === "research_complete") {
-    const compiledQuestion = outcome.openQuestions[0] ?? null;
-    /**
-     * Literal actions alone ("repay 1 XLM") compile straight to steps. A request that ALSO
-     * needs sizing ("deposit 10 XLM and borrow to the floor") arrives as plans with a
-     * literal leg, and must not be cut down to its literal part here.
-     */
-    const earlySteps = !compiledQuestion && !outcome.plans?.length ? compileRequestedActions(outcome.goal, messages, scope) : [];
-    if (earlySteps.length) {
-      const evidence = compactResearchEvidence(result.observations, null, Date.now());
-      evidence.requestedSteps = earlySteps;
-      evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
-      logPhase("compiled_write", { steps: earlySteps.length, op: earlySteps[0]?.op });
-      return {
-        status: "researched",
-        message: strategyReply({
-          status: "researched", facts: [], candidates: null, capacity: null, question: null,
-          intent: "strategy", originalRequest: messages[0], statedSteps: earlySteps,
-        }),
-        originalRequest: messages[0], refinements: messages.slice(1), question: null,
-        proposalCandidateId: REQUESTED_ACTIONS_ID,
-        understanding: outcome.goal, facts: [], capacity: null, candidates: null, rateComparisons: [],
-        checks: result.observations.map((observation) => ({
-          id: observation.id, label: observation.capability.replaceAll("_", " "),
-          status: observation.status, readAt: observation.observedAt,
-        })),
-        warnings: [],
-        scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
-        continuation: codec.seal(scope, messages, null, evidence), executionAllowed: false,
-      };
-    }
-  }
+  /**
+   * Stated actions ("repay 1 XLM") do NOT short-cut to steps here. They join the plans
+   * below and are sized, funded, precision-cut and simulated like every other plan; the
+   * shortcut that used to live here is what offered "lend 1 xlm" from a wallet with
+   * nothing spendable (14 Sep).
+   */
   if (!positionAwaited) {
     const [positionResult] = await withInvestigationPhase("position", () =>
       Promise.all([positionTask]));
@@ -527,7 +501,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * when the user actually stated a floor: sizing a borrow needs one, and inventing a
    * default would fabricate the calculation's most important input.
    */
-  const observedNow = Date.now();
+  let observedNow = Date.now();
   /**
    * An amount the user named outright is honoured as stated, never re-sized to the floor.
    * When it cannot be valued from a price read this turn, NO options are offered: sizing to
@@ -573,7 +547,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
    * from "option discarded".
    */
-  const modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? outcome.plans ?? [] : [];
+  const modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
+  /**
+   * A stated write ("lend 1 xlm to earn") the model nominated as `goal.actions` is a plan
+   * of literal legs, and goes through the same sizer as every other plan: the reads it
+   * needs are fetched, its amount is checked against the pocket it draws from, and a
+   * refusal names the figure. It used to compile straight to steps (14 Sep: "lend 1 xlm"
+   * from a wallet with nothing spendable, refused by the contract after Approve).
+   */
+  const statedPlan = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
+    ? planFromStatedActions(outcome.goal.actions, outcome.goal.objective) : null;
+  if (statedPlan) modelPlans.push(statedPlan);
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
     warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
   }
@@ -614,7 +598,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * size, borrows are refused with both figures.
    */
   let planPosition: import("./plan").PlanContext["capacity"] = null;
-  if (scope.smartAccount && outcome.kind === "research_complete" && outcome.plans?.length) {
+  if (scope.smartAccount && outcome.kind === "research_complete" && modelPlans.length) {
     try {
       const basis = await computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal);
       if (basis) {
@@ -642,6 +626,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       const extra = await collectStrategyReads(scope, scopedMcp, dependencies.signal, observedNow, missing, "q");
       result.observations.push(...extra);
       logPhase("plan_reads", { requested: missing.map((r) => `${r.capability}${r.args.asset ? `:${r.args.asset}` : ""}`), ok: extra.filter((o) => o.status === "ok").length });
+      /**
+       * "Now" moves past the reads just made. Freshness is `observedAt <= now`, so a read
+       * stamped after a clock taken before it is not fresh — and the rate analysis and the
+       * sizer both dropped the very reads fetched for the plan (14 Sep: "lend 25% of xlm"
+       * fetched earn_market:XLM and was refused for "no usable Earn supply rate").
+       */
+      observedNow = Date.now();
       planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
     }
     const resolved = resolvePlans(modelPlans, {
@@ -650,6 +641,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     candidates = mergeCandidateSets(candidates, resolved);
+    /**
+     * The sizer said what fits the facts it read; the protocol's preview says what the
+     * contract will accept. An option the preview refuses is never shown; one it cannot
+     * judge is shown as not simulated.
+     */
+    if (candidates.feasible.some((c) => c.steps?.length)) {
+      candidates = await simulateCandidates(candidates, scope, scopedMcp, dependencies.signal);
+      logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
+    }
   }
   if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
     warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
@@ -657,14 +657,26 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
+  /**
+   * An option the code sized is an answer. A question the model left open beside it is
+   * shown as an open point the user MAY refine — it does not take the option away. 14 Sep:
+   * "Repay XLM debt with idle wallet XLM" was sized, shown with its button, and Prepare
+   * answered "This option was not proposed by the completed investigation", because the
+   * model's note "No BLUSDC balance is available to repay the BLUSDC debt directly" had
+   * been sealed as a blocking question.
+   */
+  const offered = Boolean(candidates?.feasible.length);
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
-    : question ? "needs_input"
-      : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
-        : outcome.kind === "stopped" ? "incomplete"
-          : "needs_input";
-  // Composed plans, once sized, are the offer; literal actions stand alone only when no plan sized.
-  const requestedSteps = outcome.kind === "research_complete" && !question && !candidates?.feasible.length
-    ? compileRequestedActions(outcome.goal, messages, scope) : [];
+    : offered ? "researched"
+      : question ? "needs_input"
+        : outcome.kind === "research_complete" ? "researched"
+          : outcome.kind === "stopped" ? "incomplete"
+            : "needs_input";
+  // A stated write, once sized and simulated, is offered as the steps to approve — not as a ranked option.
+  const statedId = statedPlan ? planCandidateId(statedPlan) : null;
+  const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
+  const requestedSteps = statedCandidate?.steps ?? [];
+  if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
   const message = strategyReply({
     status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
     intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
@@ -683,7 +695,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? "The language model was unavailable. No keyword plan was substituted."
     : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
-  evidence.allowedCandidateIds = outcome.kind === "research_complete" && !question
+  // Every option shown can be prepared; the sealed list is exactly the shown list.
+  evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
   if (requestedSteps.length) {
     evidence.requestedSteps = requestedSteps;

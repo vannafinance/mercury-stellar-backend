@@ -70,7 +70,8 @@ export interface Candidate {
   venue: "blend" | "earn" | "margin";
   /** Supply APR minus borrow APR, both simple APR. Null when nothing is borrowed. */
   netAprPct: string | null;
-  supplyAprPct: string;
+  /** Null when a supply leg's rate was not read — the option is still sized; the label says so. */
+  supplyAprPct: string | null;
   legs: SizedLeg[];
   finalHealthFactor: string | null;
   amountUsd: string;
@@ -96,6 +97,8 @@ export interface Candidate {
   rationale?: string;
   /** A composed repay plan: true when every debt row read is covered, false when some remains. */
   repaysAllDebt?: boolean;
+  /** What the protocol's own preview said about the steps, when they were put to it (simulate.ts). */
+  simulation?: import("./simulate").PlanSimulation;
 }
 
 export type DecisionFactor = "already_held" | "net_return" | "thin_margin" | "consolidation";
@@ -112,7 +115,7 @@ export interface CandidateSet {
 }
 
 function aprOf(candidate: Candidate): bigint {
-  return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct);
+  return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct ?? "0");
 }
 
 /** Expected USD return at this size: amount × APR. Ranking uses this, not APR alone. */
@@ -579,6 +582,28 @@ function spendableWad(row: Record<string, unknown>, wallet: Record<string, unkno
   } catch {
     return balance;
   }
+}
+
+/**
+ * A wallet line the read shows as held but not spendable — the chain minimum balance and
+ * the fee reserve eat all of it. Null when the line is absent, empty, or spendable. 14 Sep:
+ * "lend 1 xlm" was offered from 3.94 XLM of which 3.5 was the minimum balance and 0.5 the
+ * fee reserve; the contract answered "resulting balance is not within the allowed range".
+ */
+export function unspendableWalletLine(observations: readonly Observation[], now: number, asset: string): { balance: string; minBalance: string | null; feeReserve: string | null } | null {
+  const wallet = freshObservations(observations, now).find((observation) => observation.capability === "wallet_balances");
+  const assets = wallet?.data?.assets;
+  if (!Array.isArray(assets)) return null;
+  for (const row of assets) {
+    if (!isRecord(row) || row.symbol !== asset || row.error || (row.status !== undefined && row.status !== "ok")) continue;
+    try {
+      const balance = decimalWad(String(row.balance ?? ""));
+      if (balance <= ZERO || spendableWad(row, wallet?.data) > ZERO) return null;
+      const text = (value: unknown) => typeof value === "string" && value ? value : null;
+      return { balance: formatWad(balance), minBalance: text(row.min_balance), feeReserve: row.symbol === "XLM" ? text(wallet?.data?.fee_reserve_xlm) : null };
+    } catch { return null; }
+  }
+  return null;
 }
 
 function idleTokensFrom(observations: readonly Observation[], now: number, asset: string): string | null {

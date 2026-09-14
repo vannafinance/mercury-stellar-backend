@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { isTokenAmountIn, leverageFrom, percentFrom, quantitySpans } from "@/lib/copilot/investigation/quantities";
-import { compileRequestedActions } from "@/lib/copilot/investigation/requested-actions";
 import { compileLeverageWrites } from "@/lib/copilot/investigation/leverage-compile";
 import type { InvestigationScope } from "@/lib/copilot/investigation/types";
 
@@ -20,23 +19,6 @@ describe("quantity kinds", () => {
     expect(isTokenAmountIn("borrow 2x aqusdc", "2")).toBe(false);
     expect(percentFrom("use 40% of idle")).toBe(40);
     expect(quantitySpans("2x")[0]?.kind).toBe("leverage");
-  });
-});
-
-describe("compileRequestedActions", () => {
-  it("does not treat a leverage coefficient as a token amount", () => {
-    const message = "deposit me 5xlm and borrow 2x aqusdc and blusdc";
-    expect(compileRequestedActions({
-      intent: "strategy",
-      objective: message,
-      constraints: [],
-      borrowing: "required",
-      actions: [
-        { op: "deposit_collateral", asset: "XLM", amount: "5", sourceQuote: "5xlm" },
-        { op: "borrow", asset: "AQUSDC", amount: "2", sourceQuote: "2x aqusdc" },
-        { op: "borrow", asset: "BLUSDC", amount: "2", sourceQuote: "2x" },
-      ],
-    }, [message], SCOPE)).toEqual([]);
   });
 });
 

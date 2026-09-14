@@ -123,10 +123,63 @@ call) lives on `vanna_mcp` branch `local/mcp-integration`, not in a PR — owner
 **Not done, noted:** the rates sentence can print the same Blend rate twice; the "Aquarius
 pools were discovered; executable quotes…" warning is noise on a refused LP prompt.
 
+## 8. 14 Sep — why it kept looking "dumb", and what closes the class (say this to the team)
+
+**The pipeline in one line: the model proposes, the code disposes, the protocol decides.**
+
+| Stage | Who | Job | May invent |
+|---|---|---|---|
+| Propose | Gemini | read the user's words and the facts we fetched; say *what* to do in a fixed vocabulary — 7 ops × 6 sizing words | the shape only, never a number |
+| Dispose | `plan.ts` | turn the shape into amounts from live reads, project HF, allowlist, rank — or refuse with a sentence that names a figure | nothing |
+| Decide | MCP → contract | build, simulate, sign, submit | nothing |
+
+So "is Gemini dumb?" is the wrong question. Every defect of 12–14 Sep was in stage 2's inputs or
+rules. Five classes, and every bug we fixed is one of them:
+
+1. **Facts hidden from the model** — the debt said `USDC`, the registry knew that is `BLUSDC`
+   at the margin venue, the model never saw it and guessed `AQUSDC`. Fixed once, at the funnel.
+2. **Rules narrower than language** — "25 % of my XLM" had no sizing word. `fraction` added.
+3. **Protocol semantics not encoded** — `vanna_repay` draws from the smart account, so a one-leg
+   repay from the wallet could never run. Expansion deposit → repay.
+4. **Wrong derivations** — oracle `decimals` used as token precision → a 14-place XLM amount.
+5. **Ordering / second paths** — the plan's own read stamped "in the future"; a *stated* write
+   ("lend 1 xlm") taking a shortcut that never read a balance.
+
+**Why it was not bulletproof.** We found these one prompt at a time; each prompt is one cell of
+op × sizing × asset × funding state — ~50,000 cells — and we had typed ~40. And a plan that
+passes stage 2 could still fail at stage 3, which the user only learned on Approve.
+
+**What closed it (all on `feat/copilot-finetune`):**
+
+- **The op-flow table** (`workflow/types.ts` `OP_FLOW`, `728dba4`): for each op, where the
+  tokens come from, where they land, which read caps it, how it moves health, which rate labels
+  it. The sizer, the reads a plan needs, the risk validator's funds flow, the prompt's venue list
+  and the simulation all derive from it. It immediately exposed a real disagreement — the
+  validator charged a Blend supply as a full withdrawal while the sizer called it neutral; the
+  contract source (`RiskEngineContract`, `BlendUnderlying`) says neutral. One truth now.
+- **The shape matrix** (`tests/lib/plan-shape-matrix.test.ts`, `728dba4`): every cell generated
+  from `WORKFLOW_OPS` × `PLAN_SIZINGS` × `ASSET_IDS` × funding states, one invariant each. A new
+  op, word or asset grows the grid by itself. First run: "lend 100 XLM" offered from an empty
+  wallet — nothing had ever checked a stated amount against a balance.
+- **Stated writes through the sizer** (`f58897b`): the shortcut is gone; "lend 1 xlm" is a plan
+  of literal legs and gets the same reads, funding, precision and refusal as everything else.
+- **Propose-time simulation** (`investigation/simulate.ts`, `f58897b`): before a card is shown
+  and again at Prepare, each step the chain can be asked about goes to the MCP `preview`
+  (RiskEngine snapshot + `is_borrow_allowed` / `is_withdraw_allowed` + pool ceiling + Earn
+  minimum). The protocol's "no" removes the option with its own sentence. A step that follows
+  from an earlier one is projected, not simulated, and the card says so. An older server, a
+  timeout or a failed call never blocks — silence is not a yes.
+
+**Limits to say out loud.** The preview answers against the *current* chain state, so only the
+first independent step of a composed plan is truly simulated; the rest stand on the sizer's
+projection (labelled). The hosted MCP does not yet report `spendable`/`min_balance` (PR #3), so the
+3.94-XLM wallet is still offered there until PR #3 deploys. Blend supply has no preview.
+
 ## 7. Files
 
-New: `lib/copilot/investigation/{candidate-id,facts-by-shape,floor,plan}.ts`.
-Changed: `investigation/{answer,candidates,capacity,compile,decision,decls,evidence,execute,flash,normalize,proposal,rate-comparison,read-cache,requested-actions,service,sizing,strategy-reads,types}.ts`,
+New: `lib/copilot/investigation/{candidate-id,facts-by-shape,floor,plan,simulate}.ts`; `tests/lib/{plan-shape-matrix,workflow-op-flow,investigation-simulate}.test.ts`.
+Removed (14 Sep): `investigation/requested-actions.ts` — stated writes are plans now.
+Changed: `investigation/{answer,candidates,capacity,compile,decision,decls,evidence,execute,flash,normalize,proposal,rate-comparison,read-cache,service,sizing,strategy-reads,types}.ts`,
 `workflow/{allowlist,risk,types}.ts`, `router.ts`, `app/api/copilot/workflow/propose/route.ts`,
 `components/copilot/investigation-card.tsx`. MCP: `mcp_server/tools/wallet_tools.py`.
 Diagrams: `vanna_mcp/docs/COPILOT_MCP_FLOW_DIAGRAMS.md` §7 (drop points) and §8 (this design).
