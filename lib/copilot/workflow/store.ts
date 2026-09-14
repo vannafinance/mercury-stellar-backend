@@ -9,7 +9,16 @@ export interface RecordStore<T> {
   /** null means create-if-absent. False means another request already won. */
   write(id: string, expected: string | null, value: T): Promise<boolean>;
 }
-const validId = (id: string) => { if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("invalid_record_id"); };
+/**
+ * What a document id may look like. Records keyed by a UUID (the workflow journal, one
+ * conversation) use the default; a store keyed by something else — a subject index, keyed
+ * by the hash of the subject — passes its own rule. Anything unchecked would reach a file
+ * path and a URL.
+ */
+export type IdRule = RegExp;
+export const UUID_ID: IdRule = /^[a-f0-9-]{36}$/;
+export const HASH_ID: IdRule = /^[a-f0-9]{64}$/;
+const check = (rule: IdRule, id: string) => { if (!rule.test(id)) throw new Error("invalid_record_id"); };
 
 /** Encrypt records independently of the auth cookie and continuation keys. */
 function encryption(secret: string) {
@@ -42,9 +51,9 @@ function encryption(secret: string) {
 export class LocalRecordStore<T> implements RecordStore<T> {
   private readonly directory: string;
   private readonly codec: ReturnType<typeof encryption>;
-  constructor(directory: string, secret: string) { this.directory = resolve(directory); this.codec = encryption(secret); }
+  constructor(directory: string, secret: string, private readonly idRule: IdRule = UUID_ID) { this.directory = resolve(directory); this.codec = encryption(secret); }
   async read(id: string): Promise<Stored<T> | null> {
-    validId(id);
+    check(this.idRule, id);
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const versions = (await readdir(this.directory)).filter((file) => file.startsWith(`${id}.`) && /\.\d+\.json$/.test(file))
       .map((file) => Number(file.split(".")[1])).filter(Number.isSafeInteger);
@@ -54,7 +63,7 @@ export class LocalRecordStore<T> implements RecordStore<T> {
     return { version, value: this.codec.open<T>(`${id}:${version}`, sealed) };
   }
   async write(id: string, expected: string | null, value: T): Promise<boolean> {
-    validId(id);
+    check(this.idRule, id);
     const current = await this.read(id);
     if ((current?.version ?? null) !== expected) return false;
     const version = expected === null ? 0 : Number(expected) + 1;
@@ -84,13 +93,15 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
       const token = await new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/datastore"] }).getAccessToken();
       if (!token) throw new Error("workflow_store_auth_unavailable");
       return token;
-    }, private readonly request: typeof fetch = fetch) {
+    }, private readonly request: typeof fetch = fetch,
+    collection = "copilot_workflows", private readonly idRule: IdRule = UUID_ID) {
     if (!/^[a-z][a-z0-9-]{4,61}[a-z0-9]$/.test(project) || !/^(\(default\)|[a-z0-9-]+)$/.test(database)) throw new Error("invalid_firestore_configuration");
-    this.base = `https://firestore.googleapis.com/v1/projects/${project}/databases/${database}/documents/copilot_workflows`;
+    if (!/^[a-z][a-z0-9_]{2,60}$/.test(collection)) throw new Error("invalid_firestore_configuration");
+    this.base = `https://firestore.googleapis.com/v1/projects/${project}/databases/${database}/documents/${collection}`;
     this.codec = encryption(secret);
   }
   async read(id: string): Promise<Stored<T> | null> {
-    validId(id);
+    check(this.idRule, id);
     const response = await this.request(`${this.base}/${id}`, { headers: { Authorization: `Bearer ${await this.token()}` }, signal: AbortSignal.timeout(15_000), cache: "no-store" });
     if (response.status === 404) return null;
     if (!response.ok) throw new Error(`workflow_store_http_${response.status}`);
@@ -99,7 +110,7 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
     return { version: body.updateTime, value: this.codec.open<T>(id, body.fields.payload.stringValue) };
   }
   async write(id: string, expected: string | null, value: T): Promise<boolean> {
-    validId(id);
+    check(this.idRule, id);
     const query = expected === null ? "currentDocument.exists=false" : `currentDocument.updateTime=${encodeURIComponent(expected)}`;
     const response = await this.request(`${this.base}/${id}?${query}`, { method: "PATCH",
       headers: { Authorization: `Bearer ${await this.token()}`, "Content-Type": "application/json" },
@@ -115,9 +126,24 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
   }
 }
 
-export function workflowStore<T>(secret: string): RecordStore<T> {
+/**
+ * A durable store for one collection, chosen the same way for every caller: Firestore when
+ * the deployment names a project, local files in development, and a hard failure in
+ * production rather than a silent fall back to a container filesystem that redeploys wipe
+ * and sibling instances cannot see.
+ *
+ * One project configures them all — a second collection is not a second deployment
+ * decision, so nothing new has to be set to make conversations durable.
+ */
+export function durableStore<T>(collection: string, localDirectory: string, secret: string, idRule: IdRule = UUID_ID): RecordStore<T> {
   const project = process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT;
-  if (project) return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret);
+  if (project) {
+    return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret, undefined, undefined, collection, idRule);
+  }
   if (process.env.NODE_ENV === "production" || process.env.K_SERVICE) throw new Error("durable_workflow_store_not_configured");
-  return new LocalRecordStore(resolve(process.cwd(), ".local/copilot-workflows"), secret);
+  return new LocalRecordStore(resolve(process.cwd(), localDirectory), secret, idRule);
+}
+
+export function workflowStore<T>(secret: string): RecordStore<T> {
+  return durableStore<T>("copilot_workflows", ".local/copilot-workflows", secret);
 }

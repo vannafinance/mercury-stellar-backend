@@ -148,7 +148,12 @@ export async function POST(req: NextRequest) {
             });
             // The turn is recorded before the result goes out, so the client learns which
             // conversation it landed in and carries that id on the next turn.
-            const recorded = bound ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result }).catch(() => null) : null;
+            // A store that cannot record the turn must not cost the user their answer — but a
+            // silent failure would mean history quietly stops working in prod, so it is logged.
+            const recorded = bound
+              ? await appendSessionTurn({ subject, conversationId: input.conversationId, user: input.message, result })
+                .catch((error) => { logUnexpected("conversation not recorded", { request_id, subject, error }); return null; })
+              : null;
             send({ type: "result", result, ...(recorded ? { conversationId: recorded.id } : {}) });
             console.info("[copilot] investigate done", { request_id, status: result.status, ms: elapsed() });
           } catch (error) {

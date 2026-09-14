@@ -1,21 +1,32 @@
 /**
  * Subject-keyed conversation store: every conversation a signed-in user has had with the
- * copilot on this host — its transcript, its last sealed evidence token and its last
- * research view — plus which one is open.
+ * copilot — its transcript, its last sealed evidence token and its last research view —
+ * plus which one is open.
  *
- * Cloud SQL is the intended store (P3). Until a Postgres instance is provisioned,
- * local files match checkpoints and the workflow journal. Firestore is out.
+ * ## Durable where it runs
+ *
+ * This rides the journal's store (`workflow/store.ts`): Firestore when the deployment
+ * names a project, encrypted local files in development, and a hard failure in production
+ * rather than a silent fall back to a container filesystem that a redeploy wipes and
+ * sibling instances cannot see. It reuses `COPILOT_WORKFLOW_FIRESTORE_PROJECT`, so making
+ * history durable is not a second deployment decision. Until 14 Sep this file wrote JSON
+ * under `.local/`, which was honest when history was one invisible restore-on-reload and
+ * wrong the moment the UI promised a list.
+ *
+ * ## Two collections, on purpose
+ *
+ * A conversation carries its turns AND the last `ResearchView`, which holds every fact and
+ * candidate the card showed — tens of kilobytes. Thirty of those in one document would
+ * pass Firestore's 1 MiB limit, so each conversation is its own document and a small index
+ * per subject holds the summaries and the pointer to the open one.
  *
  * This is not an approval record. The sealed continuation inside a conversation may carry
  * evidence; it is never treated as a fingerprint to execute against.
- *
- * Until 14 Sep the file held ONE thread; a new prompt after "Start over" overwrote the
- * last one. A file in that shape is read as a single conversation, so nothing is lost.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { copilotConfig } from "./config";
+import { durableStore, HASH_ID, type RecordStore } from "./workflow/store";
 import type { ThreadTurn } from "./investigation/thread";
 import type { ResearchView } from "./investigation/view";
 
@@ -24,37 +35,57 @@ export const CONVERSATION_LIMIT = 30;
 export const TURN_LIMIT = 16;
 /** What the list shows: the first prompt, cut to a line. */
 const TITLE_LIMIT = 80;
+/** A read-modify-write of the index loses to a concurrent turn; it retries rather than dropping one. */
+const CAS_ATTEMPTS = 4;
 
 export interface CopilotConversation {
   id: string;
+  /** Whose it is. Read back and checked, so an id alone never opens someone else's conversation. */
+  subject: string;
   title: string;
   createdAt: number;
   updatedAt: number;
   turns: ThreadTurn[];
   continuation: string | null;
   result: ResearchView | null;
+  /** Set when the conversation was deleted: the payload is overwritten, so the content is gone. */
+  deleted?: true;
 }
 
 export type ConversationSummary = Pick<CopilotConversation, "id" | "title" | "createdAt" | "updatedAt">;
 
-export interface CopilotSession {
+interface SubjectIndex {
   subject: string;
-  conversations: CopilotConversation[];
+  conversations: ConversationSummary[];
   activeId: string | null;
   updatedAt: number;
 }
 
-function directory(): string {
-  return resolve(process.cwd(), ".local", "copilot-sessions");
+function secret(): string {
+  return process.env.COPILOT_RESEARCH_SECRET?.trim() || copilotConfig.sessionSecret;
 }
 
-function fileFor(subject: string): string {
-  const key = subject.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128) || "unknown";
-  return join(directory(), `${key}.json`);
+/** A subject is not a document id: it carries colons, and a file name cannot. */
+function indexId(subject: string): string {
+  return createHash("sha256").update(`copilot-conversations:${subject}`).digest("hex");
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+let indexStore: RecordStore<SubjectIndex> | null = null;
+let conversationStore: RecordStore<CopilotConversation> | null = null;
+function stores() {
+  indexStore ??= durableStore<SubjectIndex>("copilot_conversation_index", ".local/copilot-conversation-index", secret(), HASH_ID);
+  conversationStore ??= durableStore<CopilotConversation>("copilot_conversations", ".local/copilot-conversations", secret());
+  return { index: indexStore, conversation: conversationStore };
+}
+
+/** Test seam: the stores cache their configuration, and a test changes it between cases. */
+export function resetConversationStores(): void {
+  indexStore = null;
+  conversationStore = null;
+}
+
+function usable(subject: string): boolean {
+  return Boolean(subject) && subject !== "guest";
 }
 
 export function titleFor(firstPrompt: string): string {
@@ -62,121 +93,113 @@ export function titleFor(firstPrompt: string): string {
   return line.length > TITLE_LIMIT ? `${line.slice(0, TITLE_LIMIT - 1).trimEnd()}…` : line || "New chat";
 }
 
-function conversationFrom(value: unknown): CopilotConversation | null {
-  if (!isRecord(value) || typeof value.id !== "string" || !Array.isArray(value.turns)) return null;
-  return {
-    id: value.id,
-    title: typeof value.title === "string" && value.title ? value.title : titleFor(String(value.turns.find((t) => isRecord(t) && t.role === "user")?.text ?? "")),
-    createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : 0,
-    updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : 0,
-    turns: value.turns as ThreadTurn[],
-    continuation: typeof value.continuation === "string" ? value.continuation : null,
-    result: isRecord(value.result) ? value.result as unknown as ResearchView : null,
-  };
-}
-
-/** A file written before conversations existed: one thread, no id. */
-function migrateLegacy(parsed: Record<string, unknown>): CopilotSession | null {
-  if (!Array.isArray(parsed.turns)) return null;
-  const updatedAt = Number.isFinite(parsed.updatedAt) ? Number(parsed.updatedAt) : Date.now();
-  const turns = parsed.turns as ThreadTurn[];
-  const first = turns.find((t) => t.role === "user")?.text ?? "";
-  const conversations: CopilotConversation[] = turns.length ? [{
-    id: randomUUID(), title: titleFor(first), createdAt: updatedAt, updatedAt, turns,
-    continuation: typeof parsed.continuation === "string" ? parsed.continuation : null,
-    result: isRecord(parsed.result) ? parsed.result as unknown as ResearchView : null,
-  }] : [];
-  return { subject: String(parsed.subject), conversations, activeId: conversations[0]?.id ?? null, updatedAt };
-}
-
-export async function loadSession(subject: string): Promise<CopilotSession | null> {
-  if (!subject || subject === "guest") return null;
-  try {
-    const raw = await readFile(fileFor(subject), "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed) || parsed.subject !== subject) return null;
-    if (!Array.isArray(parsed.conversations)) return migrateLegacy(parsed);
-    const conversations = parsed.conversations.map(conversationFrom).filter((c): c is CopilotConversation => c !== null);
-    const activeId = typeof parsed.activeId === "string" && conversations.some((c) => c.id === parsed.activeId) ? parsed.activeId : null;
-    return { subject, conversations, activeId, updatedAt: Number.isFinite(parsed.updatedAt) ? Number(parsed.updatedAt) : Date.now() };
-  } catch {
-    return null;
-  }
-}
-
-export async function saveSession(session: CopilotSession): Promise<void> {
-  if (!session.subject || session.subject === "guest") return;
-  try {
-    await mkdir(directory(), { recursive: true, mode: 0o700 });
-    const conversations = [...session.conversations]
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, CONVERSATION_LIMIT)
-      .map((c) => ({ ...c, turns: c.turns.slice(-TURN_LIMIT) }));
-    const value: CopilotSession = {
-      subject: session.subject.slice(0, 128),
-      conversations,
-      activeId: conversations.some((c) => c.id === session.activeId) ? session.activeId : null,
-      updatedAt: Number.isFinite(session.updatedAt) ? session.updatedAt : Date.now(),
-    };
-    await writeFile(fileFor(session.subject), `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
-  } catch (error) {
-    console.warn("[copilot] session save failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-/** The open conversation, if any. */
-export function activeConversation(session: CopilotSession | null): CopilotConversation | null {
-  if (!session?.activeId) return null;
-  return session.conversations.find((c) => c.id === session.activeId) ?? null;
-}
-
-export function summarise(conversation: CopilotConversation): ConversationSummary {
+function summarise(conversation: CopilotConversation): ConversationSummary {
   return { id: conversation.id, title: conversation.title, createdAt: conversation.createdAt, updatedAt: conversation.updatedAt };
 }
 
 /** Newest first — the order the list shows. */
+function ordered(conversations: readonly ConversationSummary[]): ConversationSummary[] {
+  return [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+async function readIndex(subject: string) {
+  const stored = await stores().index.read(indexId(subject));
+  // A record whose subject does not match is not this user's, whatever the id hashed to.
+  if (!stored || stored.value.subject !== subject) return { version: null as string | null, value: null };
+  return { version: stored.version, value: stored.value };
+}
+
+/**
+ * Read the index, change it, write it back under the version it was read at. A concurrent
+ * turn wins the write and this retries against what it wrote, so neither turn is lost.
+ */
+async function updateIndex(subject: string, change: (current: SubjectIndex | null) => SubjectIndex | null): Promise<boolean> {
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const { version, value } = await readIndex(subject);
+    const next = change(value);
+    if (!next) return false;
+    if (await stores().index.write(indexId(subject), version, {
+      ...next,
+      conversations: ordered(next.conversations).slice(0, CONVERSATION_LIMIT),
+    })) return true;
+  }
+  return false;
+}
+
 export async function listConversations(subject: string): Promise<{ conversations: ConversationSummary[]; activeId: string | null }> {
-  const session = await loadSession(subject);
-  if (!session) return { conversations: [], activeId: null };
-  return {
-    conversations: [...session.conversations].sort((a, b) => b.updatedAt - a.updatedAt).map(summarise),
-    activeId: session.activeId,
-  };
+  if (!usable(subject)) return { conversations: [], activeId: null };
+  const { value } = await readIndex(subject);
+  if (!value) return { conversations: [], activeId: null };
+  return { conversations: ordered(value.conversations), activeId: value.activeId };
+}
+
+/** One conversation, only for the subject that owns it. */
+export async function readConversation(subject: string, id: string): Promise<CopilotConversation | null> {
+  if (!usable(subject)) return null;
+  let stored;
+  try {
+    stored = await stores().conversation.read(id);
+  } catch {
+    return null; // a malformed id is a miss, not a crash
+  }
+  if (!stored || stored.value.subject !== subject || stored.value.deleted) return null;
+  return stored.value;
 }
 
 /** Opening a conversation also makes it the one a reload comes back to. */
 export async function openConversation(subject: string, id: string): Promise<CopilotConversation | null> {
-  const session = await loadSession(subject);
-  const found = session?.conversations.find((c) => c.id === id) ?? null;
-  if (!session || !found) return null;
-  if (session.activeId !== id) await saveSession({ ...session, activeId: id });
-  return found;
+  const conversation = await readConversation(subject, id);
+  if (!conversation) return null;
+  await updateIndex(subject, (current) => {
+    if (!current || !current.conversations.some((entry) => entry.id === id)) return null;
+    return current.activeId === id ? null : { ...current, activeId: id, updatedAt: Date.now() };
+  });
+  return conversation;
 }
 
 /** "New chat": nothing is created until the first turn; the pointer just clears. */
 export async function closeActiveConversation(subject: string): Promise<void> {
-  const session = await loadSession(subject);
-  if (session?.activeId) await saveSession({ ...session, activeId: null });
+  if (!usable(subject)) return;
+  await updateIndex(subject, (current) => (current?.activeId ? { ...current, activeId: null, updatedAt: Date.now() } : null));
 }
 
+/**
+ * Delete a conversation: drop it from the index, then overwrite its document with a
+ * tombstone so the encrypted payload no longer holds the transcript. The record store has
+ * no delete verb — an overwrite is how content goes away, and Firestore keeps no prior
+ * version of it.
+ */
 export async function deleteConversation(subject: string, id: string): Promise<boolean> {
-  const session = await loadSession(subject);
-  if (!session || !session.conversations.some((c) => c.id === id)) return false;
-  await saveSession({
-    ...session,
-    conversations: session.conversations.filter((c) => c.id !== id),
-    activeId: session.activeId === id ? null : session.activeId,
-    updatedAt: Date.now(),
+  if (!usable(subject)) return false;
+  const conversation = await readConversation(subject, id);
+  let listed = false;
+  await updateIndex(subject, (current) => {
+    if (!current || !current.conversations.some((entry) => entry.id === id)) return null;
+    listed = true;
+    return {
+      ...current,
+      conversations: current.conversations.filter((entry) => entry.id !== id),
+      activeId: current.activeId === id ? null : current.activeId,
+      updatedAt: Date.now(),
+    };
   });
+  if (!listed && !conversation) return false;
+  if (conversation) {
+    const stored = await stores().conversation.read(id);
+    if (stored) {
+      await stores().conversation.write(id, stored.version, {
+        id, subject, title: "", createdAt: conversation.createdAt, updatedAt: Date.now(),
+        turns: [], continuation: null, result: null, deleted: true,
+      });
+    }
+  }
   return true;
 }
 
 /**
- * Record one turn. With a `conversationId` that exists, the turn joins it; otherwise a
- * conversation is started, titled by this first prompt. Returns the id the turn went to
- * so the client can carry it on the next request.
+ * Record one turn. With a `conversationId` the caller owns, the turn joins it; otherwise a
+ * conversation is started, titled by this first prompt. Returns the id the turn went to so
+ * the client can carry it on the next request.
  */
 export async function appendSessionTurn(input: {
   subject: string;
@@ -185,24 +208,35 @@ export async function appendSessionTurn(input: {
   result: ResearchView;
 }): Promise<{ id: string }> {
   const now = Date.now();
-  const session = (await loadSession(input.subject)) ?? { subject: input.subject, conversations: [], activeId: null, updatedAt: now };
-  const existing = input.conversationId ? session.conversations.find((c) => c.id === input.conversationId) ?? null : null;
-  const target: CopilotConversation = existing ?? {
-    id: randomUUID(), title: titleFor(input.user), createdAt: now, updatedAt: now, turns: [], continuation: null, result: null,
+  const fresh: CopilotConversation = {
+    id: randomUUID(), subject: input.subject, title: titleFor(input.user),
+    createdAt: now, updatedAt: now, turns: [], continuation: null, result: null,
   };
-  target.turns = [
-    ...target.turns,
-    { role: "user" as const, text: input.user },
-    { role: "assistant" as const, text: input.result.message, question: input.result.question ?? null },
-  ].slice(-TURN_LIMIT);
-  target.continuation = input.result.continuation || null;
-  target.result = input.result;
-  target.updatedAt = now;
-  await saveSession({
-    subject: input.subject,
-    conversations: existing ? session.conversations : [target, ...session.conversations],
-    activeId: target.id,
+  if (!usable(input.subject)) return { id: fresh.id };
+
+  const existing = input.conversationId ? await readConversation(input.subject, input.conversationId) : null;
+  const target = existing ?? fresh;
+  const version = existing ? (await stores().conversation.read(target.id))?.version ?? null : null;
+  const updated: CopilotConversation = {
+    ...target,
+    turns: [
+      ...target.turns,
+      { role: "user" as const, text: input.user },
+      { role: "assistant" as const, text: input.result.message, question: input.result.question ?? null },
+    ].slice(-TURN_LIMIT),
+    continuation: input.result.continuation || null,
+    result: input.result,
     updatedAt: now,
+  };
+  await stores().conversation.write(target.id, version, updated);
+  await updateIndex(input.subject, (current) => {
+    const others = (current?.conversations ?? []).filter((entry) => entry.id !== updated.id);
+    return {
+      subject: input.subject,
+      conversations: [summarise(updated), ...others],
+      activeId: updated.id,
+      updatedAt: now,
+    };
   });
-  return { id: target.id };
+  return { id: updated.id };
 }

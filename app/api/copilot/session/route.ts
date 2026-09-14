@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
-import { activeConversation, closeActiveConversation, listConversations, loadSession } from "@/lib/copilot/session-store";
+import { closeActiveConversation, listConversations, readConversation } from "@/lib/copilot/session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,9 +17,8 @@ export async function GET(req: NextRequest) {
   if (!loaded.bound) {
     return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
   }
-  const session = await loadSession(loaded.bound.sub);
   const { conversations, activeId } = await listConversations(loaded.bound.sub);
-  const active = activeConversation(session);
+  const active = activeId ? await readConversation(loaded.bound.sub, activeId) : null;
   return loaded.commit(NextResponse.json({
     conversations,
     activeId,
