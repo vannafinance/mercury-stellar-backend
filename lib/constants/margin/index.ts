@@ -127,6 +127,14 @@ export const LARGE_FORMAT_FIELDS = [
 ] as const;
 
 /**
+ * Fields shown with full (7dp, Stellar's own precision) decimal precision
+ * instead of InfoCard's default 2dp — for exchange-rate-shaped values close
+ * to 1.0 (e.g. underlying-per-vToken), 2dp rounds away the entire signal
+ * (1.0047294 displayed as "1.00" looked identical to an unmoved 1:1 rate).
+ */
+export const PRECISE_NUMBER_FIELDS = ["tokenPerVToken"] as const;
+
+/**
  * Fields rendered as USD currency. InfoCard auto-prefixes "$" to these.
  * Keep this list in sync with any new dollar-valued field IDs.
  */

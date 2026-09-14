@@ -24,6 +24,7 @@ import { MarginActionPreview } from "@/components/margin/margin-action-preview";
 import { computeCollateralPreviewRows } from "@/lib/utils/margin-preview";
 import { maxMarginWithdrawal, marginWithdrawalPreset } from "@/lib/utils/margin-withdraw";
 import { getXlmMinReserve, maxSpendableXlm } from "@/lib/xlm-reserve";
+import { USD_DUST_EPSILON } from "@/lib/account-snapshot";
 
 const XLM_TRANSFER_EPSILON = 1e-7;
 const LIQUIDATION_THRESHOLD = 1.1;
@@ -70,7 +71,16 @@ export const TransferCollateral = () => {
   const totalBorrowedValue = useMarginAccountInfoStore((state) => state.totalBorrowedValue);
   const avgHealthFactor = useMarginAccountInfoStore((state) => state.avgHealthFactor);
   const collateralBalances = useMarginAccountInfoStore((state) => state.collateralBalances);
-  const hasMeaningfulDebt = totalBorrowedValue > 0;
+  // Same dust floor the rest of the app's HF math already applies
+  // (USD_DUST_EPSILON in lib/account-snapshot.ts) — `avgHealthFactor` itself
+  // is computed against THAT floored debt (any sub-cent residual reads as no
+  // debt, HF = ∞). Comparing `totalBorrowedValue > 0` here instead let a
+  // leftover sub-cent debt (e.g. $0.00004 of dust after a repay) desync from
+  // that ∞ HF: `hasMeaningfulDebt` came back true while `avgHealthFactor` was
+  // still the infinity sentinel (999), and the (healthFactor - 1.1) * debtUsd
+  // formula below then computed a near-zero withdrawal cap instead of the
+  // full balance — 100%/Max filled in a wildly wrong tiny amount.
+  const hasMeaningfulDebt = totalBorrowedValue > USD_DUST_EPSILON;
   // Subscribe to global wallet state — local user/balance state is loaded once
   // on mount via Freighter, so without this hook the component keeps showing
   // the previous wallet's margin and wallet balances after disconnect.
@@ -117,8 +127,18 @@ export const TransferCollateral = () => {
       ? maxTransferableBalance
       : sourceBalance;
   const sourceBalanceInUsd = displayedSourceBalance * selectedTokenPrice;
+  // maxMarginWithdrawal requires debtUsd and healthFactor to agree on the
+  // same account state — but the store's avgHealthFactor is ALREADY computed
+  // against a dust-floored debt (effectiveDebtValue in account-snapshot.ts:
+  // any debt at or below USD_DUST_EPSILON reads as zero, HF = the infinity
+  // sentinel). Passing the raw totalBorrowedValue here desyncs the two the
+  // moment a sub-cent residual is left over (HF=999 paired with, say,
+  // $0.00004 of "debt"), which collapsed the withdrawal cap to a near-zero
+  // amount instead of the full balance. Apply the same floor here so the pair
+  // stays consistent with what avgHealthFactor already represents.
+  const dustFlooredDebt = hasMeaningfulDebt ? totalBorrowedValue : 0;
   const maxExecutableWithdraw = selectedTransferType === "WB"
-    ? maxMarginWithdrawal(maxTransferableBalance, totalBorrowedValue, avgHealthFactor, selectedTokenPrice)
+    ? maxMarginWithdrawal(maxTransferableBalance, dustFlooredDebt, avgHealthFactor, selectedTokenPrice)
     : maxTransferableBalance;
   const marginBalanceInput = collateralBalances[normalizeContractTokenSymbol(selectedCurrency)]?.amount ?? String(marginAccountBalance);
   const isOverSourceBalance = Number(valueInput || 0) > sourceBalance;

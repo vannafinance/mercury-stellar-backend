@@ -1,6 +1,18 @@
 import { floorAmountToInput } from "./sanitize-amount";
 
-/** UI estimate only; the contract checks live debt and collateral at execution. */
+/**
+ * UI estimate only; the contract checks live debt and collateral at
+ * execution. `debtUsd` and `healthFactor` MUST be computed consistently by
+ * the caller — both raw, or both floored against the same dust threshold
+ * (USD_DUST_EPSILON in lib/account-snapshot.ts). Passing an un-floored
+ * `debtUsd` alongside a `healthFactor` that was itself computed against a
+ * dust-floored debt (e.g. the store's `avgHealthFactor`, which reads as the
+ * infinity sentinel whenever debt is sub-cent) desyncs the two: a genuinely
+ * dust-level debt (say $0.00004) then paired with HF=999 collapses
+ * `(healthFactor - 1.1) * debtUsd` to a near-zero cap instead of the full
+ * balance a truly negligible debt should allow. See transfer-collateral.tsx's
+ * call site for where that floor is applied before calling this.
+ */
 export function maxMarginWithdrawal(balance: number, debtUsd: number, healthFactor: number, price: number): number {
   if (!Number.isFinite(balance) || balance <= 0) return 0;
   // Contract-held XLM has no classic-account base reserve.

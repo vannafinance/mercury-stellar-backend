@@ -15,6 +15,11 @@ interface HistoryModalProps {
 /** Canonicalise a Mercury event's asset symbol to the app's display symbol. */
 const canonical = (t: string): string => {
   const u = (t || "").toUpperCase();
+  // A Blend-tracked deposit/withdraw can carry the pool's internal tracking
+  // symbol (BLEND_XLM, see lib/blend-utils.ts's trackingSymbol) instead of
+  // the plain underlying "XLM" — without this, it fell through to `return u`
+  // and rendered as the raw "BLEND_XLM" in history rows.
+  if (u === "BLEND_XLM") return "XLM";
   if (u === "BLEND_USDC" || u === "USDC") return "BLUSDC";
   if (u === "AQUARIUS_USDC") return "AQUSDC";
   if (u === "SOROSWAP_USDC") return "SOUSDC";

@@ -1,5 +1,9 @@
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
+  // A Blend-tracked deposit/withdraw can carry the pool's internal tracking
+  // symbol (BLEND_XLM) instead of the plain underlying "XLM" — without this,
+  // it fell through unmapped and rendered as the raw "BLEND_XLM".
+  if (normalized === "BLEND_XLM") return "XLM";
   if (normalized === "BLEND_USDC" || normalized === "USDC") return "BLUSDC";
   if (normalized === "AQUIRESUSDC" || normalized === "AQUARIUS_USDC") return "AQUSDC";
   if (normalized === "SOROSWAPUSDC" || normalized === "SOROSWAP_USDC") return "SOUSDC";
