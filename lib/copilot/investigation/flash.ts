@@ -128,6 +128,7 @@ projects the health factor after each leg against the user's floor, rejects what
 shows the user why. Build from what the user actually holds (read the wallet, positions, rates first): idle wallet
 tokens must be deposited (deposit_collateral, all_idle) before supply_blend can use them; a borrow (to_floor) is
 followed by supply_blend (previous_leg) of the same asset; Earn lending spends the wallet directly (lend, all_idle).
+"How much can I withdraw / withdraw as much as keeps HF above X" is withdraw_collateral (to_floor) — never a question back.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays

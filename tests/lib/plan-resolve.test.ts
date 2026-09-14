@@ -141,7 +141,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
     ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin account is needed/],
     ["no price read", {}, [{ op: "lend", asset: "AQUA", sizing: { kind: "all_idle" } }], "lend AQUA", "no AQUA price was read this investigation"],
-    ["to_floor on a deposit", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "to_floor" } }], "deposit collateral XLM", /only a borrow can be sized to the health-factor floor/],
+    ["to_floor on a deposit", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "to_floor" } }], "deposit collateral XLM", /only a withdraw or a borrow can be sized to the health-factor floor/],
   ])("rejects with a readable reason: %s", (_name, over, legs, leg, reason) => {
     const { candidates, rejected } = resolvePlans([plan("Try", legs as ProposedPlan["legs"])], ctx(over as Partial<Parameters<typeof resolvePlans>[1]>));
     expect(candidates).toEqual([]);
@@ -248,7 +248,7 @@ describe("resolvePlans — an account already under its floor", () => {
     const { rejected } = resolvePlans([plan("Lever", [
       { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },
     ])], ctx({ capacity: { ...CAPACITY, floor: "1.5" } }));
-    expect(rejected[0].reason).toMatch(/no borrowing headroom at your health-factor floor/);
+    expect(rejected[0].reason).toMatch(/no headroom at your health-factor floor/);
   });
 });
 
@@ -311,6 +311,47 @@ describe("resolvePlans — a share of what the leg draws on (13 Sep: 'repay 25% 
     );
     expect(rejected).toEqual([]);
     expect(candidates[0]?.steps?.[0]).toEqual(expect.objectContaining({ op: "withdraw_collateral", amount: "2000" }));
+  });
+});
+
+describe("resolvePlans — withdraw to the floor (14 Sep: 'how much xlm can i withdraw', 'withdraw all … keep my HF > 2.5')", () => {
+  const posted = [...OBSERVATIONS, obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "20000" }] })];
+
+  it("sizes the withdrawal that leaves the health factor exactly at the floor: G − F·D, in tokens", () => {
+    // (6605.84 − 1.2 × 5102.54) = 482.792 USD → / 0.18 = 2682.1777 XLM, well under the 20,000 posted.
+    const { candidates, rejected } = resolvePlans(
+      [plan("Withdraw to the floor", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "to_floor" } }])],
+      ctx({ observations: posted, messages: ["withdraw as much XLM as keeps my HF above 1.2"] }),
+    );
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["withdraw_collateral", "2682.1777777"]]);
+    expect(Number(candidates[0]?.finalHealthFactor)).toBeCloseTo(1.2, 6);
+    expect(candidates[0]?.amountBasis).toBe("derived_max_at_floor");
+  });
+
+  it("takes no more than is posted, and says so when the floor leaves no room", () => {
+    const little = [...OBSERVATIONS, obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "500" }] })];
+    const capped = resolvePlans(
+      [plan("Withdraw to the floor", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "to_floor" } }])],
+      ctx({ observations: little, messages: ["withdraw all my XLM, keep HF above 1.2"] }),
+    );
+    expect(capped.candidates[0]?.steps?.[0]?.amount).toBe("500");
+    const none = resolvePlans(
+      [plan("Withdraw to the floor", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "to_floor" } }])],
+      ctx({ observations: posted, messages: ["withdraw all my XLM, keep HF above 2.5"], capacity: { ...CAPACITY, floor: "2.5" } }),
+    );
+    expect(none.candidates).toEqual([]);
+    expect(none.rejected[0]?.reason).toMatch(/^there is no headroom at your health-factor floor; to fit at a 2\.5 floor/);
+  });
+
+  it("with no floor stated, names what could come out at the 1.1 line and asks for the floor — never invents one", () => {
+    const { candidates, rejected } = resolvePlans(
+      [plan("Withdraw to the floor", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "to_floor" } }])],
+      ctx({ observations: posted, messages: ["how much xlm can i withdraw ??"], capacity: { ...CAPACITY, floor: null } }),
+    );
+    expect(candidates).toEqual([]);
+    // 6605.84 − 1.1 × 5102.54 = 993.046 USD → / 0.18 = 5516.9222 XLM.
+    expect(rejected[0]?.reason).toBe("a withdraw sized to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line — tell me the number; at the line itself up to 5516.9222222 XLM of the 20000 posted could come out");
   });
 });
 
@@ -459,7 +500,7 @@ describe("resolvePlans — when a plan does not fit, say what would make it fit"
     // HF is 1.2946 today; a 1.5 floor needs G ≥ 1.5·D = 7,653.81 → add $1,047.97, or repay (F·D − G)/(F − 1) = $2,095.94.
     const { rejected } = resolvePlans([plan("Lever", [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }])], ctx({ capacity: { ...CAPACITY, floor: "1.5" } }));
     expect(rejected[0].reason).toBe(
-      "there is no borrowing headroom at your health-factor floor; to fit at a 1.5 floor, add $1047.97 of collateral (≈ 5822.06 XLM from your wallet) or repay $2095.94 of debt first",
+      "there is no headroom at your health-factor floor; to fit at a 1.5 floor, add $1047.97 of collateral (≈ 5822.06 XLM from your wallet) or repay $2095.94 of debt first",
     );
   });
 

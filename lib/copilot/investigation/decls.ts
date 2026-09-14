@@ -91,7 +91,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           type: "array",
           description:
             "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number — " +
-            "all_idle (the asset's idle wallet balance), to_floor (largest borrow at the user's health-factor floor), " +
+            "all_idle (the asset's idle wallet balance), to_floor (the largest borrow — or withdrawal of posted collateral — at the user's health-factor floor), " +
             "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
             "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated — '25%', 'half' — " +
             "of what the leg draws on: of=idle for the wallet balance, of=position for the Earn position, the posted collateral " +

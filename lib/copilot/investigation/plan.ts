@@ -24,7 +24,7 @@ import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactio
 import { priceFor, tokensFromUsd, wireSymbol, writeArgs } from "./compile";
 import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
-import { sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
+import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
@@ -167,7 +167,7 @@ const SIZER_REASONS: Record<string, string> = {
   floor_below_liquidation_threshold: "a health-factor floor at or below 1.1 is the liquidation line, not a safety margin — state a floor above it",
   would_be_liquidatable: "this would leave the account liquidatable",
   floor_required_for_max: "sizing to the floor needs a stated health-factor floor",
-  no_capacity_at_floor: "there is no borrowing headroom at your health-factor floor",
+  no_capacity_at_floor: "there is no headroom at your health-factor floor",
   health_floor_breached: "this would take the health factor below your floor",
   repay_exceeds_debt: "the repay is larger than the outstanding debt",
   repay_exceeds_collateral: "the repay is larger than the collateral",
@@ -240,6 +240,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   interface Draft {
     leg: PlanLeg; name: string;
     usd: string | "max" | { previous: number };
+    /** For a "max" leg: what the pocket holds, in USD — a withdraw takes no more than is posted. */
+    capUsd?: string;
     /** The amount the tool is called with (vTokens for a redeem). */
     tokens: string | null;
     /** What the leg leaves for the next one; differs from `tokens` only for a redeem. */
@@ -349,9 +351,29 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     if (sizing.kind === "to_floor") {
-      // The floor caps what is drawn from borrowing capacity; nothing else is sized to it.
-      if (flow.from !== "debt") throw new Reject(name, "only a borrow can be sized to the health-factor floor");
-      drafts.push({ leg, name, usd: "max", tokens: null, produces: null, heldTokens: null });
+      // The floor caps what lowers health: a borrow (from capacity) or a withdraw (from what is posted).
+      if (flow.health !== "lowers") throw new Reject(name, `only ${listOps(WORKFLOW_OPS.filter((op) => OP_FLOW[op].health === "lowers"))} can be sized to the health-factor floor`);
+      if (flow.from === "debt") {
+        drafts.push({ leg, name, usd: "max", tokens: null, produces: null, heldTokens: null });
+        continue;
+      }
+      const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
+      if (posted === null) throw new Reject(name, `no ${leg.asset} posted collateral was read this investigation`);
+      if (decimalWad(posted) <= ZERO) throw new Reject(name, `no ${leg.asset} is posted as collateral`);
+      const capUsd = formatWad(mulDown(decimalWad(posted), price.price, WAD));
+      /**
+       * "How much can I withdraw?" with no floor stated: the liquidation line is the only
+       * stop the chain enforces, so the figure AT the line is named — and the floor they
+       * want kept is asked for, never invented (14 Sep: the question was answered with a
+       * question, "what specific amount would you like to verify?").
+       */
+      if (ctx.capacity && ctx.capacity.floor === null) {
+        const room = maxWithdrawForFloorWad(decimalWad(ctx.capacity.grossCollateralUsd), decimalWad(ctx.capacity.debtUsd), LIQUIDATION_THRESHOLD_WAD);
+        const atLine = room < decimalWad(capUsd) ? room : decimalWad(capUsd);
+        const tokens = tokensFromUsd(formatWad(atLine), price.price, decimals.get(leg.asset) ?? 7);
+        throw new Reject(name, `a withdraw sized to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line — tell me the number; at the line itself up to ${tokens.ok ? tokens.tokens : "0"} ${leg.asset} of the ${precise(posted, leg.asset, name)} posted could come out`);
+      }
+      drafts.push({ leg, name, usd: "max", capUsd, tokens: null, produces: null, heldTokens: null });
       continue;
     }
     if (sizing.kind === "previous_leg") {
@@ -478,6 +500,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const requests: LegRequest[] = marginDrafts.map((d) => ({
       op: d.leg.op as SizedOp, label: d.name,
       amountUsd: d.usd === "max" ? "max" : typeof d.usd === "string" ? d.usd : "0",
+      ...(d.capUsd !== undefined ? { capUsd: d.capUsd } : {}),
     }));
     /**
      * The floor is a stop condition for legs that can LOWER health. A sequence of deposits

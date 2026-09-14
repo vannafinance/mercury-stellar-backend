@@ -26,7 +26,7 @@ export const LIQUIDATION_THRESHOLD_WAD = BigInt(11) * WAD / BigInt(10);
 
 /** The ops the sizer projects are the ones the op-flow table says move health. */
 export type { SizedOp } from "../workflow/types";
-import type { SizedOp } from "../workflow/types";
+import { OP_FLOW, type SizedOp } from "../workflow/types";
 
 export interface SizingBase {
   /** Authoritative gross collateral in USD, as a decimal string. */
@@ -39,6 +39,8 @@ export interface LegRequest {
   label: string;
   /** A fixed USD size, or "max" to take the largest amount the floor permits. */
   amountUsd: string | "max";
+  /** For "max": what the pocket actually holds (a withdraw cannot take more than is posted). */
+  capUsd?: string;
 }
 
 export interface SizedLeg {
@@ -78,6 +80,21 @@ export function maxBorrowForFloorWad(grossWad: bigint, debtWad: bigint, floorWad
 }
 
 /**
+ * Largest withdrawal that still leaves `HF >= floor`: a withdraw takes from collateral only.
+ *
+ *   (G - x) / D >= F   =>   x <= G - F*D
+ *
+ * With no debt nothing can liquidate, so all of G is withdrawable. Zero when the account is
+ * already at or below the floor — never a negative size.
+ */
+export function maxWithdrawForFloorWad(grossWad: bigint, debtWad: bigint, floorWad: bigint): bigint {
+  if (floorWad <= WAD) throw new Error("floor_must_exceed_one");
+  if (debtWad === ZERO) return grossWad;
+  const room = grossWad - checked(floorWad * debtWad) / WAD;
+  return room > ZERO ? room : ZERO;
+}
+
+/**
  * Apply a sequence of legs to a starting state, sizing any "max" leg against the floor.
  *
  * Every intermediate state is checked, not just the final one: a plan whose last leg is
@@ -114,9 +131,15 @@ export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: s
   for (const leg of legs) {
     let amount: bigint;
     if (leg.amountUsd === "max") {
-      if (leg.op !== "borrow") return fail("max_only_supported_for_borrow", leg.label);
+      // Only a leg that LOWERS health has a "most the floor allows"; which formula is which pocket it draws on.
+      if (OP_FLOW[leg.op].health !== "lowers") return fail("max_only_for_ops_that_lower_health", leg.label);
       if (floorWad === null) return fail("floor_required_for_max", leg.label);
-      amount = maxBorrowForFloorWad(gross, debt, floorWad);
+      amount = OP_FLOW[leg.op].from === "debt" ? maxBorrowForFloorWad(gross, debt, floorWad) : maxWithdrawForFloorWad(gross, debt, floorWad);
+      if (leg.capUsd !== undefined) {
+        let cap: bigint;
+        try { cap = decimalWad(leg.capUsd); } catch { return fail("invalid_leg_amount", leg.label); }
+        if (cap < amount) amount = cap;
+      }
       if (amount === ZERO) return fail("no_capacity_at_floor", leg.label);
     } else {
       try {

@@ -59,8 +59,8 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
       const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
       if (ofIdle) want("wallet_balances");
-      // A position share draws on what the op spends: the read the op-flow table names for it.
-      if (ofPosition && flow.positionRead) want(flow.positionRead, flow.positionRead === "earn_position" ? leg.asset : undefined);
+      // A position share — or a withdraw to the floor — draws on what the op spends: the read the op-flow table names for it.
+      if ((ofPosition || leg.sizing.kind === "to_floor") && flow.positionRead) want(flow.positionRead, flow.positionRead === "earn_position" ? leg.asset : undefined);
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
       if (flow.to === "debt" && flow.positionRead) want(flow.positionRead);
       // A leg the account funds is checked against the account's balance, whatever its sizing word.
