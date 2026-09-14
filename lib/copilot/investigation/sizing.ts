@@ -24,7 +24,9 @@ import { checked, decimalWad, formatWad, WAD, ZERO } from "./fixed";
 /** The contract's own liquidation threshold, 1.1 WAD. Exclusive: HF <= this is unsafe. */
 export const LIQUIDATION_THRESHOLD_WAD = BigInt(11) * WAD / BigInt(10);
 
-export type SizedOp = "deposit_collateral" | "borrow" | "repay" | "withdraw_collateral";
+/** The ops the sizer projects are the ones the op-flow table says move health. */
+export type { SizedOp } from "../workflow/types";
+import { OP_FLOW, type SizedOp } from "../workflow/types";
 
 export interface SizingBase {
   /** Authoritative gross collateral in USD, as a decimal string. */
@@ -37,6 +39,8 @@ export interface LegRequest {
   label: string;
   /** A fixed USD size, or "max" to take the largest amount the floor permits. */
   amountUsd: string | "max";
+  /** For "max": what the pocket actually holds (a withdraw cannot take more than is posted). */
+  capUsd?: string;
 }
 
 export interface SizedLeg {
@@ -76,37 +80,66 @@ export function maxBorrowForFloorWad(grossWad: bigint, debtWad: bigint, floorWad
 }
 
 /**
+ * Largest withdrawal that still leaves `HF >= floor`: a withdraw takes from collateral only.
+ *
+ *   (G - x) / D >= F   =>   x <= G - F*D
+ *
+ * With no debt nothing can liquidate, so all of G is withdrawable. Zero when the account is
+ * already at or below the floor — never a negative size.
+ */
+export function maxWithdrawForFloorWad(grossWad: bigint, debtWad: bigint, floorWad: bigint): bigint {
+  if (floorWad <= WAD) throw new Error("floor_must_exceed_one");
+  if (debtWad === ZERO) return grossWad;
+  const room = grossWad - checked(floorWad * debtWad) / WAD;
+  return room > ZERO ? room : ZERO;
+}
+
+/**
  * Apply a sequence of legs to a starting state, sizing any "max" leg against the floor.
  *
  * Every intermediate state is checked, not just the final one: a plan whose last leg is
  * healthy can still pass through a liquidatable state in the middle, and the chain does
  * not wait for the sequence to finish before liquidating.
  */
-export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: string): SizingResult {
+/**
+ * `floor` is the user's stated health-factor floor. When they gave none (`null`), the
+ * contract's own liquidation line is the stop condition: a sequence may not pass through
+ * a liquidatable state, and nothing may be sized "to the max" — a max needs a floor the
+ * user chose. That is not a default floor invented for them; it is the one line the chain
+ * enforces regardless.
+ */
+export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: string | null): SizingResult {
   const sized: SizedLeg[] = [];
   const fail = (reason: string, failingLeg: string | null = null): SizingResult =>
     ({ ok: false, reason, failingLeg, legs: sized });
 
-  let floorWad: bigint;
+  let floorWad: bigint | null;
   let gross: bigint;
   let debt: bigint;
   try {
-    floorWad = decimalWad(floor);
+    floorWad = floor === null ? null : decimalWad(floor);
     gross = decimalWad(base.grossCollateralUsd);
     debt = decimalWad(base.debtUsd);
   } catch {
     return fail("invalid_base_or_floor");
   }
   // A floor at or below the liquidation threshold is not a safety margin.
-  if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return fail("floor_below_liquidation_threshold");
+  if (floorWad !== null && floorWad <= LIQUIDATION_THRESHOLD_WAD) return fail("floor_below_liquidation_threshold");
   if (!legs.length) return fail("no_legs");
   if (legs.length > 8) return fail("too_many_legs");
 
   for (const leg of legs) {
     let amount: bigint;
     if (leg.amountUsd === "max") {
-      if (leg.op !== "borrow") return fail("max_only_supported_for_borrow", leg.label);
-      amount = maxBorrowForFloorWad(gross, debt, floorWad);
+      // Only a leg that LOWERS health has a "most the floor allows"; which formula is which pocket it draws on.
+      if (OP_FLOW[leg.op].health !== "lowers") return fail("max_only_for_ops_that_lower_health", leg.label);
+      if (floorWad === null) return fail("floor_required_for_max", leg.label);
+      amount = OP_FLOW[leg.op].from === "debt" ? maxBorrowForFloorWad(gross, debt, floorWad) : maxWithdrawForFloorWad(gross, debt, floorWad);
+      if (leg.capUsd !== undefined) {
+        let cap: bigint;
+        try { cap = decimalWad(leg.capUsd); } catch { return fail("invalid_leg_amount", leg.label); }
+        if (cap < amount) amount = cap;
+      }
       if (amount === ZERO) return fail("no_capacity_at_floor", leg.label);
     } else {
       try {
@@ -147,7 +180,8 @@ export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: s
       healthFactorAfter: hf === null ? null : formatWad(hf),
     });
     // No debt means nothing can liquidate this state, so the floor does not apply.
-    if (hf !== null && hf < floorWad) return fail("health_floor_breached", leg.label);
+    if (hf !== null && floorWad !== null && hf < floorWad) return fail("health_floor_breached", leg.label);
+    if (hf !== null && floorWad === null && hf <= LIQUIDATION_THRESHOLD_WAD) return fail("would_be_liquidatable", leg.label);
   }
 
   const finalHf = healthFactorWad(gross, debt);

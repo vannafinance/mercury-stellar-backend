@@ -66,5 +66,6 @@ export interface ResearchView {
 
 export type ResearchStreamEvent =
   | { type: "progress"; event: import("./types").InvestigationProgress }
-  | { type: "result"; result: ResearchView }
+  /** `conversationId`: where the server recorded this turn, so the next turn joins it. */
+  | { type: "result"; result: ResearchView; conversationId?: string }
   | { type: "error"; code: string; message: string };

@@ -16,6 +16,129 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `lend 1 xlm to earn` (signed-in, local MCP loop, approved, refused by the contract)
+
+- **Date / commit / surface:** 2026-09-14 · `feat/copilot-finetune` @ `728dba4` · signed-in `/copilot` · local MCP · wallet 3.94 XLM (3.5 chain minimum + 0.5 fee reserve → 0 spendable)
+- **Result:** `WRONG` — a plan was offered, approved, and the contract refused it
+- **Returned, verbatim:**
+  > Lend 1 XLM. Approve to run this step. · Lend 1 XLM into Vanna Earn. · Lend exactly 1 XLM into Vanna Earn · No new borrowing · Checked in 4s · NOT EXECUTED · Not submitted — the protocol rejected this step before broadcast: Contract HostError #10: resulting balance is not within the allowed range · lend 1 XLM · 1 XLM
+- **Right about:** nothing was broadcast; the contract's sentence was shown.
+- **Cause:** a second code path. Plans go through the sizer (`plan.ts`) and are sized from `spendable`; a *stated* action (`goal.actions`) short-cut in `service.ts` straight to a step — no read, no balance, no precision ("Checked in 4s" is the tell). The wallet read had `spendable: 0` all along; nothing on that path asked. HostError #10 is Stellar's minimum-balance rule.
+- **Fix `f58897b`:** the shortcut and `requested-actions.ts` are gone. A stated action is a plan of literal legs through the same sizer: reads fetched, amount checked against the pocket the op-flow table names, precision cut, simulated. Expected card now: *"lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve — nothing is spendable."* — and nothing to approve. Pinned in `tests/lib/investigation-fast-path.test.ts` with this wallet.
+- **Hosted caveat:** `min_balance` / `spendable` come from MCP PR #3. Without it the copilot falls back to balance − fee reserve (3.44) and this wallet is still offered; the hosted Earn `preview` accepts `holder` but checks no balance. Fully fixed on hosted only once PR #3 deploys.
+- **Battery:** B1 (funding edge), L-series.
+
+### Copilot · `lend 25% of xlm that i hold and also repay 25% of xlm debt` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-14 · `feat/copilot-finetune` @ `9232cc9` · signed-in `/copilot` · local MCP · wallet ~9,999.88 spendable XLM; debt ~14,113 XLM
+- **Result:** `REFUSED-WRONGLY` — the model proposed the right two legs (`fraction 25% of idle` lend, `fraction 25% of position` repay); the sizer refused the lend for a rate
+- **Returned, verbatim:**
+  > Ruled out — Lend 25% XLM and Repay 25% XLM Debt. lend XLM: no usable Earn supply rate was read for XLM.
+- **Cause (three, all code):** (1) `service.ts` stamped `observedNow` *before* `readsForPlans` fetched `earn_market:XLM`, so the read the plan itself asked for was "in the future" and dropped from the rate rows; (2) `rate-comparison.ts` gave a Blend-listed asset no row unless *both* venues were read — a plain lend reads only Earn; (3) `plan.ts` refused any supply leg whose rate was missing, though the rate is the option's label, not an input to its size.
+- **Fix `feae0f4`:** clock re-taken after the plan reads; an earn-only row when Blend was not read (a Blend market that *was* read but is unusable keeps the old gate, so exclusions still show); a missing supply rate labels the option ("rate not read") instead of refusing — only a plan that *borrows* needs every supply rate. End-to-end test replays the live prompt with the seed lacking `earn_market:XLM`. Expected card now: Lend ~2,499.97 XLM → Deposit ~3,528.37 → Repay ~3,528.37, "Leaves ~10,585 XLM of debt".
+- **Battery:** B5 / D8 (fraction sizing).
+
+### Copilot · `I want zero debt but keep all my collateral` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-13 16:05 UTC · `feat/copilot-finetune` @ `83781f3` · signed-in `/copilot` · local MCP · debt ~$5,077 in XLM; wallet 0 spendable XLM
+- **Result:** `REFUSED-WRONGLY` — refusal true but content-free; the debt figure never shown
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Repay debt using wallet balances — repay XLM: an idle wallet balance does not size a borrow, repay, redeem or withdraw. Nothing was executed. · Eliminate all margin debt while preserving current posted collateral. · Zero debt · Keep all collateral intact · No new borrowing · Ruled out — Repay debt using wallet balances. repay XLM: an idle wallet balance does not size a borrow, repay, redeem or withdraw. · Unresolved — answer or refine your request below to continue · Deposit sufficient XLM and USDC into the wallet to execute repayment without reducing posted collateral.
+- **Log:** reads debt, collateral, wallet, liquidation snapshot, prices; model 1 turn; `plans: proposed 1, sized 0`.
+- **Right about:** no substitute offered (no withdraw-to-repay); "keep collateral" honoured; the model's suggestion (add funds) is sound.
+- **Cause:** the model chose `all_idle` for the repay — "repay from what I have", a natural reading — and the sizer knew only `all_position` for repay. The rejection named the sizing rule, not the debt.
+- **Fix `bc9884b`:** repay + `all_idle` = min(spendable, owed); every repay leg reads the debt; the refusal reads "you owe N XLM (~$X) and the wallet holds no spendable XLM — add N XLM to the wallet, or redeem it from Earn first".
+- **Battery:** D7/D9.
+
+### Copilot · `invest into earn pool where i can get the best/good returns` — re-run after `99fe08c`, before Faucet (signed-in, local MCP loop, executed)
+
+- **Date / commit / surface:** 2026-09-13 15:50 UTC · `feat/copilot-finetune` @ `99fe08c` · signed-in `/copilot` · local MCP · wallet 3.97 XLM (0 spendable), 0.0003729 AQUSDC
+- **Result:** `WRONG` — a dust transaction offered, approved and executed
+- **Returned, verbatim:**
+  > Lend idle AQUSDC in Earn: lend 0.0003729 AQUSDC to Earn. About 20.18% APR on $0.00, using idle funds only. Approve to run those steps. · OPTIONS · Lend idle AQUSDC in Earn · $0.00 · no change to health factor · 1 Lend 0.0003729 AQUSDC to Earn · Lend idle AQUSDC into the AQUSDC Earn pool, which offers 20.18% supply APY (p8). · Using AQUSDC — you hold 0 of it, so no swap is needed. · Ruled out — Lend idle BLUSDC in Earn. lend BLUSDC: no idle BLUSDC in the wallet.
+- **Executed:** tx `98c285fd…`, ledger 4658216, **fee 0.0964 XLM** to deposit $0.00007 of AQUSDC.
+- **Log:** investigate 26.9s (model 17.3s; 9,512 in / 382 out / 2,976 thinking); propose 0.4s; approve 1.4s; advance 2.8s; submit 3.0s; 4 ledger polls ≤ 0.5s. Nothing slow server-side — the wait was signing + ledger.
+- **Cause:** the sizer's only test for an idle line was amount > 0; nothing asked whether the leg was worth a transaction. Label fix from `99fe08c` visible (pool named AQUSDC); the "Idle in the wallet" line did not show because a candidate existed.
+- **Fix `82feeb4`:** a line worth less than the wallet read's own fee reserve at the read XLM price is dust — not idle for the fixed shapes, and a plan leg on it is ruled out as "0.0003729 AQUSDC ($0.00) is worth less than the fee reserve one transaction needs ($0.09) — not worth moving". No threshold of ours; nothing is dust when the reserve or the price was not read.
+- **Class:** confident wrong action — the worst class; caught by the battery before the founder.
+- **Next entry:** same prompt after Faucet.
+
+### Copilot · `invest into earn pool where i can get the best/good returns` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-13 15:40 UTC · `feat/copilot-finetune` @ `7c5d0df` · signed-in `/copilot` · local MCP (main + #3 + #4) · wallet 3.97 XLM (all minimum balance + fee reserve), 0.0004 AQUSDC; everything else posted or in Blend
+- **Result:** `PARTIAL` — every number real, nothing invented; question unanswered; the reason for "no option" hidden
+- **Returned, verbatim:**
+  > The reported supply rates are XLM Earn: 5.187282 % APR; USDC Earn: 29.084267 % APR; USDC Earn: 20.179294 % APR; USDC Earn: 0.377295 % APR; XLM Blend: 168.6584 % APR; USDC Blend: 0.9232 % APR. · Invest idle assets into Vanna Earn pools offering the highest returns. · Focus on Vanna Earn pools · Maximize supply APY · Checked in 23s
+- **Log:** 13 reads (4 × pool_stats, 4 × price, blend reserves, wallet), model turn 1 14.2s (9,511 in / 444 out / 2,212 thinking), `research_complete`, no plans, no `plans` phase.
+- **Cause (three):**
+  1. `pool_stats` answers `pool_symbol: "USDC"` for BLUSDC, AQUSDC and SOUSDC alike; `facts-by-shape` labelled by the row's own symbol → three indistinguishable "USDC Earn" rates.
+  2. Nothing spendable in the wallet, and no line said so — the model's findings were the rate list; the deterministic layer had the wallet read and stayed silent.
+  3. The model proposed no plan (defensible with nothing idle) and did not name the best pool.
+- **Fix `99fe08c`:** (1) a row symbol equal to the requested asset's venue spelling (`earnSymbol`/`marginSymbol`, registry) is labelled with the asset id; (2) a strategy turn with nothing feasible and nothing ruled out opens with "Idle in the wallet: XLM 0 spendable of 3.9737, AQUSDC 0.0004."; (3) duplicate rate lines collapse. Not fixed: the model still has to say which pool is best — re-run pending.
+- **Battery:** B6 + B2. **Re-run after Faucet is the next entry.**
+
+### Copilot · `put my XLM and USDC into the Aquarius XLM/USDC LP` (local MCP, after the fixes)
+
+- **Date / commit / surface:** 2026-09-13 19:08 UTC · `feat/copilot-finetune` @ `d700d02` · `/copilot` against a **local** MCP (`vanna_mcp` main + PR #3 + PR #4) · wallet connected, Privy session dropped by a reload (`signed_in: false`)
+- **Result:** `REFUSED-CORRECTLY`
+- **Returned, verbatim:**
+  > Aquarius XLM/USDC pool CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX was found, but depositing liquidity into Aquarius AMM pools is an unsupported action on this platform. · Deposit XLM and AQUSDC into the Aquarius XLM/USDC LP pool. · Aquarius LP deposit operations are not executable through Vanna strategy plans · No new borrowing · Checked in 19s
+- **Log:** model turn 1 6.4s; `aquarius_markets` read 3.6s (router `get_pools` → API by address); turn 2 8.7s; `research_complete`, no plan.
+- **Three fixes met here:** the pool is found (MCP PR #4); the limitation finding is kept although it cites no observation (`ebb47e5`); a non-executable venue is named, never substituted (`00068f3`).
+- **Still shown:** "Aquarius pools were discovered; executable quotes and net returns have not been evaluated." — pre-existing normalize warning, now noise on a refused LP prompt. Not fixed yet.
+
+---
+
+### Copilot · `put my XLM and USDC into the Aquarius XLM/USDC LP` (hosted MCP, three runs)
+
+- **Date / commit / surface:** 2026-09-13 16:1x–16:5x UTC · `feat/copilot-finetune` @ `126292d` → `ebb47e5` · signed-in `/copilot` · hosted `mcp.vanna.finance`
+- **Run 1 result:** `ERROR` — > Research stopped: invalid decision. · aquarius markets: pools[0] was unavailable — No Aquarius pool for USDC/XLM in API.
+  - **Cause:** the model wrote the limitation the prompt asks for ("say so in findings") with `evidenceIds: []`; `decision.ts` refused every uncited finding on a strategy turn (`finding: keys=evidenceIds,summary evidence=0` in the log after `56deaa2`). Prompt and parser contradicted each other. **Fix `ebb47e5`:** an uncited finding is kept when it states no figure; an uncited figure is dropped and counted.
+- **Run 2 result:** `WRONG` — > I've checked the available information. One choice still changes the plan: No Aquarius XLM/USDC pool is currently available on this network. · ANSWER BELOW TO CONTINUE
+  - **Cause (two):** the hosted MCP's `vanna_list_aquarius_pools` scans page 1 of the Aquarius API for the code "USDC" — the Farm pool is on page 4 of 177 pools, and six XLM/USDC pools exist across three issuers (**MCP PR #4**); and the card rendered a data-gap `openQuestion` as a user choice (**fix `d700d02`**: "this is unresolved: …").
+- **Run 3 result:** `ERROR` — > The investigation ran out of time before it could finish. — the request never reached the server: a full vitest run + `tsc` were hogging the machine while the dev server recompiled. Not a copilot defect; recorded so the copy is not blamed.
+
+---
+
+### Copilot · `Deposit 10000 XLM as collateral and deploy it in the Blend farm, keep my HF above 1.15` (signed-in)
+
+- **Date / commit / surface:** 2026-09-13 10:35 UTC · `feat/copilot-finetune` @ `f7c3218` · signed-in `/copilot` · hosted MCP · Privy `GBH5…IHA`
+- **Result:** `WORKS` (executed) with one defect underneath
+- **Returned / executed:** Deposit 10000 XLM as collateral — tx `bf7efcb3…` 10:35:17 · Supply 10000 XLM to Blend (`execute`) — tx `a7d29509…` 10:35:32 · both settled with no click between them (ledger-close polling, `f7c3218`).
+- **Defect:** log `phase: 'plans', proposed: 1, sized: 0, rejected: ["… Blend supply takes what a deposit or borrow put in the account — size that leg instead"]`. The model wrote `10000` on both legs (the user's words); `plan.ts` refused any literal on `supply_blend`, the composed plan died, and the run fell through to the literal-only `goal.actions` path — executed, but without rationale or projection. **Fix `1557a3b`:** a literal Blend supply is accepted when the deposit/borrow before it put in at least that much.
+
+---
+
+### Copilot · `use my AqUSDC sitting in Earn as collateral, keep HF above 1.15` (signed-in, executed)
+
+- **Date / commit / surface:** 2026-09-13 10:15 UTC · `feat/copilot-finetune` @ `1fd0ccc` · signed-in `/copilot` · hosted MCP
+- **Result:** `WORKS` (executed) — first live redeem → deposit
+- **Executed:** Redeem 4918.2651397 VAQUSDC (`redeem_vtokens`, u256 `4918265139700000000000`) — tx `e5e75d39…` 10:15:57 · Deposit 5000.9718044 AQUSDC — tx `86f5bc5c…` 10:19:37. Dust left in wallet 0.0003729 AQUSDC = interest accrued between estimate and execution; the estimate was conservative.
+- **Defect:** the card sat on "Broadcasting…" through both settlements. `use-workflow.ts` asked the server once, immediately after submit (ledger not yet closed → NOT_FOUND) and then waited for "Check progress". **Fix `f7c3218`:** a submitted step is re-asked about at every ledger close (`useLedgerTick`), and the run continues by itself.
+- **Also seen:** "Prepare this plan" re-clicked after the redeem → 409 `candidate_unavailable` — correct; the propose path re-read the position and refused a second redeem.
+
+---
+
+### Copilot · `Create a startegy in such a way that My HF will stay above the 1.1 and use USDC and XLM as collateral and deploy them in farm` (signed-in, user's own words)
+
+- **Date / commit / surface:** 2026-09-13 10:35 IST · `feat/copilot-finetune` @ Aditya's `f7413d7` + §1 candidate-id · signed-in `/copilot` · Privy `GBH5…IHA` → `CCKIT…DMC`, testnet
+- **Account / auto-sign:** collateral $6,605.84, debt $5,102.54, HF ~1.29; wallet 10,206.98 XLM idle, 0 USDC-family idle; 5,000 AqUSDC already in Earn; Blend supply ~16,185 XLM + ~876 USDC
+- **Result:** `PARTIAL` (prose correct, **zero options**, five warnings — two of them false)
+- **Returned, verbatim:**
+  > The current margin account holds $6,605.84 in collateral and $5,102.54 in debt, yielding a Health Factor of ~1.29, which is above the 1.1 threshold. Protocol collateral config allows XLM, AQUSDC, and SOUSDC as margin collateral; the wallet holds 10,206.98 spendable XLM. Blend Farm offers 425.61% supply APY for XLM and 0.91% for USDC (where the account currently holds ~16,185 XLM and ~876 USDC in Blend supply), while Aquarius currently has no available USDC/XLM LP pool. · Deploy XLM and USDC into Vanna Farm while maintaining a margin Health Factor above 1.1. · Maintain Health Factor strictly above 1.1 · Use XLM and USDC as collateral for farming · Borrowing allowed, not required · Checked in 30s · ⓘ wallet balances: some entries were unavailable. · ⓘ aquarius markets: some entries were unavailable. · ⓘ Aquarius pools were discovered; executable quotes and net returns have not been evaluated. · ⓘ collateral config: no supported display fields were available. · ⓘ farm overview: no supported display fields were available. · [Start over]
+- **Log:** request `f1efb360`; scope 2.3s; seed 4.0s (10 markets); model turn 1 6.8s (thoughts 647), turn 2 15.2s (thoughts 2,738); 5 reads (`account_collateral`, `account_debt`, `collateral_config`, `aquarius_markets`, `farm_overview`), `research_complete` at 23.9s; fact extract `collateral_config` → `no_fields`, `farm_overview` → `no_fields`; turn 30.2s.
+- **Tx:** none possible — nothing to prepare.
+- **Cause (three, all deterministic-layer, none the model's):**
+  1. `rate-comparison.ts` rejected any supply rate over **100% APR** as implausible. Testnet Blend XLM is at 89.98% utilisation → 168.6% APR / 425.6% APY, internally consistent (208.2 × 0.90 × 0.9 backstop ≈ 168.6). XLM lost its rate row → the only idle asset produced no candidate. **Silently** — the model's prose reported 425.61% while the options layer had discarded XLM.
+  2. Remaining shapes infeasible, correctly: 0 idle USDC-family (the 5K AqUSDC is vTokens in Earn, never read); borrow-BLUSDC→Blend carry = 0.9% − 32.5% < 0.
+  3. `normalize.ts` 14-case switch: `collateral_config` and `farm_overview` returned full payloads and were dropped; "wallet balances: some entries were unavailable" was the MCP's deliberate `USDC: not_resolvable` line; "aquarius markets: …" likewise a non-ok row status.
+- **Fix (13 Sep, same branch):** §1 candidate ids owned by `candidate-id.ts`; rate plausibility = `supply ≤ borrow × utilization` with excluded rates named on the card (`rate-comparison.ts`, `evidence.ts` carries the fields); facts derived from response shape (`facts-by-shape.ts`), judgement branches only in `normalize.ts`; non-ok row status is information, not failure. Suite 1679/0/3.
+- **Class:** enumerated-not-intelligent (handoff §3d) — a size cap, a capability list, and a status list each threw away real data without saying so
+- **Reveals:** the prose and the options are generated from different places and never reconciled; the user cannot tell "no good option" from "option discarded". Also: the copilot never read the Earn position, so "use USDC" could not consider the 5K AqUSDC sitting in Earn — a strategy-space gap, not a data gap (§8 of `COPILOT_MCP_FLOW_DIAGRAMS.md`).
+- **Not yet re-run after the fix.** Next entry above this one must be the same prompt, verbatim, with the new card.
+
+---
+
 ### Copilot · `repay 1 xlm from my account` (signed-in, approve consumed)
 
 - **Date / commit / surface:** 2026-09-11 14:20 IST · signed-in `/copilot` · Privy `GD4B…NPDH`

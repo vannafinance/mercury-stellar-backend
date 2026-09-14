@@ -7,16 +7,27 @@
  * sizer uses for prices. Stale or missing evidence falls back to live reads.
  */
 
+import { assetForVenueSpelling } from "../registry/assets";
+import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { Observation } from "./types";
 import type { ResearchCapacity } from "./view";
 
-const KEEP = new Set([
+/**
+ * What the sealed continuation carries forward, so Prepare can re-size the plan the user
+ * clicked. The position reads are DERIVED from the op-flow table rather than listed here:
+ * a hand-kept list is one a new op falls off silently, and on 14 Sep exactly that happened
+ * — `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
+ * Prepare answered "no XLM Blend supply was read this investigation".
+ */
+const KEEP = new Set<string>([
   "wallet_balances", "asset_price", "earn_market", "blend_markets",
-  "account_position", "account_health", "account_debt", "account_collateral",
+  "account_position", "account_health",
+  ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
 const PRIORITY: Record<string, number> = {
+  blend_position: 9,
   account_position: 0,
   account_health: 1,
   account_debt: 2,
@@ -25,12 +36,22 @@ const PRIORITY: Record<string, number> = {
   asset_price: 5,
   earn_market: 6,
   blend_markets: 7,
+  earn_position: 8,
 };
 const MAX_OBSERVATIONS = 16;
 
 export interface ResearchEvidence {
   allowedCandidateIds?: string[];
   requestedSteps?: import("../workflow/types").ProposalStep[];
+  /**
+   * The model's composed shapes, sealed so propose can re-size the one the user picked
+   * from the same evidence without a second model turn — a model turn is not
+   * deterministic, and the option the user clicked must be the option that compiles.
+   */
+  plans?: import("./types").ProposedPlan[];
+  /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
+  position?: import("./plan").PlanContext["capacity"];
+  floor?: string | null;
   capturedAt: number;
   observations: Observation[];
   capacity: ResearchCapacity | null;
@@ -128,11 +149,26 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
   if (capability === "asset_price") {
     return { price_usd: data.price_usd };
   }
+  /**
+   * Rate rows keep the borrow rate and utilization alongside the supply rate: the rate
+   * comparison vouches for a supply rate only by checking it against those two, so a
+   * bundle without them would make every sealed option "no longer available" on propose.
+   */
   if (capability === "earn_market") {
     return {
       supply_apr_pct: data.supply_apr_pct,
       supply_apy_pct: data.supply_apy_pct,
       borrow_apr_pct: data.borrow_apr_pct,
+      utilization_pct: data.utilization_pct,
+    };
+  }
+  if (capability === "earn_position") {
+    return {
+      ...(data.symbol !== undefined ? { symbol: data.symbol } : {}),
+      ...(data.vtoken_symbol !== undefined ? { vtoken_symbol: data.vtoken_symbol } : {}),
+      ...(data.decimals !== undefined ? { decimals: data.decimals } : {}),
+      ...(data.human !== undefined ? { human: data.human } : {}),
+      ...(data.redeemable_human !== undefined ? { redeemable_human: data.redeemable_human } : {}),
     };
   }
   if (capability === "wallet_balances") {
@@ -141,11 +177,15 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       return [{
         symbol: row.symbol,
         balance: row.balance,
+        ...(row.decimals !== undefined ? { decimals: row.decimals } : {}),
+        ...(row.spendable !== undefined ? { spendable: row.spendable } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),
         ...(row.error !== undefined ? { error: row.error } : {}),
       }];
     }) : [];
-    return { assets };
+    // The fee reserve travels with the balances: an idle XLM amount sized on propose
+    // must equal the one sized on the card, and both leave the reserve in the wallet.
+    return { assets, ...(data.fee_reserve_xlm !== undefined ? { fee_reserve_xlm: data.fee_reserve_xlm } : {}) };
   }
   if (capability === "account_position" || capability === "account_health") {
     return {
@@ -157,17 +197,32 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
     };
   }
   if (capability === "account_debt") {
+    // `asset` is the registry id the wire symbol means here (BLUSDC for "USDC"); the model
+    // names legs by it, and must never have to guess it from the venue's spelling.
+    const debt = Array.isArray(data.debt) ? data.debt.flatMap((row) => {
+      if (!isRecord(row) || typeof row.symbol !== "string") return [];
+      const asset = assetForVenueSpelling("margin", row.symbol)?.id;
+      return [{ symbol: row.symbol, ...(asset ? { asset } : {}), balance: row.balance }];
+    }) : undefined;
     return {
       ...(data.total_debt_usd !== undefined ? { total_debt_usd: data.total_debt_usd } : {}),
       ...(data.debt_usd !== undefined ? { debt_usd: data.debt_usd } : {}),
       ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(debt ? { debt } : {}),
     };
   }
   if (capability === "account_collateral") {
+    // Posted rows travel too: a withdraw sized as `all_position` re-sizes from them on propose.
+    const collateral = Array.isArray(data.collateral) ? data.collateral.flatMap((row) => {
+      if (!isRecord(row) || typeof row.symbol !== "string") return [];
+      const asset = assetForVenueSpelling("margin", row.symbol)?.id;
+      return [{ symbol: row.symbol, ...(asset ? { asset } : {}), balance: row.balance, ...(row.balance_untrusted !== undefined ? { balance_untrusted: row.balance_untrusted } : {}) }];
+    }) : undefined;
     return {
       ...(data.total_value_usd !== undefined ? { total_value_usd: data.total_value_usd } : {}),
       ...(data.collateral_usd !== undefined ? { collateral_usd: data.collateral_usd } : {}),
       ...(data.source !== undefined ? { source: data.source } : {}),
+      ...(collateral ? { collateral } : {}),
     };
   }
   if (capability === "blend_markets") {
@@ -177,6 +232,8 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
         venue: row.venue,
         symbol: row.symbol,
         supply_apr_pct: row.supply_apr_pct,
+        borrow_apr_pct: row.borrow_apr_pct,
+        utilization_pct: row.utilization_pct,
         ...(row.error !== undefined ? { error: row.error } : {}),
         ...(row.available !== undefined ? { available: row.available } : {}),
         ...(row.status !== undefined ? { status: row.status } : {}),

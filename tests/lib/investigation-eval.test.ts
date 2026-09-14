@@ -111,13 +111,13 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
         if (tool === "vanna_get_pool_stats") {
-          return { supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "4" };
+          return { supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
         }
         if (tool === "vanna_list_blend_reserves") {
           return {
             reserves: [
-              { venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" },
-              { venue: "blend", symbol: "USDC", supply_apr_pct: "10", supply_apy_pct: "10.5" },
+              { venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" },
+              { venue: "blend", symbol: "USDC", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" },
             ],
           };
         }
@@ -218,13 +218,13 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     const mcp = {
       call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
         if (tool === "vanna_get_pool_stats") {
-          return { supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "4" };
+          return { supply_apr_pct: "2", supply_apy_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
         }
         if (tool === "vanna_list_blend_reserves") {
           return {
             reserves: [
-              { venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5" },
-              { venue: "blend", symbol: "USDC", supply_apr_pct: "10", supply_apy_pct: "10.5" },
+              { venue: "blend", symbol: "XLM", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" },
+              { venue: "blend", symbol: "USDC", supply_apr_pct: "10", supply_apy_pct: "10.5", borrow_apr_pct: "12", utilization_pct: "90" },
             ],
           };
         }

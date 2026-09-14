@@ -31,13 +31,82 @@ export interface InvestigationRequest {
   promptName?: string;
 }
 
+import type { WorkflowOp } from "../workflow/types";
+
 export interface GoalUnderstanding {
   intent?: "answer" | "strategy";
   relation?: "new" | "refine";
-  actions?: Array<{ op: "lend" | "deposit_collateral" | "borrow" | "repay" | "supply_blend"; asset: string; amount: string; sourceQuote: string }>;
+  actions?: Array<{ op: WorkflowOp; asset: string; amount: string; sourceQuote: string }>;
   objective: string;
   constraints: string[];
   borrowing: "unspecified" | "allowed" | "required" | "forbidden";
+  /**
+   * The health-factor floor the user stated, as their exact number with the substring
+   * of their message that contains it. Understanding which sentence states a floor is
+   * the model's job ("HF stays above 1.3", "never let health dip under 1.25"); the
+   * number is verified against the user's own words in code and never invented. Absent
+   * when no number was stated — "avoid liquidation" is not a floor.
+   */
+  healthFactorFloor?: { value: string; sourceQuote: string };
+}
+
+/** The write operations a plan may be composed from: exactly the ones the workflow can execute. */
+export type PlanOp = WorkflowOp;
+
+/**
+ * How a leg is sized — a WORD, never a number. The model says what the amount is a
+ * function of; `plan.ts` computes it from observations and the user's floor:
+ *
+ *   all_idle      the asset's idle wallet balance (less the fee reserve for XLM)
+ *   all_position  the whole of what the op draws on: the Earn position for a redeem, the
+ *                 posted collateral for a withdraw, the outstanding debt for a repay
+ *   to_floor      the largest borrow that keeps the health factor at the stated floor
+ *   previous_leg  the same amount the previous leg produced (borrow → supply it;
+ *                 redeem → deposit the underlying it returned)
+ *   literal       an amount the user typed, quoted verbatim so it can be anchored
+ */
+export type PlanSizing =
+  | { kind: "all_idle" }
+  | { kind: "all_position" }
+  | { kind: "to_floor" }
+  | { kind: "previous_leg" }
+  | { kind: "literal"; amount: string; sourceQuote: string }
+  /**
+   * A share of what the leg draws on, as the user said it: `of: "idle"` is the wallet's
+   * spendable balance, `of: "position"` the position the op spends (the Earn position, the
+   * posted collateral, the debt). `percent` is the user's figure ("25") or the figure a word
+   * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
+   */
+  | { kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string };
+
+export interface PlanLeg {
+  op: PlanOp;
+  asset: string;
+  sizing: PlanSizing;
+  /**
+   * The asset the leg produces, when that differs from the one it spends: `token_out` of a
+   * swap. Every other op ends in the same asset it started with, so this is absent.
+   */
+  assetOut?: string;
+  /**
+   * The DEX a swap routes through — the MCP's own `venue` argument, "soroswap" or
+   * "aquarius". Absent means the registry decides: an asset that names its venue
+   * (AQUSDC is Aquarius's USDC, SOUSDC is Soroswap's) fixes it.
+   */
+  venue?: import("../registry/assets").LpVenue;
+}
+
+/**
+ * A strategy shape the model composed. Ordered legs, a title, and a rationale that cites
+ * observation ids. It carries no amounts and no rates: every number the user sees for it
+ * is derived in code, and a plan the code cannot size or verify is rejected with a reason
+ * the user can read.
+ */
+export interface ProposedPlan {
+  title: string;
+  rationale: string;
+  evidenceIds: string[];
+  legs: PlanLeg[];
 }
 
 export interface ReadRequest {
@@ -60,6 +129,12 @@ export type ResearchDecision =
       goal: GoalUnderstanding;
       findings: Array<{ summary: string; evidenceIds: string[] }>;
       openQuestions: string[];
+      /** Strategy shapes for the deterministic evaluator. Absent or empty for answers. */
+      plans?: ProposedPlan[];
+      /** Plans the model sent that did not fit the contract and were dropped, so the card can say so. */
+      droppedPlans?: number;
+      /** Findings that stated a figure with no read behind it; left out, and the card says so. */
+      droppedFindings?: number;
     };
 
 export interface Observation {

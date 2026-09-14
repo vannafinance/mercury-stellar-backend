@@ -1,7 +1,8 @@
 import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
-import { isRecord, parseDecision } from "./decision";
+import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
+import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
   InvestigationLimits, InvestigationOutcome, InvestigationRequest, InvestigationResult,
@@ -203,7 +204,10 @@ export async function runInvestigation(
    * and is not entered in `seen`: no MCP call was spent on it, and it is not something a
    * retry could re-fetch.
    */
-  const observations: Observation[] = (request.seed ?? []).map((seed) => structuredClone(seed));
+  const observations: Observation[] = (request.seed ?? []).map((seed) => {
+    const copy = structuredClone(seed);
+    return { ...copy, data: annotateVenueAssets(copy) };
+  });
   let modelTurns = 0;
   let toolCalls = 0;
   const controller = new AbortController();
@@ -306,7 +310,11 @@ export async function runInvestigation(
       } catch {
         decision = null;
       }
-      if (!decision) return finish({ kind: "stopped", reason: "invalid_decision" });
+      if (!decision) {
+        // Say which check the model failed; the card only says "invalid decision".
+        console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: lastDecisionRefusal() || "unparseable", keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
+        return finish({ kind: "stopped", reason: "invalid_decision" });
+      }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
@@ -390,7 +398,7 @@ export async function runInvestigation(
         const fromSeed = snapshotBackedData(request.capability, request.args, observations);
         if (fromSeed) {
           try {
-            observation.data = observationData(fromSeed.data, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(fromSeed.data, limits.maxObservationBytes) });
             observation.status = "ok";
             observation.observedAt = fromSeed.observedAt;
           } catch {
@@ -410,7 +418,7 @@ export async function runInvestigation(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {
           try {
-            observation.data = observationData(response, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(response, limits.maxObservationBytes) });
             observation.status = toolFailed(observation.data) ? "error" : "ok";
             if (observation.status === "error") {
               observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
@@ -438,7 +446,8 @@ export async function runInvestigation(
           // A read that ran out of its own time is reported as such: the model can retry a
           // timeout usefully, whereas "failed" invites it to treat the venue as broken.
           const timeout = readSignal.aborted && !signal.aborted;
-          console.error("[copilot] investigation read failed", {
+          // The request itself went away (client replaced or cancelled it): note it, do not alarm.
+          (signal.aborted ? console.info : console.error)("[copilot] investigation read failed", {
             capability: request.capability,
             tool: read.tool,
             timeout,

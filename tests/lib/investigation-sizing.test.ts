@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad, sizeLegs,
+  LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad, maxWithdrawForFloorWad, sizeLegs,
   type LegRequest,
 } from "@/lib/copilot/investigation/sizing";
 import { decimalWad, formatWad, WAD } from "@/lib/copilot/investigation/fixed";
@@ -87,6 +87,21 @@ describe("sizeLegs", () => {
     expect(result.finalHealthFactor).toBe("1.3");
   });
 
+  it("sizes a max withdrawal to the floor: G − F·D, capped by what is posted, and refuses a max on an op that cannot lower health", () => {
+    // 4219.36 − 1.3 × 1736.19 = 1962.313 USD leaves HF exactly 1.3.
+    const result = sizeLegs(BASE, [leg("withdraw_collateral", "max", "Withdraw as much as the floor allows")], "1.30");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.legs[0].amountUsd).toBe("1962.313");
+    expect(result.finalHealthFactor).toBe("1.3");
+    const capped = sizeLegs(BASE, [{ ...leg("withdraw_collateral", "max"), capUsd: "500" }], "1.30");
+    expect(capped.ok && capped.legs[0].amountUsd).toBe("500");
+    expect(sizeLegs(BASE, [leg("withdraw_collateral", "max")], "2.60")).toMatchObject({ ok: false, reason: "no_capacity_at_floor" });
+    expect(sizeLegs(BASE, [leg("deposit_collateral", "max")], "1.30")).toMatchObject({ ok: false, reason: "max_only_for_ops_that_lower_health" });
+    // No debt: nothing can liquidate, so everything posted is withdrawable.
+    expect(maxWithdrawForFloorWad(decimalWad("100"), decimalWad("0"), decimalWad("1.3"))).toBe(decimalWad("100"));
+  });
+
   it("rejects a plan that passes through a breach even when it ends healthy", () => {
     // Borrow far past the floor, then repay back to safety. The end state is fine; the
     // middle is not, and the chain does not wait for the sequence to finish.
@@ -156,9 +171,9 @@ describe("sizeLegs", () => {
       .toMatchObject({ ok: false, reason: "too_many_legs" });
   });
 
-  it("only accepts max on a borrow, where the bound is defined", () => {
+  it("only accepts max on an op that lowers health, where the bound is defined", () => {
     expect(sizeLegs(BASE, [leg("deposit_collateral", "max", "Deposit everything")], "1.30"))
-      .toMatchObject({ ok: false, reason: "max_only_supported_for_borrow" });
+      .toMatchObject({ ok: false, reason: "max_only_for_ops_that_lower_health" });
   });
 
   it("keeps full decimal precision through a multi-leg sequence", () => {
