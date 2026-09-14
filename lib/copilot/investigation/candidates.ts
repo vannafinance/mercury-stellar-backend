@@ -70,7 +70,8 @@ export interface Candidate {
   venue: "blend" | "earn" | "margin";
   /** Supply APR minus borrow APR, both simple APR. Null when nothing is borrowed. */
   netAprPct: string | null;
-  supplyAprPct: string;
+  /** Null when a supply leg's rate was not read — the option is still sized; the label says so. */
+  supplyAprPct: string | null;
   legs: SizedLeg[];
   finalHealthFactor: string | null;
   amountUsd: string;
@@ -112,7 +113,7 @@ export interface CandidateSet {
 }
 
 function aprOf(candidate: Candidate): bigint {
-  return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct);
+  return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct ?? "0");
 }
 
 /** Expected USD return at this size: amount × APR. Ranking uses this, not APR alone. */

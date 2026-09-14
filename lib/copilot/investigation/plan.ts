@@ -515,13 +515,20 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * headline rate.
    */
   let supplied = ZERO, returnWad = ZERO, borrowed = ZERO;
+  /**
+   * A supply leg's rate is the label on the option, not an input to its size. A leg whose
+   * rate was not read (or failed the cross-check) is still sized and offered; the card says
+   * the rate is unknown. Only a plan that BORROWS needs every supply rate — its carry cannot
+   * be judged without them. 14 Sep: "lend 25% of xlm" was refused outright for a rate.
+   */
+  let rateUnknown = false;
   for (const d of drafts) {
     const row = ctx.comparisons.find((c) => c.asset === d.leg.asset);
     const usd = decimalWad(d.usd as string);
     if (d.leg.op === "lend" || d.leg.op === "supply_blend") {
       const apr = d.leg.op === "lend" ? row?.earnSupplyApr : row?.blendSupplyApr;
-      if (apr === null || apr === undefined) throw new Reject(d.name, `no usable ${d.leg.op === "lend" ? "Earn" : "Blend"} supply rate was read for ${d.leg.asset}`);
       supplied += usd;
+      if (apr === null || apr === undefined) { rateUnknown = true; continue; }
       returnWad += mulDown(usd, decimalWad(apr), WAD);
     }
     if (d.leg.op === "borrow") {
@@ -529,6 +536,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       borrowed += usd;
       returnWad -= mulDown(usd, decimalWad(row.marginBorrowApr), WAD);
     }
+  }
+  if (rateUnknown && borrowed > ZERO) {
+    const missing = drafts.find((d) => (d.leg.op === "lend" || d.leg.op === "supply_blend") && !(d.leg.op === "lend" ? ctx.comparisons.find((c) => c.asset === d.leg.asset)?.earnSupplyApr : ctx.comparisons.find((c) => c.asset === d.leg.asset)?.blendSupplyApr))!;
+    throw new Reject(missing.name, `no usable ${missing.leg.op === "lend" ? "Earn" : "Blend"} supply rate was read for ${missing.leg.asset}, so the borrow's carry cannot be judged`);
   }
   /**
    * The same rule the fixed shapes apply: if what the borrow costs meets or exceeds what
@@ -580,7 +591,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     asset: first.leg.asset,
     venue: lastSupply?.leg.op === "lend" ? "earn" : lastSupply ? "blend" : "margin",
     netAprPct: borrows ? formatWad(netApr) : null,
-    supplyAprPct: formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
+    supplyAprPct: rateUnknown ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
     legs: sized,
     finalHealthFactor,
     amountUsd: formatWad(deployed),

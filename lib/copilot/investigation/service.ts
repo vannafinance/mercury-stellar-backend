@@ -515,7 +515,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * when the user actually stated a floor: sizing a borrow needs one, and inventing a
    * default would fabricate the calculation's most important input.
    */
-  const observedNow = Date.now();
+  let observedNow = Date.now();
   /**
    * An amount the user named outright is honoured as stated, never re-sized to the floor.
    * When it cannot be valued from a price read this turn, NO options are offered: sizing to
@@ -630,6 +630,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       const extra = await collectStrategyReads(scope, scopedMcp, dependencies.signal, observedNow, missing, "q");
       result.observations.push(...extra);
       logPhase("plan_reads", { requested: missing.map((r) => `${r.capability}${r.args.asset ? `:${r.args.asset}` : ""}`), ok: extra.filter((o) => o.status === "ok").length });
+      /**
+       * "Now" moves past the reads just made. Freshness is `observedAt <= now`, so a read
+       * stamped after a clock taken before it is not fresh — and the rate analysis and the
+       * sizer both dropped the very reads fetched for the plan (14 Sep: "lend 25% of xlm"
+       * fetched earn_market:XLM and was refused for "no usable Earn supply rate").
+       */
+      observedNow = Date.now();
       planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
     }
     const resolved = resolvePlans(modelPlans, {

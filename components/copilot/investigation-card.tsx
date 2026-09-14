@@ -231,7 +231,7 @@ export function InvestigationCard({
                           </p>
                           <p className="shrink-0 font-mono text-[15px] tabular-nums text-violet-500">
                             {candidate.netAprPct === null
-                              ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR`
+                              ? candidate.supplyAprPct === null ? "rate not read" : `${Number(candidate.supplyAprPct).toFixed(2)}% APR`
                               : `${Number(candidate.netAprPct) >= 0 ? "+" : ""}${Number(candidate.netAprPct).toFixed(2)}% net APR`}
                           </p>
                         </div>

@@ -178,7 +178,9 @@ export function strategyReply(input: {
         ? ` Repays ${repays.map((step) => `${step.amount} ${step.asset}`).join(" and ")} of margin debt from the wallet.`
         : top.netAprPct !== null
           ? ` About ${Number(top.netAprPct).toFixed(2)}% net APR after borrow cost, before fees.`
-          : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
+          : top.supplyAprPct === null
+            ? ` ${money(top.amountUsd)} using idle funds only; the supply rate could not be read this time.`
+            : ` About ${Number(top.supplyAprPct).toFixed(2)}% APR on ${money(top.amountUsd)}, using idle funds only.`;
       const hf = top.finalHealthFactor
         ? ` Health factor after this would be ${Number(top.finalHealthFactor).toFixed(2)}.`
         : top.repaysAllDebt ? " No debt would remain." : "";
