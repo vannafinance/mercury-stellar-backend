@@ -16,6 +16,28 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `lend 1 xlm to earn` (signed-in, local MCP loop, approved, refused by the contract)
+
+- **Date / commit / surface:** 2026-09-14 · `feat/copilot-finetune` @ `728dba4` · signed-in `/copilot` · local MCP · wallet 3.94 XLM (3.5 chain minimum + 0.5 fee reserve → 0 spendable)
+- **Result:** `WRONG` — a plan was offered, approved, and the contract refused it
+- **Returned, verbatim:**
+  > Lend 1 XLM. Approve to run this step. · Lend 1 XLM into Vanna Earn. · Lend exactly 1 XLM into Vanna Earn · No new borrowing · Checked in 4s · NOT EXECUTED · Not submitted — the protocol rejected this step before broadcast: Contract HostError #10: resulting balance is not within the allowed range · lend 1 XLM · 1 XLM
+- **Right about:** nothing was broadcast; the contract's sentence was shown.
+- **Cause:** a second code path. Plans go through the sizer (`plan.ts`) and are sized from `spendable`; a *stated* action (`goal.actions`) short-cut in `service.ts` straight to a step — no read, no balance, no precision ("Checked in 4s" is the tell). The wallet read had `spendable: 0` all along; nothing on that path asked. HostError #10 is Stellar's minimum-balance rule.
+- **Fix `f58897b`:** the shortcut and `requested-actions.ts` are gone. A stated action is a plan of literal legs through the same sizer: reads fetched, amount checked against the pocket the op-flow table names, precision cut, simulated. Expected card now: *"lend XLM: 3.94 XLM is held, but 3.5 XLM is the chain's minimum balance and 0.5 XLM is the fee reserve — nothing is spendable."* — and nothing to approve. Pinned in `tests/lib/investigation-fast-path.test.ts` with this wallet.
+- **Hosted caveat:** `min_balance` / `spendable` come from MCP PR #3. Without it the copilot falls back to balance − fee reserve (3.44) and this wallet is still offered; the hosted Earn `preview` accepts `holder` but checks no balance. Fully fixed on hosted only once PR #3 deploys.
+- **Battery:** B1 (funding edge), L-series.
+
+### Copilot · `lend 25% of xlm that i hold and also repay 25% of xlm debt` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-14 · `feat/copilot-finetune` @ `9232cc9` · signed-in `/copilot` · local MCP · wallet ~9,999.88 spendable XLM; debt ~14,113 XLM
+- **Result:** `REFUSED-WRONGLY` — the model proposed the right two legs (`fraction 25% of idle` lend, `fraction 25% of position` repay); the sizer refused the lend for a rate
+- **Returned, verbatim:**
+  > Ruled out — Lend 25% XLM and Repay 25% XLM Debt. lend XLM: no usable Earn supply rate was read for XLM.
+- **Cause (three, all code):** (1) `service.ts` stamped `observedNow` *before* `readsForPlans` fetched `earn_market:XLM`, so the read the plan itself asked for was "in the future" and dropped from the rate rows; (2) `rate-comparison.ts` gave a Blend-listed asset no row unless *both* venues were read — a plain lend reads only Earn; (3) `plan.ts` refused any supply leg whose rate was missing, though the rate is the option's label, not an input to its size.
+- **Fix `feae0f4`:** clock re-taken after the plan reads; an earn-only row when Blend was not read (a Blend market that *was* read but is unusable keeps the old gate, so exclusions still show); a missing supply rate labels the option ("rate not read") instead of refusing — only a plan that *borrows* needs every supply rate. End-to-end test replays the live prompt with the seed lacking `earn_market:XLM`. Expected card now: Lend ~2,499.97 XLM → Deposit ~3,528.37 → Repay ~3,528.37, "Leaves ~10,585 XLM of debt".
+- **Battery:** B5 / D8 (fraction sizing).
+
 ### Copilot · `I want zero debt but keep all my collateral` (signed-in, local MCP loop)
 
 - **Date / commit / surface:** 2026-09-13 16:05 UTC · `feat/copilot-finetune` @ `83781f3` · signed-in `/copilot` · local MCP · debt ~$5,077 in XLM; wallet 0 spendable XLM
