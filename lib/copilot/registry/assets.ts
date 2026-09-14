@@ -313,6 +313,24 @@ export function lpVenues(): LpVenue[] {
 }
 
 /**
+ * The DEX pool that trades a pair, from the pairs the registry already declares — each LP
+ * venue pairs XLM with its own USDC. Null when no pool holds both, which is the honest
+ * answer for BLUSDC (Blend's USDC has no DEX pool) and for AQUSDC against SOUSDC (two
+ * different venues, no shared pool).
+ */
+export function poolVenueFor(a: string, b: string): LpVenue | null {
+  const pair = lpPairs().find(({ tokens }) =>
+    (tokens[0] === a && tokens[1] === b) || (tokens[0] === b && tokens[1] === a));
+  return pair?.venue ?? null;
+}
+
+/** What an asset can actually be swapped for, from the pools that exist. */
+export function swappableWith(asset: string): AssetId[] {
+  return lpPairs().flatMap(({ tokens }) =>
+    tokens[0] === asset ? [tokens[1]] : tokens[1] === asset ? [tokens[0]] : []);
+}
+
+/**
  * The venue a swap routes through when neither asset names one (XLM for BLUSDC, say) and
  * the user did not either. This mirrors `vanna_swap`'s own default rather than choosing
  * for the protocol; it is stated once so no caller invents its own.

@@ -52,6 +52,8 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
   for (const plan of plans) {
     for (const leg of plan.legs) {
       want("asset_price", leg.asset);
+      // A swap is valued on both sides: the asset it spends AND the one it buys.
+      if (leg.assetOut) want("asset_price", leg.assetOut);
       const flow = OP_FLOW[leg.op];
       // A leg that carries a rate needs its rate row: the Earn market, and the Blend reserves for a Blend rate.
       if (flow.rate !== null) want("earn_market", leg.asset);

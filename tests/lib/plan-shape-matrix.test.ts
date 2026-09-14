@@ -23,7 +23,7 @@ import { PLAN_SIZINGS } from "@/lib/copilot/investigation/decision";
 import { decimalsFrom } from "@/lib/copilot/investigation/precision";
 import { decimalWad, formatWad, mulDown, WAD } from "@/lib/copilot/investigation/fixed";
 import type { Observation, PlanLeg, PlanSizing, ProposedPlan } from "@/lib/copilot/investigation/types";
-import { ASSET_IDS, resolveAssetDef, type AssetId } from "@/lib/copilot/registry/assets";
+import { ASSET_IDS, resolveAssetDef, swappableWith, type AssetId } from "@/lib/copilot/registry/assets";
 import { allowedInvocation } from "@/lib/copilot/workflow/allowlist";
 import { feeds, OP_FLOW, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "@/lib/copilot/workflow/types";
 
@@ -152,7 +152,11 @@ function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; sa
  */
 function withOut(op: WorkflowOp, asset: AssetId): { assetOut?: string } {
   if (op !== "swap") return {};
-  const other = ASSET_IDS.find((id) => id !== asset && resolveAssetDef(id)!.marginSymbol);
+  // Prefer an asset a pool actually trades this one against, so the cell exercises sizing
+  // rather than stopping at "no pool trades …"; fall back to any other margin asset so the
+  // untradable pairs are covered too.
+  const tradable = swappableWith(asset)[0];
+  const other = tradable ?? ASSET_IDS.find((id) => id !== asset && resolveAssetDef(id)!.marginSymbol);
   return other ? { assetOut: other } : {};
 }
 

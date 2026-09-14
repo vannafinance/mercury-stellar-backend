@@ -76,6 +76,28 @@ describe("OP_FLOW", () => {
   });
 });
 
+describe("what the protocol can actually swap", () => {
+  it("is exactly the four directions its pools hold, and nothing else", async () => {
+    /**
+     * Confirmed against the Trade page, 15 Sep: AqUSDC↔XLM on Aquarius, SoUSDC↔XLM on
+     * Soroswap. BLUSDC is Blend's USDC and has no pool at all, so `lpVenue` is null for it
+     * AND for XLM — XLM carries none because it is the other side of every pair, not a
+     * named one. Reading the venue off either asset therefore routed XLM→BLUSDC to
+     * Soroswap, a pool that cannot fill it; the venue comes from the pair now.
+     */
+    const { ASSET_IDS, poolVenueFor, swappableWith } = await import("@/lib/copilot/registry/assets");
+    const pairs = ASSET_IDS.flatMap((a) => ASSET_IDS.map((b) => [a, b] as const))
+      .flatMap(([a, b]) => { const venue = poolVenueFor(a, b); return venue ? [`${a}->${b} ${venue}`] : []; });
+    expect(pairs.sort()).toEqual([
+      "AQUSDC->XLM aquarius", "SOUSDC->XLM soroswap", "XLM->AQUSDC aquarius", "XLM->SOUSDC soroswap",
+    ]);
+    expect(poolVenueFor("XLM", "BLUSDC")).toBeNull();
+    expect(poolVenueFor("AQUSDC", "SOUSDC")).toBeNull();
+    expect(swappableWith("XLM").sort()).toEqual(["AQUSDC", "SOUSDC"]);
+    expect(swappableWith("BLUSDC")).toEqual([]);
+  });
+});
+
 describe("what the table decides downstream", () => {
   it("seals every read a leg sizes from, so Prepare can re-size what the card offered", async () => {
     /**

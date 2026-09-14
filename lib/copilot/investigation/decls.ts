@@ -111,7 +111,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                     asset: { type: "string", enum: [...ASSET_IDS] },
                     assetOut: {
                       type: "string", enum: [...ASSET_IDS],
-                      description: "swap only: the asset the swap RECEIVES. Required on a swap leg; never set on any other op.",
+                      description: "REQUIRED whenever op is swap: the asset the swap receives, which must differ from `asset`. A swap leg without it is dropped. Never set it on any other op.",
                     },
                     venue: {
                       type: "string", enum: [...lpVenues()],
@@ -129,6 +129,8 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                       required: ["kind"],
                     },
                   },
+                  // A swap also requires assetOut. JSON Schema cannot make that conditional on
+                  // `op`, so it is stated in the field's own description and in the prompt.
                   required: ["op", "asset", "sizing"],
                 },
               },

@@ -133,8 +133,10 @@ followed by supply_blend (previous_leg) of the same asset; Earn lending spends t
 "How much can I withdraw / withdraw as much as keeps HF above X" is withdraw_collateral (to_floor) — never a question back.
 Leaving a position is an op like any other: blend_withdraw (all_position) takes a Blend supply back to the account, and
 redeem (all_position) takes an Earn position back to the wallet. "Get me out of X" is that op, not a refusal.
-A swap leg names what it SPENDS as asset and what it RECEIVES as assetOut, both from the asset list, and may name venue
-("soroswap" or "aquarius") when the user did. It spends the margin account, so the tokens must already be in it.
+A swap leg is the ONLY leg with two assets: asset is what it SPENDS, assetOut is what it RECEIVES. assetOut is not
+optional on a swap — a swap without it is dropped. "swap 10 XLM to BLUSDC" is exactly:
+  {"op":"swap","asset":"XLM","assetOut":"BLUSDC","sizing":{"kind":"literal","amount":"10","sourceQuote":"swap 10 XLM to BLUSDC"}}
+Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays

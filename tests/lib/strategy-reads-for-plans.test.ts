@@ -11,6 +11,21 @@ import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/type
 const NOW = 1_000_000;
 const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 
+describe("readsForPlans — a swap is valued on both sides", () => {
+  it("asks for the price of the asset it buys as well as the one it spends", () => {
+    /**
+     * 15 Sep, live: "swap 10 XLM to AqUSDC" was refused with "no BLUSDC price was read this
+     * investigation" on the earlier pair — the plan fetched a price for the asset it spent
+     * and none for the asset it bought, so the leg could never be valued.
+     */
+    const reads = readsForPlans([plan([
+      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount: "10", sourceQuote: "swap 10 XLM to AqUSDC" } },
+    ])], [], NOW);
+    const priced = reads.filter((read) => read.capability === "asset_price").map((read) => read.args.asset).sort();
+    expect(priced).toEqual(["AQUSDC", "XLM"]);
+  });
+});
+
 describe("readsForPlans — a share reads the base it is a share of", () => {
   it("of=idle wants the wallet; of=position wants the position the op spends", () => {
     const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "25% of xlm" } }])], [], NOW);

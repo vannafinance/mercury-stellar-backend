@@ -15,7 +15,7 @@
  * but the combinations are the model's to find.
  */
 
-import { assetForVenueSpelling, DEFAULT_SWAP_VENUE, resolveAssetDef } from "../registry/assets";
+import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
 import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
@@ -286,11 +286,35 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * something the RiskEngine does not price would drop the account's backing without
      * the health projection seeing it — and the DEX must be one the protocol routes to.
      */
-    const bought = leg.op === "swap" ? resolveAssetDef(leg.assetOut ?? "") : null;
+    /**
+     * What the swap buys. The model should say so in `assetOut`, but a field that JSON
+     * Schema cannot mark required only for one op is one the model routinely omits — on
+     * 15 Sep "swap 10 XLM to BLUSDC" came back as a swap leg with no assetOut three times
+     * running. The user named the asset in their own sentence, so it is read from there,
+     * anchored exactly as a literal amount is: it must appear in their words, and it must
+     * be the only candidate besides the one being spent.
+     */
+    const bought = leg.op === "swap" ? (resolveAssetDef(leg.assetOut ?? "") ?? assetNamedInText(ctx.messages, def.id)) : null;
     if (leg.op === "swap") {
-      if (!leg.assetOut || !bought) throw new Reject(name, "a swap needs the asset you want to receive");
+      if (!bought) throw new Reject(name, `name the asset you want to receive — "swap ${d0(leg)} ${def.id} to BLUSDC", for instance`);
       if (bought.id === def.id) throw new Reject(name, `a swap has to change the asset — ${def.id} for ${bought.id} is the same token`);
       if (!bought.marginSymbol) throw new Reject(name, `${bought.id} is not accepted by the margin account, so the swap would leave it unbacked`);
+      /**
+       * A pair trades only where a pool holds both sides. `lpVenue` names the DEX that
+       * pairs a token with XLM, so XLM itself carries none while trading on every venue,
+       * and BLUSDC carries none because Blend's USDC has no pool at all. Reading the venue
+       * off either asset would have routed XLM→BLUSDC to a pool that cannot fill it.
+       */
+      const pool = poolVenueFor(def.id, bought.id);
+      if (!pool) {
+        const tradable = swappableWith(def.id);
+        throw new Reject(name, tradable.length
+          ? `no pool trades ${def.id} for ${bought.id} — ${def.id} can be swapped for ${tradable.join(" or ")}`
+          : `no pool trades ${def.id}`);
+      }
+      if (leg.venue && leg.venue !== pool) {
+        throw new Reject(name, `${def.id} and ${bought.id} trade on ${venueLabel(pool)}, not ${venueLabel(leg.venue)}`);
+      }
       const boughtPrice = priceFor(bought.id, ctx.observations, ctx.now);
       if (!boughtPrice.ok) throw new Reject(name, `no ${bought.id} price was read this investigation`);
     }
@@ -626,12 +650,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const def = resolveAssetDef(d.leg.asset)!;
     const venue = OP_FLOW[d.leg.op].venue;
     const symbol = venue === "earn" ? def.earnSymbol! : venue === "blend" ? (def.marginSymbol ?? def.id) : wireSymbol(d.leg.asset);
-    const out = d.leg.op === "swap" ? resolveAssetDef(d.leg.assetOut ?? "") : null;
-    const dex = d.leg.op === "swap" ? (d.leg.venue ?? out?.lpVenue ?? def.lpVenue ?? DEFAULT_SWAP_VENUE) : null;
+    const out = d.leg.op === "swap" ? (resolveAssetDef(d.leg.assetOut ?? "") ?? assetNamedInText(ctx.messages, d.leg.asset)) : null;
+    const dex = out ? poolVenueFor(def.id, out.id) : null;
     const label = d.leg.op === "redeem"
       ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
       : d.leg.op === "swap" && out
-        ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for ${out.displayLabel ?? out.id} on ${venueLabel(dex ?? DEFAULT_SWAP_VENUE)}`
+        ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for ${out.displayLabel ?? out.id} on ${venueLabel(dex!)}`
         : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
@@ -641,7 +665,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       label,
       tool: TOOLS[d.leg.op],
       args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
-        out ? { tokenOut: out.marginSymbol ?? out.id, venue: dex ?? DEFAULT_SWAP_VENUE } : undefined),
+        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex } : undefined),
       // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
       sizing: { basis: "stated" },
     };
@@ -951,6 +975,27 @@ function suppliesAtRate(op: WorkflowOp): boolean {
   const rate = OP_FLOW[op].rate;
   return rate !== null && rate !== "earn_borrow";
 }
+/**
+ * The asset a user named in their own words, excluding the one already being spent. Null
+ * when they named none or named several — a swap is not guessed from a list of maybes.
+ */
+function assetNamedInText(messages: readonly string[], spending: string): ReturnType<typeof resolveAssetDef> {
+  const found = new Map<string, NonNullable<ReturnType<typeof resolveAssetDef>>>();
+  const pattern = new RegExp(ASSET_SYMBOL_PATTERN.source, "gi");
+  for (const message of messages) {
+    for (const word of message.match(pattern) ?? []) {
+      const def = resolveAssetDef(word);
+      if (def && def.id !== spending && def.marginSymbol && poolVenueFor(spending, def.id)) found.set(def.id, def);
+    }
+  }
+  return found.size === 1 ? [...found.values()][0] : null;
+}
+
+/** The leg's own amount when it has one, for a refusal that shows the shape of the answer. */
+function d0(leg: PlanLeg): string {
+  return leg.sizing.kind === "literal" ? leg.sizing.amount : "10";
+}
+
 /** A venue as a person writes it, from its own name rather than a table of two. */
 function venueLabel(venue: string): string {
   return venue.charAt(0).toUpperCase() + venue.slice(1);
