@@ -589,12 +589,20 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(candidates).toHaveLength(1);
   });
 
-  it("refuses a withdraw while the sizing sources disagree — it lowers health like a borrow", () => {
+  /**
+   * A withdraw is no longer refused for the bare fact that the sources disagree — it is
+   * projected against the WORSE of the two readings, and refused when that corner cannot
+   * carry it. Here the pessimistic corner is $1 of collateral, so $129.60 of XLM cannot
+   * leave and the plan is still ruled out, now for the reason that is actually true of it.
+   * `plan-disagreement-bracket.test.ts` holds the other half: a gap too small to change
+   * the verdict stops being a refusal at all.
+   */
+  it("refuses a withdraw the worse of the two readings cannot carry", () => {
     const { rejected } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({
       observations: withEarn,
       capacity: { ...CAPACITY, issue: { reason: "sizing_sources_disagree", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: { grossCollateralUsd: "1", debtUsd: "1" } } },
     }));
-    expect(rejected[0].reason).toMatch(/disagree on your position, so nothing that lowers health is sized/);
+    expect(rejected[0].reason).toMatch(/withdraw exceeds collateral/);
   });
 
   it("repays the whole debt of an asset from the debt read — funded through the account, so deposit then repay", () => {

@@ -75,6 +75,12 @@ export interface ResolvedPlans {
  * initials of a multi-word op (`deposit_collateral` → `dc`), first two letters otherwise
  * (`borrow` → `bo`). Derived, so a new op needs no entry here.
  */
+/** The worse of two readings of the same figure: less collateral, or more debt. */
+function worse(a: string, b: string, side: "lower" | "higher"): string {
+  const [x, y] = [decimalWad(a), decimalWad(b)];
+  return formatWad(side === "lower" ? (x < y ? x : y) : (x > y ? x : y));
+}
+
 function opCode(op: PlanLeg["op"]): string {
   const words = op.split("_");
   return words.length > 1 ? words.map((w) => w[0]).join("") : op.slice(0, 2);
@@ -322,11 +328,23 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if ((leg.op === "supply_blend" || leg.op === "withdraw_blend") && !def.blendReserve) throw new Reject(name, `Blend has no ${leg.asset} reserve`);
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
     if (!walletOp && !ctx.capacity) throw new Reject(name, "the margin position was not read, so nothing touching the account can be sized");
-    // A withdraw lowers health exactly as a borrow does, so it carries the same two gates.
-    if (leg.op === "withdraw_collateral" && ctx.capacity?.issue) {
-      throw new Reject(name, ctx.capacity.issue.reason === "sizing_sources_disagree"
-        ? "the Margin page and the liquidation engine disagree on your position, so nothing that lowers health is sized until they agree"
-        : "the position could not be confirmed against the liquidation engine, so nothing that lowers health is sized");
+    /**
+     * A withdraw used to be refused outright whenever the two collateral readings
+     * disagreed. It is not refused here any more: a disagreement is a bound on how wrong
+     * either reading can be, and pass 2 projects the plan against the WORSE of the two.
+     * What clears the floor on the pessimistic reading clears it on both, so the
+     * disagreement cannot change that answer and is not a reason to withhold it.
+     *
+     * A borrow keeps its own refusal below. A withdraw spends a balance the user can see;
+     * a borrow creates debt against a collateral figure nobody can pin down, and the owner
+     * rule for that is written where it is enforced.
+     *
+     * One reading is not a bracket, though. When the engine's own figures are missing there
+     * is no worse corner to project against, only an unverified number, and the refusal
+     * stands exactly as it did.
+     */
+    if (leg.op === "withdraw_collateral" && ctx.capacity?.issue && !ctx.capacity.issue.contract) {
+      throw new Reject(name, "the liquidation engine's own figures could not be read, so there is no second reading to check this against and nothing that lowers health is sized");
     }
     // Owner rule (service.ts): permission to borrow is optional, not an instruction; "unspecified"
     // still offers a levered path beside the idle one. Only an explicit prohibition rules it out.
@@ -594,7 +612,29 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * defect: repay and deposit were blocked exactly when they were needed).
      */
     const canLowerHealth = marginDrafts.some((d) => OP_FLOW[d.leg.op].health === "lowers");
-    const result = sizeLegs({ grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd }, requests, canLowerHealth ? capacity.floor : null);
+    /**
+     * Two readings of the same position that disagree do not make the position unknowable
+     * — they bracket it. The pessimistic corner of that bracket is the least collateral and
+     * the most debt either reading admits, and a plan projected there is projected against
+     * a position at least as bad as the real one. Clearing the floor there clears it on
+     * both readings, so the disagreement cannot flip the verdict; failing there is a
+     * refusal the user can act on, with the shortfall named.
+     *
+     * 14 Sep, live: the engine put this account's collateral at $15,448.89 and the Margin
+     * page at $15,607.55 — a $158.67 gap, 1.03% of the larger side, just past the 0.5%
+     * tolerance that raises the issue. Health was 4.62 against a 1.10 line and the page's
+     * own Transfer tab offered 842.46 XLM, yet "transfer 500 xlm from my margin account to
+     * my wallet" was refused, because the rule asked whether the sources agreed instead of
+     * whether their disagreement could matter. Here it could not: 4.62 and 4.57 are the
+     * same answer. Only a gap wide enough to straddle the floor refuses now, which is the
+     * one case the original rule was right about.
+     */
+    const issue = capacity.issue;
+    const base = issue?.contract && canLowerHealth
+      ? { grossCollateralUsd: worse(issue.app.grossCollateralUsd, issue.contract.grossCollateralUsd, "lower"),
+          debtUsd: worse(issue.app.debtUsd, issue.contract.debtUsd, "higher") }
+      : { grossCollateralUsd: capacity.grossCollateralUsd, debtUsd: capacity.debtUsd };
+    const result = sizeLegs(base, requests, canLowerHealth ? capacity.floor : null);
     if (!result.ok) {
       const reason = SIZER_REASONS[result.reason] ?? result.reason.replaceAll("_", " ");
       const advice = canLowerHealth && capacity.floor ? shortfallAdvice(capacity, result, holdings, prices) : null;
