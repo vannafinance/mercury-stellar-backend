@@ -20,6 +20,7 @@ const WRITE_GRADES: Record<string, GuardrailGrade> = {
   borrow: "manual_write",
   repay: "manual_write",
   supply_blend: "manual_write",
+  withdraw_blend: "manual_write",
   add_liquidity: "manual_write",
   remove_liquidity: "manual_write",
   swap: "manual_write",

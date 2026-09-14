@@ -49,7 +49,8 @@ const OP_RANK: Record<WorkflowOp, number> = {
   borrow: 3,
   lend: 4,
   supply_blend: 5,
-  withdraw_collateral: 6,
+  withdraw_blend: 6,
+  withdraw_collateral: 7,
 };
 
 export function compileProposal(input: {

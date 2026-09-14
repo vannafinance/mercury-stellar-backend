@@ -23,6 +23,7 @@ const OP_MEANING: Record<WorkflowOp, string> = {
   borrow: "from a Vanna pool against margin collateral; proceeds stay in the account",
   repay: "margin debt from the account",
   supply_blend: "margin-account token into Blend",
+  withdraw_blend: "supplied token out of Blend back to the margin account",
 };
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");

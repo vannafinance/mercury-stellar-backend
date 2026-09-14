@@ -291,7 +291,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (leg.op === "deposit_collateral" && collateralAllowed?.get(def.marginSymbol!) === false) {
       throw new Reject(name, `${leg.asset} is not accepted as collateral on-chain right now (collateral_config)`);
     }
-    if (leg.op === "supply_blend" && !def.blendReserve) throw new Reject(name, `Blend has no ${leg.asset} reserve`);
+    if ((leg.op === "supply_blend" || leg.op === "withdraw_blend") && !def.blendReserve) throw new Reject(name, `Blend has no ${leg.asset} reserve`);
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
     if (!walletOp && !ctx.capacity) throw new Reject(name, "the margin position was not read, so nothing touching the account can be sized");
     // A withdraw lowers health exactly as a borrow does, so it carries the same two gates.
@@ -841,13 +841,14 @@ function suppliesAtRate(op: WorkflowOp): boolean {
 }
 /** "Deposit", "Withdraw", "Supply", "Lend" … — the op's verb for labels and refusals. */
 function verbOf(op: WorkflowOp): string {
-  const verb = op === "supply_blend" ? "supply" : op.split("_")[0];
+  const verb = op === "supply_blend" ? "supply" : op === "withdraw_blend" ? "withdraw" : op.split("_")[0];
   return verb.charAt(0).toUpperCase() + verb.slice(1);
 }
 /** Where a step's label says the tokens go, from the table's destination pocket. */
 const WHERE: Record<WorkflowOp, string> = Object.fromEntries(WORKFLOW_OPS.map((op) => {
   const { from, to } = OP_FLOW[op];
   const text = to === "earn" ? " to Earn" : to === "blend" ? " to Blend" : to === "account" && from === "wallet" ? " as collateral"
+    : to === "account" && from === "blend" ? " from Blend"
     : to === "wallet" && from === "account" ? " of collateral to the wallet" : "";
   return [op, text];
 })) as Record<WorkflowOp, string>;

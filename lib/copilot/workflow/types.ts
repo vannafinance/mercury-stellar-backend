@@ -7,7 +7,7 @@ import type { Venue } from "../registry/assets";
  * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
  * `Record<WorkflowOp, …>` maps the compiler then demands.
  */
-export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend"] as const;
+export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "withdraw_blend"] as const;
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
@@ -53,6 +53,7 @@ export const OP_FLOW = Object.freeze({
   borrow:              { venue: "margin", from: "debt",    to: "account", positionRead: null,                 health: "lowers",  rate: "earn_borrow" },
   repay:               { venue: "margin", from: "account", to: "debt",    positionRead: "account_debt",       health: "raises",  rate: null },
   supply_blend:        { venue: "blend",  from: "account", to: "blend",   positionRead: null,                 health: "neutral", rate: "blend_supply" },
+  withdraw_blend:      { venue: "blend",  from: "blend",   to: "account", positionRead: null,                 health: "neutral", rate: null },
 } as const satisfies Record<WorkflowOp, OpFlow>);
 
 /** Ops whose every pocket is the G-wallet's: they never touch the margin account. */
