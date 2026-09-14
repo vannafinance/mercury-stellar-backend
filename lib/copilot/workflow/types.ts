@@ -26,7 +26,7 @@ export interface OpFlow {
   /** Where they land. `debt` means the debt shrinks; `earn` / `blend` mean a position grows. */
   to: Pocket;
   /** The read whose row states the whole of what the op draws on — what "all of it" and "a share of it" size from. */
-  positionRead: "earn_position" | "account_collateral" | "account_debt" | null;
+  positionRead: "earn_position" | "blend_position" | "account_collateral" | "account_debt" | null;
   /**
    * How the margin account's health moves. `lowers` is what the user's floor guards;
    * `neutral` legs are not sizer legs. A Blend supply is neutral because the RiskEngine
@@ -53,7 +53,7 @@ export const OP_FLOW = Object.freeze({
   borrow:              { venue: "margin", from: "debt",    to: "account", positionRead: null,                 health: "lowers",  rate: "earn_borrow" },
   repay:               { venue: "margin", from: "account", to: "debt",    positionRead: "account_debt",       health: "raises",  rate: null },
   supply_blend:        { venue: "blend",  from: "account", to: "blend",   positionRead: null,                 health: "neutral", rate: "blend_supply" },
-  withdraw_blend:      { venue: "blend",  from: "blend",   to: "account", positionRead: null,                 health: "neutral", rate: null },
+  withdraw_blend:      { venue: "blend",  from: "blend",   to: "account", positionRead: "blend_position",     health: "neutral", rate: null },
 } as const satisfies Record<WorkflowOp, OpFlow>);
 
 /** Ops whose every pocket is the G-wallet's: they never touch the margin account. */

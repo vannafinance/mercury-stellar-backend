@@ -20,6 +20,27 @@ describe("quantity kinds", () => {
     expect(percentFrom("use 40% of idle")).toBe(40);
     expect(quantitySpans("2x")[0]?.kind).toBe("leverage");
   });
+
+  /**
+   * A scale suffix is a unit, so the span carries what it means. 14 Sep, live: "remove
+   * 10k xlm from my blend pool" compiled the right leg and was refused because the text
+   * said "10k" and the amount said "10000".
+   */
+  it("expands a scale suffix so the amount anchors to the user's own shorthand", () => {
+    expect(isTokenAmountIn("withdraw 5k xlm", "5000")).toBe(true);
+    expect(isTokenAmountIn("remove 10k xlm from my blend pool", "10000")).toBe(true);
+    expect(isTokenAmountIn("deposit 1.5k xlm", "1500")).toBe(true);
+    expect(quantitySpans("withdraw 5k xlm")[0]?.amount).toBe("5000");
+  });
+
+  it("does not invent a scale the user did not write", () => {
+    // `m` is ambiguous and `b` is not typed here; both fall through to the ordinary refusal.
+    expect(isTokenAmountIn("withdraw 5m xlm", "5000000")).toBe(false);
+    // A coefficient is still not a quantity, scale or no scale.
+    expect(isTokenAmountIn("borrow 2x aqusdc", "2")).toBe(false);
+    // The plain case is unchanged.
+    expect(isTokenAmountIn("lend 2 AQUSDC", "2")).toBe(true);
+  });
 });
 
 describe("compileLeverageWrites", () => {

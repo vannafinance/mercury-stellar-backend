@@ -99,7 +99,35 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
   // was offered against a wallet holding 9,999 XLM and no BLUSDC; it could never have run.
   return legs.flatMap((leg): SizerLeg[] => {
     if (leg.op !== "repay") return [leg];
+    /**
+     * The account repays itself when it can. `vanna_repay` draws on the smart account's
+     * own balance, so a wallet deposit is needed only for a FUNDING DEFICIT — the part of
+     * the debt the account cannot already cover. The `literal` branch below has always
+     * checked this; `all_position` and `all_idle` did not, and injected the deposit
+     * unconditionally.
+     *
+     * 14 Sep, live: the margin account held 842.46 XLM against 68.49 XLM of debt — twelve
+     * times the cover — and "clear all my debt" was ruled out because the WALLET had no
+     * spendable XLM to fund a deposit leg that was never needed. Same for "use the funds
+     * sitting in my margin account to pay off what I owe", where the model read the intent
+     * correctly and the compiler overrode it.
+     *
+     * The account balance is a read, not an assumption: when no fresh `account_collateral`
+     * row states it, the deposit-first shape stands, because sizing a repay against a
+     * balance nobody read would be a guess.
+     */
     if (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position") {
+      const def = resolveAssetDef(leg.asset);
+      const held = def?.marginSymbol
+        ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now)
+        : null;
+      const debt = def?.marginSymbol
+        ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now)
+        : null;
+      // Covered outright: repay straight from the account, no wallet leg at all.
+      if (held !== null && debt !== null && decimalWad(held) >= decimalWad(debt)) {
+        return [{ op: "repay", asset: leg.asset, sizing: leg.sizing }];
+      }
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
     // "repay 25% of my debt" (of: position) or "repay with a quarter of my idle XLM" (of: idle):
@@ -500,6 +528,24 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (decimalWad(owed) <= ZERO) throw new Reject(name, `you owe no ${leg.asset}`);
       if (decimalWad(owed) < amountWad) throw new Reject(name, `you owe only ${precise(owed, leg.asset, name)} ${leg.asset}`);
     }
+    /**
+     * A pocket backed by its own position read is bounded by that read. The op-flow table
+     * already names "the read whose row states the whole of what the op draws on", so this
+     * is derived from the table rather than from a list of pockets: an op added later with
+     * a position read of its own is bounded here without touching this branch.
+     *
+     * `account` and `earn` are handled separately — the first carries credited/debited flow
+     * and a richer refusal, the second converts the underlying the user names into the
+     * vTokens the tool takes.
+     */
+    if (flow.positionRead && flow.positionRead !== "earn_position" && flow.from !== "account") {
+      const held = positionRowBalance(ctx.observations, flow.positionRead, POSITION_ROWS[flow.positionRead as keyof typeof POSITION_ROWS], def.marginSymbol!, def.id, ctx.now);
+      if (held === null) throw new Reject(name, `no ${leg.asset} position in ${flow.venue} was read this investigation`);
+      const { credited, debited } = flowOf(flow.from);
+      const available = decimalWad(held) + credited - debited;
+      if (available <= ZERO) throw new Reject(name, `you have no ${leg.asset} in ${flow.venue}`);
+      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is in ${flow.venue}`);
+    }
     if (flow.positionRead === "earn_position") {
       // The user names the underlying; the tool takes vTokens, converted at the position's own rate.
       const position = earnPositionOf(ctx.observations, leg.asset, ctx.now);
@@ -763,7 +809,8 @@ function positionRowBalance(observations: readonly Observation[], capability: st
     if (!Array.isArray(rows)) continue;
     for (const row of rows) {
       if (!isRecord(row) || (row.symbol !== symbol && row.symbol !== id) || row.balance_untrusted === true) continue;
-      const balance = row.balance ?? row.amount_human ?? row.amount;
+      // `underlying_value`: a Blend row states its worth in the underlying, not as a bare balance.
+      const balance = row.balance ?? row.amount_human ?? row.amount ?? row.underlying_value;
       if (typeof balance !== "string" && typeof balance !== "number") continue;
       try { decimalWad(String(balance)); return String(balance); } catch { return null; }
     }
@@ -823,6 +870,9 @@ function grossSupplyApr(drafts: ReadonlyArray<{ leg: PlanLeg; usd: string | "max
 const POSITION_ROWS: Record<Exclude<NonNullable<OpFlow["positionRead"]>, "earn_position">, readonly string[]> = {
   account_collateral: ["collateral", "positions", "balances"],
   account_debt: ["debt", "borrows", "positions"],
+  // A Blend position states the b-token receipt and what it is worth; the withdrawal is
+  // denominated in the underlying, so `underlying_value` is the row's balance.
+  blend_position: ["positions"],
 };
 /** The rate row column each table rate names. */
 const RATE_COLUMN: Record<NonNullable<OpFlow["rate"]>, keyof Pick<RateComparison, "earnSupplyApr" | "marginBorrowApr" | "blendSupplyApr">> = {

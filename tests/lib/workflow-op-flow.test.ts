@@ -56,7 +56,7 @@ describe("OP_FLOW", () => {
   });
 
   it("names a position read for exactly the ops 'all of it' can size, and a rate for exactly the ops that carry one", () => {
-    expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].positionRead !== null).sort()).toEqual(["redeem", "repay", "withdraw_collateral"]);
+    expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].positionRead !== null).sort()).toEqual(["redeem", "repay", "withdraw_blend", "withdraw_collateral"]);
     expect(WORKFLOW_OPS.filter((op) => OP_FLOW[op].rate !== null).sort()).toEqual(["borrow", "lend", "supply_blend"]);
     expect(OP_FLOW.borrow.rate).toBe("earn_borrow");
   });

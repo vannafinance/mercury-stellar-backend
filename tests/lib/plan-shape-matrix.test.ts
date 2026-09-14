@@ -80,6 +80,11 @@ function observations(asset: AssetId, world: World): Observation[] {
     obs("b", "blend_markets", { reserves: ASSET_IDS.filter((id) => resolveAssetDef(id)!.blendReserve).map((id) =>
       ({ venue: "blend", symbol: resolveAssetDef(id)!.marginSymbol, supply_apr_pct: "12", borrow_apr_pct: "16", utilization_pct: "75" })) }),
   ];
+  if (def.blendReserve && def.marginSymbol) {
+    // Blend holds what a withdraw draws on. Always present, like `blend_markets`: adding a
+    // world flag for it would double a 64,512-cell matrix to cover one op.
+    rows.push(obs("bp", "blend_position", { positions: [{ symbol: def.marginSymbol, underlying_value: POSTED }] }));
+  }
   if (world.earnPosition && def.earnSymbol) {
     rows.push(obs("ep", "earn_position", { symbol: def.earnSymbol, vtoken_symbol: `V${def.earnSymbol}`, decimals: 7, human: VTOKENS, redeemable_human: UNDERLYING }, { asset }));
   }
@@ -170,7 +175,7 @@ function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
     earn: world.earnPosition ? decimalWad(VTOKENS) : BigInt(0),
     account: world.account !== "none" && world.collateral ? decimalWad(POSTED) : BigInt(0),
     debt: world.account !== "none" && world.debt ? decimalWad(OWED) : BigInt(0),
-    blend: BigInt(0),
+    blend: resolveAssetDef(asset)!.blendReserve ? decimalWad(POSTED) : BigInt(0),
   };
 }
 
