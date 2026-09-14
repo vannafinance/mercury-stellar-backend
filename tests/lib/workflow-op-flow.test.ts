@@ -77,6 +77,24 @@ describe("OP_FLOW", () => {
 });
 
 describe("what the table decides downstream", () => {
+  it("seals every read a leg sizes from, so Prepare can re-size what the card offered", async () => {
+    /**
+     * 14 Sep, live: "withdraw all XLM from Blend" sized correctly on the card — 26,565.288
+     * XLM — and Prepare answered "no XLM Blend supply was read this investigation". The
+     * evidence kept a hand-written list of capabilities that `blend_position` was not on,
+     * so the read the plan was sized from never reached the proposal. The list is derived
+     * from the op-flow table now; this fails if a new op's read is ever dropped again.
+     */
+    const { compactResearchEvidence } = await import("@/lib/copilot/investigation/evidence");
+    const reads = [...new Set(WORKFLOW_OPS.map((op) => OP_FLOW[op].positionRead).filter(Boolean))] as string[];
+    const observations = reads.map((capability, index) => ({
+      id: `e${index}`, capability, args: {}, observedAt: NOW, status: "ok" as const,
+      data: { positions: [{ symbol: "XLM", balance: "1" }] },
+    }));
+    const sealed = compactResearchEvidence(observations, null, NOW);
+    expect(sealed.observations.map((o) => o.capability).sort()).toEqual([...reads].sort());
+  });
+
   const NOW = 1_700_000_000_000;
   const plan = (legs: ProposedPlan["legs"]): ProposedPlan => ({ title: "t", rationale: "r", evidenceIds: [], legs });
 

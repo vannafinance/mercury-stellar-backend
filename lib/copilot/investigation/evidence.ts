@@ -8,16 +8,26 @@
  */
 
 import { assetForVenueSpelling } from "../registry/assets";
+import { OP_FLOW, WORKFLOW_OPS } from "../workflow/types";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { Observation } from "./types";
 import type { ResearchCapacity } from "./view";
 
-const KEEP = new Set([
-  "wallet_balances", "asset_price", "earn_market", "blend_markets", "earn_position",
-  "account_position", "account_health", "account_debt", "account_collateral",
+/**
+ * What the sealed continuation carries forward, so Prepare can re-size the plan the user
+ * clicked. The position reads are DERIVED from the op-flow table rather than listed here:
+ * a hand-kept list is one a new op falls off silently, and on 14 Sep exactly that happened
+ * — `blend_withdraw` sized correctly on the card, the seal dropped `blend_position`, and
+ * Prepare answered "no XLM Blend supply was read this investigation".
+ */
+const KEEP = new Set<string>([
+  "wallet_balances", "asset_price", "earn_market", "blend_markets",
+  "account_position", "account_health",
+  ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
 const PRIORITY: Record<string, number> = {
+  blend_position: 9,
   account_position: 0,
   account_health: 1,
   account_debt: 2,
