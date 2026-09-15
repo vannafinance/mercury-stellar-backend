@@ -140,6 +140,10 @@ function sizingsOf(kind: (typeof PLAN_SIZINGS)[number], asset: AssetId): Array<{
       { sizing: { kind, percent: "25", of: "idle", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:idle" },
       { sizing: { kind, percent: "25", of: "position", sourceQuote: `25% of my ${asset}` }, said: `25% of my ${asset}`, tag: "fraction:position" },
     ];
+    // As a lone single-leg cell this always refuses (no preceding deposit to multiply) —
+    // the happy path needs two legs and is covered by plan-resolve.test.ts's own suite;
+    // this only proves the refusal is clean, not a crash, on every op the matrix tries it on.
+    case "leverage": return [{ sizing: { kind, multiple: "6", sourceQuote: `6x leverage on ${asset}` }, said: `6x leverage on ${asset}`, tag: "leverage:6" }];
     default: return [{ sizing: { kind } as PlanSizing, said: `all my ${asset}`, tag: kind }];
   }
 }
@@ -190,7 +194,23 @@ function cells(asset: AssetId): Cell[] {
       legs: [{ op: first, asset, sizing: a.sizing, ...withOut(first, asset) },
              { op: second, asset, sizing: b.sizing, ...withOut(second, asset) }] }];
   }));
-  return [...single, ...pairs, ...sameSource];
+  /**
+   * Deposit, then borrow the SAME asset at a stated multiple, then cover it with a supply —
+   * the one shape leverage sizing exists for. Not reachable by `pairs`/`sameSource` at all:
+   * both build every second leg from `naturalSizing`/`previous_leg`, never a stated
+   * multiple, so leverage's own happy path needed its own generator or the matrix would
+   * try the sizing word 30,240+ times and never once actually size it (15 Sep).
+   */
+  const leveraged: Cell[] = [{
+    title: `deposit_collateral → borrow ${asset} leverage:6 → supply_blend`,
+    said: `100 ${asset} at 6x leverage`,
+    legs: [
+      { op: "deposit_collateral", asset, sizing: { kind: "literal", amount: "100", sourceQuote: `100 ${asset}` } },
+      { op: "borrow", asset, sizing: { kind: "leverage", multiple: "6", sourceQuote: "6x leverage" } },
+      { op: "supply_blend", asset, sizing: { kind: "previous_leg" } },
+    ],
+  }];
+  return [...single, ...pairs, ...sameSource, ...leveraged];
 }
 
 // ── the invariant ───────────────────────────────────────────────────────────────────────

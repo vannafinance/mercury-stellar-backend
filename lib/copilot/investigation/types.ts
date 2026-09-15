@@ -77,7 +77,20 @@ export type PlanSizing =
    * posted collateral, the debt). `percent` is the user's figure ("25") or the figure a word
    * of theirs means ("half" → 50), anchored to their quote; code reads the base and sizes.
    */
-  | { kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string };
+  | { kind: "fraction"; percent: string; of: "idle" | "position"; sourceQuote: string }
+  /**
+   * A stated leverage multiple on a borrow that feeds off the leg before it — "borrow with
+   * 6x leverage" after a deposit. `multiple` is the industry-standard "Nx position" figure
+   * (borrow = prior leg's amount × (N − 1), the exact split `splitLeverageAmounts` already
+   * uses elsewhere in this codebase — reused as one formula, not reinvented here). A floor
+   * stated in the SAME message is not an alternative sizing method the model may substitute
+   * this for: it is the existing floor-projection check every borrow already goes through,
+   * refusing with the figures when leverage at this size would breach it, exactly as a
+   * literal amount that breaches the floor already refuses. 15 Sep, live: "borrow with 6x
+   * leverage... HF > 1.19" had no way to state the 6x at all, so the model substituted
+   * `to_floor` — a completely different amount — without saying it had dropped the 6x.
+   */
+  | { kind: "leverage"; multiple: string; sourceQuote: string };
 
 export interface PlanLeg {
   op: PlanOp;

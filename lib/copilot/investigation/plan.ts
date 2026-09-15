@@ -182,6 +182,14 @@ function anchoredShare(sizing: PlanSizing & { kind: "fraction" }, messages: read
   if (!byNumber && !byWord) throw new Reject(name, `the share ${sizing.percent}% does not appear in your request`);
   return decimalWad(percent.toFixed(9)) / BigInt(100);
 }
+/** The leverage multiple itself, anchored to the user's own words — never a number the model only implied. */
+function anchoredMultiple(sizing: PlanSizing & { kind: "leverage" }, messages: readonly string[], name: string): bigint {
+  if (!messages.some((m) => m.includes(sizing.sourceQuote))) throw new Reject(name, `the leverage "${sizing.sourceQuote}" does not appear in your request`);
+  const multiple = Number(sizing.multiple);
+  const numbers = (sizing.sourceQuote.match(/\d+(?:\.\d+)?/g) ?? []).map(Number);
+  if (!numbers.some((n) => Math.abs(n - multiple) < 1e-9)) throw new Reject(name, `the ${sizing.multiple}x leverage does not appear in your request`);
+  return decimalWad(sizing.multiple);
+}
 /**
  * How many of a token a phrase actually states.
  *
@@ -559,6 +567,52 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (prev.leg.op === "remove_liquidity") throw new Reject(name, "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself");
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
       drafts.push({ leg, name, usd: { previous: index - 1 }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
+      continue;
+    }
+    /**
+     * A leverage multiple is not a token handoff like `previous_leg` — the deposit stays in
+     * the account as collateral, and the borrow is NEW money the multiple sizes, in
+     * whichever asset the leg names (not necessarily the deposited one: "deposit 10 XLM,
+     * borrow AQUSDC at 6x" is valid). So this reads the preceding leg's USD value, not its
+     * tokens, and prices the borrow in the BORROWED asset — the industry-standard split
+     * (`splitLeverageAmounts` elsewhere in this codebase): borrow = equity × (multiple − 1).
+     *
+     * The op-flow table decides what may be leveraged, not a named op: the leg before it
+     * must be the thing that ADDS collateral (`to: "account"`, `health: "raises"` —
+     * today only `deposit_collateral`, derived rather than named so a future op with the
+     * same shape needs no change here).
+     *
+     * A floor stated in the same message is not sized against here at all — it is the
+     * existing floor-projection every borrow already goes through (below, via SIZED_OPS),
+     * which refuses this exact fixed amount with the figures if it breaches. 15 Sep, live:
+     * "borrow with 6x leverage … HF > 1.19" had no sizing word for "6x", so the model
+     * substituted `to_floor` — a different amount — and never said the 6x was dropped.
+     */
+    if (sizing.kind === "leverage") {
+      /**
+       * Leverage only means something for a borrow — "borrow rate" (`earn_borrow`) is
+       * the one op-flow property unique to it, so this is derived from the table rather
+       * than naming the op: a future op shaped like borrow needs no change here, and
+       * leverage sizing on anything else (the shape matrix tries every op × sizing
+       * combination) refuses cleanly instead of computing a number that means nothing.
+       */
+      if (flow.rate !== "earn_borrow") throw new Reject(name, `a leverage multiple only sizes a borrow — ${verbOf(leg.op).toLowerCase()} needs a literal amount or a share instead`);
+      const prev = drafts[index - 1];
+      const prevFlow = prev ? OP_FLOW[prev.leg.op] : null;
+      if (!prev || prevFlow!.to !== "account" || prevFlow!.health !== "raises") {
+        throw new Reject(name, "a leverage multiple needs the deposit that funds it stated immediately before the borrow");
+      }
+      if (typeof prev.usd !== "string") {
+        throw new Reject(name, `${verbOf(leg.op)} at a leverage multiple needs the deposit before it to have a known amount already`);
+      }
+      const equityUsd = decimalWad(prev.usd);
+      const multiple = anchoredMultiple(sizing, ctx.messages, name);
+      const borrowUsd = formatWad(mulDown(equityUsd, multiple - WAD, WAD));
+      const converted = tokensFromUsd(borrowUsd, price.price, decimals.get(leg.asset) ?? 7);
+      if (!converted.ok) throw new Reject(name, `${sizing.multiple}x leverage on ${prev.leg.asset} sizes to nothing in ${leg.asset} at this precision`);
+      const tokens = precise(converted.tokens, leg.asset, name);
+      const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
+      drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
       continue;
     }
     if (sizing.kind === "fraction") {

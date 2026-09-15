@@ -124,6 +124,106 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(Number(c.netAprPct)).toBeCloseTo(160.63, 1);
   });
 
+  /**
+   * 15 Sep, live: "deposit 10 xlm and borrow with 6x leverage in such a way that my HF >
+   * 1.19" borrowed 315,491.90 XLM — the amount `to_floor` produces on the account's
+   * pre-existing collateral — because there was no way to state "6x" at all. The model
+   * had a floor to fall back to and silently substituted it for the leverage the user
+   * actually asked for, with no warning that the 6x had been dropped.
+   */
+  describe("leverage sizing — a stated multiple, not a silent substitute for the floor", () => {
+    it("sizes the borrow to the deposit before it times (multiple − 1), same asset", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "deposit 10 xlm" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "6", sourceQuote: "borrow with 6x leverage" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("6x leverage", legs)], ctx({
+        messages: ["deposit 10 xlm and borrow with 6x leverage in such a way that my HF > 1.19, deploy in farm"],
+      }));
+      expect(rejected).toEqual([]);
+      // borrow = 10 × (6 − 1) = 50 XLM — not the ~315,491.90 the pre-existing collateral's to_floor produced live.
+      expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([
+        ["deposit_collateral", "10"], ["borrow", "50"], ["supply_blend", "50"],
+      ]);
+    });
+
+    it("prices the borrow in the borrowed asset when it differs from the deposit's", () => {
+      // Deposit BLUSDC; leverage borrows XLM instead — XLM is also the asset with a
+      // profitable Blend carry in this fixture, so the borrow can be covered by a supply.
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "BLUSDC", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 BLUSDC" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "3", sourceQuote: "borrow XLM at 3x" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ];
+      const fundedBlusdc = OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+        { symbol: "XLM", balance: "10206.8356118", status: "ok" }, { symbol: "XLM_SAC", balance: "10206.8356118", decimals: 7, status: "ok" },
+        { symbol: "BLUSDC", balance: "300", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" }));
+      const { candidates, rejected } = resolvePlans([plan("Cross-asset leverage", legs)], ctx({
+        observations: fundedBlusdc, messages: ["deposit 100 BLUSDC and borrow XLM at 3x, deploy in farm"],
+      }));
+      expect(rejected).toEqual([]);
+      // Equity: 100 BLUSDC × $1 = $100. Borrow: $100 × (3 − 1) = $200, at $0.18/XLM ≈ 1111.1111111 XLM.
+      expect(candidates[0]?.steps?.map((s) => [s.op, s.asset, s.amount])).toEqual([
+        ["deposit_collateral", "BLUSDC", "100"], ["borrow", "XLM", "1111.1111111"], ["supply_blend", "XLM", "1111.1111111"],
+      ]);
+    });
+
+    it("sizes correctly from a decimal deposit amount", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "19.555", sourceQuote: "deposit 19.555 xlm" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "3", sourceQuote: "3x leverage" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("Decimal leverage", legs)], ctx({
+        messages: ["deposit 19.555 xlm at 3x leverage, deploy in farm"],
+      }));
+      expect(rejected).toEqual([]);
+      // 19.555 × (3 − 1) = 39.11 exactly.
+      expect(candidates[0]?.steps?.[1]).toMatchObject({ op: "borrow", amount: "39.11" });
+    });
+
+    it("refuses a leverage multiple that would take the health factor below the stated floor, naming it as such", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "deposit 10 xlm" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "50", sourceQuote: "50x leverage" } },
+        { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+      ];
+      /**
+       * The protocol's own gross-asset model — borrowed funds enter the account and raise
+       * BOTH collateral and debt — means HF from a zero base is 1 + 1/(multiple − 1), not
+       * something that crashes toward zero with ordinary leverage: 6x alone lands exactly
+       * at 1.2, still above a 1.19 floor. 50x (HF → 1.0204) is unambiguously the case this
+       * check exists for, without depending on rounding at the edge of the floor.
+       */
+      const { candidates, rejected } = resolvePlans([plan("Unsafe leverage", legs)], ctx({
+        messages: ["deposit 10 xlm and borrow with 50x leverage, deploy in farm"],
+        capacity: { grossCollateralUsd: "0", debtUsd: "0", floor: "1.19" },
+      }));
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toMatch(/^this would take the health factor below your floor/);
+    });
+
+    it("refuses leverage sizing with no preceding deposit to multiply", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "6", sourceQuote: "6x leverage" } },
+      ];
+      const { rejected } = resolvePlans([plan("No deposit", legs)], ctx({ messages: ["borrow XLM at 6x leverage"] }));
+      expect(rejected[0]?.reason).toMatch(/needs the deposit that funds it stated immediately before/);
+    });
+
+    it("refuses a leverage multiple the model did not actually anchor in the user's words", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "deposit 10 xlm" } },
+        { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "6", sourceQuote: "borrow with 6x leverage" } },
+      ];
+      // The quote itself is missing from the message — an invented sourceQuote.
+      const { rejected } = resolvePlans([plan("Hallucinated leverage", legs)], ctx({ messages: ["deposit 10 xlm and take on some debt"] }));
+      expect(rejected[0]?.reason).toMatch(/does not appear in your request/);
+    });
+  });
+
   it("honours a literal amount only when it is anchored to the user's words", () => {
     const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }];
     const ok = resolvePlans([plan("Lend 100 XLM", legs)], ctx({ messages: ["please lend 100 XLM to earn"] }));

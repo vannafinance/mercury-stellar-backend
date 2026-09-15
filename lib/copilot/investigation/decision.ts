@@ -4,7 +4,7 @@ import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDe
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
 /** The sizing words a leg may carry. `plan.ts` gives each one its meaning; the prompt lists them from here. */
-export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal", "fraction"] as const;
+export const PLAN_SIZINGS = ["all_idle", "all_position", "to_floor", "previous_leg", "literal", "fraction", "leverage"] as const;
 const MAX_PLANS = 3;
 const MAX_LEGS = 6;
 
@@ -216,6 +216,14 @@ function parseSizing(raw: unknown): PlanSizing | null {
       !/^\d+(\.\d{1,6})?$/.test(value.percent) || Number(value.percent) <= 0 || Number(value.percent) > 100 ||
       (value.of !== "idle" && value.of !== "position") || !text(value.sourceQuote, 1600)) return null;
     return { kind: "fraction", percent: value.percent, of: value.of, sourceQuote: value.sourceQuote };
+  }
+  if (value.kind === "leverage") {
+    // Upper-bounded generously; the sizer's own floor-projection is what actually stops an
+    // unsafe multiple — this is only proof the model did not invent an absurd digit string.
+    if (!exactKeys(value, ["kind", "multiple", "sourceQuote"]) || typeof value.multiple !== "string" ||
+      !/^\d+(\.\d{1,3})?$/.test(value.multiple) || Number(value.multiple) <= 1 || Number(value.multiple) > 100 ||
+      !text(value.sourceQuote, 1600)) return null;
+    return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
   if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : null;
   if (!exactKeys(value, ["kind", "amount", "sourceQuote"]) || typeof value.amount !== "string" ||
