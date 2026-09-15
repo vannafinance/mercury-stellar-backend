@@ -118,7 +118,14 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * Aquarius LP" produced exactly the limitation asked for, and the whole turn died as
    * "invalid decision" because that sentence had no evidence id.
    */
-  const allowEmptyEvidence = goal.intent === "answer" || validActions.length > 0;
+  /**
+   * "Nothing else remains" has to mean plans too. This counted stated ACTIONS only, so a
+   * strategy turn that composed its plans and wrote one uncited figure beside them was
+   * refused whole and the plans went with it — the same shape of loss the note above
+   * describes, in the branch it did not cover. 15 Sep: "remove 26k XLM liquidity from
+   * blend pool and swap 5k xlm to AqUSDC" sized two legs and died as "invalid decision".
+   */
+  const allowEmptyEvidence = goal.intent === "answer" || validActions.length > 0 || parsedPlans.plans.length > 0;
   let droppedFindings = 0;
   for (const finding of raw.findings) {
     if (!isRecord(finding) || !exactKeys(finding, ["summary", "evidenceIds"]) ||

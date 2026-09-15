@@ -123,6 +123,22 @@ describe("a malformed literal action", () => {
     expect(decision.droppedPlans).toBe(1);
   });
 
+  /**
+   * The uncited-figure rule voids the research only when nothing else remains, and plans
+   * are something remaining. Counting stated actions alone refused a whole strategy turn
+   * and took its sized plans with it (15 Sep, live: "remove 26k XLM liquidity from blend
+   * pool and swap 5k xlm to AqUSDC").
+   */
+  it("keeps the plans when an uncited figure rides beside them", () => {
+    const uncited = { ...base, findings: [{ summary: "you hold 5000 AQUSDC in Earn", evidenceIds: [] }] };
+    expect(parseDecision(uncited)).toBeNull();
+    const decision = parseDecision({ ...uncited, plans: [plan([leg("blend_withdraw", "XLM", { kind: "literal", amount: "26000", sourceQuote: "remove 26k XLM" })])] });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(decision.plans).toHaveLength(1);
+    expect(decision.findings).toHaveLength(1);
+  });
+
   it("leaves a readable reason when a decision really is refused", async () => {
     const { lastDecisionRefusal } = await import("@/lib/copilot/investigation/decision");
     expect(parseDecision({ ...base, findings: [{ summary: "you hold 5000 AQUSDC in Earn", evidenceIds: [] }] })).toBeNull();
