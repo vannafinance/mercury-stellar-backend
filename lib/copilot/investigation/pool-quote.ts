@@ -87,6 +87,33 @@ export function constantProductOut(
   return (reserveOutWad * inAfterFeeWad) / (reserveInWad + inAfterFeeWad);
 }
 
+/**
+ * The most a swap may lose against the oracle's valuation before it is refused, in percent.
+ *
+ * THE SAME NUMBER THE WEBSITE'S OWN SWAP CARD BLOCKS ON — `components/spot/
+ * spot-nonorderbook/SwapCard.tsx` (`isHighPriceImpact`, `pct > 5`), with the same formula:
+ * impact = (in_usd - out_usd) / in_usd. The copilot must not accept a trade the site's own
+ * UI would refuse to let through, so if that threshold moves, this moves with it.
+ *
+ * Why a floor alone is not enough: the floor says "settle at no worse than this", and a
+ * pool-quoted floor is by construction always meetable — so on a pool too thin for the
+ * size, a correct floor happily authorises a catastrophic fill. 15 Sep, live: the protocol's
+ * own Aquarius XLM/AQUSDC pool held ~1,571 AQUSDC against ~133,000 XLM, so 1,000 XLM
+ * (~$190) quoted ~11.7 AQUSDC — a 94% loss, which the website itself flags as "this pool's
+ * liquidity is too thin for this trade size".
+ */
+export const MAX_PRICE_IMPACT_PCT = 5;
+
+/**
+ * How far a quoted fill sits below the oracle's valuation of what is spent, as a WAD
+ * fraction (WAD/20 is 5%). Negative when the pool pays MORE than the oracle says, which is
+ * not a loss and never refused. Null when either side cannot be valued.
+ */
+export function priceImpactWad(inUsdWad: bigint, outUsdWad: bigint): bigint | null {
+  if (inUsdWad <= ZERO || outUsdWad < ZERO) return null;
+  return ((inUsdWad - outUsdWad) * WAD) / inUsdWad;
+}
+
 /** The reserve of each side of a pool for a given spend direction, by registry id. */
 export function reservesForDirection(
   reserves: PoolReserves,

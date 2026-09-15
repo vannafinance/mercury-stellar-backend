@@ -348,14 +348,15 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     });
 
     it("prices the floor below oracle parity when the pool pays less than the oracle — the case the DEX refused", () => {
-      // Pool: 100,000 XLM / 15,000 AQUSDC — 0.15 AQUSDC per XLM, against an oracle saying 0.18.
-      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(poolObs("100000", "15000")));
+      // Pool: 100,000 XLM / 17,730 AQUSDC — pays a little under the oracle's 0.18, an
+      // ordinary fee-and-spread cost rather than a thin-pool one.
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(poolObs("100000", "17730")));
       expect(rejected).toEqual([]);
-      // out = 15000 x 997 / (100000 + 997) = 148.0737…, less 0.5% = 147.3333…
+      // out = 17730 x 997 / (100000 + 997) = 175.0231…, less 0.5% = 174.1480…
       const floor = Number(candidates[0]?.steps?.[1].args.min_out);
-      expect(floor).toBeCloseTo(147.3333, 3);
-      // Oracle parity would have demanded 1000 x $0.18 / $1 = 180, less 0.5% = 179.1 —
-      // a floor 21% above what this pool could ever pay, which is exactly what it refused.
+      expect(floor).toBeCloseTo(174.148, 3);
+      // Oracle parity would have demanded 1000 x $0.18 / $1 = 180, less 0.5% = 179.1 — a
+      // floor above anything this pool pays, which is exactly what the DEX refused.
       expect(floor).toBeLessThan(179.1);
     });
 
@@ -376,6 +377,30 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       const { candidates } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(free));
       // Same reserves, no fee: 20000 x 1000 / 101000 = 198.0198…, less 0.5% = 197.0297…
       expect(Number(candidates[0]?.steps?.[1].args.min_out)).toBeCloseTo(197.0297, 3);
+    });
+
+    /**
+     * The live pool, 15 Sep, read from the AMM API: ~133,077 XLM against ~1,571 AQUSDC.
+     * 1,000 XLM (~$190) quotes about 11.7 AQUSDC — a ~94% loss — and the website's own swap
+     * card refuses exactly this with "this pool's liquidity is too thin for this trade
+     * size". A pool-quoted floor is always meetable, so without this check the copilot
+     * would have set an honest floor on a catastrophic fill and let it through.
+     */
+    it("refuses a fill far below what the spent asset is worth, as the site's own swap card does", () => {
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)],
+        swapCtx(poolObs("133076.9862876", "1571.5348824")));
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toMatch(/^this pool is too thin for 1000 XLM: it would fill at about 11\.68/);
+      expect(rejected[0]?.reason).toContain("% below what XLM is worth");
+      expect(rejected[0]?.reason).toMatch(/Swap a smaller amount/);
+    });
+
+    it("allows a spread just inside the threshold, rather than refusing every cost the pool charges", () => {
+      // 100,000 XLM / 17,425 AQUSDC quotes ~172.01 against $180 of XLM — 4.4% down, under
+      // the 5% the website blocks at. The guard is for thin pools, not for ordinary spread.
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(poolObs("100000", "17425")));
+      expect(rejected).toEqual([]);
+      expect(candidates).toHaveLength(1);
     });
 
     it("falls back to the oracle quote when no pool reserves were read, rather than refusing the swap", () => {

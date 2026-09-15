@@ -26,7 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import { constantProductOut, poolReservesFrom, reservesForDirection, type PoolReserves } from "./pool-quote";
+import { constantProductOut, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
@@ -859,7 +859,29 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (reserves) {
         const { inWad, outWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
         const quoted = constantProductOut(decimalWad(d.tokens!), inWad, outWad, feeWad);
-        if (quoted !== null && quoted > ZERO) return floorOf(quoted);
+        if (quoted !== null && quoted > ZERO) {
+          /**
+           * A pool-quoted floor is always meetable by construction — which is exactly why
+           * it cannot be the only check. On a pool too thin for the size, the honest floor
+           * authorises an honestly terrible fill: 15 Sep the protocol's own Aquarius pool
+           * quoted 1,000 XLM (~$190) at ~11.7 AQUSDC, a 94% loss, and the site's own swap
+           * card refuses that outright. So the quote is valued against the oracle and
+           * refused past the same threshold the website blocks on.
+           */
+          const spent = priceFor(def.id, ctx.observations, ctx.now);
+          const bought = priceFor(out.id, ctx.observations, ctx.now);
+          if (spent.ok && bought.ok) {
+            const inUsdWad = mulDown(decimalWad(d.tokens!), spent.price, WAD);
+            const impact = priceImpactWad(inUsdWad, mulDown(quoted, bought.price, WAD));
+            if (impact !== null && impact * BigInt(100) > WAD * BigInt(MAX_PRICE_IMPACT_PCT)) {
+              const lost = (Number(formatWad(impact)) * 100).toFixed(2);
+              throw new Reject(d.name, `this pool is too thin for ${d.tokens} ${def.id}: it would fill at about `
+                + `${truncateToDecimals(formatWad(quoted), places)} ${out.id}, ${lost}% below what ${def.id} is worth. `
+                + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`);
+            }
+          }
+          return floorOf(quoted);
+        }
       }
       const spentPrice = priceFor(def.id, ctx.observations, ctx.now);
       const outPrice = priceFor(out.id, ctx.observations, ctx.now);
