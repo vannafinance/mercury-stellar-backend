@@ -45,7 +45,14 @@ export const usePoolData = () => {
       // Pool stats now come from the cached /api/pools edge route (shared across
       // all users; APY/exchange-rate computed server-side). Still dual-written
       // into the earn store so direct store readers keep working.
-      const res = await fetch('/api/pools');
+      // Prefer a fresh read when a mutation just landed — the previous 30s
+      // CDN TTL left Total Supply / APY stale for 15–20s after a supply.
+      const bust = typeof window !== 'undefined'
+        && Boolean(sessionStorage.getItem('earn:pools:fresh'));
+      if (bust) sessionStorage.removeItem('earn:pools:fresh');
+      const res = await fetch(bust ? '/api/pools?fresh=1' : '/api/pools', {
+        cache: bust ? 'no-store' : 'default',
+      });
       if (!res.ok) {
         useEarnPoolStore.getState().set({ isLoadingPools: false });
         throw new Error(`pool stats failed (${res.status})`);
@@ -154,7 +161,7 @@ export const useUserPositions = () => {
       // exchange rates instead of re-reading getPoolStats per pool.
       const [vBalances, poolsRes, borrows] = await Promise.all([
         Promise.all(EARN_ASSETS.map((a) => ContractService.getDepositedBalance(address, a))),
-        fetch('/api/pools')
+        fetch('/api/pools?fresh=1', { cache: 'no-store' })
           .then((r) => (r.ok ? (r.json() as Promise<AllPoolStats>) : null))
           .catch(() => null),
         Promise.all(EARN_ASSETS.map((a) => ContractService.getUserBorrowBalance(address, a))),
@@ -212,12 +219,22 @@ export const useUserPositions = () => {
   };
 };
 
+/** Mark the next `/api/pools` read as cache-busting, then invalidate earn queries. */
+const resyncEarnAfterTx = (qc: ReturnType<typeof useQueryClient>) => {
+  try {
+    sessionStorage.setItem('earn:pools:fresh', '1');
+  } catch {
+    // sessionStorage may be unavailable in privacy modes — refetch still helps.
+  }
+  void qc.invalidateQueries({ queryKey: ['earn'] });
+};
+
 /**
  * Mutation to supply (deposit) liquidity into a pool. Variables:
- * `{ amount, assetType }`. No optimistic write — `ContractService.deposit`
- * waits for SUCCESS, then `onSettled` invalidates `['earn']` to refetch the real
- * balance. Records the in-memory notification row and normalizes errors; the
- * persistent history itself comes only from Mercury/RPC events.
+ * `{ amount, assetType }`. `ContractService.deposit` waits for SUCCESS, then we
+ * optimistically bump pool/position totals and aggressively re-sync (same pattern
+ * as withdraw) so the Earn page updates within ~1–2s instead of 15–20s.
+ * Persistent history itself comes only from Mercury/RPC events.
  */
 export const useSupplyLiquidity = () => {
   const qc = useQueryClient();
@@ -240,12 +257,54 @@ export const useSupplyLiquidity = () => {
         addTransaction('supply', assetType, amount.toString(), hash, 'success');
       }
       if (address) void refreshWalletBalancesOnChain(address);
+
+      // Instant UI: bump pool totals + user position before the first RPC
+      // resync lands. Reconciled by the delayed invalidations below.
+      const key = (assetType === ASSET_TYPES.BLEND_USDC ? 'USDC' : assetType) as keyof AllPoolStats;
+      const store = useEarnPoolStore.getState();
+      const pool = store.pools[key];
+      const pos = store.userPositions[key];
+      if (pool && pos) {
+        const rate = parseFloat(pool.exchangeRate) || 1;
+        const shares = rate > 0 ? amount / rate : amount;
+        const nextSupply = (parseFloat(pool.totalSupply) || 0) + amount;
+        const nextLiq = (parseFloat(pool.availableLiquidity) || 0) + amount;
+        const nextV = (parseFloat(pool.vTokenSupply) || 0) + shares;
+        const borrowed = parseFloat(pool.totalBorrowed) || 0;
+        const util = nextSupply > 0 ? (borrowed / nextSupply) * 100 : 0;
+        useEarnPoolStore.getState().set({
+          pools: {
+            ...store.pools,
+            [key]: {
+              ...pool,
+              totalSupply: nextSupply.toFixed(7),
+              availableLiquidity: nextLiq.toFixed(7),
+              vTokenSupply: nextV.toFixed(7),
+              utilizationRate: util.toFixed(2),
+            },
+          },
+          userPositions: {
+            ...store.userPositions,
+            [key]: {
+              ...pos,
+              deposited: ((parseFloat(pos.deposited) || 0) + amount).toFixed(7),
+              vTokenBalance: ((parseFloat(pos.vTokenBalance) || 0) + shares).toFixed(7),
+            },
+          },
+          lastUpdated: Date.now(),
+        });
+      }
     },
 
-    // No optimistic write — the position must change only after the tx confirms.
-    // ContractService.deposit waits for SUCCESS, so invalidate-on-settled refetches
-    // the real on-chain balance; the ledger tick reconciles thereafter.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
+    // ContractService.deposit waits for SUCCESS. Immediate + short delayed
+    // resyncs cover the brief window where simulation still returns pre-mint
+    // balances (same failure mode withdraw already handled).
+    onSettled: () => {
+      resyncEarnAfterTx(qc);
+      [400, 1000, 2000].forEach((d) => {
+        window.setTimeout(() => resyncEarnAfterTx(qc), d);
+      });
+    },
   });
 };
 
@@ -285,10 +344,14 @@ export const useWithdrawLiquidity = () => {
       if (address) void refreshWalletBalancesOnChain(address);
     },
 
-    // No optimistic write — the position must change only after the tx confirms.
-    // ContractService.withdraw waits for SUCCESS, so invalidate-on-settled refetches
-    // the real on-chain balance; the ledger tick reconciles thereafter.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['earn'] }),
+    // ContractService.withdraw waits for SUCCESS. Same fresh + delayed resync
+    // as supply so pool totals / positions catch up within ~1–2s.
+    onSettled: () => {
+      resyncEarnAfterTx(qc);
+      [400, 1000, 2000].forEach((d) => {
+        window.setTimeout(() => resyncEarnAfterTx(qc), d);
+      });
+    },
   });
 
   return Object.assign(mutation, {

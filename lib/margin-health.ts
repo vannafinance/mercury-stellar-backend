@@ -56,3 +56,20 @@ export function deriveMarginHealth(input: {
     debtLimit,
   };
 }
+
+/**
+ * Net leverage taken — same formula as Current Positions "Leverage Taken":
+ *   1 + debt_usd / equity_usd
+ * where equity is deposited collateral (not gross risk-weighted collateral).
+ */
+export function deriveNetLeverage(input: {
+  equityUsd: number;
+  debtUsd: number;
+}): number {
+  const equity = input.equityUsd;
+  const debt = input.debtUsd;
+  if (equity > 0.01) {
+    return parseFloat((1 + debt / equity).toFixed(2));
+  }
+  return debt > 0.01 ? 0 : 1;
+}

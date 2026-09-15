@@ -22,6 +22,9 @@ import { ACCOUNT_STATS_ITEMS } from "@/lib/constants/margin";
 import { useTheme } from "@/contexts/theme-context";
 import { useAppModeStore } from "@/store/app-mode-store";
 import { LiteHome } from "@/components/lite-mode/lite-home";
+import { deriveMarginHealth, deriveNetLeverage } from "@/lib/margin-health";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
+import { useShallow } from "zustand/shallow";
 
 export default function Home() {
   const { isDark } = useTheme();
@@ -57,43 +60,35 @@ export default function Home() {
   const userAddress = useUserStore((state) => state.address);
   const isConnected = useUserStore((state) => state.isConnected);
 
-  // Get margin account info from global store using selector to prevent unnecessary re-renders
-  const totalBorrowedValue = useMarginAccountInfoStore(
-    (state) => state.totalBorrowedValue
-  );
-  const totalCollateralValue = useMarginAccountInfoStore(
-    (state) => state.totalCollateralValue
-  );
-  const avgHealthFactor = useMarginAccountInfoStore(
-    (state) => state.avgHealthFactor
-  );
-  const collateralLeftBeforeLiquidation = useMarginAccountInfoStore(
-    (state) => state.collateralLeftBeforeLiquidation
-  );
-  const netAvailableCollateral = useMarginAccountInfoStore(
-    (state) => state.netAvailableCollateral
-  );
-  const timeToLiquidation = useMarginAccountInfoStore(
-    (state) => state.timeToLiquidation
-  );
-  const borrowRate = useMarginAccountInfoStore((state) => state.borrowRate);
-  const liquidationPremium = useMarginAccountInfoStore(
-    (state) => state.liquidationPremium
-  );
-  const liquidationFee = useMarginAccountInfoStore(
-    (state) => state.liquidationFee
-  );
-  const debtLimit = useMarginAccountInfoStore((state) => state.debtLimit);
-  const minDebt = useMarginAccountInfoStore((state) => state.minDebt);
-  const maxDebt = useMarginAccountInfoStore((state) => state.maxDebt);
-  const hasMarginAccount = useMarginAccountInfoStore(
-    (state) => state.hasMarginAccount
-  );
-  const marginAccountAddress = useMarginAccountInfoStore(
-    (state) => state.marginAccountAddress
-  );
-  const isLoadingBorrowedBalances = useMarginAccountInfoStore(
-    (state) => state.isLoadingBorrowedBalances
+  // Single shallow store read — balances needed for Net Leverage Taken.
+  const {
+    totalBorrowedValue,
+    timeToLiquidation,
+    borrowRate,
+    liquidationPremium,
+    liquidationFee,
+    debtLimit,
+    minDebt,
+    maxDebt,
+    hasMarginAccount,
+    collateralBalances,
+    borrowedBalances,
+    grossCollateralValue,
+  } = useMarginAccountInfoStore(
+    useShallow((state) => ({
+      totalBorrowedValue: state.totalBorrowedValue,
+      timeToLiquidation: state.timeToLiquidation,
+      borrowRate: state.borrowRate,
+      liquidationPremium: state.liquidationPremium,
+      liquidationFee: state.liquidationFee,
+      debtLimit: state.debtLimit,
+      minDebt: state.minDebt,
+      maxDebt: state.maxDebt,
+      hasMarginAccount: state.hasMarginAccount,
+      collateralBalances: state.collateralBalances,
+      borrowedBalances: state.borrowedBalances,
+      grossCollateralValue: state.grossCollateralValue,
+    })),
   );
 
   // Per-account snapshot (cached) — gives the stats instantly on reload and a
@@ -101,12 +96,55 @@ export default function Home() {
   // (falling back to the store) so the first paint shows real numbers, not 0.
   const { snapshot } = useAccountSnapshot(userAddress);
   const effHasAccount = snapshot?.hasMarginAccount ?? hasMarginAccount;
-  const effHealthFactor = snapshot?.avgHealthFactor ?? avgHealthFactor;
-  const effNetAvailable = snapshot?.netAvailableCollateral ?? netAvailableCollateral;
-  const effCollateralLeft =
-    snapshot?.collateralLeftBeforeLiquidation ?? collateralLeftBeforeLiquidation;
+  const effGrossCollateral =
+    snapshot?.grossCollateralValue ?? grossCollateralValue;
   const effBorrowed = snapshot?.totalBorrowedValue ?? totalBorrowedValue;
   const effBorrowRate = snapshot?.borrowRate ?? borrowRate;
+
+  // Recompute risk trio from gross + debt so KPIs stay coherent.
+  const derivedHealth = deriveMarginHealth({
+    grossCollateralValue: effGrossCollateral ?? 0,
+    effectiveDebtValue: effBorrowed > 0.01 ? effBorrowed : 0,
+    totalBorrowedValue: effBorrowed,
+  });
+  const effHealthFactor = derivedHealth.avgHealthFactor;
+  const effNetAvailable = derivedHealth.netAvailableCollateral;
+  const effCollateralLeft = derivedHealth.collateralLeftBeforeLiquidation;
+
+  // Same formula as Current Positions "Leverage Taken" (3.31x style).
+  const effNetLeverage = useMemo(() => {
+    const canon = (token: string): string => {
+      const n = token.toUpperCase();
+      if (n === "BLEND_XLM") return "XLM";
+      if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
+      if (n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "AQUSDC";
+      if (n === "SOROSWAPUSDC" || n === "SOROSWAP_USDC") return "SOUSDC";
+      return n;
+    };
+
+    const borrowUsdByToken = new Map<string, number>();
+    for (const [token, bal] of Object.entries(borrowedBalances ?? {})) {
+      const usd = parseFloat(bal.usdValue || "0");
+      if (!(usd > 0.01)) continue;
+      const key = canon(token);
+      borrowUsdByToken.set(key, (borrowUsdByToken.get(key) ?? 0) + usd);
+    }
+
+    let equityUsd = 0;
+    for (const [token, bal] of Object.entries(collateralBalances ?? {})) {
+      if (isTrackingSymbol(token)) continue;
+      const grossUsd = parseFloat(bal.usdValue || "0");
+      if (!(grossUsd > 0.01)) continue;
+      const key = canon(token);
+      equityUsd += Math.max(0, grossUsd - (borrowUsdByToken.get(key) ?? 0));
+    }
+
+    const debtUsd = effBorrowed > 0.01 ? effBorrowed : 0;
+    if (!(equityUsd > 0.01) && effNetAvailable > 0.01) {
+      equityUsd = effNetAvailable;
+    }
+    return deriveNetLeverage({ equityUsd, debtUsd });
+  }, [collateralBalances, borrowedBalances, effBorrowed, effNetAvailable]);
 
   // Check for margin account when user address changes or wallet connects
   useEffect(() => {
@@ -155,6 +193,7 @@ export default function Home() {
       collateralLeftBeforeLiquidation: effCollateralLeft,
       netAvailableCollateral: effNetAvailable,
       netAmountBorrowed: effBorrowed,
+      netLeverageTaken: effNetLeverage,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // mapping totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -166,6 +205,7 @@ export default function Home() {
     effCollateralLeft,
     effNetAvailable,
     effBorrowed,
+    effNetLeverage,
   ]);
 
   // InfoCard row keyed `totalCollateralValue` shows Net Available Collateral
@@ -203,7 +243,7 @@ export default function Home() {
 
   // Format account stats value with explicit units, following industry
   // conventions: Health Factor is a bare unitless ratio (Aave/Compound style,
-  // never with ×), USD totals with $ prefix, P&L with signed $ prefix (+/-).
+  // never with ×), leverage is Nx (never $), USD totals with $ prefix.
   const formatAccountStatValue = (itemId: string, value: number) => {
     if (itemId === "netHealthFactor") {
       if (value === Infinity || !isFinite(value) || value >= 999) {
@@ -213,6 +253,12 @@ export default function Home() {
         type: "health-factor",
         showZeroAsDash: false,
       });
+    }
+
+    // Always "3.31x" style — never fall through to the USD formatter below.
+    if (itemId === "netLeverageTaken") {
+      if (!Number.isFinite(value) || value <= 0) return "—";
+      return `${value.toFixed(2)}x`;
     }
 
     const usdText = formatValue(Math.abs(value), {
@@ -246,12 +292,13 @@ export default function Home() {
   }, {} as Record<string, string>);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
-  // neutral (default) at exactly zero.
+  // neutral (default) at exactly zero. Leverage uses brand purple.
   const accountStatsValueColors = (() => {
+    const colors: Record<string, string> = { netLeverageTaken: "text-[#703AE6]" };
     const pnl = accountStats.netProfitAndLoss ?? 0;
-    if (pnl > 0) return { netProfitAndLoss: "text-emerald-500" };
-    if (pnl < 0) return { netProfitAndLoss: "text-rose-500" };
-    return undefined;
+    if (pnl > 0) colors.netProfitAndLoss = "text-emerald-500";
+    if (pnl < 0) colors.netProfitAndLoss = "text-rose-500";
+    return colors;
   })();
 
   if (appMode === "lite") {
@@ -290,7 +337,8 @@ export default function Home() {
             items={ACCOUNT_STATS_ITEMS}
             values={accountStatsValues}
             valueColors={accountStatsValueColors}
-            gridCols="grid-cols-4"
+            gridCols="grid-cols-5"
+            compact
             loading={showStatsSkeleton}
           />
         </motion.section>

@@ -7,6 +7,7 @@ export const TABLE_ROW_HEADINGS = [
   "Collateral Deposited",
   "Borrowed Assets",
   "Leverage Taken",
+  "Health Factor",
   "Interest accrued till date",
   "Action",
 ] as const;
@@ -174,6 +175,11 @@ export const ACCOUNT_STATS_ITEMS = [
     id: "netAmountBorrowed",
     name: "Net amount Borrowed",
     icon: "/margin/retry.png",
+  },
+  {
+    id: "netLeverageTaken",
+    name: "Net Leverage Taken",
+    icon: "/margin/bag.png",
   },
 ] as const;
 

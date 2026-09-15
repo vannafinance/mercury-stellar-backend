@@ -29,6 +29,11 @@ interface AccountStatsProps {
   // instead of a number — so a not-yet-loaded account shows a skeleton rather
   // than a misleading "0" or a spinner.
   loading?: boolean;
+  /**
+   * Five-up KPI strip: one row on tablet/desktop with smaller type so all
+   * items (e.g. Net Leverage Taken) fit horizontally instead of wrapping.
+   */
+  compact?: boolean;
 }
 
 export const AccountStats = ({
@@ -40,9 +45,14 @@ export const AccountStats = ({
   backgroundColor = "#F7F7F7",
   darkBackgroundColor = "#222222",
   loading = false,
+  compact = false,
 }: AccountStatsProps) => {
   const { isDark } = useTheme();
   const calculatedGridRows = gridRows || "";
+  // Five KPI items (incl. Net Leverage Taken) always render as one desktop row.
+  // Inline style bypasses any Tailwind class-scan misses for grid-cols-5.
+  const fiveUp = compact || items.length >= 5;
+  const desktopGrid = fiveUp ? "grid-cols-5" : gridCols;
 
   const renderShimmer = (className: string) => (
     <span
@@ -55,7 +65,7 @@ export const AccountStats = ({
 
   return (
     <>
-      {/* Mobile/Small-tablet: 2x2 grid (< 768px) */}
+      {/* Mobile: 2-col wrap (< 768px) */}
       <div className="md:hidden w-full grid grid-cols-2 gap-2">
         {items.filter(item => item.id !== "netProfitAndLoss").map((item, idx, arr) => {
           const raw = values[item.id];
@@ -101,18 +111,23 @@ export const AccountStats = ({
         })}
       </div>
 
-      {/* Tablet/Desktop: grid layout (768px+) */}
+      {/* Tablet/Desktop: single-row grid (768px+) */}
       <div
-        className={`hidden md:grid border rounded-2xl w-full h-auto overflow-visible ${gridCols} ${calculatedGridRows} ${
+        className={`hidden md:grid border rounded-2xl w-full h-auto overflow-visible ${desktopGrid} ${calculatedGridRows} ${
           isDark ? `bg-[${darkBackgroundColor}]` : `bg-[${backgroundColor}]`
         }`}
+        style={fiveUp ? { gridTemplateColumns: "repeat(5, minmax(0, 1fr))" } : undefined}
       >
         {items.map((item, idx) => {
           const raw = values[item.id];
           const displayValue = (!raw || raw === "-") ? "0" : raw;
           return (
             <motion.article
-              className="flex flex-col justify-center items-center gap-2.5 px-4 w-full col-span-1 h-[150px]"
+              className={`flex flex-col justify-center items-center w-full col-span-1 ${
+                fiveUp
+                  ? "gap-1.5 px-2 py-4 min-h-[120px]"
+                  : "gap-2.5 px-4 h-[150px]"
+              }`}
               key={item.id}
               initial={{ opacity: 0, y: 10 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -120,18 +135,23 @@ export const AccountStats = ({
               transition={{ duration: 0.3, delay: idx * 0.06, ease: "easeOut" }}
             >
               {/* Icon + label row */}
-              <div className="flex items-center gap-2 justify-center w-full">
+              <div className="flex items-center gap-1.5 justify-center w-full px-1">
                 <div
-                  className={`w-7 h-7 flex items-center justify-center rounded-full shrink-0 ${
-                    isDark ? "bg-[#1A1A1A]" : "bg-white"
-                  }`}
+                  className={`flex items-center justify-center rounded-full shrink-0 ${
+                    fiveUp ? "w-6 h-6" : "w-7 h-7"
+                  } ${isDark ? "bg-[#1A1A1A]" : "bg-white"}`}
                 >
-                  <Image width={14} height={14} alt={item.id} src={item.icon} />
+                  <Image
+                    width={fiveUp ? 12 : 14}
+                    height={fiveUp ? 12 : 14}
+                    alt={item.id}
+                    src={item.icon}
+                  />
                 </div>
                 <span
-                  className={`text-[13px] font-medium leading-tight text-center ${
-                    isDark ? "text-[#A0A0A0]" : "text-[#6B7280]"
-                  }`}
+                  className={`font-medium leading-tight text-center ${
+                    fiveUp ? "text-[11px]" : "text-[13px]"
+                  } ${isDark ? "text-[#A0A0A0]" : "text-[#6B7280]"}`}
                 >
                   {item.name}
                 </span>
@@ -141,7 +161,9 @@ export const AccountStats = ({
               </div>
               {/* Value */}
               <motion.div
-                className={`text-[26px] font-bold leading-none text-center ${
+                className={`font-bold leading-none text-center ${
+                  fiveUp ? "text-[18px] lg:text-[22px]" : "text-[26px]"
+                } ${
                   valueColors?.[item.id] ?? (isDark ? "text-white" : "text-[#111111]")
                 }`}
                 initial={{ opacity: 0 }}
@@ -149,7 +171,7 @@ export const AccountStats = ({
                 viewport={{ once: true }}
                 transition={{ duration: 0.3, delay: idx * 0.06 + 0.15 }}
               >
-                {loading ? renderShimmer("h-7 w-24") : displayValue}
+                {loading ? renderShimmer(fiveUp ? "h-5 w-16" : "h-7 w-24") : displayValue}
               </motion.div>
             </motion.article>
           );

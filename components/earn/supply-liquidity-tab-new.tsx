@@ -20,7 +20,7 @@ import { Button } from "../ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
-import { useSupplyLiquidity, usePoolData } from "@/hooks/use-earn";
+import { useSupplyLiquidity, usePoolData, useUserPositions } from "@/hooks/use-earn";
 import { useTokenPrices } from "@/hooks/use-token-prices";
 import { AssetType } from "@/lib/stellar-utils";
 import { normalizeSupplyError } from "@/lib/errors/normalize";
@@ -74,7 +74,8 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
   const storeTokenBalances = useUserStore((state) => state.tokenBalances);
 
   const supply = useSupplyLiquidity();
-  const { pools } = usePoolData();
+  const { pools, refresh: refreshPools } = usePoolData();
+  const { refresh: refreshPositions } = useUserPositions();
   const tokenPrices = useTokenPrices(['XLM', 'BLUSDC', 'AQUSDC', 'SOUSDC']);
 
   const selectedPool = pools[normalizedAsset as keyof typeof pools];
@@ -142,6 +143,16 @@ export const SupplyLiquidityTab = memo(function SupplyLiquidityTab() {
         showTxSuccess(`Successfully supplied ${numAmount} ${selectedOption}! You received v${selectedOption} tokens.`);
         setAmount("");
         setSelectedPercentage(0);
+        // Simulation-based reads can briefly return pre-mint balances right
+        // after SUCCESS. Re-sync positions + pool stats across that window so
+        // Total Supply / Your Positions update within ~1–2s (withdraw already
+        // did this; supply previously relied on a single invalidate + CDN).
+        const resync = () => {
+          void refreshPositions();
+          void refreshPools();
+        };
+        resync();
+        [500, 1200, 2500].forEach((d) => setTimeout(resync, d));
       } catch (err) {
         showTxError(normalizeSupplyError(err instanceof Error ? err.message : undefined, selectedOption));
       }

@@ -615,7 +615,7 @@ export class ContractService {
    */
   static async pollTransactionStatus(server: StellarSdk.rpc.Server, hash: string): Promise<void> {
     let attempts = 0;
-    const maxAttempts = 30;
+    const maxAttempts = 45;
 
     while (attempts < maxAttempts) {
       try {
@@ -639,7 +639,9 @@ export class ContractService {
         // Continue polling
       }
       
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // 1s poll — confirmation UI and post-tx earn/margin resync start sooner
+      // on testnet (was 2s × 30 ≈ up to 60s of wait after send).
+      await new Promise(resolve => setTimeout(resolve, 1000));
       attempts++;
     }
     
