@@ -390,6 +390,41 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const boughtPrice = priceFor(bought.id, ctx.observations, ctx.now);
       if (!boughtPrice.ok) throw new Reject(name, `no ${bought.id} price was read this investigation`);
     }
+    /**
+     * An add-liquidity leg spends BOTH the pool's tokens. `asset` is whichever side the
+     * user stated an amount for — exactly the same "spent" convention swap uses — and
+     * `assetOut` is the other side, the paired amount is NEVER the model's number: it is
+     * derived at step-building time from the pool's own live reserves.
+     *
+     * Aquarius only, for now. Soroswap's own contract corrects an imperfect TOKEN ratio
+     * on-chain (compute_soroswap_add_liquidity_auth_amounts reads its own reserves and
+     * uses whichever side fits), so the deposit amounts are safe either way — but the
+     * SEPARATE min_liquidity_out floor (the LP shares minted) has no such protection, and
+     * this MCP has no Soroswap reserves/total-supply read to compute one honestly. Rather
+     * than ship that floor as a silent 0 — exactly the swap bug fixed today — Soroswap
+     * add_liquidity is refused until that read exists, same as the exact-output swap gap.
+     */
+    const paired = leg.op === "add_liquidity" ? resolveAssetDef(leg.assetOut ?? "") : null;
+    if (leg.op === "add_liquidity") {
+      if (!paired) throw new Reject(name, `name the token ${def.id} is paired with — AQUSDC for Aquarius`);
+      if (paired.id === def.id) throw new Reject(name, `a pool needs two different tokens — ${def.id} and ${paired.id} is the same token`);
+      if (!paired.marginSymbol) throw new Reject(name, `${paired.id} is not accepted by the margin account, so the deposit would leave it unbacked`);
+      const pool = poolVenueFor(def.id, paired.id);
+      if (!pool) {
+        const tradable = swappableWith(def.id);
+        throw new Reject(name, tradable.length
+          ? `no pool holds ${def.id} and ${paired.id} together — ${def.id} pairs with ${tradable.join(" or ")}`
+          : `no pool holds ${def.id}`);
+      }
+      if (leg.venue && leg.venue !== pool) {
+        throw new Reject(name, `${def.id} and ${paired.id} pool on ${venueLabel(pool)}, not ${venueLabel(leg.venue)}`);
+      }
+      if (pool !== "aquarius") {
+        throw new Reject(name, `add_liquidity on ${venueLabel(pool)} is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available`);
+      }
+      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
+      if (!reserves) throw new Reject(name, `no live ${pool} pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio`);
+    }
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
     if (!walletOp && !ctx.capacity) throw new Reject(name, "the margin position was not read, so nothing touching the account can be sized");
     /**
@@ -800,7 +835,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const venue = OP_FLOW[d.leg.op].venue;
     const symbol = venue === "earn" ? def.earnSymbol! : venue === "blend" ? (def.marginSymbol ?? def.id) : wireSymbol(d.leg.asset);
     const out = d.leg.op === "swap" ? resolveAssetDef(d.leg.assetOut ?? "") : null;
-    const dex = out ? poolVenueFor(def.id, out.id) : d.leg.op === "remove_liquidity" ? def.lpVenue : null;
+    const paired = d.leg.op === "add_liquidity" ? resolveAssetDef(d.leg.assetOut ?? "") : null;
+    const dex = out ? poolVenueFor(def.id, out.id) : d.leg.op === "remove_liquidity" ? def.lpVenue : paired ? poolVenueFor(def.id, paired.id) : null;
     /**
      * The floor this swap is told to accept, from the prices already read this
      * investigation — the gate above already required both to be `.ok`, so this repeats
@@ -816,13 +852,37 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const floorWad = (decimalWad(expected.tokens) * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000);
       return truncateToDecimals(formatWad(floorWad), decimals.get(out.id) ?? 7);
     })() : null;
+    /**
+     * The paired amount and the LP-share floor, both from the pool's own live reserves —
+     * never the model's number, and never oracle prices standing in for the pool's actual
+     * ratio. Proportional to the stated side: derivedAmount = stated x reserveDerived /
+     * reserveStated, and — because the deposit is exactly proportional — the LP shares
+     * minted for it are exactly stated x totalShare / reserveStated too, the same formula
+     * a constant-product pool itself mints by (no oracle needed for either number).
+     */
+    const addLiquidity = paired && dex === "aquarius" ? (() => {
+      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
+      if (!reserves) throw new Reject(d.name, "no live aquarius pool reserves were read this investigation");
+      const statedIsXlm = def.id === "XLM";
+      const reserveStatedWad = decimalWad(statedIsXlm ? reserves.xlm : reserves.paired);
+      const reserveDerivedWad = decimalWad(statedIsXlm ? reserves.paired : reserves.xlm);
+      if (reserveStatedWad <= ZERO) throw new Reject(d.name, `the pool's ${def.id} reserve read as zero, so a proportional deposit cannot be sized`);
+      const statedWad = decimalWad(d.tokens!);
+      const derivedTokens = precise(formatWad(mulDown(statedWad, reserveDerivedWad, reserveStatedWad)), paired.id, d.name);
+      const totalShareWad = decimalWad(reserves.totalShare);
+      const expectedSharesWad = mulDown(statedWad, totalShareWad, reserveStatedWad);
+      const minSharesWad = (expectedSharesWad * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000);
+      return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(minSharesWad), 7) };
+    })() : null;
     const label = d.leg.op === "redeem"
       ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
       : d.leg.op === "swap" && out
         ? `Swap ${d.tokens} ${def.displayLabel ?? def.id} for at least ${minOut} ${out.displayLabel ?? out.id} on ${venueLabel(dex!)}`
         : d.leg.op === "remove_liquidity"
           ? `Remove ${d.tokens} XLM/${def.displayLabel ?? def.id} LP shares on ${venueLabel(dex!)}`
-          : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
+          : d.leg.op === "add_liquidity" && paired && addLiquidity
+            ? `Add ${d.tokens} ${def.displayLabel ?? def.id} + ${addLiquidity.amountB} ${paired.displayLabel ?? paired.id} to the ${venueLabel(dex!)} pool`
+            : `${verbOf(d.leg.op)} ${d.tokens} ${def.displayLabel ?? def.id}${WHERE[d.leg.op]}`;
     const step: ProposalStep = {
       id: `s${index}-${d.leg.op}`,
       op: d.leg.op,
@@ -833,6 +893,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
         out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined }
           : d.leg.op === "remove_liquidity" && dex ? { venue: dex }
+          : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),
       // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
       sizing: { basis: "stated" },
@@ -1006,6 +1067,31 @@ function farmLpPositionOf(observations: readonly Observation[], asset: string, n
   const shares = read?.data?.lp_shares_human;
   if (typeof shares !== "string" && typeof shares !== "number") return null;
   try { decimalWad(String(shares)); return String(shares); } catch { return null; }
+}
+
+/**
+ * Live XLM/paired-token reserves for an Aquarius pool, matched by the same `asset`
+ * argument the catalog bound the read with. The reserves dict is keyed by the AMM API's
+ * OWN token label, not our registry spelling ("USDC", not "AQUSDC") — the same venue-vs-
+ * registry mismatch documented throughout this codebase — so this reads by position
+ * (the "XLM" key is always exactly that; whichever other key remains is the paired side)
+ * rather than assume the paired token's key matches `def.marginSymbol` literally.
+ */
+function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): { xlm: string; paired: string; totalShare: string } | null {
+  const read = [...observations].reverse().find((o) =>
+    o.capability === "aquarius_pool_reserves" && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
+  const pool = read?.data?.pool;
+  if (read?.data?.found !== true || !isRecord(pool) || pool.available === false || !isRecord(pool.reserves)) return null;
+  const entries = Object.entries(pool.reserves);
+  const xlm = entries.find(([key]) => key === "XLM")?.[1];
+  const paired = entries.find(([key]) => key !== "XLM")?.[1];
+  const totalShare = pool.total_share;
+  if ((typeof xlm !== "string" && typeof xlm !== "number") || (typeof paired !== "string" && typeof paired !== "number")
+    || (typeof totalShare !== "string" && typeof totalShare !== "number")) return null;
+  try {
+    decimalWad(String(xlm)); decimalWad(String(paired)); decimalWad(String(totalShare));
+    return { xlm: String(xlm), paired: String(paired), totalShare: String(totalShare) };
+  } catch { return null; }
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */

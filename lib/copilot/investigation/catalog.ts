@@ -29,6 +29,7 @@ const priceAssets = assets.map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
 const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
+const aquariusLpAssets = assets.filter((asset) => asset.lpVenue === "aquarius").map((asset) => asset.id);
 
 function requireAsset(id: unknown) {
   const asset = assets.find((entry) => entry.id === id);
@@ -217,6 +218,15 @@ export const CATALOG: readonly CatalogEntry[] = [
         smart_account: scope.smartAccount,
         ...(def?.lpVenue ? { token_a: "XLM", token_b: def.marginSymbol ?? def.id, venue: def.lpVenue } : {}),
       };
+    },
+  },
+  {
+    name: "aquarius_pool_reserves", tool: "vanna_get_aquarius_pool_stats", scope: "public", cost: "cheap",
+    description: "Live pool reserves and total LP shares for one Aquarius pair, named by the token XLM is paired with. Use to size add_liquidity's paired amount or an exact-output swap on Aquarius — never guess a ratio from oracle prices when this is available.",
+    modelArgs: { asset: { type: "enum", values: aquariusLpAssets } },
+    bind: (args) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return { token_a: "XLM", token_b: def?.marginSymbol ?? def?.id ?? "" };
     },
   },
   {

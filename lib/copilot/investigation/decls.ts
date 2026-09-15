@@ -111,11 +111,11 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                     asset: { type: "string", enum: [...ASSET_IDS] },
                     assetOut: {
                       type: "string", enum: [...ASSET_IDS],
-                      description: "REQUIRED whenever op is swap: the asset the swap receives, which must differ from `asset`. A swap leg without it is dropped. Never set it on any other op.",
+                      description: "REQUIRED whenever op is swap or add_liquidity: for swap, the asset received; for add_liquidity, the pool's other token. Either way it must differ from `asset`. A leg without it, on either op, is dropped. Never set it on any other op.",
                     },
                     venue: {
                       type: "string", enum: [...lpVenues()],
-                      description: "swap only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
+                      description: "swap or add_liquidity only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
                     },
                     sizing: {
                       type: "object",

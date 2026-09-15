@@ -71,7 +71,7 @@ describe("OP_FLOW", () => {
       const venue = OP_FLOW[op].venue;
       if (venue === "earn") expect(tool, op).toMatch(/^vanna_(lend|redeem)$/);
       if (venue === "blend") expect(tool, op).toMatch(/blend/);
-      if (venue === "margin") expect(tool, op).toMatch(/^vanna_(deposit_collateral|withdraw_collateral|borrow|repay|swap|remove_liquidity)$/);
+      if (venue === "margin") expect(tool, op).toMatch(/^vanna_(deposit_collateral|withdraw_collateral|borrow|repay|swap|remove_liquidity|add_liquidity)$/);
     }
   });
 });

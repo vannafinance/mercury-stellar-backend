@@ -23,7 +23,7 @@ import { PLAN_SIZINGS } from "@/lib/copilot/investigation/decision";
 import { decimalsFrom } from "@/lib/copilot/investigation/precision";
 import { decimalWad, formatWad, mulDown, WAD } from "@/lib/copilot/investigation/fixed";
 import type { Observation, PlanLeg, PlanSizing, ProposedPlan } from "@/lib/copilot/investigation/types";
-import { ASSET_IDS, resolveAssetDef, swappableWith, type AssetId } from "@/lib/copilot/registry/assets";
+import { ASSET_IDS, poolVenueFor, resolveAssetDef, swappableWith, type AssetId } from "@/lib/copilot/registry/assets";
 import { allowedInvocation } from "@/lib/copilot/workflow/allowlist";
 import { feeds, OP_FLOW, WORKFLOW_OPS, type Pocket, type WorkflowOp } from "@/lib/copilot/workflow/types";
 
@@ -99,6 +99,14 @@ function observations(asset: AssetId, world: World): Observation[] {
     rows.push(obs("ac", "account_collateral", { collateral: world.collateral && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: POSTED }] : [] }));
     rows.push(obs("ad", "account_debt", { debt: world.debt && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: OWED }] : [] }));
   }
+  // Live reserves for any asset paired with XLM on Aquarius, keyed the way `plan.ts` reads
+  // them — by the pool's non-XLM side — so add_liquidity can size the paired amount here
+  // exactly as it would from the real MCP read, in every world, not just a hand-picked one.
+  if (poolVenueFor("XLM", asset) === "aquarius") {
+    rows.push(obs("res", "aquarius_pool_reserves",
+      { found: true, pool: { available: true, reserves: { XLM: "10000", [asset]: "1800" }, total_share: "5000" } },
+      { asset }));
+  }
   return rows;
 }
 
@@ -158,11 +166,13 @@ function naturalSizing(op: WorkflowOp, asset: AssetId): { sizing: PlanSizing; sa
 }
 
 /**
- * A swap needs the asset it buys. Any other margin-accepted asset will do — the point of
- * the grid is the sizing and funding rules, not which pair was chosen.
+ * A swap needs the asset it buys; add_liquidity needs the pool's other token. Any other
+ * margin-accepted asset will do for a swap — the point of the grid is the sizing and
+ * funding rules, not which pair was chosen — but add_liquidity's rejects on anything that
+ * isn't a real pool partner, so it always takes the tradable one when there is one.
  */
 function withOut(op: WorkflowOp, asset: AssetId): { assetOut?: string } {
-  if (op !== "swap") return {};
+  if (op !== "swap" && op !== "add_liquidity") return {};
   // Prefer an asset a pool actually trades this one against, so the cell exercises sizing
   // rather than stopping at "no pool trades …"; fall back to any other margin asset so the
   // untradable pairs are covered too.
@@ -210,7 +220,22 @@ function cells(asset: AssetId): Cell[] {
       { op: "supply_blend", asset, sizing: { kind: "previous_leg" } },
     ],
   }];
-  return [...single, ...pairs, ...sameSource, ...leveraged];
+  /**
+   * Deposit, then add it to the pool as previous_leg — add_liquidity's own happy path, not
+   * reachable by `pairs` either: the paired amount only sizes off live reserves, and only
+   * for a real pool partner, so a generic second leg picked by `naturalSizing` never lands
+   * here (15 Sep, same gap leverage sizing had — see `leveraged` above). Gated on the
+   * registry actually pairing this asset with XLM on Aquarius, not a named asset.
+   */
+  const pooled: Cell[] = poolVenueFor("XLM", asset) === "aquarius" ? [{
+    title: `deposit_collateral → add_liquidity ${asset}`,
+    said: `100 ${asset} into the pool`,
+    legs: [
+      { op: "deposit_collateral", asset, sizing: { kind: "literal", amount: "100", sourceQuote: `100 ${asset}` } },
+      { op: "add_liquidity", asset, sizing: { kind: "previous_leg" }, ...withOut("add_liquidity", asset) },
+    ],
+  }] : [];
+  return [...single, ...pairs, ...sameSource, ...leveraged, ...pooled];
 }
 
 // ── the invariant ───────────────────────────────────────────────────────────────────────
@@ -305,7 +330,7 @@ describe("the shape matrix — every op × sizing × asset × funding state", ()
           plansBy.asset.add(asset);
         }
       }
-    }, 60_000);
+    }, 120_000);
   });
 
   // 14 Sep: 1,880 plans and 51,040 refusals out of 52,920 cells.

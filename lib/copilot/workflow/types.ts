@@ -7,7 +7,7 @@ import type { Venue } from "../registry/assets";
  * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
  * `Record<WorkflowOp, …>` maps the compiler then demands.
  */
-export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "blend_withdraw", "swap", "remove_liquidity"] as const;
+export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "blend_withdraw", "swap", "remove_liquidity", "add_liquidity"] as const;
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
@@ -78,6 +78,19 @@ export const OP_FLOW = Object.freeze({
    * swap it spells its tokens the margin way and takes the DEX from the pair, not the row.
    */
   remove_liquidity:    { venue: "margin", from: "lp",      to: "account", positionRead: "farm_lp_position",   health: "neutral", rate: null },
+  /**
+   * The way INTO an LP position, and remove_liquidity's exact mirror: both of the pool's
+   * tokens leave the margin account and LP shares come back. Health-neutral for the same
+   * reason the exit is — the RiskEngine prices the LP receipt from the same oracle feeds as
+   * the tokens it replaces. Spends `account` because the tokens must already be in the
+   * margin account (a wallet balance is deposited first, exactly as a swap requires).
+   *
+   * `positionRead` is null: nothing about the CURRENT position sizes an entry. What it
+   * needs instead is the pool's live reserves, so the paired amount matches the ratio the
+   * pool will actually mint against — a different read, requested by the sizer, not by the
+   * op-flow table's position slot.
+   */
+  add_liquidity:       { venue: "margin", from: "account", to: "lp",      positionRead: null,                 health: "neutral", rate: null },
 } as const satisfies Record<WorkflowOp, OpFlow>);
 
 /** Ops whose every pocket is the G-wallet's: they never touch the margin account. */

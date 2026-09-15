@@ -26,6 +26,7 @@ const OP_MEANING: Record<WorkflowOp, string> = {
   blend_withdraw: "a Blend supply back out to the margin account; the way OUT of the Blend farm",
   swap: "one margin-account token for another through a DEX; carries assetOut (what you receive) and may carry venue",
   remove_liquidity: "an LP position back out to the margin account as both its tokens; the way OUT of an Aquarius or Soroswap pool",
+  add_liquidity: "both of a pool's tokens from the margin account INTO an Aquarius or Soroswap pool, minting LP shares; the way IN",
 };
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
@@ -94,6 +95,8 @@ a valid AMM add. That composition is a protocol fact, and the paired amount is D
 the ratio at execution time, not chosen. Never ask the user which side to deposit, whether
 to add the other side, or how much of the pair to use. The pool's tokens field states the
 pair. Slippage tolerance is a real user choice; the pair is not.
+add_liquidity is Aquarius only for now — this deployment has no live reserves read for
+Soroswap yet, so a Soroswap add_liquidity leg is refused rather than sized on a guess.
 When investigating borrowing to supply into Blend, inspect the same canonical asset's Earn
 borrow APR and Blend supply APR. APY minus APR is not a valid rate spread. The server compares
 reported simple APRs deterministically; a positive spread alone does not validate a strategy.
@@ -150,6 +153,10 @@ put that output amount in sizing.amount; report that exact-output swaps need an 
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
 SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.
+add_liquidity enters one: asset is whichever side the user stated an amount for (any sizing word — literal, all_idle,
+fraction — the same as any other leg), assetOut is REQUIRED and is the other side of the pair. Never state an amount
+for both sides or compute the paired amount yourself — the server derives it from the pool's live reserves. "Add 100
+XLM to the AQUSDC pool" is exactly {"op":"add_liquidity","asset":"XLM","assetOut":"AQUSDC","sizing":{"kind":"literal","amount":"100","sourceQuote":"Add 100 XLM to the AQUSDC pool"}}.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays

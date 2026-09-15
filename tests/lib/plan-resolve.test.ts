@@ -224,6 +224,109 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     });
   });
 
+  /**
+   * 15 Sep: the developer's own suggestion — fetch the pool's live reserves from Aquarius's
+   * public AMM API rather than trust the model's guess at a ratio, or the contract's own
+   * on-chain correction (Soroswap) where no such read exists yet. `asset` is whichever side
+   * the user stated an amount for, exactly the same "spent" convention swap uses; the other
+   * side and the LP-share floor are both derived from the pool's own reserves, never priced
+   * off an oracle.
+   */
+  describe("add_liquidity — Aquarius sizes the paired amount from live reserves, Soroswap is refused", () => {
+    // Reserves 1000 XLM / 200 AQUSDC (a 5:1 ratio), 100 total LP shares outstanding.
+    const RESERVES_OBS = obs("e7", "aquarius_pool_reserves",
+      { found: true, pool: { available: true, reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100" } },
+      { asset: "AQUSDC" });
+
+    it("sizes the paired AQUSDC amount and the LP-share floor off the pool's own reserves", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 xlm" } },
+        { op: "add_liquidity", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "previous_leg" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("Add XLM/AQUSDC liquidity", legs)], ctx({
+        messages: ["deposit 100 xlm and add it with AQUSDC to the aquarius pool"],
+        observations: [...OBSERVATIONS, RESERVES_OBS],
+      }));
+      expect(rejected).toEqual([]);
+      const c = candidates[0];
+      // 100 XLM x (200/1000) = 20 AQUSDC; LP shares 100 x (100/1000) = 10, floor at 0.5% slippage = 9.95.
+      expect(c.steps?.map((s) => [s.op, s.asset, s.amount, s.tool])).toEqual([
+        ["deposit_collateral", "XLM", "100", "vanna_deposit_collateral"],
+        ["add_liquidity", "XLM", "100", "vanna_add_liquidity"],
+      ]);
+      expect(c.steps?.[1].args).toEqual({
+        smart_account: SCOPE.smartAccount, token_a: "XLM", token_b: "AQUSDC",
+        amount_a: "100", amount_b: "20", min_liquidity_out: "9.95",
+        trader: SCOPE.trader, venue: "aquarius",
+      });
+      expect(c.steps?.[1].label).toBe("Add 100 XLM + 20 AQUSDC to the Aquarius pool");
+    });
+
+    /**
+     * The MCP's own tool takes token_a/amount_a as a pair — the amount must never be
+     * assigned to a different token than the one the user actually stated. A first pass at
+     * this always hardcoded token_a to "XLM", which mislabeled the amount whenever the user
+     * named the paired token instead (and collided token_b with token_a, since both would
+     * read "XLM"). Deposit AQUSDC here — the opposite order from the test above — to prove
+     * the fix, not just the common case.
+     */
+    it("keeps the stated token and its amount paired correctly when the paired asset is stated, not XLM", () => {
+      const fundedAqusdc = OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+        { symbol: "XLM", balance: "10206.8356118", status: "ok" }, { symbol: "XLM_SAC", balance: "10206.8356118", decimals: 7, status: "ok" },
+        { symbol: "AQUSDC", balance: "50.0000000", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" }));
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "AQUSDC", sizing: { kind: "literal", amount: "20", sourceQuote: "deposit 20 AQUSDC" } },
+        { op: "add_liquidity", asset: "AQUSDC", assetOut: "XLM", sizing: { kind: "previous_leg" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("Add AQUSDC/XLM liquidity", legs)], ctx({
+        messages: ["deposit 20 AQUSDC and add it with XLM to the aquarius pool"],
+        observations: [...fundedAqusdc, obs("e8", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), RESERVES_OBS],
+      }));
+      expect(rejected).toEqual([]);
+      // 20 AQUSDC x (1000/200) = 100 XLM; LP shares 20 x (100/200) = 10, floor at 0.5% slippage = 9.95.
+      expect(candidates[0]?.steps?.[1].args).toEqual({
+        smart_account: SCOPE.smartAccount, token_a: "AQUSDC", token_b: "XLM",
+        amount_a: "20", amount_b: "100", min_liquidity_out: "9.95",
+        trader: SCOPE.trader, venue: "aquarius",
+      });
+    });
+
+    it("refuses add_liquidity on Soroswap — no reserves read exists for it, so no floor can be set honestly", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "add_liquidity", asset: "XLM", assetOut: "SOUSDC", sizing: { kind: "literal", amount: "100", sourceQuote: "add 100 xlm" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("Add XLM/SOUSDC liquidity", legs)], ctx({ messages: ["add 100 xlm with SOUSDC to the pool"] }));
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toBe(
+        "add_liquidity on Soroswap is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available");
+    });
+
+    it("refuses an add_liquidity leg with no paired token named", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "add_liquidity", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "add 100 xlm to the pool" } },
+      ];
+      const { rejected } = resolvePlans([plan("Add liquidity", legs)], ctx({ messages: ["add 100 xlm to the pool"] }));
+      expect(rejected[0]?.reason).toBe("name the token XLM is paired with — AQUSDC for Aquarius");
+    });
+
+    it("refuses an add_liquidity leg paired with the same token", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "add_liquidity", asset: "XLM", assetOut: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "add 100 xlm to the pool" } },
+      ];
+      const { rejected } = resolvePlans([plan("Add liquidity", legs)], ctx({ messages: ["add 100 xlm to the pool"] }));
+      expect(rejected[0]?.reason).toBe("a pool needs two different tokens — XLM and XLM is the same token");
+    });
+
+    it("refuses Aquarius add_liquidity with no live reserves read this investigation", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "add_liquidity", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount: "100", sourceQuote: "add 100 xlm to AQUSDC pool" } },
+      ];
+      const { rejected } = resolvePlans([plan("Add liquidity", legs)], ctx({ messages: ["add 100 xlm to AQUSDC pool"] }));
+      expect(rejected[0]?.reason).toBe("no live aquarius pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio");
+    });
+  });
+
   it("honours a literal amount only when it is anchored to the user's words", () => {
     const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }];
     const ok = resolvePlans([plan("Lend 100 XLM", legs)], ctx({ messages: ["please lend 100 XLM to earn"] }));

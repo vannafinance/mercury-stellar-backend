@@ -55,6 +55,8 @@ const OP_RANK: Record<WorkflowOp, number> = {
   remove_liquidity: 0,
   // A swap converts what the account already holds, before anything is put to work with it.
   swap: 1,
+  // Entering a pool puts account tokens to work, so it ranks with the other deployments.
+  add_liquidity: 5,
 };
 
 export function compileProposal(input: {

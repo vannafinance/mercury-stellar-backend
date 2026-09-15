@@ -6,7 +6,7 @@
  */
 
 import type { MCPClient } from "../mcp-client";
-import { allAssets, ASSET_SYMBOL_PATTERN } from "../registry/assets";
+import { allAssets, ASSET_SYMBOL_PATTERN, poolVenueFor } from "../registry/assets";
 import { resolveRead } from "./capabilities";
 import { interruptible } from "./runtime";
 import { isRecord } from "./decision";
@@ -71,6 +71,14 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       }
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
       if (flow.to === "debt" && flow.positionRead) want(flow.positionRead);
+      /**
+       * Entering an Aquarius pool needs the pool's live reserves to size the paired
+       * amount against the real ratio — the model's own number is never trusted for it
+       * (Soroswap needs no read here: the contract corrects an imperfect ratio itself).
+       */
+      if (leg.op === "add_liquidity" && leg.assetOut && poolVenueFor(leg.asset, leg.assetOut) === "aquarius") {
+        want("aquarius_pool_reserves", leg.asset === "XLM" ? leg.assetOut : leg.asset);
+      }
       // A leg the account funds is checked against the account's balance, whatever its sizing word.
       if (flow.from === "account") want("account_collateral");
     }

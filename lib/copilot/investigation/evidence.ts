@@ -22,7 +22,7 @@ import type { ResearchCapacity } from "./view";
  * Prepare answered "no XLM Blend supply was read this investigation".
  */
 const KEEP = new Set<string>([
-  "wallet_balances", "asset_price", "earn_market", "blend_markets",
+  "wallet_balances", "asset_price", "earn_market", "blend_markets", "aquarius_pool_reserves",
   "account_position", "account_health",
   ...WORKFLOW_OPS.flatMap((op) => OP_FLOW[op].positionRead ? [OP_FLOW[op].positionRead as string] : []),
 ]);
