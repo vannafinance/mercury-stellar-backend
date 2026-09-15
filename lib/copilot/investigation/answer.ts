@@ -199,6 +199,8 @@ export function strategyReply(input: {
   findings?: ReadonlyArray<{ summary: string }>;
   originalRequest?: string;
   statedSteps?: ReadonlyArray<{ label: string }>;
+  /** Why the loop stopped, when it did — an `incomplete` turn reads differently for each. */
+  stopReason?: string | null;
 }): string {
   const top = input.candidates?.feasible[0];
   if (top) {
@@ -272,6 +274,21 @@ export function strategyReply(input: {
     return "I couldn’t complete this investigation with the available capabilities and information.";
   }
   if (input.status === "incomplete") {
+    /**
+     * Why it stopped changes what the user should do, so it changes the sentence. A
+     * cancelled run is not a failure and must not invite a blind retry — it is what a page
+     * reload or a second prompt does to the first one, and telling the user it "ran out of
+     * time, please try again" sent them to retry something that was never slow (15 Sep).
+     */
+    if (input.stopReason === "cancelled") {
+      return "This run was cancelled before it finished — a reload or a new prompt replaces the one in flight. Nothing was executed.";
+    }
+    if (input.stopReason === "deadline") {
+      return "The investigation ran out of time before it could finish. The completed reads are shown below; no strategy was executed.";
+    }
+    if (input.stopReason === "invalid_evidence" || input.stopReason === "invalid_decision") {
+      return "The investigation could not be completed from the reads it made. Nothing was executed — please try again.";
+    }
     return "The investigation stopped before it could finish. The completed reads are shown below; no strategy was executed.";
   }
   if (input.statedSteps?.length) {

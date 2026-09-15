@@ -1,4 +1,4 @@
-import { DEFAULT_SWAP_VENUE, lpVenues, resolveAssetDef } from "../registry/assets";
+import { DEFAULT_SWAP_VENUE, lpVenues, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { decimalWad } from "../investigation/fixed";
 import type { InvestigationScope } from "../investigation/types";
 import { OP_FLOW, WALLET_OPS, type ProposalStep, type WorkflowOp } from "./types";
@@ -9,6 +9,7 @@ export const TOOLS: Readonly<Record<WorkflowOp, string>> = Object.freeze({
   deposit_collateral: "vanna_deposit_collateral", withdraw_collateral: "vanna_withdraw_collateral",
   borrow: "vanna_borrow", repay: "vanna_repay", supply_blend: "vanna_blend_supply",
   blend_withdraw: "vanna_blend_withdraw", swap: "vanna_swap",
+  remove_liquidity: "vanna_remove_liquidity",
 });
 
 /**
@@ -21,13 +22,20 @@ export function writeArgsFor(
   symbol: string,
   amount: string,
   scope: Pick<InvestigationScope, "trader" | "smartAccount">,
-  extra?: { tokenOut?: string; venue?: string },
+  extra?: { tokenOut?: string; venue?: string; minOut?: string },
 ): Record<string, unknown> {
+  if (op === "remove_liquidity") {
+    // vanna_remove_liquidity(smart_account, token_a, token_b, liquidity, trader, venue)
+    return {
+      smart_account: scope.smartAccount, token_a: "XLM", token_b: symbol,
+      liquidity: amount, trader: scope.trader, venue: extra?.venue ?? "",
+    };
+  }
   if (op === "swap") {
-    // vanna_swap(smart_account, token_in, token_out, amount_in, trader, venue)
+    // vanna_swap(smart_account, token_in, token_out, amount_in, min_out, trader, venue)
     return {
       smart_account: scope.smartAccount, token_in: symbol, token_out: extra?.tokenOut ?? "",
-      amount_in: amount, trader: scope.trader, venue: extra?.venue ?? DEFAULT_SWAP_VENUE,
+      amount_in: amount, min_out: extra?.minOut ?? "", trader: scope.trader, venue: extra?.venue ?? DEFAULT_SWAP_VENUE,
     };
   }
   return WALLET_OPS.includes(op)
@@ -43,13 +51,24 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
   if (!asset || asset.id !== step.asset) throw new Error("invalid_write_asset");
   const symbol = WALLET_OPS.includes(step.op) ? asset.earnSymbol : asset.marginSymbol;
   if (!symbol || (OP_FLOW[step.op].venue === "blend" && !asset.blendReserve)) throw new Error("write_not_allowed");
-  // A swap names a second asset; it must be one the registry knows and the account accepts.
-  let extra: { tokenOut?: string; venue?: string } | undefined;
+  let extra: { tokenOut?: string; venue?: string; minOut?: string } | undefined;
+  // Leaving a pool names the venue that holds it; XLM is the other side of every pair.
+  if (step.op === "remove_liquidity") {
+    const venue = typeof step.args.venue === "string" ? step.args.venue : "";
+    if (asset.lpVenue !== venue || !poolVenueFor("XLM", asset.id)) throw new Error("write_not_allowed");
+    extra = { venue };
+  }
+  // A swap names a second asset; it must be one the registry knows and the account accepts,
+  // and it must carry the floor it will not accept less than — a swap with no floor at all
+  // is what left the propose-time preview unable to project anything but oracle parity.
   if (step.op === "swap") {
     const out = typeof step.args.token_out === "string" ? resolveAssetDef(step.args.token_out) : null;
     const venue = typeof step.args.venue === "string" ? step.args.venue : "";
-    if (!out?.marginSymbol || out.id === asset.id || !(lpVenues() as readonly string[]).includes(venue)) throw new Error("write_not_allowed");
-    extra = { tokenOut: out.marginSymbol, venue };
+    const minOut = typeof step.args.min_out === "string" ? step.args.min_out : "";
+    if (!out?.marginSymbol || out.id === asset.id || !(lpVenues() as readonly string[]).includes(venue) || decimalWad(minOut) <= BigInt(0)) {
+      throw new Error("write_not_allowed");
+    }
+    extra = { tokenOut: out.marginSymbol, venue, minOut };
   }
   const args = writeArgsFor(step.op, symbol, step.amount, scope, extra);
   if (!WALLET_OPS.includes(step.op) && !scope.smartAccount) throw new Error("write_not_allowed");

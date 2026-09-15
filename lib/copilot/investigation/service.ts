@@ -9,10 +9,10 @@ import { normalizeResearchFacts } from "./normalize";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, statedFloorFrom } from "./floor";
-import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
+import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { planCandidateId, planFromStatedActions, resolvePlans } from "./plan";
+import { planCandidateId, planFromStatedActions, resolvePlans, withBoughtAsset } from "./plan";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -385,6 +385,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   logPhase("loop", {
     ms: Date.now() - loopStarted,
     outcome: result.outcome.kind,
+    // WHY it stopped is the whole diagnosis — "stopped" alone sent a live 15 Sep failure
+    // ("deploy my XLM in farm") to the generic timeout copy while the loop had actually
+    // ended after one model turn and no tool calls at all.
+    ...(result.outcome.kind === "stopped" ? { reason: result.outcome.reason } : {}),
     modelTurns: result.usage.modelTurns,
     toolCalls: result.usage.toolCalls,
     loopElapsedMs: result.usage.elapsedMs,
@@ -537,7 +541,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
    * from "option discarded".
    */
-  const modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
+  let modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
   /**
    * A stated write ("lend 1 xlm to earn") the model nominated as `goal.actions` is a plan
    * of literal legs, and goes through the same sizer as every other plan: the reads it
@@ -548,6 +552,12 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const statedPlan = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
     ? planFromStatedActions(outcome.goal.actions, outcome.goal.objective) : null;
   if (statedPlan) modelPlans.push(statedPlan);
+  /**
+   * A swap that did not say what it buys is completed from the user's sentence here, before
+   * the reads are chosen and before the evidence is sealed, so the reads phase, the sizer,
+   * the card and the sealed plan all see the same leg.
+   */
+  modelPlans = withBoughtAsset(modelPlans, messages);
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
     warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
   }
@@ -582,10 +592,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages);
   /**
-   * Plans size on the reconciled basis — the contract's figures once the app agrees — the
-   * same rule headroom uses, so a plan can never quietly borrow against the Margin page's
-   * more generous number. A disagreement is carried into the context: deposits still
-   * size, borrows are refused with both figures.
+   * Plans size from the contract's figures always — the one number that liquidates you
+   * (`grossCollateralUsd`/`debtUsd` here are `computeSizingBasis`'s contract basis
+   * regardless of `issue`). An account holding any unposted balance or LP receipt
+   * disagrees with the Margin page PERMANENTLY by design (the app counts everything held,
+   * the contract counts only what is posted), so a plan no longer refuses on the
+   * disagreement itself — only when the contract read that IS the basis could not be made
+   * (`sizing_contract_unavailable`; see plan.ts). The gap becomes information instead: the
+   * unposted amount, named plainly, rather than a reason nothing can be sized.
    */
   let planPosition: import("./plan").PlanContext["capacity"] = null;
   if (scope.smartAccount && outcome.kind === "research_complete" && modelPlans.length) {
@@ -596,7 +610,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           grossCollateralUsd: basis.grossCollateralUsd, debtUsd: basis.debtUsd, floor: statedFloor,
           issue: basis.issue ? { reason: basis.issue, app: basis.app, contract: basis.contract } : null,
         };
-        if (basis.issue === "sizing_sources_disagree" && !warnings.includes(SIZING_SOURCES_DISAGREE_WARNING)) warnings.push(SIZING_SOURCES_DISAGREE_WARNING);
+        if (basis.issue === "sizing_sources_disagree") {
+          const note = unpostedCollateralNote(basis.app, basis.contract ?? basis.app);
+          if (note && !warnings.includes(note)) warnings.push(note);
+        }
       }
     } catch (error) {
       console.warn("[copilot] investigation sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
@@ -673,6 +690,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
     originalRequest: messages[0],
     statedSteps: requestedSteps,
+    stopReason: outcome.kind === "stopped" ? outcome.reason : null,
   });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
@@ -699,7 +717,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   }
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
-    proposalCandidateId: requestedSteps.length ? REQUESTED_ACTIONS_ID : candidates?.feasible[0]?.id ?? null,
+    /**
+     * A nomination means "there is one unambiguous thing to prepare", not "here is the
+     * first row". The client auto-proposes whatever is nominated, and with session signing
+     * on it then auto-approves and broadcasts — so nominating `feasible[0]` out of several
+     * competing strategies executed a financial choice the user never made (15 Sep, S4:
+     * two options offered, the first one signed and sent before it could be read).
+     * Delegated signing is consent to skip the wallet popup, not consent to pick the
+     * strategy. With more than one option the choice stays the user's.
+     */
+    proposalCandidateId: requestedSteps.length ? REQUESTED_ACTIONS_ID
+      : candidates?.feasible.length === 1 ? candidates.feasible[0].id : null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
     understanding: outcome.kind === "research_complete" ? outcome.goal

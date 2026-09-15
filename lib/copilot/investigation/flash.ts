@@ -25,6 +25,7 @@ const OP_MEANING: Record<WorkflowOp, string> = {
   supply_blend: "margin-account token into Blend",
   blend_withdraw: "a Blend supply back out to the margin account; the way OUT of the Blend farm",
   swap: "one margin-account token for another through a DEX; carries assetOut (what you receive) and may carry venue",
+  remove_liquidity: "an LP position back out to the margin account as both its tokens; the way OUT of an Aquarius or Soroswap pool",
 };
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
@@ -137,6 +138,8 @@ A swap leg is the ONLY leg with two assets: asset is what it SPENDS, assetOut is
 optional on a swap — a swap without it is dropped. "swap 10 XLM to BLUSDC" is exactly:
   {"op":"swap","asset":"XLM","assetOut":"BLUSDC","sizing":{"kind":"literal","amount":"10","sourceQuote":"swap 10 XLM to BLUSDC"}}
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
+remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
+SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited
 (deposit_collateral, previous_leg). all_position on a withdraw is the posted collateral; on a repay, the debt.
 Use borrow only when the user allowed or required it AND stated a floor above 1.1. A borrow-to-supply shape only pays

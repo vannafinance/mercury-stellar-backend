@@ -1,4 +1,4 @@
-import { allAssets } from "../registry/assets";
+import { allAssets, resolveAssetDef } from "../registry/assets";
 import type { InvestigationScope, ReadCapability, ReadCost } from "./types";
 
 /**
@@ -28,6 +28,7 @@ const earnAssets = assets.filter((asset) => asset.earnSymbol).map((asset) => ass
 const priceAssets = assets.map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
+const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
 
 function requireAsset(id: unknown) {
   const asset = assets.find((entry) => entry.id === id);
@@ -203,8 +204,20 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "farm_lp_position", tool: "vanna_get_farm_lp_position", scope: "account", cost: "expensive",
-    description: "The user's Aquarius/Soroswap LP farm position. Use when they ask about LP or a named pair they hold, not for pool discovery (aquarius_markets).",
-    modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
+    description: "The user's Aquarius/Soroswap LP farm position for one pair, named by the token XLM is paired with. Use when they ask about LP or a named pair they hold, not for pool discovery (aquarius_markets).",
+    modelArgs: { asset: { type: "enum", values: lpAssets } },
+    /**
+     * Each LP venue pairs XLM with its own token, so naming that token fixes the pair AND
+     * the venue. Without it the tool reads its own defaults (Aquarius XLM/USDC) and a
+     * Soroswap position would come back empty.
+     */
+    bind: (args, scope) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return {
+        smart_account: scope.smartAccount,
+        ...(def?.lpVenue ? { token_a: "XLM", token_b: def.marginSymbol ?? def.id, venue: def.lpVenue } : {}),
+      };
+    },
   },
   {
     name: "lp_balance", tool: "vanna_get_lp_balance", scope: "account", cost: "expensive",

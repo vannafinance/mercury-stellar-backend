@@ -7,7 +7,7 @@ import type { Venue } from "../registry/assets";
  * prompt's vocabulary) is derived from it, so adding an op is one edit here plus the
  * `Record<WorkflowOp, …>` maps the compiler then demands.
  */
-export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "blend_withdraw", "swap"] as const;
+export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_collateral", "borrow", "repay", "supply_blend", "blend_withdraw", "swap", "remove_liquidity"] as const;
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
@@ -30,7 +30,7 @@ export interface OpFlow {
   /** Where they land. `debt` means the debt shrinks; `earn` / `blend` mean a position grows. */
   to: Pocket;
   /** The read whose row states the whole of what the op draws on — what "all of it" and "a share of it" size from. */
-  positionRead: "earn_position" | "account_collateral" | "account_debt" | "blend_position" | null;
+  positionRead: "earn_position" | "account_collateral" | "account_debt" | "blend_position" | "farm_lp_position" | null;
   /**
    * How the margin account's health moves. `lowers` is what the user's floor guards;
    * `neutral` legs are not sizer legs. A Blend supply is neutral because the RiskEngine
@@ -71,6 +71,13 @@ export const OP_FLOW = Object.freeze({
    * collateral, because that would quietly drop the account's backing.
    */
   swap:                { venue: "margin", from: "account", to: "account", positionRead: "account_collateral", health: "neutral", rate: null },
+  /**
+   * The way out of an LP position: the pool's shares burn and BOTH underlying tokens come
+   * back to the margin account. Health-neutral — the RiskEngine values the LP receipt from
+   * the same oracle prices as the tokens it returns (`LpAquarius` / `LpSoroswap`). Like a
+   * swap it spells its tokens the margin way and takes the DEX from the pair, not the row.
+   */
+  remove_liquidity:    { venue: "margin", from: "lp",      to: "account", positionRead: "farm_lp_position",   health: "neutral", rate: null },
 } as const satisfies Record<WorkflowOp, OpFlow>);
 
 /** Ops whose every pocket is the G-wallet's: they never touch the margin account. */

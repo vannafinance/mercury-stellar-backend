@@ -2654,7 +2654,16 @@ export function CopilotWorkspace() {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
     if (view.status !== "researched" || view.question) return;
-    const candidateId = view.proposalCandidateId ?? view.candidates?.feasible[0]?.id;
+    /**
+     * Only what the server NOMINATED is prepared without a click. It nominates a candidate
+     * only when there is exactly one — several competing strategies are the user's choice
+     * to make, and this effect feeds the auto-approve effect below, which with session
+     * signing on signs and broadcasts (15 Sep, S4: the first of two options was executed
+     * before it could be read). The `?? feasible[0]` fallback that used to sit here
+     * re-nominated exactly what the server had declined to, which is why the server-side
+     * rule alone did nothing.
+     */
+    const candidateId = view.proposalCandidateId;
     if (!candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
     const proposeKey = `${view.continuation}:${candidateId}`;

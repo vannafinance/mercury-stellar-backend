@@ -116,6 +116,40 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(bad.rejected[0]).toEqual({ title: "Lend 100 XLM", leg: "lend XLM", reason: "the amount 100 does not appear in your request" });
   });
 
+  /**
+   * A number in someone's words is not always a quantity of tokens. 15 Sep, live: "borrow
+   * 2x aqusdc" was executed as a 2 AQUSDC borrow because the anchor compared raw digit
+   * substrings, and "remove 10k xlm" was refused because `10000` is not the substring `10`.
+   */
+  it("reads a scale suffix as the quantity people mean by it", () => {
+    const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "10000", sourceQuote: "lend 10k xlm" } }];
+    const { candidates, rejected } = resolvePlans([plan("Lend 10k XLM", legs)], ctx({ messages: ["lend 10k xlm to earn"] }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.[0]).toMatchObject({ op: "lend", amount: "10000" });
+  });
+
+  it("refuses to read a leverage factor as a token amount", () => {
+    const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "2", sourceQuote: "lend 2x xlm" } }];
+    const { candidates, rejected } = resolvePlans([plan("Lend 2 XLM", legs)], ctx({ messages: ["lend 2x xlm"] }));
+    expect(candidates).toEqual([]);
+    expect(rejected[0]?.reason).toBe("the amount 2 does not appear in your request");
+  });
+
+  it("refuses to read a health-factor floor as a token amount", () => {
+    const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "1.4", sourceQuote: "keep HF above 1.4" } }];
+    const { candidates, rejected } = resolvePlans([plan("Lend 1.4 XLM", legs)], ctx({ messages: ["lend my xlm, keep HF above 1.4"] }));
+    expect(candidates).toEqual([]);
+    expect(rejected[0]?.reason).toBe("the amount 1.4 does not appear in your request");
+  });
+
+  it("still reads an amount written against its own symbol", () => {
+    // "100xlm" — the leverage test stops at a letter boundary, so this stays an amount.
+    const legs: ProposedPlan["legs"] = [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100xlm" } }];
+    const { candidates, rejected } = resolvePlans([plan("Lend 100 XLM", legs)], ctx({ messages: ["lend 100xlm to earn"] }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.[0]).toMatchObject({ op: "lend", amount: "100" });
+  });
+
   it("accepts a literal Blend supply covered by the deposit before it (13 Sep: 'deposit 10000 XLM … deploy it in the Blend farm')", () => {
     const legs: ProposedPlan["legs"] = [
       { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10000", sourceQuote: "Deposit 10000 XLM" } },
@@ -650,12 +684,29 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(candidates).toHaveLength(1);
   });
 
-  it("refuses a withdraw while the sizing sources disagree — it lowers health like a borrow", () => {
-    const { rejected } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({
+  /**
+   * A disagreement is not a missing basis. The app counts everything the account holds and
+   * the contract counts only what is posted, so any account with an unposted token or an LP
+   * receipt disagrees permanently — and the sizer is already using the contract's figures,
+   * the ones that liquidate you. Refusing on top of that blocked every withdraw and borrow
+   * on the live account while protecting nothing (15 Sep). Only a missing CONTRACT basis
+   * still refuses.
+   */
+  it("sizes a withdraw while the sizing sources merely disagree — the contract's figures are the basis either way", () => {
+    const { candidates, rejected } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({
       observations: withEarn,
       capacity: { ...CAPACITY, issue: { reason: "sizing_sources_disagree", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: { grossCollateralUsd: "1", debtUsd: "1" } } },
     }));
-    expect(rejected[0].reason).toMatch(/disagree on your position, so nothing that lowers health is sized/);
+    expect(rejected).toEqual([]);
+    expect(candidates[0].steps![0]).toMatchObject({ op: "withdraw_collateral" });
+  });
+
+  it("refuses a withdraw when the contract basis itself could not be read — nothing authoritative to size from", () => {
+    const { rejected } = resolvePlans([plan("Take XLM out", [{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({
+      observations: withEarn,
+      capacity: { ...CAPACITY, issue: { reason: "sizing_contract_unavailable", app: { grossCollateralUsd: "1", debtUsd: "1" }, contract: null } },
+    }));
+    expect(rejected[0].reason).toMatch(/could not be confirmed against the liquidation engine/);
   });
 
   it("repays the whole debt of an asset from the debt read — funded through the account, so deposit then repay", () => {

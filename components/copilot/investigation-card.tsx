@@ -186,7 +186,15 @@ export function InvestigationCard({
             </p>
           )}
 
-          {result && (
+          {/*
+            * While the next turn is running, `result` is still the PREVIOUS turn's — the
+            * hook keeps it deliberately so the column does not go blank. Rendering it here
+            * put the last reply on screen twice: clamped in the thread above, and again in
+            * full BELOW the question just asked, where it reads as the answer to it. The
+            * thread already carries it, so during a run the answer area stays empty and the
+            * spinner is the only thing under the new question.
+            */}
+          {result && !(loading && !workflow) && (
             <article aria-label="Copilot reply" className={`space-y-5${priorTurns.length ? " border-t border-vgray-100 pt-5" : ""}`}>
               {/* The reply, then what was understood — the one line the user needs, not a list of reads. */}
               <div className="max-w-[68ch]">

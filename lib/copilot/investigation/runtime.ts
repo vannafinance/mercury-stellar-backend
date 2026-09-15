@@ -318,12 +318,25 @@ export async function runInvestigation(
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
-        const valid = decision.findings.every((finding) => finding.evidenceIds.every((id) => {
-          const observation = evidence.get(id);
-          const age = observation ? now() - observation.observedAt : -1;
-          return observation?.status === "ok" && age >= 0 && age <= limits.maxEvidenceAgeMs;
-        }));
-        return valid ? finish(decision) : finish({ kind: "stopped", reason: "invalid_evidence" });
+        /**
+         * Which id failed and why. The sibling `invalid_decision` path has said so since it
+         * was written; this one discarded a whole investigation in silence, so a live stop
+         * (15 Sep, "deploy my XLM in farm") reached the user as a bare "stopped before it
+         * could finish" with nothing in the log to reason from.
+         */
+        const rejects: string[] = [];
+        for (const finding of decision.findings) {
+          for (const id of finding.evidenceIds) {
+            const observation = evidence.get(id);
+            const age = observation ? now() - observation.observedAt : -1;
+            if (!observation) rejects.push(`${id}: no such observation`);
+            else if (observation.status !== "ok") rejects.push(`${id}: ${observation.capability} was ${observation.status}`);
+            else if (!(age >= 0 && age <= limits.maxEvidenceAgeMs)) rejects.push(`${id}: ${age}ms old`);
+          }
+        }
+        if (!rejects.length) return finish(decision);
+        console.warn("[copilot] investigation evidence refused", { turn: modelTurns, rejects: rejects.slice(0, 8) });
+        return finish({ kind: "stopped", reason: "invalid_evidence" });
       }
       if (decision.kind !== "inspect") return finish(decision);
       if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });

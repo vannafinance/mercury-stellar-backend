@@ -171,7 +171,15 @@ describe("model proposes, code disposes — end to end", () => {
     expect(view.message).toMatch(/^(Move idle XLM into Blend[^:]*): deposit .* XLM as collateral, then supply .* to Blend/);
     expect(view.message).toMatch(/Health factor after this would be/);
     expect(view.warnings).not.toContainEqual(expect.stringMatching(/no supported display fields|some entries were unavailable/));
-    expect(view.proposalCandidateId).toBe(feasible[0].id);
+    /**
+     * Several options are offered here, so NOTHING is nominated: the client prepares only
+     * what the server nominates, and with session signing on that path signs and broadcasts.
+     * Nominating `feasible[0]` executed the first of several competing strategies before the
+     * user could read them (15 Sep, S4). Delegated signing is consent to skip the wallet
+     * popup, not consent to choose the strategy.
+     */
+    expect(feasible.length).toBeGreaterThan(1);
+    expect(view.proposalCandidateId).toBeNull();
   });
 
   it("compiles the clicked composed option from the sealed evidence, with no model turn and no re-read", async () => {
@@ -342,7 +350,7 @@ describe("model proposes, code disposes — end to end", () => {
     expect(mcp.call.mock.calls.map((c) => c[0])).toContain("vanna_get_debt");
   });
 
-  it("when the Margin page and the liquidation engine disagree, sizes the deposit but refuses the borrow with both figures", async () => {
+  it("when the Margin page and the liquidation engine disagree, sizes BOTH from the contract and names the unposted gap", async () => {
     // 13 Sep live: app $6,605.84 / $5,102.54 vs contract $6,457.32 / $5,110.67 — past the drift band.
     harness.computeSizingBasis.mockResolvedValue({
       grossCollateralUsd: "6457.32", debtUsd: "5110.67", source: "contract", issue: "sizing_sources_disagree",
@@ -362,12 +370,17 @@ describe("model proposes, code disposes — end to end", () => {
     expect(deposit).toBeTruthy();
     // Projected on the contract's figures, not the page's: (6457.32 + 1837.14) / 5110.67.
     expect(Number(deposit!.finalHealthFactor)).toBeCloseTo(1.6229, 3);
-    expect(view.candidates?.feasible.map((c) => c.id)).not.toContain("composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
-    expect(view.candidates?.rejected).toContainEqual(expect.objectContaining({
-      label: "Move idle XLM into Blend, then lever to the floor",
-      reason: expect.stringMatching(/^borrow XLM: the Margin page and the liquidation engine disagree on your position \(collateral \$6605\.84 vs \$6457\.32, debt \$5102\.54 vs \$5110\.67\)/),
-    }));
-    expect(view.warnings).toContainEqual(expect.stringMatching(/Margin page snapshot and the contract liquidation snapshot disagree/));
+    /**
+     * The disagreement no longer refuses the borrow: the app counts what the account holds
+     * and the contract counts what is posted, so they disagree permanently on any account
+     * with an unposted token — and the sizer is on the contract's figures either way. The
+     * levered option is offered, projected to the stated 1.2 floor on those figures.
+     */
+    const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
+    expect(levered).toBeTruthy();
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.2, 3);
+    // The gap is stated as what it is — $6,605.84 − $6,457.32 of unposted collateral.
+    expect(view.warnings).toContainEqual(expect.stringMatching(/^\$148\.52 in your account is not posted as collateral/));
   });
 
   it("refuses a composed id the investigation never sealed", async () => {

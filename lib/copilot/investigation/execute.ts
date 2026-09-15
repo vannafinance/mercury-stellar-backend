@@ -170,7 +170,7 @@ export async function advanceWorkflow(input: {
    * carries its hash. Such an envelope is a rejection with a reason, and the reason is
    * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
    */
-  const rejection = preBroadcastRejection(build, hash);
+  const rejection = preBroadcastRejection(build, hash, step);
   if (rejection) {
     console.warn("[copilot] write rejected before broadcast", { tool: invocation.tool, error: build.error, code: build.code, reason: build.reason, message: rejection.slice(0, 300) });
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: rejection }));
@@ -202,12 +202,33 @@ export async function advanceWorkflow(input: {
 }
 
 /** The MCP's own message when its envelope proves nothing was broadcast; null otherwise. */
-export function preBroadcastRejection(build: Record<string, unknown>, hash: string | null): string | null {
+export function preBroadcastRejection(
+  build: Record<string, unknown>,
+  hash: string | null,
+  step?: { op?: string; args?: Record<string, unknown> },
+): string | null {
   if (hash || typeof build.error !== "string" || !build.error) return null;
   const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
-  return `Not submitted — the protocol rejected this step before broadcast: ${message}`;
+  const note = swapFloorNote(step, message);
+  return `Not submitted — the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+}
+
+/**
+ * A swap carries a floor (`min_out`) the DEX must meet or the call reverts, and the raw
+ * revert is a bare contract code — "HostError #2006" told the user nothing (15 Sep, live).
+ * The floor is the one thing about that failure we can state as fact, so it is named, and
+ * the likeliest reading of it is offered AS a reading, not as a diagnosis: the error codes
+ * belong to the DEX's own contract, not to Vanna's, so their meanings are not ours to
+ * assert. No rate is quoted — the protocol exposes no pool quote to compare against.
+ */
+function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
+  if (step?.op !== "swap") return null;
+  const floor = typeof step.args?.min_out === "string" ? step.args.min_out : null;
+  const bought = typeof step.args?.token_out === "string" ? step.args.token_out : null;
+  if (!floor || !bought || !/contract|hosterror|simulation/i.test(message)) return null;
+  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here — the code itself belongs to the DEX's contract, so it is not proof.`;
 }
 
 export async function confirmWorkflow(input: {

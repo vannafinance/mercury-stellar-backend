@@ -43,13 +43,14 @@ interface World {
   wallet: (typeof WALLET_STATES)[number];
   earnPosition: boolean;
   blendPosition: boolean;
+  lpPosition: boolean;
   collateral: boolean;
   debt: boolean;
   account: (typeof ACCOUNT_STATES)[number];
 }
 const WORLDS: World[] = WALLET_STATES.flatMap((wallet) => [false, true].flatMap((earnPosition) =>
-  [false, true].flatMap((blendPosition) => [false, true].flatMap((collateral) => [false, true].flatMap((debt) =>
-    ACCOUNT_STATES.map((account) => ({ wallet, earnPosition, blendPosition, collateral, debt, account })))))));
+  [false, true].flatMap((blendPosition) => [false, true].flatMap((lpPosition) => [false, true].flatMap((collateral) => [false, true].flatMap((debt) =>
+    ACCOUNT_STATES.map((account) => ({ wallet, earnPosition, blendPosition, lpPosition, collateral, debt, account }))))))));
 
 /** A price per oracle feed — the registry says which feed prices each asset. */
 const FEED_PRICE = { XLM: "0.18", USDC: "1", AQUA: "0.002", EURC: "1.1" } as const;
@@ -58,6 +59,7 @@ const DUST = "0.01";          // worth less than the 0.5 XLM fee reserve at any 
 const POSTED = "800";         // tokens posted as collateral
 const OWED = "300";           // tokens owed
 const BLEND_SUPPLIED = "600";                 // what the account has sitting in the Blend farm
+const LP_SHARES = "50";                       // LP shares held in the pair XLM is paired with
 const VTOKENS = "500", UNDERLYING = "510.5"; // the Earn position, as the vToken read states it
 
 const obs = (id: string, capability: string, data: Record<string, unknown>, args: Record<string, unknown> = {}): Observation =>
@@ -88,6 +90,11 @@ function observations(asset: AssetId, world: World): Observation[] {
   if (world.blendPosition && def.blendReserve) {
     rows.push(obs("bp", "blend_position", { positions: [{ venue: "blend", symbol: def.marginSymbol, underlying_value: BLEND_SUPPLIED }] }));
   }
+  if (world.lpPosition && def.lpVenue) {
+    rows.push(obs("lp", "farm_lp_position", {
+      venue: def.lpVenue, token_a: "XLM", token_b: def.marginSymbol, lp_shares_human: LP_SHARES, lp_shares_raw: "500000000", decimals: 7,
+    }, { asset }));
+  }
   if (world.account !== "none") {
     rows.push(obs("ac", "account_collateral", { collateral: world.collateral && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: POSTED }] : [] }));
     rows.push(obs("ad", "account_debt", { debt: world.debt && def.marginSymbol ? [{ symbol: def.marginSymbol, balance: OWED }] : [] }));
@@ -98,7 +105,7 @@ function observations(asset: AssetId, world: World): Observation[] {
 /** One world is read once; only the user's words differ from cell to cell. */
 const worlds = new Map<string, Omit<PlanContext, "messages">>();
 function context(asset: AssetId, world: World, messages: string[]): PlanContext {
-  const key = `${asset}|${world.wallet}|${world.earnPosition}|${world.blendPosition}|${world.collateral}|${world.debt}|${world.account}`;
+  const key = `${asset}|${world.wallet}|${world.earnPosition}|${world.blendPosition}|${world.lpPosition}|${world.collateral}|${world.debt}|${world.account}`;
   let base = worlds.get(key);
   if (!base) {
     const rows = observations(asset, world);
@@ -201,7 +208,7 @@ function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
     wallet: spendable,
     earn: world.earnPosition ? decimalWad(VTOKENS) : BigInt(0),
     blend: world.blendPosition && resolveAssetDef(asset)!.blendReserve ? decimalWad(BLEND_SUPPLIED) : BigInt(0),
-    lp: BigInt(0),
+    lp: world.lpPosition && resolveAssetDef(asset)!.lpVenue ? decimalWad(LP_SHARES) : BigInt(0),
     account: world.account !== "none" && world.collateral ? decimalWad(POSTED) : BigInt(0),
     debt: world.account !== "none" && world.debt ? decimalWad(OWED) : BigInt(0),
   };
@@ -210,7 +217,7 @@ function pockets(asset: AssetId, world: World): Record<Pocket, bigint> {
 function checkCell(asset: AssetId, world: World, cell: Cell): "plan" | "refusal" {
   const ctx = context(asset, world, [`${cell.said} — ${cell.title}`]);
   const plan: ProposedPlan = { title: cell.title, rationale: "matrix", evidenceIds: ["w"], legs: cell.legs };
-  const label = `${cell.title} | wallet=${world.wallet} earn=${world.earnPosition} blend=${world.blendPosition} coll=${world.collateral} debt=${world.debt} account=${world.account}`;
+  const label = `${cell.title} | wallet=${world.wallet} earn=${world.earnPosition} blend=${world.blendPosition} lp=${world.lpPosition} coll=${world.collateral} debt=${world.debt} account=${world.account}`;
   const { candidates, rejected } = resolvePlans([plan], ctx);
   expect(candidates.length + rejected.length, label).toBe(1);
 

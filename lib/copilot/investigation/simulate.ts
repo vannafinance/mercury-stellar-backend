@@ -83,8 +83,21 @@ export function dependsOnEarlier(steps: readonly ProposalStep[], index: number):
   });
 }
 
+/**
+ * A swap's args carry no `symbol`/`amount` at all — `writeArgsFor` built them as
+ * `token_in`/`amount_in` (plus `token_out`/`min_out`), since a swap moves two assets, not
+ * one. Sourcing the spent side from the op's own argument shape here, and passing the
+ * SAME `min_out` the write carries, is what lets `vanna_preview_margin`'s swap branch
+ * (PR #6) project the exact trade that gets signed rather than a different one.
+ */
 function previewArgs(step: ProposalStep, scope: Pick<InvestigationScope, "trader" | "smartAccount">): Record<string, unknown> {
-  const base = { symbol: String(step.args.symbol), amount: step.amount, operation: operationOf(step.op) };
+  const base = step.op === "swap"
+    ? {
+        symbol: String(step.args.token_in), amount: String(step.args.amount_in), operation: operationOf(step.op),
+        token_out: String(step.args.token_out),
+        ...(typeof step.args.min_out === "string" && step.args.min_out ? { min_out: step.args.min_out } : {}),
+      }
+    : { symbol: String(step.args.symbol), amount: step.amount, operation: operationOf(step.op) };
   return OP_FLOW[step.op].venue === "earn"
     ? { ...base, holder: scope.trader }
     : { ...base, smart_account: scope.smartAccount };
