@@ -4,6 +4,7 @@ import { validateWorkflowRisk } from "@/lib/copilot/workflow/risk";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
 import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
 import { compactResearchEvidence } from "@/lib/copilot/investigation/evidence";
+import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { candidateId, REQUESTED_ACTIONS_ID } from "@/lib/copilot/investigation/candidate-id";
 import { researchCodec } from "@/lib/copilot/investigation/continuation";
 import type { Observation } from "@/lib/copilot/investigation/types";
@@ -176,6 +177,50 @@ describe("proposeWorkflow evidence reuse", () => {
     expect(harness.computeSizingBasis).toHaveBeenCalledTimes(1);
     expect(view.status).toBe("proposed");
     expect(view.steps.map((step) => step.op)).toEqual(["borrow", "supply_blend"]);
+  });
+
+  /**
+   * The world-read and the app snapshot are independent MCP round trips. Running them one
+   * after another stacked their bounds — up to 15s each — on top of scope resolution, which
+   * on a cold cache pushed a stale propose past the browser's 90s budget (15 Sep, D4). A
+   * timing assertion is the only proof that they now overlap rather than merely that the
+   * result is unchanged: both are delayed by the same amount, and the whole call must still
+   * finish in less than their sum.
+   */
+  it("reads the world and the app snapshot together, not one after another", async () => {
+    const DELAY_MS = 60;
+    harness.computeSizingBasis.mockResolvedValue({
+      grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, source: "contract", issue: null,
+      app: { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd },
+      contract: { grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd },
+    });
+    vi.mocked(computeMarginSnapshot).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+      // Matches the shape the module-level mock above returns; that one is inferred loosely
+      // inside the vi.mock factory, this call is against the real signature.
+      return { grossCollateralValue: 4219.36, totalBorrowedValue: 1736.19 } as unknown as Awaited<ReturnType<typeof computeMarginSnapshot>>;
+    });
+    const mcp = {
+      call: vi.fn(async (tool: string) => {
+        await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+        if (tool === "vanna_get_wallet_balance") return { assets: [{ symbol: "AQUSDC", balance: "680" }] };
+        if (tool === "vanna_get_price") return { price_usd: "1" };
+        if (tool === "vanna_get_pool_stats") return { supply_apr_pct: "2", borrow_apr_pct: "4", utilization_pct: "60" };
+        if (tool === "vanna_list_blend_reserves") {
+          return { reserves: [{ venue: "blend", symbol: "USDC", supply_apr_pct: "10", borrow_apr_pct: "12", utilization_pct: "90" }] };
+        }
+        throw new Error(`unexpected ${tool}`);
+      }),
+    };
+    const startedAt = Date.now();
+    const view = await proposeWorkflow({
+      continuation: continuation(NOW - 61_000), candidateId: candidateId("borrow_supply", "BLUSDC"),
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp, signal: new AbortController().signal, now: NOW,
+    });
+    // Sequential would be at least 2 x DELAY_MS for these two legs alone; parallel is ~1 x.
+    expect(Date.now() - startedAt).toBeLessThan(DELAY_MS * 2);
+    expect(view.status).toBe("proposed");
   });
 });
 

@@ -118,9 +118,18 @@ export async function proposeWorkflow(input: {
    * without them the plan re-resolves as "no XLM debt was read" and the card says the
    * option "is no longer available" (13 Sep, one minute after it was offered).
    */
-  const observations = reused
-    ? prior.evidence!.observations
-    : await collectStrategyReads(scope, input.mcp, input.signal, now,
+  /**
+   * The world-read and the app snapshot are independent MCP round trips — neither's result
+   * feeds the other — so a stale propose ran them one after another for no reason: up to
+   * 15s for the reads, THEN up to another 15s for the snapshot, on top of whatever the
+   * scope re-resolution above already cost. On a cold cache (five minutes of reading the
+   * card is all it takes — the scope cache and the evidence freshness window both lapse
+   * together) that sequential stack was most of what pushed a propose past the browser's
+   * 90s budget (15 Sep, D4). Running them together does not change what either reads.
+   */
+  const observationsTask = reused
+    ? Promise.resolve(prior.evidence!.observations)
+    : collectStrategyReads(scope, input.mcp, input.signal, now,
         sealedPlan ? [...STRATEGY_READS, ...readsForPlans([sealedPlan], [], now).filter((r) => !STRATEGY_READS.some((s) => s.capability === r.capability && JSON.stringify(s.args) === JSON.stringify(r.args)))] : STRATEGY_READS);
   /**
    * On a stale bundle the floor is the one sealed at investigation (model-anchored to the
@@ -133,16 +142,21 @@ export async function proposeWorkflow(input: {
    * shapes and the position for a composed plan both derive from it; nothing is read twice.
    * Reading it twice, unbounded, took a propose past the browser's 90s (13 Sep).
    */
+  const appTask = !reused && scope.smartAccount
+    ? interruptible(() => computeMarginSnapshot(scope.smartAccount!), AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]))
+      .catch((error) => {
+        console.warn("[copilot] propose app snapshot unavailable", { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
+        return null;
+      })
+    : Promise.resolve(null);
+  const [observations, app] = await Promise.all([observationsTask, appTask]);
   let liveBasis: SizingBasis | null = null;
   if (!reused && scope.smartAccount) {
-    let app: Awaited<ReturnType<typeof computeMarginSnapshot>> | null = null;
     try {
-      app = await interruptible(() => computeMarginSnapshot(scope.smartAccount!), AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
-    } catch (error) {
-      console.warn("[copilot] propose app snapshot unavailable", { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
-    }
-    try {
-      liveBasis = await computeSizingBasis(scope.smartAccount, null, { mcp: input.mcp, trader: scope.trader, app }, input.signal);
+      // Bounded like the two reads above it: an unbounded contract read here rode on
+      // whatever the client's 90s had left, with nothing local to degrade to on a stall.
+      liveBasis = await computeSizingBasis(scope.smartAccount, null, { mcp: input.mcp, trader: scope.trader, app },
+        AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]));
     } catch (error) {
       console.warn("[copilot] propose sizing basis failed", { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) });
     }
