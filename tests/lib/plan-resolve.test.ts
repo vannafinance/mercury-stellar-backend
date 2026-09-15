@@ -724,6 +724,32 @@ describe("resolvePlans — redeem and withdraw", () => {
     expect(candidates[0]?.repaysAllDebt).toBe(true);
   });
 
+  /**
+   * 14 Sep, live: an account holding 842.46 XLM against 68.49 XLM of debt was told "the
+   * wallet holds no spendable XLM" for "clear all my debt". The account IS a source, and
+   * "repay all my debt" names no other one, so it repays from itself when it can.
+   */
+  it("repays the whole debt from the account when the account already covers it, with no wallet deposit", () => {
+    const covered = [
+      ...withEarn.filter((o) => o.capability !== "account_debt" && o.capability !== "account_collateral"),
+      obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "68.49" }] }),
+      obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "842.46" }] }),
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Clear XLM debt", [{ op: "repay", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: covered }));
+    expect(rejected).toEqual([]);
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["repay", "68.49"]]);
+  });
+
+  it("still deposits first when the account cannot cover the whole debt on its own", () => {
+    const short = [
+      ...withEarn.filter((o) => o.capability !== "account_debt" && o.capability !== "account_collateral"),
+      obs("e10", "account_debt", { debt: [{ symbol: "XLM", balance: "68.49" }] }),
+      obs("e11", "account_collateral", { collateral: [{ symbol: "XLM", balance: "10" }] }),
+    ];
+    const { candidates } = resolvePlans([plan("Clear XLM debt", [{ op: "repay", asset: "XLM", sizing: { kind: "all_position" } }])], ctx({ observations: short }));
+    expect(candidates[0]?.steps?.map((s) => s.op)).toEqual(["deposit_collateral", "repay"]);
+  });
+
   it("names what is missing when the position was not read", () => {
     const { rejected } = resolvePlans([plan("Bring AqUSDC", [{ op: "redeem", asset: "AQUSDC", sizing: { kind: "all_position" } }])], ctx({ observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })] }));
     expect(rejected[0].reason).toBe("no AQUSDC position in Earn was read this investigation");

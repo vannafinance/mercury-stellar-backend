@@ -125,6 +125,19 @@ function expandLegs(legs: ProposedPlan["legs"], ctx: PlanContext): SizerLeg[] {
     if (before && before.op === "deposit_collateral" && before.asset === leg.asset && drawsOnWallet(before.sizing)) {
       return [{ op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
+    /**
+     * "Repay all my debt" names no source — the account is already one, and it repays from
+     * itself when it can. Injecting a wallet deposit unconditionally refused the repay for
+     * want of wallet funds it never needed: 14 Sep, an account holding 842.46 XLM against
+     * 68.49 XLM of debt was told the wallet had nothing spendable. "Repay with my idle
+     * XLM" (`all_idle`) does name the wallet, so that one still deposits first.
+     */
+    if (leg.sizing.kind === "all_position") {
+      const def = resolveAssetDef(leg.asset);
+      const owed = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_debt", POSITION_ROWS.account_debt, def.marginSymbol, def.id, ctx.now) : null;
+      const held = def?.marginSymbol ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now) : null;
+      if (owed !== null && held !== null && decimalWad(held) >= decimalWad(owed) && decimalWad(owed) > ZERO) return [leg];
+    }
     if (leg.sizing.kind === "all_idle" || leg.sizing.kind === "all_position") {
       return [{ op: "deposit_collateral", asset: leg.asset, sizing: { kind: "all_idle" }, fundsRepay: true }, { op: "repay", asset: leg.asset, sizing: { kind: "previous_leg" } }];
     }
