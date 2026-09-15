@@ -9,6 +9,8 @@ import type { MCPClient } from "../mcp-client";
 import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
+import { decimalWad, formatWad } from "./fixed";
+import { constantProductOut, poolReservesFrom, reservesForDirection, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -47,6 +49,66 @@ function persistRun(record: { proposal: WorkflowProposal; status: string; steps:
 function identityOf(proposal: WorkflowProposal) {
   return { scope: proposal.scope, server: proposal.server };
 }
+
+/**
+ * A swap's floor is checked against the pool one more time, moments before the write.
+ *
+ * ## The race this closes
+ *
+ * The floor is derived when the plan is built; the swap is sent when the user approves it,
+ * seconds or minutes later. A pool does not stand still in between — 15 Sep, live, the same
+ * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time and
+ * filled at the identical floor minutes later. The user saw a raw contract code for what
+ * was really "the price moved".
+ *
+ * So the pool is re-quoted here, and the answer decides between two honest outcomes:
+ *
+ * - The pool still pays the approved floor → send it UNCHANGED. The floor the user approved
+ *   is the floor that gets signed; re-quoting never quietly raises or lowers it.
+ * - The pool no longer pays it → refuse, naming both figures. It must not be lowered to fit:
+ *   a floor that follows the price down is not a floor, it is a slider, and the user
+ *   approved a trade at the number they were shown, not "whatever it settles at".
+ *
+ * Fails OPEN. If the pool read is unavailable, slow, or not an Aquarius pair, the write
+ * proceeds exactly as before — the DEX's own floor check is still the backstop, and a
+ * stats endpoint being down is not a reason to block a swap the user approved.
+ */
+export async function staleSwapFloor(
+  step: ProposalStep,
+  mcp: Pick<MCPClient, "call">,
+  trader: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (step.op !== "swap" || step.args.venue !== "aquarius") return null;
+  const tokenIn = typeof step.args.token_in === "string" ? step.args.token_in : "";
+  const tokenOut = typeof step.args.token_out === "string" ? step.args.token_out : "";
+  const amountIn = typeof step.args.amount_in === "string" ? step.args.amount_in : "";
+  const minOut = typeof step.args.min_out === "string" ? step.args.min_out : "";
+  if (!tokenIn || !tokenOut || !amountIn || !minOut) return null;
+  let reserves: PoolReserves | null = null;
+  try {
+    const payload = await interruptible(
+      () => mcp.call("vanna_get_aquarius_pool_stats", { token_a: tokenIn, token_b: tokenOut }, trader),
+      AbortSignal.any([signal, AbortSignal.timeout(POOL_REQUOTE_MS)]),
+    );
+    reserves = poolReservesFrom(payload);
+  } catch { return null; }
+  if (!reserves) return null;
+  let quoted: bigint | null;
+  try {
+    const { inWad, outWad, feeWad } = reservesForDirection(reserves, tokenIn.toUpperCase() === "XLM");
+    quoted = constantProductOut(decimalWad(amountIn), inWad, outWad, feeWad);
+  } catch { return null; }
+  if (quoted === null) return null;
+  let floorWad: bigint;
+  try { floorWad = decimalWad(minOut); } catch { return null; }
+  if (quoted >= floorWad) return null;
+  return `Not submitted — the pool's price moved after you approved this. ${tokenIn} → ${tokenOut} now fills at about `
+    + `${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, below the ${minOut} ${tokenOut} floor you approved. `
+    + `The floor was not lowered to fit. Ask again for a fresh quote.`;
+}
+
+const POOL_REQUOTE_MS = 8_000;
 
 function hashOf(value: unknown): string | null {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) return null;
@@ -149,6 +211,16 @@ export async function advanceWorkflow(input: {
       kind: "failed", message: "The protocol operation did not match the approved arguments. Nothing was submitted.",
     }));
   }
+  /**
+   * Re-quote the pool before spending the user's approval on a floor the price has already
+   * left behind. Nothing is resized: this either proceeds with the approved arguments or
+   * stops with the reason, so the swap that gets signed is the one that was approved.
+   */
+  const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal);
+  if (stale) {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale }));
+  }
+
   let build: Record<string, unknown>;
   try {
     const raw = await interruptible(() => input.mcp.call(invocation.tool, invocation.args, scope.trader!),
@@ -221,7 +293,12 @@ export function preBroadcastRejection(
  * The floor is the one thing about that failure we can state as fact, so it is named, and
  * the likeliest reading of it is offered AS a reading, not as a diagnosis: the error codes
  * belong to the DEX's own contract, not to Vanna's, so their meanings are not ours to
- * assert. No rate is quoted — the protocol exposes no pool quote to compare against.
+ * assert.
+ *
+ * This is now the SECOND line of defence, not the first: `staleSwapFloor` re-quotes the
+ * pool before the write and states "the price moved" in plain words with both figures.
+ * A rejection that still reaches here is one that re-quote could not foresee — the pool
+ * read was unavailable, the pair is not Aquarius, or the pool moved inside the last moment.
  */
 function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
   if (step?.op !== "swap") return null;

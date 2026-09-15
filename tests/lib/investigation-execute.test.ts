@@ -151,3 +151,100 @@ describe("advanceWorkflow", () => {
     expect(view.status).toBe("completed");
   });
 });
+
+/**
+ * 15 Sep, live: the identical 1,000 XLM → AQUSDC swap was refused by the DEX at approve
+ * time (HostError #2006) and filled at the same floor minutes later. The floor is derived
+ * when the plan is built and sent when the user approves it, and the pool does not stand
+ * still in between — so the pool is re-quoted immediately before the write.
+ */
+describe("advanceWorkflow — a swap's floor is re-checked against the pool before it is sent", () => {
+  const POOL = "vanna_get_aquarius_pool_stats";
+  const swapStep = {
+    id: "one", op: "swap" as const, asset: "XLM", amount: "1000",
+    label: "Swap 1000 XLM for at least 147.3333 AQUSDC on Aquarius",
+    tool: "vanna_swap",
+    args: {
+      smart_account: SCOPE.smartAccount, token_in: "XLM", token_out: "AQUSDC",
+      amount_in: "1000", min_out: "147.3333", trader: SCOPE.trader, venue: "aquarius",
+    },
+  };
+
+  async function approvedSwap() {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Swap XLM to AQUSDC",
+      messages: ["swap 1000 xlm to AQUSDC"], assumptions: [], constraints: [], floor: "1.30",
+      steps: [swapStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    return created.proposal.id;
+  }
+
+  const poolPaying = (xlm: string, aqusdc: string) =>
+    ({ found: true, pool: { available: true, reserves: { XLM: xlm, AQUSDC: aqusdc }, total_share: "40000", fee: "0.0030" } });
+
+  it("sends the approved floor unchanged when the pool still pays it", async () => {
+    const id = await approvedSwap();
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp: McpCall = {
+      call: async (tool, args) => {
+        seen.push({ tool, args: args as Record<string, unknown> });
+        // 100,000 XLM / 15,000 AQUSDC quotes 148.07 — above the 147.3333 approved.
+        if (tool === POOL) return poolPaying("100000", "15000");
+        return { status: "signed_and_submitted", tx_hash: HASH };
+      },
+    };
+    const view = await advance(id, mcp);
+    expect(seen.map((s) => s.tool)).toEqual([POOL, "vanna_swap"]);
+    // The floor the user approved is the floor that gets signed — never re-derived upward.
+    expect(seen[1].args.min_out).toBe("147.3333");
+    expect(view.status).toBe("completed");
+  });
+
+  it("refuses with both figures when the pool has moved below the approved floor, and sends nothing", async () => {
+    const id = await approvedSwap();
+    const seen: string[] = [];
+    const mcp: McpCall = {
+      call: async (tool) => {
+        seen.push(tool);
+        // 100,000 XLM / 14,000 AQUSDC quotes ~138.2 — below the 147.3333 approved.
+        if (tool === POOL) return poolPaying("100000", "14000");
+        return { status: "signed_and_submitted", tx_hash: HASH };
+      },
+    };
+    const view = await advance(id, mcp);
+    expect(seen).toEqual([POOL]);
+    expect(view.steps[0].status).toBe("failed");
+    const message = String(view.steps[0].message);
+    expect(message).toContain("the pool's price moved after you approved this");
+    expect(message).toContain("147.3333 AQUSDC floor you approved");
+    expect(message).toContain("The floor was not lowered to fit");
+    expect(view.steps[0].txHash).toBeUndefined();
+  });
+
+  it("fails open: a pool read that errors never blocks a swap the user approved", async () => {
+    const id = await approvedSwap();
+    const seen: string[] = [];
+    const mcp: McpCall = {
+      call: async (tool) => {
+        seen.push(tool);
+        if (tool === POOL) throw new Error("amm api unreachable");
+        return { status: "signed_and_submitted", tx_hash: HASH };
+      },
+    };
+    const view = await advance(id, mcp);
+    expect(seen).toEqual([POOL, "vanna_swap"]);
+    expect(view.status).toBe("completed");
+  });
+
+  it("leaves every non-swap write alone — no extra pool round-trip", async () => {
+    const id = await approvedBorrow();
+    const seen: string[] = [];
+    const mcp: McpCall = {
+      call: async (tool) => { seen.push(tool); return { status: "signed_and_submitted", tx_hash: HASH }; },
+    };
+    await advance(id, mcp);
+    expect(seen).toEqual(["vanna_borrow"]);
+  });
+});

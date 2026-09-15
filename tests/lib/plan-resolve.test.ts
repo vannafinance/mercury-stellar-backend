@@ -235,7 +235,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
   describe("add_liquidity — Aquarius sizes the paired amount from live reserves, Soroswap is refused", () => {
     // Reserves 1000 XLM / 200 AQUSDC (a 5:1 ratio), 100 total LP shares outstanding.
     const RESERVES_OBS = obs("e7", "aquarius_pool_reserves",
-      { found: true, pool: { available: true, reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100" } },
+      { found: true, pool: { available: true, reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100", fee: "0.0030" } },
       { asset: "AQUSDC" });
 
     it("sizes the paired AQUSDC amount and the LP-share floor off the pool's own reserves", () => {
@@ -324,6 +324,68 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       ];
       const { rejected } = resolvePlans([plan("Add liquidity", legs)], ctx({ messages: ["add 100 xlm to AQUSDC pool"] }));
       expect(rejected[0]?.reason).toBe("no live aquarius pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio");
+    });
+  });
+
+  /**
+   * 15 Sep, live: "swap 1k xlm to AQUSDC" was refused by the DEX itself (HostError #2006)
+   * and the user saw a bare contract code. The floor had been priced at ORACLE PARITY —
+   * the USD value of the XLM converted at the oracle's AQUSDC price — while the pool fills
+   * on its own curve, after its own fee, at whatever its reserves say. When the pool's
+   * price sits below the oracle's, that floor is one the pool can never meet.
+   */
+  describe("a swap's floor is quoted against the pool it settles on, not the oracle", () => {
+    const poolObs = (xlm: string, aqusdc: string) => obs("e8", "aquarius_pool_reserves",
+      { found: true, pool: { available: true, reserves: { XLM: xlm, AQUSDC: aqusdc }, total_share: "40000", fee: "0.0030" } },
+      { asset: "AQUSDC" });
+    const swapLegs: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "1000", sourceQuote: "swap 1000 XLM" } },
+      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const swapCtx = (pool: Observation) => ctx({
+      messages: ["swap 1000 XLM to AQUSDC on aquarius"],
+      observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), pool],
+    });
+
+    it("prices the floor below oracle parity when the pool pays less than the oracle — the case the DEX refused", () => {
+      // Pool: 100,000 XLM / 15,000 AQUSDC — 0.15 AQUSDC per XLM, against an oracle saying 0.18.
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(poolObs("100000", "15000")));
+      expect(rejected).toEqual([]);
+      // out = 15000 x 997 / (100000 + 997) = 148.0737…, less 0.5% = 147.3333…
+      const floor = Number(candidates[0]?.steps?.[1].args.min_out);
+      expect(floor).toBeCloseTo(147.3333, 3);
+      // Oracle parity would have demanded 1000 x $0.18 / $1 = 180, less 0.5% = 179.1 —
+      // a floor 21% above what this pool could ever pay, which is exactly what it refused.
+      expect(floor).toBeLessThan(179.1);
+    });
+
+    it("prices the floor above oracle parity when the pool pays more, rather than capping it at the oracle", () => {
+      // Pool: 100,000 XLM / 20,000 AQUSDC — 0.20 AQUSDC per XLM, better than the oracle's 0.18.
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(poolObs("100000", "20000")));
+      expect(rejected).toEqual([]);
+      // out = 20000 x 997 / (100000 + 997) = 197.4316…, less 0.5% = 196.4444…
+      const floor = Number(candidates[0]?.steps?.[1].args.min_out);
+      expect(floor).toBeCloseTo(196.4444, 3);
+      expect(floor).toBeGreaterThan(179.1);
+    });
+
+    it("charges the pool's own fee, so the floor is never above what the curve actually pays", () => {
+      const free = obs("e8", "aquarius_pool_reserves",
+        { found: true, pool: { available: true, reserves: { XLM: "100000", AQUSDC: "20000" }, total_share: "40000", fee: "0" } },
+        { asset: "AQUSDC" });
+      const { candidates } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(free));
+      // Same reserves, no fee: 20000 x 1000 / 101000 = 198.0198…, less 0.5% = 197.0297…
+      expect(Number(candidates[0]?.steps?.[1].args.min_out)).toBeCloseTo(197.0297, 3);
+    });
+
+    it("falls back to the oracle quote when no pool reserves were read, rather than refusing the swap", () => {
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], ctx({
+        messages: ["swap 1000 XLM to AQUSDC on aquarius"],
+        observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })],
+      }));
+      expect(rejected).toEqual([]);
+      // 1000 x $0.18 / $1 = 180, less 0.5%.
+      expect(candidates[0]?.steps?.[1].args.min_out).toBe("179.1");
     });
   });
 

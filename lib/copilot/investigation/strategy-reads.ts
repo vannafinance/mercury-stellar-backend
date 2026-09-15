@@ -12,7 +12,7 @@ import { interruptible } from "./runtime";
 import { isRecord } from "./decision";
 import { PRICE_MAX_AGE_MS } from "./candidates";
 import type { InvestigationScope, Observation, ProposedPlan } from "./types";
-import { OP_FLOW } from "../workflow/types";
+import { ASSET_OUT_OPS, OP_FLOW } from "../workflow/types";
 
 export interface StrategyRead { capability: string; args: Record<string, unknown> }
 
@@ -72,11 +72,15 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.
       if (flow.to === "debt" && flow.positionRead) want(flow.positionRead);
       /**
-       * Entering an Aquarius pool needs the pool's live reserves to size the paired
-       * amount against the real ratio — the model's own number is never trusted for it
-       * (Soroswap needs no read here: the contract corrects an imperfect ratio itself).
+       * Anything that touches an Aquarius pool needs the pool's live reserves: entering it
+       * sizes the paired amount against the real ratio (the model's own number is never
+       * trusted for it), and a swap quotes its floor against the curve it actually settles
+       * on rather than at oracle parity — the gap between the two is what the DEX refused
+       * outright on 15 Sep. Soroswap needs no read to ENTER (its contract corrects an
+       * imperfect ratio itself); its swaps still fall back to the oracle quote.
        */
-      if (leg.op === "add_liquidity" && leg.assetOut && poolVenueFor(leg.asset, leg.assetOut) === "aquarius") {
+      if ((ASSET_OUT_OPS as readonly string[]).includes(leg.op) && leg.assetOut
+        && poolVenueFor(leg.asset, leg.assetOut) === "aquarius") {
         want("aquarius_pool_reserves", leg.asset === "XLM" ? leg.assetOut : leg.asset);
       }
       // A leg the account funds is checked against the account's balance, whatever its sizing word.

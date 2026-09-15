@@ -165,13 +165,23 @@ function summarise(steps: readonly ProposalStep[], results: StepSimulation[]): P
     const after = r.projected ? ` (LTV ${r.projected.ltvPct}% after)` : "";
     return `${label(r.stepId)} allowed${after}`;
   }).join("; ");
-  if (!dependent.length && !unavailable.length) return { verdict: "runnable", steps: results, summary: `Simulated against the protocol: ${said}.` };
+  /**
+   * What the margin preview answers for a swap is "does the account stay healthy if this
+   * fills at its floor" — it reads the RiskEngine and the oracle, and asks the pool
+   * nothing. Saying only "allowed" let that read as "this trade will go through", which
+   * is how a card stayed clickable for a swap the DEX then refused (15 Sep, live). The
+   * pool has the final word at approve time, so the card says which question was answered.
+   */
+  const fill = allowed.some((r) => steps.find((s) => s.id === r.stepId)?.op === "swap")
+    ? " The pool's own fill is not simulated ahead; the floor is re-checked against it when you approve."
+    : "";
+  if (!dependent.length && !unavailable.length) return { verdict: "runnable", steps: results, summary: `Simulated against the protocol: ${said}.${fill}` };
   const rest = dependent.length && unavailable.length
     ? `${dependent.length + unavailable.length} other step${dependent.length + unavailable.length === 1 ? "" : "s"} could not be simulated ahead`
     : dependent.length
       ? `${dependent.length === 1 ? "the other step follows" : `the other ${dependent.length} steps follow`} from it and stand on the projection`
       : `${unavailable.length === 1 ? "one step" : `${unavailable.length} steps`} could not be simulated`;
-  return { verdict: "partial", steps: results, summary: `Simulated against the protocol: ${said}; ${rest}.` };
+  return { verdict: "partial", steps: results, summary: `Simulated against the protocol: ${said}; ${rest}.${fill}` };
 }
 
 /** Put a plan's steps to the protocol's preview. Never throws; never changes a step. */

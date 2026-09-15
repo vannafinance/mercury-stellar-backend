@@ -26,6 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
+import { constantProductOut, poolReservesFrom, reservesForDirection, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
@@ -842,15 +843,31 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * investigation — the gate above already required both to be `.ok`, so this repeats
      * a check that has already passed rather than trusting that silently.
      */
+    /**
+     * The floor this swap is told to accept. Quoted against the POOL when its live reserves
+     * were read — the curve it actually settles on, after its own fee — and only otherwise
+     * against the oracle, which assumes a parity fill the pool never promised. 15 Sep, live:
+     * the oracle-parity floor was refused outright by the DEX (HostError #2006) on a swap
+     * that filled fine when quoted against the pool itself.
+     */
     const minOut = out ? (() => {
+      const places = decimals.get(out.id) ?? 7;
+      const floorOf = (expectedWad: bigint) =>
+        truncateToDecimals(formatWad((expectedWad * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000)), places);
+      const reserves = dex === "aquarius"
+        ? aquariusReservesOf(ctx.observations, def.id === "XLM" ? out.id : def.id, ctx.now) : null;
+      if (reserves) {
+        const { inWad, outWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
+        const quoted = constantProductOut(decimalWad(d.tokens!), inWad, outWad, feeWad);
+        if (quoted !== null && quoted > ZERO) return floorOf(quoted);
+      }
       const spentPrice = priceFor(def.id, ctx.observations, ctx.now);
       const outPrice = priceFor(out.id, ctx.observations, ctx.now);
       if (!spentPrice.ok || !outPrice.ok) throw new Reject(d.name, `no ${!spentPrice.ok ? def.id : out.id} price was read this investigation`);
       const usdValue = formatWad(mulDown(decimalWad(d.tokens!), spentPrice.price, WAD));
-      const expected = tokensFromUsd(usdValue, outPrice.price, decimals.get(out.id) ?? 7);
+      const expected = tokensFromUsd(usdValue, outPrice.price, places);
       if (!expected.ok) throw new Reject(d.name, "the swap's expected output could not be sized from the reads that completed");
-      const floorWad = (decimalWad(expected.tokens) * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000);
-      return truncateToDecimals(formatWad(floorWad), decimals.get(out.id) ?? 7);
+      return floorOf(decimalWad(expected.tokens));
     })() : null;
     /**
      * The paired amount and the LP-share floor, both from the pool's own live reserves —
@@ -1077,21 +1094,10 @@ function farmLpPositionOf(observations: readonly Observation[], asset: string, n
  * (the "XLM" key is always exactly that; whichever other key remains is the paired side)
  * rather than assume the paired token's key matches `def.marginSymbol` literally.
  */
-function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): { xlm: string; paired: string; totalShare: string } | null {
+function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): PoolReserves | null {
   const read = [...observations].reverse().find((o) =>
     o.capability === "aquarius_pool_reserves" && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
-  const pool = read?.data?.pool;
-  if (read?.data?.found !== true || !isRecord(pool) || pool.available === false || !isRecord(pool.reserves)) return null;
-  const entries = Object.entries(pool.reserves);
-  const xlm = entries.find(([key]) => key === "XLM")?.[1];
-  const paired = entries.find(([key]) => key !== "XLM")?.[1];
-  const totalShare = pool.total_share;
-  if ((typeof xlm !== "string" && typeof xlm !== "number") || (typeof paired !== "string" && typeof paired !== "number")
-    || (typeof totalShare !== "string" && typeof totalShare !== "number")) return null;
-  try {
-    decimalWad(String(xlm)); decimalWad(String(paired)); decimalWad(String(totalShare));
-    return { xlm: String(xlm), paired: String(paired), totalShare: String(totalShare) };
-  } catch { return null; }
+  return read?.data ? poolReservesFrom(read.data) : null;
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */

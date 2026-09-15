@@ -104,7 +104,7 @@ function observations(asset: AssetId, world: World): Observation[] {
   // exactly as it would from the real MCP read, in every world, not just a hand-picked one.
   if (poolVenueFor("XLM", asset) === "aquarius") {
     rows.push(obs("res", "aquarius_pool_reserves",
-      { found: true, pool: { available: true, reserves: { XLM: "10000", [asset]: "1800" }, total_share: "5000" } },
+      { found: true, pool: { available: true, reserves: { XLM: "10000", [asset]: "1800" }, total_share: "5000", fee: "0.0030" } },
       { asset }));
   }
   return rows;
