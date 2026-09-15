@@ -96,6 +96,7 @@ scripts/__tmp_verify_addliq_eurc.mjs
 
 # Claude Code project guide — kept local, not shipped in the repo
 CLAUDE.md
+CLAUDE-HANDOFF-*.md
 
 testsprite_tests/
 

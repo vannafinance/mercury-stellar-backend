@@ -88,6 +88,24 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(c.evidenceIds).toEqual(["e1", "e6"]);
   });
 
+  it("rejects exact-output swaps instead of treating the desired output as input", () => {
+    const result = resolvePlans([plan("Receive AQUSDC", [{
+      op: "swap",
+      asset: "XLM",
+      assetOut: "AQUSDC",
+      sizing: {
+        kind: "literal",
+        amount: "961.4183674",
+        sourceQuote: "swap XLM to receive 961.4183674 AQUSDC",
+      },
+    }])], ctx({
+      messages: ["swap XLM to receive 961.4183674 AQUSDC"],
+      observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })],
+    }));
+    expect(result.candidates).toEqual([]);
+    expect(result.rejected[0]?.reason).toContain("exact-output swaps are not supported yet");
+  });
+
   it("sizes 'borrow XLM to the floor, supply it to Blend' with the closed-form sizer and reports the carry", () => {
     const { candidates, rejected } = resolvePlans([plan("Lever XLM into Blend", [
       { op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } },

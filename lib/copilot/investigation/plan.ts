@@ -359,6 +359,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (leg.op === "swap") {
       if (!bought) throw new Reject(name, `name the asset you want to receive — "swap ${d0(leg)} ${def.id} to BLUSDC", for instance`);
       if (bought.id === def.id) throw new Reject(name, `a swap has to change the asset — ${def.id} for ${bought.id} is the same token`);
+      if (isExactOutputSwapQuote(leg.sizing, leg.asset, bought.id)) {
+        throw new Reject(name, `exact-output swaps are not supported yet — ${bought.id} is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much ${def.id} to spend`);
+      }
       if (!bought.marginSymbol) throw new Reject(name, `${bought.id} is not accepted by the margin account, so the swap would leave it unbacked`);
       /**
        * A pair trades only where a pool holds both sides. `lpVenue` names the DEX that
@@ -1144,6 +1147,16 @@ function assetNamedInText(messages: readonly string[], spending: string): Return
 /** The leg's own amount when it has one, for a refusal that shows the shape of the answer. */
 function d0(leg: PlanLeg): string {
   return leg.sizing.kind === "literal" ? leg.sizing.amount : "10";
+}
+
+/** Exact-output wording cannot be represented by the current amount_in/min_out write API. */
+function isExactOutputSwapQuote(sizing: PlanSizing, spending: string, receiving: string): boolean {
+  if (sizing.kind !== "literal") return false;
+  const quote = sizing.sourceQuote;
+  const amount = sizing.amount.replace(/[.,]/g, "\\$&");
+  const out = receiving.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+  const hasReceivingAmount = new RegExp(`(?:receive|get|getting|for\\s+at\\s+least)\\s+${amount}\\s*${out}\\b`, "i").test(quote);
+  return hasReceivingAmount || new RegExp(`(?:receive|get|getting|for\\s+at\\s+least)\\s+\\d[\\d,]*(?:\\.\\d+)?\\s*${out}\\b`, "i").test(quote);
 }
 
 /** A venue as a person writes it, from its own name rather than a table of two. */

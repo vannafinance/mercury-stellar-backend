@@ -137,6 +137,9 @@ redeem (all_position) takes an Earn position back to the wallet. "Get me out of 
 A swap leg is the ONLY leg with two assets: asset is what it SPENDS, assetOut is what it RECEIVES. assetOut is not
 optional on a swap — a swap without it is dropped. "swap 10 XLM to BLUSDC" is exactly:
   {"op":"swap","asset":"XLM","assetOut":"BLUSDC","sizing":{"kind":"literal","amount":"10","sourceQuote":"swap 10 XLM to BLUSDC"}}
+The current swap write accepts amount_in plus min_out, so the literal amount must always be the asset spent.
+If the user asks to receive a specified amount ("receive 961 AQUSDC" or "for at least 961 AQUSDC"), do not
+put that output amount in sizing.amount; report that exact-output swaps need an inverse DEX quote and block it.
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
 SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.

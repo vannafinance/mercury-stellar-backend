@@ -44,6 +44,17 @@ describe("readsForPlans — a repay reads the debt whatever its sizing word", ()
   });
 });
 
+describe("readsForPlans — literal position exits", () => {
+  it("asks for Blend position evidence before sizing a literal withdrawal", () => {
+    const reads = readsForPlans([plan([{
+      op: "blend_withdraw",
+      asset: "XLM",
+      sizing: { kind: "literal", amount: "26000", sourceQuote: "remove 26k XLM from Blend" },
+    }])], [], NOW);
+    expect(reads).toContainEqual({ capability: "blend_position", args: {} });
+  });
+});
+
 describe("readsForPlans", () => {
   it("asks for the price, the wallet and the Blend reserves a deposit-then-supply plan needs", () => {
     const reads = readsForPlans([plan([

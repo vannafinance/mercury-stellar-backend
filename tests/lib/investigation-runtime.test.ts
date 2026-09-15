@@ -75,6 +75,26 @@ describe("adaptive investigation", () => {
     expect(mcp.call).not.toHaveBeenCalled();
   });
 
+  it("repairs one uncited numeric completion without weakening evidence validation", async () => {
+    const mcp = read();
+    const invalid = {
+      kind: "research_complete",
+      goal: { objective: "Investigate the account", constraints: [], borrowing: "unspecified" },
+      findings: [{ summary: "The account has 217.59 USD of debt.", evidenceIds: [] }],
+      openQuestions: [],
+    };
+    const turns: Array<{ decisionFeedback?: string }> = [];
+    const model: ResearchModel = async (turn) => {
+      turns.push(turn);
+      if (!turn.observations.length) return inspect("account_debt");
+      return turns.length === 2 ? invalid : complete(["e1"]);
+    };
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual(complete(["e1"]));
+    expect(turns[2].decisionFeedback).toContain("numeric finding had no evidenceIds");
+    expect(result.usage.modelTurns).toBe(3);
+  });
+
   it("provides failed reads as errors and lets the model choose a different next read", async () => {
     const mcp = { call: vi.fn().mockResolvedValueOnce({ error: "oracle_unavailable", price: 0 })
       .mockResolvedValueOnce({ debt_usd: "217.59" }) };

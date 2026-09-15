@@ -61,9 +61,12 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
       const ofIdle = leg.sizing.kind === "all_idle" || (leg.sizing.kind === "fraction" && leg.sizing.of === "idle");
       const ofPosition = leg.sizing.kind === "all_position" || (leg.sizing.kind === "fraction" && leg.sizing.of === "position");
       if (ofIdle) want("wallet_balances");
-      // A position share — or a withdraw to the floor — draws on what the op spends: the read the op-flow table names for it.
-      // earn_position and farm_lp_position are read per asset — one pair or one pool per call, not a shared table.
-      if ((ofPosition || leg.sizing.kind === "to_floor") && flow.positionRead) {
+      // Every declared position read is required for deterministic sizing, including literal
+      // exits such as "withdraw 26000 XLM from Blend". The sizer checks literal amounts against
+      // the source position too; skipping this read made valid Blend withdrawals look empty.
+      // earn_position and farm_lp_position are read per asset — one pair or one pool per call,
+      // not a shared table.
+      if (flow.positionRead) {
         want(flow.positionRead, flow.positionRead === "earn_position" || flow.positionRead === "farm_lp_position" ? leg.asset : undefined);
       }
       // A repay is capped by what is owed whichever way it is sized, and a refusal must name the debt.

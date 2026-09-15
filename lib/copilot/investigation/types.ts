@@ -163,6 +163,7 @@ export interface ReadCapability {
 export interface ResearchTurn {
   message: string;
   history: Array<{ role: "user" | "assistant"; text: string }>;
+  decisionFeedback?: string;
   context: { network: string; hasWallet: boolean; hasSmartAccount: boolean };
   capabilities: readonly ReadCapability[];
   observations: readonly Observation[];

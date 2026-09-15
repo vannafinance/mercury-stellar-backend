@@ -233,6 +233,7 @@ export async function runInvestigation(
   const history = (request.history ?? []).slice(-8).map((entry) => ({
     role: entry.role, text: entry.text.slice(0, 1200),
   }));
+  let decisionFeedback: string | undefined;
   const progress = (event: InvestigationProgress) => {
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
@@ -286,6 +287,7 @@ export async function runInvestigation(
       try {
         raw = await interruptible(() => dependencies.model({
           message: request.message, history: structuredClone(history), context: { ...context },
+          ...(decisionFeedback ? { decisionFeedback } : {}),
           capabilities: readCapabilities(scope), observations: structuredClone(observations),
           remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
@@ -312,7 +314,13 @@ export async function runInvestigation(
       }
       if (!decision) {
         // Say which check the model failed; the card only says "invalid decision".
-        console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: lastDecisionRefusal() || "unparseable", keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
+        const refusal = lastDecisionRefusal() || "unparseable";
+        if (!decisionFeedback && refusal === "findings: every finding stated a figure with no evidence (1)") {
+          decisionFeedback = "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id.";
+          console.warn("[copilot] investigation decision repair requested", { turn: modelTurns, reason: refusal });
+          return null;
+        }
+        console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: refusal, keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
         return finish({ kind: "stopped", reason: "invalid_decision" });
       }
       span.setAttribute("vanna.investigation.decision", decision.kind);
