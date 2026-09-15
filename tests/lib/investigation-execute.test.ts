@@ -153,20 +153,28 @@ describe("advanceWorkflow", () => {
 });
 
 /**
- * 15 Sep, live: the identical 1,000 XLM → AQUSDC swap was refused by the DEX at approve
- * time (HostError #2006) and filled at the same floor minutes later. The floor is derived
- * when the plan is built and sent when the user approves it, and the pool does not stand
- * still in between — so the pool is re-quoted immediately before the write.
+ * 15 Sep, live, twice over. First: the identical swap was refused by the DEX (HostError
+ * #2006) at approve time and filled fine minutes later — a moved price alone, wrongly
+ * treated as fatal. Then, once fixed to re-quote instead of refusing outright: "it is not
+ * mandatory [that the exact number holds] — whatever price is available after the plan
+ * executes, it should execute, with a clear message of what price it swapped at — don't
+ * fail it unless it's actually dangerous." So a moved price adjusts the floor down and
+ * proceeds, with a note recording what actually happened; only a fill that would itself be
+ * a bad trade (the same oracle price-impact threshold the propose-time card refuses on)
+ * stops the write.
  */
 describe("advanceWorkflow — a swap's floor is re-checked against the pool before it is sent", () => {
   const POOL = "vanna_get_aquarius_pool_stats";
+  const PRICE = "vanna_get_price";
+  // Reserves 100,000 XLM / 17,730 AQUSDC quote ~175.0231 for 1,000 XLM — a normal spread
+  // under oracle parity ($180 at $0.18/XLM), floored 0.5% down to 174.148 at approve time.
   const swapStep = {
     id: "one", op: "swap" as const, asset: "XLM", amount: "1000",
-    label: "Swap 1000 XLM for at least 147.3333 AQUSDC on Aquarius",
+    label: "Swap 1000 XLM for at least 174.148 AQUSDC on Aquarius",
     tool: "vanna_swap",
     args: {
       smart_account: SCOPE.smartAccount, token_in: "XLM", token_out: "AQUSDC",
-      amount_in: "1000", min_out: "147.3333", trader: SCOPE.trader, venue: "aquarius",
+      amount_in: "1000", min_out: "174.148", trader: SCOPE.trader, venue: "aquarius",
     },
   };
 
@@ -183,44 +191,98 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
 
   const poolPaying = (xlm: string, aqusdc: string) =>
     ({ found: true, pool: { available: true, reserves: { XLM: xlm, AQUSDC: aqusdc }, total_share: "40000", fee: "0.0030" } });
+  const price = (usd: string) => ({ price_usd: usd });
+  /**
+   * vanna_get_price is called once per symbol; route by the symbol argument. Every call
+   * (price or otherwise) is recorded into `seen` here, so callers only supply the non-price
+   * behavior.
+   */
+  function withPrices(
+    seen: Array<{ tool: string; args: Record<string, unknown> }>,
+    mcp: (tool: string, args: Record<string, unknown>) => Record<string, unknown>,
+  ): McpCall {
+    return {
+      call: async (tool, args) => {
+        const a = args as Record<string, unknown>;
+        seen.push({ tool, args: a });
+        if (tool === PRICE) return price(String(a.symbol) === "XLM" ? "0.18" : "1");
+        return mcp(tool, a);
+      },
+    };
+  }
 
-  it("sends the approved floor unchanged when the pool still pays it", async () => {
+  it("sends the approved floor unchanged when the pool still pays it — no oracle call needed", async () => {
     const id = await approvedSwap();
     const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
     const mcp: McpCall = {
       call: async (tool, args) => {
         seen.push({ tool, args: args as Record<string, unknown> });
-        // 100,000 XLM / 15,000 AQUSDC quotes 148.07 — above the 147.3333 approved.
-        if (tool === POOL) return poolPaying("100000", "15000");
+        // 100,000 XLM / 17,750 AQUSDC quotes ~175.22 — above the 174.148 approved.
+        if (tool === POOL) return poolPaying("100000", "17750");
         return { status: "signed_and_submitted", tx_hash: HASH };
       },
     };
     const view = await advance(id, mcp);
     expect(seen.map((s) => s.tool)).toEqual([POOL, "vanna_swap"]);
-    // The floor the user approved is the floor that gets signed — never re-derived upward.
-    expect(seen[1].args.min_out).toBe("147.3333");
+    // The floor the user approved is the floor that gets signed — never re-derived upward,
+    // and never needs an oracle round-trip when the approved floor is already met.
+    expect(seen[1].args.min_out).toBe("174.148");
     expect(view.status).toBe("completed");
   });
 
-  it("refuses with both figures when the pool has moved below the approved floor, and sends nothing", async () => {
+  it("lowers the floor and proceeds when the price moved but the fresh fill is still fair, and says so plainly", async () => {
+    const id = await approvedSwap();
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp = withPrices(seen, (tool) =>
+      // 100,000 XLM / 17,600 AQUSDC quotes ~173.74 — below the 174.148 approved, but only
+      // 3.48% under the $180 oracle value of the XLM spent: an ordinary spread, not a red flag.
+      tool === POOL ? poolPaying("100000", "17600") : { status: "signed_and_submitted", tx_hash: HASH });
+    const view = await advance(id, mcp);
+    expect(seen.map((s) => s.tool)).toEqual([POOL, PRICE, PRICE, "vanna_swap"]);
+    const sent = seen.find((s) => s.tool === "vanna_swap")!;
+    // Sent at the FRESH floor (0.5% below the ~173.74 the pool actually quotes), not the
+    // stale 174.148 the pool can no longer pay, and not a refusal either.
+    expect(Number(sent.args.min_out)).toBeCloseTo(172.87, 1);
+    expect(Number(sent.args.min_out)).toBeLessThan(174.148);
+    expect(view.status).toBe("completed");
+    const message = String(view.message);
+    expect(message).toContain("The pool's price moved after you approved this");
+    expect(message).toContain("173.7");
+    expect(message).toContain("174.148 AQUSDC originally quoted for 1000 XLM");
+  });
+
+  it("still refuses when the fresh fill would itself be a bad trade, naming both figures, and sends nothing", async () => {
+    const id = await approvedSwap();
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp = withPrices(seen, (tool) =>
+      // 100,000 XLM / 14,000 AQUSDC quotes ~138.2 — 23.2% below the $180 oracle value of
+      // the XLM spent, well past the 5% threshold the propose-time card itself refuses on.
+      tool === POOL ? poolPaying("100000", "14000") : { status: "signed_and_submitted", tx_hash: HASH });
+    const view = await advance(id, mcp);
+    expect(seen.map((s) => s.tool)).toEqual([POOL, PRICE, PRICE]);
+    expect(view.steps[0].status).toBe("failed");
+    const message = String(view.steps[0].message);
+    expect(message).toContain("the pool's price moved after you approved this, and now fills at a loss");
+    expect(message).toContain("174.148 AQUSDC floor you approved");
+    expect(view.steps[0].txHash).toBeUndefined();
+  });
+
+  it("proceeds at the fresh quote when the oracle price is unavailable, rather than blocking on it", async () => {
     const id = await approvedSwap();
     const seen: string[] = [];
     const mcp: McpCall = {
       call: async (tool) => {
         seen.push(tool);
-        // 100,000 XLM / 14,000 AQUSDC quotes ~138.2 — below the 147.3333 approved.
-        if (tool === POOL) return poolPaying("100000", "14000");
+        if (tool === POOL) return poolPaying("100000", "17600");
+        if (tool === PRICE) throw new Error("oracle unreachable");
         return { status: "signed_and_submitted", tx_hash: HASH };
       },
     };
     const view = await advance(id, mcp);
-    expect(seen).toEqual([POOL]);
-    expect(view.steps[0].status).toBe("failed");
-    const message = String(view.steps[0].message);
-    expect(message).toContain("the pool's price moved after you approved this");
-    expect(message).toContain("147.3333 AQUSDC floor you approved");
-    expect(message).toContain("The floor was not lowered to fit");
-    expect(view.steps[0].txHash).toBeUndefined();
+    // Both price legs are requested concurrently; one throwing fails the pair, and the
+    // write proceeds at the pool's own fresh quote rather than blocking on the oracle.
+    expect(seen).toEqual([POOL, PRICE, PRICE, "vanna_swap"]);
+    expect(view.status).toBe("completed");
   });
 
   it("fails open: a pool read that errors never blocks a swap the user approved", async () => {

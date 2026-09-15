@@ -9,8 +9,8 @@ import type { MCPClient } from "../mcp-client";
 import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
-import { decimalWad, formatWad } from "./fixed";
-import { constantProductOut, poolReservesFrom, reservesForDirection, type PoolReserves } from "./pool-quote";
+import { decimalWad, formatWad, mulDown, WAD } from "./fixed";
+import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -50,65 +50,122 @@ function identityOf(proposal: WorkflowProposal) {
   return { scope: proposal.scope, server: proposal.server };
 }
 
+/** What re-quoting the pool right before the write decided. */
+export type StaleFloorVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; minOut: string; note: string }
+  | { kind: "refuse"; message: string };
+
 /**
- * A swap's floor is checked against the pool one more time, moments before the write.
+ * A swap's floor is re-quoted against the pool one more time, moments before the write.
  *
  * ## The race this closes
  *
  * The floor is derived when the plan is built; the swap is sent when the user approves it,
  * seconds or minutes later. A pool does not stand still in between — 15 Sep, live, the same
- * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time and
- * filled at the identical floor minutes later. The user saw a raw contract code for what
- * was really "the price moved".
+ * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time on a
+ * floor that had been perfectly fine moments before.
  *
- * So the pool is re-quoted here, and the answer decides between two honest outcomes:
+ * A moved price is not, by itself, a reason to stop: the user asked to swap 100 XLM, not to
+ * receive exactly one number or nothing. So the pool is re-quoted here, and the write
+ * proceeds whenever the fresh fill is still a FAIR one — only a fill that is itself
+ * dangerous (the same oracle-price-impact threshold the propose-time card refuses on) stops
+ * the write, and it stops BEFORE anything is sent, naming both figures:
  *
- * - The pool still pays the approved floor → send it UNCHANGED. The floor the user approved
- *   is the floor that gets signed; re-quoting never quietly raises or lowers it.
- * - The pool no longer pays it → refuse, naming both figures. It must not be lowered to fit:
- *   a floor that follows the price down is not a floor, it is a slider, and the user
- *   approved a trade at the number they were shown, not "whatever it settles at".
+ * - Pool still pays the approved floor → send it UNCHANGED.
+ * - Pool pays less, but the fresh fill is still fair (within the impact threshold) → send it
+ *   with the floor LOWERED to what the pool actually offers, minus the same slippage margin
+ *   the original floor used. The eventual result names the price it actually settled at —
+ *   never a silent substitution the user has to discover from their balance afterward.
+ * - Pool pays so much less that the fresh fill is itself a bad trade → refuse, naming both
+ *   figures. This is the one case a floor must not be lowered to fit: an already-thin pool
+ *   getting thinner is exactly what the price-impact guard exists to catch, whichever side
+ *   of the approval it happens on.
  *
- * Fails OPEN. If the pool read is unavailable, slow, or not an Aquarius pair, the write
- * proceeds exactly as before — the DEX's own floor check is still the backstop, and a
- * stats endpoint being down is not a reason to block a swap the user approved.
+ * Fails OPEN. If the pool or price reads are unavailable, slow, or not an Aquarius pair, the
+ * write proceeds unchanged — the DEX's own floor check is still the backstop, and a stats
+ * endpoint being down is not a reason to block a swap the user approved.
  */
 export async function staleSwapFloor(
   step: ProposalStep,
   mcp: Pick<MCPClient, "call">,
   trader: string,
   signal: AbortSignal,
-): Promise<string | null> {
-  if (step.op !== "swap" || step.args.venue !== "aquarius") return null;
+): Promise<StaleFloorVerdict> {
+  const unchanged: StaleFloorVerdict = { kind: "unchanged" };
+  if (step.op !== "swap" || step.args.venue !== "aquarius") return unchanged;
   const tokenIn = typeof step.args.token_in === "string" ? step.args.token_in : "";
   const tokenOut = typeof step.args.token_out === "string" ? step.args.token_out : "";
   const amountIn = typeof step.args.amount_in === "string" ? step.args.amount_in : "";
   const minOut = typeof step.args.min_out === "string" ? step.args.min_out : "";
-  if (!tokenIn || !tokenOut || !amountIn || !minOut) return null;
+  if (!tokenIn || !tokenOut || !amountIn || !minOut) return unchanged;
   let reserves: PoolReserves | null = null;
   try {
     const payload = await interruptible(
       () => mcp.call("vanna_get_aquarius_pool_stats", { token_a: tokenIn, token_b: tokenOut }, trader),
-      AbortSignal.any([signal, AbortSignal.timeout(POOL_REQUOTE_MS)]),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     reserves = poolReservesFrom(payload);
-  } catch { return null; }
-  if (!reserves) return null;
+  } catch { return unchanged; }
+  if (!reserves) return unchanged;
   let quoted: bigint | null;
+  let floorWad: bigint;
   try {
     const { inWad, outWad, feeWad } = reservesForDirection(reserves, tokenIn.toUpperCase() === "XLM");
     quoted = constantProductOut(decimalWad(amountIn), inWad, outWad, feeWad);
-  } catch { return null; }
-  if (quoted === null) return null;
-  let floorWad: bigint;
-  try { floorWad = decimalWad(minOut); } catch { return null; }
-  if (quoted >= floorWad) return null;
-  return `Not submitted — the pool's price moved after you approved this. ${tokenIn} → ${tokenOut} now fills at about `
-    + `${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, below the ${minOut} ${tokenOut} floor you approved. `
-    + `The floor was not lowered to fit. Ask again for a fresh quote.`;
+    floorWad = decimalWad(minOut);
+  } catch { return unchanged; }
+  if (quoted === null) return unchanged;
+  if (quoted >= floorWad) return unchanged;
+
+  // The pool pays less than approved. Whether that is fine or dangerous is not a question
+  // the pool's own reserves can answer — it needs the oracle, the same way the propose-time
+  // guard does, so both ends of the same trade are judged by the same yardstick.
+  let inUsd: unknown, outUsd: unknown;
+  try {
+    [inUsd, outUsd] = await interruptible(
+      () => Promise.all([
+        mcp.call("vanna_get_price", { symbol: tokenIn }, trader),
+        mcp.call("vanna_get_price", { symbol: tokenOut }, trader),
+      ]),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+  } catch { return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut); }
+  const inPriceWad = priceWadFrom(inUsd);
+  const outPriceWad = priceWadFrom(outUsd);
+  if (inPriceWad === null || outPriceWad === null) {
+    return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut);
+  }
+  const inUsdWad = mulDown(decimalWad(amountIn), inPriceWad, WAD);
+  const outUsdWad = mulDown(quoted, outPriceWad, WAD);
+  if (isDangerousFill(inUsdWad, outUsdWad)) {
+    return {
+      kind: "refuse",
+      message: `Not submitted — the pool's price moved after you approved this, and now fills at a loss: `
+        + `${tokenIn} → ${tokenOut} would settle for about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, `
+        + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. Ask again for a fresh quote.`,
+    };
+  }
+  return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut);
 }
 
-const POOL_REQUOTE_MS = 8_000;
+/** The pool moved but the fresh fill is still fair: adjust the floor down and say so, plainly. */
+function adjustedOrUnchanged(quoted: bigint, tokenIn: string, tokenOut: string, amountIn: string, approvedMinOut: string): StaleFloorVerdict {
+  const freshFloor = formatWad(slippageFloor(quoted));
+  return {
+    kind: "adjusted",
+    minOut: freshFloor,
+    note: `The pool's price moved after you approved this: ${tokenIn} → ${tokenOut} settled for about `
+      + `${formatWad(quoted)} ${tokenOut} instead of the ${approvedMinOut} ${tokenOut} originally quoted for ${amountIn} ${tokenIn}.`,
+  };
+}
+
+function priceWadFrom(response: unknown): bigint | null {
+  if (!isRecord(response) || typeof response.price_usd !== "string") return null;
+  try { return decimalWad(response.price_usd); } catch { return null; }
+}
+
+const REQUOTE_MS = 8_000;
 
 function hashOf(value: unknown): string | null {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) return null;
@@ -141,13 +198,14 @@ async function settleSubmitted(
   id: string,
   identity: { scope: WorkflowProposal["scope"]; server: string },
   lookup: LedgerLookup,
+  note?: string,
 ) {
   const stored = await journal.read(id, identity);
   const step = stored.value.steps.find((entry) => entry.status === "submitted" && entry.txHash);
   if (!step?.txHash) return stored.value;
   const outcome = await lookup(step.txHash);
   if (!outcome.found) return stored.value;
-  return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success);
+  return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success, note);
 }
 
 export async function advanceWorkflow(input: {
@@ -212,18 +270,22 @@ export async function advanceWorkflow(input: {
     }));
   }
   /**
-   * Re-quote the pool before spending the user's approval on a floor the price has already
-   * left behind. Nothing is resized: this either proceeds with the approved arguments or
-   * stops with the reason, so the swap that gets signed is the one that was approved.
+   * Re-quote the pool before spending the user's approval on a price that has already moved.
+   * A moved price alone does not stop the write — only a fill that would itself be a bad
+   * trade does (`staleSwapFloor`'s own "refuse" case). Otherwise the floor is sent as
+   * approved, or lowered to what the pool actually offers with a note recording it — never
+   * a silent substitution the user only discovers from their balance afterward.
    */
   const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal);
-  if (stale) {
-    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale }));
+  if (stale.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
   }
+  const invocationArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  const note = stale.kind === "adjusted" ? stale.note : null;
 
   let build: Record<string, unknown>;
   try {
-    const raw = await interruptible(() => input.mcp.call(invocation.tool, invocation.args, scope.trader!),
+    const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
@@ -254,15 +316,15 @@ export async function advanceWorkflow(input: {
       record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
       return workflowView(record);
     }
-    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash });
-    record = await settleSubmitted(journal, input.id, identity, lookup);
+    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
+    record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
     persistRun(record, input.subject);
     return workflowView(record);
   }
 
   if (result.status === "needs_wallet_sign" && result.unsigned_xdr) {
     record = await journal.invocationResult(input.id, identity, step.id, {
-      kind: "unsigned", unsignedXdr: result.unsigned_xdr,
+      kind: "unsigned", unsignedXdr: result.unsigned_xdr, note: note ?? undefined,
     });
     return workflowView(record);
   }

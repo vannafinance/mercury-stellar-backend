@@ -114,6 +114,22 @@ export function priceImpactWad(inUsdWad: bigint, outUsdWad: bigint): bigint | nu
   return ((inUsdWad - outUsdWad) * WAD) / inUsdWad;
 }
 
+/** True when a fill's price impact against the oracle exceeds the refuse threshold. */
+export function isDangerousFill(inUsdWad: bigint, outUsdWad: bigint): boolean {
+  const impact = priceImpactWad(inUsdWad, outUsdWad);
+  return impact !== null && impact * BigInt(100) > WAD * BigInt(MAX_PRICE_IMPACT_PCT);
+}
+
+/**
+ * The floor a fresh quote gets held to: SWAP_SLIPPAGE_BPS below the quote itself. One
+ * constant for the propose-time floor and the approve-time re-quote, so "the number on the
+ * card" and "the number the write is allowed to settle for" are never two different margins.
+ */
+export const SWAP_SLIPPAGE_BPS = BigInt(50); // 0.5%
+export function slippageFloor(quotedOutWad: bigint): bigint {
+  return (quotedOutWad * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000);
+}
+
 /**
  * The input a constant-product pool needs for an EXACT output — the same curve as
  * `constantProductOut`, solved backwards:

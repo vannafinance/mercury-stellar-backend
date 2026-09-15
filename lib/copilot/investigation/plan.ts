@@ -26,7 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, type PoolReserves } from "./pool-quote";
+import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
@@ -38,7 +38,6 @@ import type { OpFlow } from "../workflow/types";
  * the write will carry: preview and write are both told the same `min_out`, so the card
  * never simulates a different swap from the one the user signs.
  */
-const SWAP_SLIPPAGE_BPS = BigInt(50); // 0.5%
 
 export interface PlanContext {
   scope: InvestigationScope;
@@ -904,8 +903,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      */
     const minOut = out ? (() => {
       const places = decimals.get(out.id) ?? 7;
-      const floorOf = (expectedWad: bigint) =>
-        truncateToDecimals(formatWad((expectedWad * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000)), places);
+      const floorOf = (expectedWad: bigint) => truncateToDecimals(formatWad(slippageFloor(expectedWad)), places);
       const reserves = dex === "aquarius"
         ? aquariusReservesOf(ctx.observations, def.id === "XLM" ? out.id : def.id, ctx.now) : null;
       if (reserves) {
@@ -962,8 +960,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const derivedTokens = precise(formatWad(mulDown(statedWad, reserveDerivedWad, reserveStatedWad)), paired.id, d.name);
       const totalShareWad = decimalWad(reserves.totalShare);
       const expectedSharesWad = mulDown(statedWad, totalShareWad, reserveStatedWad);
-      const minSharesWad = (expectedSharesWad * (BigInt(10_000) - SWAP_SLIPPAGE_BPS)) / BigInt(10_000);
-      return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(minSharesWad), 7) };
+      return { amountB: derivedTokens, minLiquidityOut: truncateToDecimals(formatWad(slippageFloor(expectedSharesWad)), 7) };
     })() : null;
     const label = d.leg.op === "redeem"
       ? `Redeem ${d.tokens} ${def.id} vTokens from Earn (≈ ${d.produces} ${def.displayLabel ?? def.id})`
