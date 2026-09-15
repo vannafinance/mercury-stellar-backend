@@ -503,8 +503,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * number than the one they gave is the worst outcome available here.
    */
   const requestedBorrow = requestedBorrowFrom(messages, result.observations, observedNow);
-  if (requestedBorrow && requestedBorrow.usd === null) warnings.push(
-    `You asked to borrow ${requestedBorrow.tokens} ${requestedBorrow.asset}, but no ${requestedBorrow.asset} price was read, so that amount could not be checked against your floor.`);
   /**
    * Permission to borrow is not an instruction to borrow. "Unspecified" still offers
    * both the idle path and a levered path — the owner prompt says the copilot may take
@@ -658,6 +656,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
     }
   }
+  /**
+   * Checked against the FINAL observations for this turn, after `plan_reads` — not the
+   * snapshot from before it ran. `requestedBorrow` above is read early because the fixed
+   * shapes need it to decide whether to generate at all; the warning does not have that
+   * constraint, and checking it early meant a price `plan_reads` fetched moments later was
+   * still reported missing (15 Sep: BLUSDC's price read ok at plan_reads, ~4.7s after the
+   * copilot had already told the user it was never read).
+   */
+  const requestedBorrowNow = requestedBorrowFrom(messages, result.observations, observedNow);
+  if (requestedBorrowNow && requestedBorrowNow.usd === null) warnings.push(
+    `You asked to borrow ${requestedBorrowNow.tokens} ${requestedBorrowNow.asset}, but no ${requestedBorrowNow.asset} price was read, so that amount could not be checked against your floor.`);
   if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
     warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
   }

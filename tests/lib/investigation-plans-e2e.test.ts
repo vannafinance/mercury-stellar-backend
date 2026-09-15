@@ -243,6 +243,42 @@ describe("model proposes, code disposes — end to end", () => {
     expect(view.warnings).not.toContainEqual(expect.stringMatching(/price was read/));
   });
 
+  /**
+   * 15 Sep, live: "Deposit 50 XLM, borrow BLUSDC to HF floor 1.40" answered "You asked to
+   * borrow 1.4 BLUSDC, but no BLUSDC price was read, so that amount could not be checked
+   * against your floor" — then `plan_reads` read BLUSDC's price ~4.7s later in the SAME
+   * turn. This message names no strategy keyword (`needsMarketSeed` does not fire), so
+   * nothing seeds BLUSDC's price ahead of time the way "deploy"/"invest" wording does —
+   * `plan_reads` is the only thing that ever fetches it, and it runs AFTER the point the
+   * warning used to be checked at.
+   */
+  it("does not warn a stated borrow amount's price was never read when plan_reads fetches it moments later", async () => {
+    let turn = 0;
+    const view = await researchTurn(
+      { message: "Deposit 50 XLM, borrow BLUSDC to HF floor 1.40", wallet: SCOPE.trader, continuation: null },
+      {
+        subject: SCOPE.subject, server: "mcp-test", network: "testnet", secret: SECRET, mcp, signal: new AbortController().signal,
+        model: async () => turn++ === 0
+          ? { kind: "inspect", reads: [{ capability: "wallet_balances", args: {} }] }
+          : {
+            ...modelComplete,
+            goal: { ...modelComplete.goal, objective: "Deposit XLM and borrow BLUSDC to the floor", healthFactorFloor: { value: "1.40", sourceQuote: "HF floor 1.40" } },
+            plans: [{
+              title: "Deposit XLM, borrow BLUSDC to the floor",
+              rationale: "Deposit idle XLM (e1), then borrow BLUSDC to the stated floor.",
+              evidenceIds: ["e1"],
+              legs: [
+                { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "50", sourceQuote: "Deposit 50 XLM" } },
+                { op: "borrow", asset: "BLUSDC", sizing: { kind: "to_floor" } },
+              ],
+            }],
+          },
+      },
+    );
+    expect(mcp.call.mock.calls.map((c) => c[0])).toContain("vanna_get_price");
+    expect(view.warnings).not.toContainEqual(expect.stringMatching(/no BLUSDC price was read/));
+  });
+
   it("sizes a levered plan to the floor the model anchored when the regex parser missed it", async () => {
     // "HF stays above 1.3" parses to no floor by regex; the model reports it with the quote.
     const prompt = "Create a strategy so my HF stays above 1.3, use USDC and XLM as collateral and deploy them in farm, you can borrow";
