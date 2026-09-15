@@ -97,14 +97,15 @@ export interface PlanLeg {
   asset: string;
   sizing: PlanSizing;
   /**
-   * The asset the leg produces, when that differs from the one it spends: `token_out` of a
-   * swap. Every other op ends in the same asset it started with, so this is absent.
+   * The second asset a leg names, for the ops in `ASSET_OUT_OPS`: what a swap receives, or
+   * the token an add_liquidity leg pairs with. Every other op's `asset` is the whole leg,
+   * so this is absent.
    */
   assetOut?: string;
   /**
-   * The DEX a swap routes through — the MCP's own `venue` argument, "soroswap" or
-   * "aquarius". Absent means the registry decides: an asset that names its venue
-   * (AQUSDC is Aquarius's USDC, SOUSDC is Soroswap's) fixes it.
+   * The DEX a swap or add_liquidity leg routes through — the MCP's own `venue` argument,
+   * "soroswap" or "aquarius". Absent means the registry decides: an asset that names its
+   * venue (AQUSDC is Aquarius's USDC, SOUSDC is Soroswap's) fixes it.
    */
   venue?: import("../registry/assets").LpVenue;
 }

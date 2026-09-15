@@ -1,5 +1,5 @@
 import { lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
-import { WORKFLOW_OPS } from "../workflow/types";
+import { ASSET_OUT_OPS, WORKFLOW_OPS } from "../workflow/types";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
@@ -185,9 +185,9 @@ function parsePlan(plan: unknown): ProposedPlan | null {
      * tolerated: the plan is dropped and counted, as with every other unknown key.
      */
     if (!isRecord(leg)) return null;
-    const swaps = String(leg.op) === "swap";
+    const hasAssetOut = (ASSET_OUT_OPS as readonly string[]).includes(String(leg.op));
     // `venue` is the one optional key on a leg: absent means the registry picks the DEX.
-    const allowed = swaps
+    const allowed = hasAssetOut
       ? (Object.hasOwn(leg, "venue") ? ["op", "asset", "sizing", "assetOut", "venue"] : ["op", "asset", "sizing", "assetOut"])
       : ["op", "asset", "sizing"];
     if (!exactKeys(leg, allowed) ||
@@ -195,8 +195,8 @@ function parsePlan(plan: unknown): ProposedPlan | null {
       !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
     const sizing = parseSizing(leg.sizing);
     if (!sizing) return null;
-    if (!swaps) { legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing }); continue; }
-    // What it buys must be a known asset, and not the one it is selling.
+    if (!hasAssetOut) { legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing }); continue; }
+    // The second asset must be a known one, and not the one the leg already spends.
     if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
     if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return null;
     legs.push({

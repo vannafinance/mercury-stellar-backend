@@ -33,6 +33,24 @@ describe("research_complete plans", () => {
     expect(decision.droppedPlans).toBeUndefined();
   });
 
+  /**
+   * 15 Sep, live: "deposit 100 xlm and add it with AQUSDC to the aquarius pool" came back
+   * "1 proposed strategy shape could not be read and was not sized" — the whole plan
+   * dropped — because this parser's `assetOut`/`venue` allowlist only recognized a leg
+   * named "swap", and an add_liquidity leg (which must carry `assetOut` too, or `plan.ts`
+   * refuses it for not naming a paired token) had one key more than that allowed.
+   */
+  it("parses an add_liquidity leg with its paired asset, the same as a swap", () => {
+    const decision = parseDecision({ ...base, plans: [plan([
+      leg("deposit_collateral"), { ...leg("add_liquidity", "XLM", { kind: "previous_leg" }), assetOut: "AQUSDC" },
+    ])] });
+    expect(decision?.kind).toBe("research_complete");
+    if (decision?.kind !== "research_complete") return;
+    expect(decision.droppedPlans).toBeUndefined();
+    expect(decision.plans).toHaveLength(1);
+    expect(decision.plans![0].legs[1]).toMatchObject({ op: "add_liquidity", asset: "XLM", assetOut: "AQUSDC" });
+  });
+
   it("accepts a bare sizing word, as a model without schema enforcement would send it", () => {
     const decision = parseDecision({ ...base, plans: [plan([leg("lend", "XLM", "all_idle")])] });
     expect(decision?.kind === "research_complete" && decision.plans?.[0].legs[0].sizing).toEqual({ kind: "all_idle" });
@@ -49,7 +67,9 @@ describe("research_complete plans", () => {
     ["a swap into an asset outside the registry", [{ ...leg("swap"), assetOut: "DOGE" }]],
     ["a swap into the asset it spends", [{ ...leg("swap"), assetOut: "XLM" }]],
     ["a swap through a venue the protocol does not route to", [{ ...leg("swap"), assetOut: "BLUSDC", venue: "uniswap" }]],
-    ["assetOut on a leg that is not a swap", [{ ...leg("lend"), assetOut: "BLUSDC" }]],
+    ["assetOut on a leg that is not a swap or add_liquidity", [{ ...leg("lend"), assetOut: "BLUSDC" }]],
+    ["an add_liquidity leg with no assetOut", [leg("add_liquidity")]],
+    ["an add_liquidity leg paired with the asset it spends", [{ ...leg("add_liquidity"), assetOut: "XLM" }]],
     ["an asset outside the registry", [leg("lend", "DOGE")]],
     ["seven legs", Array.from({ length: 7 }, () => leg("lend"))],
     ["no legs", []],

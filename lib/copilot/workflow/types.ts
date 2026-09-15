@@ -11,6 +11,16 @@ export const WORKFLOW_OPS = ["lend", "redeem", "deposit_collateral", "withdraw_c
 export type WorkflowOp = (typeof WORKFLOW_OPS)[number];
 
 /**
+ * The ops whose leg names a SECOND asset — `assetOut` — because `asset` alone does not
+ * describe the whole leg: a swap changes to a different asset, add_liquidity spends a
+ * paired token too. Every other op's `asset` is the entire leg. One list, so a leg
+ * validator and a prompt schema cannot disagree about which ops may carry the field —
+ * `decision.ts`'s structural parser dropped every add_liquidity plan outright (15 Sep,
+ * live) because it still only allowed `assetOut`/`venue` on a leg named "swap".
+ */
+export const ASSET_OUT_OPS: readonly WorkflowOp[] = ["swap", "add_liquidity"];
+
+/**
  * The places a step moves value between. `wallet` and `account` hold tokens; `earn`,
  * `blend` and `debt` are positions. Each is held by one key — the G-wallet signs for its
  * own tokens and its Earn vTokens; the smart account holds everything margin-side.

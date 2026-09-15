@@ -17,7 +17,7 @@
 
 import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { ASSET_OUT_OPS, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
@@ -1244,9 +1244,12 @@ function suppliesAtRate(op: WorkflowOp): boolean {
   return rate !== null && rate !== "earn_borrow";
 }
 /**
- * A swap leg completed with the asset it buys, taken from the user's own words when the
- * model left `assetOut` off — JSON Schema cannot make a field required for one op only,
- * and Gemini skips optional fields.
+ * A swap or add_liquidity leg completed with its second asset, taken from the user's own
+ * words when the model left `assetOut` off. A full plan shape always carries it —
+ * `parsePlan` drops the whole plan otherwise — so this only ever fires on the single-leg
+ * literal actions `planFromStatedActions` builds from `goal.actions`, whose schema has no
+ * `assetOut` field at all: JSON Schema cannot make a field required for one op only there
+ * either, and Gemini skips optional fields.
  *
  * This runs ONCE, before the reads phase, because everything downstream reads the finished
  * leg: `readsForPlans` fetches the bought asset's price from it, the sizer values it, the
@@ -1255,7 +1258,7 @@ function suppliesAtRate(op: WorkflowOp): boolean {
  * price was read", a price the reads phase had never been told to ask for.
  */
 export function withBoughtAsset(plans: readonly ProposedPlan[], messages: readonly string[]): ProposedPlan[] {
-  const incomplete = (leg: PlanLeg) => leg.op === "swap" && !leg.assetOut;
+  const incomplete = (leg: PlanLeg) => (ASSET_OUT_OPS as readonly string[]).includes(leg.op) && !leg.assetOut;
   return plans.map((plan) => plan.legs.some(incomplete)
     ? {
       ...plan,
