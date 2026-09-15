@@ -88,7 +88,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(c.evidenceIds).toEqual(["e1", "e6"]);
   });
 
-  it("rejects exact-output swaps instead of treating the desired output as input", () => {
+  it("rejects an exact-output swap on Aquarius with no live pool reserves read, rather than guessing a ratio", () => {
     const result = resolvePlans([plan("Receive AQUSDC", [{
       op: "swap",
       asset: "XLM",
@@ -103,7 +103,96 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })],
     }));
     expect(result.candidates).toEqual([]);
-    expect(result.rejected[0]?.reason).toContain("exact-output swaps are not supported yet");
+    expect(result.rejected[0]?.reason).toBe("no live aquarius pool reserves were read this investigation, so an exact AQUSDC amount cannot be sized");
+  });
+
+  it("still rejects exact-output swaps outright on a venue with no reserves read at all (Soroswap)", () => {
+    const result = resolvePlans([plan("Receive SOUSDC", [{
+      op: "swap",
+      asset: "XLM",
+      assetOut: "SOUSDC",
+      sizing: {
+        kind: "literal",
+        amount: "961.4183674",
+        sourceQuote: "swap XLM to receive 961.4183674 SOUSDC",
+      },
+    }])], ctx({
+      messages: ["swap XLM to receive 961.4183674 SOUSDC"],
+      observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "SOUSDC" })],
+    }));
+    expect(result.candidates).toEqual([]);
+    expect(result.rejected[0]?.reason).toBe(
+      "exact-output swaps are not supported yet on Soroswap — SOUSDC is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much XLM to spend");
+  });
+
+  /**
+   * The write API only ever takes amount_in and min_out — never a target output — so
+   * "swap XLM to receive 961 AQUSDC" has to become an input amount before it can be sized
+   * at all. On Aquarius, with live reserves read, that inversion is exact: the same
+   * constant-product curve the pool settles by, solved for the input a given output costs.
+   */
+  describe("exact-output swaps on Aquarius are sized by inverting the pool's own curve", () => {
+    const poolObs = obs("e7", "aquarius_pool_reserves",
+      { found: true, pool: { available: true, reserves: { XLM: "100000", AQUSDC: "20000" }, total_share: "40000", fee: "0.0030" } },
+      { asset: "AQUSDC" });
+    const exactOutLeg = (amount: string, sourceQuote: string): ProposedPlan["legs"] => [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
+      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount, sourceQuote } },
+    ];
+
+    it("sizes the input the pool's curve needs for the exact output asked for", () => {
+      const { candidates, rejected } = resolvePlans([plan("Receive AQUSDC", exactOutLeg("100", "swap XLM to receive 100 AQUSDC"))], ctx({
+        messages: ["deposit my idle XLM then swap XLM to receive 100 AQUSDC"],
+        observations: [...OBSERVATIONS, obs("e7b", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), poolObs],
+      }));
+      expect(rejected).toEqual([]);
+      const swapStep = candidates[0]?.steps?.[1];
+      // inAfterFee = 100 x 100000 / (20000 - 100) = 502.5126…; in = inAfterFee / 0.997 = 504.0246…
+      expect(Number(swapStep?.amount)).toBeCloseTo(504.0246, 3);
+      expect(swapStep?.args.token_in).toBe("XLM");
+      expect(swapStep?.args.token_out).toBe("AQUSDC");
+      // Pass 3 re-quotes the SAME computed input forward, so the floor lands close to the
+      // 100 AQUSDC asked for, less the usual 0.5% slippage margin — not a separate formula.
+      expect(Number(swapStep?.args.min_out)).toBeCloseTo(99.5, 1);
+      expect(Number(swapStep?.args.min_out)).toBeLessThan(100);
+    });
+
+    it("refuses when the pool cannot pay that much at all — the output is at or past its own reserve", () => {
+      const { rejected } = resolvePlans([plan("Receive AQUSDC", exactOutLeg("20000", "swap XLM to receive 20000 AQUSDC"))], ctx({
+        messages: ["deposit my idle XLM then swap XLM to receive 20000 AQUSDC"],
+        observations: [...OBSERVATIONS, obs("e7b", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), poolObs],
+      }));
+      expect(rejected[0]?.reason).toBe("the pool holds only 20000 AQUSDC — 20000 cannot be filled from it");
+    });
+
+    it("refuses when the account cannot fund the input the exact output actually costs", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "deposit 10 xlm" } },
+        { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "previous_leg" } },
+      ];
+      // Force the funding gap with a direct literal swap instead: 10 XLM posted, but the
+      // exact-output leg needs ~504 XLM (as sized above) — far more than is in the account.
+      const direct = exactOutLeg("100", "swap XLM to receive 100 AQUSDC");
+      const { rejected } = resolvePlans([plan("Receive AQUSDC", [legs[0], direct[1]])], ctx({
+        messages: ["deposit 10 xlm then swap XLM to receive 100 AQUSDC"],
+        observations: [...OBSERVATIONS, obs("e7b", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), poolObs],
+      }));
+      expect(rejected[0]?.reason).toMatch(/^only 10 XLM is in the margin account after the legs before it — receiving 100 AQUSDC needs about 504/);
+    });
+
+    it("still refuses an exact-output request the price-impact guard would refuse as an ordinary swap", () => {
+      // Reserves too thin for the output asked for: 100,000 XLM / 2,000 AQUSDC — the
+      // input this costs (~2,572 XLM for 50 AQUSDC) still fits the wallet, so the funding
+      // check passes and the price-impact guard is what actually catches it.
+      const thin = obs("e7", "aquarius_pool_reserves",
+        { found: true, pool: { available: true, reserves: { XLM: "100000", AQUSDC: "2000" }, total_share: "4000", fee: "0.0030" } },
+        { asset: "AQUSDC" });
+      const { rejected } = resolvePlans([plan("Receive AQUSDC", exactOutLeg("50", "swap XLM to receive 50 AQUSDC"))], ctx({
+        messages: ["deposit my idle XLM then swap XLM to receive 50 AQUSDC"],
+        observations: [...OBSERVATIONS, obs("e7b", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), thin],
+      }));
+      expect(rejected[0]?.reason).toMatch(/^this pool is too thin for/);
+    });
   });
 
   it("sizes 'borrow XLM to the floor, supply it to Blend' with the closed-form sizer and reports the carry", () => {

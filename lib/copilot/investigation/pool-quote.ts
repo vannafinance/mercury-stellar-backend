@@ -114,6 +114,30 @@ export function priceImpactWad(inUsdWad: bigint, outUsdWad: bigint): bigint | nu
   return ((inUsdWad - outUsdWad) * WAD) / inUsdWad;
 }
 
+/**
+ * The input a constant-product pool needs for an EXACT output — the same curve as
+ * `constantProductOut`, solved backwards:
+ *
+ *   inAfterFee = out x reserveIn / (reserveOut - out),  in = inAfterFee / (1 - fee)
+ *
+ * Null whenever the output cannot be sized honestly: non-positive inputs, a fee outside
+ * [0, 1), or an output at or past the pool's own reserve of it (which does not fill at
+ * any finite price — a pool cannot pay out more than it holds).
+ */
+export function exactOutputIn(
+  amountOutWad: bigint,
+  reserveInWad: bigint,
+  reserveOutWad: bigint,
+  feeWad: bigint,
+): bigint | null {
+  if (amountOutWad <= ZERO || reserveInWad <= ZERO || reserveOutWad <= ZERO) return null;
+  if (feeWad < ZERO || feeWad >= WAD) return null;
+  if (amountOutWad >= reserveOutWad) return null;
+  const inAfterFeeWad = (amountOutWad * reserveInWad) / (reserveOutWad - amountOutWad);
+  if (inAfterFeeWad <= ZERO) return null;
+  return (inAfterFeeWad * WAD) / (WAD - feeWad);
+}
+
 /** The reserve of each side of a pool for a given spend direction, by registry id. */
 export function reservesForDirection(
   reserves: PoolReserves,

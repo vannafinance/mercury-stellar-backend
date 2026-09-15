@@ -26,7 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import { constantProductOut, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, type PoolReserves } from "./pool-quote";
+import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
@@ -368,9 +368,6 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     if (leg.op === "swap") {
       if (!bought) throw new Reject(name, `name the asset you want to receive — "swap ${d0(leg)} ${def.id} to BLUSDC", for instance`);
       if (bought.id === def.id) throw new Reject(name, `a swap has to change the asset — ${def.id} for ${bought.id} is the same token`);
-      if (isExactOutputSwapQuote(leg.sizing, leg.asset, bought.id)) {
-        throw new Reject(name, `exact-output swaps are not supported yet — ${bought.id} is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much ${def.id} to spend`);
-      }
       if (!bought.marginSymbol) throw new Reject(name, `${bought.id} is not accepted by the margin account, so the swap would leave it unbacked`);
       /**
        * A pair trades only where a pool holds both sides. `lpVenue` names the DEX that
@@ -387,6 +384,21 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       }
       if (leg.venue && leg.venue !== pool) {
         throw new Reject(name, `${def.id} and ${bought.id} trade on ${venueLabel(pool)}, not ${venueLabel(leg.venue)}`);
+      }
+      /**
+       * "Swap XLM to receive 961 AQUSDC" names the OUTPUT amount; the write API only takes
+       * an input amount and a floor. On Aquarius, with the pool's live reserves read, the
+       * question inverts cleanly: how much input does the pool's own curve need for that
+       * exact output — sized in the sizing dispatch below, the same as any other amount.
+       * Anywhere else, there is no curve to invert against, so it stays refused.
+       */
+      if (isExactOutputSwapQuote(leg.sizing, leg.asset, bought.id)) {
+        if (pool !== "aquarius") {
+          throw new Reject(name, `exact-output swaps are not supported yet on ${venueLabel(pool)} — ${bought.id} is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much ${def.id} to spend`);
+        }
+        if (!aquariusReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, ctx.now)) {
+          throw new Reject(name, `no live aquarius pool reserves were read this investigation, so an exact ${bought.id} amount cannot be sized`);
+        }
       }
       const boughtPrice = priceFor(bought.id, ctx.observations, ctx.now);
       if (!boughtPrice.ok) throw new Reject(name, `no ${bought.id} price was read this investigation`);
@@ -686,6 +698,46 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const tokens = precise(shareOf(formatWad(stillPosted.available), share), leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
       drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
+      continue;
+    }
+    /**
+     * Exact-output on Aquarius — "swap XLM to receive 961.4183674 AQUSDC" — solves the
+     * pool's own constant-product formula backwards: not "what does amountIn buy" but
+     * "what amountIn does this exact output cost", at the pool's live reserves and fee.
+     * The gate above already required both the venue and the reserves read, so a leg
+     * reaching here always has both; `bought` is non-null for the same reason.
+     *
+     * `tokens` becomes the computed INPUT, same as any other sizing kind — everything
+     * downstream (funding checks, the step's amount_in, Pass 3's own floor, even the price-
+     * impact guard) treats it exactly like a stated input amount, because that is what it
+     * now is. `produces` stays null, same as an ordinary swap: a swap fills at the pool's
+     * price, not a number decided in advance.
+     */
+    if (leg.op === "swap" && bought && isExactOutputSwapQuote(sizing, leg.asset, bought.id)) {
+      const stated = tokenAmountsIn(sizing.sourceQuote);
+      const quoted = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) && stated.some((n) => sameAmount(n, sizing.amount));
+      if (!quoted) throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
+      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, ctx.now)!;
+      const { inWad: reserveInWad, outWad: reserveOutWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
+      const desiredOutWad = decimalWad(sizing.amount);
+      if (desiredOutWad >= reserveOutWad) {
+        throw new Reject(name, `the pool holds only ${formatWad(reserveOutWad)} ${bought.id} — ${sizing.amount} cannot be filled from it`);
+      }
+      const amountInWad = exactOutputIn(desiredOutWad, reserveInWad, reserveOutWad, feeWad);
+      if (amountInWad === null) throw new Reject(name, `${sizing.amount} ${bought.id} cannot be sized from this pool's reserves`);
+      const tokens = precise(formatWad(amountInWad), leg.asset, name);
+      const amountWad = decimalWad(tokens);
+      // The same funding check every stated amount gets — swap always spends the account.
+      const earlier = drafts.slice(0, index).filter((d) => d.leg.asset === leg.asset);
+      const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
+      const { available } = pocketBalance("account", posted === null ? ZERO : decimalWad(posted), drafts, leg.asset);
+      if (available < amountWad) {
+        throw new Reject(name, posted === null && !earlier.length
+          ? `${verbOf(leg.op)} takes what a deposit or borrow put in the account — add that leg before it`
+          : `only ${formatWad(available)} ${leg.asset} is in the margin account${earlier.length ? " after the legs before it" : ""} — receiving ${sizing.amount} ${bought.id} needs about ${tokens}`);
+      }
+      const usd = formatWad(mulDown(amountWad, price.price, WAD));
+      drafts.push({ leg, name, usd, tokens, produces: null, heldTokens: null });
       continue;
     }
     // literal — anchored to the user's own words, exactly as goal.actions requires.
