@@ -146,13 +146,15 @@ export function findCollateralAsset(text: string): string | null {
  * An explicit borrow size, when the user gave one instead of (or beside) a multiple.
  *
  * Leverage is stripped first so "3x" never reads as a quantity — the same trap
- * findAmount guards against for the deposit slot.
+ * findAmount guards against for the deposit slot. Shorthand ("10k") is expanded the
+ * same way findAmount expands it for a deposit — this used to skip that step, so
+ * "borrow 10k XLM" read as 10, the substring before the "k" (15 Sep, findings C1/B1).
  *
  * Bare "borrow 3" (no asset) next to a deposit is leverage, not 3 tokens — see
  * {@link findLeverage}. Returning 3 here is what sized a $3 loan instead of 3×.
  */
 export function findBorrowAmount(text: string): number | null {
-  const cleaned = stripAddresses(text).replace(LEVERAGE_RE, " ");
+  const cleaned = stripAddresses(normalizeShorthandAmounts(text)).replace(LEVERAGE_RE, " ");
   const verb = cleaned.match(BORROW_VERB);
   if (!verb || verb.index == null) return null;
   let after = cleaned.slice(verb.index + verb[0].length);
@@ -170,7 +172,23 @@ export function findBorrowAmount(text: string): number | null {
     return null;
   }
   const m = after.match(/(\d+(?:\.\d+)?)/);
-  if (!m) return null;
+  if (!m || m.index == null) return null;
+  /**
+   * A health-factor floor is not a size. `matchMinHealthFactor` is the shared, canonical
+   * detector for "keep/maintain/stays above N" phrasings — reused here rather than a
+   * second regex that could disagree with it — but it is DELIBERATELY narrow beyond
+   * that: floor-anchored.test.ts documents "stays above" as a gap on purpose, because in
+   * the main pipeline the MODEL reports the floor and its quote is verified against the
+   * user's own words, not re-derived by widening this regex list. This function has no
+   * model to defer to, so for the one phrasing it cannot afford to miss — "floor" said
+   * immediately before a number, which is never a token quantity in ANY phrasing — the
+   * check is local to this function rather than a change to the shared detector's scope.
+   * Until both checks existed, "borrow BLUSDC to HF floor 1.40" read 1.40 as the borrow
+   * size (findings C1, 15 Sep): the only number in `after` IS the floor.
+   */
+  const floor = matchMinHealthFactor(after);
+  if (floor && m.index >= floor.start && m.index < floor.end) return null;
+  if (/\bfloor\b[^\d]{0,12}$/i.test(after.slice(0, m.index))) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
