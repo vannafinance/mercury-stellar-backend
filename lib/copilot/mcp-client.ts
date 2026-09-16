@@ -209,12 +209,27 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_blend_withdraw: { tool: "vanna_farm_blend", action: "withdraw" },
   vanna_list_aquarius_pools: { tool: "vanna_farm_lp", action: "list_aquarius" },
   vanna_get_aquarius_pool_stats: { tool: "vanna_farm_lp", action: "aquarius_stats" },
+  vanna_get_soroswap_pool_stats: { tool: "vanna_farm_lp", action: "soroswap_stats" },
   vanna_get_farm_lp_position: { tool: "vanna_farm_lp", action: "lp_position" },
   vanna_get_lp_balance: { tool: "vanna_farm_lp", action: "get_lp_balance" },
   vanna_add_liquidity: { tool: "vanna_farm_lp", action: "add_liquidity" },
   vanna_remove_liquidity: { tool: "vanna_farm_lp", action: "remove_liquidity" },
-  // DEX swap via margin account
-  vanna_swap: { tool: "vanna_swap", action: "swap" },
+  /**
+   * DEX swap via margin account — DELIBERATELY ABSENT from this map.
+   *
+   * `vanna_swap` was never consolidated into a dispatcher: it is still its own tool, taking
+   * flat arguments (smart_account, token_in, token_out, amount_in, min_out, trader, venue).
+   * It was listed here as `{ tool: "vanna_swap", action: "swap" }` — mapping the name to
+   * ITSELF — which still sent it down the wrapping path, so the server received
+   * `{action: "swap", kwargs: {…}}` and answered "4 validation errors for
+   * vanna_swapArguments: smart_account Field required" (15 Sep, live: every copilot swap
+   * died as "The tool response could not be confirmed", while the website's own Swap page
+   * — which never goes through this translation — worked fine).
+   *
+   * An unmapped name passes through untouched, which is what this tool needs, and is what
+   * the block comment above already describes. It was the only self-referential entry in
+   * the table; a name that maps to itself never wants the `{action, kwargs}` envelope.
+   */
   // wallet identity / balances
   vanna_get_wallet_balance: { tool: "vanna_wallet", action: "balance" },
   vanna_get_token_balance: { tool: "vanna_wallet", action: "token_balance" },
@@ -232,13 +247,21 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
   vanna_sign_and_submit: { tool: "vanna_sign", action: "sign_and_submit" },
 };
 
-/** Legacy call → the consolidated `{ name, arguments }` the server now expects. */
+/**
+ * Legacy call → the consolidated `{ name, arguments }` the server now expects.
+ *
+ * A name that maps to ITSELF is not a dispatcher entry — it is a tool that was never
+ * consolidated, and wrapping its flat arguments in `{action, kwargs}` makes the server
+ * reject the call for missing required fields (15 Sep, live, on `vanna_swap`). Such an
+ * entry is treated as unmapped rather than trusted, so the mistake cannot come back by
+ * someone re-adding the row.
+ */
 export function toServerCall(
   tool: string,
   args: Record<string, unknown>,
 ): { name: string; arguments: Record<string, unknown> } {
   const mapped = LEGACY_TOOL_MAP[tool];
-  if (!mapped) return { name: tool, arguments: args };
+  if (!mapped || mapped.tool === tool) return { name: tool, arguments: args };
   return { name: mapped.tool, arguments: { action: mapped.action, kwargs: args } };
 }
 

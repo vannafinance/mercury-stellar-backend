@@ -30,6 +30,7 @@ const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) =>
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
 const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
 const aquariusLpAssets = assets.filter((asset) => asset.lpVenue === "aquarius").map((asset) => asset.id);
+const soroswapLpAssets = assets.filter((asset) => asset.lpVenue === "soroswap").map((asset) => asset.id);
 
 function requireAsset(id: unknown) {
   const asset = assets.find((entry) => entry.id === id);
@@ -218,6 +219,15 @@ export const CATALOG: readonly CatalogEntry[] = [
         smart_account: scope.smartAccount,
         ...(def?.lpVenue ? { token_a: "XLM", token_b: def.marginSymbol ?? def.id, venue: def.lpVenue } : {}),
       };
+    },
+  },
+  {
+    name: "soroswap_pool_reserves", tool: "vanna_get_soroswap_pool_stats", scope: "public", cost: "cheap",
+    description: "Live pair reserves, fee and total LP shares for one Soroswap pair, named by the token XLM is paired with. Use to size a Soroswap swap or exact-output — the oracle says what the pair is WORTH, not what this pool will PAY, and sizing a floor from it proposes amounts the pool cannot fill.",
+    modelArgs: { asset: { type: "enum", values: soroswapLpAssets } },
+    bind: (args) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return { token_a: "XLM", token_b: def?.marginSymbol ?? def?.id ?? "" };
     },
   },
   {

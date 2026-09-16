@@ -96,6 +96,9 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
     if (!out?.marginSymbol || out.id === asset.id || !(lpVenues() as readonly string[]).includes(venue) || decimalWad(minOut) <= BigInt(0)) {
       throw new Error("write_not_allowed");
     }
+    if (step.targetOut && (venue !== "aquarius" || decimalWad(step.targetOut) !== decimalWad(minOut))) {
+      throw new Error("exact_output_floor_mismatch");
+    }
     extra = { tokenOut: out.marginSymbol, venue, minOut };
   }
   const args = writeArgsFor(step.op, symbol, step.amount, scope, extra);

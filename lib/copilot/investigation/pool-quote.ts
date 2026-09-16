@@ -44,6 +44,7 @@ export function poolReservesFrom(data: unknown): PoolReserves | null {
   if (!isRecord(data) || data.found !== true) return null;
   const pool = data.pool;
   if (!isRecord(pool) || pool.available === false || !isRecord(pool.reserves)) return null;
+  if (pool.reserves_source === "amm_api") return null;
   const entries = Object.entries(pool.reserves);
   const xlm = entries.find(([key]) => key === "XLM")?.[1];
   const paired = entries.find(([key]) => key !== "XLM")?.[1];

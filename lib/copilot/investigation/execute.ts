@@ -93,7 +93,12 @@ export async function staleSwapFloor(
   signal: AbortSignal,
 ): Promise<StaleFloorVerdict> {
   const unchanged: StaleFloorVerdict = { kind: "unchanged" };
-  if (step.op !== "swap" || step.args.venue !== "aquarius") return unchanged;
+  // Re-quote ANY swap venue, not just Aquarius. A price that moved between the plan and
+  // the approval is the normal case, and a Soroswap leg that skipped this carried its
+  // plan-time floor all the way to signing — which is how a floor sized at oracle parity
+  // reached the wallet against a pool paying less than half of it (16 Sep, live).
+  const swapVenue = typeof step.args.venue === "string" ? step.args.venue : "";
+  if (step.op !== "swap" || (swapVenue !== "aquarius" && swapVenue !== "soroswap")) return unchanged;
   const tokenIn = typeof step.args.token_in === "string" ? step.args.token_in : "";
   const tokenOut = typeof step.args.token_out === "string" ? step.args.token_out : "";
   const amountIn = typeof step.args.amount_in === "string" ? step.args.amount_in : "";
@@ -102,7 +107,11 @@ export async function staleSwapFloor(
   let reserves: PoolReserves | null = null;
   try {
     const payload = await interruptible(
-      () => mcp.call("vanna_get_aquarius_pool_stats", { token_a: tokenIn, token_b: tokenOut }, trader),
+      () => mcp.call(
+        swapVenue === "soroswap" ? "vanna_get_soroswap_pool_stats" : "vanna_get_aquarius_pool_stats",
+        { token_a: tokenIn, token_b: tokenOut },
+        trader,
+      ),
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
     // `swap_killed` is the AMM API's description of a pool, not the chain's answer, and

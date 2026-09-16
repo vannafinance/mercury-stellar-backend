@@ -77,11 +77,16 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
        * trusted for it), and a swap quotes its floor against the curve it actually settles
        * on rather than at oracle parity — the gap between the two is what the DEX refused
        * outright on 15 Sep. Soroswap needs no read to ENTER (its contract corrects an
-       * imperfect ratio itself); its swaps still fall back to the oracle quote.
+       * imperfect ratio itself), but it does to SWAP: falling back to the oracle quote
+       * there proposed "100 XLM for at least 17.4469985 SOUSDC" against a pool paying
+       * 7.4921219 (16 Sep, live). Each venue is asked for its own pool's numbers.
        */
-      if ((ASSET_OUT_OPS as readonly string[]).includes(leg.op) && leg.assetOut
-        && poolVenueFor(leg.asset, leg.assetOut) === "aquarius") {
-        want("aquarius_pool_reserves", leg.asset === "XLM" ? leg.assetOut : leg.asset);
+      const legVenue = leg.assetOut ? poolVenueFor(leg.asset, leg.assetOut) : null;
+      if ((ASSET_OUT_OPS as readonly string[]).includes(leg.op) && leg.assetOut && legVenue) {
+        want(
+          legVenue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves",
+          leg.asset === "XLM" ? leg.assetOut : leg.asset,
+        );
       }
       // A leg the account funds is checked against the account's balance, whatever its sizing word.
       if (flow.from === "account") want("account_collateral");

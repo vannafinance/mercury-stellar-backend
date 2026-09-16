@@ -144,6 +144,8 @@ export interface ProposalStep {
   label: string;
   tool: string;
   args: Record<string, unknown>;
+  /** Exact-output swap floor; never lower this when the pool moves. */
+  targetOut?: string;
   /** Absent means `stated`: never re-derive an amount whose origin was not recorded. */
   sizing?: StepSizing;
 }

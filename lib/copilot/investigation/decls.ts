@@ -125,6 +125,10 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
                         percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
                         of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
                         sourceQuote: { type: "string", description: "literal/fraction only: exact substring of the user message containing the amount or the share." },
+                        amountAsset: {
+                          type: "string", enum: ["asset", "assetOut"],
+                          description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') — asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
+                        },
                       },
                       required: ["kind"],
                     },

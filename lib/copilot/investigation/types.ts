@@ -70,7 +70,25 @@ export type PlanSizing =
   | { kind: "all_position" }
   | { kind: "to_floor" }
   | { kind: "previous_leg" }
-  | { kind: "literal"; amount: string; sourceQuote: string }
+  /**
+   * `amountAsset` names which of the leg's two assets the literal amount is denominated
+   * in — only meaningful on a swap (the only op with two assets). Absent, or "asset", means
+   * the ordinary case: the amount is what the leg spends. "assetOut" means the user stated
+   * what they want to RECEIVE ("give me 15 SOUSDC", "swap XLM to receive 961 AQUSDC") — the
+   * server inverts the DEX's own quote to size the spend, on venues where that inversion is
+   * possible, and refuses by name elsewhere.
+   *
+   * This is a structural field, not a re-derived guess: earlier, exact-output intent was
+   * inferred by regexing sourceQuote for a fixed list of phrasings ("receive", "get", "for
+   * at least"), which is the same failure mode a hardcoded vocabulary always has — a model
+   * that (correctly) understood "give me 15 SOUSDC" as a receive-amount, phrased in words
+   * the list did not enumerate, produced a leg indistinguishable from "spend 15 XLM", which
+   * was then silently executed (16 Sep, live — see PROMPT-LIBRARY.md). The model already
+   * gets the semantics right every time it is asked in its own words ("Understood as:
+   * Swap XLM to receive 15 SOUSDC"); this field lets it say so structurally instead of
+   * leaving that understanding to be reconstructed from prose downstream.
+   */
+  | { kind: "literal"; amount: string; sourceQuote: string; amountAsset?: "asset" | "assetOut" }
   /**
    * A share of what the leg draws on, as the user said it: `of: "idle"` is the wallet's
    * spendable balance, `of: "position"` the position the op spends (the Earn position, the

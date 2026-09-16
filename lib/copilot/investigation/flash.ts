@@ -147,12 +147,17 @@ redeem (all_position) takes an Earn position back to the wallet. "Get me out of 
 A swap leg is the ONLY leg with two assets: asset is what it SPENDS, assetOut is what it RECEIVES. assetOut is not
 optional on a swap — a swap without it is dropped. "swap 10 XLM to BLUSDC" is exactly:
   {"op":"swap","asset":"XLM","assetOut":"BLUSDC","sizing":{"kind":"literal","amount":"10","sourceQuote":"swap 10 XLM to BLUSDC"}}
-The current swap write accepts amount_in plus min_out, so the literal amount is normally the asset spent.
-If the user asks to receive a specified amount ("receive 961 AQUSDC" or "for at least 961 AQUSDC"), state it exactly
-that way — sizing.amount is the RECEIVED amount, quoted from their own words ("receive 961 AQUSDC"), assetOut is
-still what they receive, asset is still what they spend. The server inverts the DEX's own quote to size the spend on
-Aquarius, when the pool's live reserves were read; anywhere else it refuses by name rather than guess a ratio. Never
-convert the output amount to an estimated input yourself — that number is not real until the server sizes it.
+The current swap write accepts amount_in plus min_out, so the literal amount is normally the asset spent — leave
+sizing.amountAsset unset (or "asset") for this, the ordinary case.
+If the user states what they want to RECEIVE, in ANY wording — "receive 961 AQUSDC", "for at least 961 AQUSDC",
+"give me 15 SOUSDC", "so it gives me 15 SOUSDC", "such that I end up with 15" — set sizing.amountAsset to "assetOut".
+sizing.amount is still the figure they stated, quoted verbatim in sourceQuote; asset is still what they spend,
+assetOut is still what they receive — only amountAsset changes, to say which one the number belongs to. Judge this
+from what the user meant, not from matching a fixed phrase: getting this wrong silently swaps the wrong side, because
+nothing downstream re-checks which asset the amount was for. The server inverts the DEX's own quote to size the
+spend on Aquarius, when the pool's live reserves were read; anywhere else it refuses by name rather than guess a
+ratio. Never convert the output amount to an estimated input yourself — that number is not real until the server
+sizes it.
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
 SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.

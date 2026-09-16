@@ -17,12 +17,14 @@ import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans } from "./strategy-reads";
+import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
+import { ASSET_SYMBOL_PATTERN, lpPairs, resolveAssetDef } from "../registry/assets";
+import { WORKFLOW_OPS } from "../workflow/types";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -273,6 +275,30 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         () => computeAccountPosition(scope.smartAccount, positionSignal),
         positionSignal,
       ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const namedAssets = [...new Set([...input.message.matchAll(new RegExp(ASSET_SYMBOL_PATTERN.source, "gi"))]
+    .map((match) => resolveAssetDef(match[0])?.id).filter((id): id is NonNullable<typeof id> => !!id))];
+  const explicitOp = new RegExp(`\\b(?:${WORKFLOW_OPS.map((op) => op.replaceAll("_", " ")).join("|")})\\b`, "i").test(input.message);
+  // Whichever venue trades the named pair — a Soroswap swap needs its pool's numbers
+  // just as much as an Aquarius one, and seeding only Aquarius left Soroswap on the
+  // oracle quote (see strategy-reads.ts).
+  const namedPair = lpPairs().find((pair) => pair.tokens.every((token) => namedAssets.includes(token)));
+  const poolAsset = namedPair?.tokens[1];
+  const poolCapability = namedPair?.venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves";
+  const poolOp = /\b(?:swap|add liquidity|remove liquidity)\b/i.test(input.message);
+  const evidenceSeedRequests: StrategyRead[] = explicitOp && !needsMarketSeed(input.message)
+    ? [
+        ...namedAssets.map((asset) => ({ capability: "asset_price", args: { asset } })),
+        ...(poolOp && poolAsset ? [{ capability: poolCapability, args: { asset: poolAsset } }] : []),
+        ...(poolOp && scope.trader && scope.smartAccount ? [{ capability: "wallet_balances", args: {} }] : []),
+      ].filter((request) => !carriedObs.some((observation) => observation.capability === request.capability
+        && observation.status === "ok" && observation.args.asset === ("asset" in request.args ? request.args.asset : undefined)
+        && Date.now() - observation.observedAt <= 60_000))
+    : [];
+  const evidenceSeedTask = evidenceSeedRequests.length
+    ? collectStrategyReads(scope, scopedMcp,
+        AbortSignal.any([dependencies.signal, AbortSignal.timeout(15_000)]),
+        Date.now(), evidenceSeedRequests, "w")
+    : Promise.resolve([]);
   const withdrawTask = withdrawAsk
     ? interruptible(
         () => withdrawObservation(withdrawAsk.asset, withdrawAsk.amount, scope, scopedMcp),
@@ -374,6 +400,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ];
   } else if (haveCarriedPosition) {
     logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
+  }
+  const evidenceSeed = await evidenceSeedTask;
+  if (evidenceSeed.length) {
+    seed.push(...evidenceSeed);
+    logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
   }
   const loopStarted = Date.now();
   const result = await withInvestigationPhase("loop", () => runInvestigation({

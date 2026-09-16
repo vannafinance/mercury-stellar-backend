@@ -268,11 +268,22 @@ export async function computeSizingBasis(
   options?: SizingOptions,
   signal?: AbortSignal,
 ): Promise<SizingBasis | null> {
-  const snapshot = shared ?? (options && Object.prototype.hasOwnProperty.call(options, "app") ? options.app ?? null : await computeMarginSnapshot(smartAccount));
+  let snapshot = shared ?? null;
+  if (!snapshot && !(options && Object.prototype.hasOwnProperty.call(options, "app"))) {
+    try {
+      snapshot = await computeMarginSnapshot(smartAccount);
+    } catch (error) {
+      console.warn("[copilot] sizing app snapshot failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+    }
+  } else if (!snapshot) {
+    snapshot = options?.app ?? null;
+  }
   signal?.throwIfAborted();
   // A partially-read position produces a confidently wrong figure.
   const appUsable = snapshot !== null && snapshotIsUsable(snapshot);
-  const app = appUsable ? { grossCollateralUsd: usd(snapshot.grossCollateralValue), debtUsd: usd(snapshot.totalBorrowedValue) } : null;
+  const app = snapshot && appUsable ? { grossCollateralUsd: usd(snapshot.grossCollateralValue), debtUsd: usd(snapshot.totalBorrowedValue) } : null;
   let contract: ContractLiquidationBasis;
   try {
     contract = await resolveContractBasis(smartAccount, options, signal);

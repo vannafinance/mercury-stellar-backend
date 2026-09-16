@@ -393,11 +393,11 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * Anywhere else, there is no curve to invert against, so it stays refused.
        */
       if (leg.sizing.kind === "literal" && leg.sizing.amountAsset === "assetOut") {
-        if (pool !== "aquarius") {
-          throw new Reject(name, `exact-output swaps are not supported yet on ${venueLabel(pool)} — ${bought.id} is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much ${def.id} to spend`);
-        }
-        if (!aquariusReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, ctx.now)) {
-          throw new Reject(name, `no live aquarius pool reserves were read this investigation, so an exact ${bought.id} amount cannot be sized`);
+        // Either venue can be inverted now: both are constant product, and each has a
+        // reserves read answering in the same envelope. What cannot be inverted is a
+        // pool nobody read — that is refused by name rather than sized from a price.
+        if (!poolReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, pool, ctx.now)) {
+          throw new Reject(name, `no live ${pool} pool reserves were read this investigation, so an exact ${bought.id} amount cannot be sized`);
         }
       }
       /**
@@ -754,7 +754,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const stated = tokenAmountsIn(sizing.sourceQuote);
       const quoted = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) && stated.some((n) => sameAmount(n, sizing.amount));
       if (!quoted) throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
-      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, ctx.now)!;
+      const reserves = poolReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, poolVenueFor(def.id, bought.id) ?? "aquarius", ctx.now)!;
       const { inWad: reserveInWad, outWad: reserveOutWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
       const desiredOutWad = decimalWad(sizing.amount);
       if (decimalWad(precise(sizing.amount, bought.id, name)) !== desiredOutWad) {
@@ -1223,10 +1223,26 @@ function farmLpPositionOf(observations: readonly Observation[], asset: string, n
  * (the "XLM" key is always exactly that; whichever other key remains is the paired side)
  * rather than assume the paired token's key matches `def.marginSymbol` literally.
  */
-function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): PoolReserves | null {
+/**
+ * Reserves for the pool a swap will actually settle against, by venue.
+ *
+ * Both venues are constant product and both reads answer in the same envelope, so the
+ * same formula prices either one. Soroswap used to have no reserves read at all and was
+ * sized from the oracle instead — which is what the pair is WORTH, not what the pool will
+ * PAY. Live, 16 Sep: that offered "100 XLM for at least 17.4469985 SOUSDC" against a pool
+ * paying 7.4921219, a floor the pool could never fill.
+ */
+function poolReservesOf(
+  observations: readonly Observation[], pairedAsset: string, venue: string, now: number,
+): PoolReserves | null {
+  const capability = venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves";
   const read = [...observations].reverse().find((o) =>
-    o.capability === "aquarius_pool_reserves" && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
+    o.capability === capability && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
   return read?.data ? poolReservesFrom(read.data) : null;
+}
+
+function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): PoolReserves | null {
+  return poolReservesOf(observations, pairedAsset, "aquarius", now);
 }
 
 function aquariusPoolDataOf(observations: readonly Observation[], pairedAsset: string, now: number): Record<string, unknown> | null {

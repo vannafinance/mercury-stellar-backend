@@ -226,7 +226,14 @@ function parseSizing(raw: unknown): PlanSizing | null {
     return { kind: "leverage", multiple: value.multiple, sourceQuote: value.sourceQuote };
   }
   if (value.kind !== "literal") return exactKeys(value, ["kind"]) ? { kind: value.kind as "all_idle" | "all_position" | "to_floor" | "previous_leg" } : null;
-  if (!exactKeys(value, ["kind", "amount", "sourceQuote"]) || typeof value.amount !== "string" ||
-    value.amount.length > 60 || !/^\d+(\.\d{1,18})?$/.test(value.amount) || !text(value.sourceQuote, 1600)) return null;
-  return { kind: "literal", amount: value.amount, sourceQuote: value.sourceQuote };
+  // amountAsset is optional — every non-swap leg, and the ordinary "spend" swap, omit it.
+  const hasAmountAsset = Object.hasOwn(value, "amountAsset");
+  const literalKeys = hasAmountAsset ? ["kind", "amount", "sourceQuote", "amountAsset"] : ["kind", "amount", "sourceQuote"];
+  if (!exactKeys(value, literalKeys) || typeof value.amount !== "string" ||
+    value.amount.length > 60 || !/^\d+(\.\d{1,18})?$/.test(value.amount) || !text(value.sourceQuote, 1600) ||
+    (hasAmountAsset && value.amountAsset !== "asset" && value.amountAsset !== "assetOut")) return null;
+  return {
+    kind: "literal", amount: value.amount, sourceQuote: value.sourceQuote,
+    ...(hasAmountAsset ? { amountAsset: value.amountAsset as "asset" | "assetOut" } : {}),
+  };
 }
