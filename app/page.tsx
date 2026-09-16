@@ -292,9 +292,9 @@ export default function Home() {
   }, {} as Record<string, string>);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
-  // neutral (default) at exactly zero. Leverage uses brand purple.
+  // neutral (default) at exactly zero. Leverage matches other KPI values (white).
   const accountStatsValueColors = (() => {
-    const colors: Record<string, string> = { netLeverageTaken: "text-[#703AE6]" };
+    const colors: Record<string, string> = {};
     const pnl = accountStats.netProfitAndLoss ?? 0;
     if (pnl > 0) colors.netProfitAndLoss = "text-emerald-500";
     if (pnl < 0) colors.netProfitAndLoss = "text-rose-500";

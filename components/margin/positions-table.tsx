@@ -342,8 +342,15 @@ export const Positionstable = ({
     // opened before Mercury indexed this account (e.g. via a raw/CLI
     // transaction with no matching event) — the same failure mode fixed on
     // the Earn page's Net Earnings.
+    //
+    // Also: skip interest when every remaining borrow is sub-cent dust
+    // (Borrowed Assets already renders those as "$0") so a near-full repay
+    // doesn't leave a phantom "$0.05 Interest accrued" next to empty debt.
     let interestAccruedUsd = 0;
-    if (!historyInitialLoading) {
+    const visibleBorrowUsd = borrowedArray
+      .filter((b) => b.usdValue >= BORROW_DUST_USD)
+      .reduce((sum, b) => sum + b.usdValue, 0);
+    if (!historyInitialLoading && visibleBorrowUsd >= BORROW_DUST_USD) {
       for (const [canonical, entry] of borrowEntries) {
         const currentAmt = parseFloat(entry.balance.amount || '0');
         const interest = calculateAccruedBorrowInterest(
@@ -667,7 +674,7 @@ export const Positionstable = ({
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.2 }}
       >
         {item.leverage > 0 ? (
-          <span className="text-[#703AE6]">{item.leverage}x</span>
+          <span className={isDark ? "text-white" : "text-[#111111]"}>{item.leverage}x</span>
         ) : (
           <span className={isDark ? "text-[#666666]" : "text-[#A0A0A0]"}>
             -
@@ -841,7 +848,7 @@ export const Positionstable = ({
         <div className={`rounded-md px-3 py-2 grid grid-cols-3 gap-2 ${isDark ? "bg-[#1A1A1A]" : "bg-[#F0F0F0]"}`}>
           <div>
             <p className={lbl}>Leverage</p>
-            <p className={`text-[13px] font-semibold ${item.leverage > 0 ? "text-[#703AE6]" : isDark ? "text-[#666]" : "text-[#A0A0A0]"}`}>
+            <p className={`text-[13px] font-semibold ${item.leverage > 0 ? (isDark ? "text-white" : "text-[#111]") : isDark ? "text-[#666]" : "text-[#A0A0A0]"}`}>
               {item.leverage > 0 ? `${item.leverage}x` : "-"}
             </p>
           </div>
