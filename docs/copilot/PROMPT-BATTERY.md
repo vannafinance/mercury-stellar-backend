@@ -35,7 +35,7 @@ Legend: ✅ executable on `/copilot` today · 🟡 exists in contract + MCP + UI
 | Withdraw from Blend | `execute` → BlendController | `vanna_farm_blend · withdraw` | — | Farm (Lending) | 🟡 |
 | Deposit + borrow (one tx) | `deposit_and_borrow`, `_cross` | `vanna_margin_write · deposit_and_borrow(_cross)` | — (two legs) | Margin | 🟡 as one tx; ✅ as two |
 | Deposit + borrow + Blend (one tx) | `deposit_borrow_and_deploy_blend` | `vanna_farm_blend · deploy` | — (three legs) | Farm | 🟡 as one tx; ✅ as three |
-| Swap inside the account | `execute` → Soroswap/Aquarius controller | `vanna_swap · swap` | — | Trade › Spot | 🟡 |
+| Swap inside the account | `execute` → Soroswap/Aquarius controller | `vanna_swap · swap` | `swap` | Trade › Spot | ✅ (16 Sep: `swap` landed in `WORKFLOW_OPS` after this matrix was written — see `PROMPT-LIBRARY.md`. Aquarius refuses correctly when the venue's own pool has `swap_killed`) |
 | Add / remove LP | `execute` → Aquarius/Soroswap controller | `vanna_farm_lp · add_liquidity / remove_liquidity` | — | Farm (LP) | 🔒 risk engine does not value LP receipts (`candidates.ts`) |
 | Open / close / settle account | `create_account`, `close_account`, `settle_account` | `vanna_account_write · open/close`, `vanna_margin_write · settle` | — | Margin | 🟡 |
 | Liquidate | `liquidate` | `vanna_margin_write · liquidate` | — | — | 🟡 (not a retail action) |
@@ -49,7 +49,7 @@ Legend: ✅ executable on `/copilot` today · 🟡 exists in contract + MCP + UI
 | Auto-sign session | — | `vanna_sign · enable/disable/session_status/sign_and_submit` | executor | Copilot › Autonomy | ✅ |
 | Perps, options | — | — | — | Trade › Perps/Options | ❌ not in contract or MCP |
 
-**What the matrix says, in one line:** the contract and the MCP already cover every retail action; the copilot's execution vocabulary covers seven of them. The 🟡 rows are each one `WORKFLOW_OPS` entry plus its allowlist/risk/sizer lines (handoff §5.3). The 🔒 row is a protocol decision, not a copilot one.
+**What the matrix says, in one line:** the contract and the MCP already cover every retail action; the copilot's execution vocabulary covered seven of them when this matrix was reconciled (13 Sep) — `swap` landed in `WORKFLOW_OPS` afterward (16 Sep, `f58897b`), making eight. The remaining 🟡 rows are each one `WORKFLOW_OPS` entry plus its allowlist/risk/sizer lines (handoff §5.3). The 🔒 row is a protocol decision, not a copilot one.
 
 ---
 
@@ -134,9 +134,11 @@ Columns: **Prompt** exactly as a person types it · **Must** = the acceptable ca
 
 | # | Prompt | Must | Probes |
 |---|---|---|---|
-| G1 | swap 100 xlm to usdc | **REFUSED-CORRECTLY** — swap isn't executable on `/copilot`; Trade › Spot named; **no** clarify about which USDC first | 🟡 `swap` |
+| G1 | swap 100 xlm to usdc | ~~**REFUSED-CORRECTLY** — swap isn't executable on `/copilot`~~ **stale since 16 Sep**: `swap` is now in `WORKFLOW_OPS` (`f58897b`) — **WORKS**, a quote naming venue and floor, `usdc` resolved to the venue's own SAC (AQUSDC on Aquarius, SOUSDC on Soroswap); **no** clarify about which USDC first | ✅ `swap` — see `PROMPT-LIBRARY.md` 16 Sep entries |
 | G2 | convert my aqusdc to blusdc so I can use blend | **REFUSED-CORRECTLY** with the reason, and the manual route named | 🟡 |
 | G3 | go long xlm 3x | **REFUSED-CORRECTLY** — perps not available | ❌ |
+| G4 | swap 100 xlm to sousdc | **WORKS** — quote from the live Soroswap oracle/pool, floor stated, "Approve to run this step" | ✅ `swap` — ★ 16 Sep, `PROMPT-LIBRARY.md` |
+| G5 | swap 100 xlm to aqusdc (or for aqusdc), when the Aquarius pool has `swap_killed` | **REFUSED-CORRECTLY** — named as a venue-level pause ("swaps are paused on the router-selected Aquarius pool"), not a copilot or MCP error; nothing executed | ✅ `swap` — ★ 16 Sep, `PROMPT-LIBRARY.md`. Verified independently against Aquarius's own public AMM API, not just the MCP's read |
 
 ### H. Strategy / leverage — the founder's prompts
 

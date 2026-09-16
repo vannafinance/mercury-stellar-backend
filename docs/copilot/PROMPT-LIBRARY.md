@@ -16,6 +16,72 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `Swap 100 XLM to SOUSDC` — re-run after `20ef7d7` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-16 · app `feat/copilot-finetune` @ `f58897b` · MCP `local/mcp-integration-main` @ `20ef7d7` · signed-in `/copilot` · local MCP (composites, port 8765) · smart account `CCKITLMK…UNCTHDMC`; wallet `GBH5G2WP…U6NNOFIHA`; $312.45 idle, unposted
+- **Result:** `WORKS` — a real quote came back; not approved or executed this run
+- **Returned, verbatim:**
+  > Swap 100 XLM for at least 17.5271776 SOUSDC on Soroswap. Approve to run this step.
+  > Checked in 29s
+  > Understood as
+  > Swap 100 XLM to SOUSDC
+  > Preparing the plan: sizing every step from the sealed reads
+  > $312.45 in your account is not posted as collateral — it does not back borrowing, and it can be withdrawn without touching your health factor.
+- **Log:** 29,287 ms total. `scope` phase alone cost 13,341 ms, almost entirely one `vanna_list_my_wallet_bindings` call at 12,456 ms — the known local-only identity-token cold-mint cost (`HANDOFF-aditya-local-mcp.md` §6, `fix/mcp-identity-token-mint-cache`, closed as local-loop-only; hosted's Sign Service is reachable from Cloud Run and never hits this path). Model turn 7,557 ms. Everything else (10+ Soroban/wallet reads) ~9s combined.
+- **Right about:** quote, venue, floor and the unrelated idle-balance note are all real reads, not invented.
+- **Cause (previous entry):** fixed by `20ef7d7` below — see that entry.
+- **Battery:** G1 (needs correcting — see note), new G4 candidate (Soroswap swap quote, non-Aquarius pair).
+
+### MCP · `vanna_swap` under `MCP_TOOL_SURFACE=composites` — `20ef7d7`
+
+- **Date / commit / surface:** 2026-09-16 · MCP `local/mcp-integration-main` @ `20ef7d7` (fixes `877c88b`) · `mcp_server/tools/surface_tools.py`
+- **Result:** fix, not a prompt — recorded here because it is what turned the entry below from `ERROR` into `WORKS` above
+- **Cause:** two independent fixes for the same 15 Sep incident stopped matching. The app (`feat/copilot-finetune` @ `f58897b`) stopped wrapping `vanna_swap` in `{action, kwargs}` — see the block comment above `toServerCall` in `lib/copilot/mcp-client.ts`. The MCP's composites-only surface still registered swap as `vanna_swap_surface(action="swap", **kwargs)` (`get_surface_tools`, `include_swap_surface=True`), and FastMCP renders a bare `**kwargs: Any` parameter as a single **required** `kwargs` object — so a flat call had no such field and failed before reaching venue/quote logic at all. Confirmed live in `mercury-copilot-upgrade/copilot-dev.log`: `"1 validation error for vanna_swapArguments\nkwargs\n  Field required [type=missing, input_value={'smart_account': …, 'venue': 'soroswap'}, input_type=dict]"`. Independently reproduced against Aquarius's own public API (`amm-api-testnet.aqua.network`) that the pool-pause report in the entry two below it was unrelated and correct.
+- **Fix:** `get_surface_tools(include_swap_surface=True)` now registers the underlying flat `vanna_swap` (`_vanna_swap_impl`, already imported) directly instead of the dispatcher. Write-scope gating unaffected — `"vanna_swap"` was already in `SURFACE_WRITE_TOOLS`/`ALL_WRITE_TOOLS`, and `main.py`'s scope check gates by registered tool name, not function identity.
+- **Hosted caveat:** hosted also runs the composites surface (`HANDOFF-aditya-local-mcp.md` §6) — this was live-broken there too, since 15 Sep. Needs deploying, not just merging.
+- **Verified:** `get_surface_tools(include_swap_surface=True)` schema now flat (`smart_account, token_in, token_out, amount_in, min_out, trader, venue, fee_bps, …`); `test_surface_tool_counts` passes; live XLM→SOUSDC/soroswap call through the restarted local server returned a simulated unsigned transaction. Full suite: 599 passed, same 10 pre-existing unrelated failures.
+
+### Copilot · `Can you swap 100 xlm to SOUSDC ??` — before `20ef7d7` (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-16 · app `feat/copilot-finetune` @ `f58897b` · MCP `local/mcp-integration-main` @ `877c88b` (pre-fix) · signed-in `/copilot` · local MCP (composites, port 8765) · same account as above
+- **Result:** `ERROR` — a correct quote was shown, then execution silently died
+- **Returned, verbatim:**
+  > Swap 100 XLM for at least 17.4625657 SOUSDC on Soroswap. Approve to run this step.
+  > Checked in 16s, though it took 1m 25s to reach you
+  > Understood as
+  > Swap 100 XLM to SOUSDC.
+  > Running
+  > Can you swap 100 xlm to SOUSDC ??
+  > The tool response could not be confirmed. This step will not be repeated automatically.
+  > Execution Progress
+  > Step-by-Step Approval
+  > Swap 100 XLM for at least 17.4625657 SOUSDC on Soroswap
+  > 100 XLM
+  > $311.88 in your account is not posted as collateral — it does not back borrowing, and it can be withdrawn
+- **Right about:** the quote itself (venue, floor) was correctly computed before execution; the unrelated idle-balance note is real, just glued onto the same card with no separator, reading as if it explained the failure — it does not.
+- **Cause:** see the `vanna_swap` / composites entry above — this is the live symptom it explains. Root-caused from `copilot-dev.log`, not guessed: `write call failed, step marked uncertain { tool: 'vanna_swap', name: 'MCPCallError', message: "MCP tool 'vanna_swap' reported an error: Error executing tool vanna_swap: 1 validation error for vanna_swapArguments\nkwargs\n  Field required […]" }`.
+- **Fix:** `20ef7d7` (MCP). See entry above.
+- **Battery:** G1 (needs correcting — see note on the entry above).
+
+### Copilot · `Swap 100 XLM` (understood as `Swap 100 XLM for AQUSDC`) — Aquarius pool paused (signed-in, local MCP loop)
+
+- **Date / commit / surface:** 2026-09-16 · app `feat/copilot-finetune` @ `f58897b` · MCP `local/mcp-integration-main` @ `877c88b` · signed-in `/copilot` · local MCP (composites, port 8765) · same account as above
+- **Result:** `REFUSED-CORRECTLY` — swap_killed on the router-selected pool, independently confirmed
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Swap 100 XLM — swap XLM: swaps are paused on the router-selected Aquarius pool; nothing can be swapped there now. Nothing was executed.
+  > Checked in 17s
+  > Understood as
+  > Swap 100 XLM for AQUSDC.
+  > Options
+  > Ruled out: Swap 100 XLM. swap XLM: swaps are paused on the router-selected Aquarius pool; nothing can be swapped there now.
+  > $311.88 in your account is not posted as collateral — it does not back borrowing, and it can be withdrawn
+- **Right about:** the refusal is real, not a false negative. Verified two ways, independent of each other: (1) `vanna_get_aquarius_pool_stats(XLM, USDC)` on the local MCP returned `swap_killed: true` (`deposit_killed`/`claim_killed`: `false`) for pool `CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX`; (2) a direct, unauthenticated `curl` against Aquarius's own public API — `https://amm-api-testnet.aqua.network/pools/CD3LFMMLBQ6RBJUD3Z2LFDFE6544WDRMWHEZYPI5YDVESYRSO2TT32BX/` — returned the same `"swap_killed": true` with zero involvement from Vanna's code. Aquarius (third-party AMM) had swaps disabled on this pool at request time; deposits and claims were unaffected.
+- **Not a bug:** nothing to fix here — the guard worked as designed (`swap_killed` check landed in `877c88b` / earlier in today's session).
+- **Formatting note:** the trailing "$311.88 … not posted as collateral" line is an unrelated margin-account observation the card glues on with no separator — same cosmetic issue noted on the entry above. Worth a UI fix so an unrelated fact doesn't read as part of a refusal's reason.
+- **Battery:** new G5 candidate (venue-level pause, distinct from G1's "not executable" premise).
+
+---
+
 ### Copilot · `lend 1 xlm to earn` (signed-in, local MCP loop, approved, refused by the contract)
 
 - **Date / commit / surface:** 2026-09-14 · `feat/copilot-finetune` @ `728dba4` · signed-in `/copilot` · local MCP · wallet 3.94 XLM (3.5 chain minimum + 0.5 fee reserve → 0 spendable)
