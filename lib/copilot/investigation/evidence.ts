@@ -232,6 +232,36 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       ...(collateral ? { collateral } : {}),
     };
   }
+  /**
+   * A pool read carries the numbers a swap is quoted from, not a display summary.
+   *
+   * `compactData` is an allowlist whose fallback is `{}`, and neither pool capability had
+   * a branch — so a pool read sealed on one turn came back as an empty object on the next,
+   * and `poolReservesFrom` saw nothing. Live, 16 Sep: "the soroswap pool's live on-chain
+   * reserves were unavailable" on a pair whose reserves had just been read successfully,
+   * and the same hole made Aquarius reads warn "no supported display fields were
+   * available". Exactly the fields `poolReservesFrom` reads are kept, and no more:
+   * reserves and total_share size the quote, fee is required by the constant-product
+   * formula, and reserves_source is what proves the numbers came from the ledger rather
+   * than an indexer.
+   */
+  if (capability === "aquarius_pool_reserves" || capability === "soroswap_pool_reserves") {
+    const pool = isRecord(data.pool) ? data.pool : null;
+    if (!pool) return {};
+    return {
+      ...(data.found !== undefined ? { found: data.found } : {}),
+      pool: {
+        ...(pool.pool_address !== undefined ? { pool_address: pool.pool_address } : {}),
+        ...(pool.pool_type !== undefined ? { pool_type: pool.pool_type } : {}),
+        ...(pool.fee !== undefined ? { fee: pool.fee } : {}),
+        ...(pool.reserves !== undefined ? { reserves: pool.reserves } : {}),
+        ...(pool.total_share !== undefined ? { total_share: pool.total_share } : {}),
+        ...(pool.available !== undefined ? { available: pool.available } : {}),
+        ...(pool.reserves_source !== undefined ? { reserves_source: pool.reserves_source } : {}),
+        ...(pool.swap_killed !== undefined ? { swap_killed: pool.swap_killed } : {}),
+      },
+    };
+  }
   if (capability === "blend_markets") {
     const reserves = Array.isArray(data.reserves) ? data.reserves.flatMap((row) => {
       if (!isRecord(row)) return [];
