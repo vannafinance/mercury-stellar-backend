@@ -46,6 +46,12 @@ export interface PlanContext {
   /** Conversation, for anchoring `literal` amounts to text the user actually typed. */
   messages: readonly string[];
   /**
+   * What the user said they wanted, as the model recorded it structurally. Read here for
+   * `slippageAccepted`: a fill far below fair value is refused by default, and that
+   * refusal lifts only when the user's own words accepted it.
+   */
+  goal?: GoalUnderstanding;
+  /**
    * The margin position and the user's stated floor (null when none was stated — then the
    * contract's liquidation line is the stop and no borrow can be sized). Null as a whole
    * when the position could not be read; every account-touching leg is then rejected.
@@ -954,10 +960,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const minOut = out ? (() => {
       const places = decimals.get(out.id) ?? 7;
       const floorOf = (expectedWad: bigint) => truncateToDecimals(formatWad(slippageFloor(expectedWad)), places);
-      const reserves = dex === "aquarius"
-        ? aquariusReservesOf(ctx.observations, def.id === "XLM" ? out.id : def.id, ctx.now) : null;
-      if (dex === "aquarius" && !reserves) {
-        throw new Reject(d.name, "the Aquarius pool's live on-chain reserves were unavailable; the swap cannot be quoted safely");
+      // Whichever venue settles it, quote the pool that settles it. Gating this on
+      // Aquarius left Soroswap on oracle parity, which is a price no pool promised:
+      // 16 Sep, live, that floored 100 XLM at 17.4452676 SOUSDC against a pool paying
+      // 7.4921219, so the pre-write re-quote refused a plan that could never have run.
+      if (!dex) throw new Reject(d.name, `no pool trades ${def.id} for ${out.id}`);
+      const reserves = poolReservesOf(ctx.observations, def.id === "XLM" ? out.id : def.id, dex, ctx.now);
+      if (!reserves) {
+        throw new Reject(d.name, `the ${dex} pool's live on-chain reserves were unavailable; the swap cannot be quoted safely`);
       }
       if (reserves) {
         const { inWad, outWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
@@ -976,11 +986,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           if (spent.ok && bought.ok) {
             const inUsdWad = mulDown(decimalWad(d.tokens!), spent.price, WAD);
             const impact = priceImpactWad(inUsdWad, mulDown(quoted, bought.price, WAD));
-            if (impact !== null && impact * BigInt(100) > WAD * BigInt(MAX_PRICE_IMPACT_PCT)) {
+            // Refused unless the user said, in their own words, that they accept it.
+            // Their acceptance is a decision they are entitled to make; what this guard
+            // owes them is the number, not a veto they cannot lift. Before this, saying
+            // "i dont care if i lose, swap anyway" changed nothing: the model recorded it
+            // in `constraints`, which nothing read, and the swap was refused regardless.
+            if (impact !== null && impact * BigInt(100) > WAD * BigInt(MAX_PRICE_IMPACT_PCT)
+              && !ctx.goal?.slippageAccepted?.accepted) {
               const lost = (Number(formatWad(impact)) * 100).toFixed(2);
               throw new Reject(d.name, `this pool is too thin for ${d.tokens} ${def.id}: it would fill at about `
                 + `${truncateToDecimals(formatWad(quoted), places)} ${out.id}, ${lost}% below what ${def.id} is worth. `
-                + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`);
+                + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`
+                + `, or say you accept the loss and it will be swapped as asked`);
             }
           }
           if (d.targetOut) {

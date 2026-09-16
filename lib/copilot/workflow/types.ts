@@ -162,6 +162,12 @@ export interface WorkflowProposal {
   assumptions: string[];
   constraints: string[];
   floor: string | null;
+  /**
+   * The user accepted a fill far below fair value, in their own words. Carried from the
+   * sealed research so the decision survives to approval — the pre-write re-quote lowers
+   * the floor to the live price for them instead of refusing a trade they agreed to.
+   */
+  slippageAccepted?: boolean;
   steps: ProposalStep[];
 }
 export type StepStatus = "pending" | "invoking" | "awaiting_signature" | "submitting" | "submitted" | "settled" | "failed" | "uncertain";

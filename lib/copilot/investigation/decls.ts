@@ -56,6 +56,12 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         objective: { type: "string", description: "User objective in one sentence." },
         constraints: { type: "array", items: { type: "string" } },
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
+        slippageAccepted: {
+          type: "object",
+          description: "Only when the user has said, in their own words, that they accept a poor price or a loss on this trade — \"i dont care if i lose\", \"swap anyway\", \"any price\", \"ignore the price impact\". accepted is true; sourceQuote is the exact substring of their message that says it. Never infer it from urgency, from naming an amount, or from them simply repeating the request. Without this the server refuses a fill far below fair value; with it, the fill is theirs to take.",
+          properties: { accepted: { type: "boolean" }, sourceQuote: { type: "string" } },
+          required: ["accepted", "sourceQuote"],
+        },
         healthFactorFloor: {
           type: "object",
           description: "Only when the user stated a health-factor floor as a number. value is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent a floor; 'avoid liquidation' is not one.",

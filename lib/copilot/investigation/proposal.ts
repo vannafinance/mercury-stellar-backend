@@ -246,6 +246,7 @@ export async function proposeWorkflow(input: {
       scope, server: input.server, objective: candidate.label, messages: prior.messages,
       assumptions, constraints: capacity ? [`Health factor at or above ${capacity.floor}`] : [],
       floor: capacity?.floor ?? null, steps: compiled.steps,
+      slippageAccepted: prior.evidence?.slippageAccepted === true,
     });
     void appendAudit({
       at: now, subject: input.subject, action: "proposed",

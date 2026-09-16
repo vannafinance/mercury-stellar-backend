@@ -6,6 +6,24 @@ import type { GoalUnderstanding } from "./types";
  * messages and really contains the number. The model locates the sentence; the user's
  * own text vouches for the value. Formatted like `statedFloorFrom` so the two agree.
  */
+/**
+ * Whether the user accepted a bad fill, verified against their own words.
+ *
+ * Consent is the one thing a model must never supply on a user's behalf, so the quote it
+ * cites has to appear verbatim in a message the user actually sent — the same anchoring
+ * `anchoredGoalFloor` applies to a stated health-factor floor. A model that paraphrases,
+ * infers agreement from impatience, or quotes its own earlier sentence fails this and the
+ * protective refusal stays in place.
+ */
+export function anchoredSlippageAccepted(
+  goal: Pick<GoalUnderstanding, "slippageAccepted"> | null | undefined,
+  messages: readonly string[],
+): boolean {
+  const accepted = goal?.slippageAccepted;
+  if (!accepted?.accepted) return false;
+  return messages.some((message) => message.includes(accepted.sourceQuote));
+}
+
 export function anchoredGoalFloor(goal: Pick<GoalUnderstanding, "healthFactorFloor"> | null | undefined, messages: readonly string[]): string | null {
   const floor = goal?.healthFactorFloor;
   if (!floor) return null;

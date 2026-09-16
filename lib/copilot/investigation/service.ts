@@ -8,7 +8,7 @@ import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
-import { anchoredGoalFloor, statedFloorFrom } from "./floor";
+import { anchoredGoalFloor, anchoredSlippageAccepted, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -674,6 +674,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const resolved = resolvePlans(modelPlans, {
       scope, observations: result.observations, now: observedNow, messages,
       capacity: planPosition, borrowing, comparisons: planComparisons,
+      // Only an acceptance anchored in the user's own message counts.
+      goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
+        ? outcome.goal : undefined,
     });
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
     candidates = mergeCandidateSets(candidates, resolved);
@@ -753,6 +756,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (modelPlans.length) {
     evidence.plans = modelPlans;
     evidence.position = planPosition;
+    // Sealed with the plans it applies to, already anchored to the user's own words.
+    if (outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)) {
+      evidence.slippageAccepted = true;
+    }
     evidence.floor = statedFloor;
   }
   return {

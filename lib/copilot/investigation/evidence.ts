@@ -49,6 +49,13 @@ export interface ResearchEvidence {
    * deterministic, and the option the user clicked must be the option that compiles.
    */
   plans?: import("./types").ProposedPlan[];
+  /**
+   * The user accepted a fill far below fair value, in their own words, verified against
+   * their messages when the research was sealed. Carried here so the decision survives to
+   * approval: the pool is re-quoted before the write, and a user who accepted the loss
+   * gets the trade at the fresh price instead of a refusal they cannot lift.
+   */
+  slippageAccepted?: boolean;
   /** The margin position the plans were sized against (contract basis), the sources' disagreement if any, and the user's stated floor (null = none). */
   position?: import("./plan").PlanContext["capacity"];
   floor?: string | null;

@@ -91,6 +91,7 @@ export async function staleSwapFloor(
   mcp: Pick<MCPClient, "call">,
   trader: string,
   signal: AbortSignal,
+  slippageAccepted = false,
 ): Promise<StaleFloorVerdict> {
   const unchanged: StaleFloorVerdict = { kind: "unchanged" };
   // Re-quote ANY swap venue, not just Aquarius. A price that moved between the plan and
@@ -154,12 +155,17 @@ export async function staleSwapFloor(
   }
   const inUsdWad = mulDown(decimalWad(amountIn), inPriceWad, WAD);
   const outUsdWad = mulDown(quoted, outPriceWad, WAD);
-  if (isDangerousFill(inUsdWad, outUsdWad)) {
+  // A user who accepted the loss gets the trade, re-quoted: the floor drops to what the
+  // pool pays NOW, which is what "execute at whatever price" has to mean if it is to mean
+  // anything safe. Sending no floor at all would leave the fill to whoever moves the pool
+  // next in the same ledger, so the fresh quote — not nothing — becomes the floor.
+  if (isDangerousFill(inUsdWad, outUsdWad) && !slippageAccepted) {
     return {
       kind: "refuse",
       message: `Not submitted — the pool's price moved after you approved this, and now fills at a loss: `
         + `${tokenIn} → ${tokenOut} would settle for about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, `
-        + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. Ask again for a fresh quote.`,
+        + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. `
+        + `Ask again for a fresh quote, or say you accept the loss and it will be swapped as asked.`,
     };
   }
   return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut);
@@ -292,11 +298,17 @@ export async function advanceWorkflow(input: {
    * approved, or lowered to what the pool actually offers with a note recording it — never
    * a silent substitution the user only discovers from their balance afterward.
    */
-  const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal);
+  const acceptedLoss = stored.value.proposal.slippageAccepted === true;
+  const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal, acceptedLoss);
   if (stale.kind === "refuse") {
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
   }
-  const invocationArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  const adjustedArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
+  // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
+  const invocationArgs = acceptedLoss && step.op === "swap"
+    ? { ...adjustedArgs, acknowledged_price_impact: true }
+    : adjustedArgs;
   const note = stale.kind === "adjusted" ? stale.note : null;
 
   let build: Record<string, unknown>;

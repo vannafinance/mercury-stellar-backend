@@ -71,7 +71,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -93,6 +93,17 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     text(action.sourceQuote, 1600));
   const droppedActions = (goal.actions === undefined ? 0 : Array.isArray(goal.actions) ? goal.actions.length : 1) - validActions.length;
   // A floor is a literal: the exact decimal, inside a quote of the user's message. Anything else is no floor.
+  /**
+   * Accepted only when the model quotes the user saying it. The quote is checked against
+   * the message itself by the caller's existing anchoring, so "the user accepted a loss"
+   * cannot be something the model decided on their behalf — the one thing that must not
+   * be inferred here is consent.
+   */
+  const slippage = goal.slippageAccepted === undefined || goal.slippageAccepted === null ? undefined
+    : isRecord(goal.slippageAccepted) && exactKeys(goal.slippageAccepted, ["accepted", "sourceQuote"]) &&
+      goal.slippageAccepted.accepted === true && text(goal.slippageAccepted.sourceQuote, 400)
+      ? { accepted: true, sourceQuote: goal.slippageAccepted.sourceQuote }
+      : undefined;
   const floor = goal.healthFactorFloor === undefined || goal.healthFactorFloor === null ? undefined
     : isRecord(goal.healthFactorFloor) && exactKeys(goal.healthFactorFloor, ["value", "sourceQuote"]) &&
       typeof goal.healthFactorFloor.value === "string" && /^\d+(\.\d{1,6})?$/.test(goal.healthFactorFloor.value) &&
@@ -143,6 +154,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(goal.relation ? { relation: goal.relation as "new" | "refine" } : {}),
       ...(validActions.length ? { actions: structuredClone(validActions) as NonNullable<Extract<ResearchDecision, { kind: "research_complete" }>["goal"]["actions"]> } : {}),
       ...(floor ? { healthFactorFloor: floor } : {}),
+      ...(slippage ? { slippageAccepted: slippage } : {}),
       objective: goal.objective,
       constraints: [...goal.constraints],
       borrowing: goal.borrowing as "unspecified" | "allowed" | "required" | "forbidden",

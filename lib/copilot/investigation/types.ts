@@ -48,6 +48,15 @@ export interface GoalUnderstanding {
    * when no number was stated — "avoid liquidation" is not a floor.
    */
   healthFactorFloor?: { value: string; sourceQuote: string };
+  /**
+   * The user accepting a bad price, in their own words — "i dont care if i lose",
+   * "swap anyway". Structural, because the model already understood it: on 16 Sep it
+   * wrote "User explicitly accepts potential loss/slippage" into `constraints`, a
+   * free-text list nothing downstream reads, so the sizer, the floor and the auto-sign
+   * gate all refused a trade the user had plainly agreed to. A field it can state the
+   * decision in beats re-deriving that decision from its prose.
+   */
+  slippageAccepted?: { accepted: boolean; sourceQuote: string };
 }
 
 /** The write operations a plan may be composed from: exactly the ones the workflow can execute. */
