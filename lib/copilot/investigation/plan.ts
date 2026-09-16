@@ -26,7 +26,7 @@ import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
-import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
+import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
 import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
 import type { OpFlow } from "../workflow/types";
 
@@ -332,6 +332,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     /** What the leg leaves for the next one; differs from `tokens` only for a redeem. */
     produces: string | null;
     heldTokens: string | null;
+    targetOut?: string;
   }
   const drafts: Draft[] = [];
   for (const [index, leg] of expandLegs(plan.legs, ctx).entries()) {
@@ -391,7 +392,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * exact output — sized in the sizing dispatch below, the same as any other amount.
        * Anywhere else, there is no curve to invert against, so it stays refused.
        */
-      if (isExactOutputSwapQuote(leg.sizing, leg.asset, bought.id)) {
+      if (leg.sizing.kind === "literal" && leg.sizing.amountAsset === "assetOut") {
         if (pool !== "aquarius") {
           throw new Reject(name, `exact-output swaps are not supported yet on ${venueLabel(pool)} — ${bought.id} is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much ${def.id} to spend`);
         }
@@ -399,6 +400,22 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           throw new Reject(name, `no live aquarius pool reserves were read this investigation, so an exact ${bought.id} amount cannot be sized`);
         }
       }
+      /**
+       * `swap_killed` is NOT a refusal.
+       *
+       * It comes from Aquarius's off-chain AMM API describing a pool, and it is not what
+       * the chain enforces. Live, 16 Sep: with the flag true on the router-selected pool,
+       * the pool's own `estimate_swap` still answered, the transaction still simulated,
+       * and the website's Trade > Spot page settled a real swap on that very pool
+       * (-10 XLM / +0.12 AQUSDC, matching its quote exactly) — while the copilot refused
+       * every one of them on this line. Refusing here blocked swaps the chain accepts,
+       * and made the copilot look broken next to the site's own swap page.
+       *
+       * What actually decides now: the MCP quotes every pool the router has for the pair
+       * via each pool's own `estimate_swap`, takes the best, and refuses only when no pool
+       * can quote at all. The flag rides along as a note on the card.
+       */
+      void aquariusPoolDataOf;
       const boughtPrice = priceFor(bought.id, ctx.observations, ctx.now);
       if (!boughtPrice.ok) throw new Reject(name, `no ${bought.id} price was read this investigation`);
     }
@@ -435,6 +452,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
         throw new Reject(name, `add_liquidity on ${venueLabel(pool)} is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available`);
       }
       const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
+      const poolData = aquariusPoolDataOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
+      if (poolData?.deposit_killed === true) throw new Reject(name, "deposits are paused on the router-selected Aquarius pool");
       if (!reserves) throw new Reject(name, `no live ${pool} pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio`);
     }
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
@@ -454,8 +473,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     // Owner rule (service.ts): permission to borrow is optional, not an instruction; "unspecified"
     // still offers a levered path beside the idle one. Only an explicit prohibition rules it out.
     if (leg.op === "borrow" && ctx.borrowing === "forbidden") throw new Reject(name, "you said no new borrowing");
-    if (leg.op === "borrow" && ctx.capacity && ctx.capacity.floor === null) {
-      throw new Reject(name, "a borrow needs the health-factor floor you want kept, above the 1.1 liquidation line — tell me the number");
+    /**
+     * A floor is only REQUIRED here for `to_floor` — the sizing word that means "borrow the
+     * most the floor allows", which is meaningless without one (`sizeLegs`' own
+     * `floor_required_for_max`). A stated amount ("borrow 60 AQUSDC") or a stated multiple
+     * needs no floor at all: `sizeLegs` below prices the resulting health factor either way,
+     * against the user's floor when they gave one or against the 1.1 liquidation line when
+     * they did not, and shows the plan with that figure rather than a number nobody asked
+     * for. 15 Sep, live: "deposit 10 xlm and take 6x leverage" was refused outright here —
+     * before the sizer, which would have shown the resulting HF and let the user decide —
+     * for a floor the leg never needed, on a sizing word this check did not even name.
+     */
+    if (leg.op === "borrow" && leg.sizing.kind === "to_floor" && ctx.capacity && ctx.capacity.floor === null) {
+      throw new Reject(name, "borrowing to the floor needs the health-factor floor you want kept, above the 1.1 liquidation line — tell me the number, or state the amount and I'll show you the health factor it leaves");
     }
     // Same gate as withdraw, same reason: only the missing-contract-basis case has nothing to size from.
     if (leg.op === "borrow" && ctx.capacity?.issue?.reason === "sizing_contract_unavailable") {
@@ -706,25 +736,45 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * The gate above already required both the venue and the reserves read, so a leg
      * reaching here always has both; `bought` is non-null for the same reason.
      *
+     * `sizing.amountAsset === "assetOut"` is the model's own structural statement that
+     * `amount` is the RECEIVED figure, not the spent one — set directly from its own
+     * understanding of the request, not re-derived by matching sourceQuote against a fixed
+     * list of phrasings. A model that correctly understands "give me 15 SOUSDC" as a
+     * receive-amount, in words a hardcoded regex did not enumerate, used to fall straight
+     * through to the ordinary spend-amount path below and silently swap the wrong side (16
+     * Sep, live).
+     *
      * `tokens` becomes the computed INPUT, same as any other sizing kind — everything
      * downstream (funding checks, the step's amount_in, Pass 3's own floor, even the price-
      * impact guard) treats it exactly like a stated input amount, because that is what it
      * now is. `produces` stays null, same as an ordinary swap: a swap fills at the pool's
      * price, not a number decided in advance.
      */
-    if (leg.op === "swap" && bought && isExactOutputSwapQuote(sizing, leg.asset, bought.id)) {
+    if (leg.op === "swap" && bought && sizing.kind === "literal" && sizing.amountAsset === "assetOut") {
       const stated = tokenAmountsIn(sizing.sourceQuote);
       const quoted = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) && stated.some((n) => sameAmount(n, sizing.amount));
       if (!quoted) throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
       const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? bought.id : def.id, ctx.now)!;
       const { inWad: reserveInWad, outWad: reserveOutWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
       const desiredOutWad = decimalWad(sizing.amount);
+      if (decimalWad(precise(sizing.amount, bought.id, name)) !== desiredOutWad) {
+        throw new Reject(name, `${bought.id} cannot represent the requested output at its on-chain precision`);
+      }
       if (desiredOutWad >= reserveOutWad) {
         throw new Reject(name, `the pool holds only ${formatWad(reserveOutWad)} ${bought.id} — ${sizing.amount} cannot be filled from it`);
       }
-      const amountInWad = exactOutputIn(desiredOutWad, reserveInWad, reserveOutWad, feeWad);
+      // The input buys a small buffer; the enforced floor remains the user's exact target.
+      const bufferedOutWad = (desiredOutWad * BigInt(10_000) + BigInt(10_000) - SWAP_SLIPPAGE_BPS - BigInt(1))
+        / (BigInt(10_000) - SWAP_SLIPPAGE_BPS);
+      const amountInWad = exactOutputIn(bufferedOutWad, reserveInWad, reserveOutWad, feeWad);
       if (amountInWad === null) throw new Reject(name, `${sizing.amount} ${bought.id} cannot be sized from this pool's reserves`);
-      const tokens = precise(formatWad(amountInWad), leg.asset, name);
+      const places = decimals.get(leg.asset)!;
+      const quantum = BigInt(10) ** BigInt(18 - places);
+      let roundedInWad = ((amountInWad + quantum - BigInt(1)) / quantum) * quantum;
+      while ((constantProductOut(roundedInWad, reserveInWad, reserveOutWad, feeWad) ?? ZERO) < bufferedOutWad) {
+        roundedInWad += quantum;
+      }
+      const tokens = formatWad(roundedInWad);
       const amountWad = decimalWad(tokens);
       // The same funding check every stated amount gets — swap always spends the account.
       const earlier = drafts.slice(0, index).filter((d) => d.leg.asset === leg.asset);
@@ -736,7 +786,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : `only ${formatWad(available)} ${leg.asset} is in the margin account${earlier.length ? " after the legs before it" : ""} — receiving ${sizing.amount} ${bought.id} needs about ${tokens}`);
       }
       const usd = formatWad(mulDown(amountWad, price.price, WAD));
-      drafts.push({ leg, name, usd, tokens, produces: null, heldTokens: null });
+      drafts.push({ leg, name, usd, tokens, produces: null, heldTokens: null, targetOut: sizing.amount });
       continue;
     }
     // literal — anchored to the user's own words, exactly as goal.actions requires.
@@ -906,6 +956,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const floorOf = (expectedWad: bigint) => truncateToDecimals(formatWad(slippageFloor(expectedWad)), places);
       const reserves = dex === "aquarius"
         ? aquariusReservesOf(ctx.observations, def.id === "XLM" ? out.id : def.id, ctx.now) : null;
+      if (dex === "aquarius" && !reserves) {
+        throw new Reject(d.name, "the Aquarius pool's live on-chain reserves were unavailable; the swap cannot be quoted safely");
+      }
       if (reserves) {
         const { inWad, outWad, feeWad } = reservesForDirection(reserves, def.id === "XLM");
         const quoted = constantProductOut(decimalWad(d.tokens!), inWad, outWad, feeWad);
@@ -929,6 +982,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
                 + `${truncateToDecimals(formatWad(quoted), places)} ${out.id}, ${lost}% below what ${def.id} is worth. `
                 + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`);
             }
+          }
+          if (d.targetOut) {
+            if (quoted < decimalWad(d.targetOut)) throw new Reject(d.name, `the pool cannot currently pay ${d.targetOut} ${out.id} for the sized input`);
+            return d.targetOut;
           }
           return floorOf(quoted);
         }
@@ -983,6 +1040,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : d.leg.op === "remove_liquidity" && dex ? { venue: dex }
           : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),
+      ...(d.targetOut ? { targetOut: d.targetOut } : {}),
       // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
       sizing: { basis: "stated" },
     };
@@ -1169,6 +1227,12 @@ function aquariusReservesOf(observations: readonly Observation[], pairedAsset: s
   const read = [...observations].reverse().find((o) =>
     o.capability === "aquarius_pool_reserves" && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
   return read?.data ? poolReservesFrom(read.data) : null;
+}
+
+function aquariusPoolDataOf(observations: readonly Observation[], pairedAsset: string, now: number): Record<string, unknown> | null {
+  const read = [...observations].reverse().find((o) =>
+    o.capability === "aquarius_pool_reserves" && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
+  return isRecord(read?.data?.pool) ? read.data.pool : null;
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */
@@ -1367,16 +1431,6 @@ function assetNamedInText(messages: readonly string[], spending: string): Return
 /** The leg's own amount when it has one, for a refusal that shows the shape of the answer. */
 function d0(leg: PlanLeg): string {
   return leg.sizing.kind === "literal" ? leg.sizing.amount : "10";
-}
-
-/** Exact-output wording cannot be represented by the current amount_in/min_out write API. */
-function isExactOutputSwapQuote(sizing: PlanSizing, spending: string, receiving: string): boolean {
-  if (sizing.kind !== "literal") return false;
-  const quote = sizing.sourceQuote;
-  const amount = sizing.amount.replace(/[.,]/g, "\\$&");
-  const out = receiving.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
-  const hasReceivingAmount = new RegExp(`(?:receive|get|getting|for\\s+at\\s+least)\\s+${amount}\\s*${out}\\b`, "i").test(quote);
-  return hasReceivingAmount || new RegExp(`(?:receive|get|getting|for\\s+at\\s+least)\\s+\\d[\\d,]*(?:\\.\\d+)?\\s*${out}\\b`, "i").test(quote);
 }
 
 /** A venue as a person writes it, from its own name rather than a table of two. */

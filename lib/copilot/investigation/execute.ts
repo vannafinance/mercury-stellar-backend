@@ -105,17 +105,24 @@ export async function staleSwapFloor(
       () => mcp.call("vanna_get_aquarius_pool_stats", { token_a: tokenIn, token_b: tokenOut }, trader),
       AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
     );
+    // `swap_killed` is the AMM API's description of a pool, not the chain's answer, and
+    // refusing on it blocked swaps that settle — see the note in plan.ts. The re-quote
+    // below is the real check: it refuses when the pool cannot actually fill the floor.
     reserves = poolReservesFrom(payload);
-  } catch { return unchanged; }
-  if (!reserves) return unchanged;
+  } catch { return step.targetOut ? { kind: "refuse", message: "The live pool could not be re-quoted for the exact output you approved. Nothing was submitted." } : unchanged; }
+  if (!reserves) return step.targetOut ? { kind: "refuse", message: "The live pool reserves are unavailable for the exact output you approved. Nothing was submitted." } : unchanged;
   let quoted: bigint | null;
   let floorWad: bigint;
   try {
     const { inWad, outWad, feeWad } = reservesForDirection(reserves, tokenIn.toUpperCase() === "XLM");
     quoted = constantProductOut(decimalWad(amountIn), inWad, outWad, feeWad);
     floorWad = decimalWad(minOut);
-  } catch { return unchanged; }
-  if (quoted === null) return unchanged;
+  } catch { return step.targetOut ? { kind: "refuse", message: "The exact-output quote could not be checked. Nothing was submitted." } : unchanged; }
+  if (quoted === null) return step.targetOut ? { kind: "refuse", message: "The exact-output quote could not be checked. Nothing was submitted." } : unchanged;
+  if (step.targetOut && quoted < decimalWad(step.targetOut)) {
+    return { kind: "refuse", message: `The pool now offers about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, below the ${step.targetOut} ${tokenOut} you approved. Nothing was submitted; ask for a fresh quote.` };
+  }
+  if (step.targetOut) return unchanged;
   if (quoted >= floorWad) return unchanged;
 
   // The pool pays less than approved. Whether that is fine or dangerous is not a question
@@ -289,7 +296,16 @@ export async function advanceWorkflow(input: {
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
-  } catch {
+  } catch (error) {
+    // This catch used to be silent: a step went "uncertain" with nothing in any log
+    // explaining why, so a timeout, a transport error and a malformed payload were
+    // indistinguishable from the outside. `error` is never a broadcast proof either way,
+    // so the outcome is unchanged — only the diagnostic trail is new.
+    console.warn("[copilot] write call failed, step marked uncertain", {
+      tool: invocation.tool,
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+    });
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" }));
   }
   const hash = hashOf(build.tx_hash);
