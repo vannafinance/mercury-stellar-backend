@@ -194,6 +194,11 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.actions !== undefined) goal.actions = source.actions;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
+  // Copied by name, like every field above it. A field the model answers and this does not
+  // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:
+  // Swap 100 XLM for SOUSDC with explicit slippage acceptance" while the sizer refused the
+  // swap for slippage, because the acceptance never left this function.
+  if (source.slippageAccepted !== undefined) goal.slippageAccepted = source.slippageAccepted;
   const plans = args.plans ?? source.plans;
   return {
     kind: "research_complete",

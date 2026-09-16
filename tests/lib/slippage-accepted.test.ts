@@ -86,3 +86,49 @@ describe("parseDecision carries slippageAccepted", () => {
     expect(out && "goal" in out ? out.goal.slippageAccepted : "absent").toBeUndefined();
   });
 });
+
+/**
+ * The model's answer has to survive the hop from function-call args into `goal`.
+ *
+ * `wrapComplete` copies fields by name. A field the model answers and it does not forward
+ * is a field that silently does not exist — 16 Sep, the card said "Understood as: Swap 100
+ * XLM for SOUSDC with explicit slippage acceptance" while the sizer refused that very swap
+ * for slippage, because the acceptance was dropped between the two.
+ */
+describe("decisionFromFunctionCalls forwards the acceptance", () => {
+  it("carries slippageAccepted from the model's call into goal", async () => {
+    const { decisionFromFunctionCalls } = await import("@/lib/copilot/investigation/decls");
+    const out = decisionFromFunctionCalls([{
+      name: "research_complete",
+      args: {
+        objective: "Swap 100 XLM for SOUSDC",
+        constraints: [],
+        borrowing: "unspecified",
+        slippageAccepted: { accepted: true, sourceQuote: "i accept the loss" },
+        findings: [{ summary: "quoted", evidenceIds: [] }],
+        openQuestions: [],
+      },
+    }] as never);
+    const goal = (out as { goal: Record<string, unknown> }).goal;
+    expect(goal.slippageAccepted).toEqual({ accepted: true, sourceQuote: "i accept the loss" });
+  });
+
+  it("carries it through the nested-goal shape too", async () => {
+    const { decisionFromFunctionCalls } = await import("@/lib/copilot/investigation/decls");
+    const out = decisionFromFunctionCalls([{
+      name: "research_complete",
+      args: {
+        goal: {
+          objective: "Swap 100 XLM for SOUSDC",
+          constraints: [],
+          borrowing: "unspecified",
+          slippageAccepted: { accepted: true, sourceQuote: "i accept the loss" },
+        },
+        findings: [{ summary: "quoted", evidenceIds: [] }],
+        openQuestions: [],
+      },
+    }] as never);
+    const goal = (out as { goal: Record<string, unknown> }).goal;
+    expect(goal.slippageAccepted).toEqual({ accepted: true, sourceQuote: "i accept the loss" });
+  });
+});
