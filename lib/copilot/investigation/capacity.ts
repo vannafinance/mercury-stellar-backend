@@ -42,7 +42,7 @@ export type MarginSnapshot = Awaited<ReturnType<typeof computeMarginSnapshot>>;
 export type ContractLiquidationBasis = {
   collateralUsd: number;
   debtUsd: number;
-  liquidatable: boolean;
+  unpriceablePlain: boolean;
 };
 
 export type SizingOptions = {
@@ -150,7 +150,12 @@ export function parseLiquidationSnapshot(data: unknown): ContractLiquidationBasi
   return {
     collateralUsd: collateral,
     debtUsd: debt,
-    liquidatable: data.liquidatable === true,
+    // New MCP names the third tuple unpriceable_plain. Old MCP sent the same
+    // bool as liquidatable — keep that key so a stale server still parses.
+    unpriceablePlain:
+      typeof data.unpriceable_plain === "boolean"
+        ? data.unpriceable_plain === true
+        : data.liquidatable === true,
   };
 }
 
@@ -188,7 +193,7 @@ async function resolveContractBasis(
     return {
       collateralUsd: snap.collateralUsd,
       debtUsd: snap.debtUsd,
-      liquidatable: snap.liquidatable,
+      unpriceablePlain: snap.unpriceablePlain,
     };
   } catch {
     throw new Error("sizing_contract_unavailable");

@@ -115,9 +115,18 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       case "account_health":
       case "account_position":
       case "liquidation_snapshot": {
-        consumed.add("is_healthy").add("liquidatable").add("page_debt_mismatch").add("page_health_factor");
+        consumed.add("is_healthy").add("liquidatable").add("unpriceable_plain").add("page_debt_mismatch").add("page_health_factor");
         flag("is_healthy", "Account health status", data.is_healthy, "healthy", "at risk");
-        flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
+        flag(
+          "unpriceable_plain",
+          "Unpriceable plain collateral",
+          data.unpriceable_plain,
+          "AccountManager will refuse liquidation",
+          "plain collateral is priced",
+        );
+        if (data.unpriceable_plain === undefined) {
+          flag("liquidatable", "Liquidation snapshot flag", data.liquidatable, "liquidatable", "not liquidatable");
+        }
         if (data.page_debt_mismatch === true) {
           facts.push({
             id: `${observation.id}:page_debt_mismatch`,

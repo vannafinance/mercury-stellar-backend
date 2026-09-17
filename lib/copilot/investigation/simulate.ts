@@ -53,11 +53,15 @@ export interface PlanSimulation {
   summary: string;
 }
 
-/** The preview each venue offers, by the legacy name the transport maps to `{ tool, action: "preview" }`. */
+/** The preview each venue offers, by the legacy name the transport maps to `{ tool, action: "preview" }`.
+ * Blend supply/withdraw is valued on the same RiskEngine snapshot as margin (b-token
+ * receipt = underlying × b_rate), so it uses `vanna_preview_margin` — not a second
+ * Blend-only preview, and not a venue lock. Aquarius/Soroswap writes are margin-venue
+ * ops (`add_liquidity` / `remove_liquidity` / `swap`); those rows stay null. */
 const PREVIEW_TOOL: Record<Venue, string | null> = {
   earn: "vanna_preview_earn",
   margin: "vanna_preview_margin",
-  blend: null,
+  blend: "vanna_preview_margin",
   aquarius: null,
   soroswap: null,
 };
@@ -91,6 +95,30 @@ export function dependsOnEarlier(steps: readonly ProposalStep[], index: number):
  * (PR #6) project the exact trade that gets signed rather than a different one.
  */
 function previewArgs(step: ProposalStep, scope: Pick<InvestigationScope, "trader" | "smartAccount">): Record<string, unknown> {
+  if (step.op === "add_liquidity") {
+    return {
+      smart_account: scope.smartAccount,
+      symbol: String(step.args.token_a ?? step.asset),
+      amount: String(step.args.amount_a ?? step.amount),
+      operation: "add_liquidity",
+    };
+  }
+  if (step.op === "remove_liquidity") {
+    return {
+      smart_account: scope.smartAccount,
+      symbol: String(step.args.token_b ?? step.asset),
+      amount: String(step.args.liquidity ?? step.amount),
+      operation: "remove_liquidity",
+    };
+  }
+  if (step.op === "supply_blend" || step.op === "blend_withdraw") {
+    return {
+      smart_account: scope.smartAccount,
+      symbol: String(step.args.symbol ?? step.asset),
+      amount: String(step.args.amount ?? step.amount),
+      operation: step.op,
+    };
+  }
   const base = step.op === "swap"
     ? {
         symbol: String(step.args.token_in), amount: String(step.args.amount_in), operation: operationOf(step.op),

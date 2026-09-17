@@ -160,7 +160,7 @@ describe("researchTurn fast path", () => {
         debt_usd: "278.91",
         collateral_usd_wad: (BigInt(95380) * (BigInt(10) ** BigInt(16))).toString(),
         debt_usd_wad: (BigInt(27891) * (BigInt(10) ** BigInt(16))).toString(),
-        liquidatable: false,
+        unpriceable_plain: false,
         source: "risk_engine.liquidation_snapshot",
       })),
     };
@@ -191,7 +191,7 @@ describe("researchTurn fast path", () => {
       call: vi.fn(async () => ({
         collateral_usd: "953.80",
         debt_usd: "278.91",
-        liquidatable: false,
+        unpriceable_plain: false,
         source: "risk_engine.liquidation_snapshot",
       })),
     };
@@ -218,7 +218,7 @@ describe("researchTurn fast path", () => {
         debt_usd: "278.91",
         collateral_usd_wad: (BigInt(95380) * (BigInt(10) ** BigInt(16))).toString(),
         debt_usd_wad: (BigInt(27891) * (BigInt(10) ** BigInt(16))).toString(),
-        liquidatable: false,
+        unpriceable_plain: false,
         source: "risk_engine.liquidation_snapshot",
       })),
     };

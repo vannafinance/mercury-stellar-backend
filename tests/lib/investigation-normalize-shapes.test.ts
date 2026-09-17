@@ -114,14 +114,14 @@ describe("normalizeResearchFacts live MCP shapes", () => {
       smart_account: "CAHLZMJMMKNC2OUX2334UP3AXWEQFXHOJNQFE26M5MOIDOQNRSHQGLLJ",
       collateral_usd: "4230.94",
       debt_usd: "2705.60",
-      liquidatable: false,
+      unpriceable_plain: false,
       source: "risk_engine.liquidation_snapshot",
     }, { args: {} })]);
     expect(result.facts).toEqual(expect.arrayContaining([
       // Named by its source, so it cannot be confused with the app-side account_health figure.
       expect.objectContaining({ label: "Liquidation snapshot collateral", sourcePath: "collateral_usd", value: "4230.94", unit: "USD" }),
       expect.objectContaining({ label: "Liquidation snapshot debt", sourcePath: "debt_usd", value: "2705.60", unit: "USD" }),
-      expect.objectContaining({ label: "Liquidation snapshot flag", value: "not liquidatable" }),
+      expect.objectContaining({ label: "Unpriceable plain collateral", value: "plain collateral is priced" }),
     ]));
     expect(result.facts.some((fact) => fact.unit === "HF" || fact.sourcePath === "health_factor")).toBe(false);
     expect(result.warnings.some((warning) => noDisplayWarning.test(warning))).toBe(false);

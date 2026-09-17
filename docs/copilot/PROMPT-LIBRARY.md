@@ -16,7 +16,37 @@ Raw run JSON: `docs/copilot/runs/`.
 
 ---
 
+### Copilot · `add 10 XLM and 0.75 SOUSDC to the soroswap pool`
+
+- **Date / commit / surface:** 2026-09-17 · app `feat/copilot-finetune` @ `faf719c` · signed-in `/copilot` · local
+- **Account / auto-sign:** n/a (never reached a write)
+- **Signed-in:** yes
+- **Result:** `REFUSED-WRONGLY` at `f1963c2`; gate lifted in `faf719c` (Soroswap add uses `poolReservesOf` like Aquarius). Live add still unproven — Prepare failed in the browser before the request left it.
+- **Returned, verbatim:**
+  > I checked the shape against your position and the live rates, and none could be prepared: Add 10 XLM, then Add 0.75 SOUSDC — add liquidity XLM: add_liquidity on Soroswap is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available. Nothing was executed.
+- **Tx:** none
+- **Cause:** `lib/copilot/investigation/plan.ts` used to `throw` unless the pool was Aquarius. `faf719c` sizes either venue from the live reserves read. MCP `vanna_add_liquidity` was never the gap.
+- **Class:** stale venue gate — fixed in `faf719c`; write path still unproven end to end
+- **Reveals:** The missing-read sentence was already false as of the 16 Sep Soroswap reserves read.
+
+### MCP · 1 XLM XLM→SOUSDC `vanna_swap` on hosted `00098-bpn` (PR #11 live)
+
+- **Date / commit / surface:** 2026-09-17 · MCP `main` @ `020d0bb` (PR #11, dual envelope `32e2e69`) · hosted `vanna-mcp-server-00098-bpn` · M2M `tools/call` to `https://vanna-mcp-server-uscm2gn35a-uc.a.run.app/mcp` · account `CBOQAN5N…G5XY` / `GD4BQRQP…NPDH`
+- **Account / auto-sign:** `CBOQAN…G5XY` · n/a (M2M, not the Privy session owner)
+- **Signed-in:** n/a · MCP write from Copilot M2M token
+- **Result:** `PARTIAL` — both envelopes quoted and simulated; high-impact gate withheld without the flag; with the flag auto-sign reached but `wallet_not_bound`. No hash.
+- **Returned, verbatim:**
+  > Swap 1 XLM for at least 0.0748737 SOUSDC on soroswap … (live quote~0.07525, slippage 0.5% live Soroswap router quote) … WARNING: This pool pays about 58.84% below oracle fair value: 1 XLM is worth ~$0.18, and this fill returns ~$0.08 of SOUSDC.
+  > without flag: `auto_sign` `withheld_price_impact` · `signing_status` `needs_explicit_confirmation`
+  > wrapped `{action, kwargs}` (plus leftover `protocol`): same quote, same withhold — not `kwargs Field required`
+  > with `acknowledged_price_impact: true`: `price_impact_acknowledged` true · `auto_sign` `rejected` · `reason` `wallet_not_bound`
+- **Tx:** none · unsigned XDR only · Horizon n/a
+- **Cause:** Sign Service bind is user-keyed; M2M `sub` is the client id (`mcp-client.ts` M2M vs end-user). Same class as standing 10 Sep wallet-keyed status vs user-keyed submit.
+- **Class:** dual-envelope + venue quote + impact gate proven on hosted; landing still unproven
+- **Reveals:** Hosted composites `vanna_swap` now accepts flat and wrapped. Floor is the Soroswap router (~0.075), not oracle parity. 58.84% impact withholds auto-sign until the flag. A landed swap still needs the Privy user who owns the Sign Service session.
+
 ### Copilot · `Swap 100 XLM to SOUSDC` — re-run after `20ef7d7` (signed-in, local MCP loop)
+
 
 - **Date / commit / surface:** 2026-09-16 · app `feat/copilot-finetune` @ `f58897b` · MCP `local/mcp-integration-main` @ `20ef7d7` · signed-in `/copilot` · local MCP (composites, port 8765) · smart account `CCKITLMK…UNCTHDMC`; wallet `GBH5G2WP…U6NNOFIHA`; $312.45 idle, unposted
 - **Result:** `WORKS` — a real quote came back; not approved or executed this run

@@ -97,6 +97,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         kind: "literal",
         amount: "961.4183674",
         sourceQuote: "swap XLM to receive 961.4183674 AQUSDC",
+        amountAsset: "assetOut",
       },
     }])], ctx({
       messages: ["swap XLM to receive 961.4183674 AQUSDC"],
@@ -106,7 +107,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(result.rejected[0]?.reason).toBe("no live aquarius pool reserves were read this investigation, so an exact AQUSDC amount cannot be sized");
   });
 
-  it("still rejects exact-output swaps outright on a venue with no reserves read at all (Soroswap)", () => {
+  it("rejects an exact-output swap on Soroswap the same way when that pool was not read", () => {
     const result = resolvePlans([plan("Receive SOUSDC", [{
       op: "swap",
       asset: "XLM",
@@ -115,6 +116,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         kind: "literal",
         amount: "961.4183674",
         sourceQuote: "swap XLM to receive 961.4183674 SOUSDC",
+        amountAsset: "assetOut",
       },
     }])], ctx({
       messages: ["swap XLM to receive 961.4183674 SOUSDC"],
@@ -122,7 +124,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     }));
     expect(result.candidates).toEqual([]);
     expect(result.rejected[0]?.reason).toBe(
-      "exact-output swaps are not supported yet on Soroswap — SOUSDC is the amount you want to receive, but this route only accepts an XLM amount_in and min_out; specify how much XLM to spend");
+      "no live soroswap pool reserves were read this investigation, so an exact SOUSDC amount cannot be sized");
   });
 
   /**
@@ -137,7 +139,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       { asset: "AQUSDC" });
     const exactOutLeg = (amount: string, sourceQuote: string): ProposedPlan["legs"] => [
       { op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } },
-      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount, sourceQuote } },
+      { op: "swap", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "literal", amount, sourceQuote, amountAsset: "assetOut" } },
     ];
 
     it("sizes the input the pool's curve needs for the exact output asked for", () => {
@@ -564,14 +566,16 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       expect(candidates).toHaveLength(1);
     });
 
-    it("names a paused Aquarius swap rather than calling its reserves missing", () => {
+    it("still sizes an Aquarius swap when the AMM API's swap_killed flag is set — the chain decides, not the flag", () => {
       const paused = obs("e8", "aquarius_pool_reserves",
         { found: true, pool: { available: true, reserves_source: "soroban_balance", swap_killed: true,
           reserves: { XLM: "100000", AQUSDC: "17730" }, total_share: "40000", fee: "0.0030" } },
         { asset: "AQUSDC" });
       const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(paused));
-      expect(candidates).toEqual([]);
-      expect(rejected[0]?.reason).toBe("swaps are paused on the router-selected Aquarius pool; nothing can be swapped there now");
+      expect(rejected).toEqual([]);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]?.steps?.[1]).toMatchObject({ op: "swap", tool: "vanna_swap" });
+      expect(Number(candidates[0]?.steps?.[1].args.min_out)).toBeCloseTo(174.148, 3);
     });
 
     it("refuses an Aquarius swap when no live pool reserves were read", () => {
@@ -580,7 +584,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })],
       }));
       expect(candidates).toEqual([]);
-      expect(rejected[0]?.reason).toBe("the Aquarius pool's live on-chain reserves were unavailable; the swap cannot be quoted safely");
+      expect(rejected[0]?.reason).toBe("the aquarius pool's live on-chain reserves were unavailable; the swap cannot be quoted safely");
     });
   });
 

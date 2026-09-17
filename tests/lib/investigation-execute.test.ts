@@ -185,16 +185,20 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     if (verdict.kind === "refuse") expect(verdict.message).toContain("below the 174 AQUSDC you approved");
   });
 
-  it("refuses a paused pool at approval time without sending a write", async () => {
+  it("swap_killed on the AMM API does not block a swap the pool can still fill", async () => {
     const id = await approvedSwap();
     const seen: string[] = [];
     const mcp: McpCall = { call: async (tool) => {
       seen.push(tool);
-      return { ...poolPaying("100000", "17750"), pool: { ...poolPaying("100000", "17750").pool, swap_killed: true } };
+      if (tool === POOL) {
+        return { ...poolPaying("100000", "17750"), pool: { ...poolPaying("100000", "17750").pool, swap_killed: true } };
+      }
+      return { status: "signed_and_submitted", tx_hash: HASH };
     } };
     const view = await advance(id, mcp);
-    expect(seen).toEqual([POOL]);
-    expect(view.steps[0].message).toContain("Swaps are paused");
+    expect(seen).toEqual([POOL, "vanna_swap"]);
+    expect(view.status).toBe("completed");
+    expect(String(view.steps[0].message ?? "")).not.toMatch(/paused/i);
   });
 
   async function approvedSwap() {

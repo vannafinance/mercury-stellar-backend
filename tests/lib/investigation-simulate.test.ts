@@ -71,11 +71,46 @@ describe("simulateSteps", () => {
     expect(result.summary).toBe("Simulated against the protocol: deposit_collateral 100 XLM allowed (LTV 33.33% after); the other 3 steps follow from it and stand on the projection.");
   });
 
-  it("the Blend supply has no preview: a lone supply is unavailable, not blocked", async () => {
-    const mcp = { call: vi.fn() };
+  it("a lone Blend supply asks the RiskEngine preview, not a missing-tool skip", async () => {
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      expect(tool).toBe("vanna_preview_margin");
+      expect(args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "XLM", amount: "100", operation: "supply_blend" });
+      return { allowed: true, reason: "Supplying to Blend swaps posted tokens for a b-token receipt the RiskEngine values.",
+        projected_position: { collateral_usd: "150", debt_usd: "50", ltv_pct: "33.33", is_healthy: true } };
+    }) };
     const result = await simulateSteps([step("s0", "supply_blend", "100")], SCOPE, mcp, signal());
-    expect(mcp.call).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ verdict: "unavailable", summary: "Not simulated against the protocol: the protocol offers no preview for a supply." });
+    expect(result.verdict).toBe("runnable");
+    expect(result.steps[0].verdict).toBe("allowed");
+  });
+
+  it("add_liquidity sends the write's token_a/amount_a, not a guessed symbol/amount pair", async () => {
+    const mcp = { call: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+      expect(tool).toBe("vanna_preview_margin");
+      expect(args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "XLM", amount: "10", operation: "add_liquidity" });
+      return { allowed: true, reason: "Adding liquidity swaps posted tokens for an LP receipt the RiskEngine values.",
+        projected_position: { collateral_usd: "1000", debt_usd: "200", ltv_pct: "20", is_healthy: true } };
+    }) };
+    const lp: ProposalStep = {
+      id: "s0", op: "add_liquidity", asset: "XLM", amount: "10",
+      label: "add 10 XLM + 0.75 SOUSDC", tool: "vanna_add_liquidity",
+      args: { token_a: "XLM", token_b: "SOUSDC", amount_a: "10", amount_b: "0.75", min_liquidity_out: "1", trader: SCOPE.trader, smart_account: SCOPE.smartAccount, venue: "soroswap" },
+    };
+    const result = await simulateSteps([lp], SCOPE, mcp, signal());
+    expect(result.verdict).toBe("runnable");
+    expect(result.steps[0].verdict).toBe("allowed");
+  });
+
+  it("remove_liquidity sends the write's liquidity amount", async () => {
+    const mcp = { call: vi.fn(async (_tool: string, args: Record<string, unknown>) => {
+      expect(args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "SOUSDC", amount: "1.5", operation: "remove_liquidity" });
+      return { allowed: true, reason: "ok", projected_position: { collateral_usd: "1000", debt_usd: "200", ltv_pct: "20", is_healthy: true } };
+    }) };
+    const rm: ProposalStep = {
+      id: "s0", op: "remove_liquidity", asset: "SOUSDC", amount: "1.5",
+      label: "remove LP", tool: "vanna_remove_liquidity",
+      args: { token_a: "XLM", token_b: "SOUSDC", liquidity: "1.5", trader: SCOPE.trader, smart_account: SCOPE.smartAccount, venue: "soroswap" },
+    };
+    expect((await simulateSteps([rm], SCOPE, mcp, signal())).verdict).toBe("runnable");
   });
 });
 

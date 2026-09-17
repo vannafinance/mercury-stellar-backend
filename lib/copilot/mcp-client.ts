@@ -757,7 +757,7 @@ export function unwrapToolData(value: unknown, depth = 0): Record<string, unknow
     || "collateral_usd" in value || "debt_usd" in value || "health_factor" in value
     || "collateral" in value || "debt" in value || "total_debt_usd" in value
     || "total_value_usd" in value || "price_usd" in value || "is_healthy" in value
-    || "liquidatable" in value;
+    || "liquidatable" in value || "unpriceable_plain" in value;
   if (!hasFactKeys && Array.isArray(value.content)) {
     const text = extractText(value);
     if (text) return unwrapToolData(text, depth + 1);

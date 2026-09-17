@@ -136,7 +136,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "liquidation_snapshot", tool: "vanna_get_liquidation_snapshot", scope: "account", cost: "expensive",
-    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus the liquidatable flag. Health questions read this; it is not the Margin page snapshot.",
+    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus unpriceable_plain — true means AccountManager will refuse liquidation even if HF looks low. Not a liquidatable verdict and not the Margin page snapshot.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {
