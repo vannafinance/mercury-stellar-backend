@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { anchoredGoalFloor, statedFloorFrom } from "@/lib/copilot/investigation/floor";
 import { parseDecision } from "@/lib/copilot/investigation/decision";
-import { preBroadcastRejection } from "@/lib/copilot/investigation/execute";
+import { autoSignRefusal, preBroadcastRejection } from "@/lib/copilot/investigation/execute";
 
 const PROMPT = "Create a strategy so my HF stays above 1.3, use USDC and XLM as collateral and deploy them in farm, you can borrow";
 
@@ -56,6 +56,32 @@ describe("parseDecision healthFactorFloor", () => {
     const d = parseDecision({ ...base, goal: goal(floor) });
     expect(d?.kind).toBe("research_complete");
     expect(d?.kind === "research_complete" && d.goal.healthFactorFloor).toBeUndefined();
+  });
+});
+
+/**
+ * A budget the user armed, refusing a spend they set the limit for, is the budget
+ * working — but only if they are told which limit and how to move it. The card used to
+ * say "sign this in your wallet" for a blown cap, a dead session and an unallowlisted
+ * contract alike, which sends someone who armed a budget precisely to avoid the popup
+ * back to the popup, unable to tell which of their own caps stopped it.
+ */
+describe("autoSignRefusal", () => {
+  it("passes the Sign Service's reason through when auto sign refused", () => {
+    expect(autoSignRefusal({
+      auto_sign: "rejected",
+      reason: "over_daily_cap",
+      message: "The Sign Service refused to sign (policy: over_daily_cap). Nothing was signed.",
+    })).toMatch(/over_daily_cap/);
+  });
+
+  it("is silent when auto sign signed it, or was never armed", () => {
+    expect(autoSignRefusal({ auto_sign: "on", message: "signed" })).toBeNull();
+    expect(autoSignRefusal({ message: "no verdict here" })).toBeNull();
+  });
+
+  it("adds nothing of its own when the refusal carried no message", () => {
+    expect(autoSignRefusal({ auto_sign: "rejected", reason: "over_per_tx_cap" })).toBeNull();
   });
 });
 

@@ -360,8 +360,25 @@ export async function advanceWorkflow(input: {
   }
 
   if (result.status === "needs_wallet_sign" && result.unsigned_xdr) {
+    /**
+     * Auto sign was armed and the transaction still came back unsigned — the Sign
+     * Service refused this one. Say why.
+     *
+     * Its reason is the thing the user needs and the only thing that tells them what to
+     * do next: a spend over the per-tx or daily cap is fixed by raising the cap, an
+     * unallowlisted contract by re-enabling, a dead session by enabling again. Without
+     * it the card said "sign this in your wallet" for every one of those, and a user who
+     * had armed a budget precisely so they would not have to was left with a popup and
+     * no idea which of their own limits had stopped it.
+     *
+     * The text is MCP's own (`sign_tools.maybe_auto_sign`), passed through rather than
+     * re-derived here: the Sign Service owns that vocabulary, it grows on their side,
+     * and a copy of it here would be a list to keep in step and get wrong.
+     */
+    const refusal = autoSignRefusal(build);
     record = await journal.invocationResult(input.id, identity, step.id, {
-      kind: "unsigned", unsignedXdr: result.unsigned_xdr, note: note ?? undefined,
+      kind: "unsigned", unsignedXdr: result.unsigned_xdr,
+      note: [note, refusal].filter(Boolean).join(" ") || undefined,
     });
     return workflowView(record);
   }
@@ -370,6 +387,23 @@ export async function advanceWorkflow(input: {
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
+}
+
+/**
+ * Why auto sign did not sign this one — MCP's own sentence, or null when it signed or
+ * was never armed.
+ *
+ * `auto_sign` is the Sign Service's verdict on this transaction: "on" when it signed,
+ * and anything else ("rejected" over a cap or an allowlist, "disabled" with no session,
+ * "unavailable" when unreachable) when it did not. Only the refusals carry a message,
+ * and it is passed through verbatim — which reason exists, and what to do about each,
+ * is the Sign Service's to say, not something this file should keep its own copy of.
+ */
+export function autoSignRefusal(build: Record<string, unknown>): string | null {
+  const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
+  if (!verdict || verdict === "on") return null;
+  const message = typeof build.message === "string" ? build.message.trim() : "";
+  return message || null;
 }
 
 /** The MCP's own message when its envelope proves nothing was broadcast; null otherwise. */

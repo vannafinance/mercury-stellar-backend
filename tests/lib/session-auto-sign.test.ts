@@ -137,14 +137,27 @@ describe("shouldSessionAutoSubmit", () => {
 });
 
 describe("shouldAutoApproveProposedWorkflow", () => {
-  it("auto-approves a proposed non-swap journal when session signing is on", () => {
+  /**
+   * Arming the capped signer skips the wallet popup on a plan the user approved. It is
+   * not agreement to the plan, and it used to be read as both: with the switch on,
+   * "deposit my idle XLM and supply it to Blend" sized itself and settled with nothing
+   * to click (17 Sep, live). The rail promises the prompt goes away, not the review.
+   */
+  it("does not auto-click a non-swap plan — the signing prompt is what auto sign skips", () => {
     expect(
       shouldAutoApproveProposedWorkflow({
         sessionSigning: true,
         status: "proposed",
         steps: [{ op: "borrow" }],
       }),
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "deposit_collateral" }, { op: "supply_blend" }],
+      }),
+    ).toBe(false);
   });
 
   it("does not auto-click a swap plan — that click is the price-impact acknowledgement", () => {
@@ -173,6 +186,17 @@ describe("shouldAutoApproveProposedWorkflow", () => {
         slippageAccepted: true,
       }),
     ).toBe(true);
+  });
+
+  it("does not auto-click an accepted plan with no swap in it", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "borrow" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(false);
   });
 
   it("still refuses when session signing is off, accepted or not", () => {

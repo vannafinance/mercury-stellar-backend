@@ -62,16 +62,22 @@ export function shouldSessionAutoSubmit(opts: {
 }
 
 /**
- * Auto-clicking Approve on a proposed journal that contains a swap would send
- * `acknowledged_price_impact` without a human seeing the fill. The user must
- * click that card; later hops (unsigned XDR after approval) may still auto-sign.
+ * Auto sign skips the SIGNING prompt, not the plan.
  *
- * `slippageAccepted` is the one exception, and it is not a weaker rule — it is the
- * same rule satisfied earlier. The proposal carries it only when the user's own words
- * accepted this fill before it was sealed (anchored verbatim in `service.ts`), so a
- * human did state a decision about this price; asking them to click again says the
- * words did not count. The flag is sent on that same condition, so a swap nobody
- * accepted still reaches MCP without it and is still withheld there.
+ * Both were skipped before, so with the switch on, "deposit my idle XLM and supply it
+ * to Blend" sized itself and settled with nothing to click — the user saw the result,
+ * never the plan (17 Sep: `vanna_deposit_collateral` and `vanna_blend_supply` executed
+ * that way, on a turn where nothing had been agreed to). Arming a capped signer is
+ * consent to skip the wallet popup on a plan you approved; it is not consent to the
+ * plan. The rail says as much — "cleared writes run without a prompt" is about the
+ * prompt, and clearing the Sign Service policy is a cap on size, never agreement to
+ * the trade.
+ *
+ * One case still needs no click: a swap whose proposal carries `slippageAccepted`.
+ * That flag is set only from the user's own words, matched verbatim against a message
+ * they sent, and only for a fill they were shown. They have already stated a decision
+ * about this exact price, so a click would ask them to agree twice — the dead end that
+ * left an accepted swap unexecutable. Every other plan, swap or not, waits.
  */
 export function shouldAutoApproveProposedWorkflow(opts: {
   sessionSigning: boolean;
@@ -81,8 +87,7 @@ export function shouldAutoApproveProposedWorkflow(opts: {
 }): boolean {
   if (!opts.sessionSigning) return false;
   if (opts.status !== "proposed") return false;
-  if (opts.steps?.some((step) => step.op === "swap") && opts.slippageAccepted !== true) return false;
-  return true;
+  return opts.slippageAccepted === true && !!opts.steps?.some((step) => step.op === "swap");
 }
 
 /**
