@@ -1,3 +1,5 @@
+import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
+
 /**
  * Client session auto-approve (Privy embedded wallet silent-sign of MCP XDR).
  *
@@ -60,6 +62,22 @@ export function shouldSessionAutoSubmit(opts: {
 }
 
 /**
+ * Auto-clicking Approve on a proposed journal that contains a swap would send
+ * `acknowledged_price_impact` without a human seeing the fill. The user must
+ * click that card; later hops (unsigned XDR after approval) may still auto-sign.
+ */
+export function shouldAutoApproveProposedWorkflow(opts: {
+  sessionSigning: boolean;
+  status?: string | null;
+  steps?: Array<{ op?: string | null }>;
+}): boolean {
+  if (!opts.sessionSigning) return false;
+  if (opts.status !== "proposed") return false;
+  if (opts.steps?.some((step) => step.op === "swap")) return false;
+  return true;
+}
+
+/**
  * Promote needs_auto_sign → needs_wallet_sign when an XDR is present so the
  * existing staged + auto-submit path runs (no enable-auto-sign panel).
  */
@@ -107,6 +125,23 @@ export function shouldArmAutoApprove(opts: {
 
 export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound";
 
+export type SignServiceRailState = {
+  status: SignServiceRailStatus;
+  reason: string | null;
+};
+
+export function hasAuthenticatedPrivyHeader(headers: Record<string, string>): boolean {
+  return Boolean(headers[PRIVY_TOKEN_HEADER]?.trim());
+}
+
+/** Keep the last conclusive server state when a refresh is unavailable/transient. */
+export function preserveLastConclusiveSignState(
+  current: SignServiceRailState,
+  next: SignServiceRailState,
+): SignServiceRailState {
+  return next.status === "unavailable" && current.status !== "unknown" ? current : next;
+}
+
 /**
  * Map a Sign Service session read (`auto_sign.action = status`) onto the
  * Autonomy rail. `ok` is the only status that may show "Budget active".
@@ -137,7 +172,10 @@ export function signServiceFromSessionRead(res: {
   if (res.kind === "error" || err) {
     return {
       status: "unavailable",
-      reason: err || String(res.message ?? "error"),
+      reason:
+        err === "legacy_identity_reconnect_required"
+          ? res.message?.trim() || "Reconnect the MCP while signed in with Privy."
+          : err || String(res.message ?? "error"),
     };
   }
   const enabled = facts.enabled === true || facts.status === "enabled";

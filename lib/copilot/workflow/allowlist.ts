@@ -22,7 +22,7 @@ export function writeArgsFor(
   symbol: string,
   amount: string,
   scope: Pick<InvestigationScope, "trader" | "smartAccount">,
-  extra?: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string },
+  extra?: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean },
 ): Record<string, unknown> {
   if (op === "add_liquidity") {
     // vanna_add_liquidity(smart_account, token_a, token_b, amount_a, amount_b, min_liquidity_out, trader, venue)
@@ -44,10 +44,15 @@ export function writeArgsFor(
   }
   if (op === "swap") {
     // vanna_swap(smart_account, token_in, token_out, amount_in, min_out, trader, venue)
-    return {
+    // `acknowledged_price_impact` is frozen onto the proposal and sent only when
+    // the user approves that card — MCP withholds Sign Service auto-sign above
+    // 10% impact unless this flag is true.
+    const args: Record<string, unknown> = {
       smart_account: scope.smartAccount, token_in: symbol, token_out: extra?.tokenOut ?? "",
       amount_in: amount, min_out: extra?.minOut ?? "", trader: scope.trader, venue: extra?.venue ?? DEFAULT_SWAP_VENUE,
     };
+    if (extra?.acknowledgedPriceImpact) args.acknowledged_price_impact = true;
+    return args;
   }
   return WALLET_OPS.includes(op)
     ? { symbol, amount, lender: scope.trader }
@@ -62,7 +67,7 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
   if (!asset || asset.id !== step.asset) throw new Error("invalid_write_asset");
   const symbol = WALLET_OPS.includes(step.op) ? asset.earnSymbol : asset.marginSymbol;
   if (!symbol || (OP_FLOW[step.op].venue === "blend" && !asset.blendReserve)) throw new Error("write_not_allowed");
-  let extra: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string } | undefined;
+  let extra: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean } | undefined;
   /**
    * Entering a pool names the other side of the pair and the paired amount the sizer
    * derived for it — the ratio is not the model's to guess, and never re-derived here from
@@ -99,7 +104,12 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
     if (step.targetOut && (venue !== "aquarius" || decimalWad(step.targetOut) !== decimalWad(minOut))) {
       throw new Error("exact_output_floor_mismatch");
     }
-    extra = { tokenOut: out.marginSymbol, venue, minOut };
+    extra = {
+      tokenOut: out.marginSymbol,
+      venue,
+      minOut,
+      ...(step.args.acknowledged_price_impact === true ? { acknowledgedPriceImpact: true } : {}),
+    };
   }
   const args = writeArgsFor(step.op, symbol, step.amount, scope, extra);
   if (!WALLET_OPS.includes(step.op) && !scope.smartAccount) throw new Error("write_not_allowed");

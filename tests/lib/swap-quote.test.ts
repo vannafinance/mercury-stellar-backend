@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { dexWireSymbol, liveUsdLabel, oracleSwapRateLabel, quoteDexSwap, swapFillRateLabel } from "@/lib/copilot/swap-quote";
+import { dexWireSymbol, liveUsdLabel, oracleSwapRateLabel, quoteDexSwap, SWAP_IMPACT_CONFIRM_PCT, swapFillRateLabel, swapPriceImpact, usdPriceFromOracleBatch } from "@/lib/copilot/swap-quote";
 
 vi.mock("@/lib/soroswap-utils", () => ({
   SoroswapService: {
@@ -41,5 +41,39 @@ describe("DEX swap quotes match Trade/Spot (router, not oracle)", () => {
   it("formats Farm-style live USD next to the tx hash", () => {
     expect(liveUsdLabel(30, "BLUSDC", 1.000333)).toBe("30 BLUSDC ≈ $30.01");
     expect(liveUsdLabel(0, "BLUSDC", 1)).toBeNull();
+  });
+});
+
+describe("swap price impact matches MCP bands", () => {
+  it("treats a ~57% thin-pool fill as high", () => {
+    const impact = swapPriceImpact({
+      amountIn: 100,
+      expectedOut: 7.49,
+      tokenIn: "XLM",
+      tokenOut: "SOUSDC",
+      priceInUsd: 0.175,
+      priceOutUsd: 1,
+    });
+    expect(impact.level).toBe("high");
+    expect(impact.pct).toBeGreaterThan(SWAP_IMPACT_CONFIRM_PCT);
+    expect(impact.warning).toMatch(/below oracle fair value/);
+  });
+
+  it("reports unknown rather than 0% when a price is missing", () => {
+    expect(
+      swapPriceImpact({
+        amountIn: 10,
+        expectedOut: 1.7,
+        tokenIn: "XLM",
+        tokenOut: "USDC",
+        priceInUsd: null,
+        priceOutUsd: 1,
+      }).level,
+    ).toBe("unknown");
+  });
+
+  it("reads USDC-family aliases from a prices batch", () => {
+    expect(usdPriceFromOracleBatch({ prices: { USDC: { price_usd: "1" } } }, "SOUSDC")).toBe(1);
+    expect(usdPriceFromOracleBatch({ XLM: { price_usd: "0.18" } }, "XLM")).toBe(0.18);
   });
 });

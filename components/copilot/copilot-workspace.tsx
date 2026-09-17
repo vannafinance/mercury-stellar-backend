@@ -33,7 +33,7 @@ import {
   refreshBorrowedBalances,
   isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
-import { useCopilotSettingsStore, setAutoApprove } from "@/store/copilot-settings";
+import { setAutoApprove } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
@@ -53,8 +53,10 @@ import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
+  shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
+  preserveLastConclusiveSignState,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -1436,7 +1438,6 @@ export function CopilotWorkspace() {
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
   const storeCollateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
   const storeBorrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
-  const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
@@ -1833,9 +1834,10 @@ export function CopilotWorkspace() {
    * been asked for, and it has a button.
    */
   const [signServiceState, setSignServiceState] = useState<{
+    address: string | null;
     status: "unknown" | "ok" | "unavailable" | "unbound";
     reason: string | null;
-  }>({ status: "unknown", reason: null });
+  }>({ address: null, status: "unknown", reason: null });
 
   /**
    * The in-app consent is running (Privy may be showing its own sheet).
@@ -1847,7 +1849,10 @@ export function CopilotWorkspace() {
   const [bindingInApp, setBindingInApp] = useState(false);
 
   /** Whether anything server-side is actually holding the caps. */
-  const capsEnforced = signServiceState.status === "ok";
+  const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
+  // The browser value is only a display cache. The Sign Service session is the
+  // authority, so a switch changed by MCP is reflected here after the read.
+  const autoApprove = capsEnforced;
 
   /**
    * On wallet connect, read the live Sign Service session. Without this the rail
@@ -1857,14 +1862,18 @@ export function CopilotWorkspace() {
    */
   useEffect(() => {
     if (!address || !sessionSigningAvailable) {
-      setSignServiceState({ status: "unknown", reason: null });
+      setSignServiceState({ address: null, status: "unknown", reason: null });
       return;
     }
     let cancelled = false;
     const seq = ++signReadSeq.current;
-    setSignServiceState({ status: "unknown", reason: null });
+    let readController: AbortController | null = null;
+    setSignServiceState({ address, status: "unknown", reason: null });
     let attempts = 0;
     const run = async () => {
+      readController?.abort();
+      const controller = new AbortController();
+      readController = controller;
       try {
         const headers = await copilotRequestHeaders();
         if (cancelled || seq !== signReadSeq.current) return;
@@ -1881,11 +1890,25 @@ export function CopilotWorkspace() {
             surface: "copilot",
             auto_sign: { action: "status" },
           }),
+          signal: controller.signal,
         });
         const data = (await res.json()) as ChatResponse;
         if (cancelled || seq !== signReadSeq.current) return;
         const next = signServiceFromSessionRead(data);
-        setSignServiceState({ status: next.status, reason: next.reason });
+        // An unavailable/transient read is not proof that a previously conclusive
+        // wallet-global session was revoked. Keep the last server-confirmed state.
+        setSignServiceState((current) => {
+          const currentForWallet =
+            current.address === address
+              ? current
+              : { address, status: "unknown" as const, reason: null };
+          const stable = preserveLastConclusiveSignState(currentForWallet, next);
+          return { address, ...stable };
+        });
+        if (next.status === "unavailable") return;
+        if (address) {
+          setAutoApprove(address, next.status === "ok");
+        }
         if (next.caps) {
           try {
             localStorage.setItem(
@@ -1900,14 +1923,21 @@ export function CopilotWorkspace() {
           }
           setSavedCaps({ tx: next.caps.tx, day: next.caps.day });
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
         // A failed read is not evidence the Sign Service is down — leave unknown
         // so the enable path still works.
       }
     };
     void run();
+    const poll = window.setInterval(() => void run(), 15_000);
+    const onFocus = () => void run();
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
+      readController?.abort();
+      window.clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
     };
   }, [address, sessionSigningAvailable]);
   /**
@@ -2495,9 +2525,9 @@ export function CopilotWorkspace() {
         if (address) {
           if (/\bauto-sign disabled\b/i.test(data.message || "")) {
             setAutoApprove(address, false);
-            setSignServiceState({ status: "unknown", reason: null });
+            setSignServiceState({ address, status: "unknown", reason: null });
           } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
-            setSignServiceState({ status: "ok", reason: null });
+            setSignServiceState({ address, status: "ok", reason: null });
             setAutoApprove(address, true);
           }
         }
@@ -2706,7 +2736,15 @@ export function CopilotWorkspace() {
     if (!sessionSigning) return;
     const view = workflow.view;
     if (!view || workflow.loading || workflow.error) return;
-    if (view.status !== "proposed") return;
+    if (
+      !shouldAutoApproveProposedWorkflow({
+        sessionSigning,
+        status: view.status,
+        steps: view.steps,
+      })
+    ) {
+      return;
+    }
     if (approvedJournalRef.current === view.id) return;
     approvedJournalRef.current = view.id;
     void workflow.approve();
@@ -2806,14 +2844,14 @@ export function CopilotWorkspace() {
       if (data.kind === "needs_wallet_bind") {
         signReadSeq.current += 1;
         if (action === "disable") setAutoApprove(address, false);
-        setSignServiceState({ status: "unbound", reason: null });
+        setSignServiceState({ address, status: "unbound", reason: null });
         return;
       }
 
       if (action === "disable") {
         signReadSeq.current += 1;
         setAutoApprove(address, false);
-        setSignServiceState({ status: "unknown", reason: null });
+        setSignServiceState({ address, status: "unknown", reason: null });
         return;
       }
       if (data.kind === "needs_auto_sign") return;
@@ -2830,9 +2868,10 @@ export function CopilotWorkspace() {
         (data.kind === "error" ? data.message : null) ||
         null;
       signReadSeq.current += 1;
-      setSignServiceState(
-        mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
-      );
+      setSignServiceState({
+        address,
+        ...(mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason }),
+      });
 
       const fromMcp = Number(facts.default_cap_usd);
       const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;

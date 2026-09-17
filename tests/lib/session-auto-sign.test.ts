@@ -8,8 +8,11 @@ import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
+  shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
+  preserveLastConclusiveSignState,
+  hasAuthenticatedPrivyHeader,
 } from "@/components/copilot/session-auto-sign";
 
 describe("hopAutoSubmitKey", () => {
@@ -133,6 +136,28 @@ describe("shouldSessionAutoSubmit", () => {
   });
 });
 
+describe("shouldAutoApproveProposedWorkflow", () => {
+  it("auto-approves a proposed non-swap journal when session signing is on", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "borrow" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not auto-click a swap plan — that click is the price-impact acknowledgement", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("promoteSignableAutoSignResponse", () => {
   it("promotes needs_auto_sign + XDR to needs_wallet_sign", () => {
     const out = promoteSignableAutoSignResponse(
@@ -183,6 +208,30 @@ describe("shouldArmAutoApprove", () => {
 });
 
 describe("signServiceFromSessionRead", () => {
+  it("only treats a Privy-authenticated request as cache-authoritative", () => {
+    expect(hasAuthenticatedPrivyHeader({})).toBe(false);
+    expect(hasAuthenticatedPrivyHeader({ "x-privy-token": "  " })).toBe(false);
+    expect(hasAuthenticatedPrivyHeader({ "x-privy-token": "signed-token" })).toBe(true);
+  });
+
+  it("preserves a conclusive state across an unavailable refresh", () => {
+    expect(
+      preserveLastConclusiveSignState(
+        { status: "ok", reason: null },
+        { status: "unavailable", reason: "temporarily offline" },
+      ),
+    ).toEqual({ status: "ok", reason: null });
+  });
+
+  it("surfaces an unavailable first read when no conclusive state exists", () => {
+    expect(
+      preserveLastConclusiveSignState(
+        { status: "unknown", reason: null },
+        { status: "unavailable", reason: "temporarily offline" },
+      ),
+    ).toEqual({ status: "unavailable", reason: "temporarily offline" });
+  });
+
   it("maps an active GET /sessions payload to Budget-active (ok + caps)", () => {
     expect(
       signServiceFromSessionRead({
