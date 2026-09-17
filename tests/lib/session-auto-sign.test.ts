@@ -156,6 +156,35 @@ describe("shouldAutoApproveProposedWorkflow", () => {
       }),
     ).toBe(false);
   });
+
+  /**
+   * The acknowledgement the click stands for, the user already gave in words, before
+   * the plan was sealed — and the sealed plan carries it. Demanding the click anyway
+   * is asking them to agree twice to one price, which is the dead end that made an
+   * accepted swap unexecutable (17 Sep: "swap xlm so i will get 1 AqUSDC", accepted,
+   * refused). The proposal's own flag is what distinguishes the two cases.
+   */
+  it("auto-approves a swap the user accepted the loss on, in their own words", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("still refuses when session signing is off, accepted or not", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: false,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("promoteSignableAutoSignResponse", () => {

@@ -1930,14 +1930,35 @@ export function CopilotWorkspace() {
       }
     };
     void run();
-    const poll = window.setInterval(() => void run(), 15_000);
-    const onFocus = () => void run();
+    /**
+     * A hidden tab does not poll, and the interval is 45s rather than 15s.
+     *
+     * A browser allows ~6 connections per origin, and this page already holds several
+     * slow ones: the investigation stream for the whole of a run, and account snapshot
+     * reads that take 6-10s each. A 15s poll per open tab on top of that exhausts the
+     * pool, and the request that loses the race never leaves the browser at all — the
+     * user sees "Sending your request" counting up against a server that logged nothing
+     * (17 Sep: three swap tests stalled this way, minutes each, nothing server-side to
+     * show for them; §9 of the 16 Sep handover records the same symptom).
+     *
+     * Nothing is lost by waiting: the session state this reads changes when the user
+     * enables or disables auto-sign, and both of those already write it directly. The
+     * poll only catches a change made elsewhere — another tab, or MCP — which no one is
+     * watching the rail for in a hidden tab. Becoming visible reads immediately, so the
+     * rail is never stale by the time it is looked at.
+     */
+    const visible = () => document.visibilityState === "visible";
+    const runIfVisible = () => { if (visible()) void run(); };
+    const poll = window.setInterval(runIfVisible, 45_000);
+    const onFocus = () => runIfVisible();
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
     return () => {
       cancelled = true;
       readController?.abort();
       window.clearInterval(poll);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
     };
   }, [address, sessionSigningAvailable]);
   /**
@@ -2741,6 +2762,7 @@ export function CopilotWorkspace() {
         sessionSigning,
         status: view.status,
         steps: view.steps,
+        slippageAccepted: view.slippageAccepted,
       })
     ) {
       return;
@@ -5215,6 +5237,8 @@ export function CopilotWorkspace() {
               onResume={() => { void workflow.resume(); }}
               onCancelPlan={() => { void workflow.cancelPlan(); }}
               onSign={() => { void signJournalXdr(false); }}
+              wallet={address}
+              autoSign={sessionSigning}
             />
           )}
           <div

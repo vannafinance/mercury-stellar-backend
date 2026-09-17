@@ -206,11 +206,31 @@ export interface WorkflowView {
   constraints: string[];
   message: string;
   steps: Array<Pick<ProposalStep, "id" | "op" | "asset" | "amount" | "label" | "sizing"> & WorkflowStepState>;
+  /** Display-only swap terms. The server keeps the executable arguments in the proposal. */
+  swap?: {
+    tokenIn: string; tokenOut: string; venue: "aquarius" | "soroswap";
+    amountIn: string; minOut: string; targetOut: string | null;
+  };
+  /**
+   * The user accepted a fill far below fair value, in their own words, before this
+   * proposal was even sealed (`WorkflowProposal.slippageAccepted`). The client reads
+   * this to decide whether a swap may skip its manual "Confirm swap" click when auto
+   * sign is on — never to change what gets signed, only who has to click.
+   */
+  slippageAccepted: boolean;
 }
 export function workflowView(record: WorkflowRecord): WorkflowView {
   const p = record.proposal;
+  const swapStep = p.steps.find((step) => step.op === "swap") ?? null;
+  const venue = swapStep?.args.venue;
+  const tokenOut = swapStep?.args.token_out;
+  const minOut = swapStep?.args.min_out;
   return { id: p.id, revision: p.revision, digest: p.digest, status: record.status, objective: p.objective,
     expiresAt: p.expiresAt, assumptions: p.assumptions, constraints: p.constraints, message: record.message,
+    slippageAccepted: p.slippageAccepted === true,
+    ...(swapStep && (venue === "aquarius" || venue === "soroswap") && typeof tokenOut === "string" && typeof minOut === "string"
+      ? { swap: { tokenIn: swapStep.asset, tokenOut, venue, amountIn: swapStep.amount,
+          minOut, targetOut: swapStep.targetOut ?? null } } : {}),
     steps: p.steps.map((step, index) => {
       const state = record.steps[index];
       return { id: step.id, op: step.op, asset: step.asset, amount: step.amount, label: step.label,

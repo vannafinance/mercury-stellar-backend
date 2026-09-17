@@ -224,6 +224,22 @@ describe("proposeWorkflow evidence reuse", () => {
   });
 });
 
+/** A stated exact-output swap — the shape the copilot proposes for "swap XLM so i get 1 AQUSDC". */
+const SWAP_STEP = {
+  id: "requested-0",
+  op: "swap" as const,
+  asset: "XLM",
+  amount: "84.6004692",
+  label: "Swap 84.6004692 XLM for at least 1 AQUSDC on Aquarius",
+  tool: "vanna_swap",
+  sizing: { basis: "stated" as const },
+  targetOut: "1",
+  args: {
+    token_in: "XLM", token_out: "AQUSDC", amount_in: "84.6004692", min_out: "1",
+    venue: "aquarius", trader: SCOPE.trader, smart_account: SCOPE.smartAccount,
+  },
+};
+
 describe("proposeWorkflow requested_actions", () => {
   it("creates the journal from sealed steps without MCP or risk validation", async () => {
     const codec = researchCodec(SECRET, SERVER, () => NOW);
@@ -252,5 +268,42 @@ describe("proposeWorkflow requested_actions", () => {
     expect(validateWorkflowRisk).not.toHaveBeenCalled();
     expect(view.status).toBe("proposed");
     expect(view.steps).toEqual([expect.objectContaining({ op: "repay", asset: "XLM", amount: "1" })]);
+  });
+
+  /**
+   * A stated swap is proposed through THIS branch, and the acceptance the user stated in
+   * their own words has to reach the stored proposal — it is what the pre-write re-quote
+   * and the MCP's impact gate both read at execution time. Sealed on the research and
+   * dropped here, the card appears and the swap is then withheld twice over for a price
+   * the user had already agreed to, with nothing left for them to say.
+   */
+  it("carries the sealed slippage acceptance into the stored proposal", async () => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.slippageAccepted = true;
+    evidence.requestedSteps = [SWAP_STEP];
+    const view = await proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["swap xlm so i get 1 AQUSDC, i accept the loss"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect(view.status).toBe("proposed");
+    expect((await harness.store.read(""))?.value.proposal.slippageAccepted).toBe(true);
+  });
+
+  it("leaves it false when the user never accepted — the refusal is the default", async () => {
+    const codec = researchCodec(SECRET, SERVER, () => NOW);
+    const evidence = compactResearchEvidence([], null, NOW);
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
+    evidence.requestedSteps = [SWAP_STEP];
+    await proposeWorkflow({
+      continuation: codec.seal(SCOPE, ["swap xlm so i get 1 AQUSDC"], null, evidence),
+      candidateId: REQUESTED_ACTIONS_ID,
+      subject: SCOPE.subject, secret: SECRET, server: SERVER, network: SCOPE.network,
+      mcp: { call: vi.fn() }, signal: new AbortController().signal, now: NOW,
+    });
+    expect((await harness.store.read(""))?.value.proposal.slippageAccepted).toBe(false);
   });
 });

@@ -65,15 +65,23 @@ export function shouldSessionAutoSubmit(opts: {
  * Auto-clicking Approve on a proposed journal that contains a swap would send
  * `acknowledged_price_impact` without a human seeing the fill. The user must
  * click that card; later hops (unsigned XDR after approval) may still auto-sign.
+ *
+ * `slippageAccepted` is the one exception, and it is not a weaker rule — it is the
+ * same rule satisfied earlier. The proposal carries it only when the user's own words
+ * accepted this fill before it was sealed (anchored verbatim in `service.ts`), so a
+ * human did state a decision about this price; asking them to click again says the
+ * words did not count. The flag is sent on that same condition, so a swap nobody
+ * accepted still reaches MCP without it and is still withheld there.
  */
 export function shouldAutoApproveProposedWorkflow(opts: {
   sessionSigning: boolean;
   status?: string | null;
   steps?: Array<{ op?: string | null }>;
+  slippageAccepted?: boolean;
 }): boolean {
   if (!opts.sessionSigning) return false;
   if (opts.status !== "proposed") return false;
-  if (opts.steps?.some((step) => step.op === "swap")) return false;
+  if (opts.steps?.some((step) => step.op === "swap") && opts.slippageAccepted !== true) return false;
   return true;
 }
 

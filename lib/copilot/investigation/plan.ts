@@ -48,9 +48,12 @@ export interface PlanContext {
   /**
    * What the user said they wanted, as the model recorded it structurally. Read here for
    * `slippageAccepted`: a fill far below fair value is refused by default, and that
-   * refusal lifts only when the user's own words accepted it.
+   * refusal lifts only when the user's own words accepted it. Narrowed to the one field
+   * this module reads — a re-propose of an already-sealed plan (`proposal.ts`'s composed
+   * path) has no fresh model turn to source a full `GoalUnderstanding` from, only the
+   * acceptance already anchored and sealed onto the evidence.
    */
-  goal?: GoalUnderstanding;
+  goal?: Pick<GoalUnderstanding, "slippageAccepted">;
   /**
    * The margin position and the user's stated floor (null when none was stated — then the
    * contract's liquidation line is the stop and no borrow can be sized). Null as a whole
@@ -1053,7 +1056,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       label,
       tool: TOOLS[d.leg.op],
       args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
-        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined, acknowledgedPriceImpact: true }
+        /**
+         * `acknowledged_price_impact` is a claim that a human was shown this fill and
+         * took it anyway, and MCP drops its own 10% auto-sign gate on the strength of it.
+         * Sent unconditionally it is not a claim at all — every swap asserts it, the gate
+         * can never fire, and the only thing left standing between a 93%-below-fair fill
+         * and a signature is one boolean in the browser. So it is sent exactly when it is
+         * true: the user accepted this fill in their own words, anchored verbatim before
+         * the plan was sealed. Every other swap reaches MCP without it and is withheld
+         * there — which is the case the gate was built for.
+         */
+        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined,
+          acknowledgedPriceImpact: ctx.goal?.slippageAccepted?.accepted === true }
           : d.leg.op === "remove_liquidity" && dex ? { venue: dex }
           : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),

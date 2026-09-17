@@ -72,9 +72,17 @@ export async function proposeWorkflow(input: {
     if (!steps?.length) throw new ResearchError("candidate_unavailable", "The requested actions are unavailable. Investigate again.");
     for (const step of steps) allowedInvocation(step, scope);
     const floor = prior.evidence?.capacity?.floor ?? null;
+    /**
+     * The acceptance travels with the steps. A stated swap is proposed through THIS branch,
+     * not the composed one below — so leaving it off here dropped the user's own words at
+     * the last hop: the plan gate lifted and the card appeared, then the pre-write re-quote
+     * and the MCP's impact gate both still saw an unaccepted fill and withheld the swap the
+     * user had already agreed to. The same field the composed path seals, sealed here.
+     */
     const draft = { scope, server: input.server, objective: prior.messages[0], messages: prior.messages,
       assumptions: ["Amounts are the literal token amounts in your request. No automatic resizing is allowed."],
-      constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps };
+      constraints: floor ? [`Health factor at or above ${floor}`] : [], floor, steps,
+      slippageAccepted: prior.evidence?.slippageAccepted === true };
     /**
      * Propose holds the compiled plan for the card. Live prices and balances are
      * re-checked on approve and again immediately before the first leg (P6).
@@ -206,6 +214,15 @@ export async function proposeWorkflow(input: {
         capacity: planPosition,
         // Only shapes that sized under the user's real permission were sealed as proposable.
         borrowing: "allowed", comparisons,
+        /**
+         * The re-propose here has no fresh model turn — the acceptance was already
+         * anchored to the user's own words when the investigation sealed it (service.ts),
+         * and compacted onto `evidence.slippageAccepted`. Omitting it here (as before) left
+         * `ctx.goal` undefined on every composed-plan approval, so `resolvePlans` refused
+         * the exact-output AQUSDC swap a second time even after the user said "I accept
+         * the loss" — the sizer and the card never saw the word.
+         */
+        goal: prior.evidence?.slippageAccepted ? { slippageAccepted: { accepted: true, sourceQuote: "" } } : undefined,
       })
     : null;
   const candidate = resolved

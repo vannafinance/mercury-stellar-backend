@@ -147,14 +147,12 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       }));
       expect(rejected).toEqual([]);
       const swapStep = candidates[0]?.steps?.[1];
-      // inAfterFee = 100 x 100000 / (20000 - 100) = 502.5126…; in = inAfterFee / 0.997 = 504.0246…
-      expect(Number(swapStep?.amount)).toBeCloseTo(504.0246, 3);
+      // Input includes the quote buffer; the floor still enforces the 100 asked for.
+      expect(Number(swapStep?.amount)).toBeCloseTo(506.5702, 3);
       expect(swapStep?.args.token_in).toBe("XLM");
       expect(swapStep?.args.token_out).toBe("AQUSDC");
-      // Pass 3 re-quotes the SAME computed input forward, so the floor lands close to the
-      // 100 AQUSDC asked for, less the usual 0.5% slippage margin — not a separate formula.
-      expect(Number(swapStep?.args.min_out)).toBeCloseTo(99.5, 1);
-      expect(Number(swapStep?.args.min_out)).toBeLessThan(100);
+      expect(swapStep?.args.min_out).toBe("100");
+      expect(swapStep?.targetOut).toBe("100");
     });
 
     it("refuses when the pool cannot pay that much at all — the output is at or past its own reserve", () => {
@@ -177,7 +175,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         messages: ["deposit 10 xlm then swap XLM to receive 100 AQUSDC"],
         observations: [...OBSERVATIONS, obs("e7b", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }), poolObs],
       }));
-      expect(rejected[0]?.reason).toMatch(/^only 10 XLM is in the margin account after the legs before it — receiving 100 AQUSDC needs about 504/);
+      expect(rejected[0]?.reason).toMatch(/^only 10 XLM is in the margin account after the legs before it — receiving 100 AQUSDC needs about 506/);
     });
 
     it("still refuses an exact-output request the price-impact guard would refuse as an ordinary swap", () => {
@@ -351,6 +349,21 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       expect(c.steps?.[1].label).toBe("Add 100 XLM + 20 AQUSDC to the Aquarius pool");
     });
 
+    it("can still size an LP deposit when swaps, but not deposits, are paused", () => {
+      const pausedSwap = obs("e7", "aquarius_pool_reserves",
+        { found: true, pool: { available: true, reserves_source: "soroban_balance", swap_killed: true, deposit_killed: false,
+          reserves: { XLM: "1000", AQUSDC: "200" }, total_share: "100", fee: "0.0030" } }, { asset: "AQUSDC" });
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 xlm" } },
+        { op: "add_liquidity", asset: "XLM", assetOut: "AQUSDC", sizing: { kind: "previous_leg" } },
+      ];
+      const { candidates, rejected } = resolvePlans([plan("Add Aquarius liquidity", legs)], ctx({
+        messages: ["deposit 100 xlm and add liquidity with AQUSDC"], observations: [...OBSERVATIONS, pausedSwap],
+      }));
+      expect(rejected).toEqual([]);
+      expect(candidates[0]?.steps?.[1].args.amount_b).toBe("20");
+    });
+
     /**
      * The MCP's own tool takes token_a/amount_a as a pair — the amount must never be
      * assigned to a different token than the one the user actually stated. A first pass at
@@ -459,6 +472,25 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       expect(floor).toBeGreaterThan(179.1);
     });
 
+    /**
+     * `acknowledged_price_impact` tells MCP a human was shown this fill and took it, and
+     * MCP drops its own 10% auto-sign gate on that word. Asserted on every swap it stops
+     * being a word: the gate can never fire, and nothing server-side is left between a
+     * fill far below fair value and a signature. So it rides on the same condition that
+     * earned it — the user's own accepted loss — and on no other swap.
+     */
+    it("claims the price impact was acknowledged only when the user actually accepted it", () => {
+      const pool = poolObs("100000", "17730");
+      const silent = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(pool));
+      expect(silent.candidates[0]?.steps?.[1].args).not.toHaveProperty("acknowledged_price_impact");
+
+      const accepted = resolvePlans([plan("Swap XLM", swapLegs)], {
+        ...swapCtx(pool),
+        goal: { slippageAccepted: { accepted: true, sourceQuote: "i accept the loss" } },
+      });
+      expect(accepted.candidates[0]?.steps?.[1].args.acknowledged_price_impact).toBe(true);
+    });
+
     it("charges the pool's own fee, so the floor is never above what the curve actually pays", () => {
       const free = obs("e8", "aquarius_pool_reserves",
         { found: true, pool: { available: true, reserves: { XLM: "100000", AQUSDC: "20000" }, total_share: "40000", fee: "0" } },
@@ -492,14 +524,23 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       expect(candidates).toHaveLength(1);
     });
 
-    it("falls back to the oracle quote when no pool reserves were read, rather than refusing the swap", () => {
+    it("names a paused Aquarius swap rather than calling its reserves missing", () => {
+      const paused = obs("e8", "aquarius_pool_reserves",
+        { found: true, pool: { available: true, reserves_source: "soroban_balance", swap_killed: true,
+          reserves: { XLM: "100000", AQUSDC: "17730" }, total_share: "40000", fee: "0.0030" } },
+        { asset: "AQUSDC" });
+      const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], swapCtx(paused));
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toBe("swaps are paused on the router-selected Aquarius pool; nothing can be swapped there now");
+    });
+
+    it("refuses an Aquarius swap when no live pool reserves were read", () => {
       const { candidates, rejected } = resolvePlans([plan("Swap XLM", swapLegs)], ctx({
         messages: ["swap 1000 XLM to AQUSDC on aquarius"],
         observations: [...OBSERVATIONS, obs("e7", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" })],
       }));
-      expect(rejected).toEqual([]);
-      // 1000 x $0.18 / $1 = 180, less 0.5%.
-      expect(candidates[0]?.steps?.[1].args.min_out).toBe("179.1");
+      expect(candidates).toEqual([]);
+      expect(rejected[0]?.reason).toBe("the Aquarius pool's live on-chain reserves were unavailable; the swap cannot be quoted safely");
     });
   });
 
@@ -657,6 +698,45 @@ describe("resolvePlans — floor semantics", () => {
     const { candidates, rejected } = resolvePlans([plan("Lever", lever)], ctx({ capacity: { ...CAPACITY, floor: null } }));
     expect(candidates).toEqual([]);
     expect(rejected[0]).toMatchObject({ leg: "borrow XLM", reason: expect.stringMatching(/needs the health-factor floor you want kept/) });
+  });
+
+  /**
+   * 15 Sep, live: "deposit 10 xlm and take 6x leverage with AqUSDC as a borrowed token" was
+   * refused with "a borrow needs the health-factor floor you want kept — tell me the
+   * number". The user's answer: "it should show a plan, not a rejection… show me in the plan
+   * what the HF will be after that; if the user is ready to bear it, go ahead."
+   *
+   * A floor is only needed to SIZE a `to_floor` borrow. An amount the user stated themselves
+   * needs no floor at all — `sizeLegs` projects the resulting health factor either way, and
+   * refuses only what would actually leave the account liquidatable (the 1.1 line).
+   */
+  it("sizes a borrow stated as an amount with no floor, showing the health factor it leaves", () => {
+    const stated: ProposedPlan["legs"] = [
+      { op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "borrow 100 XLM" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Borrow 100", stated)], ctx({
+      messages: ["borrow 100 XLM and supply it to Blend"],
+      capacity: { ...CAPACITY, floor: null },
+    }));
+    expect(rejected).toEqual([]);
+    expect(candidates).toHaveLength(1);
+    // The figure the user is being asked to bear is on the card, not demanded from them.
+    expect(Number(candidates[0].finalHealthFactor)).toBeGreaterThan(1.1);
+    expect(candidates[0].steps?.[0]).toMatchObject({ op: "borrow", amount: "100" });
+  });
+
+  it("still refuses a stated borrow with no floor when it would leave the account liquidatable", () => {
+    const huge: ProposedPlan["legs"] = [
+      { op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "500000", sourceQuote: "borrow 500000 XLM" } },
+      { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Borrow far too much", huge)], ctx({
+      messages: ["borrow 500000 XLM and supply it to Blend"],
+      capacity: { ...CAPACITY, floor: null },
+    }));
+    expect(candidates).toEqual([]);
+    expect(rejected[0]?.reason).toContain("liquidatable");
   });
 
   it("refuses to size a borrow to a floor at the liquidation line, naming the line", () => {

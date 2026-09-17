@@ -170,6 +170,7 @@ describe("investigation card / options", () => {
           expiresAt: Date.now() + 60_000,
           assumptions: [],
           constraints: [],
+          slippageAccepted: false,
           message: "Preparing step 1.",
           steps: [{
             id: "one", op: "borrow", asset: "BLUSDC", amount: "115.81",
@@ -194,6 +195,7 @@ describe("investigation card / options", () => {
       expiresAt: Date.now() + 60_000,
       assumptions: [],
       constraints: [],
+      slippageAccepted: false,
       message: "Review the amounts and steps before approving.",
       steps: [{
         id: "one", op: "borrow" as const, asset: "BLUSDC", amount: "115.81",
@@ -301,7 +303,7 @@ describe("investigation card / in-flight state", () => {
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Preparing the plan/);
     rerender(
       <InvestigationCard prompt={result.originalRequest} result={result} progress={null} loading={false} error={null} onPropose={() => {}} workflowLoading
-        workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], message: "m", steps: [] }} />,
+        workflow={{ id: "w", revision: 1, digest: "d", status: "proposed", objective: "o", expiresAt: 0, assumptions: [], constraints: [], slippageAccepted: false, message: "m", steps: [] }} />,
     );
     expect(screen.getByTestId("workflow-progress").textContent).toMatch(/Checking funds, prices and projected health/);
   });
