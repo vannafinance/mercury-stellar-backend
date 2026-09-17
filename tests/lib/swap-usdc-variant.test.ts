@@ -64,4 +64,12 @@ describe("swap — a named USDC variant is honoured, never substituted", () => {
     expect(r.step?.label).toContain("SOUSDC");
     expect(r.step?.args.expected_out).toBe("28.35");
   });
+
+  it("sends acknowledged_price_impact only after the human was shown the fill", () => {
+    const silent = swap({ token_b: "SOUSDC" });
+    expect(silent.step?.args).not.toHaveProperty("acknowledged_price_impact");
+    const confirmed = swap({ token_b: "SOUSDC", acknowledged_price_impact: true, price_impact_pct: 57.21 });
+    expect(confirmed.step?.args.acknowledged_price_impact).toBe(true);
+    expect(confirmed.step?.label).toMatch(/57\.21% price impact/);
+  });
 });

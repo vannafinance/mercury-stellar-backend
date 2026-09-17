@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Asset, Networks } from "@stellar/stellar-sdk";
 import { isRetryableRiskReason, validateWorkflowRisk } from "@/lib/copilot/workflow/risk";
-import { allowedInvocation } from "@/lib/copilot/workflow/allowlist";
+import { allowedInvocation, writeArgsFor } from "@/lib/copilot/workflow/allowlist";
 import type { WorkflowProposal } from "@/lib/copilot/workflow/types";
 import { decimalWad } from "@/lib/copilot/investigation/fixed";
 
@@ -68,6 +68,33 @@ describe("deterministic execution risk", () => {
     expect(() => allowedInvocation({ ...p.steps[0], tool: "shell" }, scope)).toThrow();
     expect(() => allowedInvocation({ ...p.steps[0], amount: "500" }, scope)).toThrow();
     expect(() => allowedInvocation({ ...p.steps[0], args: { ...p.steps[0].args, recipient: "other" } }, scope)).toThrow();
+  });
+  it("a swap proposal that showed impact may carry acknowledged_price_impact", () => {
+    const swapScope = {
+      trader: "GBH5G2WPAAFZ5MS76GDJ4HKHYXSRGF2MBLYDIRQOHGVS4HPU6NNOFIHA",
+      smartAccount: "CCKITLMKA2VKSWGOTFABSUFA3RMOZHRP5YNP6HLG73JSWMMUUNCTHDMC",
+    };
+    const args = writeArgsFor("swap", "XLM", "10", swapScope, {
+      tokenOut: "SOUSDC",
+      venue: "soroswap",
+      minOut: "1",
+      acknowledgedPriceImpact: true,
+    });
+    expect(args.acknowledged_price_impact).toBe(true);
+    expect(() =>
+      allowedInvocation(
+        {
+          id: "s0-swap",
+          op: "swap",
+          asset: "XLM",
+          amount: "10",
+          label: "Swap 10 XLM",
+          tool: "vanna_swap",
+          args,
+        },
+        swapScope,
+      ),
+    ).not.toThrow();
   });
   it("accepts a sized repay without a health-factor floor", async () => {
     const p = proposal("1");

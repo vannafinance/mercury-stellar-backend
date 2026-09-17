@@ -254,7 +254,8 @@ const LEGACY_TOOL_MAP: Record<string, { tool: string; action: string }> = {
  * consolidated, and wrapping its flat arguments in `{action, kwargs}` makes the server
  * reject the call for missing required fields (15 Sep, live, on `vanna_swap`). Such an
  * entry is treated as unmapped rather than trusted, so the mistake cannot come back by
- * someone re-adding the row.
+ * someone re-adding the row. MCP `vanna_swap` now accepts both envelopes; Copilot
+ * still sends the flat shape.
  */
 export function toServerCall(
   tool: string,

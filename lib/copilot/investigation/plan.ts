@@ -1053,7 +1053,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       label,
       tool: TOOLS[d.leg.op],
       args: writeArgsFor(d.leg.op, symbol, d.tokens!, ctx.scope,
-        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined }
+        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined, acknowledgedPriceImpact: true }
           : d.leg.op === "remove_liquidity" && dex ? { venue: dex }
           : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),

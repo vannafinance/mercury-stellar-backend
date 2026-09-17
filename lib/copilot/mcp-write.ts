@@ -459,6 +459,13 @@ export function mapOpToMcpStep(
     expected_out?: number | string | null;
     min_out?: number | string | null;
     slippage_pct?: number | string | null;
+    /**
+     * Set only after a human approved a card that showed this fill's price impact.
+     * MCP withholds Sign Service auto-sign above 10% impact unless this is true.
+     */
+    acknowledged_price_impact?: boolean | null;
+    /** Pre-computed impact for the swap label (same formula MCP uses). */
+    price_impact_pct?: number | string | null;
     /** Resolved Registry blend pool C-address for deploy_to_blend. */
     blend_pool_address?: string | null;
     /** enable_auto_sign only — Sign Service policy caps. */
@@ -839,6 +846,13 @@ export function mapOpToMcpStep(
         params.slippage_pct != null && Number(params.slippage_pct) > 0
           ? String(params.slippage_pct)
           : "0.5";
+      const impactPct =
+        params.price_impact_pct != null && Number.isFinite(Number(params.price_impact_pct))
+          ? Number(params.price_impact_pct).toFixed(2)
+          : null;
+      const fillLabel = expectedOut
+        ? `Swap ${amount} ${uiIn} → ${Number(expectedOut).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${uiOut} (${venue})`
+        : `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`;
       return {
         step: {
           tool: "vanna_swap",
@@ -853,10 +867,11 @@ export function mapOpToMcpStep(
             trader,
             venue,
             protocol: venue,
+            ...(params.acknowledged_price_impact === true
+              ? { acknowledged_price_impact: true }
+              : {}),
           },
-          label: expectedOut
-            ? `Swap ${amount} ${uiIn} → ${Number(expectedOut).toLocaleString(undefined, { maximumFractionDigits: 4 })} ${uiOut} (${venue})`
-            : `Swap ${amount} ${uiIn} → ${uiOut} (${venue})`,
+          label: impactPct ? `${fillLabel} · ${impactPct}% price impact` : fillLabel,
         },
       };
     }
@@ -1687,6 +1702,26 @@ export async function executeMcpWrite(
       status: "needs_wallet_sign",
       message: readyToSignMessage(step.label),
       mcp_trace: { ...baseTrace, auto_sign_error: asErr || as || null },
+    };
+  }
+
+  // High price impact: MCP built the XDR but withheld Sign Service auto-sign
+  // until a human who was shown the figure confirms it. Do not let in-app
+  // auto-approve silent-sign this XDR — that would empty the gate. A click on
+  // Approve still session-signs (or a later call with `acknowledged_price_impact`).
+  if (as === "withheld_price_impact" && xdr) {
+    const warning = String(build.message || build.price_impact_warning || "").trim();
+    return {
+      tool: step.tool,
+      label: step.label,
+      build,
+      unsigned_xdr: xdr,
+      status: "needs_wallet_sign",
+      forbid_session_sign: true,
+      message:
+        warning ||
+        "This fill is far below oracle fair value. Auto-sign is withheld until you confirm it.",
+      mcp_trace: { ...baseTrace, auto_sign: as },
     };
   }
 

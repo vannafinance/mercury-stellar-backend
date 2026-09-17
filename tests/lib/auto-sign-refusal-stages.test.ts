@@ -152,6 +152,26 @@ describe("executeMcpWrite — an auto-sign refusal with a usable XDR stages for 
     expect(r.message).toMatch(/wallet/i);
   });
 
+  it("withheld_price_impact stages the XDR but forbids silent auto-approve", async () => {
+    const r = await executeMcpWrite(
+      fakeMcp({
+        unsigned_xdr: XDR,
+        auto_sign: "withheld_price_impact",
+        signing_status: "needs_explicit_confirmation",
+        price_impact_pct: "57.21",
+        price_impact_level: "high",
+        price_impact_warning: "This pool pays about 57.21% below oracle fair value",
+        message: "This pool pays about 57.21% below oracle fair value. Auto-sign is withheld above 10% impact.",
+      }),
+      { ...STEP, tool: "vanna_swap", label: "Swap 100 XLM → SOUSDC" },
+      CTX,
+    );
+    expect(r.status).toBe("needs_wallet_sign");
+    expect(r.forbid_session_sign).toBe(true);
+    expect(r.unsigned_xdr).toBe(XDR);
+    expect(r.message).toMatch(/57\.21/);
+  });
+
   it.each(["over_daily_cap", "over_per_tx_cap"])(
     "%s with XDR stages for wallet sign",
     async (reason) => {

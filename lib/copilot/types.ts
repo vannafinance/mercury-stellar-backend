@@ -287,6 +287,11 @@ export interface CopilotAction {
    * Not an oracle USD conversion.
    */
   expected_out?: number | null;
+  /**
+   * The user approved a card that showed this swap's price impact. Copilot
+   * forwards it as `acknowledged_price_impact` so MCP may auto-sign a ≥10% fill.
+   */
+  acknowledged_price_impact?: boolean | null;
 }
 
 export interface RiskResult {
