@@ -53,6 +53,11 @@ export interface ResearchView {
   capacity?: ResearchCapacity | null;
   /** Deterministically generated and ranked options. Never a model's suggestion. */
   candidates?: import("./candidates").CandidateSet | null;
+  /** User-stated side of a swap, kept even when the risk gate rejects the plan. */
+  swapIntent?: {
+    tokenIn: string; tokenOut: string; venue: "aquarius" | "soroswap";
+    amount: string; amountAsset: "asset" | "assetOut";
+  } | null;
   rateComparisons?: import("./rate-comparison").RateComparison[];
   checks: Array<{ id: string; label: string; status: "ok" | "error"; readAt: number }>;
   warnings: string[];

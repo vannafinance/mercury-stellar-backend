@@ -21,9 +21,11 @@
  */
 
 import { evaluateDomainFirewall, guardUserPrompt } from "../domain-firewall";
+import { lpPairs } from "../registry/assets";
+import { WORKFLOW_OPS } from "../workflow/types";
 
 export interface ImmediateReply {
-  kind: "greeting" | "off_domain";
+  kind: "greeting" | "capability" | "off_domain";
   message: string;
 }
 
@@ -38,6 +40,9 @@ const GREETING =
 /** Asking what the surface is or does — answerable from the product, with no reads. */
 const CAPABILITY_QUESTION =
   /^(?:(?:so\s+)?(?:what|who)\s+(?:are|is|can)\s+(?:you|u|this|vanna)(?:\s+(?:do|help\s+with|capable\s+of))?|what\s+can\s+(?:you|u)\s+do|how\s+(?:do|does)\s+(?:you|this)\s+work|help|what\s+is\s+this)[\s!.,?]*$/i;
+
+/** A swap capability question has no amount to quote; answer from executable ops. */
+const SWAP_CAPABILITY_QUESTION = /^(?:can|could|do)\s+(?:you|u)\s+swap\b/i;
 
 const IDENTITY =
   "I’m the Vanna copilot. I can look at your margin account — health factor, collateral, " +
@@ -57,6 +62,11 @@ export async function immediateReply(
   // firewall would reject it, and greeting someone with a refusal is the wrong answer.
   if (text.length <= 40 && (GREETING.test(text) || CAPABILITY_QUESTION.test(text))) {
     return { kind: "greeting", message: IDENTITY };
+  }
+
+  if (SWAP_CAPABILITY_QUESTION.test(text) && !/\d/.test(text) && WORKFLOW_OPS.includes("swap")) {
+    const pairs = lpPairs().map((pair) => `${pair.venue}: ${pair.tokens.join("/ ")}`).join("; ");
+    return { kind: "capability", message: `Yes. I can prepare a swap on ${pairs}. Tell me the amount and which token you want to spend or receive. I’ll show a live quote for you to confirm before anything is signed.` };
   }
 
   if (opts?.subject && opts.signal) {

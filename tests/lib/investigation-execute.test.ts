@@ -37,7 +37,7 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
 });
 
 const { WorkflowJournal } = await import("@/lib/copilot/workflow/journal");
-const { advanceWorkflow } = await import("@/lib/copilot/investigation/execute");
+const { advanceWorkflow, staleSwapFloor } = await import("@/lib/copilot/investigation/execute");
 type McpCall = Pick<import("@/lib/copilot/mcp-client").MCPClient, "call">;
 
 const SCOPE = {
@@ -177,6 +177,25 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
       amount_in: "1000", min_out: "174.148", trader: SCOPE.trader, venue: "aquarius",
     },
   };
+
+  it("does not lower an exact-output target when the pool moves", async () => {
+    const mcp: McpCall = { call: async () => poolPaying("100000", "17600") };
+    const verdict = await staleSwapFloor({ ...swapStep, targetOut: "174" }, mcp, SCOPE.trader!, new AbortController().signal);
+    expect(verdict.kind).toBe("refuse");
+    if (verdict.kind === "refuse") expect(verdict.message).toContain("below the 174 AQUSDC you approved");
+  });
+
+  it("refuses a paused pool at approval time without sending a write", async () => {
+    const id = await approvedSwap();
+    const seen: string[] = [];
+    const mcp: McpCall = { call: async (tool) => {
+      seen.push(tool);
+      return { ...poolPaying("100000", "17750"), pool: { ...poolPaying("100000", "17750").pool, swap_killed: true } };
+    } };
+    const view = await advance(id, mcp);
+    expect(seen).toEqual([POOL]);
+    expect(view.steps[0].message).toContain("Swaps are paused");
+  });
 
   async function approvedSwap() {
     const journal = new WorkflowJournal(harness.store);

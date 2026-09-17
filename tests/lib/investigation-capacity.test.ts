@@ -20,6 +20,7 @@ vi.mock("@/lib/copilot/investigation/contract-health", async (importOriginal) =>
 
 import {
   computeBorrowCapacity,
+  computeSizingBasis,
   reconcileSizingBasis,
 } from "@/lib/copilot/investigation/capacity";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
@@ -208,6 +209,38 @@ describe("reconcileSizingBasis", () => {
       { collateralUsd: 4230.94, debtUsd: 2705.60, liquidatable: false },
     );
     expect(result).toEqual({ ok: false, reason: "sizing_sources_disagree" });
+  });
+});
+
+describe("computeSizingBasis", () => {
+  it("uses the RiskEngine basis when the app snapshot times out", async () => {
+    mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const basis = await computeSizingBasis(ACCOUNT, null, contract(4219.36, 1736.19));
+      expect(basis).toMatchObject({
+        source: "contract",
+        grossCollateralUsd: "4219.36",
+        debtUsd: "1736.19",
+        issue: "sizing_app_unavailable",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        "[copilot] sizing app snapshot failed",
+        expect.objectContaining({ error: expect.objectContaining({ message: "snapshot timed out" }) }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("returns no basis when both snapshots are unavailable", async () => {
+    mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await computeSizingBasis(ACCOUNT, null, { contract: null })).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

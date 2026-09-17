@@ -98,10 +98,10 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
     const out = typeof step.args.token_out === "string" ? resolveAssetDef(step.args.token_out) : null;
     const venue = typeof step.args.venue === "string" ? step.args.venue : "";
     const minOut = typeof step.args.min_out === "string" ? step.args.min_out : "";
-    if (!out?.marginSymbol || out.id === asset.id || !(lpVenues() as readonly string[]).includes(venue) || decimalWad(minOut) <= BigInt(0)) {
+    if (!out?.marginSymbol || out.id === asset.id || poolVenueFor(asset.id, out.id) !== venue || decimalWad(minOut) <= BigInt(0)) {
       throw new Error("write_not_allowed");
     }
-    if (step.targetOut && (venue !== "aquarius" || decimalWad(step.targetOut) !== decimalWad(minOut))) {
+    if (step.targetOut && decimalWad(step.targetOut) !== decimalWad(minOut)) {
       throw new Error("exact_output_floor_mismatch");
     }
     extra = {

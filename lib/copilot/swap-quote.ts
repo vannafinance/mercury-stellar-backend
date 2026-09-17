@@ -49,6 +49,37 @@ export async function quoteDexSwap(opts: {
   }
 }
 
+/** Invert the venue's own forward quote when the user fixed the receive amount. */
+export async function quoteDexExactOut(opts: {
+  targetOut: number; tokenIn: string; tokenOut: string;
+  venue: "aquarius" | "soroswap"; simulator: string;
+}): Promise<{ amountIn: number; expectedOut: number } | null> {
+  if (!(opts.targetOut > 0)) return null;
+  const forward = (amountIn: number) => quoteDexSwap({ ...opts, amountIn });
+  const unit = await forward(1);
+  if (!unit) return null;
+  let low = 0;
+  let high = Math.max(1, opts.targetOut / unit.expected);
+  let highQuote = await forward(high);
+  for (let i = 0; i < 6 && (!highQuote || highQuote.expected < opts.targetOut); i++) {
+    low = high;
+    high *= highQuote?.expected ? Math.max(1.05, opts.targetOut / highQuote.expected * 1.01) : 2;
+    highQuote = await forward(high);
+  }
+  if (!highQuote || highQuote.expected < opts.targetOut) return null;
+  for (let i = 0; i < 8; i++) {
+    const middle = (low + high) / 2;
+    const quote = await forward(middle);
+    if (!quote) return null;
+    if (quote.expected >= opts.targetOut) high = middle;
+    else low = middle;
+  }
+  // The executable path spends a buffered input. This is a display estimate only.
+  const amountIn = Math.ceil(high * 1e7) / 1e7;
+  const finalQuote = await forward(amountIn);
+  return finalQuote ? { amountIn, expectedOut: finalQuote.expected } : null;
+}
+
 /**
  * Price-impact bands. Same formula and thresholds as MCP `vanna_swap`
  * (`SWAP_IMPACT_WARN_PCT` / `SWAP_IMPACT_CONFIRM_PCT`):

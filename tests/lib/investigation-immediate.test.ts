@@ -25,6 +25,14 @@ describe("turns answered without investigating", () => {
     }
   });
 
+  it("answers a swap capability question from the executable registry, including a misspelled venue", async () => {
+    const reply = await immediateReply("Can You swap in Aquarious");
+    expect(reply?.kind).toBe("capability");
+    expect(reply?.message).toMatch(/Aquarius/i);
+    expect(reply?.message).toMatch(/live quote/i);
+    expect(await immediateReply("Can you swap 10 XLM to AQUSDC in Aquarius")).toBeNull();
+  });
+
   it("does NOT swallow a real request that merely opens with a greeting", async () => {
     // The whole failure mode: answering this with an introduction drops the borrow.
     for (const text of [

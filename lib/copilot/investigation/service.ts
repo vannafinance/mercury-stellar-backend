@@ -23,7 +23,7 @@ import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
-import { ASSET_SYMBOL_PATTERN, lpPairs, resolveAssetDef } from "../registry/assets";
+import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
 
 /**
@@ -762,6 +762,15 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
     evidence.floor = statedFloor;
   }
+  const swapLeg = modelPlans.flatMap((plan) => plan.legs).find((leg) => leg.op === "swap" && leg.sizing.kind === "literal" && leg.assetOut);
+  const swapVenue = swapLeg?.assetOut ? poolVenueFor(swapLeg.asset, swapLeg.assetOut) : null;
+  const swapSourceQuote = swapLeg?.sizing.kind === "literal" ? swapLeg.sizing.sourceQuote : null;
+  const swapIntent: ResearchView["swapIntent"] = swapLeg?.sizing.kind === "literal" && swapLeg.assetOut && swapVenue
+    && (!swapLeg.venue || swapLeg.venue === swapVenue)
+    && swapSourceQuote && messages.some((message) => message.includes(swapSourceQuote))
+      ? { tokenIn: swapLeg.asset, tokenOut: swapLeg.assetOut, venue: swapVenue,
+          amount: swapLeg.sizing.amount, amountAsset: swapLeg.sizing.amountAsset ?? "asset" }
+      : null;
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
     /**
@@ -785,7 +794,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             borrowing,
           }
         : null,
-    facts, capacity, candidates: requestedSteps.length ? null : candidates, rateComparisons, checks: result.observations.map((observation) => ({
+    facts, capacity, candidates: requestedSteps.length ? null : candidates, swapIntent, rateComparisons, checks: result.observations.map((observation) => ({
       id: observation.id, label: observation.capability.replaceAll("_", " "), status: observation.status, readAt: observation.observedAt,
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,

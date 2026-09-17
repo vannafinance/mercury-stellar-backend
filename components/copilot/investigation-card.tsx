@@ -7,6 +7,7 @@ import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 
@@ -29,6 +30,8 @@ export interface InvestigationCardProps {
   onResume?: () => void;
   onCancelPlan?: () => void;
   onSign?: () => void;
+  wallet?: string | null;
+  autoSign?: boolean;
 }
 
 const money = (value: string) =>
@@ -74,6 +77,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], onContinue, continueLabel,
   onPropose, workflow, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
+  wallet = null, autoSign = false,
 }: InvestigationCardProps) {
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
@@ -229,6 +233,11 @@ export function InvestigationCard({
                 </section>
               )}
 
+              {result.swapIntent && !workflow?.swap && (
+                <SwapIntentPreviewCard intent={result.swapIntent} wallet={wallet ?? result.scope.wallet}
+                  refusal={result.candidates?.rejected.find((entry) => /swap/i.test(entry.label))?.reason ?? null} />
+              )}
+
               {/*
                 Options, computed rather than suggested. The non-borrowing choice is shown
                 beside the leveraged one on purpose — permission to borrow is not an
@@ -322,7 +331,17 @@ export function InvestigationCard({
                 </p>
               )}
 
-              {workflow && (
+              {workflow?.status === "proposed" && workflow.swap && onApprove && (
+                <SwapReviewCard workflow={workflow} wallet={wallet} busy={!!workflowLoading}
+                  autoSign={autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
+              )}
+              {workflow?.status === "proposed" && workflow.steps.some((step) => step.op === "swap") && !workflow.swap && (
+                <section role="alert" className="rounded-xl border border-imperial-500/30 bg-surface p-4 text-[13px] text-imperial-600">
+                  The swap terms could not be reviewed. Ask copilot to prepare a new swap quote.
+                  {onCancelPlan && <button type="button" onClick={onCancelPlan} className="ml-2 underline">Cancel plan</button>}
+                </section>
+              )}
+              {workflow && !(workflow.status === "proposed" && workflow.steps.some((step) => step.op === "swap")) && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
                     {workflow.status === "proposed" || workflow.status === "validating"

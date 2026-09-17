@@ -43,6 +43,8 @@ yarn-error.log*
 
 # Stray dev-server log from `npm run dev > dev.log`.
 dev.log
+copilot-dev.log
+copilot-dev.err.log
 
 # vercel
 .vercel
