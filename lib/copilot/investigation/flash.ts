@@ -30,9 +30,33 @@ const OP_MEANING: Record<WorkflowOp, string> = {
 };
 const PLAN_OPS_TEXT = WORKFLOW_OPS.map((op) => `${op} (${OP_MEANING[op]})`).join(", ");
 const PLAN_SIZINGS_TEXT = PLAN_SIZINGS.join(", ");
+/**
+ * `all_position` sizes what a leg TAKES OUT of something already held, so it only means
+ * anything on an op that reads a position. Named here from the same field the sizer
+ * refuses on (`OP_FLOW[op].positionRead`), because the model was choosing it for legs
+ * that ENTER a position and being refused after the fact: 17 Sep, "add LP XLM and SOUSDC
+ * and ask me the amount" came back "all_position applies to a redeem, a withdraw, a
+ * repay, a blend, a swap or a remove" — a rule the prompt had never stated.
+ */
+const POSITION_SIZED_OPS_TEXT = WORKFLOW_OPS.filter((op) => OP_FLOW[op].positionRead !== null).join(", ");
 
-/** The venues the ops act on, from the op-flow table. */
-const EXECUTABLE_VENUES: Venue[] = [...new Set(WORKFLOW_OPS.map((op) => OP_FLOW[op].venue))];
+/**
+ * The venues the ops act on: the op-flow table, plus every venue the registry has a pool
+ * on.
+ *
+ * `OP_FLOW[op].venue` names where an op's BALANCE lives — swap, add_liquidity and
+ * remove_liquidity all read "margin" or the one pool venue that happened to be written
+ * there — so deriving the executable set from it alone left `soroswap` out and the model
+ * was told it was "not executable here". It refused an LP add on a venue the copilot had
+ * settled a swap on earlier the same day (17 Sep, 10 XLM → 0.7521937 SOUSDC, on-chain).
+ *
+ * A pool in the registry is a venue the pool ops can route to, so it belongs here. The
+ * two sources answer different halves of the question and neither is complete alone.
+ */
+const EXECUTABLE_VENUES: Venue[] = [...new Set([
+  ...WORKFLOW_OPS.map((op) => OP_FLOW[op].venue),
+  ...lpPairs().map((pair) => pair.venue),
+])];
 /**
  * What the model is told about venues comes from the registry, the same tables the
  * evaluator sizes from — never a hand-written "AQUSDC for Aquarius". A venue the user
@@ -95,8 +119,9 @@ a valid AMM add. That composition is a protocol fact, and the paired amount is D
 the ratio at execution time, not chosen. Never ask the user which side to deposit, whether
 to add the other side, or how much of the pair to use. The pool's tokens field states the
 pair. Slippage tolerance is a real user choice; the pair is not.
-add_liquidity is Aquarius only for now — this deployment has no live reserves read for
-Soroswap yet, so a Soroswap add_liquidity leg is refused rather than sized on a guess.
+add_liquidity works on both Aquarius and Soroswap. Each is sized from its own pool's live
+reserves; the pair decides the venue, so never steer a user to one because the other is
+unavailable.
 When investigating borrowing to supply into Blend, inspect the same canonical asset's Earn
 borrow APR and Blend supply APR. APY minus APR is not a valid rate spread. The server compares
 reported simple APRs deterministically; a positive spread alone does not validate a strategy.
@@ -162,8 +187,11 @@ sizes it.
 Add "venue" only when the user named the DEX. A swap spends the margin account, so the tokens must already be in it.
 remove_liquidity (all_position) exits an LP pool. Its asset is the token XLM is paired with — AQUSDC for Aquarius,
 SOUSDC for Soroswap — never XLM itself, which is the other side of every pair.
-add_liquidity enters one: asset is whichever side the user stated an amount for (any sizing word — literal, all_idle,
-fraction — the same as any other leg), assetOut is REQUIRED and is the other side of the pair. Never state an amount
+add_liquidity enters one: asset is whichever side the user stated an amount for (literal, all_idle or fraction —
+never all_position, which sizes what a leg takes OUT of something held and applies only to ${POSITION_SIZED_OPS_TEXT};
+entering a pool has no position to take all of yet), assetOut is REQUIRED and is the other side of the pair.
+When the user gives no amount and asks to be asked, ask — one closed question naming the side and their idle balance.
+Never reach for a sizing word to stand in for an amount they said they would give you. Never state an amount
 for both sides or compute the paired amount yourself — the server derives it from the pool's live reserves. "Add 100
 XLM to the AQUSDC pool" is exactly {"op":"add_liquidity","asset":"XLM","assetOut":"AQUSDC","sizing":{"kind":"literal","amount":"100","sourceQuote":"Add 100 XLM to the AQUSDC pool"}}.
 Tokens sitting in Earn come back to the wallet with redeem (all_position) and can then be deposited

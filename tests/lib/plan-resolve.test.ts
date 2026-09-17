@@ -394,14 +394,54 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
       });
     });
 
-    it("refuses add_liquidity on Soroswap — no reserves read exists for it, so no floor can be set honestly", () => {
+    /**
+     * Soroswap was refused outright while it had no reserves read and the MCP sent the
+     * LP floor as WAD — a floor it could not size honestly, on a field that reverted
+     * every add that carried one. `vanna_get_soroswap_pool_stats` answers reserves, fee
+     * and total_share in the Aquarius envelope now, and the MCP sends the floor at the
+     * tokens' scale, so the same arithmetic serves both venues.
+     */
+    const SOROSWAP_RESERVES_OBS = obs("e7", "soroswap_pool_reserves",
+      { found: true, pool: { available: true, reserves: { XLM: "1000", SOUSDC: "200" }, total_share: "100", fee: "0.0030" } },
+      { asset: "SOUSDC" });
+
+    it("sizes a Soroswap add the same way it sizes an Aquarius one", () => {
+      const legs: ProposedPlan["legs"] = [
+        { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 xlm" } },
+        { op: "add_liquidity", asset: "XLM", assetOut: "SOUSDC", sizing: { kind: "previous_leg" } },
+      ];
+      // The wallet read is where every protocol token's on-chain precision comes from,
+      // so the paired side has to appear in it for its amount to be cut to its decimals.
+      const withSousdc = OBSERVATIONS.map((o) => o.id !== "e1" ? o : obs("e1", "wallet_balances", { assets: [
+        { symbol: "XLM", balance: "10206.8356118", status: "ok" }, { symbol: "XLM_SAC", balance: "10206.8356118", decimals: 7, status: "ok" },
+        { symbol: "SOUSDC", balance: "50.0000000", decimals: 7, status: "ok" },
+      ], fee_reserve_xlm: "0.5" }));
+      const { candidates, rejected } = resolvePlans([plan("Add XLM/SOUSDC liquidity", legs)], ctx({
+        messages: ["deposit 100 xlm and add it with SOUSDC to the soroswap pool"],
+        observations: [...withSousdc, obs("e8", "asset_price", { price_usd: "1" }, { asset: "SOUSDC" }), SOROSWAP_RESERVES_OBS],
+      }));
+      expect(rejected).toEqual([]);
+      // Same formula as Aquarius: 100 XLM x (200/1000) = 20 SOUSDC paired; LP shares
+      // 100 x (100/1000) = 10, floor at 0.5% slippage = 9.95.
+      expect(candidates[0]?.steps?.[1].args).toEqual({
+        smart_account: SCOPE.smartAccount, token_a: "XLM", token_b: "SOUSDC",
+        amount_a: "100", amount_b: "20", min_liquidity_out: "9.95",
+        trader: SCOPE.trader, venue: "soroswap",
+      });
+    });
+
+    it("refuses a Soroswap add when its pool was not read — never the Aquarius pool's numbers", () => {
       const legs: ProposedPlan["legs"] = [
         { op: "add_liquidity", asset: "XLM", assetOut: "SOUSDC", sizing: { kind: "literal", amount: "100", sourceQuote: "add 100 xlm" } },
       ];
-      const { candidates, rejected } = resolvePlans([plan("Add XLM/SOUSDC liquidity", legs)], ctx({ messages: ["add 100 xlm with SOUSDC to the pool"] }));
+      const { candidates, rejected } = resolvePlans([plan("Add XLM/SOUSDC liquidity", legs)], ctx({
+        messages: ["add 100 xlm with SOUSDC to the pool"],
+        // The Aquarius pool IS read here; the Soroswap one is not.
+        observations: [...OBSERVATIONS, obs("e8", "asset_price", { price_usd: "1" }, { asset: "SOUSDC" }), RESERVES_OBS],
+      }));
       expect(candidates).toEqual([]);
       expect(rejected[0]?.reason).toBe(
-        "add_liquidity on Soroswap is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available");
+        "no live soroswap pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio");
     });
 
     it("refuses an add_liquidity leg with no paired token named", () => {

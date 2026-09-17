@@ -434,13 +434,17 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * `assetOut` is the other side, the paired amount is NEVER the model's number: it is
      * derived at step-building time from the pool's own live reserves.
      *
-     * Aquarius only, for now. Soroswap's own contract corrects an imperfect TOKEN ratio
-     * on-chain (compute_soroswap_add_liquidity_auth_amounts reads its own reserves and
-     * uses whichever side fits), so the deposit amounts are safe either way — but the
-     * SEPARATE min_liquidity_out floor (the LP shares minted) has no such protection, and
-     * this MCP has no Soroswap reserves/total-supply read to compute one honestly. Rather
-     * than ship that floor as a silent 0 — exactly the swap bug fixed today — Soroswap
-     * add_liquidity is refused until that read exists, same as the exact-output swap gap.
+     * Both venues, as of 17 Sep. Soroswap was refused here while two things were true of
+     * it: no reserves/total-supply read existed to size an honest `min_liquidity_out`,
+     * and sending the floor as a silent 0 was the very bug being fixed on the swap side.
+     * `vanna_get_soroswap_pool_stats` now answers reserves, fee and total_share in the
+     * same envelope as the Aquarius read — one formula prices either — and the MCP sends
+     * that floor at the tokens' own scale instead of WAD, where it used to revert every
+     * add that carried one. Neither reason survives, so the refusal does not either.
+     *
+     * The deposit amounts were never the risk on Soroswap: its contract corrects an
+     * imperfect TOKEN ratio on-chain (compute_soroswap_add_liquidity_auth_amounts reads
+     * its own reserves and uses whichever side fits). It was always the floor.
      */
     const paired = leg.op === "add_liquidity" ? resolveAssetDef(leg.assetOut ?? "") : null;
     if (leg.op === "add_liquidity") {
@@ -457,12 +461,13 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (leg.venue && leg.venue !== pool) {
         throw new Reject(name, `${def.id} and ${paired.id} pool on ${venueLabel(pool)}, not ${venueLabel(leg.venue)}`);
       }
-      if (pool !== "aquarius") {
-        throw new Reject(name, `add_liquidity on ${venueLabel(pool)} is not supported yet — this MCP has no live reserves read for it, so the LP-share floor cannot be set honestly; Aquarius is available`);
+      const reserves = poolReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, pool, ctx.now);
+      // `deposit_killed` is a flag on the Aquarius AMM API's pool record; Soroswap's read
+      // has no counterpart, so this asks only the venue that answers it.
+      if (pool === "aquarius") {
+        const poolData = aquariusPoolDataOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
+        if (poolData?.deposit_killed === true) throw new Reject(name, "deposits are paused on the router-selected Aquarius pool");
       }
-      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
-      const poolData = aquariusPoolDataOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
-      if (poolData?.deposit_killed === true) throw new Reject(name, "deposits are paused on the router-selected Aquarius pool");
       if (!reserves) throw new Reject(name, `no live ${pool} pool reserves were read this investigation, so the paired amount cannot be sized against the real ratio`);
     }
     if (!walletOp && !ctx.scope.smartAccount) throw new Reject(name, "a margin account is needed for this step and none is connected");
@@ -1026,9 +1031,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
      * minted for it are exactly stated x totalShare / reserveStated too, the same formula
      * a constant-product pool itself mints by (no oracle needed for either number).
      */
-    const addLiquidity = paired && dex === "aquarius" ? (() => {
-      const reserves = aquariusReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, ctx.now);
-      if (!reserves) throw new Reject(d.name, "no live aquarius pool reserves were read this investigation");
+    const addLiquidity = paired && dex ? (() => {
+      const reserves = poolReservesOf(ctx.observations, def.id === "XLM" ? paired.id : def.id, dex, ctx.now);
+      if (!reserves) throw new Reject(d.name, `no live ${dex} pool reserves were read this investigation`);
       const statedIsXlm = def.id === "XLM";
       const reserveStatedWad = decimalWad(statedIsXlm ? reserves.xlm : reserves.paired);
       const reserveDerivedWad = decimalWad(statedIsXlm ? reserves.paired : reserves.xlm);
@@ -1270,10 +1275,6 @@ function poolReservesOf(
   const read = [...observations].reverse().find((o) =>
     o.capability === capability && o.status === "ok" && o.data && o.args.asset === pairedAsset && now - o.observedAt <= 60_000);
   return read?.data ? poolReservesFrom(read.data) : null;
-}
-
-function aquariusReservesOf(observations: readonly Observation[], pairedAsset: string, now: number): PoolReserves | null {
-  return poolReservesOf(observations, pairedAsset, "aquarius", now);
 }
 
 function aquariusPoolDataOf(observations: readonly Observation[], pairedAsset: string, now: number): Record<string, unknown> | null {
