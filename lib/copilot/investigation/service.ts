@@ -6,20 +6,25 @@ import { researchCodec } from "./continuation";
 import { runInvestigation, interruptible } from "./runtime";
 import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
-import { compareObservedRates } from "./rate-comparison";
-import { computeBorrowCapacity, computeAccountPosition } from "./capacity";
-import { SIZING_SOURCES_DISAGREE_WARNING } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, requestedBorrowFrom } from "./candidates";
+import { analyseObservedRates } from "./rate-comparison";
+import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
+import { anchoredGoalFloor, anchoredSlippageAccepted, statedFloorFrom } from "./floor";
+import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
+import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
+import { REQUESTED_ACTIONS_ID } from "./candidate-id";
+import { planCandidateId, planFromStatedActions, resolvePlans, withBoughtAsset } from "./plan";
+import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
-import { compileRequestedActions } from "./requested-actions";
-import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed } from "./strategy-reads";
+import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
+import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
+import { WORKFLOW_OPS } from "../workflow/types";
 
 /**
  * The three budgets that run OUTSIDE the investigation loop's own deadline, named so
@@ -49,6 +54,8 @@ export interface ResearchInput {
    */
   session?: string | null;
   history?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** The conversation this turn belongs to; absent on the first turn of a new chat. */
+  conversationId?: string | null;
   /** Named eval fixture for traces. Never the user message. */
   promptName?: string;
 }
@@ -268,6 +275,30 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         () => computeAccountPosition(scope.smartAccount, positionSignal),
         positionSignal,
       ).then((value) => ({ value, error: null as unknown }), (error) => ({ value: null, error }));
+  const namedAssets = [...new Set([...input.message.matchAll(new RegExp(ASSET_SYMBOL_PATTERN.source, "gi"))]
+    .map((match) => resolveAssetDef(match[0])?.id).filter((id): id is NonNullable<typeof id> => !!id))];
+  const explicitOp = new RegExp(`\\b(?:${WORKFLOW_OPS.map((op) => op.replaceAll("_", " ")).join("|")})\\b`, "i").test(input.message);
+  // Whichever venue trades the named pair — a Soroswap swap needs its pool's numbers
+  // just as much as an Aquarius one, and seeding only Aquarius left Soroswap on the
+  // oracle quote (see strategy-reads.ts).
+  const namedPair = lpPairs().find((pair) => pair.tokens.every((token) => namedAssets.includes(token)));
+  const poolAsset = namedPair?.tokens[1];
+  const poolCapability = namedPair?.venue === "soroswap" ? "soroswap_pool_reserves" : "aquarius_pool_reserves";
+  const poolOp = /\b(?:swap|add liquidity|remove liquidity)\b/i.test(input.message);
+  const evidenceSeedRequests: StrategyRead[] = explicitOp && !needsMarketSeed(input.message)
+    ? [
+        ...namedAssets.map((asset) => ({ capability: "asset_price", args: { asset } })),
+        ...(poolOp && poolAsset ? [{ capability: poolCapability, args: { asset: poolAsset } }] : []),
+        ...(poolOp && scope.trader && scope.smartAccount ? [{ capability: "wallet_balances", args: {} }] : []),
+      ].filter((request) => !carriedObs.some((observation) => observation.capability === request.capability
+        && observation.status === "ok" && observation.args.asset === ("asset" in request.args ? request.args.asset : undefined)
+        && Date.now() - observation.observedAt <= 60_000))
+    : [];
+  const evidenceSeedTask = evidenceSeedRequests.length
+    ? collectStrategyReads(scope, scopedMcp,
+        AbortSignal.any([dependencies.signal, AbortSignal.timeout(15_000)]),
+        Date.now(), evidenceSeedRequests, "w")
+    : Promise.resolve([]);
   const withdrawTask = withdrawAsk
     ? interruptible(
         () => withdrawObservation(withdrawAsk.asset, withdrawAsk.amount, scope, scopedMcp),
@@ -370,6 +401,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   } else if (haveCarriedPosition) {
     logPhase("position", { ms: 0, seeded: true, source: "carried_evidence" });
   }
+  const evidenceSeed = await evidenceSeedTask;
+  if (evidenceSeed.length) {
+    seed.push(...evidenceSeed);
+    logPhase("evidence_seed", { requested: evidenceSeedRequests.map((request) => `${request.capability}:${request.args.asset ?? ""}`), ok: evidenceSeed.filter((observation) => observation.status === "ok").length });
+  }
   const loopStarted = Date.now();
   const result = await withInvestigationPhase("loop", () => runInvestigation({
     message: input.message, scope, seed,
@@ -380,38 +416,21 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   logPhase("loop", {
     ms: Date.now() - loopStarted,
     outcome: result.outcome.kind,
+    // WHY it stopped is the whole diagnosis — "stopped" alone sent a live 15 Sep failure
+    // ("deploy my XLM in farm") to the generic timeout copy while the loop had actually
+    // ended after one model turn and no tool calls at all.
+    ...(result.outcome.kind === "stopped" ? { reason: result.outcome.reason } : {}),
     modelTurns: result.usage.modelTurns,
     toolCalls: result.usage.toolCalls,
     loopElapsedMs: result.usage.elapsedMs,
   });
   const outcome = result.outcome;
-  if (outcome.kind === "research_complete") {
-    const compiledQuestion = outcome.openQuestions[0] ?? null;
-    const earlySteps = !compiledQuestion ? compileRequestedActions(outcome.goal, messages, scope) : [];
-    if (earlySteps.length) {
-      const evidence = compactResearchEvidence(result.observations, null, Date.now());
-      evidence.requestedSteps = earlySteps;
-      evidence.allowedCandidateIds = ["requested_actions"];
-      logPhase("compiled_write", { steps: earlySteps.length, op: earlySteps[0]?.op });
-      return {
-        status: "researched",
-        message: strategyReply({
-          status: "researched", facts: [], candidates: null, capacity: null, question: null,
-          intent: "strategy", originalRequest: messages[0], statedSteps: earlySteps,
-        }),
-        originalRequest: messages[0], refinements: messages.slice(1), question: null,
-        proposalCandidateId: "requested_actions",
-        understanding: outcome.goal, facts: [], capacity: null, candidates: null, rateComparisons: [],
-        checks: result.observations.map((observation) => ({
-          id: observation.id, label: observation.capability.replaceAll("_", " "),
-          status: observation.status, readAt: observation.observedAt,
-        })),
-        warnings: [],
-        scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
-        continuation: codec.seal(scope, messages, null, evidence), executionAllowed: false,
-      };
-    }
-  }
+  /**
+   * Stated actions ("repay 1 XLM") do NOT short-cut to steps here. They join the plans
+   * below and are sized, funded, precision-cut and simulated like every other plan; the
+   * shortcut that used to live here is what offered "lend 1 xlm" from a wallet with
+   * nothing spendable (14 Sep).
+   */
   if (!positionAwaited) {
     const [positionResult] = await withInvestigationPhase("position", () =>
       Promise.all([positionTask]));
@@ -497,13 +516,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         : "Borrowing headroom could not be computed from your current position.",
     );
   }
-  const rateComparisons = compareObservedRates(result.observations, Date.now());
+  const rateAnalysis = analyseObservedRates(result.observations, Date.now());
+  const rateComparisons = rateAnalysis.comparisons;
+  // A rate that was read but not used must be visible, or the prose (which saw the raw
+  // read) and the ranked options (which did not) will disagree with no explanation.
+  for (const dropped of rateAnalysis.excluded) warnings.push(dropped.detail);
   /**
    * Options, generated from the evidence rather than proposed by the model. Only offered
    * when the user actually stated a floor: sizing a borrow needs one, and inventing a
    * default would fabricate the calculation's most important input.
    */
-  const observedNow = Date.now();
+  let observedNow = Date.now();
   /**
    * An amount the user named outright is honoured as stated, never re-sized to the floor.
    * When it cannot be valued from a price read this turn, NO options are offered: sizing to
@@ -511,8 +534,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * number than the one they gave is the worst outcome available here.
    */
   const requestedBorrow = requestedBorrowFrom(messages, result.observations, observedNow);
-  if (requestedBorrow && requestedBorrow.usd === null) warnings.push(
-    `You asked to borrow ${requestedBorrow.tokens} ${requestedBorrow.asset}, but no ${requestedBorrow.asset} price was read, so that amount could not be checked against your floor.`);
   /**
    * Permission to borrow is not an instruction to borrow. "Unspecified" still offers
    * both the idle path and a levered path — the owner prompt says the copilot may take
@@ -525,7 +546,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
-          floor: capacity?.floor ?? "1.30",
+          floor: capacity?.floor ?? null,
           idleWalletUsd: idleWalletUsdFrom(result.observations, observedNow),
           idleWalletByAssetUsd: idleWalletByAssetUsdFrom(result.observations, observedNow),
           idleWalletByAssetTokens: idleWalletByAssetTokensFrom(result.observations, observedNow),
@@ -543,25 +564,176 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     });
     warnings.push("Strategy options could not be ranked from the reads that completed.");
   }
+  /**
+   * The model's composed shapes, sized and checked in code, ranked beside the fixed
+   * shapes. A plan that does not fit is listed with the reason, never dropped silently —
+   * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
+   * from "option discarded".
+   */
+  let modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
+  /**
+   * A stated write ("lend 1 xlm to earn") the model nominated as `goal.actions` is a plan
+   * of literal legs, and goes through the same sizer as every other plan: the reads it
+   * needs are fetched, its amount is checked against the pocket it draws from, and a
+   * refusal names the figure. It used to compile straight to steps (14 Sep: "lend 1 xlm"
+   * from a wallet with nothing spendable, refused by the contract after Approve).
+   */
+  const statedPlan = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
+    ? planFromStatedActions(outcome.goal.actions, outcome.goal.objective) : null;
+  if (statedPlan) modelPlans.push(statedPlan);
+  /**
+   * A swap that did not say what it buys is completed from the user's sentence here, before
+   * the reads are chosen and before the evidence is sealed, so the reads phase, the sizer,
+   * the card and the sealed plan all see the same leg.
+   */
+  modelPlans = withBoughtAsset(modelPlans, messages);
+  if (outcome.kind === "research_complete" && outcome.droppedPlans) {
+    warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
+  }
+  if (outcome.kind === "research_complete" && outcome.droppedFindings) {
+    warnings.push(`${outcome.droppedFindings} ${outcome.droppedFindings === 1 ? "statement" : "statements"} from the model quoted a figure with no read behind it and ${outcome.droppedFindings === 1 ? "was" : "were"} left out.`);
+  }
+  /**
+   * The position the plans are sized against comes from the account read, and the floor
+   * from the user's words — even when borrowing headroom could not be computed (a floor
+   * at 1.1, or none stated). A deposit needs no floor; a borrow with none is rejected
+   * with a sentence saying so, instead of every account leg claiming the position was
+   * never read (13 Sep card).
+   */
+  /**
+   * The floor the model understood and the user's words confirm comes first; the regex
+   * parser is the fallback. When it differs from what headroom was computed with (the
+   * regex missed "HF stays above 1.3" on 13 Sep), headroom is recomputed with it so the
+   * fixed shapes and the plans size against the floor the user actually stated.
+   */
+  const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, messages) : null;
+  if (goalFloor && goalFloor !== capacity?.floor && scope.smartAccount && !capacityResult.failed) {
+    try {
+      capacity = await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null, {
+        mcp: scopedMcp, trader: scope.trader, floor: goalFloor,
+      });
+      logPhase("floor", { source: "goal", floor: goalFloor, headroom: capacity?.maxBorrowUsd ?? null });
+    } catch (error) {
+      console.warn("[copilot] investigation capacity refresh with the stated floor failed", {
+        error: error instanceof Error ? { name: error.name, message: error.message } : String(error),
+      });
+    }
+  }
+  const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages);
+  /**
+   * Plans size from the contract's figures always — the one number that liquidates you
+   * (`grossCollateralUsd`/`debtUsd` here are `computeSizingBasis`'s contract basis
+   * regardless of `issue`). An account holding any unposted balance or LP receipt
+   * disagrees with the Margin page PERMANENTLY by design (the app counts everything held,
+   * the contract counts only what is posted), so a plan no longer refuses on the
+   * disagreement itself — only when the contract read that IS the basis could not be made
+   * (`sizing_contract_unavailable`; see plan.ts). The gap becomes information instead: the
+   * unposted amount, named plainly, rather than a reason nothing can be sized.
+   */
+  let planPosition: import("./plan").PlanContext["capacity"] = null;
+  if (scope.smartAccount && outcome.kind === "research_complete" && modelPlans.length) {
+    try {
+      const basis = await computeSizingBasis(scope.smartAccount, position?.snapshot ?? null, { mcp: scopedMcp, trader: scope.trader }, dependencies.signal);
+      if (basis) {
+        planPosition = {
+          grossCollateralUsd: basis.grossCollateralUsd, debtUsd: basis.debtUsd, floor: statedFloor,
+          issue: basis.issue ? { reason: basis.issue, app: basis.app, contract: basis.contract } : null,
+        };
+        if (basis.issue === "sizing_sources_disagree") {
+          const note = unpostedCollateralNote(basis.app, basis.contract ?? basis.app);
+          if (note && !warnings.includes(note)) warnings.push(note);
+        }
+      }
+    } catch (error) {
+      console.warn("[copilot] investigation sizing basis failed", { error: error instanceof Error ? { name: error.name, message: error.message } : String(error) });
+    }
+  }
+  let planComparisons = rateComparisons;
+  if (modelPlans.length) {
+    /**
+     * Code fetches what code needs. The loop may not have read a price, a wallet balance
+     * or a market the plans depend on — a phrase list used to decide whether the market
+     * seed ran at all — so the missing reads are made here, deterministically, before
+     * sizing. They join the observations so the card, the sealed evidence and propose
+     * all see the same reads.
+     */
+    const missing = readsForPlans(modelPlans, result.observations, observedNow);
+    if (missing.length) {
+      const extra = await collectStrategyReads(scope, scopedMcp, dependencies.signal, observedNow, missing, "q");
+      result.observations.push(...extra);
+      logPhase("plan_reads", { requested: missing.map((r) => `${r.capability}${r.args.asset ? `:${r.args.asset}` : ""}`), ok: extra.filter((o) => o.status === "ok").length });
+      /**
+       * "Now" moves past the reads just made. Freshness is `observedAt <= now`, so a read
+       * stamped after a clock taken before it is not fresh — and the rate analysis and the
+       * sizer both dropped the very reads fetched for the plan (14 Sep: "lend 25% of xlm"
+       * fetched earn_market:XLM and was refused for "no usable Earn supply rate").
+       */
+      observedNow = Date.now();
+      planComparisons = analyseObservedRates(result.observations, observedNow).comparisons;
+    }
+    const resolved = resolvePlans(modelPlans, {
+      scope, observations: result.observations, now: observedNow, messages,
+      capacity: planPosition, borrowing, comparisons: planComparisons,
+      // Only an acceptance anchored in the user's own message counts.
+      goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
+        ? outcome.goal : undefined,
+    });
+    logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
+    candidates = mergeCandidateSets(candidates, resolved);
+    /**
+     * The sizer said what fits the facts it read; the protocol's preview says what the
+     * contract will accept. An option the preview refuses is never shown; one it cannot
+     * judge is shown as not simulated.
+     */
+    if (candidates.feasible.some((c) => c.steps?.length)) {
+      candidates = await simulateCandidates(candidates, scope, scopedMcp, dependencies.signal);
+      logPhase("simulation", { options: candidates.feasible.map((c) => `${c.id}: ${c.simulation?.verdict ?? "not simulated"}`), refused: candidates.rejected.filter((r) => /^The protocol refuses/.test(r.reason)).map((r) => r.reason) });
+    }
+  }
+  /**
+   * Checked against the FINAL observations for this turn, after `plan_reads` — not the
+   * snapshot from before it ran. `requestedBorrow` above is read early because the fixed
+   * shapes need it to decide whether to generate at all; the warning does not have that
+   * constraint, and checking it early meant a price `plan_reads` fetched moments later was
+   * still reported missing (15 Sep: BLUSDC's price read ok at plan_reads, ~4.7s after the
+   * copilot had already told the user it was never read).
+   */
+  const requestedBorrowNow = requestedBorrowFrom(messages, result.observations, observedNow);
+  if (requestedBorrowNow && requestedBorrowNow.usd === null) warnings.push(
+    `You asked to borrow ${requestedBorrowNow.tokens} ${requestedBorrowNow.asset}, but no ${requestedBorrowNow.asset} price was read, so that amount could not be checked against your floor.`);
   if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
     warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
   }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
+  /**
+   * An option the code sized is an answer. A question the model left open beside it is
+   * shown as an open point the user MAY refine — it does not take the option away. 14 Sep:
+   * "Repay XLM debt with idle wallet XLM" was sized, shown with its button, and Prepare
+   * answered "This option was not proposed by the completed investigation", because the
+   * model's note "No BLUSDC balance is available to repay the BLUSDC debt directly" had
+   * been sealed as a blocking question.
+   */
+  const offered = Boolean(candidates?.feasible.length);
   const status: ResearchView["status"] = outcome.kind === "blocked" ? "blocked"
-    : question ? "needs_input"
-      : candidates?.feasible.length || outcome.kind === "research_complete" ? "researched"
-        : outcome.kind === "stopped" ? "incomplete"
-          : "needs_input";
-  const requestedSteps = outcome.kind === "research_complete" && !question
-    ? compileRequestedActions(outcome.goal, messages, scope) : [];
+    : offered ? "researched"
+      : question ? "needs_input"
+        : outcome.kind === "research_complete" ? "researched"
+          : outcome.kind === "stopped" ? "incomplete"
+            : "needs_input";
+  // A stated write, once sized and simulated, is offered as the steps to approve — not as a ranked option.
+  const statedId = statedPlan ? planCandidateId(statedPlan) : null;
+  const statedCandidate = statedId ? candidates?.feasible.find((c) => c.id === statedId) : undefined;
+  const requestedSteps = statedCandidate?.steps ?? [];
+  if (statedCandidate && candidates) candidates = { ...candidates, feasible: candidates.feasible.filter((c) => c.id !== statedId) };
   const message = strategyReply({
     status, facts, candidates: requestedSteps.length ? null : candidates, capacity, question,
     intent: outcome.kind === "research_complete" ? outcome.goal.intent : undefined,
     findings: outcome.kind === "research_complete" ? outcome.findings : undefined,
     originalRequest: messages[0],
     statedSteps: requestedSteps,
+    stopReason: outcome.kind === "stopped" ? outcome.reason : null,
   });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
@@ -574,15 +746,44 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     ? "The language model was unavailable. No keyword plan was substituted."
     : `Research stopped: ${outcome.reason.replaceAll("_", " ")}.`);
   const evidence = compactResearchEvidence(result.observations, capacity, observedNow);
-  evidence.allowedCandidateIds = outcome.kind === "research_complete" && !question
+  // Every option shown can be prepared; the sealed list is exactly the shown list.
+  evidence.allowedCandidateIds = outcome.kind === "research_complete"
     ? candidates?.feasible.map(candidate => candidate.id) ?? [] : [];
   if (requestedSteps.length) {
     evidence.requestedSteps = requestedSteps;
-    evidence.allowedCandidateIds = ["requested_actions"];
+    evidence.allowedCandidateIds = [REQUESTED_ACTIONS_ID];
   }
+  if (modelPlans.length) {
+    evidence.plans = modelPlans;
+    evidence.position = planPosition;
+    // Sealed with the plans it applies to, already anchored to the user's own words.
+    if (outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)) {
+      evidence.slippageAccepted = true;
+    }
+    evidence.floor = statedFloor;
+  }
+  const swapLeg = modelPlans.flatMap((plan) => plan.legs).find((leg) => leg.op === "swap" && leg.sizing.kind === "literal" && leg.assetOut);
+  const swapVenue = swapLeg?.assetOut ? poolVenueFor(swapLeg.asset, swapLeg.assetOut) : null;
+  const swapSourceQuote = swapLeg?.sizing.kind === "literal" ? swapLeg.sizing.sourceQuote : null;
+  const swapIntent: ResearchView["swapIntent"] = swapLeg?.sizing.kind === "literal" && swapLeg.assetOut && swapVenue
+    && (!swapLeg.venue || swapLeg.venue === swapVenue)
+    && swapSourceQuote && messages.some((message) => message.includes(swapSourceQuote))
+      ? { tokenIn: swapLeg.asset, tokenOut: swapLeg.assetOut, venue: swapVenue,
+          amount: swapLeg.sizing.amount, amountAsset: swapLeg.sizing.amountAsset ?? "asset" }
+      : null;
   return {
     status, message, originalRequest: messages[0], refinements: messages.slice(1), question,
-    proposalCandidateId: requestedSteps.length ? "requested_actions" : candidates?.feasible[0]?.id ?? null,
+    /**
+     * A nomination means "there is one unambiguous thing to prepare", not "here is the
+     * first row". The client auto-proposes whatever is nominated, and with session signing
+     * on it then auto-approves and broadcasts — so nominating `feasible[0]` out of several
+     * competing strategies executed a financial choice the user never made (15 Sep, S4:
+     * two options offered, the first one signed and sent before it could be read).
+     * Delegated signing is consent to skip the wallet popup, not consent to pick the
+     * strategy. With more than one option the choice stays the user's.
+     */
+    proposalCandidateId: requestedSteps.length ? REQUESTED_ACTIONS_ID
+      : candidates?.feasible.length === 1 ? candidates.feasible[0].id : null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
     understanding: outcome.kind === "research_complete" ? outcome.goal
@@ -593,7 +794,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
             borrowing,
           }
         : null,
-    facts, capacity, candidates: requestedSteps.length ? null : candidates, rateComparisons, checks: result.observations.map((observation) => ({
+    facts, capacity, candidates: requestedSteps.length ? null : candidates, swapIntent, rateComparisons, checks: result.observations.map((observation) => ({
       id: observation.id, label: observation.capability.replaceAll("_", " "), status: observation.status, readAt: observation.observedAt,
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,

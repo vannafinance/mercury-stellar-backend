@@ -8,8 +8,11 @@ import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
+  shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
+  preserveLastConclusiveSignState,
+  hasAuthenticatedPrivyHeader,
 } from "@/components/copilot/session-auto-sign";
 
 describe("hopAutoSubmitKey", () => {
@@ -133,6 +136,81 @@ describe("shouldSessionAutoSubmit", () => {
   });
 });
 
+describe("shouldAutoApproveProposedWorkflow", () => {
+  /**
+   * Arming the capped signer skips the wallet popup on a plan the user approved. It is
+   * not agreement to the plan, and it used to be read as both: with the switch on,
+   * "deposit my idle XLM and supply it to Blend" sized itself and settled with nothing
+   * to click (17 Sep, live). The rail promises the prompt goes away, not the review.
+   */
+  it("does not auto-click a non-swap plan — the signing prompt is what auto sign skips", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "borrow" }],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "deposit_collateral" }, { op: "supply_blend" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not auto-click a swap plan — that click is the price-impact acknowledgement", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * The acknowledgement the click stands for, the user already gave in words, before
+   * the plan was sealed — and the sealed plan carries it. Demanding the click anyway
+   * is asking them to agree twice to one price, which is the dead end that made an
+   * accepted swap unexecutable (17 Sep: "swap xlm so i will get 1 AqUSDC", accepted,
+   * refused). The proposal's own flag is what distinguishes the two cases.
+   */
+  it("auto-approves a swap the user accepted the loss on, in their own words", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not auto-click an accepted plan with no swap in it", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: true,
+        status: "proposed",
+        steps: [{ op: "borrow" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("still refuses when session signing is off, accepted or not", () => {
+    expect(
+      shouldAutoApproveProposedWorkflow({
+        sessionSigning: false,
+        status: "proposed",
+        steps: [{ op: "swap" }],
+        slippageAccepted: true,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("promoteSignableAutoSignResponse", () => {
   it("promotes needs_auto_sign + XDR to needs_wallet_sign", () => {
     const out = promoteSignableAutoSignResponse(
@@ -183,6 +261,30 @@ describe("shouldArmAutoApprove", () => {
 });
 
 describe("signServiceFromSessionRead", () => {
+  it("only treats a Privy-authenticated request as cache-authoritative", () => {
+    expect(hasAuthenticatedPrivyHeader({})).toBe(false);
+    expect(hasAuthenticatedPrivyHeader({ "x-privy-token": "  " })).toBe(false);
+    expect(hasAuthenticatedPrivyHeader({ "x-privy-token": "signed-token" })).toBe(true);
+  });
+
+  it("preserves a conclusive state across an unavailable refresh", () => {
+    expect(
+      preserveLastConclusiveSignState(
+        { status: "ok", reason: null },
+        { status: "unavailable", reason: "temporarily offline" },
+      ),
+    ).toEqual({ status: "ok", reason: null });
+  });
+
+  it("surfaces an unavailable first read when no conclusive state exists", () => {
+    expect(
+      preserveLastConclusiveSignState(
+        { status: "unknown", reason: null },
+        { status: "unavailable", reason: "temporarily offline" },
+      ),
+    ).toEqual({ status: "unavailable", reason: "temporarily offline" });
+  });
+
   it("maps an active GET /sessions payload to Budget-active (ok + caps)", () => {
     expect(
       signServiceFromSessionRead({

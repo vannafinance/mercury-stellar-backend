@@ -117,4 +117,24 @@ describe("investigation read catalogue", () => {
       expect(call.arguments).toEqual({ action: expect.any(String), kwargs: { marker: true } });
     }
   });
+
+  /**
+   * 15 Sep, live: every copilot swap died as "The tool response could not be confirmed".
+   * `vanna_swap` was never consolidated into a dispatcher — it is its own tool, taking flat
+   * arguments — but the translation table listed it as `{ tool: "vanna_swap", action:
+   * "swap" }`, mapping the name to ITSELF, which still wrapped the arguments. The server
+   * answered "4 validation errors for vanna_swapArguments: smart_account Field required",
+   * and an empty catch turned that into the unexplained "uncertain" the user saw. The
+   * website's own Swap page worked throughout — it never goes through this translation.
+   */
+  it("sends a swap's arguments flat, never wrapped in the dispatcher envelope", () => {
+    const args = {
+      smart_account: "CCKITLMK", token_in: "AQUSDC", token_out: "XLM",
+      amount_in: "10", min_out: "550.5", trader: "GBH5G2WP", venue: "aquarius",
+    };
+    expect(toServerCall("vanna_swap", args)).toEqual({ name: "vanna_swap", arguments: args });
+    // Specifically: no `action`/`kwargs` envelope, which is what the server rejected.
+    expect(toServerCall("vanna_swap", args).arguments).not.toHaveProperty("kwargs");
+    expect(toServerCall("vanna_swap", args).arguments).toHaveProperty("smart_account");
+  });
 });

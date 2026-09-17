@@ -1,4 +1,4 @@
-import { allAssets } from "../registry/assets";
+import { allAssets, resolveAssetDef } from "../registry/assets";
 import type { InvestigationScope, ReadCapability, ReadCost } from "./types";
 
 /**
@@ -28,6 +28,9 @@ const earnAssets = assets.filter((asset) => asset.earnSymbol).map((asset) => ass
 const priceAssets = assets.map((asset) => asset.id);
 const marginAssets = assets.filter((asset) => asset.marginSymbol).map((asset) => asset.id);
 const blendAssets = assets.filter((asset) => asset.blendReserve).map((asset) => asset.id);
+const lpAssets = assets.filter((asset) => asset.lpVenue).map((asset) => asset.id);
+const aquariusLpAssets = assets.filter((asset) => asset.lpVenue === "aquarius").map((asset) => asset.id);
+const soroswapLpAssets = assets.filter((asset) => asset.lpVenue === "soroswap").map((asset) => asset.id);
 
 function requireAsset(id: unknown) {
   const asset = assets.find((entry) => entry.id === id);
@@ -133,7 +136,7 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "liquidation_snapshot", tool: "vanna_get_liquidation_snapshot", scope: "account", cost: "expensive",
-    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus the liquidatable flag. Health questions read this; it is not the Margin page snapshot.",
+    description: "The RiskEngine function that decides liquidation. Posted collateral and debt in USD, plus unpriceable_plain — true means AccountManager will refuse liquidation even if HF looks low. Not a liquidatable verdict and not the Margin page snapshot.",
     modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
   },
   {
@@ -203,8 +206,38 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     name: "farm_lp_position", tool: "vanna_get_farm_lp_position", scope: "account", cost: "expensive",
-    description: "The user's Aquarius/Soroswap LP farm position. Use when they ask about LP or a named pair they hold, not for pool discovery (aquarius_markets).",
-    modelArgs: {}, bind: (_, scope) => ({ smart_account: scope.smartAccount }),
+    description: "The user's Aquarius/Soroswap LP farm position for one pair, named by the token XLM is paired with. Use when they ask about LP or a named pair they hold, not for pool discovery (aquarius_markets).",
+    modelArgs: { asset: { type: "enum", values: lpAssets } },
+    /**
+     * Each LP venue pairs XLM with its own token, so naming that token fixes the pair AND
+     * the venue. Without it the tool reads its own defaults (Aquarius XLM/USDC) and a
+     * Soroswap position would come back empty.
+     */
+    bind: (args, scope) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return {
+        smart_account: scope.smartAccount,
+        ...(def?.lpVenue ? { token_a: "XLM", token_b: def.marginSymbol ?? def.id, venue: def.lpVenue } : {}),
+      };
+    },
+  },
+  {
+    name: "soroswap_pool_reserves", tool: "vanna_get_soroswap_pool_stats", scope: "public", cost: "cheap",
+    description: "Live pair reserves, fee and total LP shares for one Soroswap pair, named by the token XLM is paired with. Use to size a Soroswap swap or exact-output — the oracle says what the pair is WORTH, not what this pool will PAY, and sizing a floor from it proposes amounts the pool cannot fill.",
+    modelArgs: { asset: { type: "enum", values: soroswapLpAssets } },
+    bind: (args) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return { token_a: "XLM", token_b: def?.marginSymbol ?? def?.id ?? "" };
+    },
+  },
+  {
+    name: "aquarius_pool_reserves", tool: "vanna_get_aquarius_pool_stats", scope: "public", cost: "cheap",
+    description: "Live pool reserves and total LP shares for one Aquarius pair, named by the token XLM is paired with. Use to size add_liquidity's paired amount or an exact-output swap on Aquarius — never guess a ratio from oracle prices when this is available.",
+    modelArgs: { asset: { type: "enum", values: aquariusLpAssets } },
+    bind: (args) => {
+      const def = resolveAssetDef(String(args.asset ?? ""));
+      return { token_a: "XLM", token_b: def?.marginSymbol ?? def?.id ?? "" };
+    },
   },
   {
     name: "lp_balance", tool: "vanna_get_lp_balance", scope: "account", cost: "expensive",

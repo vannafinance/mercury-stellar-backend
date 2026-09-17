@@ -9,6 +9,8 @@ import type { MCPClient } from "../mcp-client";
 import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
+import { decimalWad, formatWad, mulDown, WAD } from "./fixed";
+import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
@@ -17,10 +19,12 @@ import { appendAudit } from "../audit-log";
 import { checkpointFromJournal, saveCheckpoint } from "../checkpoint";
 import { ResearchError, resolveInvestigationScope } from "./scope";
 import { workflowJournal } from "./proposal";
+import { TOOLS } from "../workflow/allowlist";
+import { WALLET_OPS } from "../workflow/types";
 
-const WRITE_TOOLS = new Set([
-  "vanna_deposit_collateral", "vanna_borrow", "vanna_repay", "vanna_blend_supply", "vanna_lend",
-]);
+/** Every tool the vocabulary maps to. Derived, so a new op cannot be allowlisted yet unexecutable. */
+const WRITE_TOOLS = new Set(Object.values(TOOLS));
+const WALLET_TOOLS = new Set(WALLET_OPS.map((op) => TOOLS[op]));
 
 export type LedgerLookup = (hash: string) => Promise<
   { found: true; success: boolean; ledger: number } | { found: false }
@@ -45,6 +49,145 @@ function persistRun(record: { proposal: WorkflowProposal; status: string; steps:
 function identityOf(proposal: WorkflowProposal) {
   return { scope: proposal.scope, server: proposal.server };
 }
+
+/** What re-quoting the pool right before the write decided. */
+export type StaleFloorVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; minOut: string; note: string }
+  | { kind: "refuse"; message: string };
+
+/**
+ * A swap's floor is re-quoted against the pool one more time, moments before the write.
+ *
+ * ## The race this closes
+ *
+ * The floor is derived when the plan is built; the swap is sent when the user approves it,
+ * seconds or minutes later. A pool does not stand still in between — 15 Sep, live, the same
+ * 1,000 XLM → AQUSDC swap was refused by the DEX (HostError #2006) at approve time on a
+ * floor that had been perfectly fine moments before.
+ *
+ * A moved price is not, by itself, a reason to stop: the user asked to swap 100 XLM, not to
+ * receive exactly one number or nothing. So the pool is re-quoted here, and the write
+ * proceeds whenever the fresh fill is still a FAIR one — only a fill that is itself
+ * dangerous (the same oracle-price-impact threshold the propose-time card refuses on) stops
+ * the write, and it stops BEFORE anything is sent, naming both figures:
+ *
+ * - Pool still pays the approved floor → send it UNCHANGED.
+ * - Pool pays less, but the fresh fill is still fair (within the impact threshold) → send it
+ *   with the floor LOWERED to what the pool actually offers, minus the same slippage margin
+ *   the original floor used. The eventual result names the price it actually settled at —
+ *   never a silent substitution the user has to discover from their balance afterward.
+ * - Pool pays so much less that the fresh fill is itself a bad trade → refuse, naming both
+ *   figures. This is the one case a floor must not be lowered to fit: an already-thin pool
+ *   getting thinner is exactly what the price-impact guard exists to catch, whichever side
+ *   of the approval it happens on.
+ *
+ * Fails OPEN. If the pool or price reads are unavailable, slow, or not an Aquarius pair, the
+ * write proceeds unchanged — the DEX's own floor check is still the backstop, and a stats
+ * endpoint being down is not a reason to block a swap the user approved.
+ */
+export async function staleSwapFloor(
+  step: ProposalStep,
+  mcp: Pick<MCPClient, "call">,
+  trader: string,
+  signal: AbortSignal,
+  slippageAccepted = false,
+): Promise<StaleFloorVerdict> {
+  const unchanged: StaleFloorVerdict = { kind: "unchanged" };
+  // Re-quote ANY swap venue, not just Aquarius. A price that moved between the plan and
+  // the approval is the normal case, and a Soroswap leg that skipped this carried its
+  // plan-time floor all the way to signing — which is how a floor sized at oracle parity
+  // reached the wallet against a pool paying less than half of it (16 Sep, live).
+  const swapVenue = typeof step.args.venue === "string" ? step.args.venue : "";
+  if (step.op !== "swap" || (swapVenue !== "aquarius" && swapVenue !== "soroswap")) return unchanged;
+  const tokenIn = typeof step.args.token_in === "string" ? step.args.token_in : "";
+  const tokenOut = typeof step.args.token_out === "string" ? step.args.token_out : "";
+  const amountIn = typeof step.args.amount_in === "string" ? step.args.amount_in : "";
+  const minOut = typeof step.args.min_out === "string" ? step.args.min_out : "";
+  if (!tokenIn || !tokenOut || !amountIn || !minOut) return unchanged;
+  let reserves: PoolReserves | null = null;
+  try {
+    const payload = await interruptible(
+      () => mcp.call(
+        swapVenue === "soroswap" ? "vanna_get_soroswap_pool_stats" : "vanna_get_aquarius_pool_stats",
+        { token_a: tokenIn, token_b: tokenOut },
+        trader,
+      ),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+    // `swap_killed` is the AMM API's description of a pool, not the chain's answer, and
+    // refusing on it blocked swaps that settle — see the note in plan.ts. The re-quote
+    // below is the real check: it refuses when the pool cannot actually fill the floor.
+    reserves = poolReservesFrom(payload);
+  } catch { return step.targetOut ? { kind: "refuse", message: "The live pool could not be re-quoted for the exact output you approved. Nothing was submitted." } : unchanged; }
+  if (!reserves) return step.targetOut ? { kind: "refuse", message: "The live pool reserves are unavailable for the exact output you approved. Nothing was submitted." } : unchanged;
+  let quoted: bigint | null;
+  let floorWad: bigint;
+  try {
+    const { inWad, outWad, feeWad } = reservesForDirection(reserves, tokenIn.toUpperCase() === "XLM");
+    quoted = constantProductOut(decimalWad(amountIn), inWad, outWad, feeWad);
+    floorWad = decimalWad(minOut);
+  } catch { return step.targetOut ? { kind: "refuse", message: "The exact-output quote could not be checked. Nothing was submitted." } : unchanged; }
+  if (quoted === null) return step.targetOut ? { kind: "refuse", message: "The exact-output quote could not be checked. Nothing was submitted." } : unchanged;
+  if (step.targetOut && quoted < decimalWad(step.targetOut)) {
+    return { kind: "refuse", message: `The pool now offers about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, below the ${step.targetOut} ${tokenOut} you approved. Nothing was submitted; ask for a fresh quote.` };
+  }
+  if (step.targetOut) return unchanged;
+  if (quoted >= floorWad) return unchanged;
+
+  // The pool pays less than approved. Whether that is fine or dangerous is not a question
+  // the pool's own reserves can answer — it needs the oracle, the same way the propose-time
+  // guard does, so both ends of the same trade are judged by the same yardstick.
+  let inUsd: unknown, outUsd: unknown;
+  try {
+    [inUsd, outUsd] = await interruptible(
+      () => Promise.all([
+        mcp.call("vanna_get_price", { symbol: tokenIn }, trader),
+        mcp.call("vanna_get_price", { symbol: tokenOut }, trader),
+      ]),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+  } catch { return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut); }
+  const inPriceWad = priceWadFrom(inUsd);
+  const outPriceWad = priceWadFrom(outUsd);
+  if (inPriceWad === null || outPriceWad === null) {
+    return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut);
+  }
+  const inUsdWad = mulDown(decimalWad(amountIn), inPriceWad, WAD);
+  const outUsdWad = mulDown(quoted, outPriceWad, WAD);
+  // A user who accepted the loss gets the trade, re-quoted: the floor drops to what the
+  // pool pays NOW, which is what "execute at whatever price" has to mean if it is to mean
+  // anything safe. Sending no floor at all would leave the fill to whoever moves the pool
+  // next in the same ledger, so the fresh quote — not nothing — becomes the floor.
+  if (isDangerousFill(inUsdWad, outUsdWad) && !slippageAccepted) {
+    return {
+      kind: "refuse",
+      message: `Not submitted — the pool's price moved after you approved this, and now fills at a loss: `
+        + `${tokenIn} → ${tokenOut} would settle for about ${formatWad(quoted)} ${tokenOut} for ${amountIn} ${tokenIn}, `
+        + `well below the ${minOut} ${tokenOut} floor you approved and below what ${tokenIn} is worth. `
+        + `Ask again for a fresh quote, or say you accept the loss and it will be swapped as asked.`,
+    };
+  }
+  return adjustedOrUnchanged(quoted, tokenIn, tokenOut, amountIn, minOut);
+}
+
+/** The pool moved but the fresh fill is still fair: adjust the floor down and say so, plainly. */
+function adjustedOrUnchanged(quoted: bigint, tokenIn: string, tokenOut: string, amountIn: string, approvedMinOut: string): StaleFloorVerdict {
+  const freshFloor = formatWad(slippageFloor(quoted));
+  return {
+    kind: "adjusted",
+    minOut: freshFloor,
+    note: `The pool's price moved after you approved this: ${tokenIn} → ${tokenOut} settled for about `
+      + `${formatWad(quoted)} ${tokenOut} instead of the ${approvedMinOut} ${tokenOut} originally quoted for ${amountIn} ${tokenIn}.`,
+  };
+}
+
+function priceWadFrom(response: unknown): bigint | null {
+  if (!isRecord(response) || typeof response.price_usd !== "string") return null;
+  try { return decimalWad(response.price_usd); } catch { return null; }
+}
+
+const REQUOTE_MS = 8_000;
 
 function hashOf(value: unknown): string | null {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) return null;
@@ -77,13 +220,14 @@ async function settleSubmitted(
   id: string,
   identity: { scope: WorkflowProposal["scope"]; server: string },
   lookup: LedgerLookup,
+  note?: string,
 ) {
   const stored = await journal.read(id, identity);
   const step = stored.value.steps.find((entry) => entry.status === "submitted" && entry.txHash);
   if (!step?.txHash) return stored.value;
   const outcome = await lookup(step.txHash);
   if (!outcome.found) return stored.value;
-  return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success);
+  return journal.settled(id, identity, step.id, step.txHash, outcome.ledger, outcome.success, note);
 }
 
 export async function advanceWorkflow(input: {
@@ -133,7 +277,7 @@ export async function advanceWorkflow(input: {
     throw error;
   }
 
-  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (step.tool !== "vanna_lend" && !scope.smartAccount)) {
+  if (!WRITE_TOOLS.has(step.tool) || !scope.trader || (!WALLET_TOOLS.has(step.tool) && !scope.smartAccount)) {
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "failed", message: "This step is not an allowed write for the connected account. Nothing was submitted.",
     });
@@ -147,13 +291,42 @@ export async function advanceWorkflow(input: {
       kind: "failed", message: "The protocol operation did not match the approved arguments. Nothing was submitted.",
     }));
   }
+  /**
+   * Re-quote the pool before spending the user's approval on a price that has already moved.
+   * A moved price alone does not stop the write — only a fill that would itself be a bad
+   * trade does (`staleSwapFloor`'s own "refuse" case). Otherwise the floor is sent as
+   * approved, or lowered to what the pool actually offers with a note recording it — never
+   * a silent substitution the user only discovers from their balance afterward.
+   */
+  const acceptedLoss = stored.value.proposal.slippageAccepted === true;
+  const stale = await staleSwapFloor(step, input.mcp, scope.trader, input.signal, acceptedLoss);
+  if (stale.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
+  }
+  const adjustedArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
+  // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
+  const invocationArgs = acceptedLoss && step.op === "swap"
+    ? { ...adjustedArgs, acknowledged_price_impact: true }
+    : adjustedArgs;
+  const note = stale.kind === "adjusted" ? stale.note : null;
+
   let build: Record<string, unknown>;
   try {
-    const raw = await interruptible(() => input.mcp.call(invocation.tool, invocation.args, scope.trader!),
+    const raw = await interruptible(() => input.mcp.call(invocation.tool, invocationArgs, scope.trader!),
       AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]));
     if (!isRecord(raw)) throw new Error("invalid_write_result");
     build = raw;
-  } catch {
+  } catch (error) {
+    // This catch used to be silent: a step went "uncertain" with nothing in any log
+    // explaining why, so a timeout, a transport error and a malformed payload were
+    // indistinguishable from the outside. `error` is never a broadcast proof either way,
+    // so the outcome is unchanged — only the diagnostic trail is new.
+    console.warn("[copilot] write call failed, step marked uncertain", {
+      tool: invocation.tool,
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+    });
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" }));
   }
   const hash = hashOf(build.tx_hash);
@@ -161,21 +334,51 @@ export async function advanceWorkflow(input: {
   const result = { status: hash ? "signed_and_submitted" : unsigned && !build.error ? "needs_wallet_sign" : "error", build,
     submitted: null, unsigned_xdr: unsigned };
 
+  /**
+   * The MCP's error envelope (`mcp_server/error_handling.py`) attaches `reason`, `code`
+   * or `contract_diagnostic` only to failures it classified INSIDE the tool — simulation
+   * and validation, before anything was submitted — and a submitted transaction always
+   * carries its hash. Such an envelope is a rejection with a reason, and the reason is
+   * the one line the user needs; filing it as "uncertain" hid it (13 Sep deposit).
+   */
+  const rejection = preBroadcastRejection(build, hash, step);
+  if (rejection) {
+    console.warn("[copilot] write rejected before broadcast", { tool: invocation.tool, error: build.error, code: build.code, reason: build.reason, message: rejection.slice(0, 300) });
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: rejection }));
+  }
+
   if (result.status === "signed_and_submitted") {
     const txHash = hash;
     if (!txHash) {
       record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
       return workflowView(record);
     }
-    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash });
-    record = await settleSubmitted(journal, input.id, identity, lookup);
+    record = await journal.invocationResult(input.id, identity, step.id, { kind: "submitted", txHash, note: note ?? undefined });
+    record = await settleSubmitted(journal, input.id, identity, lookup, note ?? undefined);
     persistRun(record, input.subject);
     return workflowView(record);
   }
 
   if (result.status === "needs_wallet_sign" && result.unsigned_xdr) {
+    /**
+     * Auto sign was armed and the transaction still came back unsigned — the Sign
+     * Service refused this one. Say why.
+     *
+     * Its reason is the thing the user needs and the only thing that tells them what to
+     * do next: a spend over the per-tx or daily cap is fixed by raising the cap, an
+     * unallowlisted contract by re-enabling, a dead session by enabling again. Without
+     * it the card said "sign this in your wallet" for every one of those, and a user who
+     * had armed a budget precisely so they would not have to was left with a popup and
+     * no idea which of their own limits had stopped it.
+     *
+     * The text is MCP's own (`sign_tools.maybe_auto_sign`), passed through rather than
+     * re-derived here: the Sign Service owns that vocabulary, it grows on their side,
+     * and a copy of it here would be a list to keep in step and get wrong.
+     */
+    const refusal = autoSignRefusal(build);
     record = await journal.invocationResult(input.id, identity, step.id, {
       kind: "unsigned", unsignedXdr: result.unsigned_xdr,
+      note: [note, refusal].filter(Boolean).join(" ") || undefined,
     });
     return workflowView(record);
   }
@@ -184,6 +387,58 @@ export async function advanceWorkflow(input: {
   // or a proven pre-broadcast rejection, don't claim that nothing was submitted.
   record = await journal.invocationResult(input.id, identity, step.id, { kind: "uncertain" });
   return workflowView(record);
+}
+
+/**
+ * Why auto sign did not sign this one — MCP's own sentence, or null when it signed or
+ * was never armed.
+ *
+ * `auto_sign` is the Sign Service's verdict on this transaction: "on" when it signed,
+ * and anything else ("rejected" over a cap or an allowlist, "disabled" with no session,
+ * "unavailable" when unreachable) when it did not. Only the refusals carry a message,
+ * and it is passed through verbatim — which reason exists, and what to do about each,
+ * is the Sign Service's to say, not something this file should keep its own copy of.
+ */
+export function autoSignRefusal(build: Record<string, unknown>): string | null {
+  const verdict = typeof build.auto_sign === "string" ? build.auto_sign : null;
+  if (!verdict || verdict === "on") return null;
+  const message = typeof build.message === "string" ? build.message.trim() : "";
+  return message || null;
+}
+
+/** The MCP's own message when its envelope proves nothing was broadcast; null otherwise. */
+export function preBroadcastRejection(
+  build: Record<string, unknown>,
+  hash: string | null,
+  step?: { op?: string; args?: Record<string, unknown> },
+): string | null {
+  if (hash || typeof build.error !== "string" || !build.error) return null;
+  const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
+  if (!classified) return null;
+  const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;
+  const note = swapFloorNote(step, message);
+  return `Not submitted — the protocol rejected this step before broadcast: ${message}${note ? ` ${note}` : ""}`;
+}
+
+/**
+ * A swap carries a floor (`min_out`) the DEX must meet or the call reverts, and the raw
+ * revert is a bare contract code — "HostError #2006" told the user nothing (15 Sep, live).
+ * The floor is the one thing about that failure we can state as fact, so it is named, and
+ * the likeliest reading of it is offered AS a reading, not as a diagnosis: the error codes
+ * belong to the DEX's own contract, not to Vanna's, so their meanings are not ours to
+ * assert.
+ *
+ * This is now the SECOND line of defence, not the first: `staleSwapFloor` re-quotes the
+ * pool before the write and states "the price moved" in plain words with both figures.
+ * A rejection that still reaches here is one that re-quote could not foresee — the pool
+ * read was unavailable, the pair is not Aquarius, or the pool moved inside the last moment.
+ */
+function swapFloorNote(step: { op?: string; args?: Record<string, unknown> } | undefined, message: string): string | null {
+  if (step?.op !== "swap") return null;
+  const floor = typeof step.args?.min_out === "string" ? step.args.min_out : null;
+  const bought = typeof step.args?.token_out === "string" ? step.args.token_out : null;
+  if (!floor || !bought || !/contract|hosterror|simulation/i.test(message)) return null;
+  return `This swap would only settle for at least ${floor} ${bought}; a DEX refuses the call outright when its pool cannot meet that, which is the most likely reading here — the code itself belongs to the DEX's contract, so it is not proof.`;
 }
 
 export async function confirmWorkflow(input: {
@@ -263,7 +518,7 @@ function journalMessage(code: string): string {
  * on the G-wallet and rejects the margin overlay Blend writes need.
  */
 export function invocationArgs(step: ProposalStep, scope: { trader: string | null; smartAccount: string | null }): Record<string, unknown> {
-  if (step.tool === "vanna_lend") {
+  if (WALLET_TOOLS.has(step.tool)) {
     return { symbol: step.args.symbol, amount: step.amount, lender: scope.trader };
   }
   return { ...step.args, amount: step.amount, smart_account: scope.smartAccount, trader: scope.trader };

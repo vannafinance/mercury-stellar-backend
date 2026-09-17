@@ -50,12 +50,49 @@ describe("adaptive investigation", () => {
     expect(result).not.toHaveProperty("approved_plan");
   });
 
+  it("hands the model the registry asset beside a venue's wire symbol (13 Sep: a 'USDC' debt row guessed as AQUSDC, then SOUSDC)", async () => {
+    // The exact debt payload the MCP returned for the test account; the model reads observations raw.
+    const mcp = { call: vi.fn(async () => ({
+      smart_account: "CCKIT", total_debt_usd: "5076.8601",
+      debt: [{ symbol: "USDC", balance: "2559.566080757051806242", value_usd: "2559.9473" }, { symbol: "XLM", balance: "14113.311211804998648290", value_usd: "2516.9128" }],
+    })) };
+    const seen: unknown[] = [];
+    const model: ResearchModel = async (turn) => {
+      if (!turn.observations.length) return inspect("account_debt");
+      seen.push(turn.observations[0].data);
+      return complete(["e1"]);
+    };
+    await runInvestigation({ ...request, message: "I want zero debt but keep all my collateral" }, { model, mcp });
+    const rows = (seen[0] as { debt: Array<Record<string, unknown>> }).debt;
+    expect(rows.map((r) => [r.symbol, r.asset])).toEqual([["USDC", "BLUSDC"], ["XLM", "XLM"]]);
+  });
+
   it("asks a material clarification without calling MCP or creating a plan", async () => {
     const mcp = read();
     const decision = { kind: "clarify", question: "What amount should this strategy invest?" };
     const result = await runInvestigation(request, { model: sequence(decision), mcp });
     expect(result.outcome).toEqual(decision);
     expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it("repairs one uncited numeric completion without weakening evidence validation", async () => {
+    const mcp = read();
+    const invalid = {
+      kind: "research_complete",
+      goal: { objective: "Investigate the account", constraints: [], borrowing: "unspecified" },
+      findings: [{ summary: "The account has 217.59 USD of debt.", evidenceIds: [] }],
+      openQuestions: [],
+    };
+    const turns: Array<{ decisionFeedback?: string }> = [];
+    const model: ResearchModel = async (turn) => {
+      turns.push(turn);
+      if (!turn.observations.length) return inspect("account_debt");
+      return turns.length === 2 ? invalid : complete(["e1"]);
+    };
+    const result = await runInvestigation(request, { model, mcp });
+    expect(result.outcome).toEqual(complete(["e1"]));
+    expect(turns[2].decisionFeedback).toContain("numeric finding had no evidenceIds");
+    expect(result.usage.modelTurns).toBe(3);
   });
 
   it("provides failed reads as errors and lets the model choose a different next read", async () => {

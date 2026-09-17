@@ -231,6 +231,24 @@ describe("collateral and borrow are independent slots, for any phrasing", () => 
     // "3x" is leverage, never a quantity.
     expect(findBorrowAmount("deposit 100 AQUSDC at 3x and borrow XLM")).toBeNull();
   });
+
+  /**
+   * 15 Sep, findings C1/B1: the amount slot never learned the shorthand the deposit slot
+   * already knew, and never knew a health-factor floor is not a size at all — "borrow
+   * BLUSDC to HF floor 1.40" read 1.40 as the borrow amount, live, and was checked against
+   * a price that was never the amount the user stated.
+   */
+  it("expands shorthand the same way the deposit slot does", () => {
+    expect(findBorrowAmount("borrow 10k XLM")).toBe(10000);
+    expect(findBorrowAmount("borrow 2,500 XLM")).toBe(2500);
+  });
+
+  it("never reads a health-factor floor as the borrow amount, asset-tagged or bare", () => {
+    expect(findBorrowAmount("borrow BLUSDC to HF floor 1.40")).toBeNull();
+    expect(findBorrowAmount("borrow XLM, keep health factor above 1.3")).toBeNull();
+    // The floor is excluded; a real size stated beside it still comes through.
+    expect(findBorrowAmount("borrow 500 BLUSDC, keep HF above 1.4")).toBe(500);
+  });
 });
 
 // ── C. variant chips only when actually ambiguous ───────────────────────────

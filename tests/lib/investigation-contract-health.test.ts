@@ -174,7 +174,7 @@ describe("contract health simulator", () => {
     });
     const snap = await readLiquidationSnapshot(ACCOUNT, { rpc });
     expect(snap.ledger).toBe(100);
-    expect(snap.liquidatable).toBe(false);
+    expect(snap.unpriceablePlain).toBe(false);
     expect(snap.collateralUsd).toBeCloseTo(3051.150757526168, 6);
     expect(snap.debtUsd).toBeCloseTo(1650.0907367198442, 6);
     expect(snap).not.toHaveProperty("healthFactor");

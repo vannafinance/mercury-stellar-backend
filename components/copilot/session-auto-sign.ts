@@ -1,3 +1,5 @@
+import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
+
 /**
  * Client session auto-approve (Privy embedded wallet silent-sign of MCP XDR).
  *
@@ -60,6 +62,35 @@ export function shouldSessionAutoSubmit(opts: {
 }
 
 /**
+ * Auto sign skips the SIGNING prompt, not the plan.
+ *
+ * Both were skipped before, so with the switch on, "deposit my idle XLM and supply it
+ * to Blend" sized itself and settled with nothing to click — the user saw the result,
+ * never the plan (17 Sep: `vanna_deposit_collateral` and `vanna_blend_supply` executed
+ * that way, on a turn where nothing had been agreed to). Arming a capped signer is
+ * consent to skip the wallet popup on a plan you approved; it is not consent to the
+ * plan. The rail says as much — "cleared writes run without a prompt" is about the
+ * prompt, and clearing the Sign Service policy is a cap on size, never agreement to
+ * the trade.
+ *
+ * One case still needs no click: a swap whose proposal carries `slippageAccepted`.
+ * That flag is set only from the user's own words, matched verbatim against a message
+ * they sent, and only for a fill they were shown. They have already stated a decision
+ * about this exact price, so a click would ask them to agree twice — the dead end that
+ * left an accepted swap unexecutable. Every other plan, swap or not, waits.
+ */
+export function shouldAutoApproveProposedWorkflow(opts: {
+  sessionSigning: boolean;
+  status?: string | null;
+  steps?: Array<{ op?: string | null }>;
+  slippageAccepted?: boolean;
+}): boolean {
+  if (!opts.sessionSigning) return false;
+  if (opts.status !== "proposed") return false;
+  return opts.slippageAccepted === true && !!opts.steps?.some((step) => step.op === "swap");
+}
+
+/**
  * Promote needs_auto_sign → needs_wallet_sign when an XDR is present so the
  * existing staged + auto-submit path runs (no enable-auto-sign panel).
  */
@@ -107,6 +138,23 @@ export function shouldArmAutoApprove(opts: {
 
 export type SignServiceRailStatus = "unknown" | "ok" | "unavailable" | "unbound";
 
+export type SignServiceRailState = {
+  status: SignServiceRailStatus;
+  reason: string | null;
+};
+
+export function hasAuthenticatedPrivyHeader(headers: Record<string, string>): boolean {
+  return Boolean(headers[PRIVY_TOKEN_HEADER]?.trim());
+}
+
+/** Keep the last conclusive server state when a refresh is unavailable/transient. */
+export function preserveLastConclusiveSignState(
+  current: SignServiceRailState,
+  next: SignServiceRailState,
+): SignServiceRailState {
+  return next.status === "unavailable" && current.status !== "unknown" ? current : next;
+}
+
 /**
  * Map a Sign Service session read (`auto_sign.action = status`) onto the
  * Autonomy rail. `ok` is the only status that may show "Budget active".
@@ -137,7 +185,10 @@ export function signServiceFromSessionRead(res: {
   if (res.kind === "error" || err) {
     return {
       status: "unavailable",
-      reason: err || String(res.message ?? "error"),
+      reason:
+        err === "legacy_identity_reconnect_required"
+          ? res.message?.trim() || "Reconnect the MCP while signed in with Privy."
+          : err || String(res.message ?? "error"),
     };
   }
   const enabled = facts.enabled === true || facts.status === "enabled";

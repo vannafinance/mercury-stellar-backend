@@ -28,6 +28,8 @@ describe("read/write credential split", () => {
       "vanna_oracle",
       "vanna_margin_status",
       "vanna_list_smart_accounts",
+      "vanna_get_aquarius_pool_stats",
+      "vanna_get_soroswap_pool_stats",
     ]) {
       expect(callNeedsUserToken(tool)).toBe(false);
     }

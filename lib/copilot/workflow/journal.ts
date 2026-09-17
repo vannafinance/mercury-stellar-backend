@@ -163,7 +163,7 @@ export class WorkflowJournal {
     throw new WorkflowConflict("step_not_ready");
   }
   async invocationResult(id: string, identity: Identity, stepId: string,
-    result: { kind: "submitted"; txHash: string } | { kind: "unsigned"; unsignedXdr: string }
+    result: { kind: "submitted"; txHash: string; note?: string } | { kind: "unsigned"; unsignedXdr: string; note?: string }
       | { kind: "uncertain"; txHash?: string } | { kind: "failed"; message: string }) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
@@ -171,12 +171,16 @@ export class WorkflowJournal {
     if (result.kind === "submitted") {
       if (!/^[a-f0-9]{64}$/i.test(result.txHash)) throw new Error("invalid_transaction_hash");
       step.status = "submitted"; step.txHash = result.txHash.toLowerCase();
-      record.value.message = "Transaction submitted; waiting for ledger confirmation.";
+      record.value.message = result.note
+        ? `Transaction submitted; waiting for ledger confirmation. ${result.note}`
+        : "Transaction submitted; waiting for ledger confirmation.";
     } else if (result.kind === "unsigned") {
       if (!result.unsignedXdr || result.unsignedXdr.length > 100_000) throw new Error("invalid_transaction_envelope");
       step.status = "awaiting_signature"; step.unsignedXdr = result.unsignedXdr;
       record.value.status = "awaiting_signature";
-      record.value.message = "Approve the transaction in your wallet to continue.";
+      record.value.message = result.note
+        ? `Approve the transaction in your wallet to continue. ${result.note}`
+        : "Approve the transaction in your wallet to continue.";
     } else if (result.kind === "failed") {
       // Simulation/policy failure: nothing reached the ledger, so this is not `uncertain`.
       step.status = "failed";
@@ -232,7 +236,7 @@ export class WorkflowJournal {
     record.value.message = "Submission recorded. Checking the transaction on chain.";
     return this.save(record);
   }
-  async settled(id: string, identity: Identity, stepId: string, hash: string, ledger: number, success: boolean) {
+  async settled(id: string, identity: Identity, stepId: string, hash: string, ledger: number, success: boolean, note?: string) {
     const record = await this.read(id, identity);
     const step = record.value.steps.find(s => s.id === stepId);
     if (!step || step.status !== "submitted" || step.txHash !== hash || !Number.isSafeInteger(ledger) || ledger <= 0)
@@ -240,8 +244,13 @@ export class WorkflowJournal {
     step.status = success ? "settled" : "failed";
     step.settledLedger = ledger;
     record.value.status = !success ? "blocked" : record.value.steps.every(s => s.status === "settled") ? "completed" : "running";
-    record.value.message = !success ? "The transaction failed on chain. Remaining steps were stopped."
+    const base = !success ? "The transaction failed on chain. Remaining steps were stopped."
       : record.value.status === "completed" ? "All approved transactions were confirmed on chain." : "Step confirmed. Remaining steps still require fresh validation.";
+    // The note travels with the step that earned it (e.g. a swap's floor moved and was
+    // adjusted before broadcast), so it survives past this settlement's own generic message —
+    // otherwise the one thing recording what price it actually swapped at is overwritten the
+    // instant the ledger confirms, moments after it was written.
+    record.value.message = success && note ? `${base} ${note}` : base;
     return this.save(record);
   }
   /**

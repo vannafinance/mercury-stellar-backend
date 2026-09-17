@@ -61,6 +61,22 @@ describe("Flash research adapter", () => {
     }))).toBe("MEDIUM");
   });
 
+  it("tells the model about venues from the registry, not a hand-written list", async () => {
+    const { RESEARCH_SYSTEM } = await import("@/lib/copilot/investigation/flash");
+    const { venueTable, venueUsdc, lpPairs } = await import("@/lib/copilot/registry/assets");
+    for (const { venue, assets } of venueTable()) expect(RESEARCH_SYSTEM).toContain(`${venue} takes ${assets.join(", ")}`);
+    for (const { venue, usdc } of venueUsdc()) expect(RESEARCH_SYSTEM).toContain(`${venue} → ${usdc}`);
+    for (const { venue, tokens } of lpPairs()) expect(RESEARCH_SYSTEM).toContain(`${venue}: ${tokens.join(" + ")}`);
+    // A venue the user leaves open is their choice when several executable venues fit — not a rate pick.
+    expect(RESEARCH_SYSTEM).not.toMatch(/Venue selection is yours/);
+    expect(RESEARCH_SYSTEM).toMatch(/names NO venue and more than one\s+executable venue fits/);
+    expect(RESEARCH_SYSTEM).not.toMatch(/AQUSDC for Aquarius, SOUSDC for Soroswap/);
+    // The venue's own word for an asset is printed from the registry, so the model never has to guess it.
+    expect(RESEARCH_SYSTEM).toContain("BLUSDC is spelled USDC by margin, earn");
+    // A share is a sizing word the model may use; the number stays the user's.
+    expect(RESEARCH_SYSTEM).toMatch(/fraction carries the share the user stated/);
+  });
+
   it("rejects non-Flash configuration before provider or MCP calls", () => {
     vi.stubEnv("VERTEX_MODEL", "gemini-3.8-pro");
     expect(createFlashResearchModel).toThrow("Gemini Flash");

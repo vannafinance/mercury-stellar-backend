@@ -1,7 +1,8 @@
 import type { FunctionDeclaration } from "../vertex-tools";
-import { ASSET_IDS } from "../registry/assets";
+import { lpVenues, ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
-import { isRecord } from "./decision";
+import { isRecord, PLAN_SIZINGS } from "./decision";
+import { WORKFLOW_OPS } from "../workflow/types";
 import type { ReadCapability } from "./types";
 
 const CONTROL_NAMES = new Set(["research_complete", "clarify", "blocked"]);
@@ -55,6 +56,18 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         objective: { type: "string", description: "User objective in one sentence." },
         constraints: { type: "array", items: { type: "string" } },
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
+        slippageAccepted: {
+          type: "object",
+          description: "Only when the user has said, in their own words, that they accept a poor price or a loss on this trade — \"i dont care if i lose\", \"swap anyway\", \"any price\", \"ignore the price impact\". accepted is true; sourceQuote is the exact substring of their message that says it. Never infer it from urgency, from naming an amount, or from them simply repeating the request. Without this the server refuses a fill far below fair value; with it, the fill is theirs to take.",
+          properties: { accepted: { type: "boolean" }, sourceQuote: { type: "string" } },
+          required: ["accepted", "sourceQuote"],
+        },
+        healthFactorFloor: {
+          type: "object",
+          description: "Only when the user stated a health-factor floor as a number. value is their exact decimal; sourceQuote is the exact substring of their message that contains it. Never invent a floor; 'avoid liquidation' is not one.",
+          properties: { value: { type: "string" }, sourceQuote: { type: "string" } },
+          required: ["value", "sourceQuote"],
+        },
         findings: {
           type: "array",
           items: {
@@ -72,12 +85,67 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
           items: {
             type: "object",
             properties: {
-              op: { type: "string", enum: ["lend", "deposit_collateral", "borrow", "repay", "supply_blend"] },
+              op: { type: "string", enum: [...WORKFLOW_OPS] },
               asset: { type: "string", enum: [...ASSET_IDS] },
               amount: { type: "string" },
               sourceQuote: { type: "string" },
             },
             required: ["op", "asset", "amount", "sourceQuote"],
+          },
+        },
+        plans: {
+          type: "array",
+          description:
+            "For intent=strategy: one to three strategy SHAPES as ordered legs. Sizing is a word, never a number — " +
+            "all_idle (the asset's idle wallet balance), to_floor (the largest borrow — or withdrawal of posted collateral — at the user's health-factor floor), " +
+            "previous_leg (the amount the previous leg produced, e.g. supply what was just borrowed), " +
+            "literal (an amount the user typed, with sourceQuote), fraction (a share the user stated — '25%', 'half' — " +
+            "of what the leg draws on: of=idle for the wallet balance, of=position for the Earn position, the posted collateral " +
+            "or the debt; with sourceQuote). The server sizes, checks and ranks every plan.",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Short, e.g. 'Move idle XLM into Blend'." },
+              rationale: { type: "string", description: "Why this shape serves the objective, citing observation ids." },
+              evidenceIds: { type: "array", items: { type: "string" } },
+              legs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    op: { type: "string", enum: [...WORKFLOW_OPS] },
+                    asset: { type: "string", enum: [...ASSET_IDS] },
+                    assetOut: {
+                      type: "string", enum: [...ASSET_IDS],
+                      description: "REQUIRED whenever op is swap or add_liquidity: for swap, the asset received; for add_liquidity, the pool's other token. Either way it must differ from `asset`. A leg without it, on either op, is dropped. Never set it on any other op.",
+                    },
+                    venue: {
+                      type: "string", enum: [...lpVenues()],
+                      description: "swap or add_liquidity only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
+                    },
+                    sizing: {
+                      type: "object",
+                      properties: {
+                        kind: { type: "string", enum: [...PLAN_SIZINGS] },
+                        amount: { type: "string", description: "literal only: the user's exact decimal." },
+                        percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
+                        of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
+                        sourceQuote: { type: "string", description: "literal/fraction only: exact substring of the user message containing the amount or the share." },
+                        amountAsset: {
+                          type: "string", enum: ["asset", "assetOut"],
+                          description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') — asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
+                        },
+                      },
+                      required: ["kind"],
+                    },
+                  },
+                  // A swap also requires assetOut. JSON Schema cannot make that conditional on
+                  // `op`, so it is stated in the field's own description and in the prompt.
+                  required: ["op", "asset", "sizing"],
+                },
+              },
+            },
+            required: ["title", "rationale", "evidenceIds", "legs"],
           },
         },
       },
@@ -125,11 +193,19 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.intent !== undefined) goal.intent = source.intent;
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.actions !== undefined) goal.actions = source.actions;
+  if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
+  // Copied by name, like every field above it. A field the model answers and this does not
+  // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:
+  // Swap 100 XLM for SOUSDC with explicit slippage acceptance" while the sizer refused the
+  // swap for slippage, because the acceptance never left this function.
+  if (source.slippageAccepted !== undefined) goal.slippageAccepted = source.slippageAccepted;
+  const plans = args.plans ?? source.plans;
   return {
     kind: "research_complete",
     goal,
     findings: args.findings ?? source.findings,
     openQuestions: args.openQuestions ?? source.openQuestions,
+    ...(plans !== undefined ? { plans } : {}),
   };
 }
 

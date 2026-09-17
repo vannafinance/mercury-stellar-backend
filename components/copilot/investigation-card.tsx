@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ChevronRight, CircleAlert, Loader2, Search } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { CircleAlert, Loader2, Search } from "lucide-react";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
+import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
+import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 
 export interface InvestigationCardProps {
@@ -16,7 +18,6 @@ export interface InvestigationCardProps {
   loading: boolean;
   error: string | null;
   turns?: ThreadTurn[];
-  onReset: () => void;
   /** Act on what was understood — the plan card takes over from here. */
   onContinue?: () => void;
   continueLabel?: string;
@@ -29,6 +30,8 @@ export interface InvestigationCardProps {
   onResume?: () => void;
   onCancelPlan?: () => void;
   onSign?: () => void;
+  wallet?: string | null;
+  autoSign?: boolean;
 }
 
 const money = (value: string) =>
@@ -56,9 +59,25 @@ const BORROWING: Record<Borrowing, string | null> = {
   forbidden: "No new borrowing",
 };
 
+/** The rate is shown only when the option earns or pays one; a repay has none, and "0.00% APR" was a false figure. */
+function rateOf(candidate: NonNullable<ResearchView["candidates"]>["feasible"][number]): string | null {
+  if (candidate.netAprPct !== null) return `${Number(candidate.netAprPct) >= 0 ? "+" : ""}${Number(candidate.netAprPct).toFixed(2)}% net APR`;
+  if (candidate.supplyAprPct === null) return candidate.venue === "margin" ? null : "Rate not read";
+  return Number(candidate.supplyAprPct) > 0 ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR` : null;
+}
+
+/** A small heading for a section of the reply. Sentence case, no tracking, no mono. */
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-[12px] font-semibold text-vgray-500">{children}</h3>;
+}
+
+const BTN_PRIMARY = "rounded-r2 bg-gradient px-3.5 py-2 text-[13px] font-semibold text-white transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-45";
+const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
+
 export function InvestigationCard({
-  prompt, result: researchResult, progress, loading, error, turns = [], onReset, onContinue, continueLabel,
+  prompt, result: researchResult, progress, loading, error, turns = [], onContinue, continueLabel,
   onPropose, workflow, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
+  wallet = null, autoSign = false,
 }: InvestigationCardProps) {
   const result: ResearchView | null = researchResult ?? (workflow ? {
     status: "researched", message: "Restored your recorded plan.", originalRequest: workflow.objective, refinements: [],
@@ -67,337 +86,345 @@ export function InvestigationCard({
   } : null);
   const progressLabel = !progress ? "Starting the investigation"
     : progress.kind === "scope" ? progress.label
-      : progress.kind === "reviewing" ? "Working out what to check next…"
-        : progress.kind === "reading" ? `Reading ${progress.label}…`
-          : `${progress.label}: ${progress.status === "ok" ? "read complete" : "unavailable"}`;
+      : progress.kind === "reviewing" ? "Working out what to check next"
+        : progress.kind === "reading" ? `Reading ${progress.label}`
+          : `${progress.label}: ${progress.status === "ok" ? "read" : "unavailable"}`;
 
   const stance = result?.understanding ? BORROWING[result.understanding.borrowing] : null;
+  /**
+   * Another option may be prepared once the current plan can no longer submit anything:
+   * blocked before broadcast, finished, or cancelled. While a plan is proposed, approved,
+   * running, awaiting a signature — or uncertain, where a transaction may be in flight —
+   * a second plan would race it, so the buttons wait.
+   */
+  const planInFlight = !!workflow && !["blocked", "completed", "cancelled"].includes(workflow.status);
+  /** A transaction is on its way to a ledger; the hook asks again at every ledger close. */
+  const awaitingLedger = !!workflow && ["approved", "running"].includes(workflow.status) && inFlight(workflow);
+  /**
+   * The run clock. Zeroing it inside the effect made every start a second render pass; a
+   * run that begins is a prop change, so the reset belongs in render, where React handles
+   * it in the same pass.
+   */
   const [elapsedSec, setElapsedSec] = useState(0);
+  const [clockRunning, setClockRunning] = useState(loading);
+  if (loading !== clockRunning) {
+    setClockRunning(loading);
+    if (loading) setElapsedSec(0);
+  }
+  const startedAt = useRef(0);
   useEffect(() => {
     if (!loading) return;
-    const startedAt = Date.now();
-    setElapsedSec(0);
-    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    startedAt.current = Date.now();
+    const id = setInterval(() => setElapsedSec(Math.floor((Date.now() - startedAt.current) / 1000)), 1000);
     return () => clearInterval(id);
   }, [loading]);
   const serverClock = result?.elapsedMs != null ? formatElapsedMs(result.elapsedMs) : null;
   const deviceClock = elapsedSec > 0 ? formatRunClock(elapsedSec) : null;
+  /**
+   * The server's time and the device's time are one figure unless they differ enough to
+   * mean something — then the gap is the fact worth stating (14 Sep: 9 s on the server,
+   * 1 m 59 s on the device, the difference spent in the browser before the request left).
+   */
+  const clock = serverClock
+    ? deviceClock && elapsedSec >= 30 && result?.elapsedMs != null && elapsedSec * 1000 > result.elapsedMs * 2
+      ? `Checked in ${serverClock}, though it took ${deviceClock} to reach you`
+      : `Checked in ${serverClock}`
+    : !loading && deviceClock ? `Checked in ${deviceClock}` : null;
+
+  // The thread ends with the assistant turn the reply block explains; the block is that turn.
+  const lastTurn = turns[turns.length - 1];
+  const priorTurns = result && lastTurn?.role === "assistant" && lastTurn.text === result.message ? turns.slice(0, -1) : turns;
+  const currentStep = workflow ? Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1) : 0;
 
   return (
-    /*
-     * A SECTION of the console card, not a card of its own. The turn is one continuous
-     * piece of work — intent, reads, options, plan — and framing the reads separately made
-     * the user re-anchor mid-thought. The console owns the border; this owns the content.
-     */
     <div aria-label="Copilot investigation" className="cp-console__section min-w-0">
       {!prompt && !result && !error ? (
-        <div>
-          <Search size={20} className="mb-3 text-violet-500" />
-          <p className="text-h7 text-vgray-900">Understand your options before taking action.</p>
-          <p className="mt-2 text-[14px] leading-6 text-vgray-500">
-            Describe your goal above. I will check your position and the live markets first, then build the plan.
+        <div className="py-2">
+          <Search size={20} className="mb-3 text-violet-500" aria-hidden="true" />
+          <p className="text-[17px] leading-7 text-vgray-900">Say what you want to do with your position.</p>
+          <p className="mt-1.5 max-w-[60ch] text-[14px] leading-6 text-vgray-500">
+            The copilot checks your account and the live markets first, sizes every amount from what it read, and shows you the plan before anything runs.
           </p>
         </div>
       ) : (
-        <>
-          {turns.length > 0 && (
-            <ol className="mb-4 space-y-3" aria-label="Investigation thread">
-              {turns.map((turn, index) => (
-                <li key={`${turn.role}-${index}`} className="min-w-0">
+        <div className="space-y-5">
+          {priorTurns.length > 0 && (
+            <ol className="space-y-4" aria-label="Conversation">
+              {priorTurns.map((turn, index) => (
+                <li key={`${turn.role}-${index}`} className={turn.role === "user" ? "flex justify-end" : "min-w-0"}>
                   {turn.role === "user" ? (
-                    <p className="text-[13px] leading-6 text-vgray-500">
-                      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-vgray-400">You · </span>
-                      {turn.text}
-                    </p>
+                    <p className="max-w-[85%] rounded-r2 bg-violet-50 px-3.5 py-2 text-[14px] leading-6 text-vgray-900">{turn.text}</p>
                   ) : (
-                    <div>
-                      <p className="text-[14px] leading-6 text-vgray-700">{turn.text}</p>
-                      {turn.question && index < turns.length - 1 && (
-                        <p className="mt-1.5 text-[13px] leading-5 text-violet-500">{turn.question}</p>
+                    /*
+                     * An earlier reply is context, not the answer. Rendered in full it stacked
+                     * wall on wall — two long paragraphs reading as one — so it is clamped to
+                     * two lines and opens on click. Only the current reply stays expanded.
+                     */
+                    <details className="group max-w-[68ch]">
+                      <summary className="cursor-pointer list-none text-[13.5px] leading-6 text-vgray-500 transition-colors hover:text-vgray-700 [&::-webkit-details-marker]:hidden">
+                        <span className="group-open:hidden" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {turn.text}
+                        </span>
+                        <span className="hidden group-open:inline">{turn.text}</span>
+                      </summary>
+                      {turn.question && index < priorTurns.length - 1 && (
+                        <p className="mt-1 text-[13px] leading-5 text-violet-500">{turn.question}</p>
                       )}
-                    </div>
+                    </details>
                   )}
                 </li>
               ))}
             </ol>
           )}
-          {turns.length > 0 && (
-            <p className="mb-3 text-[11px] leading-5 text-vgray-400">
-              This thread is kept in this browser tab. Closing the tab loses the conversation and any in-flight plan that has not been approved.
-            </p>
-          )}
+
           {loading && (
             <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500">
-              <Loader2 size={15} className="shrink-0 animate-spin" />
-              {progressLabel}{deviceClock ? ` · ${deviceClock}` : ""}
+              <Loader2 size={15} className="shrink-0 animate-spin" aria-hidden="true" />
+              {progressLabel}{deviceClock ? ` (${deviceClock})` : ""}
             </p>
           )}
           {error && (
             <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
-              <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" />
+              <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
               {error}
             </p>
           )}
 
-          {result && (
-            <>
-              {/*
-                The headline is what the copilot UNDERSTOOD, not a list of what it read.
-                Every figure it gathered used to be printed here — four wallet balances, a
-                rates table, oracle prices, raw 28-decimal strings and both account
-                addresses — which buried the one line the user needed and read as a data
-                dump rather than an answer. Reads belong in the trace below.
-              */}
-              {result.understanding ? (
-                <>
-                  <p className="text-[16.5px] leading-6 text-vgray-900">{result.understanding.objective}</p>
+          {/*
+            * While the next turn is running, `result` is still the PREVIOUS turn's — the
+            * hook keeps it deliberately so the column does not go blank. Rendering it here
+            * put the last reply on screen twice: clamped in the thread above, and again in
+            * full BELOW the question just asked, where it reads as the answer to it. The
+            * thread already carries it, so during a run the answer area stays empty and the
+            * spinner is the only thing under the new question.
+            */}
+          {result && !(loading && !workflow) && (
+            <article aria-label="Copilot reply" className={`space-y-5${priorTurns.length ? " border-t border-vgray-100 pt-5" : ""}`}>
+              {/* The reply, then what was understood — the one line the user needs, not a list of reads. */}
+              <div className="max-w-[68ch]">
+                <p className="text-[15px] leading-7 text-vgray-900">{result.message}</p>
+                {clock && <p className="mt-1 text-[12px] tabular-nums text-vgray-400">{clock}</p>}
+              </div>
+
+              {result.understanding && (
+                <section className="space-y-2">
+                  <SectionTitle>Understood as</SectionTitle>
+                  <p className="text-[14px] leading-6 text-vgray-800">{result.understanding.objective}</p>
                   {(result.understanding.constraints.length > 0 || stance) && (
-                    <ul className="mt-2.5 flex flex-wrap gap-2">
-                      {result.understanding.constraints.map((constraint, index) => (
-                        <li
-                          key={index}
-                          className="rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[12px] text-violet-500"
-                        >
-                          {constraint}
-                        </li>
+                    <ul className="flex flex-wrap gap-1.5" aria-label="Constraints">
+                      {result.understanding.constraints.filter((constraint) => constraint.trim().toLowerCase() !== stance?.toLowerCase()).map((constraint, index) => (
+                        <li key={index} className="rounded-full border border-violet-100 bg-violet-50 px-2.5 py-1 text-[12px] text-violet-500">{constraint}</li>
                       ))}
-                      {stance && (
-                        <li className="rounded-full border border-vgray-100 px-2.5 py-1 text-[12px] text-vgray-500">
-                          {stance}
-                        </li>
-                      )}
+                      {stance && <li className="rounded-full border border-vgray-100 px-2.5 py-1 text-[12px] text-vgray-500">{stance}</li>}
                     </ul>
                   )}
-                </>
-              ) : null}
-              {(!turns.length || turns[turns.length - 1]?.text !== result.message) && (
-                <p className="mt-3 text-[14px] leading-6 text-vgray-700">{result.message}</p>
-              )}
-              {(serverClock || (!loading && deviceClock)) && (
-                <p className="mt-1.5 font-mono text-[12px] tabular-nums text-vgray-400">
-                  {serverClock ? `Checked in ${serverClock}` : `Checked in ${deviceClock}`}
-                  {serverClock && !loading && deviceClock ? ` · ${deviceClock} this device` : ""}
-                </p>
+                </section>
               )}
 
-              {/* The one computed number worth the headline: real headroom at their floor. */}
+              {/* The one computed number worth its own block: real headroom at their floor. */}
               {result.capacity && (
-                <div className="mt-4 rounded-xl border border-vgray-100 px-4 py-3.5">
-                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-vgray-400">
-                    Headroom at your {result.capacity.floor} floor
+                <section className="rounded-xl border border-vgray-100 px-4 py-3.5">
+                  <SectionTitle>Headroom at your {result.capacity.floor} floor</SectionTitle>
+                  <p className="mt-1 text-[22px] font-semibold tabular-nums text-violet-500">{money(result.capacity.maxBorrowUsd)}</p>
+                  <p className="mt-1.5 max-w-[60ch] text-[12.5px] leading-5 text-vgray-500">
+                    From {money(result.capacity.grossCollateralUsd)} of collateral against {money(result.capacity.debtUsd)} of debt.
+                    A borrow counts on both sides, so this is the exact amount that leaves your health factor at {result.capacity.floor}.
                   </p>
-                  <p className="mt-1 font-mono text-[21px] tabular-nums text-violet-500">
-                    {money(result.capacity.maxBorrowUsd)}
-                  </p>
-                  <p className="mt-1.5 text-[12px] leading-5 text-vgray-500">
-                    Calculated from {money(result.capacity.grossCollateralUsd)} collateral against{" "}
-                    {money(result.capacity.debtUsd)} debt. Borrowing counts toward both, so this is the exact
-                    amount that leaves your health factor at {result.capacity.floor}.
-                  </p>
-                </div>
+                </section>
+              )}
+
+              {result.swapIntent && !workflow?.swap && (
+                <SwapIntentPreviewCard intent={result.swapIntent} wallet={wallet ?? result.scope.wallet}
+                  refusal={result.candidates?.rejected.find((entry) => /swap/i.test(entry.label))?.reason ?? null} />
               )}
 
               {/*
-                Ranked options, computed rather than suggested. The non-borrowing choice is
-                shown alongside the leveraged one on purpose — permission to borrow is not
-                an instruction to borrow — and a rejected shape states WHY, so "no option"
-                never reads as "nothing was considered".
+                Options, computed rather than suggested. The non-borrowing choice is shown
+                beside the leveraged one on purpose — permission to borrow is not an
+                instruction to borrow — and a ruled-out shape states why.
               */}
               {!!result.candidates && (result.candidates.feasible.length > 0 || result.candidates.rejected.length > 0) && (
-                <div className="mt-5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-vgray-400">Options</p>
-                  <div className="mt-2.5 space-y-2.5">
-                    {result.candidates.feasible.map((candidate, index) => (
+                <section className="space-y-2.5">
+                  <SectionTitle>{result.candidates.feasible.length === 1 ? "Option" : "Options"}</SectionTitle>
+                  {result.candidates.feasible.map((candidate, index) => {
+                    const rate = rateOf(candidate);
+                    return (
                       <div
                         key={candidate.id}
                         className="rounded-xl border px-4 py-3.5"
-                        style={{
-                          borderColor: index === 0 ? "var(--cp-violet-soft-border)" : "var(--cp-g100)",
-                        }}
+                        style={{ borderColor: index === 0 ? "var(--cp-violet-soft-border)" : "var(--cp-g100)" }}
                       >
                         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                          <p className="min-w-0 break-words text-[14px] leading-6 text-vgray-900">
-                            {candidate.label}
-                          </p>
-                          <p className="shrink-0 font-mono text-[15px] tabular-nums text-violet-500">
-                            {candidate.netAprPct === null
-                              ? `${Number(candidate.supplyAprPct).toFixed(2)}% APR`
-                              : `+${Number(candidate.netAprPct).toFixed(2)}% net APR`}
-                          </p>
+                          <p className="min-w-0 break-words text-[15px] leading-6 text-vgray-900">{candidate.label}</p>
+                          {rate && <p className="shrink-0 text-[14px] font-semibold tabular-nums text-violet-500">{rate}</p>}
                         </div>
-                        <p className="mt-1.5 font-mono text-[12px] tabular-nums text-vgray-500">
-                          {money(candidate.amountUsd)}
-                          {candidate.finalHealthFactor
-                            ? ` · health factor ${Number(candidate.finalHealthFactor).toFixed(2)} after`
-                            : " · no change to health factor"}
-                        </p>
-                        {index === 0 && candidate.decision?.reason && (
-                          <p className="mt-2 text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>
+                        <dl className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px] leading-5 text-vgray-500">
+                          <div className="flex gap-1.5"><dt>Amount</dt><dd className="tabular-nums text-vgray-800">{money(candidate.amountUsd)}</dd></div>
+                          <div className="flex gap-1.5">
+                            <dt>Health factor after</dt>
+                            <dd className="tabular-nums text-vgray-800">{candidate.finalHealthFactor ? Number(candidate.finalHealthFactor).toFixed(2) : "unchanged"}</dd>
+                          </div>
+                        </dl>
+                        {/* A composed plan shows its legs in order — every amount here was sized in code. */}
+                        {!!candidate.steps?.length && (
+                          <ol className="mt-2.5 space-y-1 text-[13px] leading-5 text-vgray-800" data-testid="plan-steps">
+                            {candidate.steps.map((step, stepIndex) => (
+                              <li key={step.id} className="flex gap-2.5">
+                                <span className="w-4 shrink-0 text-right tabular-nums text-vgray-400">{stepIndex + 1}</span>
+                                <span className="min-w-0 break-words">{step.label}</span>
+                              </li>
+                            ))}
+                          </ol>
                         )}
+                        {candidate.rationale && <p className="mt-2.5 max-w-[68ch] text-[13px] leading-5 text-vgray-600">{candidate.rationale}</p>}
+                        {candidate.simulation && (
+                          <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-5 text-vgray-500" data-testid="plan-simulation">{candidate.simulation.summary}</p>
+                        )}
+                        {index === 0 && candidate.decision?.reason && <p className="mt-2 max-w-[68ch] text-[13px] leading-5 text-vgray-700">{candidate.decision.reason}</p>}
                         {onPropose && (
-                          <button
-                            type="button"
-                            onClick={() => onPropose(candidate.id)}
-                            disabled={workflowLoading || !!workflow}
-                            className="mt-3 rounded-lg bg-gradient px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-50"
-                          >
-                            Prepare this plan
-                          </button>
-                        )}
-                        {index === 0 && candidate.decision?.runnerUpId && onPropose && (
-                          <button
-                            type="button"
-                            onClick={() => onPropose(candidate.decision!.runnerUpId!)}
-                            disabled={workflowLoading}
-                            className="mt-2 ml-2 rounded-lg border border-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-500 disabled:opacity-50"
-                          >
-                            Switch →
-                          </button>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button type="button" onClick={() => onPropose(candidate.id)} disabled={workflowLoading || planInFlight} className={BTN_PRIMARY}>
+                              Prepare this plan
+                            </button>
+                            {index === 0 && candidate.decision?.runnerUpId && (
+                              <button type="button" onClick={() => onPropose(candidate.decision!.runnerUpId!)} disabled={workflowLoading || planInFlight} className={BTN_QUIET}>
+                                Use the other option
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
-                    ))}
-                    {result.candidates.rejected.map((entry, index) => (
-                      <div key={`${entry.asset}-${index}`} className="rounded-xl border border-vgray-100 px-4 py-3">
-                        <p className="text-[13px] leading-5 text-vgray-500">
-                          <span className="text-vgray-700">Ruled out — {entry.label}.</span> {entry.reason}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-2.5 text-[12px] leading-5 text-vgray-500">
-                    Sizes are calculated from your position at your stated floor, before fees and price
-                    movement. Rates are the ones read above, not a projected return.
-                  </p>
-                </div>
+                    );
+                  })}
+                  {result.candidates.rejected.length > 0 && (
+                    <ul className="space-y-1.5" aria-label="Ruled out">
+                      {result.candidates.rejected.map((entry, index) => (
+                        <li key={`${entry.asset}-${index}`} className="rounded-xl border border-dashed border-vgray-100 px-4 py-3 text-[13px] leading-5 text-vgray-500">
+                          <span className="text-vgray-800">Ruled out: {entry.label}.</span> {entry.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <details className="text-[12.5px] leading-5 text-vgray-500">
+                    <summary className="cursor-pointer select-none text-vgray-500 hover:text-vgray-800">How these figures are made</summary>
+                    <p className="mt-1 max-w-[68ch]">
+                      Every amount comes from a live read of your wallet, your position and the markets, cut to the token&apos;s on-chain precision.
+                      Health factors are projected at your stated floor, before fees and price movement. Rates are the ones read, not a projected return.
+                    </p>
+                  </details>
+                </section>
               )}
 
-              {workflow && (
-                <div className="mt-5 rounded-xl border border-violet-100 px-4 py-3.5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
+              {/* Between a click and its result the user must see the state, not a frozen card. */}
+              {(workflowLoading || awaitingLedger) && (
+                <p role="status" aria-live="polite" className="flex items-center gap-2 text-[13px] text-violet-500" data-testid="workflow-progress">
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-violet-500" aria-hidden="true" />
+                  {!workflow
+                    ? "Preparing the plan: sizing every step from the sealed reads"
+                    : !workflowLoading && awaitingLedger
+                      ? `Step ${currentStep} of ${workflow.steps.length} is on its way to the ledger; checking at every ledger close`
+                      : workflow.status === "proposed" || workflow.status === "validating"
+                        ? "Checking funds, prices and projected health before anything is submitted"
+                        : workflow.status === "awaiting_signature"
+                          ? "Waiting for your wallet signature"
+                          : `Running step ${currentStep} of ${workflow.steps.length}`}
+                </p>
+              )}
+
+              {workflow?.status === "proposed" && workflow.swap && onApprove && (
+                <SwapReviewCard workflow={workflow} wallet={wallet} busy={!!workflowLoading}
+                  autoSign={autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
+              )}
+              {workflow?.status === "proposed" && workflow.steps.some((step) => step.op === "swap") && !workflow.swap && (
+                <section role="alert" className="rounded-xl border border-imperial-500/30 bg-surface p-4 text-[13px] text-imperial-600">
+                  The swap terms could not be reviewed. Ask copilot to prepare a new swap quote.
+                  {onCancelPlan && <button type="button" onClick={onCancelPlan} className="ml-2 underline">Cancel plan</button>}
+                </section>
+              )}
+              {workflow && !(workflow.status === "proposed" && workflow.steps.some((step) => step.op === "swap")) && (
+                <section className="rounded-xl border border-violet-100 px-4 py-3.5">
+                  <SectionTitle>
                     {workflow.status === "proposed" || workflow.status === "validating"
                       ? "Plan for approval"
                       : workflow.status === "blocked" || workflow.status === "cancelled"
                         ? "Not executed"
-                        : "Execution"}
-                  </p>
-                  <p className="mt-2 text-[14px] leading-6 text-vgray-900">{workflow.objective}</p>
-                  <p className="mt-1.5 text-[12px] leading-5 text-vgray-500">{workflow.message}</p>
+                        : workflow.status === "completed" ? "Done" : "Running"}
+                  </SectionTitle>
+                  <p className="mt-1.5 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
+                  <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
                   {workflow.status === "proposed" || workflow.status === "blocked" ? (
-                    <ol className="mt-3 space-y-2">
-                      {workflow.steps.map((step) => (
-                        <li key={step.id} className="font-mono text-[12px] tabular-nums text-vgray-700">
-                          {step.label} · {step.amount} {step.asset}
-                          {step.sizing?.basis === "derived_max_at_floor"
-                            ? ` · may re-size down to $${Number(step.sizing.minAmountUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                            : ""}
+                    <ol className="mt-3 space-y-1.5">
+                      {workflow.steps.map((step, stepIndex) => (
+                        <li key={step.id} className="flex gap-2.5 text-[13px] leading-5 text-vgray-800">
+                          <span className="w-4 shrink-0 text-right tabular-nums text-vgray-400">{stepIndex + 1}</span>
+                          <span className="min-w-0 break-words">
+                            {step.label}
+                            <span className="tabular-nums text-vgray-500"> ({step.amount} {step.asset})</span>
+                            {step.sizing?.basis === "derived_max_at_floor" && (
+                              <span className="text-vgray-500"> — may re-size down to ${Number(step.sizing.minAmountUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                            )}
+                          </span>
                         </li>
                       ))}
                     </ol>
                   ) : (
                     <div className="mt-3">
-                      <ExecutionStepper
-                        steps={workflow.steps.map(toStepperStep)}
-                        currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))}
-                      />
+                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} />
                     </div>
                   )}
-                  {["running", "approved"].includes(workflow.status) && onResume && (
-                    <button type="button" disabled={workflowLoading} onClick={onResume}
-                      className="mt-3 rounded-lg border border-vgray-100 px-3 py-2 text-[13px] text-violet-500">
-                      Check progress / continue
-                    </button>
-                  )}
-                  {["proposed", "approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && (
-                    <button type="button" disabled={workflowLoading} onClick={onCancelPlan}
-                      className="mt-3 ml-2 rounded-lg border border-vgray-100 px-3 py-2 text-[13px] text-vgray-500">Cancel remaining steps</button>
-                  )}
-                  {workflow.status === "proposed" && onApprove && (
-                    <button
-                      type="button"
-                      onClick={onApprove}
-                      disabled={workflowLoading}
-                      className="mt-3 rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
-                    >
-                      Approve and run
-                    </button>
-                  )}
-                  {workflow.status === "awaiting_signature" && onSign && (
-                    <button
-                      type="button"
-                      onClick={onSign}
-                      disabled={workflowLoading}
-                      className="mt-3 rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
-                    >
-                      Sign in wallet
-                    </button>
-                  )}
-                </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {workflow.status === "proposed" && onApprove && (
+                      <button type="button" onClick={onApprove} disabled={workflowLoading} className={BTN_PRIMARY}>Approve and run</button>
+                    )}
+                    {workflow.status === "awaiting_signature" && onSign && (
+                      <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign in wallet</button>
+                    )}
+                    {["running", "approved"].includes(workflow.status) && onResume && (
+                      <button type="button" disabled={workflowLoading} onClick={onResume} className={BTN_QUIET}>Check progress</button>
+                    )}
+                    {["proposed", "approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && (
+                      <button type="button" disabled={workflowLoading} onClick={onCancelPlan} className={BTN_QUIET}>Cancel remaining steps</button>
+                    )}
+                  </div>
+                </section>
               )}
               {workflowError && (
-                <p role="alert" className="mt-3 flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
-                  <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" />
+                <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
+                  <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
                   {workflowError}
                 </p>
               )}
+
               {result.question && (
-                <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
-                  <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-violet-500">
-                    Answer below to continue
+                <section className="rounded-xl border border-violet-100 bg-violet-50 px-4 py-3.5">
+                  <SectionTitle>{result.candidates?.feasible.length ? "Open point" : "Needs your answer"}</SectionTitle>
+                  <p className="mt-1.5 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">{result.question}</p>
+                  <p className="mt-1.5 text-[12.5px] leading-5 text-vgray-500">
+                    {result.candidates?.feasible.length ? "The options above stand. Reply below to change them." : "Reply below to continue."}
                   </p>
-                  <p className="mt-2 whitespace-pre-wrap break-words text-[14px] leading-6 text-vgray-900">
-                    {result.question}
-                  </p>
-                </div>
+                </section>
               )}
 
               {result.warnings.length > 0 && (
-                <ul className="mt-4 space-y-1.5 text-[12px] leading-5 text-vgray-500">
+                <ul className="space-y-1.5 text-[12.5px] leading-5 text-vgray-500" aria-label="Notes">
                   {result.warnings.map((warning, index) => (
                     <li key={index} className="flex gap-2">
-                      <CircleAlert size={13} className="mt-0.5 shrink-0" />
-                      {warning}
+                      <CircleAlert size={13} className="mt-0.5 shrink-0" aria-hidden="true" />
+                      <span className="max-w-[68ch]">{warning}</span>
                     </li>
                   ))}
                 </ul>
               )}
-
-              {/*
-                The "What I checked · N reads" trace is gone. It was build detail: a list of
-                capability names and raw values that told the user nothing they could act on,
-                and it was the last thing on the card so it read as the conclusion. The
-                figures that matter are stated above with their qualifiers; a read log belongs
-                in the session log, which already keeps one.
-              */}
-
-            </>
+            </article>
           )}
 
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
-            {/*
-              Always offered once an investigation finishes. A remaining question refines
-              the plan; it does not block it — stopping here is what made the surface look
-              like it had no action at all. The plan card still stages for signature.
-            */}
-            {!loading && onContinue && result && (
-              <button
-                type="button"
-                onClick={onContinue}
-                className="flex items-center gap-1.5 rounded-lg bg-gradient px-4 py-2 text-[13px] font-semibold text-white"
-              >
-                {continueLabel ?? "Continue"} <ChevronRight size={14} />
-              </button>
-            )}
-            {!loading && (
-              <button
-                type="button"
-                onClick={onReset}
-                className="rounded-lg border border-vgray-100 px-3.5 py-2 text-[12px] text-vgray-700 transition-colors hover:border-violet-400"
-              >
-                Start over
-              </button>
-            )}
-          </div>
-        </>
+          {/* "New chat" lives in the page header now — one control, not one per card. */}
+          {!loading && onContinue && result && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={onContinue} className={BTN_PRIMARY}>{continueLabel ?? "Continue"}</button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

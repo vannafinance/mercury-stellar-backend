@@ -20,6 +20,8 @@ vi.mock("@/lib/copilot/investigation/contract-health", async (importOriginal) =>
 
 import {
   computeBorrowCapacity,
+  computeSizingBasis,
+  parseLiquidationSnapshot,
   reconcileSizingBasis,
 } from "@/lib/copilot/investigation/capacity";
 import { SIZING_SOURCES_DISAGREE_WARNING } from "@/lib/copilot/investigation/sizing-copy";
@@ -32,7 +34,7 @@ function snapshot(grossCollateralValue: number, totalBorrowedValue: number) {
 }
 
 function contract(collateralUsd: number, debtUsd: number) {
-  return { contract: { collateralUsd, debtUsd, liquidatable: false } };
+  return { contract: { collateralUsd, debtUsd, unpriceablePlain: false } };
 }
 
 beforeEach(() => {
@@ -86,7 +88,7 @@ describe("borrow capacity", () => {
     snapshot(4219.36, 1736.19);
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     mocks.readLiquidationSnapshot.mockResolvedValue({
-      collateralUsd: 4219.36, debtUsd: 1736.19, liquidatable: false, ledger: 4602720,
+      collateralUsd: 4219.36, debtUsd: 1736.19, unpriceablePlain: false, ledger: 4602720,
     });
     const mcp = {
       call: vi.fn(async () => ({
@@ -197,7 +199,7 @@ describe("reconcileSizingBasis", () => {
   it("treats a sub-dollar gap as agreement", () => {
     const result = reconcileSizingBasis(
       { grossCollateralValue: 1000, totalBorrowedValue: 400 },
-      { collateralUsd: 1000.25, debtUsd: 400.10, liquidatable: false },
+      { collateralUsd: 1000.25, debtUsd: 400.10, unpriceablePlain: false },
     );
     expect(result.ok).toBe(true);
   });
@@ -205,9 +207,41 @@ describe("reconcileSizingBasis", () => {
   it("treats a 60% debt miss as disagreement", () => {
     const result = reconcileSizingBasis(
       { grossCollateralValue: 4230.94, totalBorrowedValue: 1684.99 },
-      { collateralUsd: 4230.94, debtUsd: 2705.60, liquidatable: false },
+      { collateralUsd: 4230.94, debtUsd: 2705.60, unpriceablePlain: false },
     );
     expect(result).toEqual({ ok: false, reason: "sizing_sources_disagree" });
+  });
+});
+
+describe("computeSizingBasis", () => {
+  it("uses the RiskEngine basis when the app snapshot times out", async () => {
+    mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const basis = await computeSizingBasis(ACCOUNT, null, contract(4219.36, 1736.19));
+      expect(basis).toMatchObject({
+        source: "contract",
+        grossCollateralUsd: "4219.36",
+        debtUsd: "1736.19",
+        issue: "sizing_app_unavailable",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        "[copilot] sizing app snapshot failed",
+        expect.objectContaining({ error: expect.objectContaining({ message: "snapshot timed out" }) }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("returns no basis when both snapshots are unavailable", async () => {
+    mocks.computeMarginSnapshot.mockRejectedValue(new Error("snapshot timed out"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await computeSizingBasis(ACCOUNT, null, { contract: null })).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -216,5 +250,19 @@ describe("sizing refuse copy", () => {
     expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/not posted as collateral/i);
     expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/liquidation engine/i);
     expect(SIZING_SOURCES_DISAGREE_WARNING).toMatch(/Margin page/i);
+  });
+});
+
+describe("parseLiquidationSnapshot", () => {
+  it("reads unpriceable_plain from the new MCP field", () => {
+    expect(parseLiquidationSnapshot({
+      collateral_usd: "100", debt_usd: "10", unpriceable_plain: true,
+    })).toEqual({ collateralUsd: 100, debtUsd: 10, unpriceablePlain: true });
+  });
+
+  it("falls back to the old liquidatable key when unpriceable_plain is absent", () => {
+    expect(parseLiquidationSnapshot({
+      collateral_usd: "100", debt_usd: "10", liquidatable: true,
+    })).toEqual({ collateralUsd: 100, debtUsd: 10, unpriceablePlain: true });
   });
 });

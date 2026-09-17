@@ -1,7 +1,8 @@
 import { MCPError, type MCPClient } from "../mcp-client";
 import { withInvestigationTurn } from "../telemetry";
 import { readCapabilities, resolveRead } from "./capabilities";
-import { isRecord, parseDecision } from "./decision";
+import { isRecord, lastDecisionRefusal, parseDecision } from "./decision";
+import { annotateVenueAssets } from "./facts-by-shape";
 import { boundOnChainStrings } from "./onchain-strings";
 import type {
   InvestigationLimits, InvestigationOutcome, InvestigationRequest, InvestigationResult,
@@ -203,7 +204,10 @@ export async function runInvestigation(
    * and is not entered in `seen`: no MCP call was spent on it, and it is not something a
    * retry could re-fetch.
    */
-  const observations: Observation[] = (request.seed ?? []).map((seed) => structuredClone(seed));
+  const observations: Observation[] = (request.seed ?? []).map((seed) => {
+    const copy = structuredClone(seed);
+    return { ...copy, data: annotateVenueAssets(copy) };
+  });
   let modelTurns = 0;
   let toolCalls = 0;
   const controller = new AbortController();
@@ -229,6 +233,7 @@ export async function runInvestigation(
   const history = (request.history ?? []).slice(-8).map((entry) => ({
     role: entry.role, text: entry.text.slice(0, 1200),
   }));
+  let decisionFeedback: string | undefined;
   const progress = (event: InvestigationProgress) => {
     // UI delivery failures must not alter the research decision or create retries.
     try { dependencies.onProgress?.(event); } catch { /* client may have disconnected */ }
@@ -282,6 +287,7 @@ export async function runInvestigation(
       try {
         raw = await interruptible(() => dependencies.model({
           message: request.message, history: structuredClone(history), context: { ...context },
+          ...(decisionFeedback ? { decisionFeedback } : {}),
           capabilities: readCapabilities(scope), observations: structuredClone(observations),
           remaining: { turns: limits.maxTurns - modelTurns, toolCalls: limits.maxToolCalls - toolCalls },
           ...(request.task ? { task: structuredClone(request.task) } : {}),
@@ -306,16 +312,39 @@ export async function runInvestigation(
       } catch {
         decision = null;
       }
-      if (!decision) return finish({ kind: "stopped", reason: "invalid_decision" });
+      if (!decision) {
+        // Say which check the model failed; the card only says "invalid decision".
+        const refusal = lastDecisionRefusal() || "unparseable";
+        if (!decisionFeedback && refusal === "findings: every finding stated a figure with no evidence (1)") {
+          decisionFeedback = "Your last completion was rejected because its numeric finding had no evidenceIds. Return the same completion with every live numeric finding citing an existing successful observation id, or omit that finding. Do not invent an id.";
+          console.warn("[copilot] investigation decision repair requested", { turn: modelTurns, reason: refusal });
+          return null;
+        }
+        console.warn("[copilot] investigation decision refused", { turn: modelTurns, reason: refusal, keys: isRecord(raw) ? Object.keys(raw) : typeof raw });
+        return finish({ kind: "stopped", reason: "invalid_decision" });
+      }
       span.setAttribute("vanna.investigation.decision", decision.kind);
       if (decision.kind === "research_complete") {
         const evidence = new Map(observations.map((observation) => [observation.id, observation]));
-        const valid = decision.findings.every((finding) => finding.evidenceIds.every((id) => {
-          const observation = evidence.get(id);
-          const age = observation ? now() - observation.observedAt : -1;
-          return observation?.status === "ok" && age >= 0 && age <= limits.maxEvidenceAgeMs;
-        }));
-        return valid ? finish(decision) : finish({ kind: "stopped", reason: "invalid_evidence" });
+        /**
+         * Which id failed and why. The sibling `invalid_decision` path has said so since it
+         * was written; this one discarded a whole investigation in silence, so a live stop
+         * (15 Sep, "deploy my XLM in farm") reached the user as a bare "stopped before it
+         * could finish" with nothing in the log to reason from.
+         */
+        const rejects: string[] = [];
+        for (const finding of decision.findings) {
+          for (const id of finding.evidenceIds) {
+            const observation = evidence.get(id);
+            const age = observation ? now() - observation.observedAt : -1;
+            if (!observation) rejects.push(`${id}: no such observation`);
+            else if (observation.status !== "ok") rejects.push(`${id}: ${observation.capability} was ${observation.status}`);
+            else if (!(age >= 0 && age <= limits.maxEvidenceAgeMs)) rejects.push(`${id}: ${age}ms old`);
+          }
+        }
+        if (!rejects.length) return finish(decision);
+        console.warn("[copilot] investigation evidence refused", { turn: modelTurns, rejects: rejects.slice(0, 8) });
+        return finish({ kind: "stopped", reason: "invalid_evidence" });
       }
       if (decision.kind !== "inspect") return finish(decision);
       if (toolCalls >= limits.maxToolCalls) return finish({ kind: "stopped", reason: "tool_budget" });
@@ -390,7 +419,7 @@ export async function runInvestigation(
         const fromSeed = snapshotBackedData(request.capability, request.args, observations);
         if (fromSeed) {
           try {
-            observation.data = observationData(fromSeed.data, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(fromSeed.data, limits.maxObservationBytes) });
             observation.status = "ok";
             observation.observedAt = fromSeed.observedAt;
           } catch {
@@ -410,7 +439,7 @@ export async function runInvestigation(
           () => dependencies.mcp.call(read.tool, read.args, scope.trader ?? undefined), readSignal,
         ).then((response) => {
           try {
-            observation.data = observationData(response, limits.maxObservationBytes);
+            observation.data = annotateVenueAssets({ ...observation, data: observationData(response, limits.maxObservationBytes) });
             observation.status = toolFailed(observation.data) ? "error" : "ok";
             if (observation.status === "error") {
               observation.error = "MCP returned unavailable or failed data; do not use it as a financial fact.";
@@ -438,7 +467,8 @@ export async function runInvestigation(
           // A read that ran out of its own time is reported as such: the model can retry a
           // timeout usefully, whereas "failed" invites it to treat the venue as broken.
           const timeout = readSignal.aborted && !signal.aborted;
-          console.error("[copilot] investigation read failed", {
+          // The request itself went away (client replaced or cancelled it): note it, do not alarm.
+          (signal.aborted ? console.info : console.error)("[copilot] investigation read failed", {
             capability: request.capability,
             tool: read.tool,
             timeout,

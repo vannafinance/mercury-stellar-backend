@@ -180,7 +180,7 @@ export async function readLiquidationSnapshot(
     signal?: AbortSignal;
     rpc?: ReadOnlyRpc;
   } = {},
-): Promise<{ collateralUsd: number; debtUsd: number; liquidatable: boolean; ledger: number }> {
+): Promise<{ collateralUsd: number; debtUsd: number; unpriceablePlain: boolean; ledger: number }> {
   if (!StellarSdk.StrKey.isValidContract(smartAccount)) {
     throw new ContractHealthError("invalid_smart_account", "Expected a smart-account contract address.");
   }
@@ -203,7 +203,7 @@ export async function readLiquidationSnapshot(
   return {
     collateralUsd: wadUsd(collateralWad, "liquidation_snapshot"),
     debtUsd: wadUsd(debtWad, "liquidation_snapshot"),
-    liquidatable: snap.value[2] === true,
+    unpriceablePlain: snap.value[2] === true,
     ledger: snap.ledger,
   };
 }

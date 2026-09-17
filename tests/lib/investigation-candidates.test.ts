@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateCandidates, idleWalletUsdFrom, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
 /**
@@ -51,7 +52,8 @@ describe("candidate generation", () => {
     expect(rejected).toEqual([]);
     expect(feasible).toHaveLength(1);
     expect(feasible[0]).toMatchObject({
-      id: "borrow_supply_BLUSDC",
+      id: candidateId("borrow_supply", "BLUSDC"),
+      kind: "borrow_supply",
       borrows: true,
       netAprPct: "6",
       // (4219.36 - 1.3*1736.19) / 0.3 — the same closed form the sizer uses.
@@ -93,7 +95,7 @@ describe("candidate generation", () => {
     });
 
     expect(feasible.map((candidate) => candidate.borrows)).toContain(false);
-    const blendIdle = feasible.find((candidate) => candidate.id === "supply_idle_BLUSDC");
+    const blendIdle = feasible.find((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"));
     expect(blendIdle).toMatchObject({ amountUsd: "680", netAprPct: null, supplyAprPct: "10", venue: "blend" });
     // Committing idle wallet value does not move margin collateral or debt.
     expect(blendIdle?.legs).toEqual([]);
@@ -104,7 +106,7 @@ describe("candidate generation", () => {
     const { feasible } = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],
     });
-    const earn = feasible.find((candidate) => candidate.id === "lend_idle_BLUSDC");
+    const earn = feasible.find((candidate) => candidate.id === candidateId("lend_idle", "BLUSDC"));
     expect(earn).toMatchObject({
       venue: "earn",
       borrows: false,
@@ -114,7 +116,7 @@ describe("candidate generation", () => {
     });
     expect(earn?.legs).toEqual([]);
     // Higher Earn APR ranks above Blend idle 10% and levered Blend 6% net.
-    expect(feasible[0].id).toBe("lend_idle_BLUSDC");
+    expect(feasible[0].id).toBe(candidateId("lend_idle", "BLUSDC"));
   });
 
   it("does not offer Earn idle when Blend pays as much or more, or Earn was not read", () => {
@@ -123,7 +125,7 @@ describe("candidate generation", () => {
       comparisons: [comparison({ earnSupplyApr: "9", blendSupplyApr: "10" })],
     });
     expect(worse.feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-    expect(worse.feasible.some((candidate) => candidate.id === "supply_idle_BLUSDC")).toBe(true);
+    expect(worse.feasible.some((candidate) => candidate.id === candidateId("supply_idle", "BLUSDC"))).toBe(true);
 
     const missing = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" },
@@ -137,7 +139,7 @@ describe("candidate generation", () => {
       ...BASE, idleWalletUsd: null, comparisons: [comparison()],
     });
     expect(feasible.some((candidate) => candidate.venue === "earn")).toBe(false);
-    expect(feasible.every((candidate) => candidate.id.startsWith("borrow_supply_"))).toBe(true);
+    expect(feasible.every((candidate) => candidate.kind === "borrow_supply")).toBe(true);
   });
 
   it("offers no idle candidate when there is nothing idle, rather than a zero-size one", () => {
@@ -318,9 +320,9 @@ describe("an amount the user named outright", () => {
         comparison({ asset: "BLUSDC", earnSupplyApr: "4.0", blendSupplyApr: "3.5" }),
       ],
     });
-    expect(feasible[0].id).toBe("lend_idle_SOUSDC");
+    expect(feasible[0].id).toBe(candidateId("lend_idle", "SOUSDC"));
     expect(feasible[0].decision?.factor).toBe("already_held");
-    expect(feasible[0].decision?.runnerUpId).toBe("lend_idle_AQUSDC");
+    expect(feasible[0].decision?.runnerUpId).toBe(candidateId("lend_idle", "AQUSDC"));
     expect(feasible[0].decision?.reason).toMatch(/SOUSDC/);
     expect(feasible[0].decision?.reason).toMatch(/74,985/);
     expect(feasible[0].decision?.reason).toMatch(/AQUSDC/);

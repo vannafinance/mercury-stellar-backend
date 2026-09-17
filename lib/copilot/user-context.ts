@@ -116,6 +116,11 @@ const READ_ONLY_TOOLS = new Set<string>([
   "vanna_get_blend_position",
   "vanna_list_aquarius_pools",
   "vanna_get_aquarius_pool_stats",
+  // Its Soroswap counterpart, added with the read itself and missed here: the catalogue
+  // offered `soroswap_pool_reserves` while this list — what may be called without a
+  // write's scrutiny — did not know the tool, so the two disagreed about a read that
+  // changes nothing on chain.
+  "vanna_get_soroswap_pool_stats",
   "vanna_get_farm_lp_position",
   "vanna_get_lp_balance",
   "vanna_get_inactive_accounts",

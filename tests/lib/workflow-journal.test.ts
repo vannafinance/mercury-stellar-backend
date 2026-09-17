@@ -131,6 +131,34 @@ describe("workflow approval and execution journal", () => {
     await expect(journal.settled(p.id, identity, "one", "b".repeat(64), 100, true)).rejects.toThrow("settlement_mismatch");
     expect((await journal.settled(p.id, identity, "one", hash, 100, true)).status).toBe("completed");
   });
+  /**
+   * A swap's floor can be adjusted moments before broadcast when the pool moved but the
+   * fresh fill is still fair (execute.ts's staleSwapFloor). That note is the only record of
+   * what price it actually swapped at — `settled()` runs immediately after and generates
+   * its own generic confirmation message, which must not silently erase it.
+   */
+  it("carries a note recording an adjusted price through to the settled message", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const hash = "a".repeat(64);
+    const note = "The pool's price moved after you approved this: XLM → AQUSDC settled for about 173.74 AQUSDC.";
+    await journal.invocationResult(p.id, identity, "one", { kind: "submitted", txHash: hash, note });
+    const settled = await journal.settled(p.id, identity, "one", hash, 100, true, note);
+    expect(settled.status).toBe("completed");
+    expect(settled.message).toBe(`All approved transactions were confirmed on chain. ${note}`);
+  });
+  it("does not append a note to a failed settlement — the failure reason is the message", async () => {
+    const { journal, create } = fixture();
+    const { proposal: p } = await create();
+    await journal.approve(p.id, identity, 1, p.digest, async () => null);
+    await journal.claimNext(p.id, identity);
+    const hash = "a".repeat(64);
+    await journal.invocationResult(p.id, identity, "one", { kind: "submitted", txHash: hash });
+    const settled = await journal.settled(p.id, identity, "one", hash, 100, false, "should not appear");
+    expect(settled.message).toBe("The transaction failed on chain. Remaining steps were stopped.");
+  });
   it("a failed fresh validation consumes approval without claiming a write", async () => {
     const { journal, create } = fixture();
     const { proposal: p } = await create();

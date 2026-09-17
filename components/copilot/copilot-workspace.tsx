@@ -33,7 +33,7 @@ import {
   refreshBorrowedBalances,
   isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
-import { useCopilotSettingsStore, setAutoApprove } from "@/store/copilot-settings";
+import { setAutoApprove } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
@@ -53,8 +53,10 @@ import {
   hopAutoSubmitKey,
   promoteSignableAutoSignResponse,
   shouldArmAutoApprove,
+  shouldAutoApproveProposedWorkflow,
   shouldSessionAutoSubmit,
   signServiceFromSessionRead,
+  preserveLastConclusiveSignState,
 } from "./session-auto-sign";
 import {
   claimFirstAwaitingLeg,
@@ -88,6 +90,7 @@ import { useInvestigation } from "@/hooks/use-investigation";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
+import { ConversationMenu } from "./conversation-menu";
 import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
@@ -590,14 +593,16 @@ function Eyebrow({
   as?: "h2" | "p";
   children: React.ReactNode;
 }) {
+  /**
+   * Sentence case, the page's own face, no tracking: an all-caps monospace eyebrow with a
+   * middle dot is the commonest tell of a generated page, and it made every panel label
+   * look like a data readout. The stage number stays where the panels are a sequence.
+   */
+  const text = typeof children === "string" ? children.charAt(0).toUpperCase() + children.slice(1) : children;
   return (
-    <Tag className="font-mono text-[11px] font-normal uppercase tracking-[0.25em] text-vgray-400">
-      {n ? (
-        <>
-          <span className="text-violet-500">{n}</span> ·{" "}
-        </>
-      ) : null}
-      {children}
+    <Tag className="text-[12px] font-semibold text-vgray-500">
+      {n ? <span className="mr-1.5 tabular-nums text-violet-500">{n.replace(/^0/, "")}</span> : null}
+      {text}
     </Tag>
   );
 }
@@ -1420,6 +1425,7 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
   const investigation = useInvestigation(address);
+
   const workflow = useWorkflow(address);
   const proposedRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
@@ -1432,7 +1438,6 @@ export function CopilotWorkspace() {
   const storeBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
   const storeCollateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
   const storeBorrowedBalances = useMarginAccountInfoStore((s) => s.borrowedBalances);
-  const autoApprove = useCopilotSettingsStore((s) => (address ? !!s.autoApproveByWallet[address] : false));
 
   // Same live snapshot feed as margin / portfolio so the right rail tracks
   // real on-chain HF / collateral / debt instead of a one-shot store paint.
@@ -1441,6 +1446,20 @@ export function CopilotWorkspace() {
   const [intentText, setIntentText] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [signingJournal, setSigningJournal] = useState(false);
+  /**
+   * "New chat" and "open a conversation" both leave the current plan card behind: the
+   * journal keeps every proposal server-side, the screen shows one conversation at a time.
+   */
+  const leavePlanCard = useCallback(() => {
+    proposedRef.current = null;
+    signedWorkflowStepRef.current = null;
+    approvedJournalRef.current = null;
+    setSigningJournal(false);
+    workflow.reset();
+    setIntentText("");
+  }, [workflow]);
+  const startNewChat = useCallback(() => { leavePlanCard(); investigation.newChat(); }, [leavePlanCard, investigation]);
+  const openConversation = useCallback((id: string) => { leavePlanCard(); void investigation.open(id); }, [leavePlanCard, investigation]);
   /** The prompt the user typed — never replaced by "Approved plan" on resume hops. */
   const originalIntentRef = useRef("");
   /** Collateral/debt tail paused because HF dropped below the stated floor. */
@@ -1815,9 +1834,10 @@ export function CopilotWorkspace() {
    * been asked for, and it has a button.
    */
   const [signServiceState, setSignServiceState] = useState<{
+    address: string | null;
     status: "unknown" | "ok" | "unavailable" | "unbound";
     reason: string | null;
-  }>({ status: "unknown", reason: null });
+  }>({ address: null, status: "unknown", reason: null });
 
   /**
    * The in-app consent is running (Privy may be showing its own sheet).
@@ -1829,7 +1849,10 @@ export function CopilotWorkspace() {
   const [bindingInApp, setBindingInApp] = useState(false);
 
   /** Whether anything server-side is actually holding the caps. */
-  const capsEnforced = signServiceState.status === "ok";
+  const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
+  // The browser value is only a display cache. The Sign Service session is the
+  // authority, so a switch changed by MCP is reflected here after the read.
+  const autoApprove = capsEnforced;
 
   /**
    * On wallet connect, read the live Sign Service session. Without this the rail
@@ -1839,14 +1862,18 @@ export function CopilotWorkspace() {
    */
   useEffect(() => {
     if (!address || !sessionSigningAvailable) {
-      setSignServiceState({ status: "unknown", reason: null });
+      setSignServiceState({ address: null, status: "unknown", reason: null });
       return;
     }
     let cancelled = false;
     const seq = ++signReadSeq.current;
-    setSignServiceState({ status: "unknown", reason: null });
+    let readController: AbortController | null = null;
+    setSignServiceState({ address, status: "unknown", reason: null });
     let attempts = 0;
     const run = async () => {
+      readController?.abort();
+      const controller = new AbortController();
+      readController = controller;
       try {
         const headers = await copilotRequestHeaders();
         if (cancelled || seq !== signReadSeq.current) return;
@@ -1863,11 +1890,25 @@ export function CopilotWorkspace() {
             surface: "copilot",
             auto_sign: { action: "status" },
           }),
+          signal: controller.signal,
         });
         const data = (await res.json()) as ChatResponse;
         if (cancelled || seq !== signReadSeq.current) return;
         const next = signServiceFromSessionRead(data);
-        setSignServiceState({ status: next.status, reason: next.reason });
+        // An unavailable/transient read is not proof that a previously conclusive
+        // wallet-global session was revoked. Keep the last server-confirmed state.
+        setSignServiceState((current) => {
+          const currentForWallet =
+            current.address === address
+              ? current
+              : { address, status: "unknown" as const, reason: null };
+          const stable = preserveLastConclusiveSignState(currentForWallet, next);
+          return { address, ...stable };
+        });
+        if (next.status === "unavailable") return;
+        if (address) {
+          setAutoApprove(address, next.status === "ok");
+        }
         if (next.caps) {
           try {
             localStorage.setItem(
@@ -1882,14 +1923,42 @@ export function CopilotWorkspace() {
           }
           setSavedCaps({ tx: next.caps.tx, day: next.caps.day });
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
         // A failed read is not evidence the Sign Service is down — leave unknown
         // so the enable path still works.
       }
     };
     void run();
+    /**
+     * A hidden tab does not poll, and the interval is 45s rather than 15s.
+     *
+     * A browser allows ~6 connections per origin, and this page already holds several
+     * slow ones: the investigation stream for the whole of a run, and account snapshot
+     * reads that take 6-10s each. A 15s poll per open tab on top of that exhausts the
+     * pool, and the request that loses the race never leaves the browser at all — the
+     * user sees "Sending your request" counting up against a server that logged nothing
+     * (17 Sep: three swap tests stalled this way, minutes each, nothing server-side to
+     * show for them; §9 of the 16 Sep handover records the same symptom).
+     *
+     * Nothing is lost by waiting: the session state this reads changes when the user
+     * enables or disables auto-sign, and both of those already write it directly. The
+     * poll only catches a change made elsewhere — another tab, or MCP — which no one is
+     * watching the rail for in a hidden tab. Becoming visible reads immediately, so the
+     * rail is never stale by the time it is looked at.
+     */
+    const visible = () => document.visibilityState === "visible";
+    const runIfVisible = () => { if (visible()) void run(); };
+    const poll = window.setInterval(runIfVisible, 45_000);
+    const onFocus = () => runIfVisible();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
     return () => {
       cancelled = true;
+      readController?.abort();
+      window.clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
     };
   }, [address, sessionSigningAvailable]);
   /**
@@ -2477,9 +2546,9 @@ export function CopilotWorkspace() {
         if (address) {
           if (/\bauto-sign disabled\b/i.test(data.message || "")) {
             setAutoApprove(address, false);
-            setSignServiceState({ status: "unknown", reason: null });
+            setSignServiceState({ address, status: "unknown", reason: null });
           } else if (/\bauto-sign (?:already active|enabled)\b/i.test(data.message || "")) {
-            setSignServiceState({ status: "ok", reason: null });
+            setSignServiceState({ address, status: "ok", reason: null });
             setAutoApprove(address, true);
           }
         }
@@ -2636,7 +2705,16 @@ export function CopilotWorkspace() {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
     if (view.status !== "researched" || view.question) return;
-    const candidateId = view.proposalCandidateId ?? view.candidates?.feasible[0]?.id;
+    /**
+     * Only what the server NOMINATED is prepared without a click. It nominates a candidate
+     * only when there is exactly one — several competing strategies are the user's choice
+     * to make, and this effect feeds the auto-approve effect below, which with session
+     * signing on signs and broadcasts (15 Sep, S4: the first of two options was executed
+     * before it could be read). The `?? feasible[0]` fallback that used to sit here
+     * re-nominated exactly what the server had declined to, which is why the server-side
+     * rule alone did nothing.
+     */
+    const candidateId = view.proposalCandidateId;
     if (!candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
     const proposeKey = `${view.continuation}:${candidateId}`;
@@ -2679,7 +2757,16 @@ export function CopilotWorkspace() {
     if (!sessionSigning) return;
     const view = workflow.view;
     if (!view || workflow.loading || workflow.error) return;
-    if (view.status !== "proposed") return;
+    if (
+      !shouldAutoApproveProposedWorkflow({
+        sessionSigning,
+        status: view.status,
+        steps: view.steps,
+        slippageAccepted: view.slippageAccepted,
+      })
+    ) {
+      return;
+    }
     if (approvedJournalRef.current === view.id) return;
     approvedJournalRef.current = view.id;
     void workflow.approve();
@@ -2779,14 +2866,14 @@ export function CopilotWorkspace() {
       if (data.kind === "needs_wallet_bind") {
         signReadSeq.current += 1;
         if (action === "disable") setAutoApprove(address, false);
-        setSignServiceState({ status: "unbound", reason: null });
+        setSignServiceState({ address, status: "unbound", reason: null });
         return;
       }
 
       if (action === "disable") {
         signReadSeq.current += 1;
         setAutoApprove(address, false);
-        setSignServiceState({ status: "unknown", reason: null });
+        setSignServiceState({ address, status: "unknown", reason: null });
         return;
       }
       if (data.kind === "needs_auto_sign") return;
@@ -2803,9 +2890,10 @@ export function CopilotWorkspace() {
         (data.kind === "error" ? data.message : null) ||
         null;
       signReadSeq.current += 1;
-      setSignServiceState(
-        mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason },
-      );
+      setSignServiceState({
+        address,
+        ...(mcpEnabled ? { status: "ok", reason: null } : { status: "unavailable", reason }),
+      });
 
       const fromMcp = Number(facts.default_cap_usd);
       const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
@@ -4924,14 +5012,21 @@ export function CopilotWorkspace() {
       {/* Page header */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
         <div className="flex flex-col gap-1.5">
-          <Eyebrow as="p">
-            <span className="text-violet-500">agent-native</span> · orchestrator
-          </Eyebrow>
           <h1 className="text-h5 font-semibold text-vgray-900">
             Vanna <span className="bg-gradient bg-clip-text text-transparent">Copilot</span>
           </h1>
+          <p className="text-[14px] leading-6 text-vgray-500">Say what you want to do. The plan is sized from live reads and shown before anything runs.</p>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <ConversationMenu
+            items={investigation.conversations}
+            activeId={investigation.conversationId}
+            wallet={address}
+            busy={investigation.loading}
+            onNew={startNewChat}
+            onOpen={openConversation}
+            onDelete={(id) => { void investigation.remove(id); }}
+          />
           {/* The provider/mcp/tool-count chip was build detail, not product: it told the
               user nothing they could act on, and its "brain offline" state fired on any
               transient health fetch (a dev-server recompile, a cold start) which reads as
@@ -4957,8 +5052,8 @@ export function CopilotWorkspace() {
             </div>
           )}
           {sessionSigning && (
-            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] font-mono text-[11px] font-semibold text-violet-500">
-              <ShieldCheck size={13} /> auto-approve on
+            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] text-[12px] font-semibold text-violet-500">
+              <ShieldCheck size={13} aria-hidden="true" /> Auto-approve on
             </div>
           )}
         </div>
@@ -5128,15 +5223,6 @@ export function CopilotWorkspace() {
             && (!loading || workflow.loading || signingJournal || !!workflow.view) && (
             <InvestigationCard
               {...investigation}
-              onReset={() => {
-                proposedRef.current = null;
-                signedWorkflowStepRef.current = null;
-                approvedJournalRef.current = null;
-                setSigningJournal(false);
-                investigation.reset();
-                workflow.reset();
-                setIntentText("");
-              }}
               onPropose={investigation.result?.continuation
                 ? (candidateId) => {
                     const continuation = investigation.result!.continuation;
@@ -5151,6 +5237,8 @@ export function CopilotWorkspace() {
               onResume={() => { void workflow.resume(); }}
               onCancelPlan={() => { void workflow.cancelPlan(); }}
               onSign={() => { void signJournalXdr(false); }}
+              wallet={address}
+              autoSign={sessionSigning}
             />
           )}
           <div
@@ -6501,7 +6589,7 @@ export function CopilotWorkspace() {
           </div>
 
           <p className="text-center text-body-3 text-vgray-400">
-            Every action runs the same safety checks — nothing touches the chain until policy passes.
+            Every action runs the same safety checks. Nothing touches the chain until policy passes.
           </p>
         </div>
       </div>

@@ -100,7 +100,7 @@ import { guardUserPrompt } from "./domain-firewall";
 import { currentTokenSubject } from "./token-budget";
 import { findLeverage, parseMinHealthFactor, routeMessage } from "./router";
 import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
-import { quoteDexSwap } from "./swap-quote";
+import { quoteDexSwap, swapPriceImpact, usdPriceFromOracleBatch, type SwapPriceImpact } from "./swap-quote";
 import { readFarmAmmLpShares } from "./farm-lp";
 import { resolveAsset, resolveAssetDef, USDC_VARIANTS } from "./registry/assets";
 import { isTrackingSymbol } from "@/lib/account-snapshot";
@@ -2178,6 +2178,7 @@ async function runWrite(
   let swapExpectedOut: string | null = null;
   let swapMinOut: string | null = null;
   let swapSlippagePct = "0.5";
+  let swapImpact: SwapPriceImpact | null = null;
   if (action.op === "swap") {
     const swapAmount = action.amount;
     if (swapAmount == null || !(swapAmount > 0)) {
@@ -2247,6 +2248,23 @@ async function runWrite(
             expected_out: q.expected,
             venue: action.venue ?? quoteVenue,
           };
+          try {
+            const batch = await getMcpClient().call(
+              "vanna_get_prices_batch",
+              { symbols: [tokenIn, tokenOut] },
+              ctx.userId,
+            );
+            swapImpact = swapPriceImpact({
+              amountIn: swapAmount,
+              expectedOut: q.expected,
+              tokenIn,
+              tokenOut,
+              priceInUsd: usdPriceFromOracleBatch(batch, tokenIn),
+              priceOutUsd: usdPriceFromOracleBatch(batch, tokenOut),
+            });
+          } catch {
+            /* MCP still computes impact at execute; unknown here is not 0%. */
+          }
         }
       } catch {
         /* MCP may still auto-quote at execute */
@@ -2689,6 +2707,8 @@ async function runWrite(
       expected_out: swapExpectedOut,
       min_out: swapMinOut,
       slippage_pct: swapSlippagePct,
+      acknowledged_price_impact: action.acknowledged_price_impact === true,
+      price_impact_pct: swapImpact?.pct,
     },
     { trader: ctx.trader, smartAccount },
   );
@@ -3063,13 +3083,19 @@ async function runWrite(
           ]
         : ["wallet sign required (MCP built XDR)"],
     );
+    const impactWarning =
+      (typeof result.build.price_impact_warning === "string" && result.build.price_impact_warning) ||
+      swapImpact?.warning ||
+      null;
+    if (impactWarning && !reasons.includes(impactWarning)) reasons.unshift(impactWarning);
     /**
      * Manual signing is the default, so this path must read as the normal way through —
      * not as auto-sign having failed. See stripAutoSignPlumbing.
      */
     const signBody =
-      stripAutoSignPlumbing(result.message) ||
-      `${mapped.step.label} is built and ready.`;
+      result.mcp_trace.auto_sign === "withheld_price_impact"
+        ? result.message
+        : stripAutoSignPlumbing(result.message) || `${mapped.step.label} is built and ready.`;
     return {
       kind: "needs_wallet_sign",
       message: withImpact((highestPickNote || "") + signBody + xdrNote),
@@ -3104,7 +3130,8 @@ async function runWrite(
         action: { ...action, smart_account: smartAccount },
         simulation,
         mcp: { tool: result.tool, status: "needs_wallet_sign", needs_auto_sign: false },
-        allow_session_sign: result.forbid_session_sign ? false : undefined,
+        allow_session_sign:
+          result.forbid_session_sign || swapImpact?.level === "high" ? false : undefined,
       },
       request_id: ctx.request_id,
     };

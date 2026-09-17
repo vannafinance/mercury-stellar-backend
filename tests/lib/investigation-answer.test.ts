@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { normalizeResearchFacts } from "@/lib/copilot/investigation/normalize";
 import { strategyReply } from "@/lib/copilot/investigation/answer";
 import { generateCandidates } from "@/lib/copilot/investigation/candidates";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
@@ -54,6 +55,35 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/completed checks/);
   });
 
+  it("says what is idle when a strategy turn has no option and nothing ruled out (13 Sep: 3.97 XLM, all minimum balance)", () => {
+    const wallet = (label: string, value: string) => ({ id: label, label, value, unit: label.split(" ")[0], venue: "wallet" as const, evidenceId: "e1", sourcePath: label, readAt: 0 });
+    const reply = strategyReply({
+      status: "researched",
+      facts: [wallet("XLM wallet balance", "3.9736786"), wallet("XLM wallet spendable", "0"), wallet("AQUSDC wallet balance", "0.0003729")],
+      candidates: { feasible: [], rejected: [] } as never,
+      capacity: null,
+      question: null,
+      intent: "strategy",
+      findings: [{ summary: "The reported supply rates are BLUSDC Earn: 29.08 % APR; AQUSDC Earn: 20.18 % APR." }],
+    });
+    expect(reply).toMatch(/^Idle in the wallet: XLM 0 spendable of 3\.9737, AQUSDC 0\.0004\./);
+    expect(reply).toMatch(/reported supply rates/);
+  });
+
+  it("prints each market's supply rate once even when two reads carried it", () => {
+    const rate = (label: string, value: string, id: string) => ({ id, label, value, unit: "% APR", venue: "blend" as const, evidenceId: id, sourcePath: id, readAt: 0 });
+    const reply = strategyReply({
+      status: "researched",
+      facts: [rate("XLM Blend supply APR", "168.6584", "e1:reserves[0].supply_apr_pct"), rate("XLM Blend supply APR", "168.6584", "e2:supply_apr_pct")],
+      candidates: null,
+      capacity: null,
+      question: null,
+      intent: "answer",
+      originalRequest: "what is the blend xlm rate",
+    });
+    expect(reply.match(/XLM Blend/g)?.length).toBe(1);
+  });
+
   it("cites a can_withdraw read in the factual answer", () => {
     const reply = strategyReply({
       status: "researched",
@@ -86,6 +116,19 @@ describe("strategyReply", () => {
     expect(reply).not.toMatch(/\$278\.9886/);
     expect(debt.value).toBe("278.9886");
     expect(tokens.value).toBe("2781.9471234");
+  });
+
+  it("names every debt row the read returned, not the total alone (14 Sep: 'what are the debt tokens I am holding')", () => {
+    const { facts } = normalizeResearchFacts([{
+      id: "e2", capability: "account_debt", args: {}, observedAt: 1, status: "ok",
+      data: { debt: [{ symbol: "XLM", balance: "14113.4967211", value_usd: "2540.43" }, { symbol: "USDC", balance: "772", value_usd: "772" }], total_debt_usd: "3312.43" },
+    }]);
+    const reply = strategyReply({
+      status: "researched", facts, candidates: null, capacity: null, question: null, intent: "answer",
+      originalRequest: "what are the debt tokens currently i am holding",
+      findings: [{ summary: "Your reported margin debt is $3,312.43." }],
+    });
+    expect(reply).toBe("Debt: XLM 14,113.4967211 ($2,540.43), BLUSDC 772 ($772.00); total $3,312.43.");
   });
 
   it("rounds a health factor to two decimals without changing the stored fact", () => {

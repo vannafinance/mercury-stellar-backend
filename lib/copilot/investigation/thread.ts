@@ -82,7 +82,12 @@ export type StoredThread = {
   continuation: string | null;
   wallet: string;
   result: ResearchView | null;
+  /** The server-side conversation this thread belongs to; null for a chat that has not had a turn yet. */
+  conversationId?: string | null;
 };
+
+/** What the conversation list shows for each conversation. */
+export type ConversationSummary = { id: string; title: string; createdAt: number; updatedAt: number };
 
 export function threadStorageKey(wallet: string): string {
   return `${STORAGE_PREFIX}${wallet}`;
@@ -109,6 +114,7 @@ export function writeStoredThread(wallet: string | null, value: StoredThread): v
       continuation: value.continuation,
       wallet,
       result: value.result,
+      conversationId: value.conversationId ?? null,
     }));
   } catch { /* quota — the live thread still works until reload */ }
 }
