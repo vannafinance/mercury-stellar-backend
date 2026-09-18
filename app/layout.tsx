@@ -64,7 +64,7 @@ export const metadata: Metadata = {
   authors: [{ name: "Vanna" }],
   creator: "Vanna",
   alternates: { canonical: "/" },
-  icons: { icon: "/favicon.ico" },
+  icons: { icon: "/logos/vanna-icon.png" },
   openGraph: {
     type: "website",
     siteName: "Vanna Protocol",
