@@ -15,6 +15,7 @@ import { TransactionProgressModal } from "@/components/ui/transaction-progress-m
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
 import { AssistantLauncher } from "@/components/copilot/assistant-launcher";
 import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
+import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -112,7 +113,7 @@ export default function RootLayout({
                     <AppToaster />
                     <TransactionProgressModal />
                     {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
-                    <AssistantLauncher />
+                    {isCopilotEnabled() && <AssistantLauncher />}
                   </PageContextProvider>
                 </PriceProvider>
               </LedgerSubscriberProvider>
