@@ -47,7 +47,7 @@ export async function immediateReply(
   if (!text) return null;
 
   const abuse = abuseTripwire(text);
-  if (abuse) return { kind: "off_domain", message: abuse.message };
+  if (abuse && !abuse.allow) return { kind: "off_domain", message: abuse.message };
 
   if (SWAP_CAPABILITY_QUESTION.test(text) && !/\d/.test(text) && WORKFLOW_OPS.includes("swap")) {
     const pairs = lpPairs().map((pair) => `${pair.venue}: ${pair.tokens.join("/ ")}`).join("; ");
