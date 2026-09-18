@@ -41,6 +41,15 @@ env:
   REGION: us-central1
   SERVICE: vanna-copilot-dev
   SITE_URL: https://test.copilot.vanna.finance
+  # Talk to the MCP server and Connect Gateway by their own Cloud Run URLs.
+  # mcp.vanna.finance is a domain mapping that dropped 8 of 20 connections on
+  # 11 Sep where the run.app URL dropped none, and the gateway has no public
+  # name at all — unset, wallet-bind's host allowlist rejects the connect_url
+  # the Sign Service hands back. MCP_RESOURCE stays the public name: it is the
+  # audience the MCP server validates, not a transport address.
+  MCP_BASE_URL: https://vanna-mcp-server-uscm2gn35a-uc.a.run.app/mcp
+  MCP_RESOURCE: https://mcp.vanna.finance/mcp
+  SIGN_CONNECT_BASE_URL: https://vanna-connect-gateway-uscm2gn35a-uc.a.run.app
 
 jobs:
   deploy:
@@ -77,7 +86,7 @@ jobs:
             --config=cloudbuild.yaml \
             --region="$REGION" \
             --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
-            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID}" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID},_MCP_BASE_URL=$MCP_BASE_URL,_MCP_RESOURCE=$MCP_RESOURCE,_SIGN_CONNECT_BASE_URL=$SIGN_CONNECT_BASE_URL" \
             .
 
       - name: Report URL
