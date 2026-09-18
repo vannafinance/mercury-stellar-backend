@@ -9,8 +9,9 @@ export interface InvestigationScope {
   /**
    * Set when identity could not be verified this turn. Never a confirmed negative
    * (an empty bindings list is not proof the wallet is unlinked).
+   * `session` = the page sent a G-address but this request was not signed in.
    */
-  unverified?: "bindings";
+  unverified?: "bindings" | "session";
 }
 
 export interface InvestigationRequest {

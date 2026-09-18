@@ -40,7 +40,7 @@ function remember(
 
 function publicScope(
   input: { subject: string; network: string },
-  unverified?: "bindings",
+  unverified?: "bindings" | "session",
 ): InvestigationScope {
   return {
     subject: input.subject, trader: null, smartAccount: null, network: input.network,
@@ -168,9 +168,13 @@ export async function resolveInvestigationScope(
    * Public and conceptual questions need no account. Requiring a binding here
    * dropped "explain what a health factor is" for anyone without a linked wallet,
    * including signed-out visitors. Guest identity never has bindings to check.
+   *
+   * A G-address on a guest request is still the navbar wallet — do not treat it
+   * as verified, and do not pretend the user sent nothing. `session` lets the
+   * service stop strategy instead of dumping public oracle rows.
    */
-  if (!input.wallet || input.subject === "guest") {
-    return publicScope(input);
+  if (input.subject === "guest") {
+    return publicScope(input, input.wallet ? "session" : undefined);
   }
   const cached = scopeCache.get(cacheKey(input));
   if (cached && cached.expiresAt > Date.now()) {

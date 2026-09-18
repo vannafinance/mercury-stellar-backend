@@ -15,7 +15,7 @@ import type { ResearchView } from "@/lib/copilot/investigation/view";
  */
 
 const mocks = vi.hoisted(() => ({
-  headers: vi.fn(async () => ({ "content-type": "application/json" })),
+  headers: vi.fn(async () => ({ "content-type": "application/json", "x-privy-token": "test-token" })),
   consume: vi.fn(),
 }));
 
@@ -94,7 +94,7 @@ describe("useInvestigation — continuation chaining", () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.headers.mockResolvedValue({ "content-type": "application/json" });
+    mocks.headers.mockResolvedValue({ "content-type": "application/json", "x-privy-token": "test-token" });
     sessionStorage.clear();
   });
 

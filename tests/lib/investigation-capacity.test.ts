@@ -143,6 +143,26 @@ describe("borrow capacity", () => {
     expect(mocks.computeMarginSnapshot).not.toHaveBeenCalled();
   });
 
+  it("uses and discloses the configured safety floor for a typed borrowing goal", async () => {
+    snapshot(4219.36, 1736.19);
+    const capacity = await computeBorrowCapacity(
+      ACCOUNT,
+      ["borrow against my collateral"],
+      undefined,
+      undefined,
+      { ...contract(4219.36, 1736.19), useConfiguredFloor: true },
+    );
+
+    expect(capacity).toMatchObject({
+      floor: "1.3",
+      floorSource: "configured_safety_buffer",
+      grossCollateralUsd: "4219.36",
+      debtUsd: "1736.19",
+      healthFactor: "2.430240929852147518",
+      maxBorrowUsd: "6541.043333333333333333",
+    });
+  });
+
   it("takes the latest floor the user gave, not the first", async () => {
     snapshot(4219.36, 1736.19);
     const capacity = await computeBorrowCapacity(ACCOUNT, [

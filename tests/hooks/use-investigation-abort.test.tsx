@@ -15,7 +15,7 @@ import { act, renderHook } from "@testing-library/react";
  */
 
 const mocks = vi.hoisted(() => ({
-  headers: vi.fn(async () => ({ "content-type": "application/json" })),
+  headers: vi.fn(async () => ({ "content-type": "application/json", "x-privy-token": "test-token" })),
   consume: vi.fn(),
 }));
 vi.mock("@/lib/copilot/copilot-request", () => ({ copilotRequestHeaders: mocks.headers }));

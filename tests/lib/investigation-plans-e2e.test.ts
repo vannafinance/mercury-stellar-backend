@@ -166,7 +166,12 @@ describe("model proposes, code disposes — end to end", () => {
     // The fixed generator's identical shape was folded into the composed one.
     expect(feasible.map((c) => c.id)).not.toContain("supply_idle:XLM");
     // The USDC plan could not be sized, and the card says exactly why.
-    expect(view.candidates?.rejected).toContainEqual({ label: "Lend idle USDC to Earn", reason: "lend AQUSDC: no idle AQUSDC in the wallet.", asset: "AQUSDC" });
+    expect(view.candidates?.rejected).toContainEqual({
+      label: "Lend idle USDC to Earn",
+      reason: "lend AQUSDC: AQUSDC is not in the connected wallet.",
+      asset: "AQUSDC",
+      pocket: { code: "insufficient_wallet", expected: "wallet", actual: "wallet", remedy: "reduce_or_skip" },
+    });
     // The headline is generated from the winning option, not assembled beside it.
     expect(view.message).toMatch(/^(Move idle XLM into Blend[^:]*): deposit .* XLM as collateral, then supply .* to Blend/);
     expect(view.message).toMatch(/Health factor after this would be/);

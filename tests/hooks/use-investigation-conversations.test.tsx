@@ -10,7 +10,7 @@ import type { ResearchView } from "@/lib/copilot/investigation/view";
  */
 
 const mocks = vi.hoisted(() => ({
-  headers: vi.fn(async () => ({ authorization: "Bearer t" })),
+  headers: vi.fn(async () => ({ authorization: "Bearer t", "x-privy-token": "test-token" })),
   consume: vi.fn(),
 }));
 
@@ -133,5 +133,24 @@ describe("useInvestigation — conversations", () => {
     expect(result.current.conversations.map((c) => c.id)).toEqual(["c-newer"]);
     expect(result.current.turns).toEqual([]);
     expect(calls.some((c) => c.url === "/api/copilot/session/c-older" && c.method === "DELETE")).toBe(true);
+  });
+
+  it("lists the live chat immediately when the server has not recorded it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string; method?: string }) => {
+      if (url === "/api/copilot/session" && (init?.method ?? "GET") === "GET") {
+        return { ok: true, json: async () => ({ conversations: [], activeId: null, turns: [] }) } as unknown as Response;
+      }
+      if (url === "/api/copilot/investigate") return { ok: true, body: {} } as unknown as Response;
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }));
+    mocks.consume.mockImplementation(async (_res: unknown, emit: (event: unknown) => void) => {
+      emit({ type: "result", result: view("Lend 100 XLM to Earn.") });
+    });
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await act(async () => { await result.current.run("can you deposit xlm,usdc,blusdc 100 into the lending"); });
+    expect(result.current.conversations[0]).toMatchObject({
+      id: "local:current",
+      title: "can you deposit xlm,usdc,blusdc 100 into the lending",
+    });
   });
 });

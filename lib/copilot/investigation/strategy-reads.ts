@@ -88,6 +88,9 @@ export function readsForPlans(plans: readonly ProposedPlan[], observations: read
           leg.asset === "XLM" ? leg.assetOut : leg.asset,
         );
       }
+      // A lend is funded from the wallet; the account read is how a wrong-pocket
+      // sibling becomes a withdraw-then-lend offer instead of a silent skip.
+      if (leg.op === "lend") want("account_collateral");
       // A leg the account funds is checked against the account's balance, whatever its sizing word.
       if (flow.from === "account") want("account_collateral");
     }

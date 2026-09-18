@@ -12,9 +12,9 @@
  *    read cannot be compared to a usable app snapshot within a small tolerance,
  *    this refuses to quote a size rather than silently preferring either source.
  *
- * 3. **The floor must come from the user.** `parseMinHealthFactor` reads it out
- *    of their own words. If they never stated one, this returns null rather than
- *    assuming a default.
+ * 3. **A floor is normally user-supplied.** Borrowing goals may explicitly opt into
+ *    the configured safety buffer; that policy floor is marked on the returned object
+ *    so callers can disclose it rather than presenting it as user intent.
  *
  * No model output reaches this file, and it performs no writes.
  */
@@ -30,6 +30,7 @@ import { isRecord } from "./decision";
 import { formatWad, decimalWad, WAD } from "./fixed";
 import { LIQUIDATION_THRESHOLD_WAD, maxBorrowForFloorWad } from "./sizing";
 import type { ResearchCapacity } from "./view";
+import { copilotConfig } from "../config";
 
 /** Two decimals is the precision the rest of the surface shows USD at. */
 function usd(value: number): string {
@@ -52,6 +53,8 @@ export type SizingOptions = {
   trader?: string | null;
   /** The user's floor when the caller already knows it (model-anchored); otherwise parsed from the messages. */
   floor?: string | null;
+  /** Use the configured safety floor when no user floor was stated. */
+  useConfiguredFloor?: boolean;
   /**
    * The app snapshot when the caller already attempted it: a snapshot, or `null` meaning
    * "tried and unavailable — do not read again". Undefined means read it here. Mirrors
@@ -216,19 +219,36 @@ export async function computeBorrowCapacity(
   if (!smartAccount) return null;
 
   const stated = options?.floor ?? statedFloorFrom(messages);
-  if (stated === null) return null;
-  const floorWad = decimalWad(stated);
+  const configured = stated === null && options?.useConfiguredFloor === true
+    ? configuredSafetyFloor()
+    : null;
+  const floor = stated ?? configured;
+  if (floor === null) return null;
+  const floorWad = decimalWad(floor);
   // A floor at or below the liquidation threshold is not headroom, it is a breach.
   if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return null;
 
   const basis = await computeSizingBasis(smartAccount, shared ?? null, options, signal);
   if (!basis) throw new Error("position_read_inconsistent");
   if (basis.issue) throw new Error(basis.issue);
-  return capacityFromBasis(basis, formatWad(floorWad));
+  return capacityFromBasis(basis, formatWad(floorWad), configured !== null ? "configured_safety_buffer" : undefined);
+}
+
+/** The configured fallback is policy, not a user constraint, and must stay above liquidation. */
+function configuredSafetyFloor(): string {
+  const value = copilotConfig.minHealthFactor;
+  if (!Number.isFinite(value) || value <= LIQUIDATION_THRESHOLD) {
+    throw new Error("configured_health_floor_below_liquidation");
+  }
+  return formatWad(decimalWad(String(value)));
 }
 
 /** Headroom at a floor from an agreed basis. Null when the basis is disputed or the floor is not above the line. */
-export function capacityFromBasis(basis: SizingBasis, floor: string): ResearchCapacity | null {
+export function capacityFromBasis(
+  basis: SizingBasis,
+  floor: string,
+  floorSource?: ResearchCapacity["floorSource"],
+): ResearchCapacity | null {
   if (basis.issue) return null;
   const floorWad = decimalWad(floor);
   if (floorWad <= LIQUIDATION_THRESHOLD_WAD) return null;
@@ -237,6 +257,7 @@ export function capacityFromBasis(basis: SizingBasis, floor: string): ResearchCa
   const maxBorrow = maxBorrowForFloorWad(grossWad, debtWad, floorWad);
   return {
     floor: formatWad(floorWad),
+    ...(floorSource ? { floorSource } : {}),
     grossCollateralUsd: formatWad(grossWad),
     debtUsd: formatWad(debtWad),
     // Reported only when there is debt; a ratio with no denominator is not a health factor.

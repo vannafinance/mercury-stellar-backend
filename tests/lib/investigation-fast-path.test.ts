@@ -419,6 +419,6 @@ describe("researchTurn fast path", () => {
     expect(fromWallet.message).toMatch(/^Deposit 1 XLM as collateral, then Repay 1 XLM\. Approve to run these steps\./);
     const nothing = await researchTurn({ message: "repay 1 XLM", wallet: SCOPE.trader, continuation: null }, deps({ mcp: world("0", "0"), model }));
     expect(nothing.proposalCandidateId).not.toBe("requested_actions");
-    expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: no idle XLM in the wallet.");
+    expect(nothing.candidates?.rejected[0]?.reason).toBe("deposit collateral XLM: XLM is not in the connected wallet.");
   });
 });

@@ -110,7 +110,13 @@ export async function POST(req: NextRequest) {
       return loaded.commit(NextResponse.json({ code: "research_not_configured", message: "Investigation is not available on this deployment yet." }, { status: 503 }));
     }
     console.info("[copilot] investigate accepted", {
-      request_id, signed_in: !!bound, has_wallet: Boolean(input.wallet), ms: elapsed(),
+      request_id,
+      signed_in: !!bound,
+      has_wallet: Boolean(input.wallet),
+      privy_token_present: loaded.privy.tokenPresent,
+      privy_token_source: loaded.privy.source ?? null,
+      privy_error: loaded.privy.error ?? null,
+      ms: elapsed(),
     });
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

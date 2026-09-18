@@ -8,6 +8,8 @@ export interface ResearchFact {
   evidenceId: string;
   sourcePath: string;
   readAt: number;
+  /** Optional structured linkage for a fact explicitly requested by the read. */
+  requested?: boolean;
 }
 
 /**
@@ -32,6 +34,8 @@ export interface ResearchUnderstanding {
  */
 export interface ResearchCapacity {
   floor: string;
+  /** Omitted for legacy/user-stated floors; present when the configured safety buffer was applied. */
+  floorSource?: "user" | "configured_safety_buffer";
   grossCollateralUsd: string;
   debtUsd: string;
   healthFactor: string | null;

@@ -145,9 +145,72 @@ describe("what the table decides downstream", () => {
   it("a stated lend is funded from the wallet: the shape matrix found 'lend 100 XLM' offered from an empty wallet", () => {
     const empty = resolvePlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }])], ctx(rows("0", "0", "0"), ["lend 100 XLM"]));
     expect(empty.candidates).toEqual([]);
-    expect(empty.rejected[0]?.reason).toBe("no idle XLM in the wallet");
+    expect(empty.rejected[0]?.reason).toBe("XLM is not in the connected wallet");
     const short = resolvePlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }])], ctx(rows("60", "0", "0"), ["lend 100 XLM"]));
     expect(short.rejected[0]?.reason).toBe("only 59.5 XLM is spendable in the wallet");
+  });
+
+  it("keeps the wallet minimum balance and fee reserve out of Earn lend capacity", () => {
+    const constrained = rows("60", "0", "0").map((observation) => observation.capability === "wallet_balances"
+      ? { ...observation, data: { ...observation.data, assets: [{ symbol: "XLM", balance: "60", min_balance: "3.5", decimals: 7, status: "ok" }, { symbol: "XLM_SAC", balance: "60", min_balance: "3.5", decimals: 7, status: "ok" }] } }
+      : observation);
+    const result = resolvePlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "57", sourceQuote: "lend 57 XLM" } }])], ctx(constrained, ["lend 57 XLM"]));
+    expect(result.candidates).toEqual([]);
+    expect(result.rejected[0]?.reason).toBe("only 56 XLM is spendable in the wallet");
+  });
+
+  it("keeps a funded Earn sibling when another lend asks for an asset held only in margin", () => {
+    const multiAsset = [
+      obs("w", "wallet_balances", {
+        assets: [
+          { symbol: "XLM", balance: "60", decimals: 7, status: "ok" },
+          { symbol: "XLM_SAC", balance: "60", decimals: 7, status: "ok" },
+          { symbol: "AQUSDC", balance: "0", decimals: 7, status: "ok" },
+        ], fee_reserve_xlm: "0.5",
+      }),
+      obs("px", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
+      obs("pa", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
+      obs("mx", "earn_market", { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" }, { asset: "XLM" }),
+      obs("ma", "earn_market", { supply_apr_pct: "4", borrow_apr_pct: "8", utilization_pct: "62.5" }, { asset: "AQUSDC" }),
+      obs("ac", "account_collateral", { collateral: [{ symbol: "AQUSDC", balance: "20" }] }),
+      obs("ad", "account_debt", { debt: [] }),
+    ];
+    const result = resolvePlans([plan([
+      { op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 XLM" } },
+      { op: "lend", asset: "AQUSDC", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 AQUSDC" } },
+    ])], ctx(multiAsset, ["lend 10 XLM", "lend 10 AQUSDC"]));
+    const shapes = result.candidates.map((candidate) => candidate.steps?.map((step) => [step.op, step.asset]));
+    expect(shapes).toEqual(expect.arrayContaining([
+      [["lend", "XLM"]],
+      [["lend", "XLM"], ["withdraw_collateral", "AQUSDC"], ["lend", "AQUSDC"]],
+    ]));
+  });
+
+  it("offers withdraw-then-lend when the Earn asset sits in the margin account, and still keeps the funded sibling", () => {
+    const multiAsset = [
+      obs("w", "wallet_balances", {
+        assets: [
+          { symbol: "XLM", balance: "60", decimals: 7, status: "ok" },
+          { symbol: "XLM_SAC", balance: "60", decimals: 7, status: "ok" },
+          { symbol: "AQUSDC", balance: "0", decimals: 7, status: "ok" },
+        ], fee_reserve_xlm: "0.5",
+      }),
+      obs("px", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
+      obs("pa", "asset_price", { price_usd: "1" }, { asset: "AQUSDC" }),
+      obs("mx", "earn_market", { supply_apr_pct: "5", borrow_apr_pct: "8", utilization_pct: "62.5" }, { asset: "XLM" }),
+      obs("ma", "earn_market", { supply_apr_pct: "4", borrow_apr_pct: "8", utilization_pct: "62.5" }, { asset: "AQUSDC" }),
+      obs("ac", "account_collateral", { collateral: [{ symbol: "AQUSDC", balance: "20" }] }),
+      obs("ad", "account_debt", { debt: [] }),
+    ];
+    const { candidates } = resolvePlans([plan([
+      { op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 XLM" } },
+      { op: "lend", asset: "AQUSDC", sizing: { kind: "literal", amount: "10", sourceQuote: "lend 10 AQUSDC" } },
+    ])], ctx(multiAsset, ["lend 10 XLM", "lend 10 AQUSDC"]));
+    const shapes = candidates.map((candidate) => candidate.steps?.map((step) => [step.op, step.asset]));
+    expect(shapes).toEqual(expect.arrayContaining([
+      [["lend", "XLM"]],
+      [["lend", "XLM"], ["withdraw_collateral", "AQUSDC"], ["lend", "AQUSDC"]],
+    ]));
   });
 
   it("a stated Blend supply is funded from the account's own balance, without a deposit before it", () => {

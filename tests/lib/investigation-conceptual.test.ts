@@ -93,4 +93,42 @@ describe("conceptual answers without a wallet", () => {
     expect(result.executionAllowed).toBe(false);
     expect(result.scope.wallet).toBeNull();
   });
+
+  it("marks a guest request that still carried a navbar wallet as an unsigned session", async () => {
+    const mcp = { call: vi.fn() };
+    const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+    const scope = await resolveInvestigationScope(
+      { subject: "guest", wallet, network: "testnet" },
+      mcp,
+      new AbortController().signal,
+    );
+    expect(mcp.call).not.toHaveBeenCalled();
+    expect(scope).toEqual({
+      subject: "guest", trader: null, smartAccount: null, network: "testnet", unverified: "session",
+    });
+  });
+
+  it("does not run a public-market strategy when the page sent a wallet but the request is guest", async () => {
+    const model = vi.fn(async () => {
+      throw new Error("the bound investigation should run this, not guest public reads");
+    });
+    const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+    const result = await researchTurn(
+      { message: "lend 100 xlm and BLUSDC", wallet, continuation: null },
+      {
+        subject: "guest",
+        server: "mcp-test",
+        network: "testnet",
+        secret: "a".repeat(32),
+        mcp: { call: vi.fn(async () => { throw new Error("no MCP on an unsigned wallet request"); }) },
+        signal: new AbortController().signal,
+        model,
+      },
+    );
+    expect(model).not.toHaveBeenCalled();
+    expect(result.status).toBe("needs_input");
+    expect(result.facts).toEqual([]);
+    expect(result.message).toMatch(/not signed in/i);
+    expect(result.scope.wallet).toBe(wallet);
+  });
 });

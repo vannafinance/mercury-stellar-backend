@@ -12,7 +12,7 @@ import { anchoredGoalFloor, anchoredSlippageAccepted, statedFloorFrom } from "./
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
-import { planCandidateId, planFromStatedActions, resolvePlans, withBoughtAsset } from "./plan";
+import { planCandidateId, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { simulateCandidates } from "./simulate";
 import { immediateReply } from "./immediate";
 import { compactResearchEvidence, reusableObservations } from "./evidence";
@@ -197,6 +197,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error),
     });
     throw new ResearchError("account_unavailable", "I couldn't read the wallet's margin-account association. Try again when account data is available.");
+  }
+  if (!scope.trader && input.wallet) {
+    /**
+     * Navbar sent a G-address this request could not bind. Guest/public is not a
+     * fallback runner for Earn — the bound investigation is. Stop here so the
+     * card cannot dump oracle rows and call that a plan.
+     */
+    return reconnectWalletView(input, dependencies.network, scope.unverified === "bindings" ? "bindings" : "session");
   }
   const prior = input.continuation ? codec.open(input.continuation, scope) : null;
   const session = prior ? null : optionalConversation(codec, input.session, scope);
@@ -426,6 +434,27 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   });
   const outcome = result.outcome;
   /**
+   * Borrow sizing is enabled by the typed goal/plan, not by re-reading the user's
+   * wording. A required borrow (or a composed borrow leg) needs a live capacity
+   * object even when the user did not provide a floor; capacity.ts applies the
+   * configured safety buffer and records that provenance on the object.
+   */
+  const hasComposedBorrow = outcome.kind === "research_complete"
+    && (outcome.plans ?? []).some((plan) => plan.legs.some((leg) => leg.op === "borrow"));
+  const needsBorrowCapacity = outcome.kind === "research_complete"
+    && (outcome.goal.borrowing === "required" || hasComposedBorrow);
+  const capacityMessages = prior && outcome.kind === "research_complete" && outcome.goal.relation === "new"
+    ? [input.message]
+    : messages;
+  const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, capacityMessages) : null;
+  const capacityOptions = {
+    mcp: scopedMcp,
+    trader: scope.trader,
+    ...(needsBorrowCapacity
+      ? { floor: goalFloor, useConfiguredFloor: true }
+      : {}),
+  };
+  /**
    * Stated actions ("repay 1 XLM") do NOT short-cut to steps here. They join the plans
    * below and are sized, funded, precision-cut and simulated like every other plan; the
    * shortcut that used to live here is what offered "lend 1 xlm" from a wallet with
@@ -471,8 +500,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    */
   const capacityTask = interruptible(
     () => computeBorrowCapacity(
-      scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null,
-      { mcp: scopedMcp, trader: scope.trader },
+      scope.smartAccount, capacityMessages, dependencies.signal, position?.snapshot ?? null,
+      capacityOptions,
     ),
     AbortSignal.any([dependencies.signal, AbortSignal.timeout(CAPACITY_BUDGET_MS)]))
     .then(value => ({ value, failed: false as const, reason: null as string | null }), (error) => ({
@@ -493,8 +522,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     try {
       capacity = position?.snapshot
         ? await computeBorrowCapacity(
-          scope.smartAccount, messages, dependencies.signal, position.snapshot,
-          { mcp: scopedMcp, trader: scope.trader },
+          scope.smartAccount, capacityMessages, dependencies.signal, position.snapshot,
+          capacityOptions,
         )
         : null;
     } catch (error) {
@@ -522,9 +551,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   // read) and the ranked options (which did not) will disagree with no explanation.
   for (const dropped of rateAnalysis.excluded) warnings.push(dropped.detail);
   /**
-   * Options, generated from the evidence rather than proposed by the model. Only offered
-   * when the user actually stated a floor: sizing a borrow needs one, and inventing a
-   * default would fabricate the calculation's most important input.
+   * Options, generated from the evidence rather than proposed by the model. Borrowing
+   * goals may use the configured safety floor; its provenance is carried by `capacity`.
    */
   let observedNow = Date.now();
   /**
@@ -580,14 +608,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * from a wallet with nothing spendable, refused by the contract after Approve).
    */
   const statedPlan = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
-    ? planFromStatedActions(outcome.goal.actions, outcome.goal.objective) : null;
+    ? planFromStatedActions(shareSameOpLiteralActions(outcome.goal.actions, messages), outcome.goal.objective) : null;
   if (statedPlan) modelPlans.push(statedPlan);
   /**
    * A swap that did not say what it buys is completed from the user's sentence here, before
    * the reads are chosen and before the evidence is sealed, so the reads phase, the sizer,
    * the card and the sealed plan all see the same leg.
    */
-  modelPlans = withBoughtAsset(modelPlans, messages);
+  modelPlans = withSharedLiteralAmount(withBoughtAsset(modelPlans, messages), messages);
   if (outcome.kind === "research_complete" && outcome.droppedPlans) {
     warnings.push(`${outcome.droppedPlans} proposed ${outcome.droppedPlans === 1 ? "strategy shape" : "strategy shapes"} could not be read and ${outcome.droppedPlans === 1 ? "was" : "were"} not sized.`);
   }
@@ -607,7 +635,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * regex missed "HF stays above 1.3" on 13 Sep), headroom is recomputed with it so the
    * fixed shapes and the plans size against the floor the user actually stated.
    */
-  const goalFloor = outcome.kind === "research_complete" ? anchoredGoalFloor(outcome.goal, messages) : null;
   if (goalFloor && goalFloor !== capacity?.floor && scope.smartAccount && !capacityResult.failed) {
     try {
       capacity = await computeBorrowCapacity(scope.smartAccount, messages, dependencies.signal, position?.snapshot ?? null, {
@@ -824,4 +851,36 @@ function simplifyQuestion(
     return BORROW_AUTHORITY;
   }
   return question;
+}
+
+/**
+ * The bound investigation is the only runner for a wallet strategy. This view is the
+ * miss — navbar G-address, request not signed in — not a public-market substitute.
+ */
+function reconnectWalletView(
+  input: ResearchInput,
+  network: string,
+  reason: "session" | "bindings",
+): ResearchView {
+  const bindings = reason === "bindings";
+  return {
+    status: "needs_input",
+    message: bindings
+      ? "I couldn't verify the wallet link this turn, so I did not read balances or prepare a plan. Ask again in a moment. Nothing was executed."
+      : "This investigation is not signed in to the wallet shown in the navbar, so I cannot read balances or prepare a plan. Reconnect that wallet and send this again. Nothing was executed.",
+    originalRequest: input.message,
+    refinements: [],
+    understanding: null,
+    question: bindings
+      ? "Ask again in a moment."
+      : "Reconnect the connected wallet so this request can use it.",
+    facts: [],
+    checks: [],
+    warnings: [bindings
+      ? "I couldn't verify the wallet link this turn, so I did not load your margin account."
+      : "The page shows a wallet, but this request was not signed in."],
+    scope: { wallet: input.wallet, smartAccount: null, network },
+    continuation: "",
+    executionAllowed: false,
+  };
 }

@@ -306,7 +306,8 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       }
     }
 
-    // A borrow needs the user's own floor; none was stated, so no borrow shape is offered.
+    // A borrow needs a validated capacity floor. For a typed required-borrow goal the
+    // service supplies the configured safety floor; without either source, do not size.
     if (input.borrowingAllowed === false || input.floor === null) continue;
     if (supply === null || borrow === null) continue;
     // 2. Borrow against headroom and supply the proceeds. Only worth doing on a real
@@ -381,7 +382,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
  */
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -402,7 +403,12 @@ export function mergeCandidateSets(
     feasible: rankFeasible(feasible.map((candidate) => ({ ...candidate, decision: undefined })), borrowing),
     rejected: [
       ...(fixed?.rejected ?? []),
-      ...composed.rejected.map((entry) => ({ label: entry.title, reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`, asset: entry.leg?.split(" ").pop() ?? "" })),
+      ...composed.rejected.map((entry) => ({
+        label: entry.title,
+        reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
+        asset: entry.leg?.split(" ").pop() ?? "",
+        ...(entry.pocket ? { pocket: entry.pocket } : {}),
+      })),
     ],
   };
 }
@@ -589,7 +595,9 @@ function spendableWad(row: Record<string, unknown>, wallet: Record<string, unkno
   const balance = decimalWad(String(row.balance ?? ""));
   if (row.symbol !== "XLM") return balance;
   try {
-    const reserve = decimalWad(String(wallet?.fee_reserve_xlm ?? ""));
+    const minimum = decimalWad(String(row.min_balance ?? "0"));
+    const fee = decimalWad(String(wallet?.fee_reserve_xlm ?? ""));
+    const reserve = minimum + fee;
     return balance > reserve ? balance - reserve : ZERO;
   } catch {
     return balance;

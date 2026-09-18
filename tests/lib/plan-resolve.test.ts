@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { resolvePlans, planCandidateId } from "@/lib/copilot/investigation/plan";
+import { resolvePlans, planCandidateId, withSharedLiteralAmount } from "@/lib/copilot/investigation/plan";
 import { mergeCandidateSets, generateCandidates } from "@/lib/copilot/investigation/candidates";
 import { compareObservedRates } from "@/lib/copilot/investigation/rate-comparison";
 import type { Observation, ProposedPlan } from "@/lib/copilot/investigation/types";
@@ -598,6 +598,33 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     expect(bad.rejected[0]).toEqual({ title: "Lend 100 XLM", leg: "lend XLM", reason: "the amount 100 does not appear in your request" });
   });
 
+  it("applies one stated amount to every named Earn asset of the same lend", () => {
+    const shared = withSharedLiteralAmount([plan("Lend 100 XLM", [
+      { op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 xlm" } },
+    ])], ["100 xlm and BLUSDC"]);
+    expect(shared[0]?.legs.map((leg) => [leg.op, leg.asset, leg.sizing.kind === "literal" ? leg.sizing.amount : ""])).toEqual([
+      ["lend", "XLM", "100"],
+      ["lend", "BLUSDC", "100"],
+    ]);
+    const both = resolvePlans(shared, ctx({
+      messages: ["100 xlm and BLUSDC"],
+      observations: [
+        ...OBSERVATIONS,
+        obs("e-bl", "asset_price", { price_usd: "1" }, { asset: "BLUSDC" }),
+        obs("e-blm", "earn_market", { supply_apr_pct: "4", borrow_apr_pct: "8", utilization_pct: "10" }, { asset: "BLUSDC" }),
+      ],
+    }));
+    expect(both.rejected.some((entry) => /BLUSDC/.test(entry.leg ?? "") && /does not appear/.test(entry.reason))).toBe(false);
+
+    const aqusdc = withSharedLiteralAmount([plan("Lend 100 XLM", [
+      { op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "100 xlm" } },
+    ])], ["100 xlm and AQUSDC"]);
+    expect(aqusdc[0]?.legs.map((leg) => [leg.op, leg.asset, leg.sizing.kind === "literal" ? leg.sizing.amount : ""])).toEqual([
+      ["lend", "XLM", "100"],
+      ["lend", "AQUSDC", "100"],
+    ]);
+  });
+
   /**
    * A number in someone's words is not always a quantity of tokens. 15 Sep, live: "borrow
    * 2x aqusdc" was executed as a 2 AQUSDC borrow because the anchor compared raw digit
@@ -652,7 +679,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     ["Blend supply from the wallet directly", {}, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "all_idle" } }], "supply blend XLM", /deposit the idle tokens as collateral first/],
     ["a literal Blend supply with nothing put in before it", { messages: ["supply 100 XLM to Blend"] }, [{ op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "supply 100 XLM" } }], "supply blend XLM", /add that leg before it/],
     ["a literal Blend supply larger than the deposit before it", { messages: ["deposit 100 XLM and supply 200 XLM to Blend"] }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } }, { op: "supply_blend", asset: "XLM", sizing: { kind: "literal", amount: "200", sourceQuote: "supply 200 XLM" } }], "supply blend XLM", "only 100 XLM is in the margin account after the legs before it"],
-    ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "no idle AQUSDC in the wallet"],
+    ["nothing idle", {}, [{ op: "lend", asset: "AQUSDC", sizing: { kind: "all_idle" } }], "lend AQUSDC", "AQUSDC is not in the connected wallet"],
     ["previous_leg across assets", {}, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }, { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } }], "supply blend BLUSDC", /preceding leg in the same asset/],
     ["margin position not read", { capacity: null }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin position was not read/],
     ["no margin account", { scope: { ...SCOPE, smartAccount: null } }, [{ op: "deposit_collateral", asset: "XLM", sizing: { kind: "all_idle" } }], "deposit collateral XLM", /margin account is needed/],

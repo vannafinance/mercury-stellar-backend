@@ -119,9 +119,11 @@ export function isResearchEvidence(value: unknown): value is ResearchEvidence {
 function isCapacity(value: unknown): value is ResearchCapacity {
   if (!isRecord(value)) return false;
   const health = value.healthFactor;
+  const floorSource = value.floorSource;
   return typeof value.floor === "string" && typeof value.grossCollateralUsd === "string"
     && typeof value.debtUsd === "string" && typeof value.maxBorrowUsd === "string"
-    && (health === null || typeof health === "string");
+    && (health === null || typeof health === "string")
+    && (floorSource === undefined || floorSource === "user" || floorSource === "configured_safety_buffer");
 }
 
 function isCompactObservation(value: unknown): value is Observation {

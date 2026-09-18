@@ -80,6 +80,16 @@ export interface RejectedPlan {
   /** Which leg failed, as "op asset", or null when the plan as a whole did. */
   leg: string | null;
   reason: string;
+  /** Structured source-pocket mismatch, when a leg is asking the wrong holder. */
+  pocket?: PocketMismatch;
+}
+
+export interface PocketMismatch {
+  code: "wrong_pocket" | "insufficient_wallet";
+  expected: Pocket;
+  actual: Pocket;
+  /** Safe next choices; the caller must not silently move funds between pockets. */
+  remedy: "withdraw_then_lend_or_skip" | "reduce_or_skip";
 }
 
 export interface ResolvedPlans {
@@ -254,7 +264,7 @@ function debtRows(ctx: PlanContext): Array<{ asset: string; owed: string }> {
 }
 
 class Reject extends Error {
-  constructor(readonly leg: string | null, message: string) { super(message); }
+  constructor(readonly leg: string | null, message: string, readonly pocket?: PocketMismatch, readonly funding = false) { super(message); }
 }
 
 const SIZER_REASONS: Record<string, string> = {
@@ -277,18 +287,146 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
   const candidates: Candidate[] = [];
   const rejected: RejectedPlan[] = [];
   const seen = new Set<string>();
+  const remember = (candidate: Candidate) => {
+    if (seen.has(candidate.id)) return;
+    seen.add(candidate.id);
+    candidates.push(candidate);
+  };
   for (const plan of plans) {
+    /**
+     * Earn legs are independent wallet writes. A composed plan can therefore still offer
+     * its funded siblings when one asset is only present in the margin account. The
+     * ordinary resolver remains the authority for sizing and all other plan interactions.
+     * When that asset can be withdrawn first, that path is offered too — shown, not silent.
+     */
+    const bridged = withLendPocketBridge(plan, ctx);
+    if (bridged) {
+      try { remember(resolvePlan(bridged, ctx)); }
+      catch (error) {
+        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
+        else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
+      }
+    }
+    const partial = independentLendPocketCheck(plan, ctx);
+    if (partial && partial.legs.length === 0) {
+      if (!bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
+      continue;
+    }
+    const candidatePlan = partial ? { ...plan, legs: partial.legs } : plan;
     try {
-      const candidate = resolvePlan(plan, ctx);
-      if (seen.has(candidate.id)) continue; // the same shape twice is one option
-      seen.add(candidate.id);
-      candidates.push(candidate);
+      remember(resolvePlan(candidatePlan, ctx));
+      if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
-      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message });
+      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
   return { candidates, rejected };
+}
+
+/**
+ * Return only the independently fundable Earn legs when a plan contains a wrong-pocket
+ * leg. This is intentionally metadata-driven: OP_FLOW declares the source pocket and the
+ * account read supplies the observed pocket; no user wording is inspected.
+ */
+function independentLendPocketCheck(plan: ProposedPlan, ctx: PlanContext):
+  { legs: PlanLeg[]; rejected: Array<{ leg: string; reason: string; pocket?: PocketMismatch }> } | null {
+  if (plan.legs.filter((leg) => leg.op === "lend").length < 2) return null;
+  const rejected: Array<{ leg: string; reason: string; pocket?: PocketMismatch }> = [];
+  const legs = plan.legs.filter((leg) => {
+    if (leg.op !== "lend") return true;
+    const priorWithdraw = plan.legs.slice(0, plan.legs.indexOf(leg)).some(
+      (earlier) => earlier.op === "withdraw_collateral" && earlier.asset === leg.asset,
+    );
+    if (priorWithdraw) return true;
+    try {
+      resolvePlan({ ...plan, legs: [leg] }, ctx);
+      return true;
+    } catch (error) {
+      // Only funding failures are independent. Structural, pricing and rate failures
+      // still reject the composed plan as a whole, just as before.
+      if (!(error instanceof Reject) || !error.funding) return true;
+      rejected.push({
+        leg: error.leg ?? `${leg.op.replaceAll("_", " ")} ${leg.asset}`,
+        reason: error.message,
+        ...(error.pocket ? { pocket: error.pocket } : {}),
+      });
+      return false;
+    }
+  });
+  return rejected.length ? { legs, rejected } : null;
+}
+
+/**
+ * When a lend is asking the wallet and the tokens sit in the margin account, offer the
+ * extra legs: withdraw to the wallet, then lend. Shown, not silent. Posted collateral
+ * still goes through the health sizer; unposted account tokens withdraw without that
+ * haircut when the collateral row is the amount being moved.
+ */
+function withLendPocketBridge(plan: ProposedPlan, ctx: PlanContext): ProposedPlan | null {
+  if (!plan.legs.some((leg) => leg.op === "lend")) return null;
+  let changed = false;
+  const next: PlanLeg[] = [];
+  for (const leg of plan.legs) {
+    if (leg.op !== "lend" || leg.sizing.kind !== "literal") {
+      next.push(leg);
+      continue;
+    }
+    try {
+      resolvePlan({ ...plan, legs: [leg] }, ctx);
+      next.push(leg);
+    } catch (error) {
+      if (!(error instanceof Reject) || !error.funding) {
+        next.push(leg);
+        continue;
+      }
+      const def = resolveAssetDef(leg.asset);
+      const posted = def?.marginSymbol
+        ? positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now)
+        : null;
+      let enough = false;
+      try { enough = Boolean(posted && decimalWad(posted) >= decimalWad(leg.sizing.amount)); } catch { enough = false; }
+      if (!enough) {
+        next.push(leg);
+        continue;
+      }
+      next.push({
+        op: "withdraw_collateral",
+        asset: leg.asset,
+        sizing: { kind: "literal", amount: leg.sizing.amount, sourceQuote: leg.sizing.sourceQuote },
+      });
+      next.push(leg);
+      changed = true;
+    }
+  }
+  if (!changed) return null;
+  return {
+    ...plan,
+    legs: next,
+    rationale: [plan.rationale, "This withdraws the token from the margin account to the wallet, then lends it. Those are separate transactions, not atomic. Posted collateral lowers health factor; confirm before running."]
+      .filter((part) => part && part.trim()).join(" "),
+  };
+}
+
+function lendPocketMismatch(leg: PlanLeg, ctx: PlanContext): PocketMismatch | null {
+  const flow = OP_FLOW[leg.op];
+  if (leg.op !== "lend" || flow.from !== "wallet") return null;
+  const holdings = idleWalletHoldingsFrom(ctx.observations, ctx.now);
+  const held = holdings[leg.asset as keyof typeof holdings];
+  if (held && decimalWad(held.tokens) > ZERO) return null;
+  const def = resolveAssetDef(leg.asset);
+  if (!def?.marginSymbol) return null;
+  const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol, def.id, ctx.now);
+  if (!posted) return null;
+  try {
+    return decimalWad(posted) > ZERO
+      ? { code: "wrong_pocket", expected: flow.from, actual: "account", remedy: "withdraw_then_lend_or_skip" }
+      : null;
+  } catch { return null; }
+}
+
+function walletShortageMismatch(leg: PlanLeg): PocketMismatch {
+  return { code: "insufficient_wallet", expected: OP_FLOW[leg.op].from, actual: "wallet", remedy: "reduce_or_skip" };
 }
 
 /**
@@ -523,7 +661,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
       const held = idle.tokens === null ? null : { tokens: idle.tokens, usd: formatWad(mulDown(decimalWad(idle.tokens), price.price, WAD)) };
       if (idle.spent && (!held || decimalWad(held.tokens) <= ZERO)) {
-        throw new Reject(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`);
+        throw new Reject(name, `the legs before this one already use all ${idle.startedWith ?? "0"} ${leg.asset} the wallet can spend`, walletShortageMismatch(leg), true);
       }
       /**
        * A deposit that exists to fund a repay ("repay from what I have") is capped by what
@@ -542,7 +680,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           const owedUsd = Number(formatWad(mulDown(decimalWad(owedTokens), price.price, WAD))).toFixed(2);
           throw new Reject(name, `you owe ${owedTokens} ${leg.asset} (~$${owedUsd}) and the wallet holds no spendable ${leg.asset} — add ${owedTokens} ${leg.asset} to the wallet, or redeem it from Earn first`);
         }
-        throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
+        const mismatch = lendPocketMismatch(leg, ctx);
+        throw new Reject(name, mismatch
+          ? `${leg.asset} is held in the margin account, not the wallet — withdraw it to the wallet before lending, or skip this leg`
+          : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
       }
       if (leg.fundsRepay && owed !== null) {
         const stillOwed = pocketBalance("debt", decimalWad(owed), drafts, leg.asset);
@@ -711,7 +852,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       if (sizing.of === "idle") {
         if (flow.from !== "wallet") throw new Reject(name, `a share of the wallet balance sizes ${walletOps()}`);
         const held = holdings[leg.asset as keyof typeof holdings];
-        if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`);
+        if (!held || decimalWad(held.tokens) <= ZERO) throw new Reject(name, `no idle ${leg.asset} in the wallet`, walletShortageMismatch(leg), true);
         const tokens = precise(shareOf(held.tokens, share), leg.asset, name);
         if (decimalWad(tokens) <= ZERO) throw new Reject(name, `${sizing.percent}% of ${held.tokens} ${leg.asset} rounds to nothing`);
         const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
@@ -804,9 +945,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     // literal — anchored to the user's own words, exactly as goal.actions requires.
-    const stated = tokenAmountsIn(sizing.sourceQuote);
-    const quoted = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) && stated.some((n) => sameAmount(n, sizing.amount));
-    if (!quoted) throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
+    if (!literalAmountAnchored(sizing, ctx, plan, leg)) {
+      throw new Reject(name, `the amount ${sizing.amount} does not appear in your request`);
+    }
     /**
      * A stated amount is funded from the pocket the op-flow table names, after the legs
      * before it have run: the wallet's spendable balance for a lend or deposit; the account's
@@ -819,9 +960,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const earlier = drafts.slice(0, index).filter((d) => d.leg.asset === leg.asset);
     if (flow.from === "wallet") {
       const idle = walletAfterEarlierLegs(holdings[leg.asset as keyof typeof holdings], drafts, leg.asset);
-      if (idle.tokens === null) throw new Reject(name, noIdleReason(leg.asset, dust, txFloor, ctx));
+      if (idle.tokens === null) {
+        const mismatch = lendPocketMismatch(leg, ctx);
+        throw new Reject(name, mismatch
+          ? `${leg.asset} is held in the margin account, not the wallet — withdraw it to the wallet before lending, or skip this leg`
+          : noIdleReason(leg.asset, dust, txFloor, ctx), mismatch ?? walletShortageMismatch(leg), true);
+      }
       const available = decimalWad(idle.tokens);
-      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${earlier.length ? " after the legs before it" : ""}`);
+      if (available < amountWad) throw new Reject(name, `only ${formatWad(available)} ${leg.asset} is spendable in the wallet${earlier.length ? " after the legs before it" : ""}`, walletShortageMismatch(leg), true);
     }
     if (flow.from === "account") {
       const posted = positionRowBalance(ctx.observations, "account_collateral", POSITION_ROWS.account_collateral, def.marginSymbol!, def.id, ctx.now);
@@ -1384,7 +1530,7 @@ function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string;
     const why = [locked.minBalance ? `${locked.minBalance} ${asset} is the chain's minimum balance` : null, locked.feeReserve ? `${locked.feeReserve} ${asset} is the fee reserve` : null].filter(Boolean);
     return `${locked.balance} ${asset} is held, but ${why.length ? `${why.join(" and ")} — ` : ""}nothing is spendable`;
   }
-  return `no idle ${asset} in the wallet`;
+  return `${asset} is not in the connected wallet`;
 }
 
 /**
@@ -1402,6 +1548,110 @@ export function planFromStatedActions(actions: NonNullable<GoalUnderstanding["ac
     evidenceIds: [],
     legs: actions.map((a) => ({ op: a.op, asset: a.asset, sizing: { kind: "literal", amount: a.amount, sourceQuote: a.sourceQuote } })),
   };
+}
+
+function requestText(messages: readonly string[]): string {
+  return messages[messages.length - 1] ?? "";
+}
+
+function uniqueAmountsIn(text: string): string[] {
+  const out: string[] = [];
+  for (const n of tokenAmountsIn(text)) {
+    if (!out.some((s) => sameAmount(s, n))) out.push(n);
+  }
+  return out;
+}
+
+function namedEarnAssetsIn(text: string): string[] {
+  const found: string[] = [];
+  const pattern = new RegExp(ASSET_SYMBOL_PATTERN.source, "gi");
+  for (const word of text.match(pattern) ?? []) {
+    const def = resolveAssetDef(word);
+    if (def?.earnSymbol && !found.includes(def.id)) found.push(def.id);
+  }
+  return found;
+}
+
+/**
+ * One stated amount applies to every named asset of the same op. The last message is the
+ * instruction — history may contain other numbers. Two numbers stay per-asset.
+ */
+function applySharedLiteral(legs: PlanLeg[], messages: readonly string[]): PlanLeg[] {
+  const request = requestText(messages);
+  const amounts = uniqueAmountsIn(request);
+  const shared = amounts.length === 1 ? amounts[0] : null;
+  let next = legs.map((leg) => {
+    if (leg.sizing.kind !== "literal" || !shared) return leg;
+    if (tokenAmountsIn(leg.sizing.sourceQuote).some((n) => sameAmount(n, shared))) {
+      return sameAmount(leg.sizing.amount, shared) ? leg : { ...leg, sizing: { ...leg.sizing, amount: formatWad(decimalWad(shared)) } };
+    }
+    const siblings = legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");
+    if (siblings.length < 2 && leg.op !== "lend") return leg;
+    return {
+      ...leg,
+      sizing: {
+        ...leg.sizing,
+        amount: formatWad(decimalWad(shared)),
+        sourceQuote: request.includes(leg.sizing.sourceQuote) ? request : leg.sizing.sourceQuote,
+      },
+    };
+  });
+  if (shared && next.some((leg) => leg.op === "lend")) {
+    const quote = request;
+    for (const asset of namedEarnAssetsIn(request)) {
+      if (next.some((leg) => leg.op === "lend" && leg.asset === asset)) continue;
+      next = [...next, {
+        op: "lend",
+        asset,
+        sizing: { kind: "literal", amount: formatWad(decimalWad(shared)), sourceQuote: quote },
+      }];
+    }
+  }
+  return next;
+}
+
+export function withSharedLiteralAmount(plans: readonly ProposedPlan[], messages: readonly string[]): ProposedPlan[] {
+  return plans.map((plan) => {
+    const legs = applySharedLiteral(plan.legs, messages);
+    if (legs.length === plan.legs.length && legs.every((leg, index) => leg === plan.legs[index])) return plan;
+    const title = legs.every((leg) => leg.sizing.kind === "literal")
+      ? legs.map((leg) => `${verbOf(leg.op)} ${leg.sizing.kind === "literal" ? leg.sizing.amount : ""} ${leg.asset}`).join(", then ")
+      : plan.title;
+    return { ...plan, legs, title };
+  });
+}
+
+export function shareSameOpLiteralActions(
+  actions: NonNullable<GoalUnderstanding["actions"]>,
+  messages: readonly string[],
+): NonNullable<GoalUnderstanding["actions"]> {
+  const plan = planFromStatedActions(actions, "tmp");
+  if (!plan) return actions;
+  return applySharedLiteral(plan.legs, messages).flatMap((leg) => (
+    leg.sizing.kind === "literal"
+      ? [{ op: leg.op, asset: leg.asset, amount: leg.sizing.amount, sourceQuote: leg.sizing.sourceQuote }]
+      : []
+  ));
+}
+
+/**
+ * A literal amount is the user's number. Per-asset quotes still win; when one number is
+ * stated for several same-op Earn assets, that number is the amount for each.
+ */
+function literalAmountAnchored(
+  sizing: Extract<PlanSizing, { kind: "literal" }>,
+  ctx: PlanContext,
+  plan: ProposedPlan,
+  leg: PlanLeg,
+): boolean {
+  const request = requestText(ctx.messages);
+  const quoteInRequest = ctx.messages.some((m) => m.includes(sizing.sourceQuote)) || request.includes(sizing.sourceQuote);
+  if (!quoteInRequest) return false;
+  if (tokenAmountsIn(sizing.sourceQuote).some((n) => sameAmount(n, sizing.amount))) return true;
+  const amounts = uniqueAmountsIn(request);
+  if (amounts.length !== 1 || !sameAmount(amounts[0], sizing.amount)) return false;
+  const siblings = plan.legs.filter((other) => other.op === leg.op && other.sizing.kind === "literal");
+  return siblings.length >= 2 || leg.op === "lend";
 }
 
 /** Supply-side APR alone, weighted by amount, for the "supply APR" column when a plan also borrows. */

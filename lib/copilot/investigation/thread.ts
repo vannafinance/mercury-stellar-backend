@@ -79,6 +79,10 @@ export function shouldReplacePlan(message: string, last: LastInvestigation | nul
 }
 
 const STORAGE_PREFIX = "vanna.copilot.thread.";
+const LIST_PREFIX = "vanna.copilot.conversations.";
+/** On-screen chat that the server has not recorded yet — never sent as conversationId. */
+export const LIVE_CONVERSATION_ID = "local:current";
+const TITLE_LIMIT = 80;
 
 export type StoredThread = {
   turns: ThreadTurn[];
@@ -94,6 +98,58 @@ export type ConversationSummary = { id: string; title: string; createdAt: number
 
 export function threadStorageKey(wallet: string): string {
   return `${STORAGE_PREFIX}${wallet}`;
+}
+
+export function conversationsStorageKey(wallet: string): string {
+  return `${LIST_PREFIX}${wallet}`;
+}
+
+/** First user prompt, cut to a line — same rule the server uses to title a conversation. */
+export function titleForConversation(firstPrompt: string): string {
+  const line = firstPrompt.replace(/\s+/g, " ").trim();
+  return line.length > TITLE_LIMIT ? `${line.slice(0, TITLE_LIMIT - 1).trimEnd()}…` : line || "New chat";
+}
+
+export function titleFromTurns(turns: readonly ThreadTurn[]): string {
+  const first = turns.find((turn) => turn.role === "user")?.text ?? "";
+  return titleForConversation(first);
+}
+
+export function isLocalConversationId(id: string | null | undefined): boolean {
+  return typeof id === "string" && id.startsWith("local:");
+}
+
+export function readStoredConversations(wallet: string | null): ConversationSummary[] {
+  if (!wallet || typeof sessionStorage === "undefined") return [];
+  try {
+    const raw = sessionStorage.getItem(conversationsStorageKey(wallet));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is ConversationSummary =>
+      !!entry && typeof entry === "object"
+      && typeof (entry as ConversationSummary).id === "string"
+      && typeof (entry as ConversationSummary).title === "string"
+      && typeof (entry as ConversationSummary).createdAt === "number"
+      && typeof (entry as ConversationSummary).updatedAt === "number");
+  } catch {
+    return [];
+  }
+}
+
+export function writeStoredConversations(wallet: string | null, items: readonly ConversationSummary[]): void {
+  if (!wallet || typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(conversationsStorageKey(wallet), JSON.stringify(items.slice(0, 30)));
+  } catch { /* quota — the live thread still works */ }
+}
+
+/** Newest first. Replaces an existing row with the same id rather than duplicating it. */
+export function upsertConversation(
+  items: readonly ConversationSummary[],
+  entry: ConversationSummary,
+): ConversationSummary[] {
+  return [entry, ...items.filter((item) => item.id !== entry.id)].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function readStoredThread(wallet: string | null): StoredThread | null {

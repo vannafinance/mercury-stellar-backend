@@ -30,6 +30,7 @@ describe("readsForPlans — a share reads the base it is a share of", () => {
   it("of=idle wants the wallet; of=position wants the position the op spends", () => {
     const idle = readsForPlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "fraction", percent: "25", of: "idle", sourceQuote: "25% of xlm" } }])], [], NOW);
     expect(idle.map((r) => r.capability)).toContain("wallet_balances");
+    expect(idle.map((r) => r.capability)).toContain("account_collateral");
     const redeem = readsForPlans([plan([{ op: "redeem", asset: "AQUSDC", sizing: { kind: "fraction", percent: "50", of: "position", sourceQuote: "half" } }])], [], NOW);
     expect(redeem.map((r) => r.capability)).toContain("earn_position");
     const withdraw = readsForPlans([plan([{ op: "withdraw_collateral", asset: "XLM", sizing: { kind: "fraction", percent: "10", of: "position", sourceQuote: "10%" } }])], [], NOW);
