@@ -5,11 +5,15 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { logCopilotEvent } from "@/lib/copilot";
+import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  if (!isCopilotEnabled()) {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
   try {
     const body = (await req.json()) as Record<string, unknown>;
     logCopilotEvent("execute", {
