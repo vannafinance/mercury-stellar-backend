@@ -13,9 +13,7 @@ import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
 import { MarginAccountHydrator } from "@/components/margin-account-hydrator";
-import { AssistantLauncher } from "@/components/copilot/assistant-launcher";
 import { AnalyticsPrefetcher } from "@/components/analytics-prefetcher";
-import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 // Self-hosted, preloaded by next/font (no render-blocking external request, so
 // it helps LCP). `display: "swap"` paints text immediately with a fallback and
@@ -112,8 +110,6 @@ export default function RootLayout({
                     <ScaleWrapper>{children}</ScaleWrapper>
                     <AppToaster />
                     <TransactionProgressModal />
-                    {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
-                    {isCopilotEnabled() && <AssistantLauncher />}
                   </PageContextProvider>
                 </PriceProvider>
               </LedgerSubscriberProvider>
