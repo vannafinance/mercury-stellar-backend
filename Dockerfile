@@ -38,6 +38,11 @@ FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+# Same public id the builder inlined into the client. ARG does not carry across
+# stages; without this the Node server has no NEXT_PUBLIC_PRIVY_APP_ID at runtime
+# and treats every Privy wallet as signed out.
+ARG NEXT_PUBLIC_PRIVY_APP_ID=
+ENV NEXT_PUBLIC_PRIVY_APP_ID=$NEXT_PUBLIC_PRIVY_APP_ID
 # Cloud Run injects PORT=8080; Next standalone honors PORT + HOSTNAME.
 ENV PORT=8080
 ENV HOSTNAME=0.0.0.0

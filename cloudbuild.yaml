@@ -91,7 +91,7 @@ steps:
       # roles/aiplatform.user there keeps a single consistent value instead of
       # splitting them. COPILOT_PUBLIC_ORIGIN/_AUTH_REDIRECT_URI derive from
       # _SITE_URL so dev and prod each get their own origin automatically.
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE}
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE},NEXT_PUBLIC_PRIVY_APP_ID=${_PRIVY_APP_ID}
       # WorkOS M2M is what every copilot READ authenticates with; the Connect
       # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) backs the write/auto-sign
       # path. Cloud Run resolves `:latest` at deploy time, so a new secret
