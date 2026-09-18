@@ -176,9 +176,16 @@ export const copilotConfig = {
   // transport keep using the M2M credential either way: WorkOS remains the
   // machine identity, Privy is the human one.
 
-  /** Privy app id. Public by design — it is the token audience, not a secret. */
+  /**
+   * Privy app id. Public by design — it is the token audience, not a secret.
+   *
+   * Must be a literal `process.env.NEXT_PUBLIC_*` read. Next 16 only inlines that
+   * shape at `next build`. `env("NEXT_PUBLIC_PRIVY_APP_ID")` is `process.env[key]`,
+   * which stays empty on Cloud Run (no `.env.local`), so live copilot reported
+   * `privy_not_configured` and dropped the wallet session as the user assertion.
+   */
   get privyAppId(): string {
-    return env("NEXT_PUBLIC_PRIVY_APP_ID");
+    return (process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "").trim();
   },
   /**
    * Where to fetch Privy's signing keys. Derived from the app id so a deploy
