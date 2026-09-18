@@ -21,6 +21,8 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { HORIZON_URL, NETWORK_PASSPHRASE, SOROBAN_RPC_URL } from "@/lib/stellar-utils";
 import { getAddress, signTransaction } from "@/lib/wallet-adapter";
+import { recordAssistantEvent } from "@/store/assistant-events";
+import { classifyToastMessage } from "@/lib/assistant/packet";
 
 export type SignXdrResult =
   | { ok: true; hash: string }
@@ -193,7 +195,7 @@ async function pollTransaction(
  *                         only to catch an envelope built for a different source
  *                         account before we ask the user to sign it.
  */
-export async function signAndSubmitMcpXdr(
+async function signAndSubmitMcpXdrInner(
   unsignedXdr: string,
   expectedSigner?: string | null,
   /**
@@ -411,4 +413,58 @@ export async function signAndSubmitMcpXdr(
       error: e instanceof Error ? e.message : "Failed to submit the signed transaction.",
     };
   }
+}
+
+/**
+ * Same signer, plus a record of what happened for the Assistant's diagnosis lane.
+ *
+ * The Assistant is asked "why didn't my transaction go through?" and, with only the
+ * DOM to read, it cannot tell a cancelled wallet prompt from an on-chain revert. These
+ * events are the difference, and they are recorded here because this is the one place
+ * every copilot-signed leg passes through. Recording is best-effort and must never
+ * change what the signer returns.
+ */
+export async function signAndSubmitMcpXdr(
+  unsignedXdr: string,
+  expectedSigner?: string | null,
+  onSubmitted?: (hash: string) => void,
+  shouldAbort?: () => boolean,
+): Promise<SignXdrResult> {
+  const result = await signAndSubmitMcpXdrInner(
+    unsignedXdr,
+    expectedSigner,
+    (hash) => {
+      try {
+        recordAssistantEvent({
+          kind: "submitted_unconfirmed",
+          message: "Transaction submitted; waiting for the ledger to confirm.",
+          tx_hash: hash,
+        });
+      } catch {
+        /* never break submit for an event */
+      }
+      onSubmitted?.(hash);
+    },
+    shouldAbort,
+  );
+
+  try {
+    if (result.ok) {
+      recordAssistantEvent({
+        kind: "horizon_success",
+        message: "Transaction confirmed on chain.",
+        tx_hash: result.hash,
+      });
+    } else {
+      recordAssistantEvent({
+        kind: classifyToastMessage(result.error),
+        message: result.error,
+        tx_hash: result.hash ?? null,
+        code: result.code ?? null,
+      });
+    }
+  } catch {
+    /* diagnosis is a nice-to-have; signing is not */
+  }
+  return result;
 }
