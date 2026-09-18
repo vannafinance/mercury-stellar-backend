@@ -79,10 +79,11 @@ export async function POST(req: NextRequest) {
   const elapsed = () => Date.now() - startedAt;
   try {
     const origin = req.headers.get("origin");
-    if (origin && origin !== req.nextUrl.origin) {
+    if (origin && copilotConfig.publicOrigin && origin !== copilotConfig.publicOrigin) {
       clearTimeout(timer);
       return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
     }
+
     let input: ResearchInput;
     try { input = await inputFrom(req); } catch (error) {
       clearTimeout(timer);

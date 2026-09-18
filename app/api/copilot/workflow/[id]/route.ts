@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 /** Cancels unsent steps only; the journal refuses to pretend an in-flight write vanished. */
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = req.headers.get("origin");
-  if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
+  if (origin && copilotConfig.publicOrigin && origin !== copilotConfig.publicOrigin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
   const { id } = await params;
   if (!/^[a-f0-9-]{36}$/.test(id)) return NextResponse.json({ message: "Invalid plan reference." }, { status: 400 });
   const loaded = await loadUserFromRequest(req);
