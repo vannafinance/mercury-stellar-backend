@@ -337,7 +337,7 @@ export function hasCheapDomainSignal(
   return verdict.allow;
 }
 
-export function abuseTripwire(message: string): FirewallResult | null {
+export function abuseTripwire(message: string): Extract<FirewallResult, { allow: false }> | null {
   const m = (message || "").trim();
   if (!m) return { allow: false, reason: "empty", message: "Please type a question about Vanna Finance." };
   for (const re of ABUSE_TRIPWIRE) {
