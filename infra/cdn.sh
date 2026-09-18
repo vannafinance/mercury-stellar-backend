@@ -8,8 +8,15 @@
 # /api/analytics/accounts). USE_ORIGIN_HEADERS below makes Cloud CDN honour the
 # existing s-maxage values, so no application code changes.
 #
-#   bash infra/cdn.sh                      # dev  -> test.stellar.vanna.finance
-#   ENV=prod bash infra/cdn.sh             # prod -> app.stellar.vanna.finance
+#   bash infra/cdn.sh                      # dev     -> test.stellar.vanna.finance
+#   ENV=prod bash infra/cdn.sh             # prod    -> app.stellar.vanna.finance
+#   ENV=copilot bash infra/cdn.sh          # copilot -> test.copilot.vanna.finance
+#
+# Each ENV gets its own NEG/backend/IP/cert/forwarding-rule set (NAME below),
+# so running this for one ENV never touches another's load balancer. copilot
+# fronts a separate Cloud Run service (vanna-copilot-dev) from vanna-app-dev,
+# on its own domain — dev's traffic, deploys, and certificate are unaffected
+# either way.
 #
 # Idempotent: every create is guarded. Excluded from the image by .dockerignore.
 
@@ -20,9 +27,10 @@ REGION=us-central1
 ENV="${ENV:-dev}"
 
 case "$ENV" in
-  dev)  SERVICE=vanna-app-dev;  DOMAIN=test.stellar.vanna.finance; NAME=vanna-dev  ;;
-  prod) SERVICE=vanna-app-prod; DOMAIN=app.stellar.vanna.finance;  NAME=vanna-prod ;;
-  *) echo "ENV must be dev or prod" >&2; exit 1 ;;
+  dev)     SERVICE=vanna-app-dev;     DOMAIN=test.stellar.vanna.finance;  NAME=vanna-dev     ;;
+  prod)    SERVICE=vanna-app-prod;    DOMAIN=app.stellar.vanna.finance;   NAME=vanna-prod    ;;
+  copilot) SERVICE=vanna-copilot-dev; DOMAIN=test.copilot.vanna.finance;  NAME=vanna-copilot ;;
+  *) echo "ENV must be dev, prod, or copilot" >&2; exit 1 ;;
 esac
 
 # Longest stale-while-revalidate the app actually asks for is 900s (Hubble

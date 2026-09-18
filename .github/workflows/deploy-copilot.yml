@@ -1,0 +1,87 @@
+name: Deploy copilot
+
+# copilot-upgrade → Cloud Run service vanna-copilot-dev → test.copilot.vanna.finance
+#
+# Mirrors deploy-dev.yml exactly, but targets its own Cloud Run service and
+# domain. This is a fully separate deploy: it only fires on pushes to
+# copilot-upgrade, never on dev or main, and vanna-copilot-dev is a distinct
+# Cloud Run service from vanna-app-dev/vanna-app-prod — a deploy here never
+# touches, restarts, or rolls back either of those. They share only the GCP
+# project (vanna-main), the Artifact Registry repo, and the Secret Manager
+# secrets (Mercury/WorkOS) that already back the existing services.
+#
+# Uses this branch's own cloudbuild.yaml, which already carries the Copilot
+# workflow Firestore substitutions (_WORKFLOW_PROJECT/_WORKFLOW_DATABASE) and
+# drops _COPILOT_READS_ONLY — writes are enabled here, matching the state of
+# copilot-upgrade's WorkOS Connect OAuth wiring.
+
+on:
+  push:
+    branches: [copilot-upgrade]
+    paths-ignore:
+      - "infra/**"
+      - "**/*.md"
+      - ".gitattributes"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/deploy-dev.yml"
+      - ".github/workflows/deploy-prod.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-copilot
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: vanna-main
+  PROJECT_NUMBER: "1079109217674"
+  REGION: us-central1
+  SERVICE: vanna-copilot-dev
+  SITE_URL: https://test.copilot.vanna.finance
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Node 22 bundles npm 10, which rejects this lockfile. See ci.yml.
+      - run: npm i -g npm@11
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github
+          service_account: vanna-deployer@vanna-main.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy
+        env:
+          PRIVY_APP_ID: ${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
+        run: |
+          gcloud builds submit \
+            --config=cloudbuild.yaml \
+            --region="$REGION" \
+            --service-account="projects/$PROJECT_ID/serviceAccounts/vanna-deployer@vanna-main.iam.gserviceaccount.com" \
+            --substitutions="_TAG=${GITHUB_SHA::7},_SERVICE=$SERVICE,_REGION=$REGION,_SITE_URL=$SITE_URL,_PRIVY_APP_ID=${PRIVY_APP_ID}" \
+            .
+
+      - name: Report URL
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          echo "Deployed: $URL"
+          echo "### Deployed [$SERVICE]($URL)" >> "$GITHUB_STEP_SUMMARY"
