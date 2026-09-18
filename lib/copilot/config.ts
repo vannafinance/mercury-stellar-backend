@@ -211,6 +211,13 @@ export const copilotConfig = {
     return env("VERTEX_MODEL", "gemini-3.7-flash");
   },
   /**
+   * Leftover greeting/identity lane only. Never the investigate/lend model.
+   * Flash-Lite + MINIMAL thinking; a 2s abort lives on the caller.
+   */
+  get vertexSocialModel(): string {
+    return env("VERTEX_SOCIAL_MODEL", "gemini-3.5-flash-lite");
+  },
+  /**
    * Fallback models when primary Vertex model returns 404/unavailable.
    * Comma-separated env VERTEX_MODEL_FALLBACKS or built-in list.
    */

@@ -683,6 +683,87 @@ export async function generateInvestigationJson(
   });
 }
 
+const SOCIAL_RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    lane: { type: "string", enum: ["social", "work"] },
+    reply: { type: "string" },
+  },
+  required: ["lane"],
+} as const;
+
+/**
+ * Greeting leftover only. Uses Flash-Lite, not VERTEX_MODEL — investigation
+ * `assertFlashModel` rejects `-lite`, and 3.7/3.8 cannot take MINIMAL thinking.
+ */
+export async function generateSocialLaneJson(
+  system: string,
+  user: string,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const model = copilotConfig.vertexSocialModel;
+  return withModelCall(model, {
+    outputType: "json",
+    reasoningLevel: "MINIMAL",
+    maxTokens: 1024,
+  }, async () => {
+    signal.throwIfAborted();
+    const token = await getAccessToken();
+    signal.throwIfAborted();
+    const res = await fetch(modelUrl(model), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: SOCIAL_RESPONSE_SCHEMA,
+          maxOutputTokens: 1024,
+          thinkingConfig: { thinkingLevel: "MINIMAL" },
+        },
+      }),
+      signal,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) tokenCache = null;
+      const body = await res.text().catch(() => "");
+      console.error("[copilot] Vertex social-lane HTTP error", {
+        status: res.status, model, body: body.slice(0, 400),
+      });
+      throw new VertexError(`Vertex social-lane HTTP ${res.status}`);
+    }
+    const raw = await res.text();
+    let parsed: {
+      candidates?: Array<{
+        finishReason?: string;
+        content?: { parts?: Array<{ text?: string; thought?: boolean }> };
+      }>;
+    };
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch {
+      throw new VertexError("Vertex social-lane response was not JSON");
+    }
+    logUsage("social-lane", parsed);
+    const candidate = parsed.candidates?.[0];
+    if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+      throw new VertexError("Vertex social-lane did not finish");
+    }
+    const out = (candidate?.content?.parts ?? [])
+      .filter((part) => part.thought !== true)
+      .map((part) => part.text ?? "")
+      .join("");
+    if (!out.trim()) throw new VertexError("Vertex social-lane returned no decision");
+    try {
+      return JSON.parse(out);
+    } catch {
+      throw new VertexError("Vertex social-lane returned no decision");
+    }
+  });
+}
+
 /** Models to try: primary first, then fallbacks (handles wrong/retired model ids). */
 function modelCandidates(): string[] {
   return [copilotConfig.vertexModel, ...copilotConfig.vertexModelFallbacks];

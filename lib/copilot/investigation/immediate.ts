@@ -8,48 +8,36 @@
  *
  * This is NOT the investigate/action router that was removed. That router tried to guess
  * whether a genuine financial request should skip the reads, which is exactly the judgement
- * it kept getting wrong. This decides something far narrower and checkable: whether the
- * message is a financial request AT ALL. Anything that could be one falls through to the
- * full investigation untouched — the default stays "investigate", and the gate only fires
- * on messages with no product content in them.
+ * it kept getting wrong. This decides something far narrower: whether the message is a
+ * financial request AT ALL. Product vocabulary falls through to investigation with no extra
+ * model call. The leftover (greetings, identity, off-domain) never starts that loop.
  *
- * Two cases:
- *  - a greeting or a "what can you do", answered with what this surface actually does;
+ * Two leftover cases:
+ *  - a greeting / "who are you", answered by Flash-Lite (hard 2s abort);
  *  - anything the domain firewall rejects, refused with its own message rather than paid
  *    for. Off-domain prompts were reaching Vertex, which is what the firewall exists to
  *    prevent.
  */
 
-import { evaluateDomainFirewall, guardUserPrompt } from "../domain-firewall";
+import { abuseTripwire, evaluateDomainFirewall, guardUserPrompt } from "../domain-firewall";
 import { lpPairs } from "../registry/assets";
 import { WORKFLOW_OPS } from "../workflow/types";
+import { classifySocialLane, isGreetingOrIdentityLeftover, isProductInvestigationTurn } from "./social-lane";
 
 export interface ImmediateReply {
   kind: "greeting" | "capability" | "off_domain";
   message: string;
 }
 
-/**
- * A greeting and nothing else. Anchored and length-capped on purpose: "hi" is a greeting,
- * but "hi, can I borrow 500 USDC" is a borrow request with a greeting attached, and
- * answering that with an introduction would drop the actual instruction.
- */
-const GREETING =
-  /^(?:hi|hii+|hey+|hello+|yo|sup|hola|namaste|greetings|good\s+(?:morning|afternoon|evening)|gm|thanks|thank\s+you|ty|ok(?:ay)?|cool|nice)[\s!.,?]*$/i;
-
-/** Asking what the surface is or does — answerable from the product, with no reads. */
-const CAPABILITY_QUESTION =
-  /^(?:(?:so\s+)?(?:what|who)\s+(?:are|is|can)\s+(?:you|u|this|vanna)(?:\s+(?:do|help\s+with|capable\s+of))?|what\s+can\s+(?:you|u)\s+do|how\s+(?:do|does)\s+(?:you|this)\s+work|help|what\s+is\s+this)[\s!.,?]*$/i;
-
 /** A swap capability question has no amount to quote; answer from executable ops. */
 const SWAP_CAPABILITY_QUESTION = /^(?:can|could|do)\s+(?:you|u)\s+swap\b/i;
 
-const IDENTITY =
-  "I’m the Vanna copilot. I can look at your margin account — health factor, collateral, " +
-  "debt — compare Earn, Blend and Aquarius rates, size a position against a health-factor " +
-  "floor you set, and build a plan you approve before anything is signed.\n\n" +
-  "Try “what’s my health factor?”, “lend 10 XLM”, or “use my USDC and XLM to build a " +
-  "strategy that keeps the health factor above 1.3”.";
+/**
+ * Last resort when Flash-Lite aborts on a leftover that the firewall would otherwise
+ * cheap-allow as a greeting and dump into investigation. Not the happy-path copy.
+ */
+const SOCIAL_TIMEOUT_REPLY =
+  "I’m Vanna Copilot. Ask about your margin account, Earn, Farm, or a move you want sized from live reads.";
 
 export async function immediateReply(
   message: string,
@@ -58,15 +46,40 @@ export async function immediateReply(
   const text = message.trim();
   if (!text) return null;
 
-  // Greetings are checked BEFORE the firewall: "hi" carries no product vocabulary, so the
-  // firewall would reject it, and greeting someone with a refusal is the wrong answer.
-  if (text.length <= 40 && (GREETING.test(text) || CAPABILITY_QUESTION.test(text))) {
-    return { kind: "greeting", message: IDENTITY };
-  }
+  const abuse = abuseTripwire(text);
+  if (abuse) return { kind: "off_domain", message: abuse.message };
 
   if (SWAP_CAPABILITY_QUESTION.test(text) && !/\d/.test(text) && WORKFLOW_OPS.includes("swap")) {
     const pairs = lpPairs().map((pair) => `${pair.venue}: ${pair.tokens.join("/ ")}`).join("; ");
     return { kind: "capability", message: `Yes. I can prepare a swap on ${pairs}. Tell me the amount and which token you want to spend or receive. I’ll show a live quote for you to confirm before anything is signed.` };
+  }
+
+  // Product turns skip the greeting model entirely — same path as before this lane.
+  if (isProductInvestigationTurn(text)) {
+    if (opts?.subject && opts.signal) {
+      const verdict = await guardUserPrompt(text, {
+        subject: opts.subject, signal: opts.signal, hasPageContext: opts.hasPageContext,
+      });
+      if (!verdict.allow) return { kind: "off_domain", message: verdict.message };
+    }
+    return null;
+  }
+
+  const social = await classifySocialLane(text, opts?.signal);
+  if (social?.lane === "social") {
+    return { kind: "greeting", message: social.reply };
+  }
+
+  // Production always passes subject+signal. Identity leftovers cheap-allow in the
+  // firewall, so falling through to guardUserPrompt used to return null and start a
+  // 20s wallet-scope read for "Hi who are you??". Lite work/timeout must not investigate.
+  if (isGreetingOrIdentityLeftover(text)) {
+    return { kind: "greeting", message: SOCIAL_TIMEOUT_REPLY };
+  }
+
+  const leftover = evaluateDomainFirewall(text);
+  if (leftover.allow && leftover.reason === "allow:short_token") {
+    return { kind: "greeting", message: SOCIAL_TIMEOUT_REPLY };
   }
 
   if (opts?.subject && opts.signal) {
@@ -79,5 +92,5 @@ export async function immediateReply(
 
   const verdict = evaluateDomainFirewall(text);
   if (!verdict.allow) return { kind: "off_domain", message: verdict.message };
-  return null;
+  return { kind: "greeting", message: SOCIAL_TIMEOUT_REPLY };
 }

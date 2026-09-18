@@ -63,7 +63,7 @@ const PAGE_REFERENTIAL: RegExp[] = [
  * unhelpful and self-contradictory, since describing what it helps with is precisely
  * what was asked. These are in-domain by definition: the subject is the product.
  */
-const SELF_REFERENTIAL: RegExp[] = [
+export const SELF_REFERENTIAL: RegExp[] = [
   /\b(what|which)\s+(can|could|do|does)\s+(you|u|this|it)\b/i,
   /\bwhat\s+(are\s+you|is\s+this)\b/i,
   /\b(who|what)\s+are\s+you\b/i,
