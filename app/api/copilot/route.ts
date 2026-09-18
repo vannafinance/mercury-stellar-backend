@@ -7,10 +7,11 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/copilot";
+import { getBrainHealth, handleChat, logAssistantEvent, logCopilotEvent, vertexPing } from "@/lib/copilot";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { withBoundUser } from "@/lib/copilot/user-context";
 import { withTokenSubject } from "@/lib/copilot/token-budget";
+import { sanitizeAttachments, sanitizeSessionEvents } from "@/lib/assistant/packet";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -178,6 +179,8 @@ export async function POST(req: NextRequest) {
     page_context: pageContext,
     page_snapshot: pageSnapshot,
     semantic_page_context: semanticPageContext,
+    session_events: sanitizeSessionEvents(body.session_events),
+    attachments: sanitizeAttachments(body.attachments),
     history,
     auto_sign: autoSign,
     pending_write: pendingWrite,
@@ -241,10 +244,31 @@ export async function POST(req: NextRequest) {
   // on the M2M credential exactly as before.
   const loadedUser = await loadUserFromRequest(req);
 
+  const assistantTurn = payload.surface === "assistant";
+  const assistantStarted = assistantTurn ? Date.now() : 0;
+  if (assistantTurn) {
+    logAssistantEvent("request", {
+      message: message.slice(0, 160),
+      path: semanticPageContext?.path ?? pageSnapshot?.path ?? null,
+      events: payload.session_events?.length ?? 0,
+      attachments: payload.attachments?.length ?? 0,
+      main_text_chars: semanticPageContext?.mainText?.length ?? 0,
+    });
+  }
+
   try {
     const data = await withBoundUser(loadedUser.bound, () =>
       withTokenSubject(loadedUser.bound?.sub ?? "guest", () => handleChat(payload)),
     );
+    if (assistantTurn) {
+      logAssistantEvent("response", {
+        ms: Date.now() - assistantStarted,
+        request_id: data.request_id,
+        kind: data.kind,
+        template_id: data.intent?.template_id ?? null,
+        has_guide: Boolean((data as { guide?: unknown }).guide),
+      });
+    }
     const multiLeg = !!(data.data && (data.data as Record<string, unknown>).multi_leg);
     const multiSteps = multiLeg
       ? ((data.data as Record<string, unknown>).multi_leg_steps as unknown[])
@@ -284,6 +308,9 @@ export async function POST(req: NextRequest) {
     return loadedUser.commit(NextResponse.json(data));
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Copilot failed";
+    if (assistantTurn) {
+      logAssistantEvent("error", { ms: Date.now() - assistantStarted, error: msg });
+    }
     logCopilotEvent("turn_error", { error: msg });
     return loadedUser.commit(
       NextResponse.json({ kind: "error", message: msg }, { status: 200 }),

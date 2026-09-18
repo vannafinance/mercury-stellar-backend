@@ -1,6 +1,6 @@
 export { copilotConfig, TEMPLATE_COUNT } from "./config";
 export { handleChat, getBrainHealth } from "./handle";
-export { logCopilotEvent } from "./log";
+export { logAssistantEvent, logCopilotEvent } from "./log";
 export { vertexPing } from "./vertex";
 export type {
   AutoSignPrompt,

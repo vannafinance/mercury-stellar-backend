@@ -716,12 +716,30 @@ function isThinkingConfigRejection(msg: string): boolean {
   return /HTTP 400/.test(msg) && /thinking|thinkingLevel|thinkingBudget/i.test(msg);
 }
 
+export type VertexInlineImage = {
+  mime: string;
+  data: string;
+};
+
+function userContentParts(
+  text: string,
+  images?: VertexInlineImage[] | null,
+): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = [];
+  for (const img of (images ?? []).slice(0, 2)) {
+    if (!img?.data || !img.mime) continue;
+    parts.push({ inlineData: { mimeType: img.mime, data: img.data } });
+  }
+  parts.push({ text });
+  return parts;
+}
+
 async function generateTextOnce(
   model: string,
   system: string,
   user: string,
   temperature: number,
-  opts?: { lowThinking?: boolean },
+  opts?: { lowThinking?: boolean; images?: VertexInlineImage[]; timeoutMs?: number },
 ): Promise<string> {
   return withModelCall(model, {
     outputType: "text",
@@ -731,7 +749,7 @@ async function generateTextOnce(
   const thinking = opts?.lowThinking ? lowThinkingConfig(model) : null;
   const body = {
     systemInstruction: { parts: [{ text: system }] },
-    contents: [{ role: "user", parts: [{ text: user }] }],
+    contents: [{ role: "user", parts: userContentParts(user, opts?.images) }],
     generationConfig: {
       temperature,
       ...(thinking ? { thinkingConfig: thinking } : {}),
@@ -745,7 +763,7 @@ async function generateTextOnce(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(opts?.timeoutMs ?? 60_000),
     cache: "no-store",
   });
   const text = await res.text();
@@ -767,7 +785,12 @@ async function generateTextOnce(
 export async function generateText(
   system: string,
   user: string,
-  opts?: { temperature?: number; lowThinking?: boolean },
+  opts?: {
+    temperature?: number;
+    lowThinking?: boolean;
+    images?: VertexInlineImage[];
+    timeoutMs?: number;
+  },
 ): Promise<string> {
   const temperature = opts?.temperature ?? 0.2;
   const errors: string[] = [];
@@ -775,6 +798,8 @@ export async function generateText(
     try {
       return await generateTextOnce(model, system, user, temperature, {
         lowThinking: opts?.lowThinking,
+        images: opts?.images,
+        timeoutMs: opts?.timeoutMs,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -782,7 +807,10 @@ export async function generateText(
       if (opts?.lowThinking && isThinkingConfigRejection(msg)) {
         console.warn(`[copilot:vertex] ${model} rejected thinkingConfig — retrying without it`);
         try {
-          return await generateTextOnce(model, system, user, temperature);
+          return await generateTextOnce(model, system, user, temperature, {
+            images: opts?.images,
+            timeoutMs: opts?.timeoutMs,
+          });
         } catch (retryErr) {
           errors.push(retryErr instanceof Error ? retryErr.message : String(retryErr));
           continue;
@@ -813,6 +841,7 @@ export async function generateWithClientTools(
   system: string,
   user: string,
   toolDecls: ClientToolDecl[],
+  images?: VertexInlineImage[] | null,
 ): Promise<{
   text: string;
   client_tools: Array<{ name: string; args: Record<string, unknown> }>;
@@ -825,7 +854,7 @@ export async function generateWithClientTools(
     tools: [{ functionDeclarations: toolDecls }],
     // AUTO: model may answer in text and/or call tools (Gemini side-panel style)
     toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-    contents: [{ role: "user", parts: [{ text: user }] }],
+    contents: [{ role: "user", parts: userContentParts(user, images) }],
     generationConfig: { temperature: 0.35 },
   };
 
@@ -844,7 +873,7 @@ export async function generateWithClientTools(
     if (res.status === 401 || res.status === 403) tokenCache = null;
     // Fallback: plain text without tools if schema rejected
     console.warn(`[copilot:vertex] client-tools HTTP ${res.status}, falling back to generateText`);
-    const textOnly = await generateText(system, user, { temperature: 0.35 });
+    const textOnly = await generateText(system, user, { temperature: 0.35, images: images ?? undefined });
     return { text: textOnly, client_tools: [] };
   }
 
@@ -1585,6 +1614,7 @@ export async function vertexGuideAnswer(
   question: string,
   pageContextJson: string | null,
   history?: Array<{ role: "user" | "assistant"; text: string }>,
+  images?: VertexInlineImage[] | null,
 ): Promise<GuideAnswer | null> {
   // Follow-ups are the Guide's own suggestion chips ("how is that different from Earn?"),
   // so without the preceding turns the pronoun in every one of them dangles.
@@ -1596,7 +1626,9 @@ export async function vertexGuideAnswer(
   const user = [
     priorTurns ? `EARLIER IN THIS CONVERSATION:\n${priorTurns}` : "",
     `QUESTION: ${question}`,
-    pageContextJson ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 6000)}` : "PAGE CONTEXT: none",
+    pageContextJson
+      ? `PAGE CONTEXT:\n${pageContextJson.slice(0, 12_000)}`
+      : "PAGE CONTEXT: none",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1610,7 +1642,7 @@ export async function vertexGuideAnswer(
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: GUIDE_SYSTEM }] },
-        contents: [{ role: "user", parts: [{ text: user }] }],
+        contents: [{ role: "user", parts: userContentParts(user, images) }],
         generationConfig: {
           temperature: 0.3,
           responseMimeType: "application/json",

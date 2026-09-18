@@ -18,6 +18,15 @@ function enabled(): boolean {
   return Boolean(process.env.COPILOT_LOG) || process.env.NODE_ENV === "production";
 }
 
+/** Always-on dev logging for the Assistant drawer (not gated by COPILOT_LOG). */
+export function logAssistantEvent(event: string, payload: Record<string, unknown> = {}): void {
+  if (process.env.NODE_ENV === "test") return;
+  console.log(
+    "[assistant]",
+    JSON.stringify({ event, ts: new Date().toISOString(), ...payload }),
+  );
+}
+
 /** Thrown value as investigate/route.ts logs it — name, message, stack. */
 export function unexpectedCause(error: unknown): { name: string; message: string; stack?: string } | string {
   return error instanceof Error

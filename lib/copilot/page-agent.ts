@@ -2,16 +2,21 @@
  * Page-aware agent (Gemini plan): structured pageContext + client tool calling.
  */
 
-import type { ChatResponse, SemanticPageContextCtx } from "./types";
+import type { ChatResponse, SemanticPageContextCtx, PageSnapshotCtx, AssistantSessionEvent, AssistantImageAttachment } from "./types";
 import {
   generateText,
   generateWithClientTools,
   vertexGuideAnswer,
-  VertexError,
+  type VertexInlineImage,
 } from "./vertex";
 import { guideAnswerToText, type GuideAnswer } from "./guide-schema";
 import { isAssistantChat } from "./concept";
 import { DOMAIN_FIREWALL_SYSTEM } from "./domain-firewall";
+import {
+  formatSessionEventsForPrompt,
+  isDiagnosisMessage,
+} from "@/lib/assistant/packet";
+import { COPILOT_WORKFLOW_PACK, glossaryHintsFor } from "@/lib/assistant/product-knowledge";
 
 export { isAssistantChat };
 
@@ -42,7 +47,8 @@ Hard rules:
 - No fake numbers. Only cite balances/APYs if they appear in pageContext.
 `;
 
-export const PAGE_AGENT_SYSTEM = `You are an intelligent, page-aware AI Copilot for Vanna Finance (Stellar DeFi).
+export const PAGE_AGENT_SYSTEM = `You are Vanna Assist, the page-aware explainer for Vanna Finance (Stellar DeFi).
+Never call yourself Vanna Guide or Vanna Assistant.
 Help users understand what they see and how to use the product.
 ${DOMAIN_FIREWALL_SYSTEM}
 
@@ -50,13 +56,21 @@ CRITICAL — ALWAYS ANSWER IN TEXT:
 - Every reply MUST include a full natural-language answer.
 - NEVER respond with tools only.
 - Pure explain questions (what is / what can / how do I) → full structured answer, no tools.
+- You never sign, submit, enable auto-sign, or retry a transaction. If they want to act, send them to the Copilot page.
 
 ### pageContext (JSON each turn)
-path, title, sections, mainText, selectedText, interactiveHints.
+path, title, sections, mainText, selectedText, interactiveHints, optional region/metrics.
+
+### sessionEvents
+Classified facts from this browser session (wallet_rejected vs simulation_failed vs on-chain). Use them to answer "what happened". Never invent a stage that is not listed.
+
+### Attachments
+Screenshots the user pasted or cropped. Describe only what is in them. Do not invent balances from a blurry crop if sessionEvents or pageContext already have the number.
 
 ### Tools (only for show me / take me / where do I click)
-- scrollToSection, navigateToRoute, highlightElement
+- scrollToSection, navigateToRoute, highlightElement, openConnectWallet
 Paths: /, /margin, /earn, /farm, /portfolio, /trade/spot, /copilot, /analytics...
+Never call a tool that would sign or submit.
 
 ### Product notes
 Margin: deposit collateral, borrow, health factor (~1.1 liquidation). Earn: supply vaults.
@@ -65,7 +79,8 @@ Leverage: deposit collateral + borrow (and related farm leverage) — explain fr
 Never claim you signed a transaction.
 ${FORMAT_RULES}`;
 
-const ANSWER_ONLY_SYSTEM = `You are Vanna’s page-aware assistant. Answer fully using pageContext when useful.
+const ANSWER_ONLY_SYSTEM = `You are Vanna Assist. Answer fully using pageContext when useful.
+Never call yourself Vanna Guide. You explain; Copilot is the one that acts.
 No tools. Be concrete and helpful about Vanna (margin, earn, farm, spot).
 ${DOMAIN_FIREWALL_SYSTEM}
 ${FORMAT_RULES}`;
@@ -224,12 +239,31 @@ function offlineScreenAnswer(pageContext: SemanticPageContextCtx | null): string
   return lines.join("\n");
 }
 
+export type PageAgentExtras = {
+  history?: Array<{ role: "user" | "assistant"; text: string }>;
+  session_events?: AssistantSessionEvent[];
+  attachments?: AssistantImageAttachment[];
+  snapshot?: PageSnapshotCtx | null;
+  horizon?: { hash: string; status: string; detail: string } | null;
+  diagnosing?: boolean;
+};
+
 export async function runPageAgent(
   message: string,
   pageContext: SemanticPageContextCtx | null,
   request_id: string,
-  history?: Array<{ role: "user" | "assistant"; text: string }>,
+  extras?: PageAgentExtras | Array<{ role: "user" | "assistant"; text: string }>,
 ): Promise<ChatResponse> {
+  const opts: PageAgentExtras = Array.isArray(extras) ? { history: extras } : extras ?? {};
+  const history = opts.history;
+  const events = opts.session_events ?? [];
+  const images: VertexInlineImage[] = (opts.attachments ?? []).map((a) => ({
+    mime: a.mime,
+    data: a.data,
+  }));
+  const snap = opts.snapshot;
+  const diagnosing = Boolean(opts.diagnosing || isDiagnosisMessage(message));
+
   const ctxJson = pageContext
     ? JSON.stringify(
         {
@@ -241,6 +275,9 @@ export async function runPageAgent(
           selectedText: pageContext.selectedText,
           interactiveHints: pageContext.interactiveHints,
           mainText: String(pageContext.mainText || "").slice(0, 10_000),
+          regionText: snap?.region_text ? String(snap.region_text).slice(0, 4_000) : null,
+          metrics: (snap?.metrics ?? []).slice(0, 30),
+          tables: (snap?.tables ?? []).slice(0, 6),
         },
         null,
         2,
@@ -256,18 +293,34 @@ export async function runPageAgent(
         ].join("\n")
       : "";
 
-  const user = ["pageContext JSON:", ctxJson, "", historyBlock, `USER: ${message}`]
+  const horizonBlock = opts.horizon
+    ? `ON-CHAIN LOOKUP (read only):\nhash=${opts.horizon.hash} status=${opts.horizon.status}\n${opts.horizon.detail}`
+    : "";
+
+  const knowledge = [
+    formatSessionEventsForPrompt(events),
+    horizonBlock,
+    glossaryHintsFor(message, pageContext?.path ?? null),
+    COPILOT_WORKFLOW_PACK,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const user = ["pageContext JSON:", ctxJson, "", knowledge, "", historyBlock, `USER: ${message}`]
     .filter(Boolean)
     .join("\n");
 
+  const guideCtx = [ctxJson, knowledge].join("\n\n");
+
   const wantsGuidanceOnly =
-    (/\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
+    diagnosing ||
+    ((/\b(what is|what are|what can|what does|how (?:do|does|can|to)|explain|tell me|meaning|kya |kaise )\b/i.test(
       message,
     ) ||
       PAGE_QUESTION.test(message)) &&
-    !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(
-      message,
-    );
+      !/\b(show me|take me|go to|open |scroll|where (?:is|do i click|on (?:this|the) page))\b/i.test(
+        message,
+      ));
 
   try {
     let text = "";
@@ -275,28 +328,31 @@ export async function runPageAgent(
     let guide: GuideAnswer | null = null;
 
     if (wantsGuidanceOnly) {
-      // Guide first, and alone when it succeeds. This used to generate prose and then
-      // generate the guide, which doubled the wait for an answer whose prose was then
-      // discarded (`message` is the flattened guide whenever there is one).
-      guide = await vertexGuideAnswer(message, ctxJson || null, history);
+      // One structured call first; prose fallback only if guide returns empty — not if
+      // Vertex is still running (guide has its own timeout). Avoid stacking two full
+      // 60s calls, which made the browser abort at 90s while the server kept going.
+      guide = await vertexGuideAnswer(message, guideCtx || null, history, images);
       if (!guide) {
-        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+        text = await generateText(ANSWER_ONLY_SYSTEM, user, {
+          temperature: 0.4,
+          images,
+          timeoutMs: 45_000,
+        });
       }
     } else {
       const result = await generateWithClientTools(
         PAGE_AGENT_SYSTEM,
         user,
         CLIENT_TOOL_DECLS as any,
+        images,
       );
       text = result.text;
       client_tools = result.client_tools;
       if (!text.trim()) {
-        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+        text = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4, images });
       }
-      // A turn that navigated or highlighted something is an action: its reply is a
-      // short confirmation, not an article. Only the rest get the structured answer.
       if (!client_tools.length) {
-        guide = await vertexGuideAnswer(message, ctxJson || null, history);
+        guide = await vertexGuideAnswer(message, guideCtx || null, history, images);
       }
     }
 
@@ -314,15 +370,19 @@ export async function runPageAgent(
         structured_guide: Boolean(guide),
         page_path: pageContext?.path ?? null,
         used_semantic_context: Boolean(pageContext),
-        selected: Boolean(pageContext?.selectedText),
+        selected: Boolean(pageContext?.selectedText || snap?.selection || snap?.region_text),
         model: "vertex",
+        diagnosing,
+        session_events: events.length,
+        attachments: images.length,
+        horizon: opts.horizon?.status ?? null,
       },
       client_tools,
       intent: {
         template_id: "page_assist",
         slots: {
           path: pageContext?.path ?? null,
-          mode: wantsGuidanceOnly ? "explain" : "semantic_agent",
+          mode: diagnosing ? "diagnosis" : wantsGuidanceOnly ? "explain" : "semantic_agent",
           tools: client_tools.map((t) => t.name),
         },
       },
@@ -332,7 +392,11 @@ export async function runPageAgent(
     const errMsg = e instanceof Error ? e.message : String(e);
     console.warn("[copilot:page-agent] primary failed:", errMsg.slice(0, 200));
     try {
-      const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, { temperature: 0.4 });
+      const fallback = await generateText(ANSWER_ONLY_SYSTEM, user, {
+        temperature: 0.4,
+        images,
+        timeoutMs: 45_000,
+      });
       return {
         kind: "answer",
         message: sanitizeProse(fallback),
@@ -342,7 +406,6 @@ export async function runPageAgent(
         request_id,
       };
     } catch (e2) {
-      // Still answer screen questions from DOM — never dead-end on Vertex outage.
       const offline = offlineScreenAnswer(pageContext);
       return {
         kind: "answer",
