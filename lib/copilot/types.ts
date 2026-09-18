@@ -41,6 +41,40 @@ export type PageSnapshotCtx = {
   char_count?: number;
 };
 
+/**
+ * A classified in-app event the Assistant may cite. Never a signing instruction.
+ * `kind` is the failure stage; `message` is already user-facing.
+ */
+export type AssistantEventKind =
+  | "wallet_rejected"
+  | "simulation_failed"
+  | "unsigned_xdr"
+  | "submitted_unconfirmed"
+  | "horizon_failed"
+  | "horizon_success"
+  | "toast_error"
+  | "toast_success";
+
+export type AssistantSessionEvent = {
+  kind: AssistantEventKind;
+  message: string;
+  at: number;
+  tx_hash?: string | null;
+  code?: string | null;
+  path?: string | null;
+};
+
+export type AssistantImageMime = "image/png" | "image/jpeg" | "image/webp";
+
+export type AssistantImageAttachment = {
+  mime: AssistantImageMime;
+  /** Raw base64, no data: prefix. */
+  data: string;
+  source: "paste" | "drop" | "region";
+  width?: number;
+  height?: number;
+};
+
 /** Structured pageContext from the Gemini master plan (semantic reader). */
 export type SemanticPageContextCtx = {
   url?: string;
@@ -88,6 +122,17 @@ export interface ChatRequest {
   page_snapshot?: PageSnapshotCtx | null;
   /** Gemini-plan semantic pageContext JSON (primary for page agent). */
   semantic_page_context?: SemanticPageContextCtx | null;
+  /**
+   * Last client-side product events (toasts, wallet rejects, simulation failures,
+   * hashes). The page Guide uses these to answer "why did that fail" without
+   * executing anything. Bounded by the API route — never a write continuation.
+   */
+  session_events?: AssistantSessionEvent[] | null;
+  /**
+   * Optional screenshots the user attached (paste, drop, or select-from-screen).
+   * Base64 without a data: prefix. Bounded by the API route.
+   */
+  attachments?: AssistantImageAttachment[] | null;
   /**
    * Optional prior turns so the assistant can answer follow-ups naturally.
    * Client should send only short recent history (e.g. last 8 messages).

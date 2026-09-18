@@ -3,6 +3,8 @@
  * Tools are decided by Gemini; executed in the browser only.
  */
 
+import { isElementOnScreen } from "./visibility";
+
 export type ClientToolCall = {
   name: string;
   args: Record<string, unknown>;
@@ -20,6 +22,27 @@ export type SoftRouter = { push: (href: string) => void };
 const HIGHLIGHT_CLASS = "copilot-target-highlight";
 const HIGHLIGHT_MS = 3000;
 
+/**
+ * Prefer a target the user can actually see.
+ *
+ * The Earn and Farm forms render the same panel twice — a desktop card and a mobile
+ * sheet — so both carry the same `data-copilot-id` and plain `querySelector` returns
+ * whichever comes first in the document, which on desktop is sometimes the hidden sheet.
+ * Highlighting that scrolls the page to nothing.
+ */
+function queryVisible(selector: string): Element | null {
+  let nodes: NodeListOf<Element>;
+  try {
+    nodes = document.querySelectorAll(selector);
+  } catch {
+    return null;
+  }
+  for (const node of nodes) {
+    if (isElementOnScreen(node)) return node;
+  }
+  return nodes[0] ?? null;
+}
+
 function applyHighlight(el: Element) {
   el.classList.add(HIGHLIGHT_CLASS);
   window.setTimeout(() => el.classList.remove(HIGHLIGHT_CLASS), HIGHLIGHT_MS);
@@ -34,7 +57,7 @@ export function scrollToSection(elementId: string, highlight = true): ClientTool
   const el = document.getElementById(id);
   if (!el) {
     // Fallback: try data-copilot-id
-    const byData = document.querySelector(`[data-copilot-id="${CSS.escape(id)}"]`);
+    const byData = queryVisible(`[data-copilot-id="${CSS.escape(id)}"]`);
     if (byData) {
       byData.scrollIntoView({ behavior: "smooth", block: "center" });
       if (highlight) applyHighlight(byData);
@@ -58,10 +81,10 @@ export function highlightElement(selector: string): ClientToolResult {
     // Prefer data-copilot-id short form
     if (!sel.includes("[") && !sel.startsWith(".") && !sel.startsWith("#")) {
       el =
-        document.querySelector(`[data-copilot-id="${CSS.escape(sel)}"]`) ||
+        queryVisible(`[data-copilot-id="${CSS.escape(sel)}"]`) ||
         document.getElementById(sel);
     }
-    if (!el) el = document.querySelector(sel);
+    if (!el) el = queryVisible(sel);
   } catch {
     return { name: "highlightElement", ok: false, detail: `invalid selector: ${sel}` };
   }

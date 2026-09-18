@@ -51,6 +51,8 @@ import {
 } from "./amount-intent";
 import { evaluateWriteRisk } from "./risk";
 import { isAssistantChat } from "./concept";
+import { isDiagnosisMessage } from "@/lib/assistant/packet";
+import { lookupAssistantTx } from "./assistant-horizon";
 import { detectAutomationGap } from "./conditional-guard";
 import { freezePlan, verifyApprovedPlan } from "./plan-approval";
 import { claimOnce, planDedupeKey, writeDedupeKey } from "./write-dedupe";
@@ -323,7 +325,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     return {
       kind: "blocked",
       message:
-        "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+        "I'm the Vanna Assist — I can explain this page and answer questions, but I " +
         "don't sign or submit transactions myself. Open the Copilot page to run this.",
       intent: { template_id: "assistant_surface_redirect" },
       request_id,
@@ -745,7 +747,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       return {
         kind: "blocked",
         message:
-          "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+          "I'm the Vanna Assist — I can explain this page and answer questions, but I " +
           "don't sign or submit transactions myself. Open the Copilot page to run " +
           `"${message}".`,
         intent: { template_id: "assistant_surface_redirect" },
@@ -781,7 +783,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // this page, correctly) has no page snapshot to summarize. The floating Assistant
   // widget is the only surface this classifier exists for — the dedicated orchestrator
   // page has nothing for it to guide about and must always reach normal routing below.
-  if (req.surface !== "copilot" && isAssistantChat(message)) {
+  if (req.surface !== "copilot" && (isAssistantChat(message) || (req.surface === "assistant" && isDiagnosisMessage(message)))) {
     // Prefer structured semantic_page_context; fall back to legacy page_snapshot.
     let semantic = req.semantic_page_context ?? null;
     if (!semantic && req.page_snapshot) {
@@ -798,12 +800,18 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         capturedAt: snap.captured_at,
       };
     }
-    return runPageAgent(
-      message,
-      semantic,
-      request_id,
-      Array.isArray(req.history) ? req.history : undefined,
-    );
+    const diagnosing = req.surface === "assistant" && isDiagnosisMessage(message);
+    const horizon = diagnosing
+      ? await lookupAssistantTx(message, req.session_events ?? [])
+      : null;
+    return runPageAgent(message, semantic, request_id, {
+      history: Array.isArray(req.history) ? req.history : undefined,
+      session_events: req.session_events ?? [],
+      attachments: req.attachments ?? [],
+      snapshot: req.page_snapshot ?? null,
+      horizon,
+      diagnosing,
+    });
   }
 
   /**
@@ -839,7 +847,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       return {
         kind: "blocked",
         message:
-          "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+          "I'm the Vanna Assist — I can explain this page and answer questions, but I " +
           "don't sign or submit transactions myself. Open the Copilot page to run " +
           `"${message}".`,
         intent: { template_id: "assistant_surface_redirect" },
@@ -896,7 +904,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
     return {
       kind: "blocked",
       message:
-        "I'm the Vanna Assistant — I can explain this page and answer questions, but I " +
+        "I'm the Vanna Assist — I can explain this page and answer questions, but I " +
         "don't sign or submit transactions myself. Open the Copilot page to run " +
         `"${message}".`,
       intent: { template_id: "assistant_surface_redirect" },
