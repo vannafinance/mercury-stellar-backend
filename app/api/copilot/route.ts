@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getBrainHealth, handleChat, logCopilotEvent, vertexPing } from "@/lib/copilot";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { withBoundUser } from "@/lib/copilot/user-context";
+import { isCopilotEnabled } from "@/lib/copilot/enabled";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
+  if (!isCopilotEnabled()) {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
   try {
     const health = getBrainHealth();
     if (req.nextUrl.searchParams.get("probe") === "1") {
@@ -42,6 +46,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isCopilotEnabled()) {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
   let body: Record<string, unknown>;
   try {
     body = await req.json();
