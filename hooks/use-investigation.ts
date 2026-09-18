@@ -143,16 +143,17 @@ export function useInvestigation(wallet: string | null) {
       if (!response.ok || activeWallet.current !== owner) return;
       const remote = await response.json() as SessionPayload;
       if (!Array.isArray(remote.conversations)) return;
+      const remoteConversations = remote.conversations;
       setConversations((previous) => {
         const liveId = conversationId.current;
         const missingOnServer = !liveId || isLocalConversationId(liveId)
-          || !remote.conversations.some((item) => item.id === liveId);
+          || !remoteConversations.some((item) => item.id === liveId);
         const live = missingOnServer
           ? previous.find((item) => item.id === (liveId && !isLocalConversationId(liveId) ? liveId : LIVE_CONVERSATION_ID))
           : null;
-        const merged = live && !remote.conversations.some((item) => item.id === live.id)
-          ? upsertConversation(remote.conversations, live)
-          : sortedByActivity(remote.conversations);
+        const merged = live && !remoteConversations.some((item) => item.id === live.id)
+          ? upsertConversation(remoteConversations, live)
+          : sortedByActivity(remoteConversations);
         writeStoredConversations(owner, merged);
         return merged;
       });
@@ -235,10 +236,11 @@ export function useInvestigation(wallet: string | null) {
         if (!response.ok || restore.signal.aborted || activeWallet.current !== wallet) return;
         const remote = await response.json() as SessionPayload;
         if (Array.isArray(remote.conversations)) {
+          const remoteConversations = remote.conversations;
           const live = seeded.find((item) => item.id === liveId);
-          const merged = live && !remote.conversations.some((item) => item.id === live.id)
-            ? upsertConversation(remote.conversations, live)
-            : sortedByActivity(remote.conversations);
+          const merged = live && !remoteConversations.some((item) => item.id === live.id)
+            ? upsertConversation(remoteConversations, live)
+            : sortedByActivity(remoteConversations);
           setConversations(merged);
           writeStoredConversations(wallet, merged);
         }
