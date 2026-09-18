@@ -14,8 +14,10 @@ afterEach(() => resetTokenUsage());
 describe("per-subject daily token cap", () => {
   it("counts usage per subject and trips at the configured ceiling", () => {
     expect(wouldExceedTokenCap("alice")).toBe(false);
+    recordTokenUsage("alice", 250_000);
+    expect(wouldExceedTokenCap("alice")).toBe(false);
     recordTokenUsage("alice", 5_000_000);
-    expect(tokenUsageToday("alice")).toBe(5_000_000);
+    expect(tokenUsageToday("alice")).toBe(5_250_000);
     expect(wouldExceedTokenCap("alice")).toBe(true);
     expect(wouldExceedTokenCap("bob")).toBe(false);
     expect(tokenCapMessage()).toMatch(/token budget/);

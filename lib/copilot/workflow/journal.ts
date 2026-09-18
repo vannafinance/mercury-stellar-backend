@@ -20,6 +20,7 @@ export type StepReadiness =
 import type { InvestigationScope } from "../investigation/types";
 import { isRetryableRiskReason } from "./risk";
 import { logUnexpected } from "../log";
+import { PLAN_TTL_MS } from "../plan-ttl";
 
 export class WorkflowConflict extends Error {}
 type Identity = { scope: InvestigationScope; server: string };
@@ -28,6 +29,14 @@ function bound(record: WorkflowRecord, identity: Identity) {
   if (a.subject !== b.subject || a.trader !== b.trader || a.smartAccount !== b.smartAccount ||
       a.network !== b.network || record.proposal.server !== identity.server) throw new Error("workflow_not_found");
 }
+
+/**
+ * Waiting for Approve is not a quote timeout. Swap already re-quotes on submit; Earn and
+ * the rest re-check live balances on Approve (`validateWorkflowRisk`) and again per step
+ * (`readyForStep`). A 5-minute clock used to reject a plan the user was still reading.
+ * This TTL only retires abandoned proposals.
+ */
+export const PROPOSAL_TTL_MS = PLAN_TTL_MS;
 
 /** Every write is conditional; neither a repeated POST nor another replica can claim a leg twice. */
 export class WorkflowJournal {
@@ -47,7 +56,7 @@ export class WorkflowJournal {
      */
     if (input.steps.some(s => !/^\d+(\.\d+)?$/.test(s.amount) || Number(s.amount) <= 0))
       throw new Error("unsized_proposal_step");
-    const proposal = { ...structuredClone(input), id: randomUUID(), revision: 1, createdAt: this.now(), expiresAt: this.now() + 300_000, digest: "" };
+    const proposal = { ...structuredClone(input), id: randomUUID(), revision: 1, createdAt: this.now(), expiresAt: this.now() + PROPOSAL_TTL_MS, digest: "" };
     proposal.digest = createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
     const value: WorkflowRecord = { proposal, status: "proposed", updatedAt: this.now(), message: "Review the amounts and steps before approving.",
       steps: proposal.steps.map(s => ({ id: s.id, status: "pending" })) };

@@ -276,11 +276,12 @@ export const copilotConfig = {
   },
   /**
    * Per authenticated subject (or the shared guest bucket) per UTC day.
-   * This is the billing backstop the domain firewall used to approximate with regex.
+   * A research loop costs tens of thousands of tokens; 250k used to trip mid-session
+   * on testnet. Override with COPILOT_DAILY_TOKEN_CAP.
    */
   get dailyTokenCap(): number {
-    const n = Math.floor(envFloat("COPILOT_DAILY_TOKEN_CAP", 250_000));
-    return n >= 10_000 && n <= 5_000_000 ? n : 250_000;
+    const n = Math.floor(envFloat("COPILOT_DAILY_TOKEN_CAP", 2_000_000));
+    return n >= 10_000 && n <= 5_000_000 ? n : 2_000_000;
   },
 };
 

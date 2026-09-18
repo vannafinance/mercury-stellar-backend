@@ -1,6 +1,6 @@
 import { Account, Keypair, Networks, TransactionBuilder } from "@stellar/stellar-sdk";
 import { describe, expect, it } from "vitest";
-import { WorkflowJournal } from "@/lib/copilot/workflow/journal";
+import { WorkflowJournal, PROPOSAL_TTL_MS } from "@/lib/copilot/workflow/journal";
 import type { RecordStore } from "@/lib/copilot/workflow/store";
 import type { WorkflowRecord } from "@/lib/copilot/workflow/types";
 
@@ -19,7 +19,7 @@ function fixture() {
   const journal = new WorkflowJournal(store, () => now);
   const create = () => journal.create({ ...identity, objective: "Supply 1 XLM", messages: ["Supply 1 XLM"], assumptions: [], constraints: [], floor: null,
     steps: [{ id: "one", op: "lend", asset: "XLM", amount: "1", label: "Supply 1 XLM", tool: "server-selected", args: { amount: "1" } }] });
-  return { journal, create, advance: () => { now += 300_001; } };
+  return { journal, create, advance: (ms = PROPOSAL_TTL_MS + 1) => { now += ms; } };
 }
 
 describe("workflow approval and execution journal", () => {
@@ -33,6 +33,13 @@ describe("workflow approval and execution journal", () => {
     // A resolved amount is held as normal.
     expect((await journal.create({ ...base, steps: [{ ...step, amount: "6541.043333" }] })).proposal.steps[0].amount)
       .toBe("6541.043333");
+  });
+
+  it("still accepts approve after several minutes of waiting", async () => {
+    const { journal, create, advance } = fixture();
+    const { proposal: p } = await create();
+    advance(10 * 60_000);
+    await expect(journal.approve(p.id, identity, 1, p.digest, async () => null)).resolves.toMatchObject({ status: "approved" });
   });
 
   it("rejects wrong identity, modified approval, and expiration", async () => {

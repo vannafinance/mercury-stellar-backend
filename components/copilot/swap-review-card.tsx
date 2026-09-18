@@ -134,8 +134,7 @@ export function SwapReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
   const minimum = Number(swap.minOut);
   const isFresh = !!activeQuote && now - activeQuote.checkedAt < 45_000;
   const meetsFloor = !!activeQuote && Number.isFinite(minimum) && activeQuote.expectedOut >= minimum;
-  const expiresSoon = workflow.expiresAt <= now;
-  const canConfirm = isFresh && meetsFloor && !expiresSoon && !busy && !checking;
+  const canConfirm = isFresh && meetsFloor && !busy && !checking;
   const exactOutput = swap.targetOut !== null;
 
   return (
@@ -169,9 +168,9 @@ export function SwapReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
         {exactOutput ? " The input includes the plan's quote buffer and is not editable here." : ""}
       </p>
       {checking && <p role="status" className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-violet-500"><Loader2 size={13} className="animate-spin" /> Checking the pool…</p>}
-      {(error || !meetsFloor && activeQuote || expiresSoon || !isFresh && activeQuote) && (
+      {(error || !meetsFloor && activeQuote || !isFresh && activeQuote) && (
         <p role="alert" className="mt-2 text-[12.5px] text-imperial-600">
-          {expiresSoon ? "This plan expired. Ask for a new quote." : error ?? (!isFresh ? "The quote is stale. Refresh it." : "The pool now pays less than the plan's minimum. Ask for a new plan.")}
+          {error ?? (!isFresh ? "The quote is stale. Refresh it." : "The pool now pays less than the plan's minimum. Ask for a new plan.")}
         </p>
       )}
       <p className="mt-3 text-[12px] text-vgray-500">

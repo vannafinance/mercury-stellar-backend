@@ -81,6 +81,7 @@ import { HealthDial } from "./health-dial";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
+import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 import { lpSides } from "@/lib/copilot/lp-pair";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
@@ -1523,17 +1524,17 @@ export function CopilotWorkspace() {
    * deterministic fingerprint, so the second run updated the first run's row).
    *
    * Nothing was broken in the status mapping: a row only leaves a pre-terminal state when
-   * something reports a terminal one, and an abandoned run never reports anything. Since a
-   * plan's quote is only valid for `PLAN_TTL_MS` (5 min), a staged row that survives a
-   * reload is definitively finished — it just never said so. Applied ONLY on hydration, so
-   * a live run in this tab is never relabelled underneath the user.
+   * something reports a terminal one, and an abandoned run never reports anything. A plan
+   * can wait for Approve for up to a day (`PLAN_TTL_MS`); a staged row older than that is
+   * finished — it just never said so. Applied ONLY on hydration, so a live run in this tab
+   * is never relabelled underneath the user.
    */
   const settleAbandonedRow = (e: LogEntry): LogEntry => {
     const PRE_TERMINAL = new Set(["staged", "needs sign", "in progress", "needs authorization"]);
     if (!PRE_TERMINAL.has(String(e.status))) return e;
-    // Generous margin over the 5-minute plan TTL, so a genuine slow settle is never
+    // Generous margin over the plan TTL, so a genuine wait-to-Approve is never
     // mislabelled — this only catches rows that outlived any possible in-flight run.
-    if (Date.now() - Number(e.ts || 0) < 30 * 60_000) return e;
+    if (Date.now() - Number(e.ts || 0) < PLAN_TTL_MS + 60 * 60_000) return e;
     return {
       ...e,
       status: "not completed",

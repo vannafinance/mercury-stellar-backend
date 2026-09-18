@@ -8,6 +8,7 @@ import type { WorkflowView } from "@/lib/copilot/workflow/types";
 import type { ThreadTurn } from "@/lib/copilot/investigation/thread";
 import { ExecutionStepper, type StepperStep } from "@/components/copilot/execution-stepper";
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
+import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
 import { investigationAnswerDocument } from "@/lib/copilot/investigation/answer-document";
@@ -373,18 +374,20 @@ export function InvestigationCard({
                   {onCancelPlan && <button type="button" onClick={onCancelPlan} className="ml-2 underline">Cancel plan</button>}
                 </section>
               )}
-              {workflow && !(workflow.status === "proposed" && workflow.steps.some((step) => step.op === "swap")) && (
+              {workflow?.status === "proposed" && !workflow.steps.some((step) => step.op === "swap") && onApprove && (
+                <PlanReviewCard workflow={workflow} wallet={wallet ?? null} busy={!!workflowLoading}
+                  autoSign={!!autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
+              )}
+              {workflow && workflow.status !== "proposed" && (
                 <section className="rounded-xl border border-violet-100 px-4 py-3.5">
                   <SectionTitle>
-                    {workflow.status === "proposed" || workflow.status === "validating"
-                      ? "Plan for approval"
-                      : workflow.status === "blocked" || workflow.status === "cancelled"
+                    {workflow.status === "blocked" || workflow.status === "cancelled"
                         ? "Not executed"
                         : workflow.status === "completed" ? "Done" : "Running"}
                   </SectionTitle>
                   <p className="mt-1.5 text-[15px] leading-6 text-vgray-900">{workflow.objective}</p>
                   <p className="mt-1 max-w-[68ch] text-[13px] leading-5 text-vgray-500">{workflow.message}</p>
-                  {workflow.status === "proposed" || workflow.status === "blocked" ? (
+                  {workflow.status === "blocked" ? (
                     <ol className="mt-3 space-y-1.5">
                       {workflow.steps.map((step, stepIndex) => (
                         <li key={step.id} className="flex gap-2.5 text-[13px] leading-5 text-vgray-800">
@@ -392,9 +395,6 @@ export function InvestigationCard({
                           <span className="min-w-0 break-words">
                             {step.label}
                             <span className="tabular-nums text-vgray-500"> ({step.amount} {step.asset})</span>
-                            {step.sizing?.basis === "derived_max_at_floor" && (
-                              <span className="text-vgray-500"> — may re-size down to ${Number(step.sizing.minAmountUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
-                            )}
                           </span>
                         </li>
                       ))}
@@ -405,16 +405,13 @@ export function InvestigationCard({
                     </div>
                   )}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {workflow.status === "proposed" && onApprove && (
-                      <button type="button" onClick={onApprove} disabled={workflowLoading} className={BTN_PRIMARY}>Approve and run</button>
-                    )}
                     {workflow.status === "awaiting_signature" && onSign && (
                       <button type="button" onClick={onSign} disabled={workflowLoading} className={BTN_PRIMARY}>Sign in wallet</button>
                     )}
                     {["running", "approved"].includes(workflow.status) && onResume && (
                       <button type="button" disabled={workflowLoading} onClick={onResume} className={BTN_QUIET}>Check progress</button>
                     )}
-                    {["proposed", "approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && (
+                    {["approved", "awaiting_signature"].includes(workflow.status) && onCancelPlan && (
                       <button type="button" disabled={workflowLoading} onClick={onCancelPlan} className={BTN_QUIET}>Cancel remaining steps</button>
                     )}
                   </div>
