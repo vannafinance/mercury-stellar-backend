@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Delegate a single Stellar hostname to Google Cloud DNS.
 #
-#   bash infra/dns.sh                # test.stellar.vanna.finance -> dev LB
-#   ENV=prod bash infra/dns.sh       # app.stellar.vanna.finance  -> prod LB
+#   bash infra/dns.sh                   # test.stellar.vanna.finance -> dev LB
+#   ENV=prod bash infra/dns.sh          # app.stellar.vanna.finance  -> prod LB
+#   ENV=copilot bash infra/dns.sh       # test.copilot.vanna.finance -> copilot LB
 #
 # WHY PER-HOSTNAME, NOT THE WHOLE stellar.vanna.finance SUBTREE
 # Delegating the subtree would make stellar.vanna.finance the apex of the new
@@ -27,9 +28,10 @@ ENV="${ENV:-dev}"
 TTL=60
 
 case "$ENV" in
-  dev)  HOSTNAME_FQDN=test.stellar.vanna.finance; ZONE_NAME=test-stellar-vanna; LB_NAME=vanna-dev-ip  ;;
-  prod) HOSTNAME_FQDN=app.stellar.vanna.finance;  ZONE_NAME=app-stellar-vanna;  LB_NAME=vanna-prod-ip ;;
-  *) echo "ENV must be dev or prod" >&2; exit 1 ;;
+  dev)     HOSTNAME_FQDN=test.stellar.vanna.finance; ZONE_NAME=test-stellar-vanna; LB_NAME=vanna-dev-ip     ;;
+  prod)    HOSTNAME_FQDN=app.stellar.vanna.finance;  ZONE_NAME=app-stellar-vanna;  LB_NAME=vanna-prod-ip    ;;
+  copilot) HOSTNAME_FQDN=test.copilot.vanna.finance; ZONE_NAME=test-copilot-vanna; LB_NAME=vanna-copilot-ip ;;
+  *) echo "ENV must be dev, prod, or copilot" >&2; exit 1 ;;
 esac
 
 say() { printf '\n=== %s ===\n' "$1"; }
