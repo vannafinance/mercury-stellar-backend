@@ -38,7 +38,7 @@ async function inputFrom(req: NextRequest): Promise<{ signedXdr: string }> {
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const origin = req.headers.get("origin");
-  if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
+  if (origin && copilotConfig.publicOrigin && origin !== copilotConfig.publicOrigin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
   const { id } = await params;
   if (!/^[a-f0-9-]{36}$/.test(id)) {
     return NextResponse.json({ code: "invalid_request", message: "Send the signed transaction envelope only." }, { status: 400 });

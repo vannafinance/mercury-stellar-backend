@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { isRecord } from "@/lib/copilot/investigation/decision";
+import { copilotConfig } from "@/lib/copilot/config";
 import {
   armStandingOrder,
   cancelStandingOrder,
@@ -20,7 +21,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const origin = req.headers.get("origin");
-  if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
+  if (origin && copilotConfig.publicOrigin && origin !== copilotConfig.publicOrigin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
   let body: unknown;
   try { body = await req.json(); } catch {
     return NextResponse.json({ message: "Invalid request." }, { status: 400 });

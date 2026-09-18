@@ -39,7 +39,7 @@ async function inputFrom(req: NextRequest): Promise<{ continuation: string; cand
 
 export async function POST(req: NextRequest) {
   const origin = req.headers.get("origin");
-  if (origin && origin !== req.nextUrl.origin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
+  if (origin && copilotConfig.publicOrigin && origin !== copilotConfig.publicOrigin) return NextResponse.json({ message: "Request origin was refused." }, { status: 403 });
   let input: { continuation: string; candidateId: string };
   try { input = await inputFrom(req); } catch (error) {
     const known = error instanceof ResearchError ? error : new ResearchError("invalid_request", "Invalid proposal request.", 400);
