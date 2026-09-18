@@ -29,6 +29,7 @@ import { copilotConfig } from "./config";
 import { durableStore, HASH_ID, type RecordStore } from "./workflow/store";
 import type { ThreadTurn } from "./investigation/thread";
 import type { ResearchView } from "./investigation/view";
+import type { ExecutionReceiptSnapshot } from "./execution-receipt";
 
 /** How many conversations a subject keeps, newest first, and how many turns each keeps. */
 export const CONVERSATION_LIMIT = 30;
@@ -206,6 +207,7 @@ export async function appendSessionTurn(input: {
   conversationId?: string | null;
   user: string;
   result: ResearchView;
+  executionReceipt?: ExecutionReceiptSnapshot | null;
 }): Promise<{ id: string }> {
   const now = Date.now();
   const fresh: CopilotConversation = {
@@ -222,7 +224,12 @@ export async function appendSessionTurn(input: {
     turns: [
       ...target.turns,
       { role: "user" as const, text: input.user },
-      { role: "assistant" as const, text: input.result.message, question: input.result.question ?? null },
+      {
+        role: "assistant" as const,
+        text: input.result.message,
+        question: input.result.question ?? null,
+        ...(input.executionReceipt !== undefined ? { executionReceipt: input.executionReceipt } : {}),
+      },
     ].slice(-TURN_LIMIT),
     continuation: input.result.continuation || null,
     result: input.result,
@@ -240,3 +247,63 @@ export async function appendSessionTurn(input: {
   });
   return { id: updated.id };
 }
+
+function sameReceipt(a: ExecutionReceiptSnapshot, b: ExecutionReceiptSnapshot): boolean {
+  if (a.workflowId !== b.workflowId || a.status !== b.status || a.network !== b.network || a.steps.length !== b.steps.length) return false;
+  return a.steps.every((step, index) => {
+    const other = b.steps[index];
+    return step.operation === other.operation && step.asset === other.asset && step.amount === other.amount
+      && step.status === other.status && (step.txHash ?? null) === (other.txHash ?? null)
+      && (step.settledLedger ?? null) === (other.settledLedger ?? null);
+  });
+}
+
+/**
+ * Idempotently update the current assistant turn with a journal receipt.
+ *
+ * This is a compare-and-set update of the conversation document.  It is intentionally
+ * independent of `text`, so a poll can move a step from submitted to settled without
+ * parsing or appending a generated paragraph.  Only the latest assistant turn is eligible;
+ * a late poll for an older workflow cannot overwrite a newer turn's receipt.
+ */
+export async function updateSessionExecutionReceipt(input: {
+  subject: string;
+  conversationId: string;
+  receipt: ExecutionReceiptSnapshot;
+}): Promise<boolean> {
+  if (!usable(input.subject) || !input.conversationId || !input.receipt.workflowId) return false;
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const stored = await stores().conversation.read(input.conversationId);
+    if (!stored || stored.value.subject !== input.subject || stored.value.deleted) return false;
+    const reversed = [...stored.value.turns].map((turn, i) => ({ turn, i })).reverse();
+    // Once a workflow is attached, every later poll updates THAT turn even if a newer
+    // conversation turn exists. This is the invariant that keeps a late ledger close from
+    // putting an old receipt under the user's newest question.
+    const matching = reversed.find(({ turn }) =>
+      turn.role === "assistant" && turn.executionReceipt?.workflowId === input.receipt.workflowId);
+    const index = matching?.i ?? reversed.find(({ turn }) =>
+      turn.role === "assistant" && !turn.executionReceipt)?.i;
+    if (index == null) return false;
+    const current = stored.value.turns[index].executionReceipt;
+    if (current && sameReceipt(current, input.receipt)) return true;
+    const turns = [...stored.value.turns];
+    turns[index] = { ...turns[index], executionReceipt: input.receipt };
+    const updated: CopilotConversation = { ...stored.value, turns, updatedAt: Date.now() };
+    if (!await stores().conversation.write(input.conversationId, stored.version, updated)) continue;
+    await updateIndex(input.subject, (currentIndex) => {
+      if (!currentIndex || !currentIndex.conversations.some((entry) => entry.id === input.conversationId)) return null;
+      return {
+        ...currentIndex,
+        conversations: currentIndex.conversations.map((entry) => entry.id === input.conversationId
+          ? { ...entry, updatedAt: updated.updatedAt }
+          : entry),
+        updatedAt: updated.updatedAt,
+      };
+    });
+    return true;
+  }
+  return false;
+}
+
+/** Short alias for callers that think of this operation as an upsert. */
+export const upsertSessionExecutionReceipt = updateSessionExecutionReceipt;

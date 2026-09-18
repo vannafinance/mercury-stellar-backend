@@ -11,11 +11,14 @@
  */
 
 import type { ResearchView } from "./view";
+import type { ExecutionReceiptSnapshot } from "../execution-receipt";
 
 export type ThreadTurn = {
   role: "user" | "assistant";
   text: string;
   question?: string | null;
+  /** Structured workflow facts, when this assistant turn has an execution receipt. */
+  executionReceipt?: ExecutionReceiptSnapshot | null;
 };
 
 export type LastInvestigation = {

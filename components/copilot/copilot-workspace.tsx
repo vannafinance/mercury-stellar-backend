@@ -72,7 +72,7 @@ import {
   strategyIsComplete,
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
-import { localExecutionAnswer } from "@/lib/copilot/execution-receipt";
+import { executionReceiptFromWorkflowView, localExecutionAnswer } from "@/lib/copilot/execution-receipt";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { getPrivyAuthControls, signTransaction as signWorkflowTransaction } from "@/lib/wallet-adapter";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
@@ -1412,6 +1412,7 @@ export function CopilotWorkspace() {
   const investigation = useInvestigation(address);
 
   const workflow = useWorkflow(address);
+  const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const proposedRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
   const approvedJournalRef = useRef<string | null>(null);
@@ -2675,6 +2676,19 @@ export function CopilotWorkspace() {
    */
   const proposePlan = workflow.propose;
   const confirmWorkflow = workflow.confirm;
+  const updateExecutionReceipt = investigation.updateExecutionReceipt;
+  useEffect(() => {
+    const view = workflow.view;
+    const network = investigation.result?.scope.network;
+    if (!view || !network || !investigation.conversationId) return;
+    const receipt = executionReceiptFromWorkflowView(view, network);
+    const key = JSON.stringify(receipt);
+    if (persistedWorkflowReceiptRef.current === key) return;
+    persistedWorkflowReceiptRef.current = key;
+    void updateExecutionReceipt(receipt).then((saved) => {
+      if (!saved && persistedWorkflowReceiptRef.current === key) persistedWorkflowReceiptRef.current = null;
+    });
+  }, [workflow.view, investigation.result?.scope.network, investigation.conversationId, updateExecutionReceipt]);
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;

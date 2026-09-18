@@ -37,7 +37,7 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
 });
 
 const { WorkflowJournal } = await import("@/lib/copilot/workflow/journal");
-const { advanceWorkflow, staleSwapFloor } = await import("@/lib/copilot/investigation/execute");
+const { advanceWorkflow, staleLiquidityAmounts, staleSwapFloor } = await import("@/lib/copilot/investigation/execute");
 type McpCall = Pick<import("@/lib/copilot/mcp-client").MCPClient, "call">;
 
 const SCOPE = {
@@ -331,5 +331,111 @@ describe("advanceWorkflow — a swap's floor is re-checked against the pool befo
     };
     await advance(id, mcp);
     expect(seen).toEqual(["vanna_borrow"]);
+  });
+});
+
+describe("advanceWorkflow — LP amounts are refreshed against the pool before they are sent", () => {
+  const lpStep = {
+    id: "one", op: "add_liquidity" as const, asset: "XLM", amount: "100",
+    label: "Add 100 XLM + 20 AQUSDC to the Aquarius pool",
+    tool: "vanna_add_liquidity",
+    args: {
+      smart_account: SCOPE.smartAccount, token_a: "XLM", token_b: "AQUSDC",
+      amount_a: "100", amount_b: "20", min_liquidity_out: "9.95",
+      trader: SCOPE.trader, venue: "aquarius",
+    },
+  };
+  const pool = (xlm: string, paired: string, shares = "100") => ({
+    found: true,
+    pool: { available: true, reserves: { XLM: xlm, AQUSDC: paired }, total_share: shares, fee: "0.0030" },
+  });
+
+  async function approvedLp() {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Add Aquarius liquidity",
+      messages: ["add 100 XLM liquidity"], assumptions: [], constraints: [], floor: null,
+      steps: [lpStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    return created.proposal.id;
+  }
+
+  it("recomputes the paired amount and share floor from the latest reserves", async () => {
+    const verdict = await staleLiquidityAmounts(
+      lpStep,
+      { call: async () => pool("1000", "150", "100") },
+      SCOPE.trader!,
+      new AbortController().signal,
+    );
+    expect(verdict).toMatchObject({
+      kind: "adjusted", amountA: "100", amountB: "15", minLiquidityOut: "9.95",
+    });
+  });
+
+  it("never increases either approved spend when the ratio moves", async () => {
+    const verdict = await staleLiquidityAmounts(
+      lpStep,
+      { call: async () => pool("1000", "250", "100") },
+      SCOPE.trader!,
+      new AbortController().signal,
+    );
+    expect(verdict).toMatchObject({
+      kind: "adjusted", amountA: "80", amountB: "20", minLiquidityOut: "7.96",
+    });
+  });
+
+  it("maps reserves correctly when the paired token is the stated side", async () => {
+    const reversed = {
+      ...lpStep,
+      asset: "AQUSDC",
+      amount: "20",
+      args: { ...lpStep.args, token_a: "AQUSDC", token_b: "XLM", amount_a: "20", amount_b: "100" },
+    };
+    const verdict = await staleLiquidityAmounts(
+      reversed,
+      { call: async () => pool("1000", "250", "100") },
+      SCOPE.trader!,
+      new AbortController().signal,
+    );
+    expect(verdict).toMatchObject({
+      kind: "adjusted", amountA: "20", amountB: "80", minLiquidityOut: "7.96",
+    });
+  });
+
+  it("uses the Soroswap reserve reader for a Soroswap LP leg", async () => {
+    const seen: string[] = [];
+    const verdict = await staleLiquidityAmounts(
+      { ...lpStep, args: { ...lpStep.args, token_b: "SOUSDC", venue: "soroswap" } },
+      { call: async (tool) => { seen.push(tool); return pool("1000", "150", "100"); } },
+      SCOPE.trader!,
+      new AbortController().signal,
+    );
+    expect(seen).toEqual(["vanna_get_soroswap_pool_stats"]);
+    expect(verdict).toMatchObject({ kind: "adjusted", amountA: "100", amountB: "15" });
+  });
+
+  it("sends the refreshed ratio to the MCP instead of the plan-time ratio", async () => {
+    const id = await approvedLp();
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp: McpCall = { call: async (tool, args) => {
+      seen.push({ tool, args: args as Record<string, unknown> });
+      if (tool === "vanna_get_aquarius_pool_stats") return pool("1000", "150", "100");
+      return { status: "signed_and_submitted", tx_hash: HASH };
+    } };
+    const view = await advance(id, mcp);
+    expect(seen.map((entry) => entry.tool)).toEqual(["vanna_get_aquarius_pool_stats", "vanna_add_liquidity"]);
+    expect(seen[1].args).toMatchObject({ amount_a: "100", amount_b: "15", min_liquidity_out: "9.95" });
+    expect(view.status).toBe("completed");
+    expect(String(view.message)).toContain("pool ratio was refreshed immediately before execution");
+  });
+
+  it("does not submit stale LP amounts when live reserves are unavailable", async () => {
+    const id = await approvedLp();
+    const seen: string[] = [];
+    const view = await advance(id, { call: async (tool) => { seen.push(tool); throw new Error("offline"); } });
+    expect(seen).toEqual(["vanna_get_aquarius_pool_stats"]);
+    expect(view.steps[0].status).toBe("failed");
+    expect(String(view.steps[0].message)).toContain("live reserves could not be refreshed");
   });
 });

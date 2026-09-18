@@ -10,6 +10,9 @@ import { ExecutionStepper, type StepperStep } from "@/components/copilot/executi
 import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap-review-card";
 import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
+import { investigationAnswerDocument } from "@/lib/copilot/investigation/answer-document";
+import { AnswerView } from "@/components/copilot/answer-view";
+import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -49,6 +52,23 @@ function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
     id: step.id, label: step.label, op: step.op, asset: step.asset, amount: step.amount,
     status, txHash: step.txHash, ledger: step.settledLedger, error: step.message,
   };
+}
+
+function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
+  return receipt.steps.map((step, index) => ({
+    id: `${receipt.workflowId}-${index}`,
+    label: "",
+    op: step.operation,
+    asset: step.asset,
+    amount: step.amount,
+    status: step.status === "settled" ? "settled"
+      : step.status === "failed" || step.status === "uncertain" ? "failed"
+        : step.status === "awaiting_signature" ? "signing"
+          : step.status === "submitted" || step.status === "submitting" ? "submitting"
+            : step.status === "invoking" ? "claiming" : "pending",
+    ...(step.txHash ? { txHash: step.txHash } : {}),
+    ...(step.settledLedger != null ? { ledger: step.settledLedger } : {}),
+  }));
 }
 
 type Borrowing = NonNullable<ResearchView["understanding"]>["borrowing"];
@@ -130,6 +150,7 @@ export function InvestigationCard({
       ? `Checked in ${serverClock}, though it took ${deviceClock} to reach you`
       : `Checked in ${serverClock}`
     : !loading && deviceClock ? `Checked in ${deviceClock}` : null;
+  const answerDocument = result ? investigationAnswerDocument(result) : null;
 
   // The thread ends with the assistant turn the reply block explains; the block is that turn.
   const lastTurn = turns[turns.length - 1];
@@ -160,17 +181,28 @@ export function InvestigationCard({
                      * wall on wall — two long paragraphs reading as one — so it is clamped to
                      * two lines and opens on click. Only the current reply stays expanded.
                      */
-                    <details className="group max-w-[68ch]">
-                      <summary className="cursor-pointer list-none text-[13.5px] leading-6 text-vgray-500 transition-colors hover:text-vgray-700 [&::-webkit-details-marker]:hidden">
-                        <span className="group-open:hidden" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                          {turn.text}
-                        </span>
-                        <span className="hidden group-open:inline">{turn.text}</span>
-                      </summary>
-                      {turn.question && index < priorTurns.length - 1 && (
-                        <p className="mt-1 text-[13px] leading-5 text-violet-500">{turn.question}</p>
+                    <div className="min-w-0 max-w-[68ch]">
+                      <details className="group">
+                        <summary className="cursor-pointer list-none text-[13.5px] leading-6 text-vgray-500 transition-colors hover:text-vgray-700 [&::-webkit-details-marker]:hidden">
+                          <span className="group-open:hidden" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                            {turn.text}
+                          </span>
+                          <span className="hidden group-open:inline">{turn.text}</span>
+                        </summary>
+                        {turn.question && index < priorTurns.length - 1 && (
+                          <p className="mt-1 text-[13px] leading-5 text-violet-500">{turn.question}</p>
+                        )}
+                      </details>
+                      {turn.executionReceipt && (
+                        <div className="mt-2">
+                          <ExecutionStepper
+                            steps={receiptStepperSteps(turn.executionReceipt)}
+                            currentStepIndex={Math.max(0, turn.executionReceipt.steps.findIndex((step) => step.status !== "settled"))}
+                            network={turn.executionReceipt.network}
+                          />
+                        </div>
                       )}
-                    </details>
+                    </div>
                   )}
                 </li>
               ))}
@@ -202,7 +234,7 @@ export function InvestigationCard({
             <article aria-label="Copilot reply" className={`space-y-5${priorTurns.length ? " border-t border-vgray-100 pt-5" : ""}`}>
               {/* The reply, then what was understood — the one line the user needs, not a list of reads. */}
               <div className="max-w-[68ch]">
-                <p className="text-[15px] leading-7 text-vgray-900">{result.message}</p>
+                {answerDocument && <AnswerView answer={answerDocument} />}
                 {clock && <p className="mt-1 text-[12px] tabular-nums text-vgray-400">{clock}</p>}
               </div>
 
@@ -369,7 +401,7 @@ export function InvestigationCard({
                     </ol>
                   ) : (
                     <div className="mt-3">
-                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} />
+                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} />
                     </div>
                   )}
                   <div className="mt-3 flex flex-wrap gap-2">

@@ -102,6 +102,15 @@ describe("candidate generation", () => {
     expect(blendIdle?.finalHealthFactor).toBeNull();
   });
 
+  it("ranks a required borrow ahead of idle alternatives while keeping the alternative visible", () => {
+    const { feasible } = generateCandidates({
+      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
+      comparisons: [comparison()],
+    });
+    expect(feasible[0]?.borrows).toBe(true);
+    expect(feasible.some((candidate) => !candidate.borrows)).toBe(true);
+  });
+
   it("offers Earn idle when its supply APR beats Blend, compiling to a separate venue", () => {
     const { feasible } = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, comparisons: [comparison()],

@@ -704,6 +704,20 @@ describe("mergeCandidateSets — composed plans beside the fixed shapes", () => 
     expect(merged.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM")?.rationale).toBeTruthy();
   });
 
+  it("keeps a required borrow ahead of a higher-return idle option after merging", () => {
+    const fixed = generateCandidates({
+      grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: CAPACITY.floor,
+      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowingAllowed: true,
+      borrowing: "required", comparisons: compareObservedRates(OBSERVATIONS, NOW),
+    });
+    const plainBorrow = resolvePlans([plan("Borrow XLM", [
+      { op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "borrow 100 XLM" } },
+    ])], ctx({ messages: ["borrow 100 XLM"], borrowing: "required", capacity: { ...CAPACITY, floor: null } }));
+    const merged = mergeCandidateSets(fixed, plainBorrow, "required");
+    expect(merged.feasible[0]?.borrows).toBe(true);
+    expect(merged.feasible.some((candidate) => !candidate.borrows)).toBe(true);
+  });
+
   it("lists a rejected plan with its leg and reason so 'no option' is never silent", () => {
     const merged = mergeCandidateSets(null, resolvePlans([plan("Lever", [{ op: "borrow", asset: "XLM", sizing: { kind: "to_floor" } }])], ctx({ borrowing: "forbidden" })));
     expect(merged.feasible).toEqual([]);
@@ -768,6 +782,20 @@ describe("resolvePlans — floor semantics", () => {
     // The figure the user is being asked to bear is on the card, not demanded from them.
     expect(Number(candidates[0].finalHealthFactor)).toBeGreaterThan(1.1);
     expect(candidates[0].steps?.[0]).toMatchObject({ op: "borrow", amount: "100" });
+  });
+
+  it("allows a plain literal borrow with no floor without treating it as an investment carry trade", () => {
+    const stated: ProposedPlan["legs"] = [
+      { op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "borrow 100 XLM" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Borrow 100", stated)], ctx({
+      messages: ["borrow 100 XLM"],
+      capacity: { ...CAPACITY, floor: null },
+      comparisons: [],
+    }));
+    expect(rejected).toEqual([]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ borrows: true, netAprPct: null, supplyAprPct: null });
   });
 
   it("still refuses a stated borrow with no floor when it would leave the account liquidatable", () => {

@@ -553,6 +553,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
           // A failed capacity (dropped-leg debt, sources disagree) must not
           // invent headroom from $0 / a default 1.30 floor.
           borrowingAllowed: Boolean(capacity) && !capacityResult.failed && borrowing !== "forbidden",
+          borrowing,
           requestedBorrowUsd:
             capacity && !capacityResult.failed ? (requestedBorrow?.usd ?? null) : null,
           comparisons: rateComparisons,
@@ -679,7 +680,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
         ? outcome.goal : undefined,
     });
     logPhase("plans", { proposed: modelPlans.length, sized: resolved.candidates.length, rejected: resolved.rejected.map((r) => `${r.title}: ${r.reason}`) });
-    candidates = mergeCandidateSets(candidates, resolved);
+    candidates = mergeCandidateSets(candidates, resolved, borrowing);
     /**
      * The sizer said what fits the facts it read; the protocol's preview says what the
      * contract will accept. An option the preview refuses is never shown; one it cannot

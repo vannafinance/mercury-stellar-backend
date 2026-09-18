@@ -294,6 +294,35 @@ describe("investigation card / options", () => {
   });
 });
 
+describe("investigation card / historical receipts", () => {
+  it("keeps a settled transaction hash and explorer link visible outside collapsed prose", () => {
+    const hash = "ab".repeat(32);
+    const current = view({ message: "Your health factor is 3.20." });
+    render(
+      <InvestigationCard
+        prompt="what is my health factor?"
+        result={current}
+        progress={null}
+        loading={false}
+        error={null}
+        turns={[
+          { role: "user", text: "swap 10 XLM" },
+          { role: "assistant", text: "The swap settled.", executionReceipt: {
+            workflowId: "wf-1", status: "completed", network: "testnet",
+            steps: [{ operation: "swap", asset: "XLM", amount: "10", status: "settled", txHash: hash, settledLedger: 42 }],
+          } },
+          { role: "user", text: "what is my health factor?" },
+          { role: "assistant", text: current.message },
+        ]}
+      />,
+    );
+    const link = screen.getByRole("link", { name: new RegExp(hash) });
+    expect(link.getAttribute("href")).toBe(`https://stellar.expert/explorer/testnet/tx/${hash}`);
+    expect(screen.getByText("Settled")).toBeTruthy();
+    expect(screen.getByText(/ledger #42/)).toBeTruthy();
+  });
+});
+
 describe("investigation card / in-flight state", () => {
   it("says what is happening between a click and its result", () => {
     const result = view();

@@ -10,6 +10,7 @@
 
 import type { FactTone, StructuredAnswer } from "./answer-schema";
 import { farmReceiptLine } from "./execution-copy";
+import type { StepStatus, WorkflowOp, WorkflowRecord, WorkflowView } from "./workflow/types";
 
 export type ReceiptLeg = {
   label?: string | null;
@@ -74,5 +75,42 @@ export function localExecutionAnswer(opts: {
       ? "Earlier legs are already on-chain. Continue the remaining collateral/debt steps, or stop here."
       : undefined,
     venue: "none",
+  };
+}
+
+/** A durable, machine-readable workflow receipt; never reconstructed from prose. */
+export type ExecutionReceiptStep = {
+  operation: WorkflowOp;
+  asset: string;
+  amount: string;
+  status: StepStatus;
+  txHash?: string | null;
+  settledLedger?: number | null;
+};
+
+export type ExecutionReceiptSnapshot = {
+  workflowId: string;
+  status: WorkflowRecord["status"];
+  network: string;
+  steps: ExecutionReceiptStep[];
+};
+
+/** Convert a browser-safe workflow view to the durable receipt shape. */
+export function executionReceiptFromWorkflowView(
+  view: WorkflowView,
+  network: string,
+): ExecutionReceiptSnapshot {
+  return {
+    workflowId: view.id,
+    status: view.status,
+    network,
+    steps: view.steps.map((step) => ({
+      operation: step.op,
+      asset: step.asset,
+      amount: step.amount,
+      status: step.status,
+      ...(step.txHash ? { txHash: step.txHash } : {}),
+      ...(step.settledLedger != null ? { settledLedger: step.settledLedger } : {}),
+    })),
   };
 }

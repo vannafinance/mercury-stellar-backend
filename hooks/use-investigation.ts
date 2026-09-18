@@ -5,6 +5,7 @@ import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
+import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import {
   type ConversationSummary,
   type ThreadTurn,
@@ -225,6 +226,37 @@ export function useInvestigation(wallet: string | null) {
     } catch { /* it is gone from the list; the server copy goes on the next successful delete or expiry */ }
   }, [applyBlank]);
 
+  /** Persist a journal snapshot on the assistant turn that owns that workflow. */
+  const updateExecutionReceipt = useCallback(async (receipt: ExecutionReceiptSnapshot): Promise<boolean> => {
+    const owner = activeWallet.current;
+    const id = conversationId.current;
+    if (!owner || !id) return false;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000));
+      const response = await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, {
+        method: "PATCH", headers, cache: "no-store", body: JSON.stringify({ executionReceipt: receipt }),
+      });
+      if (!response.ok || activeWallet.current !== owner || conversationId.current !== id) return false;
+      setState((previous) => {
+        const reversed = [...previous.turns].map((turn, index) => ({ turn, index })).reverse();
+        const matching = reversed.find(({ turn }) =>
+          turn.role === "assistant" && turn.executionReceipt?.workflowId === receipt.workflowId);
+        const index = matching?.index ?? reversed.find(({ turn }) =>
+          turn.role === "assistant" && !turn.executionReceipt)?.index;
+        if (index == null) return previous;
+        const turns = [...previous.turns];
+        turns[index] = { ...turns[index], executionReceipt: receipt };
+        writeStoredThread(owner, {
+          wallet: owner, continuation: continuation.current, turns,
+          result: lastResult.current, conversationId: id,
+        });
+        return { ...previous, turns };
+      });
+      void refreshConversations(owner);
+      return true;
+    } catch { return false; }
+  }, [refreshConversations]);
+
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
@@ -363,5 +395,5 @@ export function useInvestigation(wallet: string | null) {
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, reset: newChat, newChat, open, remove };
+  return { ...visible, conversations, run, cancel, reset: newChat, newChat, open, remove, updateExecutionReceipt };
 }

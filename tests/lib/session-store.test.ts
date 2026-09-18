@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
+import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import type { StepStatus, WorkflowRecord } from "@/lib/copilot/workflow/types";
 
 /**
  * Conversations, on both backends.
@@ -21,6 +23,18 @@ const view = (message: string, continuation = "r1.token"): ResearchView => ({
   refinements: [], understanding: null, question: null, facts: [], checks: [], warnings: [],
   continuation, executionAllowed: false,
   scope: { wallet: null, smartAccount: null, network: "testnet" },
+});
+
+const receipt = (
+  status: WorkflowRecord["status"], stepStatus: StepStatus, settledLedger?: number,
+): ExecutionReceiptSnapshot => ({
+  workflowId: "wf-receipt-1",
+  status,
+  network: "testnet",
+  steps: [{
+    operation: "swap", asset: "XLM", amount: "10", status: stepStatus,
+    ...(settledLedger == null ? {} : { txHash: "a".repeat(64), settledLedger }),
+  }],
 });
 
 /** A Firestore-over-REST double: documents in a Map, real preconditions, real 404s. */
@@ -141,6 +155,36 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     const { id } = await store.appendSessionTurn({ subject: "carol", user: "t0", result: view("r0") });
     for (let i = 1; i < 12; i += 1) await store.appendSessionTurn({ subject: "carol", conversationId: id, user: `t${i}`, result: view(`r${i}`) });
     expect((await store.readConversation("carol", id))?.turns).toHaveLength(store.TURN_LIMIT);
+  });
+
+  it("persists a structured receipt and updates it idempotently without changing prose", async () => {
+    const first = await store.appendSessionTurn({
+      subject: "alice", user: "swap 10 XLM", result: view("Your swap is running."),
+      executionReceipt: receipt("running", "submitted"),
+    });
+    expect((await store.readConversation("alice", first.id))?.turns[1]?.executionReceipt).toEqual(receipt("running", "submitted"));
+
+    const settled = receipt("completed", "settled", 42);
+    expect(await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: settled })).toBe(true);
+    expect(await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: settled })).toBe(true);
+    const conversation = await store.readConversation("alice", first.id);
+    expect(conversation?.turns).toHaveLength(2);
+    expect(conversation?.turns[1]).toMatchObject({ role: "assistant", text: "Your swap is running.", executionReceipt: settled });
+  });
+
+  it("updates the workflow's original turn when a ledger result arrives after a newer turn", async () => {
+    const first = await store.appendSessionTurn({
+      subject: "alice", user: "swap 10 XLM", result: view("Your swap is running."),
+      executionReceipt: receipt("running", "submitted"),
+    });
+    await store.appendSessionTurn({
+      subject: "alice", conversationId: first.id, user: "what is my health factor?", result: view("Your health factor is 3.2."),
+    });
+    const settled = receipt("completed", "settled", 43);
+    expect(await store.updateSessionExecutionReceipt({ subject: "alice", conversationId: first.id, receipt: settled })).toBe(true);
+    const turns = (await store.readConversation("alice", first.id))?.turns ?? [];
+    expect(turns[1]?.executionReceipt).toEqual(settled);
+    expect(turns[3]?.executionReceipt).toBeUndefined();
   });
 });
 

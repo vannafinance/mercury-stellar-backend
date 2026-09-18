@@ -1098,13 +1098,14 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * be judged without them. 14 Sep: "lend 25% of xlm" was refused outright for a rate.
    */
   let rateUnknown = false;
+  let borrowRateUnknown = false;
   for (const d of drafts) {
     const usd = decimalWad(d.usd as string);
     const rate = OP_FLOW[d.leg.op].rate;
     if (rate === null) continue;
     const apr = legRate(d.leg.op, d.leg.asset, ctx.comparisons);
     if (rate === "earn_borrow") {
-      if (apr === null) throw new Reject(d.name, `no ${d.leg.asset} borrow rate was read`);
+      if (apr === null) { borrowRateUnknown = true; borrowed += usd; continue; }
       borrowed += usd;
       returnWad -= mulDown(usd, decimalWad(apr), WAD);
       continue;
@@ -1117,12 +1118,18 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     const missing = drafts.find((d) => suppliesAtRate(d.leg.op) && legRate(d.leg.op, d.leg.asset, ctx.comparisons) === null)!;
     throw new Reject(missing.name, `no usable ${RATE_VENUE[OP_FLOW[missing.leg.op].rate!]} supply rate was read for ${missing.leg.asset}, so the borrow's carry cannot be judged`);
   }
+  if (borrowRateUnknown && supplied > ZERO) {
+    const missing = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow" && legRate(d.leg.op, d.leg.asset, ctx.comparisons) === null)!;
+    throw new Reject(missing.name, `no ${missing.leg.asset} borrow rate was read, so the borrow's carry cannot be judged`);
+  }
   /**
-   * The same rule the fixed shapes apply: if what the borrow costs meets or exceeds what
-   * the supply earns, the position loses money by construction and no health factor
-   * makes that acceptable. Ruled out with the rates, not ranked last.
+   * The carry guard applies only when borrowed funds are being deployed into a
+   * rate-bearing supply leg. A plain borrow is a different user objective: it has no
+   * investment return to compare, so it must not be rejected as a failed carry trade.
+   * When a supply leg exists, if its return does not cover the borrow cost, rule the
+   * strategy out rather than ranking it last.
    */
-  if (borrowed > ZERO && returnWad <= ZERO) {
+  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO) {
     const borrowLeg = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow")!;
     const supplyLeg = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
     const borrowRow = ctx.comparisons.find((c) => c.asset === borrowLeg.leg.asset);
@@ -1165,8 +1172,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     borrows,
     asset: first.leg.asset,
     venue: lastSupply ? OP_FLOW[lastSupply.leg.op].venue : "margin",
-    netAprPct: borrows ? formatWad(netApr) : null,
-    supplyAprPct: rateUnknown ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
+    netAprPct: borrows && supplied > ZERO ? formatWad(netApr) : null,
+    supplyAprPct: rateUnknown || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
     legs: sized,
     finalHealthFactor,
     amountUsd: formatWad(deployed),

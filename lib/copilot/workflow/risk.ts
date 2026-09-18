@@ -78,7 +78,6 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     if (proposal.scope.network !== "testnet" || !proposal.scope.trader) return "The execution network or wallet is unavailable.";
     for (const step of proposal.steps) allowedInvocation(step, proposal.scope);
     const margin = proposal.steps.some(s => s.op !== "lend");
-    if (proposal.steps.some(s => s.op === "borrow") && !proposal.floor) return "A borrowing proposal needs an explicit health-factor floor.";
     const assets = [...new Set(proposal.steps.map(s => s.asset))];
     const funds = new Map<string, bigint>(), prices = new Map<string, bigint>();
     const project = needsHealthProjection(proposal);

@@ -9,7 +9,7 @@ import type { MCPClient } from "../mcp-client";
 import { allowedInvocation } from "../workflow/allowlist";
 import { isRecord } from "./decision";
 import { interruptible } from "./runtime";
-import { decimalWad, formatWad, mulDown, WAD } from "./fixed";
+import { decimalWad, formatWad, mulDown, WAD, ZERO } from "./fixed";
 import { constantProductOut, isDangerousFill, poolReservesFrom, reservesForDirection, slippageFloor, type PoolReserves } from "./pool-quote";
 import { WorkflowConflict, type StepReadiness } from "../workflow/journal";
 import { workflowView, type WorkflowProposal, type WorkflowView, type ProposalStep } from "../workflow/types";
@@ -54,6 +54,12 @@ function identityOf(proposal: WorkflowProposal) {
 export type StaleFloorVerdict =
   | { kind: "unchanged" }
   | { kind: "adjusted"; minOut: string; note: string }
+  | { kind: "refuse"; message: string };
+
+/** What refreshing an LP deposit against the pool immediately before the write decided. */
+export type StaleLiquidityVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; amountA: string; amountB: string; minLiquidityOut: string; note: string }
   | { kind: "refuse"; message: string };
 
 /**
@@ -189,6 +195,98 @@ function priceWadFrom(response: unknown): bigint | null {
 
 const REQUOTE_MS = 8_000;
 
+/** Floor a WAD amount to Stellar token precision without ever rounding a spend upward. */
+function tokenAmount(value: bigint, places = 7): string {
+  const [whole, fraction = ""] = formatWad(value).split(".");
+  let kept = fraction.slice(0, places);
+  while (kept.endsWith("0")) kept = kept.slice(0, -1);
+  return kept ? `${whole}.${kept}` : whole;
+}
+
+/**
+ * Refresh an LP leg's token ratio and share floor immediately before invoking the MCP.
+ *
+ * The proposal records maximum spends for both tokens. When the reserve ratio moves, the
+ * fresh proportional pair is chosen inside those maxima: keep amount A when its newly
+ * required B still fits, otherwise reduce A to fit the approved B. A refresh can therefore
+ * make the deposit smaller, but can never authorize spending more of either token than the
+ * user reviewed. The LP-share floor is then recomputed from the same fresh reserves.
+ */
+export async function staleLiquidityAmounts(
+  step: ProposalStep,
+  mcp: Pick<MCPClient, "call">,
+  trader: string,
+  signal: AbortSignal,
+): Promise<StaleLiquidityVerdict> {
+  const unchanged: StaleLiquidityVerdict = { kind: "unchanged" };
+  if (step.op !== "add_liquidity") return unchanged;
+  const venue = typeof step.args.venue === "string" ? step.args.venue : "";
+  if (venue !== "aquarius" && venue !== "soroswap") return unchanged;
+  const tokenA = typeof step.args.token_a === "string" ? step.args.token_a : "";
+  const tokenB = typeof step.args.token_b === "string" ? step.args.token_b : "";
+  const approvedA = typeof step.args.amount_a === "string" ? step.args.amount_a : "";
+  const approvedB = typeof step.args.amount_b === "string" ? step.args.amount_b : "";
+  if (!tokenA || !tokenB || !approvedA || !approvedB) return unchanged;
+
+  let reserves: PoolReserves | null = null;
+  try {
+    const payload = await interruptible(
+      () => mcp.call(
+        venue === "soroswap" ? "vanna_get_soroswap_pool_stats" : "vanna_get_aquarius_pool_stats",
+        { token_a: tokenA, token_b: tokenB },
+        trader,
+      ),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+    reserves = poolReservesFrom(payload);
+  } catch { /* handled below */ }
+  if (!reserves) {
+    return { kind: "refuse", message: "The pool's live reserves could not be refreshed, so stale liquidity amounts were not submitted. Prepare the plan again." };
+  }
+
+  try {
+    const aIsXlm = tokenA.toUpperCase() === "XLM";
+    const bIsXlm = tokenB.toUpperCase() === "XLM";
+    if (aIsXlm === bIsXlm) {
+      return { kind: "refuse", message: "The live LP pair could not be matched to its reserves. Nothing was submitted." };
+    }
+    const reserveA = decimalWad(aIsXlm ? reserves.xlm : reserves.paired);
+    const reserveB = decimalWad(bIsXlm ? reserves.xlm : reserves.paired);
+    const maxA = decimalWad(approvedA);
+    const maxB = decimalWad(approvedB);
+    if (reserveA <= ZERO || reserveB <= ZERO || maxA <= ZERO || maxB <= ZERO) {
+      return { kind: "refuse", message: "The refreshed LP ratio did not produce positive deposit amounts. Nothing was submitted." };
+    }
+
+    const bForMaxA = (maxA * reserveB) / reserveA;
+    const freshA = bForMaxA <= maxB ? maxA : (maxB * reserveA) / reserveB;
+    const freshB = bForMaxA <= maxB ? bForMaxA : maxB;
+    const amountA = tokenAmount(freshA);
+    const amountB = tokenAmount(freshB);
+    const amountAWad = decimalWad(amountA);
+    const amountBWad = decimalWad(amountB);
+    if (amountAWad <= ZERO || amountBWad <= ZERO) {
+      return { kind: "refuse", message: "The refreshed LP amounts round below token precision. Nothing was submitted." };
+    }
+    const sharesFromA = (amountAWad * decimalWad(reserves.totalShare)) / reserveA;
+    const sharesFromB = (amountBWad * decimalWad(reserves.totalShare)) / reserveB;
+    const expectedShares = sharesFromA < sharesFromB ? sharesFromA : sharesFromB;
+    const minLiquidityOut = tokenAmount(slippageFloor(expectedShares));
+    if (decimalWad(minLiquidityOut) <= ZERO) {
+      return { kind: "refuse", message: "The refreshed LP share floor rounds to zero. Nothing was submitted." };
+    }
+    return {
+      kind: "adjusted",
+      amountA,
+      amountB,
+      minLiquidityOut,
+      note: `The pool ratio was refreshed immediately before execution: the liquidity deposit used ${amountA} ${tokenA} + ${amountB} ${tokenB}, within the amounts you approved.`,
+    };
+  } catch {
+    return { kind: "refuse", message: "The live LP ratio could not be calculated safely. Nothing was submitted." };
+  }
+}
+
 function hashOf(value: unknown): string | null {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/i.test(value)) return null;
   return value.toLowerCase();
@@ -303,13 +401,28 @@ export async function advanceWorkflow(input: {
   if (stale.kind === "refuse") {
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: stale.message }));
   }
-  const adjustedArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  const liquidity = await staleLiquidityAmounts(step, input.mcp, scope.trader, input.signal);
+  if (liquidity.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
+  }
+  const swapAdjustedArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  const adjustedArgs = liquidity.kind === "adjusted"
+    ? {
+        ...swapAdjustedArgs,
+        amount_a: liquidity.amountA,
+        amount_b: liquidity.amountB,
+        min_liquidity_out: liquidity.minLiquidityOut,
+      }
+    : swapAdjustedArgs;
   // Tell the MCP a human was shown this fill and took it. Its own impact gate withholds
   // auto-sign otherwise, which for an accepted trade is the same confirmation twice.
   const invocationArgs = acceptedLoss && step.op === "swap"
     ? { ...adjustedArgs, acknowledged_price_impact: true }
     : adjustedArgs;
-  const note = stale.kind === "adjusted" ? stale.note : null;
+  const note = [
+    stale.kind === "adjusted" ? stale.note : null,
+    liquidity.kind === "adjusted" ? liquidity.note : null,
+  ].filter((value): value is string => !!value).join(" ") || null;
 
   let build: Record<string, unknown>;
   try {

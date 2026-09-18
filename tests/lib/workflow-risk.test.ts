@@ -111,10 +111,10 @@ describe("deterministic execution risk", () => {
     expect(mcp.call.mock.calls.every((call) => call[0] === "vanna_get_token_balance")).toBe(true);
     expect(mcp.call.mock.calls.every((call) => call[1].holder === scope.smartAccount)).toBe(true);
   });
-  it("still requires a floor before a borrow", async () => {
+  it("allows a literal borrow without a user floor while retaining the liquidation guard", async () => {
     const p = proposal("50");
     p.floor = null;
-    expect(await validate(p)).toMatch(/borrowing proposal needs an explicit health-factor floor/);
+    expect(await validate(p)).toBeNull();
   });
   it("fails closed on unavailable balances and never invokes a write during validation", async () => {
     const unavailable = { call: vi.fn(async (_tool: string) => ({ error: "unavailable" })) };

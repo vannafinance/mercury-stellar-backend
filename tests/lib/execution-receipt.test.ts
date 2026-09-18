@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { localExecutionAnswer } from "@/lib/copilot/execution-receipt";
+import { executionReceiptFromWorkflowView, localExecutionAnswer } from "@/lib/copilot/execution-receipt";
+import type { WorkflowView } from "@/lib/copilot/workflow/types";
 
 describe("localExecutionAnswer", () => {
   it("paints an instant all-settled receipt from the legs", () => {
@@ -33,5 +34,20 @@ describe("localExecutionAnswer", () => {
     expect(answer.headline).toMatch(/Paused/i);
     expect(answer.facts.find((f) => f.label === "steps settled")?.value).toBe("1 of 2");
     expect(answer.note).toMatch(/Continue/i);
+  });
+});
+
+describe("executionReceiptFromWorkflowView", () => {
+  it("keeps journal facts in a URL-free structured snapshot", () => {
+    const view = {
+      id: "wf-1", revision: 2, digest: "digest", status: "completed", objective: "swap",
+      expiresAt: Date.now() + 1_000, assumptions: [], constraints: [], message: "done",
+      slippageAccepted: false,
+      steps: [{ id: "s1", op: "swap", asset: "XLM", amount: "10", label: "Swap", status: "settled", txHash: "ab".repeat(32), settledLedger: 42 }],
+    } as WorkflowView;
+    expect(executionReceiptFromWorkflowView(view, "testnet")).toEqual({
+      workflowId: "wf-1", status: "completed", network: "testnet",
+      steps: [{ operation: "swap", asset: "XLM", amount: "10", status: "settled", txHash: "ab".repeat(32), settledLedger: 42 }],
+    });
   });
 });

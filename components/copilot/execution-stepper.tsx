@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronRight, ExternalLink, Loader2, XCircle } from "lucide-react";
+import { Check, ExternalLink, Loader2, XCircle } from "lucide-react";
 
 export interface StepperStep {
   id: string;
@@ -17,6 +17,7 @@ export interface StepperStep {
 export interface ExecutionStepperProps {
   steps: StepperStep[];
   currentStepIndex: number;
+  network?: string;
   autoApprove?: boolean;
   onRetry?: (stepIndex: number) => void;
 }
@@ -24,6 +25,7 @@ export interface ExecutionStepperProps {
 export function ExecutionStepper({
   steps,
   currentStepIndex,
+  network = "testnet",
   autoApprove = false,
   onRetry,
 }: ExecutionStepperProps) {
@@ -94,12 +96,12 @@ export function ExecutionStepper({
                   <div className="flex items-center gap-2 font-mono text-[10.5px] text-vgray-500 dark:text-slate-400">
                     {step.txHash ? (
                       <a
-                        href={`https://stellar.expert/explorer/testnet/tx/${step.txHash}`}
+                        href={`https://stellar.expert/explorer/${network === "mainnet" || network === "public" ? "public" : "testnet"}/tx/${step.txHash}`}
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-violet-500 underline hover:text-violet-600 dark:text-violet-400"
                       >
-                        <span>tx {step.txHash.slice(0, 8)}…</span>
+                        <span className="break-all">tx {step.txHash}</span>
                         <ExternalLink size={10} />
                       </a>
                     ) : (

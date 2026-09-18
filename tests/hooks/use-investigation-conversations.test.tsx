@@ -85,6 +85,21 @@ describe("useInvestigation — conversations", () => {
     expect(result.current.turns.map((t) => t.text)).toEqual(["repay 25% of my debt", "Repay …"]);
   });
 
+  it("persists a workflow receipt and mirrors it into the open thread", async () => {
+    const calls = server([{ result: view("unused") }]);
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await waitFor(() => expect(result.current.conversationId).toBe("c-newer"));
+    const hash = "a".repeat(64);
+    await act(async () => {
+      expect(await result.current.updateExecutionReceipt({
+        workflowId: "wf-1", status: "completed", network: "testnet",
+        steps: [{ operation: "swap", asset: "XLM", amount: "10", status: "settled", txHash: hash, settledLedger: 42 }],
+      })).toBe(true);
+    });
+    expect(calls.some((call) => call.url === "/api/copilot/session/c-newer" && call.method === "PATCH")).toBe(true);
+    expect(result.current.turns[1]?.executionReceipt?.steps[0]?.txHash).toBe(hash);
+  });
+
   it("sends the open conversation's id with a turn, and adopts the id the server records a first turn under", async () => {
     const calls = server([{ result: view("Repay …", "r2"), conversationId: "c-newer" }, { result: view("1.46"), conversationId: "c-fresh" }]);
     const { result } = renderHook(() => useInvestigation(WALLET));

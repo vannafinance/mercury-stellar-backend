@@ -49,6 +49,8 @@ export interface CandidateInput {
   /** Token balances matching `idleWalletByAssetUsd`, for the computed decision copy. */
   idleWalletByAssetTokens?: Partial<Record<RateComparison["asset"], string>>;
   borrowingAllowed?: boolean;
+  /** The user's borrowing intent, used only to order feasible candidates. */
+  borrowing?: "unspecified" | "allowed" | "required" | "forbidden";
   /**
    * A borrow size the user named outright ("borrow 500 USDC"), in USD. When present it
    * REPLACES sizing to the floor: someone who states an amount has not asked for the
@@ -199,11 +201,20 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
   };
 }
 
-export function rankFeasible(feasible: Candidate[]): Candidate[] {
+export function rankFeasible(
+  feasible: Candidate[],
+  borrowing: CandidateInput["borrowing"] = "unspecified",
+): Candidate[] {
   const idle = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
   const borrow = feasible.filter((candidate) => candidate.borrows).sort(byNetThenSize);
-  const ranked = [...idle, ...borrow];
+  // A required borrow is an instruction, not merely permission. Keep the idle
+  // alternative visible, but never let it occupy the winner slot when a borrow
+  // candidate was successfully sized.
+  const ranked = borrowing === "required" ? [...borrow, ...idle] : [...idle, ...borrow];
   const usdcIdle = idle.filter((candidate) => USDC_SET.has(candidate.asset));
+  // A required borrow has its own winner semantics; attaching an idle-only
+  // variant decision to the second-ranked candidate would mislabel the card.
+  if (borrowing === "required" && borrow.length > 0) return ranked;
   const winner = usdcIdle[0];
   if (!winner) return ranked;
   const runnerUp = usdcIdle.find((candidate) => candidate.asset !== winner.asset);
@@ -360,7 +371,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     });
   }
 
-  return { feasible: rankFeasible(feasible), rejected };
+  return { feasible: rankFeasible(feasible, input.borrowing), rejected };
 }
 
 /**
@@ -371,6 +382,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
   composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string }> },
+  borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
   const FIXED_OPS: Record<Exclude<CandidateKind, "composed">, (asset: string) => string[]> = {
@@ -387,7 +399,7 @@ export function mergeCandidateSets(
     ...(fixed?.feasible ?? []).filter((candidate) => !taken.has(signature(candidate))),
   ];
   return {
-    feasible: rankFeasible(feasible.map((candidate) => ({ ...candidate, decision: undefined }))),
+    feasible: rankFeasible(feasible.map((candidate) => ({ ...candidate, decision: undefined })), borrowing),
     rejected: [
       ...(fixed?.rejected ?? []),
       ...composed.rejected.map((entry) => ({ label: entry.title, reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`, asset: entry.leg?.split(" ").pop() ?? "" })),
