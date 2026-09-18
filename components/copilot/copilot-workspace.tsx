@@ -2,10 +2,9 @@
 
 // Vanna Copilot workspace — Gemini understands intent; MCP executes.
 //
-// Layout follows the Copilot design: a full-width intent composer, a left-column
-// turn card (agent-run → answer / staged / executed), an independent session log
-// beneath that card, and a right rail with live account health, open positions,
-// autonomy, and on-chain writes.
+// Layout follows the Copilot design: a full-width intent composer, a turn card
+// (agent-run → answer / staged / executed), and account health under that. Auto-approve
+// sits in the header next to New chat and History.
 //
 // Theming: every surface/border/text colour comes from the app's own dark-aware
 // tokens (`surface`, `vgray-*`, `shadow-vanna`), so the page follows the global
@@ -91,6 +90,7 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
 import { ConversationMenu } from "./conversation-menu";
+import { AutoApproveMenu } from "./auto-approve-menu";
 import { shouldContinueInvestigation, shouldReplacePlan } from "@/lib/copilot/investigation/thread";
 
 interface BrainHealth {
@@ -494,22 +494,9 @@ function readAutoCaps(): { tx: number; day: number } | null {
 }
 
 /**
- * The two spend budgets the Autonomy card offers.
- *
- * The default's hint does not name a figure. MCP owns `default_cap_usd` and only reports it
- * in the enable response, so printing "$1000 / tx" here would be this UI inventing a policy
- * before the server has stated one — the exact failure in brief §6.6.
+ * Default vs custom spend caps. The default figure is owned by MCP and only
+ * reported after enable — this UI must not print a dollar amount before that.
  */
-const CAPS_CHOICES = [
-  { id: "defaults", label: "Default caps", hint: "the server's own limit · shown once enabled" },
-  { id: "custom", label: "Custom limits", hint: "set your own per-tx and daily caps" },
-] as const;
-
-const CAPS_FIELDS = [
-  { id: "tx", label: "per tx", placeholder: "500", aria: "Per transaction cap in USD" },
-  { id: "day", label: "per day", placeholder: "2000", aria: "Per day cap in USD" },
-] as const;
-
 interface LogLeg {
   label: string;
   tool: string;
@@ -536,15 +523,13 @@ interface LogEntry {
 }
 
 /**
- * How many turns the copilot remembers, and how many it shows before you ask for the rest.
+ * How many turns the copilot remembers.
  *
  * The log used to hold 8 and live in component state, so it was gone on reload — which is
  * why history had to be added rather than merely surfaced. 40 is enough to cover a working
- * session without the stored blob getting large; the visible 8 keeps the card the same size
- * it was.
+ * session without the stored blob getting large.
  */
 const HISTORY_MAX = 40;
-const HISTORY_VISIBLE = 8;
 
 /** localStorage key. Per wallet, because the turns are about that wallet's account. */
 const historyKey = (address: string) => `vanna_copilot_history:${address}`;
@@ -1486,18 +1471,10 @@ export function CopilotWorkspace() {
   const [customTx, setCustomTx] = useState("500");
   const [customDay, setCustomDay] = useState("2000");
   const [showCustom, setShowCustom] = useState(false);
-  /**
-   * Spend-budget picker lives inside the rail's Autonomy card.
-   *
-   * Turning the switch on used to POST `auto_sign: {action:"start"}`, which answered with
-   * `kind:"needs_auto_sign"` and moved the whole main column to the 03 · AUTO-SIGN gate —
-   * so a rail control silently took over the transcript, and the choice appeared nowhere
-   * near the switch that asked for it. The caps question belongs on the card that owns the
-   * setting; only the confirmed choice goes to MCP.
-   */
-  const [railBudgetOpen, setRailBudgetOpen] = useState(false);
   const [railCapsMode, setRailCapsMode] = useState<"defaults" | "custom">("defaults");
   const [savedCaps, setSavedCaps] = useState<{ tx: number; day: number } | null>(null);
+  /** MCP `default_cap_usd` — shown under Default, never guessed from a custom session. */
+  const [mcpDefaultCap, setMcpDefaultCap] = useState<number | null>(null);
   const [log, setLogRaw] = useState<LogEntry[]>([]);
 
   /**
@@ -1524,7 +1501,6 @@ export function CopilotWorkspace() {
     },
     [],
   );
-  const [showAllHistory, setShowAllHistory] = useState(false);
 
   /**
    * History survives a reload.
@@ -1625,7 +1601,6 @@ export function CopilotWorkspace() {
 
   const clearHistory = useCallback(() => {
     setLogRaw([]);
-    setShowAllHistory(false);
     if (!address) return;
     try {
       localStorage.removeItem(historyKey(address));
@@ -1966,10 +1941,6 @@ export function CopilotWorkspace() {
    * A client-side-only cap can be bypassed by calling the API directly.
    */
   const sessionSigning = sessionSigningAvailable && autoApprove && capsEnforced;
-  /** Switch clicked on, budget not yet confirmed — engaged but not asserting a policy. */
-  const autoPending = railBudgetOpen && !sessionSigning;
-  /** Only the per-tx cap is required; a blank daily cap falls back to it in enableAutoSign. */
-  const capsValid = railCapsMode === "defaults" || Number(customTx) > 0;
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -2455,19 +2426,22 @@ export function CopilotWorkspace() {
       promptLabel: string,
       opts?: { chainHop?: boolean; background?: boolean },
     ) => {
-      if (cancelledRef.current && (opts?.chainHop || opts?.background)) {
+      const silent = !!opts?.background;
+      /** Header auto-approve on/off: toast only — do not steal the turn card or abort a run. */
+      const quiet = silent && !opts?.chainHop && !body.summarize_execution;
+      if (cancelledRef.current && (opts?.chainHop || opts?.background) && !quiet) {
         return null;
       }
-
-      const silent = !!opts?.background;
-      abortRef.current?.abort();
       const ac = new AbortController();
-      abortRef.current = ac;
+      if (!quiet) {
+        abortRef.current?.abort();
+        abortRef.current = ac;
+      }
 
       if (!silent) setLoading(true);
       // Keep last response on chain hops so the strategy card doesn't flash empty;
       // full new prompts still clear.
-      if (!opts?.chainHop && !body.summarize_execution) {
+      if (!quiet && !opts?.chainHop && !body.summarize_execution) {
         setResponse(null);
       }
       setShowCustom(false);
@@ -2605,13 +2579,13 @@ export function CopilotWorkspace() {
               },
             };
           });
-        } else {
+        } else if (!quiet || data.kind === "needs_wallet_bind") {
           setResponse(data);
         }
         // Agent-chain hops (pending_write / explicit chain) fold into the parent log row.
         // Full multi_leg payloads create/refresh the parent strategy row.
         // Do not log pure summarize receipts as a new turn noise — still fold if multi.
-        if (!body.summarize_execution) {
+        if (!quiet && !body.summarize_execution) {
           pushLog(promptLabel, data, {
             chainHop: !!(opts?.chainHop || body.pending_write || body.resume_multi_leg),
             hopLabel: promptLabel,
@@ -2645,7 +2619,7 @@ export function CopilotWorkspace() {
         }
         return silent ? null : failed;
       } finally {
-        if (abortRef.current === ac) abortRef.current = null;
+        if (!quiet && abortRef.current === ac) abortRef.current = null;
         if (!silent) setLoading(false);
       }
     },
@@ -2896,7 +2870,8 @@ export function CopilotWorkspace() {
       });
 
       const fromMcp = Number(facts.default_cap_usd);
-      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : 1000;
+      if (Number.isFinite(fromMcp) && fromMcp > 0) setMcpDefaultCap(fromMcp);
+      const mcpDef = Number.isFinite(fromMcp) && fromMcp > 0 ? fromMcp : mcpDefaultCap ?? 1000;
       const txCap = action === "custom" ? Number(customTx) || mcpDef : mcpDef;
       const dayCap = action === "custom" ? Number(customDay || customTx) || txCap : mcpDef;
       try {
@@ -2923,7 +2898,7 @@ export function CopilotWorkspace() {
       setAutoApprove(address, true);
       toast.success(`Auto-approve on · $${txCap}/tx · $${dayCap}/day`);
     },
-    [address, customTx, customDay, sessionSigningAvailable],
+    [address, customTx, customDay, sessionSigningAvailable, mcpDefaultCap],
   );
 
   /**
@@ -3005,7 +2980,10 @@ export function CopilotWorkspace() {
   );
 
   const enableAutoSign = useCallback(
-    async (action: "start" | "use_defaults" | "custom" | "disable") => {
+    async (
+      action: "start" | "use_defaults" | "custom" | "disable",
+      opts?: { quiet?: boolean },
+    ) => {
       const label =
         action === "disable"
           ? "Disable auto-sign"
@@ -3014,7 +2992,7 @@ export function CopilotWorkspace() {
             : action === "custom"
               ? `Enable auto-sign ($${customTx}/$${customDay || customTx})`
               : "Enable auto-sign";
-      setSubmitted(submitted ?? label);
+      if (!opts?.quiet) setSubmitted(submitted ?? label);
       const data = await postCopilot(
         {
           message:
@@ -3040,11 +3018,13 @@ export function CopilotWorkspace() {
             : null,
         },
         label,
+        opts?.quiet ? { background: true } : undefined,
       );
       // Sync local auto-approve with the Sign Service session. Caps that only
       // live in this browser are not a policy — applyAutoSignOutcome refuses to
       // arm unless MCP actually enabled a server-side session.
       if (data?.kind === "needs_wallet_bind" && data.wallet_bind) {
+        if (opts?.quiet) setSubmitted(label);
         const finished = await completeWalletBindInApp(data.wallet_bind);
         if (finished) return;
       }
@@ -3064,6 +3044,48 @@ export function CopilotWorkspace() {
       completeWalletBindInApp,
     ],
   );
+
+  const handleAutoApproveToggle = useCallback(() => {
+    if (loading) return;
+    if (!address) {
+      toast.error("Connect a wallet first.");
+      return;
+    }
+    if (sessionSigning) {
+      setAutoApprove(address, false);
+      void enableAutoSign("disable", { quiet: true });
+      toast.success("Auto-approve off");
+      return;
+    }
+    if (!sessionSigningAvailable) {
+      toast.error(
+        "Auto-approve needs a Privy embedded wallet. Freighter signs in its own extension popup.",
+      );
+      return;
+    }
+    if (capsEnforced) {
+      setAutoApprove(address, true);
+      toast.success(
+        savedCaps ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day` : "Auto-approve on",
+      );
+      return;
+    }
+    if (railCapsMode === "custom" && Number(customTx) <= 0) {
+      toast.error("Enter a per-tx cap above 0.");
+      return;
+    }
+    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true });
+  }, [
+    loading,
+    address,
+    sessionSigning,
+    sessionSigningAvailable,
+    capsEnforced,
+    savedCaps,
+    railCapsMode,
+    customTx,
+    enableAutoSign,
+  ]);
 
   /**
    * Poll the pending additional-signer consent, and let the server finish the job.
@@ -5010,14 +5032,11 @@ export function CopilotWorkspace() {
   return (
     <div className="cp-root mx-auto max-w-[1344px] px-5 pt-9 pb-24 sm:px-8 lg:px-12">
       {/* Page header */}
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-5">
-        <div className="flex flex-col gap-1.5">
-          <h1 className="text-h5 font-semibold text-vgray-900">
-            Vanna <span className="bg-gradient bg-clip-text text-transparent">Copilot</span>
-          </h1>
-          <p className="text-[14px] leading-6 text-vgray-500">Say what you want to do. The plan is sized from live reads and shown before anything runs.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2.5">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-5">
+        <h1 className="text-h5 font-semibold text-vgray-900">
+          Vanna <span className="bg-gradient bg-clip-text text-transparent">Copilot</span>
+        </h1>
+        <div className="flex flex-wrap items-center gap-2">
           <ConversationMenu
             items={investigation.conversations}
             activeId={investigation.conversationId}
@@ -5027,10 +5046,19 @@ export function CopilotWorkspace() {
             onOpen={openConversation}
             onDelete={(id) => { void investigation.remove(id); }}
           />
-          {/* The provider/mcp/tool-count chip was build detail, not product: it told the
-              user nothing they could act on, and its "brain offline" state fired on any
-              transient health fetch (a dev-server recompile, a cold start) which reads as
-              a broken product. Real failures surface on the turn card itself. */}
+          <AutoApproveMenu
+            on={sessionSigning}
+            busy={loading}
+            capsMode={railCapsMode}
+            customTx={customTx}
+            customDay={customDay}
+            defaultTx={mcpDefaultCap ?? 1000}
+            defaultDay={mcpDefaultCap ?? 1000}
+            onToggle={handleAutoApproveToggle}
+            onCapsMode={setRailCapsMode}
+            onCustomTx={setCustomTx}
+            onCustomDay={setCustomDay}
+          />
           {/* A developer login expires, and when it does the model call throws and routing
               silently falls back to keyword matching — which is how the same prompt answered
               on one machine and returned the capability list on another. Say so while it is
@@ -5049,11 +5077,6 @@ export function CopilotWorkspace() {
               }
             >
               <CircleAlert size={13} /> gcloud login
-            </div>
-          )}
-          {sessionSigning && (
-            <div className="flex items-center gap-[7px] rounded-full border border-violet-100 bg-violet-50 px-3.5 py-[7px] text-[12px] font-semibold text-violet-500">
-              <ShieldCheck size={13} aria-hidden="true" /> Auto-approve on
             </div>
           )}
         </div>
@@ -5934,130 +5957,10 @@ export function CopilotWorkspace() {
           </section>
           )}
 
-          {/* Session log — last, below the account cards. It is a history, so it belongs
-              after the current turn and the current position, not between them. */}
-          <div className="min-w-0" style={{ order: 4 }}>
-            <div className="mb-3 flex items-baseline justify-between gap-3">
-              <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
-                Session log
-              </p>
-              <div className="flex items-center gap-3">
-                <p className="font-mono text-[10.5px] text-vgray-400">
-                  {log.length} {log.length === 1 ? "turn" : "turns"}
-                </p>
-                {log.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearHistory}
-                    className="font-mono text-[11px] text-vgray-400 underline-offset-2 transition-colors hover:text-imperial-500 hover:underline"
-                  >
-                    clear
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {log.length === 0 ? (
-              <div className="rounded-2xl border border-dashed border-vgray-100 px-[26px] py-[26px] text-center">
-                <p className="text-[13.5px] leading-5 text-vgray-400">
-                  Nothing yet — every intent you run lands here as one card, with its tool call and
-                  outcome.
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2.5">
-                {(showAllHistory ? log : log.slice(0, HISTORY_VISIBLE)).map((e) => {
-                  const kindLabel =
-                    e.status === "executed"
-                      ? "write"
-                      : e.status === "answered"
-                        ? "read"
-                        : e.status === "staged" || e.status === "needs sign"
-                          ? "staged"
-                          : e.status === "error" || e.status === "blocked"
-                            ? "error"
-                            : e.strategy
-                              ? "strategy"
-                              : "turn";
-                  return (
-                    <div
-                      key={e.id}
-                      className="rounded-2xl border border-vgray-100 bg-surface px-[18px] py-4"
-                    >
-                      <div className="flex items-start gap-3.5">
-                        <span
-                          className="mt-[5px] h-2 w-2 shrink-0 rounded-full"
-                          style={{ background: TONE_INK[entryTone(e)] }}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIntentText(e.prompt);
-                              inputRef.current?.focus();
-                              inputRef.current?.scrollIntoView({
-                                block: "center",
-                                behavior: "smooth",
-                              });
-                            }}
-                            title={`${e.prompt}\n\nClick to put this back in the composer`}
-                            className="w-full text-left text-[14.5px] font-semibold leading-[21px] text-vgray-900 text-pretty transition-colors hover:text-violet-500"
-                          >
-                            {e.prompt}
-                          </button>
-                          <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
-                            <span
-                              className="rounded-md px-2 py-[3px] font-mono text-[9.5px] font-bold uppercase tracking-[0.16em]"
-                              style={{
-                                color: TONE_INK[entryTone(e)],
-                                background: TONE_TINT[entryTone(e)],
-                              }}
-                            >
-                              {kindLabel}
-                            </span>
-                            <span className="font-mono text-[10.5px] text-vgray-400">
-                              {e.tool}
-                            </span>
-                            {e.ts != null && (
-                              <span className="font-mono text-[10.5px] text-vgray-300">
-                                {relTime(e.ts)}
-                              </span>
-                            )}
-                          </div>
-                          {e.strategy && e.legs && e.legs.length > 0 && (
-                            <p className="mt-2 font-mono text-[11.5px] leading-[19px] text-vgray-500">
-                              {e.legs.map((l) => `${l.label} · ${l.status}`).join(" → ")}
-                            </p>
-                          )}
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <p
-                            className="font-mono text-[11px] font-semibold"
-                            style={{ color: TONE_INK[entryTone(e)] }}
-                          >
-                            {e.status}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {log.length > HISTORY_VISIBLE && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAllHistory((s) => !s)}
-                    className="font-mono text-[11px] text-violet-500 underline-offset-2 hover:underline"
-                  >
-                    {showAllHistory ? "show fewer" : `show all ${log.length} turns`}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
         </div>
 
         {/* ── Account context, now a row beneath the work rather than a side rail ── */}
-        <div className="grid min-w-0 grid-cols-1 items-start gap-5 lg:grid-cols-2" style={{ order: 3 }}>
+        <div className="min-w-0" style={{ order: 3 }}>
           {/* Account — the dial replaces the flat ratio + linear bar. A number cannot show
               proximity: 1.35 and 3.40 read alike in a table, and only one of them is close
               to being liquidated. The tile carries its own zone tint, so the rail changes
@@ -6225,368 +6128,6 @@ export function CopilotWorkspace() {
             </div>
           )}
 
-        {/* Autonomy — its OWN card, deliberately not folded into the account card.
-            Merging them was tried and reverted: it made one tall card where the health
-            dial, the balances and the toggle all competed, and pushed the numbers you
-            actually scan for below the control you set once. Separate cells keep the
-            account card short enough to read at a glance. */}
-        <div className="rounded-3xl border border-vgray-100 bg-surface p-6">
-          <div className="flex items-center justify-between gap-3">
-            <Eyebrow>Autonomy</Eyebrow>
-            <span
-              className="flex items-center gap-[7px] font-mono text-[11px] font-semibold"
-              style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
-            >
-              <span
-                className="h-1.5 w-1.5 rounded-full"
-                style={{
-                  background: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)",
-                }}
-              />
-              {sessionSigning ? "auto-approve on" : autoPending ? "choosing budget" : "manual signing"}
-            </span>
-          </div>
-
-          {/*
-            The real switch, moved here from the wallet dropdown: this setting only
-            affects the copilot, so it belongs on the copilot's own surface where the
-            user can see its state while a write is staged — buried in the wallet menu
-            it was invisible at the moment it mattered.
-          */}
-          {/*
-            `aria-disabled`, never `disabled`.
-
-            A `disabled` button swallows the click, so on a Freighter wallet this control
-            did nothing at all — no movement, no message, nothing to read except an
-            11px subtitle. It was reported as a broken toggle, and from the outside that
-            is indistinguishable from one. Now the click always lands and the reason is
-            said out loud; only the state change is withheld.
-          */}
-          <button
-            type="button"
-            role="switch"
-            aria-checked={sessionSigning}
-            aria-disabled={!address || loading}
-            onClick={() => {
-              if (loading) return;
-              if (!address) {
-                toast.error("Connect a wallet first.");
-                return;
-              }
-              if (sessionSigning) {
-                // Turning off: local toggle + MCP disable.
-                setRailBudgetOpen(false);
-                setAutoApprove(address, false);
-                void enableAutoSign("disable");
-                toast.success("Auto-approve off");
-                return;
-              }
-              if (!sessionSigningAvailable) {
-                toast.error(
-                  "Auto-approve needs a Privy embedded wallet. Freighter signs in its own " +
-                    "extension popup, which this app cannot skip.",
-                );
-                return;
-              }
-              // Sign Service already has a live session (GET /sessions on connect).
-              // Arm locally — do not open the budget picker or POST enable again.
-              if (capsEnforced) {
-                setRailBudgetOpen(false);
-                setAutoApprove(address, true);
-                toast.success(
-                  savedCaps
-                    ? `Auto-approve on · $${savedCaps.tx}/tx · $${savedCaps.day}/day`
-                    : "Auto-approve on — Sign Service caps are active",
-                );
-                return;
-              }
-              // Turning on opens the budget picker below, in this card. Nothing is sent
-              // to MCP until a budget is confirmed there.
-              if (savedCaps) {
-                setCustomTx(String(savedCaps.tx));
-                setCustomDay(String(savedCaps.day));
-              }
-              setRailCapsMode("defaults");
-              setRailBudgetOpen(true);
-            }}
-            className={`mt-4 flex w-full items-center gap-3 rounded-2xl border border-vgray-100 bg-vgray-50 p-3 text-left transition-colors hover:border-violet-400 ${
-              sessionSigningAvailable ? "" : "opacity-70"
-            }`}
-          >
-            <ShieldCheck
-              size={16}
-              className="shrink-0"
-              style={{ color: sessionSigning || autoPending ? ACCENT : "var(--color-vgray-400)" }}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[13px] font-semibold text-vgray-900">Auto-approve</span>
-              {/* The caps live in the summary chip below, once and only once. */}
-              <span className="block text-[11px] text-vgray-500">
-                {!sessionSigningAvailable
-                  ? "Needs a Privy embedded wallet — tap for why"
-                  : autoPending
-                    ? "Pick a spend budget below to finish turning this on"
-                    : sessionSigning
-                      ? "On · cleared writes run without a prompt"
-                      : "Turn on → choose MCP defaults or custom caps"}
-              </span>
-            </span>
-            {/*
-              A switch that does not move when clicked is the same bug as a `disabled` one:
-              indistinguishable from broken. It cannot claim "on" before MCP answers either,
-              so while the budget picker is open the knob sits mid-travel on a violet track —
-              visibly engaged, not yet asserting a policy that does not exist.
-            */}
-            <span
-              className="relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200"
-              style={{
-                background: sessionSigning
-                  ? ACCENT
-                  : autoPending
-                    ? "var(--color-violet-100)"
-                    : "var(--color-vgray-200)",
-              }}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${
-                  sessionSigning ? "translate-x-4" : autoPending ? "translate-x-2" : "translate-x-0"
-                }`}
-              />
-            </span>
-          </button>
-          <p className="mt-3 text-body-2 text-vgray-500">
-            {sessionSigning
-              ? signServiceState.status === "unavailable"
-                ? "Writes execute without a signing prompt — this app signs them with your embedded wallet. The caps are this browser's own limit, not Sign Service policy: MCP declined to register a server-side session (see “sign service” below), so nothing is enforcing them on the server. Liquidation guardian is on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
-                : "Writes that clear the Sign Service policy execute without a signing prompt. Liquidation guardian is also on: if HF drops under your floor (default 1.3, or the last “keep HF above X” you said), copilot auto-repays a slice of debt."
-              : sessionSigningAvailable
-                ? "Every write waits for an explicit Approve & sign. Turn on session signing to let cleared actions run themselves and enable HF guardian auto-repay."
-                : "Every write is signed in your wallet. Session signing (and HF guardian) needs a Privy embedded wallet — Freighter signs in its own popup, which this app cannot skip."}
-          </p>
-
-          {/* Spend-budget picker — the choice the 03 · AUTO-SIGN gate used to hijack the
-              main column for, asked here beside the switch that raised it. */}
-          {railBudgetOpen && (
-            <div className="mt-4">
-              <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-violet-500">
-                choose a spend budget
-              </p>
-              <div role="radiogroup" aria-label="Spend budget" className="flex flex-col gap-2">
-                {CAPS_CHOICES.map((c) => {
-                  const on = railCapsMode === c.id;
-                  return (
-                    <button
-                      key={c.id}
-                      type="button"
-                      role="radio"
-                      aria-checked={on}
-                      onClick={() => setRailCapsMode(c.id)}
-                      className={`flex min-w-0 items-center gap-[11px] rounded-xl border-[1.5px] p-[12px_13px] text-left transition-colors ${
-                        on
-                          ? "border-violet-500 bg-violet-50"
-                          : "border-vgray-100 hover:border-violet-400"
-                      }`}
-                    >
-                      <span
-                        aria-hidden="true"
-                        className={`flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border-2 ${
-                          on ? "border-violet-500" : "border-vgray-200"
-                        }`}
-                      >
-                        <span
-                          className={`h-[7px] w-[7px] rounded-full ${on ? "bg-violet-500" : ""}`}
-                        />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[13.5px] font-semibold text-vgray-900">
-                          {c.label}
-                        </span>
-                        <span className="block font-mono text-[11px] text-vgray-500">
-                          {c.hint}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              {railCapsMode === "custom" && (
-                <div className="mt-2.5 grid grid-cols-2 gap-2.5">
-                  {CAPS_FIELDS.map((f) => (
-                    <label key={f.id} className="block min-w-0">
-                      <span className="font-mono text-[9.5px] uppercase tracking-[0.12em] text-vgray-400">
-                        {f.label}
-                      </span>
-                      <span className="mt-[5px] flex min-w-0 items-center gap-1.5 rounded-[9px] border border-vgray-200 bg-surface px-2.5 focus-within:border-violet-500">
-                        <span className="font-mono text-[13px] text-vgray-400">$</span>
-                        <input
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          value={f.id === "tx" ? customTx : customDay}
-                          onChange={(e) =>
-                            (f.id === "tx" ? setCustomTx : setCustomDay)(e.target.value)
-                          }
-                          placeholder={f.placeholder}
-                          aria-label={f.aria}
-                          className="w-full min-w-0 flex-1 border-0 bg-transparent py-2.5 font-mono text-[14px] tabular-nums text-vgray-900 outline-none"
-                        />
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )}
-
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  disabled={!address || loading || !capsValid}
-                  onClick={() => {
-                    setRailBudgetOpen(false);
-                    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults");
-                  }}
-                  className={`px-[18px] py-2.5 ${BTN_GRADIENT}`}
-                >
-                  Done
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRailBudgetOpen(false)}
-                  className="rounded-r2 border border-vgray-100 px-4 py-2.5 text-[13px] font-semibold text-vgray-600 transition-colors hover:bg-vgray-50"
-                >
-                  Cancel
-                </button>
-              </div>
-              {railCapsMode === "custom" && !capsValid && (
-                <p className="mt-2 font-mono text-[11px]" style={{ color: WARN_INK }}>
-                  Enter a per-tx cap above 0 to continue.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Confirmed budget. Tinted amber, not violet, when only half of it is true:
-              the app will sign without a prompt but no server-side policy is holding
-              these caps, and a violet check mark would claim one. */}
-          {sessionSigning && !railBudgetOpen && (
-            <div
-              className={`mt-3.5 flex min-w-0 items-center gap-[11px] rounded-xl border p-[12px_14px] ${
-                capsEnforced ? "border-violet-100 bg-violet-50" : ""
-              }`}
-              style={
-                capsEnforced
-                  ? undefined
-                  : { borderColor: "var(--cp-warn-bd)", background: "var(--cp-warn-bg)" }
-              }
-            >
-              <ShieldCheck
-                size={15}
-                className={`shrink-0 ${capsEnforced ? "text-violet-500" : ""}`}
-                style={capsEnforced ? undefined : { color: WARN_INK }}
-              />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-semibold text-vgray-900">
-                  {capsEnforced ? "Budget active" : "Budget set — in-app only"}
-                </span>
-                <span
-                  className={`block font-mono text-[11px] ${capsEnforced ? "text-violet-500" : ""}`}
-                  style={capsEnforced ? undefined : { color: WARN_INK }}
-                >
-                  {savedCaps
-                    ? `$${savedCaps.tx}/tx · $${savedCaps.day}/day`
-                    : "MCP default caps"}
-                  {capsEnforced ? "" : " · not enforced by the Sign Service"}
-                </span>
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (savedCaps) {
-                    setCustomTx(String(savedCaps.tx));
-                    setCustomDay(String(savedCaps.day));
-                    setRailCapsMode("custom");
-                  }
-                  setRailBudgetOpen(true);
-                }}
-                className="shrink-0 rounded-lg border border-violet-100 px-3 py-1.5 text-[12px] font-semibold text-violet-500 transition-colors hover:bg-violet-100"
-              >
-                Edit
-              </button>
-            </div>
-          )}
-
-          {/* Only a real problem earns a row here. The Sign Service is a separate
-              mechanism from in-app session signing and can fail on its own, and
-              "signing authority" is a binding only the additional-signer consent can
-              create — collapsing the two is what made reconnecting the wallet look like
-              a fix for a 403 it can never fix. Saying so when they are healthy was
-              noise, so those rows now appear only when they are not. */}
-          {(signServiceState.status === "unbound" || signServiceState.status === "unavailable") && (
-            <div className="mt-4 flex flex-col">
-              <Row
-                k="sign service"
-                v={
-                  signServiceState.status === "unbound"
-                    ? "not authorized for this wallet"
-                    : `unavailable (${signServiceState.reason ?? "rejected"})`
-                }
-                color={WARN_INK}
-              />
-              {address && (
-                <Row
-                  k="signing authority"
-                  v={signServiceState.status === "unbound" ? "not bound — needs your approval" : "unknown"}
-                  color={signServiceState.status === "unbound" ? WARN_INK : undefined}
-                />
-              )}
-            </div>
-          )}
-        </div>
-
-
-          {/* Recent on-chain writes */}
-          <div
-                className="bg-surface"
-                style={{
-                  borderRadius: 11,
-                  border: "1px solid var(--cp-g100)",
-                  borderLeft: "3px solid var(--cp-g300)",
-                  padding: "22px 22px 22px 19px",
-                }}
-              >
-            <p className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-vgray-400">
-              Recent on-chain
-            </p>
-            {activity.length === 0 ? (
-              <p className="mt-3 font-mono text-[11px] text-vgray-400">
-                no writes yet — signed transactions appear here with their hash, and stay after a
-                reload.
-              </p>
-            ) : (
-              <div className="mt-2">
-                {activity.map((a) => (
-                  <a
-                    key={a.hash}
-                    href={txUrl(a.hash)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2.5 border-b border-vgray-100 py-[11px] last:border-0"
-                  >
-                    <span
-                      className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-r2 bg-vgray-50"
-                      style={{ color: OK_INK }}
-                    >
-                      <Check size={13} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-[13px] font-semibold leading-[19px] text-vgray-800">{a.label}</p>
-                      <p className="font-mono text-[10.5px] text-vgray-400">{truncHash(a.hash)}</p>
-                    </div>
-                    <span className="shrink-0 font-mono text-[10.5px] text-vgray-400">{relTime(a.ts)}</span>
-                  </a>
-                ))}
-              </div>
-            )}
-          </div>
 
           <p className="text-center text-body-3 text-vgray-400">
             Every action runs the same safety checks. Nothing touches the chain until policy passes.

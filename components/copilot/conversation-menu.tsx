@@ -64,6 +64,10 @@ function timeOf(updatedAt: number, bucket: Bucket): string {
     : date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+/** Shared by New chat, History, and Auto-approve so the header reads as one row of controls. */
+export const HEADER_CONTROL =
+  "flex items-center gap-1.5 rounded-full border border-vgray-100 px-3.5 py-[7px] text-[12.5px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
+
 /**
  * New chat, and every earlier conversation behind one control.
  *
@@ -108,11 +112,9 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
     groups.set(bucket, [...(groups.get(bucket) ?? []), item]);
   }
 
-  const control = "flex items-center gap-1.5 rounded-full border border-vgray-100 px-3.5 py-[7px] text-[12.5px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
-
   return (
-    <div className="flex items-center gap-2">
-      <button type="button" onClick={onNew} disabled={busy} className={control}>
+    <>
+      <button type="button" onClick={onNew} disabled={busy} className={HEADER_CONTROL}>
         <Plus size={14} aria-hidden="true" /> New chat
       </button>
 
@@ -123,7 +125,7 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
           onClick={() => { setOpen((wasOpen) => !wasOpen); setAsked(null); }}
           aria-expanded={open}
           aria-haspopup="menu"
-          className={control}
+          className={HEADER_CONTROL}
         >
           <History size={14} aria-hidden="true" /> History
           {items.length > 0 && <span className="tabular-nums text-vgray-400">{items.length}</span>}
@@ -213,6 +215,6 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
