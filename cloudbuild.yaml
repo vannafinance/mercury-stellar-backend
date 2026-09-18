@@ -30,6 +30,21 @@ substitutions:
   _VERTEX_MODEL: gemini-3.7-flash
   _WORKFLOW_PROJECT: vanna-mcp
   _WORKFLOW_DATABASE: copilot-workflows
+  # The mcp.vanna.finance domain mapping (ghs.googlehosted.com) dropped 8 of 20
+  # connections on 11 Sep; the service's own run.app URL dropped 0. The default
+  # keeps the public name so existing environments are unchanged — deploys that
+  # want the direct URL pass it in.
+  _MCP_BASE_URL: https://mcp.vanna.finance/mcp
+  # RFC 8707 audience. Pinned to the PUBLIC name independently of _MCP_BASE_URL,
+  # so pointing the transport at a run.app URL cannot silently change the `aud`
+  # the MCP server is asked to accept. lib/copilot/config.ts falls back to
+  # mcpBaseUrl when this is empty, which is where that drift would come from.
+  _MCP_RESOURCE: https://mcp.vanna.finance/mcp
+  # Connect Gateway origin. Left empty, lib/copilot/wallet-bind.ts falls back to
+  # the MCP base URL for its host allowlist, and a connect_url the Sign Service
+  # returns on the gateway's own run.app host fails that check — the bind is
+  # then dropped with no error anywhere.
+  _SIGN_CONNECT_BASE_URL: ""
   _TAG: latest
 
 options:
@@ -91,7 +106,7 @@ steps:
       # roles/aiplatform.user there keeps a single consistent value instead of
       # splitting them. COPILOT_PUBLIC_ORIGIN/_AUTH_REDIRECT_URI derive from
       # _SITE_URL so dev and prod each get their own origin automatically.
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=https://mcp.vanna.finance/mcp,GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE}
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=${PROJECT_ID},STATS_ENABLED=${_STATS_ENABLED},MCP_MODE=live,MCP_BASE_URL=${_MCP_BASE_URL},MCP_RESOURCE=${_MCP_RESOURCE},SIGN_CONNECT_BASE_URL=${_SIGN_CONNECT_BASE_URL},GOOGLE_CLOUD_LOCATION=global,VERTEX_MODEL=${_VERTEX_MODEL},COPILOT_PUBLIC_ORIGIN=${_SITE_URL},COPILOT_AUTH_REDIRECT_URI=${_SITE_URL}/api/auth/callback,COPILOT_WORKFLOW_FIRESTORE_PROJECT=${_WORKFLOW_PROJECT},COPILOT_WORKFLOW_FIRESTORE_DATABASE=${_WORKFLOW_DATABASE}
       # WorkOS M2M is what every copilot READ authenticates with; the Connect
       # OAuth trio (WORKOS_CLIENT_*/ENV_CLIENT_ID) backs the write/auto-sign
       # path. Cloud Run resolves `:latest` at deploy time, so a new secret
