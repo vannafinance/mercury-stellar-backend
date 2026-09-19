@@ -3,6 +3,7 @@ import { lpVenues, ASSET_IDS } from "../registry/assets";
 import { CATALOG, catalogEntry, type ArgSpec } from "./catalog";
 import { isRecord, PLAN_SIZINGS } from "./decision";
 import { WORKFLOW_OPS } from "../workflow/types";
+import { LIFECYCLE_WRITES } from "../workflow/lifecycle";
 import type { ReadCapability } from "./types";
 
 const CONTROL_NAMES = new Set(["research_complete", "clarify", "blocked"]);
@@ -92,6 +93,16 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
             },
             required: ["op", "asset", "amount", "sourceQuote"],
           },
+        },
+        write: {
+          type: "object",
+          description:
+            "A lifecycle write, not a plan: no asset, no amount. Opening a margin account is create_account. Quote the user's message. Never combine with goal.actions or plans.",
+          properties: {
+            op: { type: "string", enum: [...LIFECYCLE_WRITES] },
+            sourceQuote: { type: "string" },
+          },
+          required: ["op", "sourceQuote"],
         },
         plans: {
           type: "array",
@@ -193,6 +204,7 @@ function wrapComplete(args: Record<string, unknown>): Record<string, unknown> {
   if (source.intent !== undefined) goal.intent = source.intent;
   if (source.relation !== undefined) goal.relation = source.relation;
   if (source.actions !== undefined) goal.actions = source.actions;
+  if (source.write !== undefined) goal.write = source.write;
   if (source.healthFactorFloor !== undefined) goal.healthFactorFloor = source.healthFactorFloor;
   // Copied by name, like every field above it. A field the model answers and this does not
   // forward is a field that silently does not exist: 16 Sep, the card read "Understood as:

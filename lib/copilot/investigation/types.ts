@@ -38,6 +38,11 @@ export interface GoalUnderstanding {
   intent?: "answer" | "strategy";
   relation?: "new" | "refine";
   actions?: Array<{ op: WorkflowOp; asset: string; amount: string; sourceQuote: string }>;
+  /**
+   * A lifecycle write — not a sized plan. Opening a margin account is one of these:
+   * it has no token amount and runs for the connected G-wallet.
+   */
+  write?: { op: import("../workflow/lifecycle").LifecycleWriteOp; sourceQuote: string };
   objective: string;
   constraints: string[];
   borrowing: "unspecified" | "allowed" | "required" | "forbidden";

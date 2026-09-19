@@ -1,5 +1,6 @@
 import { lpVenues, type LpVenue, ASSET_IDS } from "../registry/assets";
 import { ASSET_OUT_OPS, WORKFLOW_OPS } from "../workflow/types";
+import { LIFECYCLE_WRITES, isLifecycleWriteOp } from "../workflow/lifecycle";
 import type { PlanLeg, PlanOp, PlanSizing, ProposedPlan, ReadRequest, ResearchDecision } from "./types";
 
 export const PLAN_OPS: readonly PlanOp[] = WORKFLOW_OPS;
@@ -71,7 +72,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     return refuse(`unknown kind or keys: kind=${String(raw.kind)} keys=${Object.keys(raw).join(",")}`);
   }
   const goal = raw.goal;
-  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : [])]) ||
+  if (!isRecord(goal) || !exactKeys(goal, ["objective", "constraints", "borrowing", ...(Object.hasOwn(goal, "intent") ? ["intent"] : []), ...(Object.hasOwn(goal, "relation") ? ["relation"] : []), ...(Object.hasOwn(goal, "actions") ? ["actions"] : []), ...(Object.hasOwn(goal, "write") ? ["write"] : []), ...(Object.hasOwn(goal, "healthFactorFloor") ? ["healthFactorFloor"] : []), ...(Object.hasOwn(goal, "slippageAccepted") ? ["slippageAccepted"] : [])]) ||
     (goal.relation !== undefined && !["new", "refine"].includes(String(goal.relation))) ||
     (goal.intent !== undefined && !["answer", "strategy"].includes(String(goal.intent))) ||
     !text(goal.objective) || !texts(goal.constraints) ||
@@ -92,6 +93,11 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
     typeof action.amount === "string" && action.amount.length <= 60 && /^\d+(\.\d{1,18})?$/.test(action.amount) &&
     text(action.sourceQuote, 1600));
   const droppedActions = (goal.actions === undefined ? 0 : Array.isArray(goal.actions) ? goal.actions.length : 1) - validActions.length;
+  const write = goal.write === undefined || goal.write === null ? undefined
+    : isRecord(goal.write) && exactKeys(goal.write, ["op", "sourceQuote"]) &&
+      isLifecycleWriteOp(String(goal.write.op)) && text(goal.write.sourceQuote, 1600)
+      ? { op: goal.write.op as (typeof LIFECYCLE_WRITES)[number], sourceQuote: String(goal.write.sourceQuote) }
+      : undefined;
   // A floor is a literal: the exact decimal, inside a quote of the user's message. Anything else is no floor.
   /**
    * Accepted only when the model quotes the user saying it. The quote is checked against
@@ -136,7 +142,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * describes, in the branch it did not cover. 15 Sep: "remove 26k XLM liquidity from
    * blend pool and swap 5k xlm to AqUSDC" sized two legs and died as "invalid decision".
    */
-  const allowEmptyEvidence = goal.intent === "answer" || validActions.length > 0 || parsedPlans.plans.length > 0;
+  const allowEmptyEvidence = goal.intent === "answer" || validActions.length > 0 || parsedPlans.plans.length > 0 || !!write;
   let droppedFindings = 0;
   for (const finding of raw.findings) {
     if (!isRecord(finding) || !exactKeys(finding, ["summary", "evidenceIds"]) ||
@@ -153,6 +159,7 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
       ...(goal.intent ? { intent: goal.intent as "answer" | "strategy" } : {}),
       ...(goal.relation ? { relation: goal.relation as "new" | "refine" } : {}),
       ...(validActions.length ? { actions: structuredClone(validActions) as NonNullable<Extract<ResearchDecision, { kind: "research_complete" }>["goal"]["actions"]> } : {}),
+      ...(write ? { write } : {}),
       ...(floor ? { healthFactorFloor: floor } : {}),
       ...(slippage ? { slippageAccepted: slippage } : {}),
       objective: goal.objective,

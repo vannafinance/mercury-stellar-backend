@@ -68,6 +68,11 @@ export interface ResearchView {
   scope: { wallet: string | null; smartAccount: string | null; network: string };
   continuation: string;
   proposalCandidateId?: string | null;
+  /**
+   * A lifecycle write the page should run through `/api/copilot` `pending_write`.
+   * Not a plan: no amounts, no journal. Identity is the connected session wallet.
+   */
+  pendingWrite?: { op: import("../workflow/lifecycle").LifecycleWriteOp } | null;
   executionAllowed: false;
   /** Server wall time for this turn. Optional so older clients stay valid. */
   elapsedMs?: number;

@@ -21,6 +21,7 @@ import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPl
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
 import { detectAutomationGap } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
+import { anchoredLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
 import { withInvestigationPhase, withInvestigationRun, setSpanAttr } from "../telemetry";
 import { ASSET_SYMBOL_PATTERN, lpPairs, poolVenueFor, resolveAssetDef } from "../registry/assets";
@@ -568,9 +569,16 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * new loans. Only an explicit prohibition suppresses borrow shapes.
    */
   const borrowing = outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified";
+  const lifecycleOp = outcome.kind === "research_complete"
+    ? anchoredLifecycleWrite(
+      outcome.goal.write,
+      messages,
+      Boolean(outcome.goal.actions?.length || outcome.plans?.length),
+    )
+    : null;
   let candidates = null;
   try {
-    candidates = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
+    candidates = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
           debtUsd: capacity?.debtUsd ?? "0",
@@ -599,7 +607,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * on 13 Sep the card showed nothing at all and the user could not tell "no good option"
    * from "option discarded".
    */
-  let modelPlans = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
+  let modelPlans = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" ? [...(outcome.plans ?? [])] : [];
   /**
    * A stated write ("lend 1 xlm to earn") the model nominated as `goal.actions` is a plan
    * of literal legs, and goes through the same sizer as every other plan: the reads it
@@ -607,7 +615,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    * refusal names the figure. It used to compile straight to steps (14 Sep: "lend 1 xlm"
    * from a wallet with nothing spendable, refused by the contract after Approve).
    */
-  const statedPlan = outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
+  const statedPlan = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
     ? planFromStatedActions(shareSameOpLiteralActions(outcome.goal.actions, messages), outcome.goal.objective) : null;
   if (statedPlan) modelPlans.push(statedPlan);
   /**
@@ -767,7 +775,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
   } else if (!scope.trader) {
     warnings.push("No verified wallet is connected. Only public market information was available.");
-  } else if (!scope.smartAccount) {
+  } else if (!scope.smartAccount && !lifecycleOp) {
     warnings.push("No active margin account was discovered for this wallet.");
   }
   if (outcome.kind === "stopped") warnings.push(outcome.reason === "model_unavailable"
@@ -810,7 +818,8 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
      * Delegated signing is consent to skip the wallet popup, not consent to pick the
      * strategy. With more than one option the choice stays the user's.
      */
-    proposalCandidateId: requestedSteps.length ? REQUESTED_ACTIONS_ID
+    proposalCandidateId: lifecycleOp ? null
+      : requestedSteps.length ? REQUESTED_ACTIONS_ID
       : candidates?.feasible.length === 1 ? candidates.feasible[0].id : null,
     // The goal restatement is the user's own request echoed back, not a financial claim,
     // so it is publishable while findings prose is not.
@@ -826,6 +835,7 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
       id: observation.id, label: observation.capability.replaceAll("_", " "), status: observation.status, readAt: observation.observedAt,
     })), warnings, scope: { wallet: scope.trader, smartAccount: scope.smartAccount, network: scope.network },
     continuation: codec.seal(scope, messages, question, evidence), executionAllowed: false,
+    pendingWrite: lifecycleOp && scope.trader ? { op: lifecycleOp } : null,
   };
 }
 

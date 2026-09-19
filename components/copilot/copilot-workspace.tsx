@@ -1415,6 +1415,7 @@ export function CopilotWorkspace() {
   const workflow = useWorkflow(address);
   const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const proposedRef = useRef<string | null>(null);
+  const lifecycleWriteRef = useRef<string | null>(null);
   const signedWorkflowStepRef = useRef<string | null>(null);
   const approvedJournalRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
@@ -2655,6 +2656,7 @@ export function CopilotWorkspace() {
       approvedJournalRef.current = null;
       setSigningJournal(false);
       proposedRef.current = null;
+      lifecycleWriteRef.current = null;
       resetWorkflow();
       resetStrategyAccumulator();
       setResponse(null);
@@ -2704,13 +2706,23 @@ export function CopilotWorkspace() {
      * rule alone did nothing.
      */
     const candidateId = view.proposalCandidateId;
-    if (!candidateId || !view.continuation) return;
+    if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
     const proposeKey = `${view.continuation}:${candidateId}`;
     if (proposedRef.current === proposeKey) return;
     proposedRef.current = proposeKey;
     void proposePlan(view.continuation, candidateId);
   }, [investigation.result, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading]);
+  useEffect(() => {
+    const view = investigation.result;
+    if (!view || investigation.loading || investigation.error) return;
+    const op = view.pendingWrite?.op;
+    if (!op) return;
+    const key = `${view.continuation}:${op}`;
+    if (lifecycleWriteRef.current === key) return;
+    lifecycleWriteRef.current = key;
+    void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest);
+  }, [investigation.result, investigation.loading, investigation.error, postCopilot]);
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;

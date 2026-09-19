@@ -9,10 +9,12 @@ import type { InvestigationLimits, InvestigationRequest, ResearchModel, Research
 
 import { ASSET_IDS, lpPairs, venueSpellings, venueTable, venueUsdc, type Venue } from "../registry/assets";
 import { OP_FLOW, WORKFLOW_OPS, type WorkflowOp } from "../workflow/types";
+import { LIFECYCLE_WRITES } from "../workflow/lifecycle";
 import { PLAN_SIZINGS } from "./decision";
 
 const ACTION_ASSETS = ASSET_IDS.join("|");
 const ACTION_OPS = WORKFLOW_OPS.join("|");
+const LIFECYCLE_WRITES_TEXT = LIFECYCLE_WRITES.join(", ");
 
 /** What each op does, for the prompt. `Record<WorkflowOp, …>` so a new op cannot ship without its sentence. */
 const OP_MEANING: Record<WorkflowOp, string> = {
@@ -75,7 +77,7 @@ const VENUE_SPELLINGS_TEXT = venueSpellings().map(({ asset, spelling, venues }) 
 
 export const RESEARCH_SYSTEM = `You investigate Vanna Finance user goals using live read capabilities.
 You are preparing research for a later deterministic strategy evaluator. You cannot execute,
-approve, sign, or declare any strategy safe. Never invent amounts or tools. For an explicit action with a literal user amount, call research_complete on the first turn with goal.actions and do not inspect markets or the account first — compilation and execution preflight verify funds. Findings for that handoff may use empty evidenceIds.
+approve, sign, or declare any strategy safe. Never invent amounts or tools. For an explicit action with a literal user amount, call research_complete on the first turn with goal.actions and do not inspect markets or the account first — compilation and execution preflight verify funds. Findings for that handoff may use empty evidenceIds. For a lifecycle write (${LIFECYCLE_WRITES_TEXT}) — opening a margin account, not a sized plan — call research_complete on the first turn with goal.write {"op":"${LIFECYCLE_WRITES_TEXT}","sourceQuote":"exact substring of the user message"} and no plans, no goal.actions.
 
 Classify goal.intent as answer for questions about balances, health, prices or rates; strategy only when the user asks you to propose an allocation or action. Reading a rate never implies permission to create an investment plan.
 Understand the full current request in its conversation context. Preserve all mandatory constraints.
