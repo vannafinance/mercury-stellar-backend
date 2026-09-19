@@ -1,5 +1,5 @@
 import type { InvestigationScope } from "../investigation/types";
-import type { Venue } from "../registry/assets";
+import { assetForVenueSpelling, type Venue } from "../registry/assets";
 
 /**
  * The write operations the copilot can compose, propose and execute. THE list — every
@@ -149,6 +149,47 @@ export interface ProposalStep {
   /** Absent means `stated`: never re-derive an amount whose origin was not recorded. */
   sizing?: StepSizing;
 }
+
+export type ReviewFundingPocket = "wallet" | "earn" | "account";
+export interface ReviewFundingMovement {
+  pocket: ReviewFundingPocket;
+  asset: string;
+  amount: string;
+}
+export interface StepFundingPreview {
+  spends: ReviewFundingMovement[];
+  receives: ReviewFundingMovement[];
+}
+
+/**
+ * Deterministic token movements shared by the approval card and the server's
+ * authoritative funding check. Quoted swap/LP-exit outputs are deliberately
+ * excluded because a later sealed step cannot safely spend them before execution.
+ */
+export function stepFundingPreview(step: ProposalStep): StepFundingPreview {
+  const flow = OP_FLOW[step.op];
+  const visible = (pocket: Pocket): pocket is ReviewFundingPocket =>
+    pocket === "wallet" || pocket === "earn" || pocket === "account";
+  const spends: ReviewFundingMovement[] = visible(flow.from)
+    ? [{ pocket: flow.from, asset: step.asset, amount: step.amount }]
+    : [];
+  const receives: ReviewFundingMovement[] = [];
+
+  if (step.op === "add_liquidity") {
+    const wireAsset = String(step.args.token_b ?? "");
+    const pairedAsset = assetForVenueSpelling("margin", wireAsset)?.id ?? wireAsset;
+    const pairedAmount = step.args.amount_b;
+    if (pairedAsset && (typeof pairedAmount === "string" || typeof pairedAmount === "number")) {
+      spends.push({ pocket: "account", asset: pairedAsset, amount: String(pairedAmount) });
+    }
+  }
+
+  if (step.op !== "redeem" && step.op !== "swap" && step.op !== "remove_liquidity" && visible(flow.to)) {
+    receives.push({ pocket: flow.to, asset: step.asset, amount: step.amount });
+  }
+  return { spends, receives };
+}
+
 export interface WorkflowProposal {
   id: string;
   revision: number;
@@ -205,7 +246,8 @@ export interface WorkflowView {
   assumptions: string[];
   constraints: string[];
   message: string;
-  steps: Array<Pick<ProposalStep, "id" | "op" | "asset" | "amount" | "label" | "sizing"> & WorkflowStepState>;
+  steps: Array<Pick<ProposalStep, "id" | "op" | "asset" | "amount" | "label" | "sizing"> &
+    { funding?: StepFundingPreview } & WorkflowStepState>;
   /** Display-only swap terms. The server keeps the executable arguments in the proposal. */
   swap?: {
     tokenIn: string; tokenOut: string; venue: "aquarius" | "soroswap";
@@ -234,7 +276,7 @@ export function workflowView(record: WorkflowRecord): WorkflowView {
     steps: p.steps.map((step, index) => {
       const state = record.steps[index];
       return { id: step.id, op: step.op, asset: step.asset, amount: step.amount, label: step.label,
-        sizing: step.sizing,
+        sizing: step.sizing, funding: stepFundingPreview(step),
         status: state.status, txHash: state.txHash, unsignedXdr: state.unsignedXdr,
         message: state.message, settledLedger: state.settledLedger,
         executedAmountUsd: state.executedAmountUsd };

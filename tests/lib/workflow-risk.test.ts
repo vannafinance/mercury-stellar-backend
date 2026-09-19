@@ -63,6 +63,42 @@ describe("deterministic execution risk", () => {
     unfunded.steps.push({ ...unfunded.steps[0], id: "supply", op: "supply_blend", tool: "vanna_blend_supply", amount: "1200", args: { ...unfunded.steps[0].args, amount: "1200" } });
     expect(await validate(unfunded)).toMatch(/not enough XLM in the margin account/);
   });
+  it("credits ordered deposits before checking both add-liquidity assets", async () => {
+    const p = proposal("1");
+    p.floor = null;
+    p.objective = "Deposit XLM and SOUSDC, then add Soroswap liquidity";
+    p.steps = [
+      {
+        id: "deposit-xlm", op: "deposit_collateral", asset: "XLM", amount: "100", label: "Deposit XLM",
+        tool: "vanna_deposit_collateral", args: writeArgsFor("deposit_collateral", "XLM", "100", scope),
+      },
+      {
+        id: "deposit-sousdc", op: "deposit_collateral", asset: "SOUSDC", amount: "25000", label: "Deposit SOUSDC",
+        tool: "vanna_deposit_collateral", args: writeArgsFor("deposit_collateral", "SOUSDC", "25000", scope),
+      },
+      {
+        id: "lp", op: "add_liquidity", asset: "XLM", amount: "100", label: "Add liquidity",
+        tool: "vanna_add_liquidity", args: writeArgsFor("add_liquidity", "XLM", "100", scope, {
+          tokenOut: "SOUSDC", venue: "soroswap", amountB: "29.0724972", minOut: "1",
+        }),
+      },
+    ];
+    mcp.call.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
+      if (tool !== "vanna_get_token_balance") throw new Error(`Unexpected tool ${tool}`);
+      const holder = String(args.holder);
+      const contract = String(args.token_contract);
+      const isWallet = holder === scope.trader;
+      const isXlm = contract === Asset.native().contractId(Networks.TESTNET);
+      return { holder, contract, human: isWallet ? (isXlm ? "100" : "25000") : "0", decimals: 7 };
+    });
+
+    expect(await validate(p)).toBeNull();
+
+    p.steps[2].args = writeArgsFor("add_liquidity", "XLM", "100", scope, {
+      tokenOut: "SOUSDC", venue: "soroswap", amountB: "25000.0000001", minOut: "1",
+    });
+    expect(await validate(p)).toMatch(/not enough SOUSDC in the margin account/);
+  });
   it("rejects unsupported tools, inconsistent amounts and extra arguments", () => {
     const p = proposal("50");
     expect(() => allowedInvocation({ ...p.steps[0], tool: "shell" }, scope)).toThrow();

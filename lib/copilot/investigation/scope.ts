@@ -155,7 +155,13 @@ async function resolveSmartAccount(
   throw new ResearchError("account_unverified", "The account response couldn't be verified. No account was selected.");
 }
 
-/** Only verified bindings can select a wallet; never forward a provided C-address. */
+/**
+ * Resolve the wallet used for public reads and manual wallet-sign plans.
+ *
+ * A Sign Service binding is still required by the auto-sign gate. It is not
+ * required to prepare a manual plan: a new Privy wallet has no binding yet,
+ * and the connected wallet must sign the resulting XDR itself.
+ */
 export async function resolveInvestigationScope(
   input: { subject: string; wallet: string | null; network: string },
   mcp: Pick<MCPClient, "call">,
@@ -187,7 +193,18 @@ export async function resolveInvestigationScope(
 
   const bound = await readBindings(mcp, signal, input.subject, input.wallet);
   if (!isUsable(bound)) {
-    // Empty or malformed: could not verify. Never accuse the wallet of being unlinked.
+    // An authenticated browser may prepare a manual wallet-sign plan for its
+    // connected address before Sign Service has created a binding. This grants
+    // no signing authority: auto-sign remains protected by the binding gate.
+    if (bound.reason === "bindings_empty" && input.wallet) {
+      const smartAccount = await resolveSmartAccount(mcp, signal, input.wallet);
+      return remember(input, {
+        subject: input.subject,
+        trader: input.wallet,
+        smartAccount,
+        network: input.network,
+      });
+    }
     return publicScope(input, "bindings");
   }
   const unique = [...new Set(bound.value)];
