@@ -1290,6 +1290,10 @@ export function routeMessage(message: string): RoutedIntent {
    * phrase list nor the supply-verb alternative below it, so it fell through everything.
    */
   const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/i.test(text);
+  const withdrawsWholeBlendPosition =
+    blendRemoveVerb &&
+    (/\b(all|entire|full|whole)\b/i.test(text) ||
+      /\b(?:my\s+)?(?:(?:xlm|blusdc|usdc)\s+)?position\b/i.test(text));
   const asksPersonalBlendSupply =
     /\b(what|how much)\b[\s\S]{0,40}\bsupply\b|\bmy\b[\s\S]{0,30}\bsupply\b|\bsupplied\b/i.test(text);
   const isBlendFarmWrite =
@@ -1309,15 +1313,16 @@ export function routeMessage(message: string): RoutedIntent {
       (any(text, "farm", "deploy", "supply", "deposit", "add", "liquidity") || blendRemoveVerb) &&
       !any(text, "position", "stats", "apy")) ||
     (any(text, "blend") && leverage != null && leverage > 1 && !any(text, "position", "stats", "apy"));
-  if (isBlendFarmWrite && blendRemoveVerb && !any(text, "position", "stats", "apy", "btoken", "which reserve")) {
+  if (isBlendFarmWrite && blendRemoveVerb && !any(text, "stats", "apy", "btoken", "which reserve")) {
     return {
       kind: "write",
       op: "withdraw_from_blend",
       template_id: "withdraw_from_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction: amount == null && withdrawsWholeBlendPosition ? 1 : null,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && !withdrawsWholeBlendPosition,
     };
   }
   if (
@@ -1702,15 +1707,16 @@ export function routeMessage(message: string): RoutedIntent {
     "leverage",
     "lever",
   );
-  if (blendVenueNamed && blendRemoveVerb && !blendRateRead) {
+  if (blendVenueNamed && blendRemoveVerb && (!blendRateRead || withdrawsWholeBlendPosition)) {
     return {
       kind: "write",
       op: "withdraw_from_blend",
       template_id: "withdraw_from_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction: amount == null && withdrawsWholeBlendPosition ? 1 : null,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && !withdrawsWholeBlendPosition,
     };
   }
   if (

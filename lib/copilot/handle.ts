@@ -1702,6 +1702,73 @@ async function runWrite(
   // spendable (website does too) and always surface wallet vs spendable balances.
   let sizingNote: string | null = null;
   let sizingFacts: Record<string, unknown> | null = null;
+
+  // "Remove my XLM position from Blend" is an explicit 100% withdrawal, not a
+  // request to inspect the position and not a missing-amount clarification. Size it
+  // from the same live underlying balance the Farm page displays. An unread position
+  // is deliberately different from a confirmed zero position.
+  if (
+    action.op === "withdraw_from_blend" &&
+    !(action.amount != null && action.amount > 0) &&
+    action.fraction === 1
+  ) {
+    if (!smartAccount) {
+      return {
+        kind: "blocked",
+        message: "I need your smart account to read and withdraw the Blend position.",
+        intent: { template_id: action.op, slots: { asset: action.asset } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const requestedAsset = String(action.asset || "XLM").toUpperCase();
+    const blendAsset = requestedAsset === "BLUSDC" ? "USDC" : requestedAsset;
+    const displayAsset = blendAsset === "USDC" ? "BLUSDC" : blendAsset;
+    let underlyingValue: unknown;
+    try {
+      const { BlendService } = await import("@/lib/blend-utils");
+      const live = await BlendService.getUserBlendBalance(smartAccount, blendAsset as "XLM" | "USDC");
+      underlyingValue = live.underlyingBalance;
+    } catch {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${displayAsset} Blend position. Please retry before withdrawing.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, read_status: "unavailable" } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const fullAmount =
+      typeof underlyingValue === "number" ? underlyingValue : Number.parseFloat(String(underlyingValue ?? ""));
+    if (!Number.isFinite(fullAmount)) {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${displayAsset} Blend position. Please retry before withdrawing.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, read_status: "invalid" } },
+        request_id: ctx.request_id,
+      };
+    }
+    if (fullAmount <= 0) {
+      return {
+        kind: "blocked",
+        message: `You have no ${displayAsset} supplied to Blend.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, balance: 0 } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    action.amount = fullAmount;
+    action.asset = displayAsset;
+    action.fraction = null;
+    action.requires_amount = false;
+    sizingNote = `Sized from your live ${displayAsset} Blend position.`;
+    sizingFacts = {
+      asset: displayAsset,
+      blend_underlying_balance: fullAmount,
+      withdrawal_fraction: 1,
+    };
+  }
+
   if (action.op === "repay") {
     const sized = await resolveRepayAmount(action, {
       ...ctx,

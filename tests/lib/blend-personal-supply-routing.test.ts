@@ -16,6 +16,18 @@ import { resolveUnnamedIntent } from "@/lib/copilot/unnamed-intent";
 import { routeMessage } from "@/lib/copilot/router";
 
 describe("personal Blend supply routing", () => {
+  it("does not steal an instruction to remove the complete XLM position", () => {
+    const routed = routeMessage("Remove my XLM position from Blend farm.");
+    expect(routed).toMatchObject({
+      kind: "write",
+      op: "withdraw_from_blend",
+      asset: "XLM",
+      amount: null,
+      fraction: 1,
+      requires_amount: false,
+    });
+  });
+
   it("routes the exact reported prompt to the user's XLM position", () => {
     const routed = routeMessage("What is my current XLM Blend supply?");
     expect(routed).toMatchObject({
