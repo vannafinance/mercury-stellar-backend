@@ -628,6 +628,13 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
    */
   const statedPlan = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && !modelPlans.length && outcome.goal.actions?.length
     ? planFromStatedActions(shareSameOpLiteralActions(outcome.goal.actions, messages), outcome.goal.objective) : null;
+  /**
+   * Its POSITION, not its identity: `withSharedLiteralAmount` below can append a leg,
+   * which would change the plan's candidate id and silently turn the user's own
+   * instruction back into a composed proposal. The transforms map in order and never
+   * reorder, so the index survives what the id does not.
+   */
+  const statedPlanIndex = statedPlan ? modelPlans.length : -1;
   if (statedPlan) modelPlans.push(statedPlan);
   /**
    * A swap that did not say what it buys is completed from the user's sentence here, before
@@ -721,6 +728,14 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     const resolved = resolvePlans(modelPlans, {
       scope, observations: result.observations, now: observedNow, messages,
       capacity: planPosition, borrowing, comparisons: planComparisons,
+      /**
+       * Which of these the user stated outright, so the carry guard can tell an offer it
+       * should never make from an instruction it has no business refusing. `statedPlan`
+       * is one of `modelPlans` by this point, and its id is the only thing separating
+       * them again.
+       */
+      statedPlanId: statedPlanIndex >= 0 && modelPlans[statedPlanIndex]
+        ? planCandidateId(modelPlans[statedPlanIndex]) : null,
       // Only an acceptance anchored in the user's own message counts.
       goal: outcome.kind === "research_complete" && anchoredSlippageAccepted(outcome.goal, messages)
         ? outcome.goal : undefined,

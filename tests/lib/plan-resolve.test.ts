@@ -1439,3 +1439,35 @@ describe("a plan whose return cannot be read is not called a loss", () => {
     expect(rejected[0]?.reason ?? "").toMatch(/loses money by construction/);
   });
 });
+
+/**
+ * Whose idea it was decides whether a losing carry is refused or offered.
+ *
+ * The same arithmetic warrants two different answers. A shape the MODEL composed that
+ * cannot cover its own borrow cost should never reach the user — proposing it is the
+ * mistake. A shape the USER stated is not a proposal: they asked for it, the Margin page
+ * opens it without objecting, and refusing it outright leaves them to do the whole thing
+ * by hand. That is the copilot failing at its job, not protecting them.
+ *
+ * Aditya, 20 Sep: *"ui se ho ra to copilot se bhi hona chahiye ni to fir mtlb ni hua ...
+ * atleast kuch to way hoga"*.
+ */
+describe("a losing carry the user asked for is offered, not refused", () => {
+  const legs: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC into Blend"];
+  const shape = plan("Levered Blend", legs);
+
+  it("still rules the shape out when the model composed it", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").toMatch(/loses money by construction/);
+  });
+
+  it("does not rule it out when it is the plan the user stated", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages, statedPlanId: planCandidateId(shape) }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
+  });
+});

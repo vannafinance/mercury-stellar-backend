@@ -55,6 +55,20 @@ export interface PlanContext {
    */
   goal?: Pick<GoalUnderstanding, "slippageAccepted">;
   /**
+   * The candidate id of the plan built from what the user stated outright, when this turn
+   * has one (`planCandidateId` of `planFromStatedActions`'s plan).
+   *
+   * Read by the carry guard, because the same arithmetic warrants two different answers.
+   * A shape the MODEL composed that cannot cover its own borrow cost should never be
+   * offered — proposing it is the mistake. A shape the USER stated is not a proposal at
+   * all: they asked for it, they can open it from the Margin page without the product
+   * objecting, and refusing it outright leaves them to do the whole thing by hand, which
+   * is the copilot failing at its job rather than protecting them. So a stated plan is
+   * sized and offered with the cost stated in the open, and only a composed one is ruled
+   * out. The numbers, and every other gate, are identical either way.
+   */
+  statedPlanId?: string | null;
+  /**
    * The margin position and the user's stated floor (null when none was stated — then the
    * contract's liquidation line is the stop and no borrow can be sized). Null as a whole
    * when the position could not be read; every account-touching leg is then rejected.
@@ -1353,7 +1367,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * When a supply leg exists, if its return does not cover the borrow cost, rule the
    * strategy out rather than ranking it last.
    */
-  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable) {
+  const userStatedThis = ctx.statedPlanId != null && planCandidateId(plan) === ctx.statedPlanId;
+  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable && !userStatedThis) {
     const borrowLeg = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow")!;
     const supplyLeg = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
     const borrowRow = ctx.comparisons.find((c) => c.asset === borrowLeg.leg.asset);
