@@ -17,7 +17,7 @@
 
 import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { ASSET_OUT_OPS, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
@@ -1298,6 +1298,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    */
   let supplied = ZERO, returnWad = ZERO, borrowed = ZERO;
   /**
+   * True once the plan deploys value into a position whose return this code cannot read —
+   * a Soroswap or Aquarius LP, whose income is trading fees, not a protocol rate.
+   *
+   * The carry guard below skipped such a leg entirely (`rate === null` → `continue`), so
+   * a leveraged LP strategy had its BORROW counted as a cost and the LP it funds counted
+   * as earning nothing. "Deposit 100 XLM, borrow 2x, supply to Blend and LP the rest on
+   * Soroswap" was therefore ruled out as losing "by construction" — a conclusion drawn
+   * from a number nobody had, about a position the user can open from the Margin page
+   * without complaint. An unreadable return is an unknown, and an unknown must not be
+   * scored as zero and then reported as a loss.
+   */
+  let returnUnreadable = false;
+  /**
    * A supply leg's rate is the label on the option, not an input to its size. A leg whose
    * rate was not read (or failed the cross-check) is still sized and offered; the card says
    * the rate is unknown. Only a plan that BORROWS needs every supply rate — its carry cannot
@@ -1308,7 +1321,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   for (const d of drafts) {
     const usd = decimalWad(d.usd as string);
     const rate = OP_FLOW[d.leg.op].rate;
-    if (rate === null) continue;
+    if (rate === null) {
+      // Moving or holding value is not a deployment and says nothing about the carry;
+      // putting it into a position whose rate cannot be read is what makes it unjudgeable.
+      if (deploysIntoPosition(d.leg.op)) returnUnreadable = true;
+      continue;
+    }
     const apr = legRate(d.leg.op, d.leg.asset, ctx.comparisons);
     if (rate === "earn_borrow") {
       if (apr === null) { borrowRateUnknown = true; borrowed += usd; continue; }
@@ -1335,7 +1353,7 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * When a supply leg exists, if its return does not cover the borrow cost, rule the
    * strategy out rather than ranking it last.
    */
-  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO) {
+  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable) {
     const borrowLeg = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow")!;
     const supplyLeg = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
     const borrowRow = ctx.comparisons.find((c) => c.asset === borrowLeg.leg.asset);
@@ -1378,7 +1396,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     borrows,
     asset: first.leg.asset,
     venue: lastSupply ? OP_FLOW[lastSupply.leg.op].venue : "margin",
-    netAprPct: borrows && supplied > ZERO ? formatWad(netApr) : null,
+    // Null when part of the return could not be read: a figure that leaves out the LP's
+    // income is not this plan's net APR, and the card already renders null as "not read".
+    netAprPct: borrows && supplied > ZERO && !returnUnreadable ? formatWad(netApr) : null,
     supplyAprPct: rateUnknown || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
     legs: sized,
     finalHealthFactor,

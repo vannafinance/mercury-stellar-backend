@@ -1398,3 +1398,44 @@ describe("previous_leg follows the asset, not the line above", () => {
     expect(rejected).not.toHaveLength(0);
   });
 });
+
+/**
+ * An unreadable return is an unknown, not a loss.
+ *
+ * The carry guard sums supplied × supply APR against borrowed × borrow APR, and skipped
+ * any leg whose op carries no rate. An LP leg is exactly that — its income is trading
+ * fees, not a protocol rate — so a leveraged LP strategy had its borrow counted as a cost
+ * and the position it funds counted as earning nothing. "Deposit, borrow 2x, supply some
+ * to Blend and LP the rest on Soroswap" was ruled out as losing "by construction", from a
+ * number nobody had, for a position the Margin page opens without complaint.
+ *
+ * Scoring an unknown as zero and then reporting it as a loss is the same error the Blend
+ * answer made when it printed a rate as a balance. The guard now fires only when it can
+ * see the whole return, and `netAprPct` goes null — the contract the card already renders
+ * as "not read".
+ */
+describe("a plan whose return cannot be read is not called a loss", () => {
+  const levered: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "add_liquidity", asset: "BLUSDC", assetOut: "XLM", venue: "soroswap", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM, borrow 2x BLUSDC and put it in the Soroswap pool with XLM"];
+
+  it("does not rule out a leveraged LP as losing money by construction", () => {
+    const { rejected } = resolvePlans([plan("Levered Soroswap LP", levered)], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
+  });
+
+  it("still rules out a borrow deployed entirely into a readable rate that cannot cover it", () => {
+    // Every leg's return IS readable here — Blend supply at 0.9% against an Earn borrow
+    // at 32.47% — so the guard must keep refusing exactly as it did.
+    const carry: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { rejected } = resolvePlans([plan("Negative carry", carry)], ctx({ messages: ["deposit 100 XLM and borrow 2x BLUSDC into Blend"] }));
+    expect(rejected[0]?.reason ?? "").toMatch(/loses money by construction/);
+  });
+});
