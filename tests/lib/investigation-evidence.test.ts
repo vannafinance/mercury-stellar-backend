@@ -56,6 +56,31 @@ describe("sealed investigation context", () => {
     expect(codec.read(legacy).evidence).toBeUndefined();
     expect(researchEvidenceReusable(undefined, 1000)).toBe(false);
   });
+
+  it("preserves the underlying Blend position needed to size a full withdrawal", () => {
+    const evidence = compactResearchEvidence([{
+      id: "blend-xlm",
+      capability: "blend_position",
+      args: {},
+      observedAt: 1000,
+      status: "ok",
+      data: {
+        positions: [{
+          symbol: "XLM",
+          b_token_balance: "420.46",
+          underlying_value: "872.17",
+          balance: "872.17",
+          noise: "drop",
+        }],
+      },
+    }], null, 1000);
+
+    expect(evidence.observations[0]).toMatchObject({
+      capability: "blend_position",
+      data: { positions: [{ symbol: "XLM", underlying_value: "872.17", balance: "872.17" }] },
+    });
+    expect((evidence.observations[0].data?.positions as Array<Record<string, unknown>>)[0]).not.toHaveProperty("noise");
+  });
 });
 
 describe("financial evidence normalization", () => {

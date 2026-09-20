@@ -1290,6 +1290,8 @@ export function routeMessage(message: string): RoutedIntent {
    * phrase list nor the supply-verb alternative below it, so it fell through everything.
    */
   const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/i.test(text);
+  const asksPersonalBlendSupply =
+    /\b(what|how much)\b[\s\S]{0,40}\bsupply\b|\bmy\b[\s\S]{0,30}\bsupply\b|\bsupplied\b/i.test(text);
   const isBlendFarmWrite =
     any(
       text,
@@ -1321,6 +1323,7 @@ export function routeMessage(message: string): RoutedIntent {
   if (
     isBlendFarmWrite &&
     !blendRemoveVerb &&
+    !asksPersonalBlendSupply &&
     (any(text, "supply", "deposit", "deploy", "farm", "leverage", "lever", "add", "liquidity") ||
       (leverage != null && leverage > 1)) &&
     (!any(text, "supply apy", "borrow apy", "btoken", "pays more", "which reserve") &&

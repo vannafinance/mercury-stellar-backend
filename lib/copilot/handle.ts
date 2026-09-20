@@ -101,6 +101,7 @@ import { logCopilotEvent } from "./log";
 import { guardUserPrompt } from "./domain-firewall";
 import { currentTokenSubject } from "./token-budget";
 import { findLeverage, parseMinHealthFactor, routeMessage } from "./router";
+import { classifyCopilotEntry } from "./entry-lane";
 import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
 import { quoteDexSwap, swapPriceImpact, usdPriceFromOracleBatch, type SwapPriceImpact } from "./swap-quote";
 import { readFarmAmmLpShares } from "./farm-lp";
@@ -815,12 +816,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   /**
-   * The Copilot workspace investigates first and executes through the workflow journal.
-   * Re-planning a free-text prompt with keywords here is a second planner with different
-   * sizing semantics. Structured payloads (approved_plan, pending_write, resume, auto-sign)
-   * already returned above.
+   * Only explicit strategy goals belong to investigation. Plain capabilities continue
+   * through the deterministic action path below, which already implements auto-sign ON
+   * and Sign & Execute OFF. Structured continuations returned before this boundary.
    */
-  if (req.surface === "copilot") {
+  if (req.surface === "copilot" && classifyCopilotEntry(message) === "strategy") {
     return {
       kind: "blocked",
       message:
@@ -915,7 +915,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // Plan → approve → execute. A freshly routed plan is SHOWN, not run; it only
   // executes once the user sends it back as approved_plan (handled near the top of
   // this function, before routing, so approval never re-infers anything).
-  if (routed.kind === "plan") {
+  if (routed.kind === "plan" && req.surface !== "copilot") {
     const preview = await previewRoutedPlan({
       routed, message, mcp, userId, request_id,
     });

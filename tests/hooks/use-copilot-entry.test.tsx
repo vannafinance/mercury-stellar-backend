@@ -15,25 +15,31 @@ import { useCopilotEntry } from "@/hooks/use-copilot-entry";
  */
 
 afterEach(() => vi.unstubAllGlobals());
-const options = () => ({ wallet: "wallet", onInvestigate: vi.fn(async () => {}) });
+const options = () => ({
+  wallet: "wallet",
+  onInvestigate: vi.fn(async () => {}),
+  onDirect: vi.fn(async () => {}),
+});
 
 describe("single composer entry", () => {
-  it("investigates every prompt, concrete instruction or open-ended goal alike", async () => {
+  it("routes plain actions directly, strategies and swaps to investigation", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    for (const message of [
-      "deposit 5 XLM as collateral",
-      "Swap 10 XLM to AQUSDC then add liquidity in Aquarius",
-      "build me a strategy that keeps health factor above 1.3",
-      "what is my health factor?",
-    ]) {
+    for (const message of ["deposit 5 XLM as collateral", "what is my health factor?"]) {
+      const input = options();
+      const { result } = renderHook(() => useCopilotEntry(input));
+      await act(async () => result.current.run(message));
+      expect(input.onDirect).toHaveBeenCalledWith(message, expect.any(AbortSignal));
+      expect(input.onInvestigate).not.toHaveBeenCalled();
+      expect(result.current.loading).toBe(false);
+    }
+    for (const message of ["build me a strategy", "swap 10 XLM to AQUSDC"]) {
       const input = options();
       const { result } = renderHook(() => useCopilotEntry(input));
       await act(async () => result.current.run(message));
       expect(input.onInvestigate).toHaveBeenCalledWith(message, expect.any(AbortSignal));
-      expect(result.current.loading).toBe(false);
+      expect(input.onDirect).not.toHaveBeenCalled();
     }
-    // No routing round-trip: there is nothing left to classify.
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -42,6 +48,7 @@ describe("single composer entry", () => {
     const { result } = renderHook(() => useCopilotEntry(input));
     await act(async () => result.current.run("   "));
     expect(input.onInvestigate).not.toHaveBeenCalled();
+    expect(input.onDirect).not.toHaveBeenCalled();
   });
 
   it("a new prompt cancels the in-flight one instead of dropping", async () => {
@@ -64,13 +71,14 @@ describe("single composer entry", () => {
         }
         return Promise.resolve();
       }),
+      onDirect: vi.fn(async () => {}),
     };
     const { result } = renderHook(() => useCopilotEntry(input));
 
-    const first = act(async () => { await result.current.run("first"); });
-    await act(async () => { await result.current.run("second"); });
+    const first = act(async () => { await result.current.run("build me a strategy first"); });
+    await act(async () => { await result.current.run("build me a strategy second"); });
     expect(input.onInvestigate).toHaveBeenCalledTimes(2);
-    expect(input.onInvestigate.mock.calls[1][0]).toBe("second");
+    expect(input.onInvestigate.mock.calls[1][0]).toBe("build me a strategy second");
     expect(result.current.loading).toBe(false);
 
     release();
@@ -81,6 +89,7 @@ describe("single composer entry", () => {
     const input = {
       wallet: "wallet",
       onInvestigate: vi.fn(async () => { throw new Error("MCP unavailable"); }),
+      onDirect: vi.fn(async () => { throw new Error("MCP unavailable"); }),
     };
     const { result } = renderHook(() => useCopilotEntry(input));
     await act(async () => result.current.run("deposit 5 XLM as collateral"));
@@ -92,6 +101,7 @@ describe("single composer entry", () => {
     const input = {
       wallet: "wallet-a",
       onInvestigate: vi.fn(async () => { throw new Error("MCP unavailable"); }),
+      onDirect: vi.fn(async () => { throw new Error("MCP unavailable"); }),
     };
     const { result, rerender } = renderHook((props: typeof input) => useCopilotEntry(props), {
       initialProps: input,
@@ -108,7 +118,8 @@ describe("single composer entry", () => {
     const pending = new Promise<void>((resolve) => { release = resolve; });
     // Only the FIRST run hangs; the follow-up must be able to complete on its own.
     let call = 0;
-    const input = { wallet: "wallet", onInvestigate: vi.fn(() => (call++ === 0 ? pending : Promise.resolve())) };
+    const handler = vi.fn(() => (call++ === 0 ? pending : Promise.resolve()));
+    const input = { wallet: "wallet", onInvestigate: handler, onDirect: handler };
     const { result } = renderHook(() => useCopilotEntry(input));
 
     const first = act(async () => { await result.current.run("build me a strategy"); });
@@ -117,7 +128,7 @@ describe("single composer entry", () => {
 
     // The abandoned run must not block the next one.
     await act(async () => { await result.current.run("deposit 5 XLM as collateral"); });
-    expect(input.onInvestigate).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledTimes(2);
 
     release();
     await first;

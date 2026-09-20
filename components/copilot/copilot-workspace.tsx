@@ -2428,7 +2428,7 @@ export function CopilotWorkspace() {
     async (
       body: Record<string, unknown>,
       promptLabel: string,
-      opts?: { chainHop?: boolean; background?: boolean },
+      opts?: { chainHop?: boolean; background?: boolean; signal?: AbortSignal },
     ) => {
       const silent = !!opts?.background;
       /** Header auto-approve on/off: toast only — do not steal the turn card or abort a run. */
@@ -2463,7 +2463,7 @@ export function CopilotWorkspace() {
             session_signing: autoApprove,
             ...body,
           }),
-          signal: ac.signal,
+          signal: opts?.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal,
         });
         if (cancelledRef.current) {
           return null;
@@ -2669,7 +2669,29 @@ export function CopilotWorkspace() {
     setPaletteOpen(false);
     await investigate(text, signal);
   }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
-  const entry = useCopilotEntry({ wallet: address, onInvestigate: runInvestigation });
+  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
+    const continuing = shouldContinueInvestigation(text, investigation.result);
+    if (shouldReplacePlan(text, investigation.result)) {
+      signedWorkflowStepRef.current = null;
+      approvedJournalRef.current = null;
+      setSigningJournal(false);
+      proposedRef.current = null;
+      lifecycleWriteRef.current = null;
+      resetWorkflow();
+      resetStrategyAccumulator();
+    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    }
+    setSubmitted(text);
+    setIntentText("");
+    setPaletteOpen(false);
+    await postCopilot({ message: text }, text, { signal });
+  }, [investigation.result, postCopilot, resetStrategyAccumulator, resetWorkflow]);
+  const entry = useCopilotEntry({
+    wallet: address,
+    onInvestigate: runInvestigation,
+    onDirect: runDirect,
+  });
 
   const { run: dispatchRun } = entry;
 
