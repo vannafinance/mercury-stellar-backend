@@ -1342,3 +1342,59 @@ describe("resolvePlans — precision comes from the protocol", () => {
     expect(rejected[0].reason).toBe("the on-chain precision of XLM was not read this investigation");
   });
 });
+
+/**
+ * A handoff is bound to the leg that produced the asset, not to the line above it.
+ *
+ * `previous_leg` used to read `drafts[index - 1]`, which made the link positional: a dual
+ * borrow puts an unrelated leg between the borrow and the supply that spends it, and the
+ * whole plan was refused with "previous_leg needs a preceding leg in the same asset" even
+ * though nothing about it was wrong. Every pipeline that passes values between steps binds
+ * them by identity for this reason — Argo names the producing task and its artifact — and
+ * here the asset is that identity, since a leg produces exactly one.
+ *
+ * The second half matters as much: one producer funds one consumer. Two legs must not be
+ * able to spend the same borrow.
+ */
+describe("previous_leg follows the asset, not the line above", () => {
+  const interleaved: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC and XLM, then supply the BLUSDC to Blend"];
+
+  it("reaches the borrow two legs back instead of refusing the plan", () => {
+    const { rejected } = resolvePlans([plan("Dual borrow then supply", interleaved)], ctx({ messages }));
+    // Whatever else this plan runs into, it must not die on the handoff any more.
+    expect(rejected[0]?.reason ?? "").not.toMatch(/previous_leg needs a preceding leg/);
+  });
+
+  it("still refuses when no preceding leg produced that asset at all", () => {
+    const orphan: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { rejected } = resolvePlans([plan("Nothing made BLUSDC", orphan)], ctx({ messages: ["deposit 100 XLM then supply the BLUSDC"] }));
+    expect(rejected[0]?.reason).toMatch(/previous_leg needs a preceding leg in the same asset/);
+  });
+
+  it("will not let two legs spend the same producer", () => {
+    const doubleSpend: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Spend it twice", doubleSpend)], ctx({ messages }));
+    /**
+     * The property that matters is that the single borrow is not spent twice, so the plan
+     * must not become something the user can approve. Which guard catches it is not
+     * pinned: claiming the borrow for the first supply leaves the second to resolve
+     * against the supply itself, and the op-flow table refuses that handoff first.
+     */
+    expect(candidates).toHaveLength(0);
+    expect(rejected).not.toHaveLength(0);
+  });
+});

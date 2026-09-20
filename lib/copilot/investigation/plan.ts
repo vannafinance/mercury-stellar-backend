@@ -482,6 +482,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     targetOut?: string;
   }
   const drafts: Draft[] = [];
+  /**
+   * Producer legs already spent by a `previous_leg` handoff. One leg's output funds one
+   * leg's input: without this, two legs could each claim the same borrow and the plan
+   * would spend the same tokens twice.
+   */
+  const claimedProducers = new Set<number>();
   // Materialised so a leg can look at its siblings, not just at what came before it:
   // a leveraged borrow has to know how many other borrows share its funding deposit.
   const expanded = [...expandLegs(plan.legs, ctx)];
@@ -795,13 +801,37 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     if (sizing.kind === "previous_leg") {
-      const prev = drafts[index - 1];
-      if (!prev || prev.leg.asset !== leg.asset) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
+      /**
+       * "The previous leg" means the leg that produced THIS asset, not whichever leg
+       * happens to sit one line above.
+       *
+       * Reading `drafts[index - 1]` made the handoff positional, so interleaving broke
+       * it: "deposit 100 XLM, borrow BLUSDC, borrow SOUSDC, supply the BLUSDC to Blend"
+       * refused with "previous_leg needs a preceding leg in the same asset", because the
+       * line above the supply is the SOUSDC borrow. The BLUSDC it wants is one further
+       * back, and nothing about that plan is wrong.
+       *
+       * Every pipeline that passes values between steps binds them by identity rather
+       * than adjacency — Argo names the producing task and its artifact, CodePipeline
+       * names the input artifact — precisely so an unrelated step in between cannot
+       * break the link. Here the asset IS the identity: a leg produces exactly one, so
+       * the nearest preceding leg in the same asset is the producer, with no new field
+       * for the model to fill. Claiming it consumes it, so two legs cannot both spend
+       * one borrow.
+       */
+      let producerIndex = index - 1;
+      while (producerIndex >= 0 &&
+        (drafts[producerIndex].leg.asset !== leg.asset || claimedProducers.has(producerIndex))) {
+        producerIndex -= 1;
+      }
+      const prev = producerIndex >= 0 ? drafts[producerIndex] : undefined;
+      if (!prev) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
       // What the previous leg leaves behind must be what this one spends (the op-flow table).
       if (prev.leg.op === "swap") throw new Reject(name, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
       if (prev.leg.op === "remove_liquidity") throw new Reject(name, "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself");
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
-      drafts.push({ leg, name, usd: { previous: index - 1 }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
+      claimedProducers.add(producerIndex);
+      drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
       continue;
     }
     /**
