@@ -299,7 +299,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "6", sourceQuote: "6x leverage" } },
       ];
       const { rejected } = resolvePlans([plan("No deposit", legs)], ctx({ messages: ["borrow XLM at 6x leverage"] }));
-      expect(rejected[0]?.reason).toMatch(/needs the deposit that funds it stated immediately before/);
+      expect(rejected[0]?.reason).toMatch(/needs the deposit that funds it stated before/);
     });
 
     it("refuses a leverage multiple the model did not actually anchor in the user's words", () => {

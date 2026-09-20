@@ -244,6 +244,10 @@ function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | nu
     !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
   const sizing = parseSizing(leg.sizing);
   if (!sizing) return null;
+  // `amountAsset` chooses between the leg's TWO assets, so it is meaningless — and a sign
+  // the leg was misunderstood — on an op that has only one. Derived from the same
+  // ASSET_OUT_OPS property as `assetOut` itself rather than naming the ops again.
+  if (!hasAssetOut && sizing.kind === "literal" && sizing.amountAsset !== undefined) return null;
   if (!hasAssetOut) return { op: leg.op as PlanOp, asset: String(leg.asset), sizing };
   // The second asset must be a known one, and not the one the leg already spends.
   if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;

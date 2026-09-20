@@ -749,10 +749,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (requestedBorrowNow && requestedBorrowNow.usd === null) warnings.push(
     `You asked to borrow ${requestedBorrowNow.tokens} ${requestedBorrowNow.asset}, but no ${requestedBorrowNow.asset} price was read, so that amount could not be checked against your floor.`);
   if (outcome.kind === "research_complete" && outcome.partial) {
-    warnings.push(
-      "The investigation ran out of time before it could work out a plan for this, so no options are"
-      + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.",
-    );
+    /**
+     * A partial run can still have produced ranked options from the reads that did
+     * finish, and there is a test that pins exactly that. Asserting "no options are
+     * offered" beside a list of them told the user something plainly false, so the
+     * sentence follows whether any option actually survived rather than assuming none did.
+     */
+    warnings.push(candidates?.feasible.length
+      ? "The investigation ran out of time, so only what the finished reads could support is"
+        + " offered here. Ask again, or split it into smaller steps, for the full picture."
+      : "The investigation ran out of time before it could work out a plan for this, so no options are"
+        + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.");
   }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;

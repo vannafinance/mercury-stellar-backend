@@ -57,7 +57,7 @@ describe("conceptual answers without a wallet", () => {
         objective: "repay 1 XLM",
         constraints: [],
         borrowing: "forbidden",
-        actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }],
+        actions: [{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "1", sourceQuote: "repay 1 XLM" }, sourceQuote: "repay 1 XLM" }],
       },
       findings: [{ summary: "User named a complete repay.", evidenceIds: [] }],
       openQuestions: [],

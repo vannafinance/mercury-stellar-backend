@@ -107,20 +107,24 @@ export function WalletSignerAttach() {
         const authorized = await authorize(signerId);
         if (!authorized?.delegated) return;
 
+        // The address Privy confirms is the one that gets registered, and it is the one
+        // the cache must be keyed on. Caching the store's address instead would mark a
+        // different wallet as bound whenever the two disagree.
+        const boundAddress = authorized.address || address;
         const done = await post({
           action: "register",
           request_id: requestId,
-          wallet_address: authorized.address || address,
+          wallet_address: boundAddress,
         });
         // Only a reported write earns the cache entry. `null` (an older Sign Service that
         // cannot say) and `false` both leave it unset, so the next load tries again
         // instead of assuming a binding that may not exist.
         if (done?.ok === true && done.bound === true) {
-          rememberBound(address);
+          rememberBound(boundAddress);
         } else {
           console.warn(
             "[copilot] the wallet connected but Vanna could not record the identity binding",
-            { wallet: address, reason: done?.reason ?? null },
+            { wallet: boundAddress, reason: done?.reason ?? null },
           );
         }
       } catch (e) {

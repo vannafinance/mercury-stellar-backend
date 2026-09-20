@@ -44,10 +44,16 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
       logDropped(observation, "unavailable");
       continue;
     }
-    const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"]) => {
+    /**
+     * `quantity` says this number is an amount of the row's own token, and it is declared
+     * here because only the caller knows. It defaults to false so a figure is never
+     * mistaken for a balance by accident — but a real token amount left unmarked would be
+     * dropped from any row rendering, so the balance/spendable callers below set it.
+     */
+    const add = (path: string, label: string, raw: unknown, unit: string, venue: ResearchFact["venue"], quantity = false) => {
       const value = decimal(raw);
       if (value === null) return;
-      facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt });
+      facts.push({ id: `${observation.id}:${path}`, label, value, unit, venue, evidenceId: observation.id, sourcePath: path, readAt: observation.observedAt, quantity });
     };
     const flag = (path: string, label: string, raw: unknown, yes: string, no: string) => {
       const bit = asBool(raw);
@@ -99,9 +105,9 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
         for (const entry of walletRows) {
           const base = entry.symbol.endsWith("_SAC") ? entry.symbol.slice(0, -4) : null;
           if (base && canonical.get(base) === entry.value) continue;
-          add(`${entry.path}.balance`, `${entry.symbol} wallet balance`, entry.value, entry.symbol, "wallet");
+          add(`${entry.path}.balance`, `${entry.symbol} wallet balance`, entry.value, entry.symbol, "wallet", true);
           if (entry.spendable !== null && entry.spendable !== entry.value) {
-            add(`${entry.path}.spendable`, `${entry.symbol} wallet spendable`, entry.spendable, entry.symbol, "wallet");
+            add(`${entry.path}.spendable`, `${entry.symbol} wallet spendable`, entry.spendable, entry.symbol, "wallet", true);
           }
         }
         break;

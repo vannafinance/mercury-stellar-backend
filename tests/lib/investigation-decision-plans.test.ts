@@ -134,7 +134,7 @@ describe("a fraction sizing", () => {
 
 describe("a malformed literal action", () => {
   it("is dropped and counted, and no longer voids the research or the plans beside it", () => {
-    const decision = parseDecision({ ...base, goal: { ...base.goal, actions: [{ op: "redeem", asset: "AQUSDC", amount: "all", sourceQuote: "use my AqUSDC" }] },
+    const decision = parseDecision({ ...base, goal: { ...base.goal, actions: [{ op: "redeem", asset: "AQUSDC", sizing: { kind: "literal", amount: "all", sourceQuote: "use my AqUSDC" }, sourceQuote: "use my AqUSDC" }] },
       plans: [plan([leg("redeem", "AQUSDC", { kind: "all_position" }), leg("deposit_collateral", "AQUSDC", { kind: "previous_leg" })])] });
     expect(decision?.kind).toBe("research_complete");
     if (decision?.kind !== "research_complete") return;

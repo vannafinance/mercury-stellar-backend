@@ -482,7 +482,10 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     targetOut?: string;
   }
   const drafts: Draft[] = [];
-  for (const [index, leg] of expandLegs(plan.legs, ctx).entries()) {
+  // Materialised so a leg can look at its siblings, not just at what came before it:
+  // a leveraged borrow has to know how many other borrows share its funding deposit.
+  const expanded = [...expandLegs(plan.legs, ctx)];
+  for (const [index, leg] of expanded.entries()) {
     const name = `${leg.op.replaceAll("_", " ")} ${leg.asset}`;
     const def = resolveAssetDef(leg.asset);
     if (!def) throw new Reject(name, `${leg.asset} is not a supported asset`);
@@ -829,19 +832,46 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * combination) refuses cleanly instead of computing a number that means nothing.
        */
       if (flow.rate !== "earn_borrow") throw new Reject(name, `a leverage multiple only sizes a borrow — ${verbOf(leg.op).toLowerCase()} needs a literal amount or a share instead`);
-      const prev = drafts[index - 1];
-      const prevFlow = prev ? OP_FLOW[prev.leg.op] : null;
-      if (!prev || prevFlow!.to !== "account" || prevFlow!.health !== "raises") {
-        throw new Reject(name, "a leverage multiple needs the deposit that funds it stated immediately before the borrow");
+      /**
+       * One deposit can fund SEVERAL leveraged borrows — that is what a dual borrow is.
+       *
+       * This used to read `drafts[index - 1]` and demand a deposit there, so the first
+       * borrow after a deposit sized fine and the second was refused outright: its
+       * previous leg is its sibling, not the deposit. "borrow 2x BLUSDC and SOUSDC"
+       * therefore died at "a leverage multiple needs the deposit ... immediately before
+       * the borrow", even though splitting it into two legs is exactly right.
+       *
+       * Walking back past the siblings is only half of it. The Margin page's own Dual
+       * Borrow treats `deposit x (leverage - 1)` as the TOTAL borrow ceiling and splits
+       * it between the two assets (components/margin/dual-borrow.tsx) — it is not that
+       * ceiling each. Giving both legs the full multiple against the same equity would
+       * quietly double the real leverage, which is the defect the split was introduced
+       * to prevent. So the equity buys one ceiling, and the siblings share it.
+       *
+       * Siblings are identified by what they ARE, not by op name: a leg sized by a
+       * leverage multiple whose op pays a borrow rate. An op added later that is shaped
+       * like a borrow joins the group with no change here.
+       */
+      const sharesFunding = (candidate: PlanLeg) =>
+        candidate.sizing.kind === "leverage" && OP_FLOW[candidate.op].rate === "earn_borrow";
+      let fundingIndex = index - 1;
+      while (fundingIndex >= 0 && sharesFunding(expanded[fundingIndex])) fundingIndex -= 1;
+      const funding = fundingIndex >= 0 ? drafts[fundingIndex] : undefined;
+      const fundingFlow = funding ? OP_FLOW[funding.leg.op] : null;
+      if (!funding || fundingFlow!.to !== "account" || fundingFlow!.health !== "raises") {
+        throw new Reject(name, "a leverage multiple needs the deposit that funds it stated before the borrow");
       }
-      if (typeof prev.usd !== "string") {
+      if (typeof funding.usd !== "string") {
         throw new Reject(name, `${verbOf(leg.op)} at a leverage multiple needs the deposit before it to have a known amount already`);
       }
-      const equityUsd = decimalWad(prev.usd);
+      let siblings = 0;
+      for (let i = fundingIndex + 1; i < expanded.length && sharesFunding(expanded[i]); i += 1) siblings += 1;
+      const equityUsd = decimalWad(funding.usd);
       const multiple = anchoredMultiple(sizing, ctx.messages, name);
-      const borrowUsd = formatWad(mulDown(equityUsd, multiple - WAD, WAD));
+      const ceilingUsd = mulDown(equityUsd, multiple - WAD, WAD);
+      const borrowUsd = formatWad(siblings > 1 ? ceilingUsd / BigInt(siblings) : ceilingUsd);
       const converted = tokensFromUsd(borrowUsd, price.price, decimals.get(leg.asset) ?? 7);
-      if (!converted.ok) throw new Reject(name, `${sizing.multiple}x leverage on ${prev.leg.asset} sizes to nothing in ${leg.asset} at this precision`);
+      if (!converted.ok) throw new Reject(name, `${sizing.multiple}x leverage on ${funding.leg.asset} sizes to nothing in ${leg.asset} at this precision`);
       const tokens = precise(converted.tokens, leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
       drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
@@ -1566,8 +1596,17 @@ function statedActionLabel(action: StatedAction): string {
             : sizing.kind === "all_position" ? "the whole position"
               : sizing.kind === "to_floor" ? "to the floor"
                 : "the previous leg";
-  const paired = action.assetOut ? ` with ${action.assetOut}` : "";
   const where = action.venue ? ` on ${action.venue}` : "";
+  /**
+   * `amountAsset: "assetOut"` means the user stated what they want to RECEIVE, not what
+   * to spend ("swap XLM to receive 961 AQUSDC"). Naming the amount against `asset` there
+   * reads as spending 961 of the wrong token. Keyed off the leg carrying a second asset
+   * at all, so it needs no knowledge of which ops those are.
+   */
+  if (action.assetOut && sizing.kind === "literal" && sizing.amountAsset === "assetOut") {
+    return `${verbOf(action.op)} ${action.asset} for ${amount} ${action.assetOut}${where}`;
+  }
+  const paired = action.assetOut ? ` with ${action.assetOut}` : "";
   return `${verbOf(action.op)} ${amount} ${action.asset}${paired}${where}`;
 }
 
@@ -1654,10 +1693,17 @@ export function shareSameOpLiteralActions(
    * stated outright vanished on its way through a helper that exists only to normalise
    * literals. Sharing one number across same-op legs must not be able to delete a leg.
    */
-  const fallbackQuote = actions[0]?.sourceQuote ?? "";
-  return applySharedLiteral(plan.legs, messages).map((leg) => ({
+  /**
+   * `applySharedLiteral` rewrites legs one-for-one and may append; it never reorders, so
+   * position still identifies the action a leg came from. Its own `sourceQuote` — the
+   * sentence the user stated that leg in — is preserved rather than collapsed onto the
+   * first action's, which would misattribute every later leg to the opening clause.
+   * Appended legs have no action behind them and fall back to their sizing's quote.
+   */
+  return applySharedLiteral(plan.legs, messages).map((leg, index) => ({
     ...leg,
-    sourceQuote: "sourceQuote" in leg.sizing ? leg.sizing.sourceQuote : fallbackQuote,
+    sourceQuote: actions[index]?.sourceQuote
+      ?? ("sourceQuote" in leg.sizing ? leg.sizing.sourceQuote : requestText(messages)),
   }));
 }
 
