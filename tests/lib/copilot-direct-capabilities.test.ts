@@ -1,6 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleChat } from "@/lib/copilot/handle";
 import { resetMcpClient } from "@/lib/copilot/mcp-client";
+
+vi.mock("@/lib/copilot/vertex", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/copilot/vertex")>();
+  return {
+    ...actual,
+    vertexSelectTool: vi.fn().mockRejectedValue(new Error("offline in test")),
+  };
+});
 
 const TRADER = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
 const ACCOUNT = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
