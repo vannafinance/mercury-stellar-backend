@@ -86,12 +86,21 @@ export function parseDecision(raw: unknown): ResearchDecision | null {
    * plans beside it (13 Sep: "use my AqUSDC in Earn as collateral" died here).
    */
   const actionRows = goal.actions === undefined ? [] : Array.isArray(goal.actions) ? goal.actions.slice(0, 8) : [];
-  const validActions = actionRows.filter((action) =>
-    isRecord(action) && exactKeys(action, ["op", "asset", "amount", "sourceQuote"]) &&
-    (WORKFLOW_OPS as readonly string[]).includes(String(action.op)) &&
-    (ASSET_IDS as readonly string[]).includes(String(action.asset)) &&
-    typeof action.amount === "string" && action.amount.length <= 60 && /^\d+(\.\d{1,18})?$/.test(action.amount) &&
-    text(action.sourceQuote, 1600));
+  /**
+   * A stated action is a plan leg plus the sentence it came from, validated by the very
+   * same `parseLeg`. It used to be validated separately against `{op, asset, amount,
+   * sourceQuote}` — a bare decimal — which silently dropped every instruction a leg could
+   * express but that shape could not: "borrow 2x" (leverage is a sizing word, and "2x"
+   * failed the decimal test) and "SOUSDC and XLM in Soroswap" (no field for the paired
+   * asset or the DEX, and `exactKeys` rejects unknown keys). Those instructions then had
+   * to survive as free-form `plans` or not at all, which is how a precise multi-leg
+   * request came back as unrelated ranked options.
+   */
+  const validActions = actionRows.flatMap((action) => {
+    const leg = parseLeg(action, ["sourceQuote"]);
+    if (!leg || !isRecord(action) || !text(action.sourceQuote, 1600)) return [];
+    return [{ ...leg, sourceQuote: String(action.sourceQuote) }];
+  });
   const droppedActions = (goal.actions === undefined ? 0 : Array.isArray(goal.actions) ? goal.actions.length : 1) - validActions.length;
   const write = goal.write === undefined || goal.write === null ? undefined
     : isRecord(goal.write) && exactKeys(goal.write, ["op", "sourceQuote"]) &&
@@ -198,32 +207,51 @@ function parsePlan(plan: unknown): ProposedPlan | null {
     !Array.isArray(plan.legs) || plan.legs.length === 0 || plan.legs.length > MAX_LEGS) return null;
   const legs: PlanLeg[] = [];
   for (const leg of plan.legs) {
-    /**
-     * A swap is the one leg that ends in a different asset, so it alone may carry
-     * `assetOut` and the DEX `venue`. Any other leg carrying them is malformed, not
-     * tolerated: the plan is dropped and counted, as with every other unknown key.
-     */
-    if (!isRecord(leg)) return null;
-    const hasAssetOut = (ASSET_OUT_OPS as readonly string[]).includes(String(leg.op));
-    // `venue` is the one optional key on a leg: absent means the registry picks the DEX.
-    const allowed = hasAssetOut
-      ? (Object.hasOwn(leg, "venue") ? ["op", "asset", "sizing", "assetOut", "venue"] : ["op", "asset", "sizing", "assetOut"])
-      : ["op", "asset", "sizing"];
-    if (!exactKeys(leg, allowed) ||
-      !(PLAN_OPS as readonly string[]).includes(String(leg.op)) ||
-      !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
-    const sizing = parseSizing(leg.sizing);
-    if (!sizing) return null;
-    if (!hasAssetOut) { legs.push({ op: leg.op as PlanOp, asset: String(leg.asset), sizing }); continue; }
-    // The second asset must be a known one, and not the one the leg already spends.
-    if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
-    if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return null;
-    legs.push({
-      op: leg.op as PlanOp, asset: String(leg.asset), sizing, assetOut: String(leg.assetOut),
-      ...(leg.venue ? { venue: leg.venue as LpVenue } : {}),
-    });
+    const parsed = parseLeg(leg);
+    if (!parsed) return null;
+    legs.push(parsed);
   }
   return { title: plan.title, rationale: plan.rationale, evidenceIds: [...plan.evidenceIds], legs };
+}
+
+/**
+ * Validate one leg — the single definition of what a leg may contain.
+ *
+ * Shared with the `goal.actions` validator rather than duplicated there. The two used to
+ * enforce different shapes: a plan leg could carry `sizing`, `assetOut` and `venue` while
+ * a stated action was limited to a bare decimal `amount`, so an instruction the plan
+ * contract could express perfectly well was rejected on the way in. Two copies of "what a
+ * leg is" is what let that gap open, so there is one copy now and `extraKeys` lets the
+ * action validator add its own `sourceQuote` without restating anything else.
+ */
+function parseLeg(leg: unknown, extraKeys: readonly string[] = []): PlanLeg | null {
+  if (!isRecord(leg)) return null;
+  /**
+   * `assetOut` and the DEX `venue` belong to the ops that name a SECOND asset — a swap
+   * ends in a different one, add_liquidity spends a paired token. Any other op carrying
+   * them is malformed, not tolerated: the leg is rejected, as with every unknown key.
+   */
+  const hasAssetOut = (ASSET_OUT_OPS as readonly string[]).includes(String(leg.op));
+  // `venue` is the one optional key on a leg: absent means the registry picks the DEX.
+  const allowed = [
+    "op", "asset", "sizing",
+    ...(hasAssetOut ? ["assetOut"] : []),
+    ...(hasAssetOut && Object.hasOwn(leg, "venue") ? ["venue"] : []),
+    ...extraKeys,
+  ];
+  if (!exactKeys(leg, allowed) ||
+    !(PLAN_OPS as readonly string[]).includes(String(leg.op)) ||
+    !(ASSET_IDS as readonly string[]).includes(String(leg.asset))) return null;
+  const sizing = parseSizing(leg.sizing);
+  if (!sizing) return null;
+  if (!hasAssetOut) return { op: leg.op as PlanOp, asset: String(leg.asset), sizing };
+  // The second asset must be a known one, and not the one the leg already spends.
+  if (!(ASSET_IDS as readonly string[]).includes(String(leg.assetOut)) || leg.assetOut === leg.asset) return null;
+  if (leg.venue !== undefined && !(lpVenues() as readonly string[]).includes(String(leg.venue))) return null;
+  return {
+    op: leg.op as PlanOp, asset: String(leg.asset), sizing, assetOut: String(leg.assetOut),
+    ...(leg.venue ? { venue: leg.venue as LpVenue } : {}),
+  };
 }
 
 function parseSizing(raw: unknown): PlanSizing | null {

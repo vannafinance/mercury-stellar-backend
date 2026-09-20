@@ -10,6 +10,12 @@ export interface ResearchFact {
   readAt: number;
   /** Optional structured linkage for a fact explicitly requested by the read. */
   requested?: boolean;
+  /**
+   * True only when this number is an amount of the fact's own token. A rate, ratio,
+   * health factor or percentage is never a quantity of the asset, and must never be
+   * rendered as one. Set where the unit is derived (`facts-by-shape.ts`).
+   */
+  quantity?: boolean;
 }
 
 /**

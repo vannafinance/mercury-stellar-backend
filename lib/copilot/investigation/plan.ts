@@ -27,7 +27,7 @@ import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
 import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
-import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
+import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
 import type { OpFlow } from "../workflow/types";
 
 /**
@@ -1543,11 +1543,32 @@ function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string;
 export function planFromStatedActions(actions: NonNullable<GoalUnderstanding["actions"]>, objective: string): ProposedPlan | null {
   if (!actions.length) return null;
   return {
-    title: actions.map((a) => `${verbOf(a.op)} ${a.amount} ${a.asset}`).join(", then "),
+    title: actions.map(statedActionLabel).join(", then "),
     rationale: objective,
     evidenceIds: [],
-    legs: actions.map((a) => ({ op: a.op, asset: a.asset, sizing: { kind: "literal", amount: a.amount, sourceQuote: a.sourceQuote } })),
+    // A stated action IS a leg (plus the sentence it came from), so it passes straight
+    // through. This used to rebuild each leg as `sizing: {kind:"literal"}`, which threw
+    // away every sizing the user had actually stated — a "borrow 2x" arrived here as a
+    // literal amount or not at all — and had no way to carry `assetOut` or `venue`, so a
+    // pool pair could not survive the trip either.
+    legs: actions.map(({ sourceQuote: _quote, ...leg }) => leg),
   };
+}
+
+/** How a stated leg reads in a plan title, sized the way the user sized it. */
+function statedActionLabel(action: StatedAction): string {
+  const { sizing } = action;
+  const amount =
+    sizing.kind === "literal" ? sizing.amount
+      : sizing.kind === "leverage" ? `${sizing.multiple}x`
+        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "idle" ? "idle" : "the position"}`
+          : sizing.kind === "all_idle" ? "all idle"
+            : sizing.kind === "all_position" ? "the whole position"
+              : sizing.kind === "to_floor" ? "to the floor"
+                : "the previous leg";
+  const paired = action.assetOut ? ` with ${action.assetOut}` : "";
+  const where = action.venue ? ` on ${action.venue}` : "";
+  return `${verbOf(action.op)} ${amount} ${action.asset}${paired}${where}`;
 }
 
 function requestText(messages: readonly string[]): string {
@@ -1627,11 +1648,17 @@ export function shareSameOpLiteralActions(
 ): NonNullable<GoalUnderstanding["actions"]> {
   const plan = planFromStatedActions(actions, "tmp");
   if (!plan) return actions;
-  return applySharedLiteral(plan.legs, messages).flatMap((leg) => (
-    leg.sizing.kind === "literal"
-      ? [{ op: leg.op, asset: leg.asset, amount: leg.sizing.amount, sourceQuote: leg.sizing.sourceQuote }]
-      : []
-  ));
+  /**
+   * Every leg comes back, whatever its sizing. This used to keep only the literal ones
+   * and silently discard the rest, so a leveraged or fraction-sized action the user had
+   * stated outright vanished on its way through a helper that exists only to normalise
+   * literals. Sharing one number across same-op legs must not be able to delete a leg.
+   */
+  const fallbackQuote = actions[0]?.sourceQuote ?? "";
+  return applySharedLiteral(plan.legs, messages).map((leg) => ({
+    ...leg,
+    sourceQuote: "sourceQuote" in leg.sizing ? leg.sizing.sourceQuote : fallbackQuote,
+  }));
 }
 
 /**

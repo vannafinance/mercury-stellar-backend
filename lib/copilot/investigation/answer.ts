@@ -71,14 +71,34 @@ function rowSentences(facts: readonly ResearchFact[]): Array<{ evidenceId: strin
     const key = `${fact.evidenceId}:${list}`;
     const group = groups.get(key) ?? { evidenceId: fact.evidenceId, name: name || list.replaceAll("_", " "), rows: new Map<string, Row>(), total: null };
     const entry = group.rows.get(`${index}:${asset}`) ?? { asset, amounts: [], usd: null };
+    /**
+     * Only an amount of the row's own token may become the row's number.
+     *
+     * This used to push EVERY non-USD number into `amounts` and then print `amounts[0]`,
+     * so which figure the user saw was decided by the order of keys in the payload rather
+     * than by what the figure meant. A Blend position row carries `b_rate` beside the
+     * balance, and on 20 Sep that rate was printed as the user's holding — "Blend: XLM
+     * 2.0749225" for an account whose actual supply was something else entirely. The read
+     * was correct, the routing was correct, MCP returned the balance: the renderer picked
+     * the wrong field. `quantity` is set where the unit is derived, so a rate, ratio,
+     * health factor or percentage can never be mistaken for a balance again — including
+     * ones nobody has enumerated, because it is decided by how the unit was built.
+     */
     if (fact.unit === "USD") entry.usd = entry.usd ?? money(fact.value);
-    else entry.amounts.push(tokens(fact.value));
+    else if (fact.quantity) entry.amounts.push(tokens(fact.value));
     group.rows.set(`${index}:${asset}`, entry);
     groups.set(key, group);
   }
   for (const fact of facts) {
     if (!/^total_.*usd$/i.test(fact.sourcePath) || !Number.isFinite(Number(fact.value))) continue;
     for (const group of groups.values()) if (group.evidenceId === fact.evidenceId && group.total === null) group.total = money(fact.value);
+  }
+  for (const group of groups.values()) {
+    // A row left with neither a token amount nor a USD value has nothing to report. It
+    // used to render as a bare symbol, or worse, borrow whatever number happened to be
+    // in the row. Saying nothing is the honest outcome; the caller's other sentences
+    // still cover what was read.
+    for (const [key, row] of group.rows) if (!row.amounts.length && !row.usd) group.rows.delete(key);
   }
   return [...groups.values()].filter((group) => group.rows.size).map((group) => {
     const rows = [...group.rows.values()].map((row) => `${row.asset} ${row.amounts[0] ?? ""}${row.usd ? ` (${row.usd})` : ""}`.trim());

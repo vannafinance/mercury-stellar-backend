@@ -9,6 +9,8 @@ import { LedgerSubscriberProvider } from "@/contexts/ledger-subscriber";
 import { PriceProvider } from "@/contexts/price-context";
 import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { PageContextProvider } from "@/contexts/page-context";
+import { InvestigationProvider } from "@/contexts/investigation-context";
+import { WalletSignerAttach } from "@/components/copilot/wallet-signer-attach";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
@@ -105,14 +107,21 @@ export default function RootLayout({
               <LedgerSubscriberProvider>
                 <PriceProvider>
                   <PageContextProvider>
-                    <MarginAccountHydrator />
-                    <AnalyticsPrefetcher />
-                    <Navbar items={navbarItems}/>
-                    <ScaleWrapper>{children}</ScaleWrapper>
-                    <AppToaster />
-                    <TransactionProgressModal />
-                    {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
-                    <AssistantLauncher />
+                    {/* Holds the copilot run above the router, so navigating away from
+                        /copilot unmounts the page but not the investigation. */}
+                    <InvestigationProvider>
+                      <MarginAccountHydrator />
+                      {/* Attaching the Vanna signer belongs to connecting, not to
+                          auto-approve — see the component docstring. */}
+                      <WalletSignerAttach />
+                      <AnalyticsPrefetcher />
+                      <Navbar items={navbarItems}/>
+                      <ScaleWrapper>{children}</ScaleWrapper>
+                      <AppToaster />
+                      <TransactionProgressModal />
+                      {/* Outside ScaleWrapper so fixed FAB is not CSS-transform scaled */}
+                      <AssistantLauncher />
+                    </InvestigationProvider>
                   </PageContextProvider>
                 </PriceProvider>
               </LedgerSubscriberProvider>

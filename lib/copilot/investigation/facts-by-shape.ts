@@ -80,6 +80,18 @@ export interface ShapeFact {
   value: string;
   unit: string;
   venue: Venue;
+  /**
+   * True only when this number is an AMOUNT OF THE ROW'S TOKEN — a balance, a receipt
+   * balance, an underlying value. False for everything else `unitFor` produces: a rate,
+   * a ratio, a health factor, a percentage, a bare integer.
+   *
+   * Decided here, where the unit itself is decided, because a consumer cannot tell the
+   * two apart afterwards: "rate" and "XLM" are both non-empty unit strings, and the
+   * symbol test that builds token units matches "rate" and "HF" just as happily. On
+   * 20 Sep a Blend answer printed `b_rate` as the user's XLM balance for exactly that
+   * reason — the renderer took the row's first non-USD number and called it a quantity.
+   */
+  quantity: boolean;
 }
 
 export interface ShapeExtraction {
@@ -103,25 +115,25 @@ const SKIP_SUFFIXES = ["_note", "_hint", "_address", "address", "_contract", "co
  * Suffix conventions carry the unit. Stem conventions carry it for a handful of
  * well-known fields whose unit is the row's own token or a dimensionless ratio.
  */
-function unitFor(key: string, identity: string | null, row: Record<string, unknown>, requested: AssetDef | null = null, venue: Venue | null = null): { unit: string; field: string } | null {
+function unitFor(key: string, identity: string | null, row: Record<string, unknown>, requested: AssetDef | null = null, venue: Venue | null = null): { unit: string; field: string; quantity?: true } | null {
   if (key.endsWith("_pct")) {
     const stem = key.slice(0, -4);
     const unit = /(^|_)apy$/.test(stem) ? "% APY" : /(^|_)apr$/.test(stem) ? "% APR" : "%";
     return { unit, field: stem };
   }
   if (key.endsWith("_usd")) return { unit: "USD", field: key.slice(0, -4) };
-  if (key.endsWith("_xlm")) return { unit: "XLM", field: key.slice(0, -4) };
+  if (key.endsWith("_xlm")) return { unit: "XLM", field: key.slice(0, -4), quantity: true };
   // A vToken payload's bare `human` is the receipt-token amount; every `<x>_human`
   // beside it (`redeemable_human`) is in the underlying.
-  if (key === "human") return { unit: tokenOf(row, identity, true, requested, venue), field: "balance" };
-  if (key.endsWith("_human")) return { unit: tokenOf(row, identity, false, requested, venue), field: key.slice(0, -6) };
+  if (key === "human") return { unit: tokenOf(row, identity, true, requested, venue), field: "balance", quantity: true };
+  if (key.endsWith("_human")) return { unit: tokenOf(row, identity, false, requested, venue), field: key.slice(0, -6), quantity: true };
   if (key === "health_factor" || key.endsWith("_health_factor")) return { unit: "HF", field: key };
   if (key === "ratio" || key.endsWith("_ratio") || key.endsWith("_threshold") || key === "distance_to_liquidation") return { unit: "ratio", field: key };
   if (key === "rate" || key.endsWith("_rate")) return { unit: "rate", field: key };
   if (/^(max|min)_/.test(key) && Number.isInteger(Number(row[key]))) return { unit: "", field: key };
   if (["balance", "spendable", "min_balance", "underlying_value", "total_supply", "total_borrow", "total_borrows", "total_liquidity", "total_assets", "lp_shares", "shares"].includes(key)) {
     const unit = tokenOf(row, identity, false, requested, venue);
-    return unit ? { unit, field: key } : null;
+    return unit ? { unit, field: key, quantity: true } : null;
   }
   return null;
 }
@@ -270,7 +282,8 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       if (informational) continue;
       if (typeof raw === "boolean") {
         if (key.startsWith("has_") || key === "allowed" && depth === 0) continue;
-        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, "")), value: raw ? "yes" : "no", unit: "", venue });
+        // A yes/no is never an amount of anything.
+        facts.push({ path: childPath, label: labelFor(observation.capability, here, venue, segments, key.replace(/^is_/, "")), value: raw ? "yes" : "no", unit: "", venue, quantity: false });
         continue;
       }
       const pct = percentString(raw);
@@ -283,16 +296,16 @@ export function extractFactsByShape(observation: Observation, consumed: Readonly
       if (!meta) continue;
       const value = decimalOf(raw);
       if (value === null) continue;
-      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field), value, meta.unit, venue);
+      push(childPath, labelFor(observation.capability, here, venue, segments, meta.field), value, meta.unit, venue, meta.quantity === true);
     }
   };
 
-  const push = (path: string, label: string, value: string, unit: string, venue: Venue) => {
+  const push = (path: string, label: string, value: string, unit: string, venue: Venue, quantity = false) => {
     // The same number under two aliases (`debt_usd` / `total_debt_usd`) is one fact.
     const key = `${value}|${unit}|${label}`;
     if (seenValues.has(key)) return;
     seenValues.add(key);
-    facts.push({ path, label, value, unit, venue });
+    facts.push({ path, label, value, unit, venue, quantity });
   };
 
   walk(data, "", [], rootIdentity, 0);

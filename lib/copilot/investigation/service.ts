@@ -578,6 +578,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     : null;
   let candidates = null;
   try {
+    /**
+     * Ranked options ARE the answer to an open-ended prompt, so a deadline after the rates
+     * were read still salvages them — pinned by `investigation-service-borrowing`. They are
+     * NOT the answer to a request that named its own operations: 16 Sep, "deposit 100 XLM,
+     * borrow 2x bLUSD and SOUSDC, then provide liquidity in Blend and Soroswap" timed out
+     * and was offered "Lend idle BLUSDC to Earn - no new borrowing", the opposite of the
+     * request, because the generator ranks venues from the wallet and never sees the ask.
+     * Suppressing on `partial` alone would break the open-ended case too, so the fix for
+     * that belongs upstream: the run must finish. `partial` is carried as a fact so the
+     * card can say what happened without re-parsing prose.
+     */
     candidates = !lifecycleOp && outcome.kind === "research_complete" && outcome.goal.intent === "strategy" && rateComparisons.length && requestedBorrow?.usd !== null
       ? generateCandidates({
           grossCollateralUsd: capacity?.grossCollateralUsd ?? "0",
@@ -737,8 +748,11 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   const requestedBorrowNow = requestedBorrowFrom(messages, result.observations, observedNow);
   if (requestedBorrowNow && requestedBorrowNow.usd === null) warnings.push(
     `You asked to borrow ${requestedBorrowNow.tokens} ${requestedBorrowNow.asset}, but no ${requestedBorrowNow.asset} price was read, so that amount could not be checked against your floor.`);
-  if (outcome.kind === "research_complete" && outcome.goal.constraints.some((constraint) => /time budget ran out/i.test(constraint))) {
-    warnings.push("The investigation ran out of time. Ranked options use only the reads that finished.");
+  if (outcome.kind === "research_complete" && outcome.partial) {
+    warnings.push(
+      "The investigation ran out of time before it could work out a plan for this, so no options are"
+      + " offered — only the reads that finished are shown. Ask again, or split it into smaller steps.",
+    );
   }
   let question = outcome.kind === "clarify" ? outcome.question
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;

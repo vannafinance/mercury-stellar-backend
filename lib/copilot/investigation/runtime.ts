@@ -258,6 +258,7 @@ export async function runInvestigation(
     const missingText = missed.length ? ` Still missing: ${missed.join(", ")}.` : "";
     return finish({
       kind: "research_complete",
+      partial: true,
       goal: {
         intent: usable.some((observation) => RATE_READS.has(observation.capability)) ? "strategy" : "answer",
         relation: "new",

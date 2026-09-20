@@ -231,7 +231,7 @@ export function normalizeResearchFacts(observations: Observation[]): { facts: Re
     const taken = new Set(facts.slice(before).map((fact) => fact.sourcePath));
     for (const fact of shaped.facts) {
       if (taken.has(fact.path)) continue;
-      facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt });
+      facts.push({ id: `${observation.id}:${fact.path}`, label: fact.label, value: fact.value, unit: fact.unit, venue: fact.venue, evidenceId: observation.id, sourcePath: fact.path, readAt: observation.observedAt, quantity: fact.quantity });
     }
     for (const row of shaped.unavailable) {
       warnings.add(`${noun}: ${row.identity ?? row.path} was unavailable${row.message ? ` — ${row.message}` : "."}`);
