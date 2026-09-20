@@ -6,6 +6,57 @@ import { WORKFLOW_OPS } from "../workflow/types";
 import { LIFECYCLE_WRITES } from "../workflow/lifecycle";
 import type { ReadCapability } from "./types";
 
+/**
+ * The schema for ONE leg, shared by `plans[].legs[]` and `goal.actions[]`.
+ *
+ * These were two separate schemas, and the action one was strictly smaller — `op`, `asset`,
+ * a bare decimal `amount`. So the model had no field in which to state "borrow 2x" or
+ * "SOUSDC paired with XLM on Soroswap" as something the user had ASKED for, even though a
+ * plan leg could express both. Those instructions could only survive as a free-form plan
+ * the model chose to compose, and when it did not, the user's precise request came back as
+ * unrelated ranked options.
+ *
+ * One schema, one parser (`parseLeg` in decision.ts): a capability a plan gains is a
+ * capability a stated instruction gains, with nothing to keep in step by hand.
+ */
+function legSchema(extra?: { properties: Record<string, JsonSchema>; required: string[] }): JsonSchema {
+  return {
+    type: "object",
+    properties: {
+      op: { type: "string", enum: [...WORKFLOW_OPS] },
+      asset: { type: "string", enum: [...ASSET_IDS] },
+      assetOut: {
+        type: "string", enum: [...ASSET_IDS],
+        description: "REQUIRED whenever op is swap or add_liquidity: for swap, the asset received; for add_liquidity, the pool's other token. Either way it must differ from `asset`. A leg without it, on either op, is dropped. Never set it on any other op.",
+      },
+      venue: {
+        type: "string", enum: [...lpVenues()],
+        description: "swap or add_liquidity only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
+      },
+      sizing: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: [...PLAN_SIZINGS] },
+          amount: { type: "string", description: "literal only: the user's exact decimal." },
+          multiple: { type: "string", description: "leverage only: the multiplier the user stated, e.g. '2' for '2x'." },
+          percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
+          of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
+          sourceQuote: { type: "string", description: "literal/fraction/leverage only: exact substring of the user message containing the amount, the share or the multiplier." },
+          amountAsset: {
+            type: "string", enum: ["asset", "assetOut"],
+            description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') — asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
+          },
+        },
+        required: ["kind"],
+      },
+      ...(extra?.properties ?? {}),
+    },
+    // A swap also requires assetOut. JSON Schema cannot make that conditional on
+    // `op`, so it is stated in the field's own description and in the prompt.
+    required: ["op", "asset", "sizing", ...(extra?.required ?? [])],
+  };
+}
+
 const CONTROL_NAMES = new Set(["research_complete", "clarify", "blocked"]);
 const READ_NAMES = new Set(CATALOG.map((entry) => entry.name));
 
@@ -59,7 +110,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
         slippageAccepted: {
           type: "object",
-          description: "Only when the user has said, in their own words, that they accept a poor price or a loss on this trade — \"i dont care if i lose\", \"swap anyway\", \"any price\", \"ignore the price impact\". accepted is true; sourceQuote is the exact substring of their message that says it. Never infer it from urgency, from naming an amount, or from them simply repeating the request. Without this the server refuses a fill far below fair value; with it, the fill is theirs to take.",
+          description: "Only when the user has said, in their own words, that they accept a loss or a poor outcome the server has put to them — \"i dont care if i lose\", \"do it anyway\", \"any price\", \"ignore the price impact\", \"i am ready to bear the loss\". accepted is true; sourceQuote is the exact substring of their message that says it. Not swap-specific: it lifts any guard that refuses a QUANTIFIED loss, including a borrow whose carry does not cover its cost. Never infer it from urgency, from naming an amount, or from them simply repeating the request — the server refuses such an outcome by default, and only the user's own words make it theirs to take.",
           properties: { accepted: { type: "boolean" }, sourceQuote: { type: "string" } },
           required: ["accepted", "sourceQuote"],
         },
@@ -83,16 +134,20 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         openQuestions: { type: "array", items: { type: "string" } },
         actions: {
           type: "array",
-          items: {
-            type: "object",
+          description:
+            "What the user literally instructed, leg by leg, in the order they said it. Same shape as a plan leg — " +
+            "so state leverage as sizing.kind=leverage with the multiple ('borrow 2x' → multiple '2'), a pool pair " +
+            "with assetOut, and the DEX with venue. Use this whenever the request is concrete, even when it has " +
+            "several legs; it is what lets the server size exactly what was asked rather than proposing alternatives.",
+          items: legSchema({
             properties: {
-              op: { type: "string", enum: [...WORKFLOW_OPS] },
-              asset: { type: "string", enum: [...ASSET_IDS] },
-              amount: { type: "string" },
-              sourceQuote: { type: "string" },
+              sourceQuote: {
+                type: "string",
+                description: "Exact substring of the user's message that states this action.",
+              },
             },
-            required: ["op", "asset", "amount", "sourceQuote"],
-          },
+            required: ["sourceQuote"],
+          }),
         },
         write: {
           type: "object",
@@ -119,42 +174,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
               title: { type: "string", description: "Short, e.g. 'Move idle XLM into Blend'." },
               rationale: { type: "string", description: "Why this shape serves the objective, citing observation ids." },
               evidenceIds: { type: "array", items: { type: "string" } },
-              legs: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    op: { type: "string", enum: [...WORKFLOW_OPS] },
-                    asset: { type: "string", enum: [...ASSET_IDS] },
-                    assetOut: {
-                      type: "string", enum: [...ASSET_IDS],
-                      description: "REQUIRED whenever op is swap or add_liquidity: for swap, the asset received; for add_liquidity, the pool's other token. Either way it must differ from `asset`. A leg without it, on either op, is dropped. Never set it on any other op.",
-                    },
-                    venue: {
-                      type: "string", enum: [...lpVenues()],
-                      description: "swap or add_liquidity only, optional: the DEX the user named. Omit it and the protocol picks from the assets involved.",
-                    },
-                    sizing: {
-                      type: "object",
-                      properties: {
-                        kind: { type: "string", enum: [...PLAN_SIZINGS] },
-                        amount: { type: "string", description: "literal only: the user's exact decimal." },
-                        percent: { type: "string", description: "fraction only: the share as a percentage, e.g. '25' for '25%' or '50' for 'half'." },
-                        of: { type: "string", enum: ["idle", "position"], description: "fraction only: idle = the wallet's spendable balance; position = what the op spends (Earn position, posted collateral, debt)." },
-                        sourceQuote: { type: "string", description: "literal/fraction only: exact substring of the user message containing the amount or the share." },
-                        amountAsset: {
-                          type: "string", enum: ["asset", "assetOut"],
-                          description: "literal + op=swap only. Which of the leg's two assets `amount` is denominated in. Omit, or 'asset', for the ordinary case: amount is what the swap SPENDS. Set 'assetOut' when the user stated what they want to RECEIVE ('give me 15 SOUSDC', 'swap XLM to receive 961 AQUSDC', 'so it gives me 15 SOUSDC') — asset and assetOut stay exactly as they otherwise would; only this field, and the amount's meaning, change. Never on any other op.",
-                        },
-                      },
-                      required: ["kind"],
-                    },
-                  },
-                  // A swap also requires assetOut. JSON Schema cannot make that conditional on
-                  // `op`, so it is stated in the field's own description and in the prompt.
-                  required: ["op", "asset", "sizing"],
-                },
-              },
+              legs: { type: "array", items: legSchema() },
             },
             required: ["title", "rationale", "evidenceIds", "legs"],
           },

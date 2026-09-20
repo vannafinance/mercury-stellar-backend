@@ -25,7 +25,27 @@ export function useCopilotEntry(options: {
   const [error, setError] = useState<string | null>(null);
   const active = useRef<AbortController | null>(null);
   const cancel = useCallback(() => { active.current?.abort(); active.current = null; setLoading(false); }, []);
-  useEffect(() => { cancel(); setError(null); return cancel; }, [wallet, cancel]);
+  /**
+   * A wallet change must cancel the previous wallet's run. An unmount must not.
+   *
+   * This effect used to return `cancel` as its cleanup, which conflated the two: React runs
+   * an effect cleanup on unmount as well as before a re-run, so navigating away from
+   * /copilot aborted the controller whose signal is handed to `onInvestigate`, and the
+   * investigation died mid-flight. The user came back to a prompt that had simply stopped.
+   *
+   * The controller exists for the deadline below and for an explicit cancel, and neither of
+   * those is "this component went off screen". So the wallet is compared against the one
+   * the in-flight run belongs to and cancelled only on a real change; nothing is torn down
+   * on unmount, and the awaiting closure carries the run to completion against the
+   * investigation state, which is owned by the root layout rather than by this page.
+   */
+  const ownerWallet = useRef(wallet);
+  useEffect(() => {
+    if (ownerWallet.current === wallet) return;
+    ownerWallet.current = wallet;
+    cancel();
+    setError(null);
+  }, [wallet, cancel]);
   const run = useCallback(async (text: string) => {
     const message = text.trim();
     if (!message) return;

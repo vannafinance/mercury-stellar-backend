@@ -156,7 +156,25 @@ export async function resolvePrivySignerId(origin: string): Promise<string | nul
 }
 
 export type RegisterBindResult =
-  | { ok: true }
+  | {
+      ok: true;
+      /**
+       * Whether the Sign Service actually wrote the `identity_wallet_bindings` row.
+       *
+       * A 200 from register means "the wallet is connected", which is NOT the same as
+       * "this identity is now bound to it" — and for a long time nothing could tell the
+       * two apart, because the response said `connected: true` either way and this
+       * function discarded the body. Callers then reported success while every consumer
+       * downstream still refused the wallet as unbound.
+       *
+       * `null` means an older Sign Service that does not report the field at all; it is
+       * deliberately distinct from `false`, so a caller can retry on a real failure
+       * without looping forever against a deployment that simply cannot answer.
+       */
+      bindingWritten: boolean | null;
+      /** Why the binding did not land, when the service named a reason. */
+      bindingError?: string;
+    }
   | {
       ok: false;
       /** Error code from the Sign Service, or a transport code we generated. */
@@ -206,7 +224,26 @@ export async function registerWalletBind(opts: {
     };
   }
 
-  if (res.ok) return { ok: true };
+  if (res.ok) {
+    // Read the outcome the service reports rather than inferring it from the status.
+    // See RegisterBindResult.bindingWritten: a 200 alone does not mean a row was written.
+    try {
+      const j = (await res.json()) as {
+        identity_binding_written?: unknown;
+        identity_binding_error?: unknown;
+      };
+      return {
+        ok: true,
+        bindingWritten:
+          typeof j.identity_binding_written === "boolean" ? j.identity_binding_written : null,
+        ...(typeof j.identity_binding_error === "string"
+          ? { bindingError: j.identity_binding_error }
+          : {}),
+      };
+    } catch {
+      return { ok: true, bindingWritten: null };
+    }
+  }
 
   let code = `http_${res.status}`;
   let message = `HTTP ${res.status}`;

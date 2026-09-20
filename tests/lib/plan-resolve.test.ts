@@ -299,7 +299,7 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
         { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "6", sourceQuote: "6x leverage" } },
       ];
       const { rejected } = resolvePlans([plan("No deposit", legs)], ctx({ messages: ["borrow XLM at 6x leverage"] }));
-      expect(rejected[0]?.reason).toMatch(/needs the deposit that funds it stated immediately before/);
+      expect(rejected[0]?.reason).toMatch(/needs the deposit that funds it stated before/);
     });
 
     it("refuses a leverage multiple the model did not actually anchor in the user's words", () => {
@@ -1150,7 +1150,11 @@ describe("resolvePlans — negative carry and spendable balance", () => {
     expect(candidates).toEqual([]);
     expect(rejected[0]).toEqual({
       title: "Lever BLUSDC", leg: "borrow BLUSDC",
-      reason: "borrowing BLUSDC costs 32.47% APR and supplying BLUSDC earns 0.90% — this loses money by construction",
+      // The refusal now ends by naming the way out, as the price-impact guard's already
+      // does, and is marked liftable so the caller can put it as a question.
+      reason: "borrowing BLUSDC costs 32.47% APR and supplying BLUSDC earns 0.90% — this loses money by construction. "
+        + "Say you accept the loss and it will be prepared as asked",
+      acceptable: true,
     });
   });
 
@@ -1340,5 +1344,170 @@ describe("resolvePlans — precision comes from the protocol", () => {
       { op: "supply_blend", asset: "XLM", sizing: { kind: "previous_leg" } },
     ])], ctx({ observations: noDecimals }));
     expect(rejected[0].reason).toBe("the on-chain precision of XLM was not read this investigation");
+  });
+});
+
+/**
+ * A handoff is bound to the leg that produced the asset, not to the line above it.
+ *
+ * `previous_leg` used to read `drafts[index - 1]`, which made the link positional: a dual
+ * borrow puts an unrelated leg between the borrow and the supply that spends it, and the
+ * whole plan was refused with "previous_leg needs a preceding leg in the same asset" even
+ * though nothing about it was wrong. Every pipeline that passes values between steps binds
+ * them by identity for this reason — Argo names the producing task and its artifact — and
+ * here the asset is that identity, since a leg produces exactly one.
+ *
+ * The second half matters as much: one producer funds one consumer. Two legs must not be
+ * able to spend the same borrow.
+ */
+describe("previous_leg follows the asset, not the line above", () => {
+  const interleaved: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "borrow", asset: "XLM", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC and XLM, then supply the BLUSDC to Blend"];
+
+  it("reaches the borrow two legs back instead of refusing the plan", () => {
+    const { rejected } = resolvePlans([plan("Dual borrow then supply", interleaved)], ctx({ messages }));
+    // Whatever else this plan runs into, it must not die on the handoff any more.
+    expect(rejected[0]?.reason ?? "").not.toMatch(/previous_leg needs a preceding leg/);
+  });
+
+  it("still refuses when no preceding leg produced that asset at all", () => {
+    const orphan: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { rejected } = resolvePlans([plan("Nothing made BLUSDC", orphan)], ctx({ messages: ["deposit 100 XLM then supply the BLUSDC"] }));
+    expect(rejected[0]?.reason).toMatch(/previous_leg needs a preceding leg in the same asset/);
+  });
+
+  it("will not let two legs spend the same producer", () => {
+    const doubleSpend: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { candidates, rejected } = resolvePlans([plan("Spend it twice", doubleSpend)], ctx({ messages }));
+    /**
+     * The property that matters is that the single borrow is not spent twice, so the plan
+     * must not become something the user can approve. Which guard catches it is not
+     * pinned: claiming the borrow for the first supply leaves the second to resolve
+     * against the supply itself, and the op-flow table refuses that handoff first.
+     */
+    expect(candidates).toHaveLength(0);
+    expect(rejected).not.toHaveLength(0);
+  });
+});
+
+/**
+ * An unreadable return is an unknown, not a loss.
+ *
+ * The carry guard sums supplied × supply APR against borrowed × borrow APR, and skipped
+ * any leg whose op carries no rate. An LP leg is exactly that — its income is trading
+ * fees, not a protocol rate — so a leveraged LP strategy had its borrow counted as a cost
+ * and the position it funds counted as earning nothing. "Deposit, borrow 2x, supply some
+ * to Blend and LP the rest on Soroswap" was ruled out as losing "by construction", from a
+ * number nobody had, for a position the Margin page opens without complaint.
+ *
+ * Scoring an unknown as zero and then reporting it as a loss is the same error the Blend
+ * answer made when it printed a rate as a balance. The guard now fires only when it can
+ * see the whole return, and `netAprPct` goes null — the contract the card already renders
+ * as "not read".
+ */
+describe("a plan whose return cannot be read is not called a loss", () => {
+  const levered: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "add_liquidity", asset: "BLUSDC", assetOut: "XLM", venue: "soroswap", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM, borrow 2x BLUSDC and put it in the Soroswap pool with XLM"];
+
+  it("does not rule out a leveraged LP as losing money by construction", () => {
+    const { rejected } = resolvePlans([plan("Levered Soroswap LP", levered)], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
+  });
+
+  it("still rules out a borrow deployed entirely into a readable rate that cannot cover it", () => {
+    // Every leg's return IS readable here — Blend supply at 0.9% against an Earn borrow
+    // at 32.47% — so the guard must keep refusing exactly as it did.
+    const carry: ProposedPlan["legs"] = [
+      { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+      { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+      { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+    ];
+    const { rejected } = resolvePlans([plan("Negative carry", carry)], ctx({ messages: ["deposit 100 XLM and borrow 2x BLUSDC into Blend"] }));
+    expect(rejected[0]?.reason ?? "").toMatch(/loses money by construction/);
+  });
+});
+
+/**
+ * Whose idea it was decides whether a losing carry is refused or offered.
+ *
+ * The same arithmetic warrants two different answers. A shape the MODEL composed that
+ * cannot cover its own borrow cost should never reach the user — proposing it is the
+ * mistake. A shape the USER stated is not a proposal: they asked for it, the Margin page
+ * opens it without objecting, and refusing it outright leaves them to do the whole thing
+ * by hand. That is the copilot failing at its job, not protecting them.
+ *
+ * Aditya, 20 Sep: *"ui se ho ra to copilot se bhi hona chahiye ni to fir mtlb ni hua ...
+ * atleast kuch to way hoga"*.
+ */
+describe("a losing carry the user asked for is offered, not refused", () => {
+  const legs: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC into Blend"];
+  const shape = plan("Levered Blend", legs);
+
+  it("still rules the shape out when the model composed it", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages }));
+    expect(rejected[0]?.reason ?? "").toMatch(/loses money by construction/);
+  });
+
+  it("does not rule it out when it is the plan the user stated", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages, statedPlanId: planCandidateId(shape) }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
+  });
+});
+
+/**
+ * The way out of a losing carry is the one the swap guard already offers.
+ *
+ * The price-impact guard states the principle in its own comment — "what this guard owes
+ * them is the number, not a veto they cannot lift" — and its refusal ends by telling the
+ * user how to lift it. The carry guard had the number and no way out, so a shape the user
+ * can open from the Margin page was a dead end in the copilot.
+ *
+ * The acceptance is the same fact in both places: the user, in their own words, taking a
+ * quantified loss that was put to them. (The field is still called `slippageAccepted`
+ * because the sealed proposal stores it under that name; its meaning is broader.)
+ */
+describe("a priced loss can be accepted, not only refused", () => {
+  const legs: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC into Blend, i am ready to bear the loss"];
+  const shape = plan("Levered Blend", legs);
+
+  it("tells the user how to lift the refusal instead of only refusing", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages }));
+    expect(rejected[0]?.reason).toMatch(/loses money by construction/);
+    expect(rejected[0]?.reason).toMatch(/accept the loss/);
+  });
+
+  it("prepares the plan once the user has accepted the loss in their own words", () => {
+    const { rejected } = resolvePlans([shape], ctx({
+      messages,
+      goal: { slippageAccepted: { accepted: true, sourceQuote: "i am ready to bear the loss" } },
+    }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
   });
 });

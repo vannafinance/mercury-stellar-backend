@@ -17,7 +17,7 @@
 
 import { assetForVenueSpelling, ASSET_SYMBOL_PATTERN, poolVenueFor, resolveAssetDef, swappableWith } from "../registry/assets";
 import { allowedInvocation, TOOLS, writeArgsFor } from "../workflow/allowlist";
-import { ASSET_OUT_OPS, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
+import { ASSET_OUT_OPS, deploysIntoPosition, feeds, OP_FLOW, SIZED_OPS, WORKFLOW_OPS, type Pocket, type ProposalStep, type SizedOp, type WorkflowOp } from "../workflow/types";
 import { isRecord } from "./decision";
 import { candidateId } from "./candidate-id";
 import { dustWalletHoldingsFrom, freshPrices, idleWalletHoldingsFrom, transactionFloorUsdWad, unspendableWalletLine, type Candidate } from "./candidates";
@@ -27,7 +27,7 @@ import type { RateComparison } from "./rate-comparison";
 import { LIQUIDATION_THRESHOLD_WAD, maxWithdrawForFloorWad, sizeLegs, type LegRequest, type SizedLeg } from "./sizing";
 import { decimalsFrom, truncateToDecimals } from "./precision";
 import { constantProductOut, exactOutputIn, MAX_PRICE_IMPACT_PCT, poolReservesFrom, priceImpactWad, reservesForDirection, slippageFloor, SWAP_SLIPPAGE_BPS, type PoolReserves } from "./pool-quote";
-import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan } from "./types";
+import type { GoalUnderstanding, InvestigationScope, Observation, PlanLeg, PlanSizing, ProposedPlan, StatedAction } from "./types";
 import type { OpFlow } from "../workflow/types";
 
 /**
@@ -54,6 +54,20 @@ export interface PlanContext {
    * acceptance already anchored and sealed onto the evidence.
    */
   goal?: Pick<GoalUnderstanding, "slippageAccepted">;
+  /**
+   * The candidate id of the plan built from what the user stated outright, when this turn
+   * has one (`planCandidateId` of `planFromStatedActions`'s plan).
+   *
+   * Read by the carry guard, because the same arithmetic warrants two different answers.
+   * A shape the MODEL composed that cannot cover its own borrow cost should never be
+   * offered — proposing it is the mistake. A shape the USER stated is not a proposal at
+   * all: they asked for it, they can open it from the Margin page without the product
+   * objecting, and refusing it outright leaves them to do the whole thing by hand, which
+   * is the copilot failing at its job rather than protecting them. So a stated plan is
+   * sized and offered with the cost stated in the open, and only a composed one is ruled
+   * out. The numbers, and every other gate, are identical either way.
+   */
+  statedPlanId?: string | null;
   /**
    * The margin position and the user's stated floor (null when none was stated — then the
    * contract's liquidation line is the stop and no borrow can be sized). Null as a whole
@@ -82,6 +96,11 @@ export interface RejectedPlan {
   reason: string;
   /** Structured source-pocket mismatch, when a leg is asking the wrong holder. */
   pocket?: PocketMismatch;
+  /**
+   * True when the user's own acceptance would lift this refusal. The caller raises such
+   * a refusal as a question rather than a verdict, so "yes" is an available answer.
+   */
+  acceptable?: true;
 }
 
 export interface PocketMismatch {
@@ -264,7 +283,20 @@ function debtRows(ctx: PlanContext): Array<{ asset: string; owed: string }> {
 }
 
 class Reject extends Error {
-  constructor(readonly leg: string | null, message: string, readonly pocket?: PocketMismatch, readonly funding = false) { super(message); }
+  /**
+   * `acceptable` marks a refusal the USER can lift by accepting the loss it names, as
+   * opposed to one nothing they say can change (a balance that is not there, a pocket
+   * that does not feed this op). The caller turns the first kind into a question the
+   * user can answer instead of a dead end — knowing the magic sentence should not be a
+   * prerequisite for using the product.
+   */
+  constructor(
+    readonly leg: string | null,
+    message: string,
+    readonly pocket?: PocketMismatch,
+    readonly funding = false,
+    readonly acceptable = false,
+  ) { super(message); }
 }
 
 const SIZER_REASONS: Record<string, string> = {
@@ -303,7 +335,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     if (bridged) {
       try { remember(resolvePlan(bridged, ctx)); }
       catch (error) {
-        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
+        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
@@ -317,7 +349,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       remember(resolvePlan(candidatePlan, ctx));
       if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
-      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
+      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
@@ -350,6 +382,7 @@ function independentLendPocketCheck(plan: ProposedPlan, ctx: PlanContext):
         leg: error.leg ?? `${leg.op.replaceAll("_", " ")} ${leg.asset}`,
         reason: error.message,
         ...(error.pocket ? { pocket: error.pocket } : {}),
+        ...(error.acceptable ? { acceptable: true as const } : {}),
       });
       return false;
     }
@@ -482,7 +515,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     targetOut?: string;
   }
   const drafts: Draft[] = [];
-  for (const [index, leg] of expandLegs(plan.legs, ctx).entries()) {
+  /**
+   * Producer legs already spent by a `previous_leg` handoff. One leg's output funds one
+   * leg's input: without this, two legs could each claim the same borrow and the plan
+   * would spend the same tokens twice.
+   */
+  const claimedProducers = new Set<number>();
+  // Materialised so a leg can look at its siblings, not just at what came before it:
+  // a leveraged borrow has to know how many other borrows share its funding deposit.
+  const expanded = [...expandLegs(plan.legs, ctx)];
+  for (const [index, leg] of expanded.entries()) {
     const name = `${leg.op.replaceAll("_", " ")} ${leg.asset}`;
     const def = resolveAssetDef(leg.asset);
     if (!def) throw new Reject(name, `${leg.asset} is not a supported asset`);
@@ -792,13 +834,37 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
       continue;
     }
     if (sizing.kind === "previous_leg") {
-      const prev = drafts[index - 1];
-      if (!prev || prev.leg.asset !== leg.asset) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
+      /**
+       * "The previous leg" means the leg that produced THIS asset, not whichever leg
+       * happens to sit one line above.
+       *
+       * Reading `drafts[index - 1]` made the handoff positional, so interleaving broke
+       * it: "deposit 100 XLM, borrow BLUSDC, borrow SOUSDC, supply the BLUSDC to Blend"
+       * refused with "previous_leg needs a preceding leg in the same asset", because the
+       * line above the supply is the SOUSDC borrow. The BLUSDC it wants is one further
+       * back, and nothing about that plan is wrong.
+       *
+       * Every pipeline that passes values between steps binds them by identity rather
+       * than adjacency — Argo names the producing task and its artifact, CodePipeline
+       * names the input artifact — precisely so an unrelated step in between cannot
+       * break the link. Here the asset IS the identity: a leg produces exactly one, so
+       * the nearest preceding leg in the same asset is the producer, with no new field
+       * for the model to fill. Claiming it consumes it, so two legs cannot both spend
+       * one borrow.
+       */
+      let producerIndex = index - 1;
+      while (producerIndex >= 0 &&
+        (drafts[producerIndex].leg.asset !== leg.asset || claimedProducers.has(producerIndex))) {
+        producerIndex -= 1;
+      }
+      const prev = producerIndex >= 0 ? drafts[producerIndex] : undefined;
+      if (!prev) throw new Reject(name, "previous_leg needs a preceding leg in the same asset");
       // What the previous leg leaves behind must be what this one spends (the op-flow table).
       if (prev.leg.op === "swap") throw new Reject(name, "a swap fills at the pool's price, so how much it buys is not known in advance — state the next leg's amount yourself");
       if (prev.leg.op === "remove_liquidity") throw new Reject(name, "removing liquidity pays back two tokens, not one, so how much of either is not known in advance — state the next leg's amount yourself");
       if (!feeds(prev.leg.op, leg.op)) throw new Reject(name, handoffReason(prev.leg.op, leg.op));
-      drafts.push({ leg, name, usd: { previous: index - 1 }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
+      claimedProducers.add(producerIndex);
+      drafts.push({ leg, name, usd: { previous: producerIndex }, tokens: prev.produces, produces: prev.produces, heldTokens: null });
       continue;
     }
     /**
@@ -829,19 +895,46 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
        * combination) refuses cleanly instead of computing a number that means nothing.
        */
       if (flow.rate !== "earn_borrow") throw new Reject(name, `a leverage multiple only sizes a borrow — ${verbOf(leg.op).toLowerCase()} needs a literal amount or a share instead`);
-      const prev = drafts[index - 1];
-      const prevFlow = prev ? OP_FLOW[prev.leg.op] : null;
-      if (!prev || prevFlow!.to !== "account" || prevFlow!.health !== "raises") {
-        throw new Reject(name, "a leverage multiple needs the deposit that funds it stated immediately before the borrow");
+      /**
+       * One deposit can fund SEVERAL leveraged borrows — that is what a dual borrow is.
+       *
+       * This used to read `drafts[index - 1]` and demand a deposit there, so the first
+       * borrow after a deposit sized fine and the second was refused outright: its
+       * previous leg is its sibling, not the deposit. "borrow 2x BLUSDC and SOUSDC"
+       * therefore died at "a leverage multiple needs the deposit ... immediately before
+       * the borrow", even though splitting it into two legs is exactly right.
+       *
+       * Walking back past the siblings is only half of it. The Margin page's own Dual
+       * Borrow treats `deposit x (leverage - 1)` as the TOTAL borrow ceiling and splits
+       * it between the two assets (components/margin/dual-borrow.tsx) — it is not that
+       * ceiling each. Giving both legs the full multiple against the same equity would
+       * quietly double the real leverage, which is the defect the split was introduced
+       * to prevent. So the equity buys one ceiling, and the siblings share it.
+       *
+       * Siblings are identified by what they ARE, not by op name: a leg sized by a
+       * leverage multiple whose op pays a borrow rate. An op added later that is shaped
+       * like a borrow joins the group with no change here.
+       */
+      const sharesFunding = (candidate: PlanLeg) =>
+        candidate.sizing.kind === "leverage" && OP_FLOW[candidate.op].rate === "earn_borrow";
+      let fundingIndex = index - 1;
+      while (fundingIndex >= 0 && sharesFunding(expanded[fundingIndex])) fundingIndex -= 1;
+      const funding = fundingIndex >= 0 ? drafts[fundingIndex] : undefined;
+      const fundingFlow = funding ? OP_FLOW[funding.leg.op] : null;
+      if (!funding || fundingFlow!.to !== "account" || fundingFlow!.health !== "raises") {
+        throw new Reject(name, "a leverage multiple needs the deposit that funds it stated before the borrow");
       }
-      if (typeof prev.usd !== "string") {
+      if (typeof funding.usd !== "string") {
         throw new Reject(name, `${verbOf(leg.op)} at a leverage multiple needs the deposit before it to have a known amount already`);
       }
-      const equityUsd = decimalWad(prev.usd);
+      let siblings = 0;
+      for (let i = fundingIndex + 1; i < expanded.length && sharesFunding(expanded[i]); i += 1) siblings += 1;
+      const equityUsd = decimalWad(funding.usd);
       const multiple = anchoredMultiple(sizing, ctx.messages, name);
-      const borrowUsd = formatWad(mulDown(equityUsd, multiple - WAD, WAD));
+      const ceilingUsd = mulDown(equityUsd, multiple - WAD, WAD);
+      const borrowUsd = formatWad(siblings > 1 ? ceilingUsd / BigInt(siblings) : ceilingUsd);
       const converted = tokensFromUsd(borrowUsd, price.price, decimals.get(leg.asset) ?? 7);
-      if (!converted.ok) throw new Reject(name, `${sizing.multiple}x leverage on ${prev.leg.asset} sizes to nothing in ${leg.asset} at this precision`);
+      if (!converted.ok) throw new Reject(name, `${sizing.multiple}x leverage on ${funding.leg.asset} sizes to nothing in ${leg.asset} at this precision`);
       const tokens = precise(converted.tokens, leg.asset, name);
       const usd = formatWad(mulDown(decimalWad(tokens), price.price, WAD));
       drafts.push({ leg, name, usd, tokens, produces: tokens, heldTokens: null });
@@ -1151,7 +1244,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
               throw new Reject(d.name, `this pool is too thin for ${d.tokens} ${def.id}: it would fill at about `
                 + `${truncateToDecimals(formatWad(quoted), places)} ${out.id}, ${lost}% below what ${def.id} is worth. `
                 + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`
-                + `, or say you accept the loss and it will be swapped as asked`);
+                + `, or say you accept the loss and it will be swapped as asked`,
+                undefined, false, true);
             }
           }
           if (d.targetOut) {
@@ -1238,6 +1332,19 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    */
   let supplied = ZERO, returnWad = ZERO, borrowed = ZERO;
   /**
+   * True once the plan deploys value into a position whose return this code cannot read —
+   * a Soroswap or Aquarius LP, whose income is trading fees, not a protocol rate.
+   *
+   * The carry guard below skipped such a leg entirely (`rate === null` → `continue`), so
+   * a leveraged LP strategy had its BORROW counted as a cost and the LP it funds counted
+   * as earning nothing. "Deposit 100 XLM, borrow 2x, supply to Blend and LP the rest on
+   * Soroswap" was therefore ruled out as losing "by construction" — a conclusion drawn
+   * from a number nobody had, about a position the user can open from the Margin page
+   * without complaint. An unreadable return is an unknown, and an unknown must not be
+   * scored as zero and then reported as a loss.
+   */
+  let returnUnreadable = false;
+  /**
    * A supply leg's rate is the label on the option, not an input to its size. A leg whose
    * rate was not read (or failed the cross-check) is still sized and offered; the card says
    * the rate is unknown. Only a plan that BORROWS needs every supply rate — its carry cannot
@@ -1248,7 +1355,12 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
   for (const d of drafts) {
     const usd = decimalWad(d.usd as string);
     const rate = OP_FLOW[d.leg.op].rate;
-    if (rate === null) continue;
+    if (rate === null) {
+      // Moving or holding value is not a deployment and says nothing about the carry;
+      // putting it into a position whose rate cannot be read is what makes it unjudgeable.
+      if (deploysIntoPosition(d.leg.op)) returnUnreadable = true;
+      continue;
+    }
     const apr = legRate(d.leg.op, d.leg.asset, ctx.comparisons);
     if (rate === "earn_borrow") {
       if (apr === null) { borrowRateUnknown = true; borrowed += usd; continue; }
@@ -1275,14 +1387,32 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * When a supply leg exists, if its return does not cover the borrow cost, rule the
    * strategy out rather than ranking it last.
    */
-  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO) {
+  const userStatedThis = ctx.statedPlanId != null && planCandidateId(plan) === ctx.statedPlanId;
+  /**
+   * The same acceptance the swap's price-impact guard honours, read here too.
+   *
+   * That guard already states the principle — "what this guard owes them is the number,
+   * not a veto they cannot lift" — and its refusal ends by telling the user how to lift
+   * it. A negative carry is a different loss, but not a different kind of decision, and
+   * leaving this one unliftable meant a shape the user could open from the Margin page
+   * was a dead end in the copilot with nothing to do about it.
+   *
+   * NAMING DEBT: the field is still `slippageAccepted` because the sealed proposal and
+   * the execute path store it under that name, and renaming it would invalidate plans
+   * already sealed. What it records is broader than its name — the user accepting a
+   * quantified loss that was put to them — and the model is told so.
+   */
+  const lossAccepted = ctx.goal?.slippageAccepted?.accepted === true;
+  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable && !userStatedThis && !lossAccepted) {
     const borrowLeg = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow")!;
     const supplyLeg = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
     const borrowRow = ctx.comparisons.find((c) => c.asset === borrowLeg.leg.asset);
     const supplyApr = supplyLeg ? legRate(supplyLeg.leg.op, supplyLeg.leg.asset, ctx.comparisons) : null;
     throw new Reject(borrowLeg.name, supplyLeg && supplyApr
-      ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction`
-      : "this borrows without a supply that could cover the borrow cost");
+      ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction. `
+        + `Say you accept the loss and it will be prepared as asked`
+      : "this borrows without a supply that could cover the borrow cost",
+      undefined, false, Boolean(supplyLeg && supplyApr));
   }
   /**
    * After the repays, what debt remains — decided from the debt rows and the repay legs,
@@ -1318,7 +1448,9 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     borrows,
     asset: first.leg.asset,
     venue: lastSupply ? OP_FLOW[lastSupply.leg.op].venue : "margin",
-    netAprPct: borrows && supplied > ZERO ? formatWad(netApr) : null,
+    // Null when part of the return could not be read: a figure that leaves out the LP's
+    // income is not this plan's net APR, and the card already renders null as "not read".
+    netAprPct: borrows && supplied > ZERO && !returnUnreadable ? formatWad(netApr) : null,
     supplyAprPct: rateUnknown || supplied === ZERO ? null : formatWad(grossSupplyApr(drafts, ctx.comparisons, supplied)),
     legs: sized,
     finalHealthFactor,
@@ -1543,11 +1675,41 @@ function noIdleReason(asset: string, dust: Partial<Record<string, { usd: string;
 export function planFromStatedActions(actions: NonNullable<GoalUnderstanding["actions"]>, objective: string): ProposedPlan | null {
   if (!actions.length) return null;
   return {
-    title: actions.map((a) => `${verbOf(a.op)} ${a.amount} ${a.asset}`).join(", then "),
+    title: actions.map(statedActionLabel).join(", then "),
     rationale: objective,
     evidenceIds: [],
-    legs: actions.map((a) => ({ op: a.op, asset: a.asset, sizing: { kind: "literal", amount: a.amount, sourceQuote: a.sourceQuote } })),
+    // A stated action IS a leg (plus the sentence it came from), so it passes straight
+    // through. This used to rebuild each leg as `sizing: {kind:"literal"}`, which threw
+    // away every sizing the user had actually stated — a "borrow 2x" arrived here as a
+    // literal amount or not at all — and had no way to carry `assetOut` or `venue`, so a
+    // pool pair could not survive the trip either.
+    legs: actions.map(({ sourceQuote: _quote, ...leg }) => leg),
   };
+}
+
+/** How a stated leg reads in a plan title, sized the way the user sized it. */
+function statedActionLabel(action: StatedAction): string {
+  const { sizing } = action;
+  const amount =
+    sizing.kind === "literal" ? sizing.amount
+      : sizing.kind === "leverage" ? `${sizing.multiple}x`
+        : sizing.kind === "fraction" ? `${sizing.percent}% of ${sizing.of === "idle" ? "idle" : "the position"}`
+          : sizing.kind === "all_idle" ? "all idle"
+            : sizing.kind === "all_position" ? "the whole position"
+              : sizing.kind === "to_floor" ? "to the floor"
+                : "the previous leg";
+  const where = action.venue ? ` on ${action.venue}` : "";
+  /**
+   * `amountAsset: "assetOut"` means the user stated what they want to RECEIVE, not what
+   * to spend ("swap XLM to receive 961 AQUSDC"). Naming the amount against `asset` there
+   * reads as spending 961 of the wrong token. Keyed off the leg carrying a second asset
+   * at all, so it needs no knowledge of which ops those are.
+   */
+  if (action.assetOut && sizing.kind === "literal" && sizing.amountAsset === "assetOut") {
+    return `${verbOf(action.op)} ${action.asset} for ${amount} ${action.assetOut}${where}`;
+  }
+  const paired = action.assetOut ? ` with ${action.assetOut}` : "";
+  return `${verbOf(action.op)} ${amount} ${action.asset}${paired}${where}`;
 }
 
 function requestText(messages: readonly string[]): string {
@@ -1627,11 +1789,24 @@ export function shareSameOpLiteralActions(
 ): NonNullable<GoalUnderstanding["actions"]> {
   const plan = planFromStatedActions(actions, "tmp");
   if (!plan) return actions;
-  return applySharedLiteral(plan.legs, messages).flatMap((leg) => (
-    leg.sizing.kind === "literal"
-      ? [{ op: leg.op, asset: leg.asset, amount: leg.sizing.amount, sourceQuote: leg.sizing.sourceQuote }]
-      : []
-  ));
+  /**
+   * Every leg comes back, whatever its sizing. This used to keep only the literal ones
+   * and silently discard the rest, so a leveraged or fraction-sized action the user had
+   * stated outright vanished on its way through a helper that exists only to normalise
+   * literals. Sharing one number across same-op legs must not be able to delete a leg.
+   */
+  /**
+   * `applySharedLiteral` rewrites legs one-for-one and may append; it never reorders, so
+   * position still identifies the action a leg came from. Its own `sourceQuote` — the
+   * sentence the user stated that leg in — is preserved rather than collapsed onto the
+   * first action's, which would misattribute every later leg to the opening clause.
+   * Appended legs have no action behind them and fall back to their sizing's quote.
+   */
+  return applySharedLiteral(plan.legs, messages).map((leg, index) => ({
+    ...leg,
+    sourceQuote: actions[index]?.sourceQuote
+      ?? ("sourceQuote" in leg.sizing ? leg.sizing.sourceQuote : requestText(messages)),
+  }));
 }
 
 /**

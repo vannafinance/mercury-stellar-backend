@@ -331,7 +331,7 @@ describe("researchTurn fast path", () => {
     const model = vi.fn(async () => ({
       kind: "research_complete",
       goal: { intent: "strategy", relation: "new", objective: "lend 1 xlm to earn", constraints: [], borrowing: "forbidden",
-        actions: [{ op: "lend", asset: "XLM", amount: "1", sourceQuote: "lend 1 xlm to earn" }] },
+        actions: [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 xlm to earn" }, sourceQuote: "lend 1 xlm to earn" }] },
       findings: [{ summary: "User named a complete lend.", evidenceIds: [] }],
       openQuestions: [],
     }));
@@ -360,7 +360,7 @@ describe("researchTurn fast path", () => {
     const model = vi.fn(async () => ({
       kind: "research_complete",
       goal: { intent: "strategy", relation: "new", objective: "lend 1 xlm to earn", constraints: [], borrowing: "forbidden",
-        actions: [{ op: "lend", asset: "XLM", amount: "1", sourceQuote: "lend 1 xlm to earn" }] },
+        actions: [{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "1", sourceQuote: "lend 1 xlm to earn" }, sourceQuote: "lend 1 xlm to earn" }] },
       findings: [{ summary: "User named a complete lend.", evidenceIds: [] }],
       openQuestions: [],
     }));
@@ -407,7 +407,7 @@ describe("researchTurn fast path", () => {
     const model = async () => ({
       kind: "research_complete",
       goal: { intent: "strategy", relation: "new", objective: "repay 1 XLM", constraints: [], borrowing: "unspecified",
-        actions: [{ op: "repay", asset: "XLM", amount: "1", sourceQuote: "repay 1 XLM" }] },
+        actions: [{ op: "repay", asset: "XLM", sizing: { kind: "literal", amount: "1", sourceQuote: "repay 1 XLM" }, sourceQuote: "repay 1 XLM" }] },
       findings: [{ summary: "Named repay.", evidenceIds: [] }],
       openQuestions: [],
     });

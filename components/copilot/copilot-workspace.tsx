@@ -86,7 +86,7 @@ import { lpSides } from "@/lib/copilot/lp-pair";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
-import { useInvestigation } from "@/hooks/use-investigation";
+import { useLiveInvestigation } from "@/contexts/investigation-context";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
 import { useWorkflow } from "@/hooks/use-workflow";
 import { InvestigationCard } from "./investigation-card";
@@ -1410,7 +1410,8 @@ function ImpactPanel({ sim }: { sim: Simulation }) {
 
 export function CopilotWorkspace() {
   const address = useUserStore((s) => s.address);
-  const investigation = useInvestigation(address);
+  // Lives in the root layout, not here: an in-flight run must survive leaving this page.
+  const investigation = useLiveInvestigation();
 
   const workflow = useWorkflow(address);
   const persistedWorkflowReceiptRef = useRef<string | null>(null);

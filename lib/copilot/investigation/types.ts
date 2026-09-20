@@ -37,7 +37,7 @@ import type { WorkflowOp } from "../workflow/types";
 export interface GoalUnderstanding {
   intent?: "answer" | "strategy";
   relation?: "new" | "refine";
-  actions?: Array<{ op: WorkflowOp; asset: string; amount: string; sourceQuote: string }>;
+  actions?: StatedAction[];
   /**
    * A lifecycle write — not a sized plan. Opening a margin account is one of these:
    * it has no token amount and runs for the connected G-wallet.
@@ -144,6 +144,30 @@ export interface PlanLeg {
 }
 
 /**
+ * A leg the user stated outright, plus the sentence they stated it in.
+ *
+ * `goal.actions` is the deterministic route from an instruction to a plan: it does not
+ * depend on the model composing anything, so a concrete request reaches the sizer even
+ * when the free-form `plans` array is empty or gets dropped. That only works if an action
+ * can hold everything a leg can hold.
+ *
+ * It could not. `actions` used to be `{op, asset, amount, sourceQuote}` — a bare decimal
+ * and nothing else — while `PlanLeg` had `sizing`, `assetOut` and `venue`. So the narrower
+ * form fed the wider one, and every instruction using leverage ("borrow 2x"), a pool pair
+ * ("SOUSDC and XLM in Soroswap") or any sizing word fell off the deterministic path
+ * entirely: `exactKeys` dropped the action for carrying an unknown key, and `"2x"` failed
+ * the decimal check. The user's own instruction then survived only if the model happened
+ * to restate it in `plans`, which is why a precise multi-leg request came back as generic
+ * ranked options.
+ *
+ * Defining it as `PlanLeg` rather than repeating the fields is the point: the two cannot
+ * drift apart again, and a new leg capability is available to a stated instruction the
+ * moment a plan can express it. `sourceQuote` is the only addition — where in the user's
+ * message this action came from, which a leg has no reason to carry.
+ */
+export type StatedAction = PlanLeg & { sourceQuote: string };
+
+/**
  * A strategy shape the model composed. Ordered legs, a title, and a rationale that cites
  * observation ids. It carries no amounts and no rates: every number the user sees for it
  * is derived in code, and a plan the code cannot size or verify is rejected with a reason
@@ -182,6 +206,14 @@ export type ResearchDecision =
       droppedPlans?: number;
       /** Findings that stated a figure with no read behind it; left out, and the card says so. */
       droppedFindings?: number;
+      /**
+       * The run hit its deadline and this outcome was synthesised from whatever reads
+       * finished — the model never produced a goal or any plans. A structured fact
+       * because the caller has to act on it: `service.ts` used to detect this by
+       * regex-matching the prose in `goal.constraints`, which silently stops working
+       * the moment that sentence is reworded.
+       */
+      partial?: true;
     };
 
 export interface Observation {

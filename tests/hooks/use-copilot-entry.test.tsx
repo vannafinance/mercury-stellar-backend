@@ -123,3 +123,64 @@ describe("single composer entry", () => {
     await first;
   });
 });
+
+/**
+ * Leaving /copilot mid-prompt used to kill the prompt.
+ *
+ * The composer's controller is what `onInvestigate` receives as its abort signal, and the
+ * effect that cancels it on a wallet change also returned `cancel` as its cleanup. React
+ * runs a cleanup on unmount too, so navigating to any other route aborted the in-flight
+ * fetch and cancelled the server request with it — the investigation did not pause, it
+ * died, and returning to the page showed nothing.
+ *
+ * What is pinned here is which events may stop a run: an explicit cancel, the deadline, a
+ * superseding prompt, and a genuine wallet change. Going off screen is not one of them.
+ */
+describe("a run outlives the page it was started from", () => {
+  it("does not abort the investigation when the composer unmounts", async () => {
+    let seen: AbortSignal | null = null;
+    let release = () => {};
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const input = {
+      wallet: "wallet",
+      onInvestigate: vi.fn((_message: string, signal: AbortSignal) => { seen = signal; return pending; }),
+    };
+    const { result, unmount } = renderHook(() => useCopilotEntry(input));
+
+    // Not wrapped in `act`: the run must stay genuinely in flight across the unmount,
+    // and an async act scope that never settles swallows the assertions after it.
+    const inFlight = result.current.run("build me a strategy");
+    const signal = seen as unknown as AbortSignal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
+
+    // The user navigates away while the investigation is still running.
+    await act(async () => { unmount(); });
+    expect(signal.aborted).toBe(false);
+
+    // And it still finishes, against the state the root layout owns.
+    release();
+    await inFlight;
+    expect(signal.aborted).toBe(false);
+  });
+
+  it("still cancels the previous wallet's run when the wallet really changes", async () => {
+    let seen: AbortSignal | null = null;
+    const pending = new Promise<void>(() => {});
+    const input = {
+      wallet: "wallet-a",
+      onInvestigate: vi.fn((_message: string, signal: AbortSignal) => { seen = signal; return pending; }),
+    };
+    const { result, rerender } = renderHook((props: typeof input) => useCopilotEntry(props), {
+      initialProps: input,
+    });
+
+    void result.current.run("build me a strategy");
+    const signal = seen as unknown as AbortSignal;
+    expect(signal.aborted).toBe(false);
+
+    await act(async () => { rerender({ ...input, wallet: "wallet-b" }); });
+    expect(signal.aborted).toBe(true);
+    expect(result.current.loading).toBe(false);
+  });
+});

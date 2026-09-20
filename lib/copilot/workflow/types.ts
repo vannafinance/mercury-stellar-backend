@@ -28,6 +28,24 @@ export const ASSET_OUT_OPS: readonly WorkflowOp[] = ["swap", "add_liquidity"];
 export const POCKET_HOLDER = { wallet: "trader", earn: "trader", account: "smartAccount", blend: "smartAccount", lp: "smartAccount", debt: "smartAccount" } as const;
 export type Pocket = keyof typeof POCKET_HOLDER;
 
+/**
+ * The pockets that hold a yield-bearing POSITION, as opposed to idle tokens (`wallet`),
+ * collateral at rest (`account`) or borrowing capacity (`debt`).
+ *
+ * Stated as a property of the pocket model rather than a list of ops, so a new op needs
+ * no change here — it declares where it moves value to, and that answers the question.
+ * `OP_FLOW[op].rate` says whether that position's return can be READ; the two together
+ * are what let the carry guard tell "this earns nothing" apart from "I cannot see what
+ * this earns", which it previously could not.
+ */
+export const POSITION_POCKETS: readonly Pocket[] = ["earn", "blend", "lp"];
+
+/** Does this op deploy value into a position, as opposed to moving or holding it? */
+export function deploysIntoPosition(op: WorkflowOp): boolean {
+  const { from, to } = OP_FLOW[op];
+  return POSITION_POCKETS.includes(to) && !POSITION_POCKETS.includes(from);
+}
+
 export interface OpFlow {
   /**
    * The product whose write tool builds the step, and so which spelling of the asset it
