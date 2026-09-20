@@ -1150,9 +1150,11 @@ describe("resolvePlans — negative carry and spendable balance", () => {
     expect(candidates).toEqual([]);
     expect(rejected[0]).toEqual({
       title: "Lever BLUSDC", leg: "borrow BLUSDC",
-      // The refusal now ends by naming the way out, as the price-impact guard's already does.
+      // The refusal now ends by naming the way out, as the price-impact guard's already
+      // does, and is marked liftable so the caller can put it as a question.
       reason: "borrowing BLUSDC costs 32.47% APR and supplying BLUSDC earns 0.90% — this loses money by construction. "
         + "Say you accept the loss and it will be prepared as asked",
+      acceptable: true,
     });
   });
 

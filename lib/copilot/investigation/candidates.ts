@@ -113,7 +113,11 @@ export interface CandidateDecision {
 
 export interface CandidateSet {
   feasible: Candidate[];
-  rejected: Array<{ label: string; reason: string; asset: string }>;
+  /**
+   * `acceptable` marks a refusal the user's own acceptance would lift, so the caller can
+   * put it to them as a question instead of a verdict they cannot answer.
+   */
+  rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true }>;
 }
 
 function aprOf(candidate: Candidate): bigint {
@@ -382,7 +386,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
  */
 export function mergeCandidateSets(
   fixed: CandidateSet | null,
-  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
+  composed: { candidates: Candidate[]; rejected: Array<{ title: string; leg: string | null; reason: string; acceptable?: true; pocket?: { code: "wrong_pocket" | "insufficient_wallet"; expected: string; actual: string; remedy: string } }> },
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): CandidateSet {
   // The op sequence a fixed shape compiles to, so it can be matched against a composed plan's steps.
@@ -407,6 +411,7 @@ export function mergeCandidateSets(
         label: entry.title,
         reason: entry.leg ? `${entry.leg}: ${entry.reason}.` : `${entry.reason}.`,
         asset: entry.leg?.split(" ").pop() ?? "",
+        ...(entry.acceptable ? { acceptable: true as const } : {}),
         ...(entry.pocket ? { pocket: entry.pocket } : {}),
       })),
     ],

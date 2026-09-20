@@ -96,6 +96,11 @@ export interface RejectedPlan {
   reason: string;
   /** Structured source-pocket mismatch, when a leg is asking the wrong holder. */
   pocket?: PocketMismatch;
+  /**
+   * True when the user's own acceptance would lift this refusal. The caller raises such
+   * a refusal as a question rather than a verdict, so "yes" is an available answer.
+   */
+  acceptable?: true;
 }
 
 export interface PocketMismatch {
@@ -278,7 +283,20 @@ function debtRows(ctx: PlanContext): Array<{ asset: string; owed: string }> {
 }
 
 class Reject extends Error {
-  constructor(readonly leg: string | null, message: string, readonly pocket?: PocketMismatch, readonly funding = false) { super(message); }
+  /**
+   * `acceptable` marks a refusal the USER can lift by accepting the loss it names, as
+   * opposed to one nothing they say can change (a balance that is not there, a pocket
+   * that does not feed this op). The caller turns the first kind into a question the
+   * user can answer instead of a dead end — knowing the magic sentence should not be a
+   * prerequisite for using the product.
+   */
+  constructor(
+    readonly leg: string | null,
+    message: string,
+    readonly pocket?: PocketMismatch,
+    readonly funding = false,
+    readonly acceptable = false,
+  ) { super(message); }
 }
 
 const SIZER_REASONS: Record<string, string> = {
@@ -317,7 +335,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
     if (bridged) {
       try { remember(resolvePlan(bridged, ctx)); }
       catch (error) {
-        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
+        if (error instanceof Reject) rejected.push({ title: bridged.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}) });
         else rejected.push({ title: bridged.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
       }
     }
@@ -331,7 +349,7 @@ export function resolvePlans(plans: readonly ProposedPlan[], ctx: PlanContext): 
       remember(resolvePlan(candidatePlan, ctx));
       if (partial && !bridged) rejected.push(...partial.rejected.map((entry) => ({ title: plan.title, ...entry })));
     } catch (error) {
-      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}) });
+      if (error instanceof Reject) rejected.push({ title: plan.title, leg: error.leg, reason: error.message, ...(error.pocket ? { pocket: error.pocket } : {}), ...(error.acceptable ? { acceptable: true as const } : {}) });
       else rejected.push({ title: plan.title, leg: null, reason: "this plan could not be sized from the reads that completed" });
     }
   }
@@ -364,6 +382,7 @@ function independentLendPocketCheck(plan: ProposedPlan, ctx: PlanContext):
         leg: error.leg ?? `${leg.op.replaceAll("_", " ")} ${leg.asset}`,
         reason: error.message,
         ...(error.pocket ? { pocket: error.pocket } : {}),
+        ...(error.acceptable ? { acceptable: true as const } : {}),
       });
       return false;
     }
@@ -1225,7 +1244,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
               throw new Reject(d.name, `this pool is too thin for ${d.tokens} ${def.id}: it would fill at about `
                 + `${truncateToDecimals(formatWad(quoted), places)} ${out.id}, ${lost}% below what ${def.id} is worth. `
                 + `Swap a smaller amount, or use ${swappableWith(def.id).filter((id) => id !== out.id).join(" or ") || "another pool"}`
-                + `, or say you accept the loss and it will be swapped as asked`);
+                + `, or say you accept the loss and it will be swapped as asked`,
+                undefined, false, true);
             }
           }
           if (d.targetOut) {
@@ -1391,7 +1411,8 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
     throw new Reject(borrowLeg.name, supplyLeg && supplyApr
       ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction. `
         + `Say you accept the loss and it will be prepared as asked`
-      : "this borrows without a supply that could cover the borrow cost");
+      : "this borrows without a supply that could cover the borrow cost",
+      undefined, false, Boolean(supplyLeg && supplyApr));
   }
   /**
    * After the repays, what debt remains — decided from the debt rows and the repay legs,

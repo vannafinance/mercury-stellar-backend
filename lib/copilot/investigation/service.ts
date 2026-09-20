@@ -780,6 +780,24 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     : outcome.kind === "research_complete" ? outcome.openQuestions[0] ?? null : null;
   question = simplifyQuestion(question, Boolean(candidates?.feasible.length), borrowing);
   /**
+   * A refusal the user could lift is a question, not a verdict.
+   *
+   * The price-impact guard, and now the carry guard, end their refusal by saying the
+   * acceptance that would lift it — but a sentence buried in a rejected option is not an
+   * invitation, and it asks the user to know the words before they have been told them.
+   * Raising it as the turn's question puts it where the UI already handles one ("Needs
+   * your answer"), and `shouldContinueInvestigation` already treats an open question as a
+   * thread the next message continues — so "yes, go ahead" lands on this same
+   * investigation instead of starting a new one.
+   *
+   * Only when nothing was offered: an option the user can approve is the better answer,
+   * and a question beside it would take it away.
+   */
+  if (!question && !candidates?.feasible.length) {
+    const liftable = candidates?.rejected.find((entry) => entry.acceptable);
+    if (liftable) question = liftable.reason;
+  }
+  /**
    * An option the code sized is an answer. A question the model left open beside it is
    * shown as an open point the user MAY refine — it does not take the option away. 14 Sep:
    * "Repay XLM debt with idle wallet XLM" was sized, shown with its button, and Prepare
