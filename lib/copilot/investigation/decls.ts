@@ -110,7 +110,7 @@ const CONTROL_DECLS: FunctionDeclaration[] = [
         borrowing: { type: "string", enum: ["unspecified", "allowed", "required", "forbidden"] },
         slippageAccepted: {
           type: "object",
-          description: "Only when the user has said, in their own words, that they accept a poor price or a loss on this trade — \"i dont care if i lose\", \"swap anyway\", \"any price\", \"ignore the price impact\". accepted is true; sourceQuote is the exact substring of their message that says it. Never infer it from urgency, from naming an amount, or from them simply repeating the request. Without this the server refuses a fill far below fair value; with it, the fill is theirs to take.",
+          description: "Only when the user has said, in their own words, that they accept a loss or a poor outcome the server has put to them — \"i dont care if i lose\", \"do it anyway\", \"any price\", \"ignore the price impact\", \"i am ready to bear the loss\". accepted is true; sourceQuote is the exact substring of their message that says it. Not swap-specific: it lifts any guard that refuses a QUANTIFIED loss, including a borrow whose carry does not cover its cost. Never infer it from urgency, from naming an amount, or from them simply repeating the request — the server refuses such an outcome by default, and only the user's own words make it theirs to take.",
           properties: { accepted: { type: "boolean" }, sourceQuote: { type: "string" } },
           required: ["accepted", "sourceQuote"],
         },

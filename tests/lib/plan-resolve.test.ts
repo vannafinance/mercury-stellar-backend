@@ -1150,7 +1150,9 @@ describe("resolvePlans — negative carry and spendable balance", () => {
     expect(candidates).toEqual([]);
     expect(rejected[0]).toEqual({
       title: "Lever BLUSDC", leg: "borrow BLUSDC",
-      reason: "borrowing BLUSDC costs 32.47% APR and supplying BLUSDC earns 0.90% — this loses money by construction",
+      // The refusal now ends by naming the way out, as the price-impact guard's already does.
+      reason: "borrowing BLUSDC costs 32.47% APR and supplying BLUSDC earns 0.90% — this loses money by construction. "
+        + "Say you accept the loss and it will be prepared as asked",
     });
   });
 
@@ -1468,6 +1470,42 @@ describe("a losing carry the user asked for is offered, not refused", () => {
 
   it("does not rule it out when it is the plan the user stated", () => {
     const { rejected } = resolvePlans([shape], ctx({ messages, statedPlanId: planCandidateId(shape) }));
+    expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
+  });
+});
+
+/**
+ * The way out of a losing carry is the one the swap guard already offers.
+ *
+ * The price-impact guard states the principle in its own comment — "what this guard owes
+ * them is the number, not a veto they cannot lift" — and its refusal ends by telling the
+ * user how to lift it. The carry guard had the number and no way out, so a shape the user
+ * can open from the Margin page was a dead end in the copilot.
+ *
+ * The acceptance is the same fact in both places: the user, in their own words, taking a
+ * quantified loss that was put to them. (The field is still called `slippageAccepted`
+ * because the sealed proposal stores it under that name; its meaning is broader.)
+ */
+describe("a priced loss can be accepted, not only refused", () => {
+  const legs: ProposedPlan["legs"] = [
+    { op: "deposit_collateral", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "deposit 100 XLM" } },
+    { op: "borrow", asset: "BLUSDC", sizing: { kind: "leverage", multiple: "2", sourceQuote: "borrow 2x" } },
+    { op: "supply_blend", asset: "BLUSDC", sizing: { kind: "previous_leg" } },
+  ];
+  const messages = ["deposit 100 XLM and borrow 2x BLUSDC into Blend, i am ready to bear the loss"];
+  const shape = plan("Levered Blend", legs);
+
+  it("tells the user how to lift the refusal instead of only refusing", () => {
+    const { rejected } = resolvePlans([shape], ctx({ messages }));
+    expect(rejected[0]?.reason).toMatch(/loses money by construction/);
+    expect(rejected[0]?.reason).toMatch(/accept the loss/);
+  });
+
+  it("prepares the plan once the user has accepted the loss in their own words", () => {
+    const { rejected } = resolvePlans([shape], ctx({
+      messages,
+      goal: { slippageAccepted: { accepted: true, sourceQuote: "i am ready to bear the loss" } },
+    }));
     expect(rejected[0]?.reason ?? "").not.toMatch(/loses money by construction/);
   });
 });

@@ -1368,13 +1368,29 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
    * strategy out rather than ranking it last.
    */
   const userStatedThis = ctx.statedPlanId != null && planCandidateId(plan) === ctx.statedPlanId;
-  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable && !userStatedThis) {
+  /**
+   * The same acceptance the swap's price-impact guard honours, read here too.
+   *
+   * That guard already states the principle — "what this guard owes them is the number,
+   * not a veto they cannot lift" — and its refusal ends by telling the user how to lift
+   * it. A negative carry is a different loss, but not a different kind of decision, and
+   * leaving this one unliftable meant a shape the user could open from the Margin page
+   * was a dead end in the copilot with nothing to do about it.
+   *
+   * NAMING DEBT: the field is still `slippageAccepted` because the sealed proposal and
+   * the execute path store it under that name, and renaming it would invalidate plans
+   * already sealed. What it records is broader than its name — the user accepting a
+   * quantified loss that was put to them — and the model is told so.
+   */
+  const lossAccepted = ctx.goal?.slippageAccepted?.accepted === true;
+  if (borrowed > ZERO && supplied > ZERO && returnWad <= ZERO && !returnUnreadable && !userStatedThis && !lossAccepted) {
     const borrowLeg = drafts.find((d) => OP_FLOW[d.leg.op].rate === "earn_borrow")!;
     const supplyLeg = [...drafts].reverse().find((d) => suppliesAtRate(d.leg.op));
     const borrowRow = ctx.comparisons.find((c) => c.asset === borrowLeg.leg.asset);
     const supplyApr = supplyLeg ? legRate(supplyLeg.leg.op, supplyLeg.leg.asset, ctx.comparisons) : null;
     throw new Reject(borrowLeg.name, supplyLeg && supplyApr
-      ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction`
+      ? `borrowing ${borrowLeg.leg.asset} costs ${Number(borrowRow?.marginBorrowApr).toFixed(2)}% APR and supplying ${supplyLeg.leg.asset} earns ${Number(supplyApr).toFixed(2)}% — this loses money by construction. `
+        + `Say you accept the loss and it will be prepared as asked`
       : "this borrows without a supply that could cover the borrow cost");
   }
   /**
