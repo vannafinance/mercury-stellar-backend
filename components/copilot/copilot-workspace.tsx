@@ -3618,8 +3618,15 @@ export function CopilotWorkspace() {
           });
           return;
         }
+        /**
+         * Same rule as the resume effect below: advancing is not signing.
+         *
+         * This is the hop that runs the instant a leg is signed and submitted, so with
+         * `!!autoApprove` here a run with the switch off stalled at exactly the moment
+         * it should have moved on - leg 1 on chain, the queue never asked for leg 2.
+         * Gating both sites made the stall survive fixing either one alone.
+         */
         const preferResume =
-          !!autoApprove &&
           !complete &&
           !pauseForLp &&
           (shouldAutoResume({
