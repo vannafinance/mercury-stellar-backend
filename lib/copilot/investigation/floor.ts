@@ -1,4 +1,4 @@
-import { matchMinHealthFactor } from "../router";
+import { matchHealthFactorCeiling, matchMinHealthFactor } from "../router";
 import type { GoalUnderstanding } from "./types";
 
 /**
@@ -53,4 +53,21 @@ export function statedFloorFrom(messages: readonly string[]): string | null {
     if (parsed !== null && !parsed.soft) floor = parsed.value;
   }
   return floor === null ? null : floor.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+/**
+ * A health-factor ceiling the user stated while stating no floor.
+ *
+ * Returned so the caller can SAY that the limit was read as the opposite of a floor,
+ * instead of proceeding as though nothing had been asked for. A message that parses
+ * as a floor is never a ceiling, so the floor is resolved first and wins.
+ */
+export function statedCeilingFrom(messages: readonly string[]): string | null {
+  if (statedFloorFrom(messages) !== null) return null;
+  let ceiling: number | null = null;
+  for (const message of messages) {
+    const parsed = matchHealthFactorCeiling(message);
+    if (parsed !== null) ceiling = parsed;
+  }
+  return ceiling === null ? null : ceiling.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
 }

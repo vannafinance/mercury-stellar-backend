@@ -99,7 +99,14 @@ describe("unspecified borrowing with a stated floor", () => {
 
     expect(result.understanding?.borrowing).toBe("unspecified");
     expect(result.candidates?.feasible.some((candidate) => candidate.borrows)).toBe(true);
-    expect(result.message).toMatch(/\$115\.81/);
+    /**
+     * $115.67, not the old $115.81: a derived max is now sized one basis point inside
+     * the floor (`FLOOR_MARGIN_BPS` in sizing.ts) rather than exactly on it, so the
+     * displayed figure moved with it. "Health factor after this would be 1.30" still
+     * reads 1.30 because the message rounds to two places; the real value underneath
+     * is 1.30013, strictly above the floor.
+     */
+    expect(result.message).toMatch(/\$115\.67/);
     expect(result.message).not.toMatch(/1000 USDC/i);
     expect(result.executionAllowed).toBe(false);
   });

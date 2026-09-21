@@ -8,7 +8,7 @@ import { strategyReply } from "./answer";
 import { normalizeResearchFacts } from "./normalize";
 import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
-import { anchoredGoalFloor, anchoredSlippageAccepted, statedFloorFrom } from "./floor";
+import { anchoredGoalFloor, anchoredSlippageAccepted, statedCeilingFrom, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
 import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
@@ -688,6 +688,27 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
     }
   }
   const statedFloor = goalFloor ?? capacity?.floor ?? statedFloorFrom(messages);
+  /**
+   * A floor stated as a ceiling is still a stated limit, and dropping it silently is
+   * the failure. "keep HF < 1.3" matches none of the floor patterns, so the turn ran
+   * with NO health-factor constraint while the user believed they had set one — a `<`
+   * typed for a `>` left only the liquidation line protecting them.
+   *
+   * It is reported rather than guessed at: reading it as 1.3 would invent a floor the
+   * user did not state, and reading it as a real ceiling would mean deliberately
+   * targeting a riskier position than the number names. Both are decisions that
+   * belong to them, so the turn says what it saw and what it did with it.
+   */
+  if (statedFloor === null) {
+    const ceiling = statedCeilingFrom(messages);
+    if (ceiling) {
+      const note =
+        `You asked for a health factor BELOW ${ceiling}, which is a ceiling, not a floor — ` +
+        `a lower health factor is the riskier side. No floor was applied. If you meant ` +
+        `"at least ${ceiling}", say so and I will size against it.`;
+      if (!warnings.includes(note)) warnings.push(note);
+    }
+  }
   /**
    * Plans size from the contract's figures always — the one number that liquidates you
    * (`grossCollateralUsd`/`debtUsd` here are `computeSizingBasis`'s contract basis

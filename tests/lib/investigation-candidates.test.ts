@@ -55,9 +55,17 @@ describe("candidate generation", () => {
       kind: "borrow_supply",
       borrows: true,
       netAprPct: "6",
-      // (4219.36 - 1.3*1736.19) / 0.3 — the same closed form the sizer uses.
-      amountUsd: "6541.043333333333333333",
-      finalHealthFactor: "1.3",
+      /**
+       * A derived max is sized one basis point INSIDE the floor
+       * (`FLOOR_MARGIN_BPS` in sizing.ts), so this lands just above 1.3 rather
+       * than exactly on it — the fix for a plan built to the floor being
+       * refused by that same floor the moment anything moved before the write.
+       * Captured from the actual sizer output, not hand-computed.
+       */
+      amountUsd: "6537.458085829473894645",
+      // Lands ON the margined target (1.3 + 1bps), the same way a max always lands
+      // exactly on whatever floor it was sized against.
+      finalHealthFactor: "1.30013",
       evidenceIds: ["e1", "e2"],
       amountBasis: "derived_max_at_floor",
     });
@@ -324,7 +332,8 @@ describe("an amount the user named outright", () => {
     expect(feasible).toEqual([]);
     expect(rejected[0].reason).toMatch(/would take the health factor below your 1.30 floor/);
     // The figure that WOULD fit is offered as information, never substituted silently.
-    expect(rejected[0].reason).toMatch(/At most 6541\.043333333333333333 USD fits/);
+    // Same margined max as the sizing test above — both paths go through `sizeLegs`.
+    expect(rejected[0].reason).toMatch(/At most 6537\.458085829473894645 USD fits/);
   });
 
   it("does not report a floor breach when the amount was simply unusable", () => {

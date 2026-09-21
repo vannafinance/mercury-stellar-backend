@@ -24,6 +24,34 @@ import { checked, decimalWad, formatWad, WAD, ZERO } from "./fixed";
 /** The contract's own liquidation threshold, 1.1 WAD. Exclusive: HF <= this is unsafe. */
 export const LIQUIDATION_THRESHOLD_WAD = BigInt(11) * WAD / BigInt(10);
 
+/**
+ * A derived max is sized one basis point INSIDE the floor, never exactly on it.
+ *
+ * `maxBorrowForFloorWad` is exact, so a max lands the health factor on the floor to
+ * the wei. That plan is then correct for an instant and wrong immediately after: debt
+ * accrues continuously, so by the time the same steps are re-validated before the
+ * write the position has already drifted under, and the plan is refused as
+ * `health_floor_breached` - having been built, shown and approved. Live, 21 Sep:
+ * "Borrow BLUSDC to the 1.3 floor" reported "Health factor after 1.30" and was then
+ * rejected against the very floor it was sized to.
+ *
+ * One basis point OF THE FLOOR, not an absolute figure, so the margin scales with the
+ * number the user chose. At a 1.3 floor it costs 0.00013 of health factor - far too
+ * small to be the answer to a different question, and enough to outlive the gap
+ * between sizing and signing.
+ *
+ * It does NOT protect against a real price move, and must not: an oracle tick that
+ * genuinely breaches the floor SHOULD invalidate the plan. This only stops a plan
+ * being born invalid.
+ */
+const FLOOR_MARGIN_BPS = BigInt(1);
+const BPS = BigInt(10_000);
+
+/** The floor a derived max is sized against: the stated floor plus its own margin. */
+function sizingFloorWad(floorWad: bigint): bigint {
+  return floorWad + floorWad * FLOOR_MARGIN_BPS / BPS;
+}
+
 /** The ops the sizer projects are the ones the op-flow table says move health. */
 export type { SizedOp } from "../workflow/types";
 import { OP_FLOW, type SizedOp } from "../workflow/types";
@@ -134,7 +162,10 @@ export function sizeLegs(base: SizingBase, legs: readonly LegRequest[], floor: s
       // Only a leg that LOWERS health has a "most the floor allows"; which formula is which pocket it draws on.
       if (OP_FLOW[leg.op].health !== "lowers") return fail("max_only_for_ops_that_lower_health", leg.label);
       if (floorWad === null) return fail("floor_required_for_max", leg.label);
-      amount = OP_FLOW[leg.op].from === "debt" ? maxBorrowForFloorWad(gross, debt, floorWad) : maxWithdrawForFloorWad(gross, debt, floorWad);
+      // Sized inside the floor; the CHECK below still uses the floor itself, so the
+      // margin buys headroom without ever loosening what counts as a breach.
+      const sizeAgainst = sizingFloorWad(floorWad);
+      amount = OP_FLOW[leg.op].from === "debt" ? maxBorrowForFloorWad(gross, debt, sizeAgainst) : maxWithdrawForFloorWad(gross, debt, sizeAgainst);
       if (leg.capUsd !== undefined) {
         let cap: bigint;
         try { cap = decimalWad(leg.capUsd); } catch { return fail("invalid_leg_amount", leg.label); }
