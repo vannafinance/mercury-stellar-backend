@@ -155,6 +155,7 @@ describe("a run outlives the page it was started from", () => {
     const input = {
       wallet: "wallet",
       onInvestigate: vi.fn((_message: string, signal: AbortSignal) => { seen = signal; return pending; }),
+      onDirect: vi.fn(async () => {}),
     };
     const { result, unmount } = renderHook(() => useCopilotEntry(input));
 
@@ -181,6 +182,7 @@ describe("a run outlives the page it was started from", () => {
     const input = {
       wallet: "wallet-a",
       onInvestigate: vi.fn((_message: string, signal: AbortSignal) => { seen = signal; return pending; }),
+      onDirect: vi.fn(async () => {}),
     };
     const { result, rerender } = renderHook((props: typeof input) => useCopilotEntry(props), {
       initialProps: input,
