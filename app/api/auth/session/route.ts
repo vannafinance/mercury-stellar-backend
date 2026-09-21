@@ -44,6 +44,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  if (!session && loaded.bound?.kind === "stellar") {
+    return loaded.commit(
+      NextResponse.json({
+        signedIn: true,
+        anchor: "stellar",
+        sub: loaded.bound.sub,
+        wallet: loaded.bound.wallet ?? null,
+        subjectIsEndUser: true,
+        note:
+          "This browser proved a Freighter wallet with a signed challenge. " +
+          "Reads and plans use that G-address. Writes still sign in Freighter; " +
+          "auto-sign stays Privy-only.",
+        workosLoginEnabled: copilotConfig.userLoginEnabled,
+      }),
+    );
+  }
+
   if (!session) {
     return loaded.commit(
       NextResponse.json({

@@ -11,6 +11,7 @@ import { AppPrivyProvider } from "@/contexts/privy-provider";
 import { PageContextProvider } from "@/contexts/page-context";
 import { InvestigationProvider } from "@/contexts/investigation-context";
 import { WalletSignerAttach } from "@/components/copilot/wallet-signer-attach";
+import { FreighterWalletSession } from "@/components/copilot/freighter-wallet-session";
 import { ScaleWrapper } from "@/components/ui/scale-wrapper";
 import { AppToaster } from "@/components/ui/app-toaster";
 import { TransactionProgressModal } from "@/components/ui/transaction-progress-modal";
@@ -114,6 +115,7 @@ export default function RootLayout({
                       {/* Attaching the Vanna signer belongs to connecting, not to
                           auto-approve — see the component docstring. */}
                       <WalletSignerAttach />
+                      <FreighterWalletSession />
                       <AnalyticsPrefetcher />
                       <Navbar items={navbarItems}/>
                       <ScaleWrapper>{children}</ScaleWrapper>

@@ -193,6 +193,20 @@ describe("bearer and assertion are separate credentials", () => {
     expect(call.assertion).toBe("workos_tok");
   });
 
+  it("a Freighter proof is signed in but does not invent a Sign Service assertion", async () => {
+    const { getMcpClient, withBoundUser } = await libs();
+    const wallet = "GBC2B7N2QPSZVLGOI7LNYQ5UPDRRSPBFYOAUCCICUDAFXYGZ4YL5NJC5";
+
+    await withBoundUser(
+      { sub: `stellar:${wallet}`, accessToken: "", kind: "stellar", wallet },
+      () => getMcpClient().call("vanna_lend", {}),
+    );
+
+    const [call] = toolCalls();
+    expect(call.authorization).toBe("Bearer m2m_token");
+    expect(call.assertion).toBeNull();
+  });
+
   it("the user token NEVER becomes the bearer", async () => {
     const { getMcpClient, withBoundUser } = await libs();
     await withBoundUser(privy("did:privy:alice", "privy_tok_alice"), () =>

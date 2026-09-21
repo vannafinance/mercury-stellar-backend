@@ -179,4 +179,35 @@ describe("investigation scope bindings", () => {
       new AbortController().signal,
     )).rejects.toBeInstanceOf(ResearchError);
   });
+
+  it("treats a Freighter stellar subject as the trader without asking Sign Service for bindings", async () => {
+    const mcp = {
+      call: vi.fn(async (tool: string) => {
+        if (tool === "vanna_resolve_account") {
+          return { status: "found_on_chain", smart_account: ACCOUNT };
+        }
+        throw new Error(`unexpected ${tool}`);
+      }),
+    };
+    const subject = `stellar:${WALLET}`;
+    const scope = await resolveInvestigationScope(
+      { subject, wallet: WALLET, network: "testnet" },
+      mcp,
+      new AbortController().signal,
+    );
+    expect(scope).toEqual({
+      subject, trader: WALLET, smartAccount: ACCOUNT, network: "testnet",
+    });
+    expect(mcp.call.mock.calls.map(([tool]) => tool)).toEqual(["vanna_resolve_account"]);
+  });
+
+  it("refuses a navbar wallet that is not the Freighter wallet that signed in", async () => {
+    const mcp = { call: vi.fn() };
+    await expect(resolveInvestigationScope(
+      { subject: `stellar:${WALLET}`, wallet: OTHER, network: "testnet" },
+      mcp,
+      new AbortController().signal,
+    )).rejects.toMatchObject({ code: "wallet_not_bound" });
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
 });
