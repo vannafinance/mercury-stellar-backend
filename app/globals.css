@@ -1012,7 +1012,7 @@ html.dark .plan-card,
 .dark .plan-card,
 html.dark .run-card,
 .dark .run-card {
-  --card-surface: #16161d;
+  --card-surface: #14151d;
   --card-inset: #1e1e27;
   --card-line: #3a3a46;
   --card-line-soft: #2b2b35;
