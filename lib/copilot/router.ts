@@ -397,9 +397,18 @@ function any(text: string, ...words: string[]): boolean {
  * Every multi-goal gate that only counted `swap|lend|borrow|…` silently dropped the
  * second clause of "swap … and add liquidity in <venue>" and executed the swap alone.
  * One matcher, used by the plan-builder and `looksLikeMultiGoal`, so they cannot drift.
+ *
+ * The verb and "liquidity" are matched independently, not as an adjacent phrase.
+ * "provide 20 XLM and AQUSDC liquidity on aquarius" — the catalogue's own documented
+ * shape for this write — has the amounts sitting between "provide" and "liquidity",
+ * so an adjacent-phrase check ("provide liquidity") never fires. Live, 21 Sep: that
+ * exact prompt fell through to a different branch entirely, which built an LP step
+ * naming BLUSDC — a token no Aquarius/Soroswap pool holds — and refused with a
+ * message about an asset the user never mentioned.
  */
 export function hasAmmLpIntent(text: string): boolean {
-  return any(text, "add liquidity", "provide liquidity", "add lp", "remove liquidity");
+  if (any(text, "add lp", "remove liquidity")) return true;
+  return any(text, "add", "provide") && any(text, "liquidity");
 }
 
 /** Every "N ASSET" pair in the message, longest-ticker first via ASSET_ALT. */
@@ -438,7 +447,7 @@ function trySizedEarnLendPlan(raw: string, text: string): RoutedIntent | null {
   if (
     legs.length === 2 &&
     (any(text, "aquarius") || any(text, "soroswap")) &&
-    any(text, "add liquidity", "provide liquidity", "add lp")
+    hasAmmLpIntent(text)
   ) {
     return null;
   }
@@ -666,9 +675,10 @@ function tryMultiGoalPlan(
   /**
    * "swap" alone never satisfies `multiVerbCount` (it does not count "add liquidity"
    * as a verb). Pair it with `hasAmmLpIntent` so swap-then-LP is a plan, not a
-   * single swap that silently drops the Farm LP leg.
+   * single swap that silently drops the Farm LP leg. Adding, not removing — a
+   * swap-then-EXIT reads as two different intents, so "remove" is excluded here.
    */
-  const wantsLp = hasAmmLpIntent(text) && any(text, "add liquidity", "provide liquidity", "add lp");
+  const wantsLp = hasAmmLpIntent(text) && !any(text, "remove liquidity", "remove lp");
   const swapMultiStep = multiVerbCount >= 2 || wantsLp;
   let swapStepTokenIn: string | null = null;
   let swapStepTokenOut: string | null = null;
@@ -1350,8 +1360,10 @@ export function routeMessage(message: string): RoutedIntent {
   // Aquarius / Soroswap LP — add liquidity (must beat bare deposit / lend).
   const dual = parseDualAmounts(raw);
   const single = dual ? null : parseSingleAmountToken(raw);
+  // "remove liquidity" is its own branch below; hasAmmLpIntent recognises both
+  // directions, so an exit reads that word too and must not land here first.
   if (
-    any(text, "add liquidity", "provide liquidity", "add lp") ||
+    (hasAmmLpIntent(text) && !any(text, "remove liquidity", "remove lp")) ||
     (any(text, "add") && any(text, "aquarius", "soroswap", "to aquarius", "lp")) ||
     (any(text, "add") && dual && any(text, "xlm") && any(text, "usdc", "blusdc", "aqusdc", "sousdc"))
   ) {
