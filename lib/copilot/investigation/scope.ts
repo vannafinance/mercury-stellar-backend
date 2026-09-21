@@ -212,9 +212,16 @@ export async function resolveInvestigationScope(
 
   const bound = await readBindings(mcp, signal, input.subject, input.wallet);
   if (!isUsable(bound)) {
-    // An authenticated browser may prepare a manual wallet-sign plan for its
-    // connected address before Sign Service has created a binding. This grants
-    // no signing authority: auto-sign remains protected by the binding gate.
+    /**
+     * An authenticated browser may prepare a manual wallet-sign plan for its
+     * connected address before Sign Service has created a binding. This grants no
+     * signing authority: auto-sign remains protected by the binding gate.
+     *
+     * But the address is the browser's claim, not something this account proved, and
+     * `input.wallet` is request body. Marking it says so: `remember` will not cache a
+     * claim for the next five minutes, so one request cannot leave a wallet it merely
+     * named sitting in the cache where a later turn would read it as established.
+     */
     if (bound.reason === "bindings_empty" && input.wallet) {
       const smartAccount = await resolveSmartAccount(mcp, signal, input.wallet);
       return remember(input, {
@@ -222,6 +229,7 @@ export async function resolveInvestigationScope(
         trader: input.wallet,
         smartAccount,
         network: input.network,
+        unverified: "claimed",
       });
     }
     return publicScope(input, "bindings");

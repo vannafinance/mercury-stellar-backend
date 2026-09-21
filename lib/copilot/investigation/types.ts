@@ -10,8 +10,12 @@ export interface InvestigationScope {
    * Set when identity could not be verified this turn. Never a confirmed negative
    * (an empty bindings list is not proof the wallet is unlinked).
    * `session` = the page sent a G-address but this request was not signed in.
+   * `claimed` = signed in with no binding yet, so `trader` is the address the browser
+   * asserted rather than one the account proved. A plan may still be prepared for it —
+   * that wallet's own key has to sign the XDR — but nothing may treat it as proof of
+   * ownership, and it is never cached for the next request.
    */
-  unverified?: "bindings" | "session";
+  unverified?: "bindings" | "session" | "claimed";
 }
 
 export interface InvestigationRequest {
