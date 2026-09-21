@@ -27,6 +27,26 @@ const SNAPSHOT_TTL_MS = 15_000;
  */
 let lastTickInvalidationAt = 0;
 
+function getCachedSnapshot(userAddress: string | null): AccountSnapshot | undefined {
+  if (typeof window === "undefined" || !userAddress) return undefined;
+  try {
+    const raw = sessionStorage.getItem(`vanna.snapshot.${userAddress}`);
+    if (raw) return JSON.parse(raw) as AccountSnapshot;
+  } catch {
+    /* ignore parse errors */
+  }
+  return undefined;
+}
+
+function setCachedSnapshot(userAddress: string | null, data: AccountSnapshot): void {
+  if (typeof window === "undefined" || !userAddress) return;
+  try {
+    sessionStorage.setItem(`vanna.snapshot.${userAddress}`, JSON.stringify(data));
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
 /**
  * Warm the account snapshot into the React Query cache as soon as the wallet
  * connects, BEFORE the user navigates to the margin page — so the margin/MB
@@ -45,7 +65,9 @@ export async function prefetchAccountSnapshot(
       queryFn: async () => {
         const res = await fetch(`/api/account/${userAddress}`);
         if (!res.ok) throw new Error(`account snapshot failed (${res.status})`);
-        return (await res.json()) as AccountSnapshot;
+        const data = (await res.json()) as AccountSnapshot;
+        setCachedSnapshot(userAddress, data);
+        return data;
       },
       staleTime: 12_000,
     })
@@ -78,10 +100,14 @@ export function useAccountSnapshot(userAddress: string | null) {
     queryFn: async () => {
       const res = await fetch(`/api/account/${userAddress}`);
       if (!res.ok) throw new Error(`account snapshot failed (${res.status})`);
-      return (await res.json()) as AccountSnapshot;
+      const data = (await res.json()) as AccountSnapshot;
+      setCachedSnapshot(userAddress, data);
+      return data;
     },
     enabled: Boolean(userAddress),
     staleTime: SNAPSHOT_TTL_MS - 3_000, // just under the route's edge TTL
+    initialData: () => getCachedSnapshot(userAddress),
+    initialDataUpdatedAt: () => 0,
   });
 
   // Revalidate on new ledgers, but at most once per TTL window.

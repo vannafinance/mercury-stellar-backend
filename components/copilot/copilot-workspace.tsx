@@ -29,7 +29,7 @@ import {
   refreshBorrowedBalances,
   isSnapshotFeedSuppressed,
 } from "@/store/margin-account-info-store";
-import { setAutoApprove } from "@/store/copilot-settings";
+import { setAutoApprove, useCopilotSettingsStore } from "@/store/copilot-settings";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
 import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 import { deriveMarginHealth } from "@/lib/margin-health";
@@ -88,7 +88,7 @@ import { useLiveInvestigation } from "@/contexts/investigation-context";
 import { CopilotShell } from "./copilot-shell";
 import { CopilotRailTop, CopilotRailBody, CopilotRailMini } from "./copilot-rail";
 import { useCopilotEntry } from "@/hooks/use-copilot-entry";
-import { useWorkflow } from "@/hooks/use-workflow";
+import { useLiveWorkflow } from "@/contexts/workflow-context";
 import { InvestigationCard } from "./investigation-card";
 import { ConversationMenu } from "./conversation-menu";
 import { AutoApproveMenu } from "./auto-approve-menu";
@@ -1361,7 +1361,7 @@ export function CopilotWorkspace() {
   // Lives in the root layout, not here: an in-flight run must survive leaving this page.
   const investigation = useLiveInvestigation();
 
-  const workflow = useWorkflow(address);
+  const workflow = useLiveWorkflow();
   const persistedWorkflowReceiptRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
@@ -1744,9 +1744,14 @@ export function CopilotWorkspace() {
     setHfPaused(false);
   }, []);
 
-  // Session signing only applies to Privy embedded wallets — Freighter always
-  // prompts through its extension, so the toggle can't apply there.
-  const sessionSigningAvailable = walletKind === "privy" && !!address;
+  const storedFreighterAutoApprove = useCopilotSettingsStore(
+    (s) => (address ? Boolean(s.autoApproveByWallet[address]) : false)
+  );
+  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedFreighterAutoApprove;
+
+  // Session signing via Sign Service applies to Privy embedded wallets.
+  // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
+  const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
 
   /**
    * What the Sign Service last reported for this wallet (`GET /sessions` on
@@ -1889,10 +1894,12 @@ export function CopilotWorkspace() {
     };
   }, [address, sessionSigningAvailable]);
   /**
-   * Auto-approve is armed only when the Sign Service is enforcing the caps.
-   * A client-side-only cap can be bypassed by calling the API directly.
+   * Auto-approve is armed when the Sign Service is enforcing caps (for Privy),
+   * or when the user has enabled auto-dispatch (for Freighter).
    */
-  const sessionSigning = sessionSigningAvailable && autoApprove && capsEnforced;
+  const sessionSigning =
+    (walletKind === "freighter" && freighterAutoApprove) ||
+    (sessionSigningAvailable && autoApprove && capsEnforced);
 
   // Feed the shared margin store from /api/account (identical path to margin page).
   useEffect(() => {
@@ -3069,6 +3076,16 @@ export function CopilotWorkspace() {
       toast.error("Connect a wallet first.");
       return;
     }
+    if (walletKind === "freighter") {
+      const next = !freighterAutoApprove;
+      setAutoApprove(address, next);
+      if (next) {
+        toast.success("Auto-dispatch on — transactions will open directly in Freighter");
+      } else {
+        toast.success("Auto-dispatch off");
+      }
+      return;
+    }
     if (sessionSigning) {
       setAutoApprove(address, false);
       void enableAutoSign("disable", { quiet: true });
@@ -3076,9 +3093,7 @@ export function CopilotWorkspace() {
       return;
     }
     if (!sessionSigningAvailable) {
-      toast.error(
-        "Auto-approve needs a Privy embedded wallet. Freighter signs in its own extension popup.",
-      );
+      toast.error("Connect a wallet first.");
       return;
     }
     if (capsEnforced) {
@@ -3096,6 +3111,8 @@ export function CopilotWorkspace() {
   }, [
     loading,
     address,
+    walletKind,
+    freighterAutoApprove,
     sessionSigning,
     sessionSigningAvailable,
     capsEnforced,

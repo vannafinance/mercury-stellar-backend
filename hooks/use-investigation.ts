@@ -15,6 +15,9 @@ import {
   readStoredThread,
   writeStoredThread,
   clearStoredThread,
+  readStoredLocalThread,
+  writeStoredLocalThread,
+  clearStoredLocalThread,
   readStoredConversations,
   writeStoredConversations,
   upsertConversation,
@@ -362,18 +365,26 @@ export function useInvestigation(wallet: string | null) {
     abort.current?.abort();
     sequence.current += 1;
     const owner = activeWallet.current;
-    clearStoredThread(owner);
-    applyBlank(owner);
     if (owner) {
+      const currentStored = readStoredThread(owner);
+      const newLocalId = `local:${Date.now()}`;
+      if (currentStored && currentStored.turns.length > 0) {
+        writeStoredLocalThread(owner, newLocalId, {
+          ...currentStored,
+          conversationId: newLocalId,
+        });
+      }
       setConversations((previous) => {
         const live = previous.find((item) => item.id === LIVE_CONVERSATION_ID);
         const next = live
-          ? previous.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: `local:${Date.now()}` } : item))
+          ? previous.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: newLocalId } : item))
           : previous;
         writeStoredConversations(owner, next);
         return next;
       });
+      clearStoredThread(owner);
     }
+    applyBlank(owner);
     if (!owner) return;
     void (async () => {
       try {
@@ -387,7 +398,42 @@ export function useInvestigation(wallet: string | null) {
   const open = useCallback(async (id: string) => {
     const owner = activeWallet.current;
     if (!owner || id === conversationId.current) return;
-    if (isLocalConversationId(id)) return;
+    // If the user was in an unsaved live chat or a local chat, preserve it before switching
+    if (owner && !conversationId.current) {
+      const currentStored = readStoredThread(owner);
+      if (currentStored && currentStored.turns.length > 0) {
+        const localId = `local:${Date.now()}`;
+        writeStoredLocalThread(owner, localId, { ...currentStored, conversationId: localId });
+        setConversations((prev) => {
+          const next = prev.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: localId } : item));
+          writeStoredConversations(owner, next);
+          return next;
+        });
+      }
+    } else if (owner && conversationId.current && isLocalConversationId(conversationId.current)) {
+      const currentStored = readStoredThread(owner);
+      if (currentStored && currentStored.turns.length > 0) {
+        writeStoredLocalThread(owner, conversationId.current, currentStored);
+      }
+    }
+
+    if (isLocalConversationId(id)) {
+      abort.current?.abort();
+      sequence.current += 1;
+      const stored = readStoredLocalThread(owner, id);
+      if (stored) {
+        writeStoredThread(owner, stored);
+        applyThread(owner, {
+          turns: stored.turns,
+          continuation: stored.continuation,
+          result: stored.result,
+          conversationId: id,
+        });
+      } else {
+        setState((previous) => ({ ...previous, error: "That conversation is no longer cached in this session." }));
+      }
+      return;
+    }
     abort.current?.abort();
     sequence.current += 1;
     try {
@@ -418,7 +464,10 @@ export function useInvestigation(wallet: string | null) {
       clearStoredThread(owner);
       applyBlank(owner);
     }
-    if (isLocalConversationId(id)) return;
+    if (isLocalConversationId(id)) {
+      clearStoredLocalThread(owner, id);
+      return;
+    }
     try {
       const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
       await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { method: "DELETE", headers, cache: "no-store" });

@@ -182,3 +182,47 @@ export function clearStoredThread(wallet: string | null): void {
   if (!wallet || typeof sessionStorage === "undefined") return;
   try { sessionStorage.removeItem(threadStorageKey(wallet)); } catch { /* ignore */ }
 }
+
+export function localThreadStorageKey(wallet: string, localId: string): string {
+  return `${STORAGE_PREFIX}${wallet}.${localId}`;
+}
+
+export function readStoredLocalThread(wallet: string | null, localId: string): StoredThread | null {
+  if (!wallet || !localId || typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(localThreadStorageKey(wallet, localId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredThread;
+    if (!parsed || parsed.wallet !== wallet || !Array.isArray(parsed.turns)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStoredLocalThread(wallet: string | null, localId: string, value: StoredThread): void {
+  if (!wallet || !localId || typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(
+      localThreadStorageKey(wallet, localId),
+      JSON.stringify({
+        turns: value.turns.slice(-16),
+        continuation: value.continuation,
+        wallet,
+        result: value.result,
+        conversationId: localId,
+      }),
+    );
+  } catch {
+    /* quota — the live thread still works */
+  }
+}
+
+export function clearStoredLocalThread(wallet: string | null, localId: string): void {
+  if (!wallet || !localId || typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.removeItem(localThreadStorageKey(wallet, localId));
+  } catch {
+    /* ignore */
+  }
+}
