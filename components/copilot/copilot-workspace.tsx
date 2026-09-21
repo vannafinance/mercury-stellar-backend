@@ -36,7 +36,6 @@ import { deriveMarginHealth } from "@/lib/margin-health";
 import { executeAction, isExecutable, type CopilotAction, type ExecuteResult } from "./execute";
 import type { Simulation as ServerSimulation } from "@/lib/copilot/types";
 import { liveUsdLabel, oracleSwapRateLabel } from "@/lib/copilot/swap-quote";
-import { farmReceiptLine } from "@/lib/copilot/execution-copy";
 import {
   isBadSequenceError,
   isSignableXdr,
@@ -82,6 +81,7 @@ import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
 import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
 import { AssistantMessage, UserBubble, ChatTurns, chatProseFromStored } from "./chat-message";
+import { ExecutionStepper } from "./execution-stepper";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
 import type { StructuredAnswer } from "@/lib/copilot/answer-schema";
 import { useLiveInvestigation } from "@/contexts/investigation-context";
@@ -5065,7 +5065,7 @@ export function CopilotWorkspace() {
     phase === "bind" ||
     phase === "done";
   /** Live `/api/copilot` reply, painted before (or if) it is mirrored into the session. */
-  const liveReply = !liveWriteUi && response
+  const liveReply = response
     ? (isError ? response.message : (response.answer?.headline || response.message))
     : null;
   const liveAssistant = liveReply && !submittedRecorded ? liveReply : null;
@@ -5163,6 +5163,22 @@ export function CopilotWorkspace() {
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
             />
+            {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
+              <ExecutionStepper
+                steps={[
+                  {
+                    id: "direct-tx",
+                    label: "",
+                    op: String(action?.op ?? "submit"),
+                    asset: String(action?.asset ?? ""),
+                    amount: String(action?.amount ?? ""),
+                    status: "settled",
+                    txHash,
+                  },
+                ]}
+                currentStepIndex={0}
+              />
+            ) : null}
             {(investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal) && (
               <InvestigationCard
                 {...investigation}
@@ -5202,7 +5218,7 @@ export function CopilotWorkspace() {
                 work needs. An empty console now shows nothing rather than filler.
               */}
               {/* A turn in flight or complete */}
-              {phase !== "idle" && (
+              {phase !== "idle" && (phase !== "done" || strategyOpen) && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, animation: "cp-in 300ms ease-out forwards" }}>
                   { !submittedRecorded && !pendingUser && (submitted || investigation.turns.find((t) => t.role === "user")?.text) && (
                     <UserBubble>
@@ -5770,72 +5786,6 @@ export function CopilotWorkspace() {
                     </div>
                   )}
 
-                  {/* Executed */}
-                  {phase === "done" && response && !strategyOpen && (
-                    <div className="mt-[26px]" style={{ animation: "cp-in 300ms ease-out forwards" }}>
-                      <Eyebrow n="04">{multiLeg ? "Response" : "Executed"}</Eyebrow>
-                      {/* Closing summary of what actually ran. Server-side when the brain
-                          finishes the last leg; client-signed finals POST summarize_execution. */}
-                      {/* A receipt is the last thing the user reads after money moved, so it
-                          gets the emphasis of a result rather than the flat panel a read
-                          answer sits in: a violet left rule marking it as the conclusion of
-                          the run above, and a surface that reads as raised, not as another
-                          row in the list. */}
-                      {response.answer && (
-                        <div className="mt-4">
-                          <AssistantMessage note={response.answer.note}>
-                            {farmReceiptLine(
-                              response.preview?.human_summary,
-                              response.answer.headline,
-                            ) || response.answer.headline}
-                          </AssistantMessage>
-                          {txHash ? <ExecutedTxReceipt action={action} txHash={txHash} /> : null}
-                        </div>
-                      )}
-                      {!response.answer && (
-                        <>
-                          <div className="mt-4 flex items-center gap-4">
-                            <span
-                              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full"
-                              style={{ background: TONE_TINT.ok, color: TONE_INK.ok }}
-                            >
-                              <Check size={26} />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-h6 font-semibold text-vgray-900">
-                                {farmReceiptLine(response.preview?.human_summary) ||
-                                  response.preview?.human_summary ||
-                                  "Submitted on-chain"}
-                              </p>
-                              <p className="mt-1 text-body-2 text-vgray-500">
-                                Signed and submitted on-chain.
-                              </p>
-                            </div>
-                          </div>
-                          <ExecutedTxReceipt action={action} txHash={txHash} />
-                        </>
-                      )}
-                      <div className="mt-[22px] flex flex-wrap gap-2.5">
-                        <button
-                          type="button"
-                          onClick={reset}
-                          className={`px-[18px] py-2.5 ${BTN_QUIET}`}
-                        >
-                          New intent
-                        </button>
-                        {txHash && (
-                          <a
-                            href={txUrl(txHash)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={`flex items-center gap-1.5 px-[18px] py-2.5 ${BTN_QUIET}`}
-                          >
-                            View on Stellar Expert <ExternalLink size={12} />
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
