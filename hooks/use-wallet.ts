@@ -182,6 +182,11 @@ export const useWallet = () => {
       return;
     }
 
+    const currentState = useUserStore.getState();
+    const alreadyConnectedFreighter = Boolean(
+      currentState.isConnected && currentState.walletKind === 'freighter' && currentState.address
+    );
+
     setActiveWalletKind('freighter');
     try {
       const { address: walletAddress, connected } = await WalletService.checkConnection();
@@ -194,6 +199,11 @@ export const useWallet = () => {
           walletService: 'ok',
         });
         await refreshBalances(walletAddress);
+      } else if (alreadyConnectedFreighter) {
+        // Preserve active Freighter connection during passive background checks (e.g. window focus
+        // while signing or when Freighter extension is temporarily busy). Only explicit disconnect
+        // (manuallyDisconnected === true) should wipe a live session.
+        console.warn('Freighter background check yielded no connection; preserving active session.');
       } else if (!hasUnexpiredPrivySession()) {
         useUserStore.getState().set({
           address: null,
