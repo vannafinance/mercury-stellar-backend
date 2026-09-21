@@ -9,7 +9,8 @@ import { sizeLegs, type LegRequest } from "../investigation/sizing";
 import { RETRY, withRetry } from "../retry-policy";
 import { logUnexpected } from "../log";
 import { allowedInvocation } from "./allowlist";
-import { OP_FLOW, POCKET_HOLDER, SIZED_OPS, type SizedOp, type WorkflowProposal } from "./types";
+import { assetForVenueSpelling } from "../registry/assets";
+import { OP_FLOW, POCKET_HOLDER, SIZED_OPS, stepFundingPreview, type SizedOp, type WorkflowProposal } from "./types";
 
 const TOKENS: Record<string, string> = {
   XLM: Asset.native().contractId(Networks.TESTNET), BLUSDC: CONTRACT_ADDRESSES.BLEND_USDC_TOKEN,
@@ -78,7 +79,12 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
     if (proposal.scope.network !== "testnet" || !proposal.scope.trader) return "The execution network or wallet is unavailable.";
     for (const step of proposal.steps) allowedInvocation(step, proposal.scope);
     const margin = proposal.steps.some(s => s.op !== "lend");
-    const assets = [...new Set(proposal.steps.map(s => s.asset))];
+    const assets = [...new Set(proposal.steps.flatMap((step) => {
+      const paired = step.op === "add_liquidity"
+        ? assetForVenueSpelling("margin", String(step.args.token_b ?? ""))?.id
+        : null;
+      return paired ? [step.asset, paired] : [step.asset];
+    }))];
     const funds = new Map<string, bigint>(), prices = new Map<string, bigint>();
     const project = needsHealthProjection(proposal);
     const read = (tool: string, args: Record<string, unknown>) => interruptible(
@@ -108,6 +114,10 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         for (const step of proposal.steps.filter(s => s.asset === asset)) {
           if ((step.amount.split(".")[1]?.length ?? 0) > decimals) fail(`amount_precision:${asset}:${decimals}`);
         }
+        for (const step of proposal.steps.filter(s => s.op === "add_liquidity" &&
+          assetForVenueSpelling("margin", String(s.args.token_b ?? ""))?.id === asset)) {
+          if ((String(step.args.amount_b).split(".")[1]?.length ?? 0) > decimals) fail(`amount_precision:${asset}:${decimals}`);
+        }
         funds.set(`${holder}:${asset}`, decimalWad(String(balance.human)));
       }));
     }));
@@ -129,15 +139,29 @@ export async function validateWorkflowRisk(proposal: WorkflowProposal, mcp: Pick
         funds.set(walletKey, (funds.get(walletKey) ?? BigInt(0)) + underlying);
         continue;
       }
-      // Funds flow exactly as the op-flow table says: debit the source pocket, credit the destination.
-      const { from, to } = OP_FLOW[step.op];
-      const keyOf = { wallet: walletKey, account: accountKey } as const;
-      if (from === "wallet" || from === "account") {
-        const available = funds.get(keyOf[from]);
-        if (available === undefined || available < amount) return `There is not enough ${step.asset} in the ${from === "wallet" ? "wallet" : "margin account"} for the approved step.`;
-        funds.set(keyOf[from], available - amount);
+      // Replay the same deterministic token movements exposed to the approval
+      // card. Earlier deposits credit the account before a later LP step, and
+      // add_liquidity debits both the stated and paired pool assets.
+      const funding = stepFundingPreview(step);
+      for (const movement of funding.spends) {
+        if (movement.pocket !== "wallet" && movement.pocket !== "account") continue;
+        const key = movement.pocket === "wallet"
+          ? `${proposal.scope.trader}:${movement.asset}`
+          : `${proposal.scope.smartAccount}:${movement.asset}`;
+        const needed = decimalWad(movement.amount);
+        const available = funds.get(key);
+        if (available === undefined || available < needed) {
+          return `There is not enough ${movement.asset} in the ${movement.pocket === "wallet" ? "wallet" : "margin account"} for the approved step.`;
+        }
+        funds.set(key, available - needed);
       }
-      if (to === "wallet" || to === "account") funds.set(keyOf[to], (funds.get(keyOf[to]) ?? BigInt(0)) + amount);
+      for (const movement of funding.receives) {
+        if (movement.pocket !== "wallet" && movement.pocket !== "account") continue;
+        const key = movement.pocket === "wallet"
+          ? `${proposal.scope.trader}:${movement.asset}`
+          : `${proposal.scope.smartAccount}:${movement.asset}`;
+        funds.set(key, (funds.get(key) ?? BigInt(0)) + decimalWad(movement.amount));
+      }
       // A health-neutral step (an Earn lend, a Blend supply the RiskEngine values at par) is not a projection leg.
       if (!(SIZED_OPS as readonly string[]).includes(step.op)) continue;
       if (!project && !proposal.floor) continue;

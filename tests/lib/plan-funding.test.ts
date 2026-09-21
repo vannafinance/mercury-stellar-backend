@@ -5,9 +5,11 @@ import {
   earnDepositKey,
   fundingCovers,
   marginBalanceKey,
+  projectFundingRows,
   spendPocket,
   walletBalanceKey,
 } from "@/lib/copilot/plan-funding";
+import { stepFundingPreview, type ProposalStep, type WorkflowView } from "@/lib/copilot/workflow/types";
 
 describe("plan wait-to-approve funding", () => {
   it("keeps a plan clickable for hours, not five minutes", () => {
@@ -37,6 +39,34 @@ describe("plan wait-to-approve funding", () => {
     expect(fundingCovers(null, 100)).toBeNull();
     expect(fundingCovers(100, 100)).toBe(true);
     expect(fundingCovers(99, 100)).toBe(false);
+  });
+
+  it("credits planned deposits before checking both legs of a later LP step", () => {
+    const proposalSteps: ProposalStep[] = [
+      { id: "deposit-xlm", op: "deposit_collateral", asset: "XLM", amount: "100", label: "Deposit XLM",
+        tool: "vanna_deposit_collateral", args: {} },
+      { id: "deposit-sousdc", op: "deposit_collateral", asset: "SOUSDC", amount: "25000", label: "Deposit SOUSDC",
+        tool: "vanna_deposit_collateral", args: {} },
+      { id: "lp", op: "add_liquidity", asset: "XLM", amount: "100", label: "Add liquidity",
+        tool: "vanna_add_liquidity", args: { token_b: "SOUSDC", amount_b: "29.0724972" } },
+    ];
+    const steps = proposalSteps.map((step) => ({
+      id: step.id, op: step.op, asset: step.asset, amount: step.amount, label: step.label,
+      funding: stepFundingPreview(step), status: "pending" as const,
+    })) satisfies WorkflowView["steps"];
+    const balances = new Map([
+      ["wallet:XLM", 7450.0805377], ["wallet:SOUSDC", 25000],
+      ["account:XLM", 50.6250002], ["account:SOUSDC", 0],
+    ]);
+
+    const rows = projectFundingRows(steps, (pocket, asset) => balances.get(`${pocket}:${asset}`) ?? null);
+    expect(rows.find((row) => row.id === "lp:account:XLM")).toMatchObject({
+      available: 150.6250002, needed: 100, projected: true,
+    });
+    expect(rows.find((row) => row.id === "lp:account:SOUSDC")).toMatchObject({
+      available: 25000, needed: 29.0724972, projected: true,
+    });
+    expect(rows.every((row) => fundingCovers(row.available, row.needed) !== false)).toBe(true);
   });
 
   it("still accepts a frozen plan after several minutes of waiting", () => {

@@ -7,12 +7,12 @@ import {
   earnDepositKey,
   fundingCovers,
   marginBalanceKey,
-  spendPocket,
+  projectFundingRows,
   walletBalanceKey,
 } from "@/lib/copilot/plan-funding";
 import { refreshWalletBalancesOnChain } from "@/hooks/use-wallet";
 import { useUserStore } from "@/store/user";
-import { useMarginAccountInfoStore } from "@/store/margin-account-info-store";
+import { refreshBorrowedBalances, useMarginAccountInfoStore } from "@/store/margin-account-info-store";
 
 interface PlanReviewCardProps {
   workflow: WorkflowView;
@@ -42,6 +42,7 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
   const tokenBalances = useUserStore((s) => s.tokenBalances);
   const depositedBalances = useUserStore((s) => s.depositedBalances);
   const collateralBalances = useMarginAccountInfoStore((s) => s.collateralBalances);
+  const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const avgHealthFactor = useMarginAccountInfoStore((s) => s.avgHealthFactor);
   const [checking, setChecking] = useState(false);
   const [fresh, setFresh] = useState(false);
@@ -56,7 +57,10 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
       inFlight = true;
       setChecking(true);
       try {
-        await refreshWalletBalancesOnChain(wallet);
+        await Promise.all([
+          refreshWalletBalancesOnChain(wallet),
+          ...(smartAccount ? [refreshBorrowedBalances(smartAccount, true)] : []),
+        ]);
         if (current) setFresh(true);
       } catch {
         /* Server re-checks on Approve; a missed Horizon read must not freeze the card. */
@@ -68,39 +72,28 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 30_000);
     return () => { current = false; window.clearInterval(timer); };
-  }, [wallet, workflow.status, workflow.id, workflow.revision, refreshKey]);
+  }, [wallet, smartAccount, workflow.status, workflow.id, workflow.revision, refreshKey]);
 
   const rows = useMemo(() => {
-    return workflow.steps.flatMap((step) => {
-      const pocket = spendPocket(step.op);
-      if (!pocket) return [];
-      const needed = Number(step.amount);
+    const readBalance = (pocket: "wallet" | "earn" | "account", asset: string): number | null => {
       let available: number | null = null;
-      let source = "";
       if (pocket === "wallet") {
-        const key = walletBalanceKey(step.asset);
+        const key = walletBalanceKey(asset);
         available = key ? parseBalance(tokenBalances[key]) : null;
-        source = "wallet";
       } else if (pocket === "earn") {
-        const key = earnDepositKey(step.asset);
+        const key = earnDepositKey(asset);
         available = key ? parseBalance(depositedBalances[key]) : null;
-        source = "Earn";
       } else {
-        const key = marginBalanceKey(step.asset);
+        const key = marginBalanceKey(asset);
         available = key ? parseBalance(collateralBalances[key]?.amount) : null;
-        source = "margin account";
       }
-      const covers = fundingCovers(available, needed);
-      return [{
-        id: step.id,
-        label: step.label,
-        asset: step.asset,
-        needed,
-        available,
-        source,
-        short: fresh && covers === false,
-      }];
-    });
+      return available;
+    };
+    return projectFundingRows(workflow.steps, readBalance).map((row) => ({
+      ...row,
+      source: row.pocket === "wallet" ? "wallet" : row.pocket === "earn" ? "Earn" : "margin account",
+      short: fresh && fundingCovers(row.available, row.needed) === false,
+    }));
   }, [workflow.steps, tokenBalances, depositedBalances, collateralBalances, fresh]);
 
   const shortfall = rows.some((row) => row.short);
@@ -142,6 +135,9 @@ export function PlanReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
           {rows.map((row) => (
             <div key={row.id} className="rounded-xl border border-vgray-100 bg-vgray-50 p-3.5">
               <dt className="text-[12px] text-vgray-500">{row.source} · {row.asset}</dt>
+              {row.projected && (
+                <dd className="mt-0.5 text-[11px] text-violet-500">Available after earlier plan steps</dd>
+              )}
               <dd className="mt-1 text-[16px] font-semibold tabular-nums text-vgray-900">
                 {fresh && row.available != null ? amount(row.available) : wallet ? "Checking…" : "Connect wallet"} available
               </dd>

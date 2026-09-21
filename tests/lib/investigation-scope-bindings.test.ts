@@ -38,19 +38,21 @@ beforeEach(() => {
 });
 
 describe("investigation scope bindings", () => {
-  it("does not accuse a wallet of being unlinked when bindings come back empty", async () => {
+  it("allows a new connected wallet to prepare a manual plan before it has a binding", async () => {
     const mcp = {
-      call: vi.fn(async () => ({ has_assertion: true, sub: SUBJECT, bindings: [] })),
+      call: vi.fn(async (tool: string) => tool === "vanna_list_my_wallet_bindings"
+        ? { has_assertion: true, sub: SUBJECT, bindings: [] }
+        : { status: "required", smart_account: null }),
     };
     const scope = await resolveInvestigationScope(
       { subject: SUBJECT, wallet: WALLET, network: "testnet" },
       mcp,
       new AbortController().signal,
     );
-    expect(scope).toMatchObject({
-      subject: SUBJECT, trader: null, smartAccount: null, unverified: "bindings",
+    expect(scope).toEqual({
+      subject: SUBJECT, trader: WALLET, smartAccount: null, network: "testnet",
     });
-    expect(mcp.call).toHaveBeenCalledTimes(2);
+    expect(mcp.call).toHaveBeenCalledTimes(3);
   });
 
   it("retries an empty list and accepts a later non-empty binding", async () => {
@@ -75,6 +77,17 @@ describe("investigation scope bindings", () => {
     expect(scope).toEqual({
       subject: SUBJECT, trader: WALLET, smartAccount: ACCOUNT, network: "testnet",
     });
+  });
+
+  it("does not trust the connected address when the binding response is malformed", async () => {
+    const mcp = { call: vi.fn(async () => ({ has_assertion: false, bindings: [] })) };
+    const scope = await resolveInvestigationScope(
+      { subject: SUBJECT, wallet: WALLET, network: "testnet" },
+      mcp,
+      new AbortController().signal,
+    );
+    expect(scope).toMatchObject({ trader: null, smartAccount: null, unverified: "bindings" });
+    expect(mcp.call).toHaveBeenCalledTimes(2);
   });
 
   it("only claims not-linked from a non-empty list that lacks this wallet", async () => {
@@ -144,14 +157,16 @@ describe("investigation scope bindings", () => {
     );
   });
 
-  it("does not cache an unverified public fallback", async () => {
+  it("caches a new-wallet scope after the empty binding fallback resolves it", async () => {
     const mcp = {
-      call: vi.fn(async () => ({ has_assertion: true, sub: SUBJECT, bindings: [] })),
+      call: vi.fn(async (tool: string) => tool === "vanna_list_my_wallet_bindings"
+        ? { has_assertion: true, sub: SUBJECT, bindings: [] }
+        : { status: "required", smart_account: null }),
     };
     const input = { subject: SUBJECT, wallet: WALLET, network: "testnet" as const };
     await resolveInvestigationScope(input, mcp, new AbortController().signal);
     await resolveInvestigationScope(input, mcp, new AbortController().signal);
-    expect(mcp.call.mock.calls.length).toBeGreaterThan(2);
+    expect(mcp.call).toHaveBeenCalledTimes(3);
   });
 
   it("expires the cache after five minutes", async () => {
