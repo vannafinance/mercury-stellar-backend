@@ -94,6 +94,35 @@ describe("preBroadcastRejection", () => {
   it("falls back to error and reason when there is no message", () => {
     expect(preBroadcastRejection({ error: "health_check_failed", reason: "ltv_too_high" }, null)).toMatch(/health_check_failed \(ltv too high\)/);
   });
+  /**
+   * A Freighter wallet has no Sign Service session, so every write it makes comes back
+   * from `maybe_auto_sign` exactly like this: the built envelope, `signing_status:
+   * "needs_wallet_sign"`, and the reason auto-sign was unavailable in `error`/`reason`.
+   * Reading that as a rejection threw the signable transaction away and showed the MCP's
+   * own signing instructions to the user as a protocol refusal (21 Sep, live, non-Privy
+   * wallet, "swap 100 XLM to AQUSDC"). The wallet can still sign it; nothing was refused.
+   */
+  it("is silent when the envelope is still signable, whatever the auto-sign reason says", () => {
+    const build = {
+      unsigned_xdr: "A".repeat(8188),
+      has_unsigned_xdr: true,
+      signing_status: "needs_wallet_sign",
+      auto_sign: "rejected",
+      reason: "wallet_not_bound",
+      error: "wallet_not_bound",
+      message: "FULL unsigned envelope is in tool result field unsigned_xdr (8188 chars). Sign it in Freighter/wallet — do not invent a hash.",
+    };
+    expect(preBroadcastRejection(build, null)).toBeNull();
+  });
+
+  it("still reports a classified failure that produced no envelope to sign", () => {
+    const build = {
+      signing_status: "no_xdr", error: "simulation_failed", reason: "insufficient_balance_or_allowance",
+      message: "On-chain simulation rejected the transaction",
+    };
+    expect(preBroadcastRejection(build, null)).toMatch(/rejected this step before broadcast/);
+  });
+
   it("stays silent — uncertain — when a hash exists or the error carries no classification", () => {
     expect(preBroadcastRejection({ error: "submit_failed", message: "timeout", code: "x" }, "a".repeat(64))).toBeNull();
     expect(preBroadcastRejection({ error: "internal_error", message: "boom" }, null)).toBeNull();
