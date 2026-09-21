@@ -153,4 +153,34 @@ describe("useInvestigation — conversations", () => {
       title: "can you deposit xlm,usdc,blusdc 100 into the lending",
     });
   });
+
+  it("archives and restores local conversation turns when clicking a local conversation in Recents", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string; method?: string }) => {
+      if (url === "/api/copilot/session" && (init?.method ?? "GET") === "GET") {
+        return { ok: true, json: async () => ({ conversations: [], activeId: null, turns: [] }) } as unknown as Response;
+      }
+      if (url === "/api/copilot/investigate") return { ok: true, body: {} } as unknown as Response;
+      return { ok: true, json: async () => ({}) } as unknown as Response;
+    }));
+    mocks.consume.mockImplementation(async (_res: unknown, emit: (event: unknown) => void) => {
+      emit({ type: "result", result: view("Lend 50 XLM.") });
+    });
+    const { result } = renderHook(() => useInvestigation(WALLET));
+    await act(async () => { await result.current.run("lend 50 XLM"); });
+    expect(result.current.turns.map((t) => t.text)).toEqual(["lend 50 XLM", "Lend 50 XLM."]);
+    const localId = result.current.conversations[0]?.id;
+    expect(localId).toBe("local:current");
+
+    // Click new chat
+    await act(async () => { result.current.newChat(); });
+    expect(result.current.turns).toEqual([]);
+    expect(result.current.conversationId).toBeNull();
+    const archivedId = result.current.conversations[0]?.id;
+    expect(archivedId).toMatch(/^local:\d+$/);
+
+    // Reopen the archived local conversation from Recents
+    await act(async () => { await result.current.open(archivedId!); });
+    expect(result.current.conversationId).toBe(archivedId);
+    expect(result.current.turns.map((t) => t.text)).toEqual(["lend 50 XLM", "Lend 50 XLM."]);
+  });
 });
