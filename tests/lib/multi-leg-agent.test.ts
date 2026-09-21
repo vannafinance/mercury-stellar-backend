@@ -51,6 +51,10 @@ describe("multi-leg-agent errors + UI payload", () => {
     expect(msg).not.toBe("fetch failed");
   });
 
+  it("humanizes ECONNRESET", () => {
+    expect(humanizeLegError("read ECONNRESET")).not.toMatch(/ECONNRESET/i);
+  });
+
   it("builds clean multi_leg ui data", () => {
     const steps = [
       {

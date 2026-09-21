@@ -197,6 +197,29 @@ export async function deleteConversation(subject: string, id: string): Promise<b
   return true;
 }
 
+/** Change the list title. Transcript and journal are untouched. */
+export async function renameConversation(subject: string, id: string, title: string): Promise<boolean> {
+  if (!usable(subject)) return false;
+  const nextTitle = titleFor(title);
+  const conversation = await readConversation(subject, id);
+  if (!conversation) return false;
+  const stored = await stores().conversation.read(id);
+  if (!stored) return false;
+  const now = Date.now();
+  await stores().conversation.write(id, stored.version, { ...conversation, title: nextTitle, updatedAt: now });
+  await updateIndex(subject, (current) => {
+    if (!current || !current.conversations.some((entry) => entry.id === id)) return null;
+    return {
+      ...current,
+      conversations: current.conversations.map((entry) =>
+        entry.id === id ? { ...entry, title: nextTitle, updatedAt: now } : entry,
+      ),
+      updatedAt: now,
+    };
+  });
+  return true;
+}
+
 /**
  * Record one turn. With a `conversationId` the caller owns, the turn joins it; otherwise a
  * conversation is started, titled by this first prompt. Returns the id the turn went to so
@@ -233,6 +256,49 @@ export async function appendSessionTurn(input: {
     ].slice(-TURN_LIMIT),
     continuation: input.result.continuation || null,
     result: input.result,
+    updatedAt: now,
+  };
+  await stores().conversation.write(target.id, version, updated);
+  await updateIndex(input.subject, (current) => {
+    const others = (current?.conversations ?? []).filter((entry) => entry.id !== updated.id);
+    return {
+      subject: input.subject,
+      conversations: [summarise(updated), ...others],
+      activeId: updated.id,
+      updatedAt: now,
+    };
+  });
+  return { id: updated.id };
+}
+
+/**
+ * Record a reply produced by the direct Copilot endpoint in the same durable transcript.
+ * This deliberately stores only what the endpoint already returned; it never re-runs,
+ * rewrites or reclassifies the model response.
+ */
+export async function appendDirectSessionTurn(input: {
+  subject: string;
+  conversationId?: string | null;
+  user: string;
+  assistant: string;
+}): Promise<{ id: string }> {
+  const now = Date.now();
+  const fresh: CopilotConversation = {
+    id: randomUUID(), subject: input.subject, title: titleFor(input.user),
+    createdAt: now, updatedAt: now, turns: [], continuation: null, result: null,
+  };
+  if (!usable(input.subject)) return { id: fresh.id };
+
+  const existing = input.conversationId ? await readConversation(input.subject, input.conversationId) : null;
+  const target = existing ?? fresh;
+  const version = existing ? (await stores().conversation.read(target.id))?.version ?? null : null;
+  const updated: CopilotConversation = {
+    ...target,
+    turns: [
+      ...target.turns,
+      { role: "user" as const, text: input.user },
+      { role: "assistant" as const, text: input.assistant },
+    ].slice(-TURN_LIMIT),
     updatedAt: now,
   };
   await stores().conversation.write(target.id, version, updated);

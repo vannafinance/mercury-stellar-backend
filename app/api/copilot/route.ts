@@ -12,6 +12,7 @@ import { loadUserFromRequest } from "@/lib/copilot/request-user";
 import { withBoundUser } from "@/lib/copilot/user-context";
 import { withTokenSubject } from "@/lib/copilot/token-budget";
 import { sanitizeAttachments, sanitizeSessionEvents } from "@/lib/assistant/packet";
+import { mcpErrorResponse } from "@/lib/copilot/mcp-error-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -307,13 +308,15 @@ export async function POST(req: NextRequest) {
     // and the next one refreshes again with an already-rotated token.
     return loadedUser.commit(NextResponse.json(data));
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Copilot failed";
+    const data = mcpErrorResponse(e, "unhandled");
     if (assistantTurn) {
-      logAssistantEvent("error", { ms: Date.now() - assistantStarted, error: msg });
+      logAssistantEvent("error", { ms: Date.now() - assistantStarted, error: data.message });
     }
-    logCopilotEvent("turn_error", { error: msg });
-    return loadedUser.commit(
-      NextResponse.json({ kind: "error", message: msg }, { status: 200 }),
-    );
+    logCopilotEvent("turn_error", {
+      error: data.message,
+      message: message.slice(0, 120),
+      user: payload.user_id,
+    });
+    return loadedUser.commit(NextResponse.json(data, { status: 200 }));
   }
 }

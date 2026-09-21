@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
-import { deleteConversation, openConversation, updateSessionExecutionReceipt } from "@/lib/copilot/session-store";
+import { deleteConversation, openConversation, renameConversation, updateSessionExecutionReceipt } from "@/lib/copilot/session-store";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { WORKFLOW_OPS, type StepStatus, type WorkflowRecord } from "@/lib/copilot/workflow/types";
 
@@ -75,11 +75,18 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
   try { body = await req.json(); } catch {
     return loaded.commit(NextResponse.json({ message: "Invalid receipt." }, { status: 400 }));
   }
-  const receipt = body && typeof body === "object"
-    ? (body as Record<string, unknown>).receipt ?? (body as Record<string, unknown>).executionReceipt
-    : null;
-  if (!isReceipt(receipt)) return loaded.commit(NextResponse.json({ message: "Invalid receipt." }, { status: 400 }));
-  const updated = await updateSessionExecutionReceipt({ subject: loaded.bound.sub, conversationId: id, receipt });
-  if (!updated) return loaded.commit(NextResponse.json({ message: "That conversation cannot accept this receipt update." }, { status: 409 }));
-  return loaded.commit(NextResponse.json({ updated: true }, NO_STORE));
+  const payload = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const receipt = payload?.receipt ?? payload?.executionReceipt ?? null;
+  if (isReceipt(receipt)) {
+    const updated = await updateSessionExecutionReceipt({ subject: loaded.bound.sub, conversationId: id, receipt });
+    if (!updated) return loaded.commit(NextResponse.json({ message: "That conversation cannot accept this receipt update." }, { status: 409 }));
+    return loaded.commit(NextResponse.json({ updated: true }, NO_STORE));
+  }
+  if (typeof payload?.title === "string") {
+    if (!(await renameConversation(loaded.bound.sub, id, payload.title))) {
+      return loaded.commit(NextResponse.json({ message: "That conversation does not exist." }, { status: 404 }));
+    }
+    return loaded.commit(NextResponse.json({ renamed: true }, NO_STORE));
+  }
+  return loaded.commit(NextResponse.json({ message: "Invalid receipt." }, { status: 400 }));
 }

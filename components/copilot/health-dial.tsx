@@ -53,6 +53,11 @@ const ZONE_DIM: Record<HealthZone, string> = {
   unknown: "var(--g50)",
 };
 
+/** The zone in words. Exported so the rail says the same thing the dial does. */
+export function zoneLabel(zone: HealthZone): string {
+  return ZONE_LABEL[zone];
+}
+
 const ZONE_LABEL: Record<HealthZone, string> = {
   danger: "at risk",
   warn: "caution",

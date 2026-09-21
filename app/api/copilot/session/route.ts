@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
-import { closeActiveConversation, listConversations, readConversation } from "@/lib/copilot/session-store";
+import { appendDirectSessionTurn, closeActiveConversation, listConversations, readConversation } from "@/lib/copilot/session-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,4 +36,25 @@ export async function DELETE(req: NextRequest) {
   }
   await closeActiveConversation(loaded.bound.sub);
   return loaded.commit(NextResponse.json({ activeId: null }, NO_STORE));
+}
+
+/** Store a direct Copilot exchange without touching the model or execution pipeline. */
+export async function POST(req: NextRequest) {
+  const loaded = await loadUserFromRequest(req);
+  if (!loaded.bound) {
+    return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
+  }
+  let body: unknown;
+  try { body = await req.json(); } catch {
+    return loaded.commit(NextResponse.json({ message: "Invalid conversation turn." }, { status: 400 }));
+  }
+  const payload = body && typeof body === "object" ? body as Record<string, unknown> : null;
+  const user = typeof payload?.user === "string" ? payload.user.trim() : "";
+  const assistant = typeof payload?.assistant === "string" ? payload.assistant.trim() : "";
+  const conversationId = typeof payload?.conversationId === "string" ? payload.conversationId : null;
+  if (!user || !assistant || user.length > 8_000 || assistant.length > 32_000) {
+    return loaded.commit(NextResponse.json({ message: "Invalid conversation turn." }, { status: 400 }));
+  }
+  const recorded = await appendDirectSessionTurn({ subject: loaded.bound.sub, conversationId, user, assistant });
+  return loaded.commit(NextResponse.json({ conversationId: recorded.id }, NO_STORE));
 }

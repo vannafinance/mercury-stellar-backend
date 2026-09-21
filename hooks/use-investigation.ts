@@ -277,8 +277,85 @@ export function useInvestigation(wallet: string | null) {
   const cancel = useCallback(() => {
     abort.current?.abort();
     sequence.current += 1;
-    setState((previous) => ({ ...previous, loading: false, progress: null, error: "Investigation cancelled. No transactions were requested." }));
-  }, []);
+    const message = "Investigation cancelled. No transactions were requested.";
+    const owner = activeWallet.current;
+    setState((previous) => {
+      const turns: ThreadTurn[] = [...previous.turns, { role: "assistant" as const, text: message }].slice(-16);
+      transcript.current = turns.map((turn) => ({ role: turn.role, text: turn.text }));
+      if (owner) {
+        writeStoredThread(owner, {
+          wallet: owner,
+          turns,
+          continuation: continuation.current,
+          result: lastResult.current,
+          conversationId: conversationId.current,
+        });
+      }
+      rememberLive(owner, turns, conversationId.current);
+      return { ...previous, loading: false, progress: null, error: null, turns };
+    });
+  }, [rememberLive]);
+
+  /**
+   * Mirror a completed direct-endpoint exchange into the shared chat transcript.
+   * The model response is stored verbatim; this is synchronization, not generation.
+   */
+  const recordDirect = useCallback(async (userText: string, assistantText: string) => {
+    const user = userText.trim();
+    const assistant = assistantText.trim();
+    const owner = activeWallet.current;
+    if (!user || !assistant) return;
+    const startedIn = conversationId.current && !isLocalConversationId(conversationId.current)
+      ? conversationId.current : null;
+
+    let localTurns: ThreadTurn[] = [];
+    setState((previous) => {
+      localTurns = [
+        ...previous.turns,
+        { role: "user" as const, text: user },
+        { role: "assistant" as const, text: assistant },
+      ].slice(-16);
+      transcript.current = localTurns.map((turn) => ({ role: turn.role, text: turn.text }));
+      if (owner) {
+        writeStoredThread(owner, {
+          wallet: owner,
+          turns: localTurns,
+          continuation: continuation.current,
+          result: lastResult.current,
+          conversationId: startedIn,
+        });
+      }
+      rememberLive(owner, localTurns, startedIn);
+      return { ...previous, turns: localTurns, error: null };
+    });
+
+    if (!owner) return;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
+      const response = await fetch("/api/copilot/session", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId: startedIn, user, assistant }),
+        cache: "no-store",
+      });
+      if (!response.ok || activeWallet.current !== owner) return;
+      const payload = await response.json() as { conversationId?: string };
+      if (!payload.conversationId) return;
+      conversationId.current = payload.conversationId;
+      setState((previous) => {
+        if (previous.wallet !== owner) return previous;
+        writeStoredThread(owner, {
+          wallet: owner,
+          turns: previous.turns,
+          continuation: continuation.current,
+          result: lastResult.current,
+          conversationId: payload.conversationId!,
+        });
+        return { ...previous, conversationId: payload.conversationId! };
+      });
+      await refreshConversations(owner);
+    } catch { /* the local transcript and Recent row remain available */ }
+  }, [refreshConversations, rememberLive]);
 
   /** Start a new chat: the screen clears; the conversation stays in the list; nothing is created until the first turn. */
   const newChat = useCallback(() => {
@@ -344,6 +421,30 @@ export function useInvestigation(wallet: string | null) {
       await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, { method: "DELETE", headers, cache: "no-store" });
     } catch { /* it is gone from the list; the server copy goes on the next successful delete or expiry */ }
   }, [applyBlank]);
+
+  /** Rename a conversation. The transcript and journal stay; only the list title changes. */
+  const rename = useCallback(async (id: string, title: string) => {
+    const nextTitle = title.replace(/\s+/g, " ").trim();
+    if (!nextTitle) return;
+    const owner = activeWallet.current;
+    if (!owner) return;
+    setConversations((items) => {
+      const next = sortedByActivity(items.map((item) =>
+        item.id === id ? { ...item, title: nextTitle, updatedAt: Date.now() } : item));
+      writeStoredConversations(owner, next);
+      return next;
+    });
+    if (isLocalConversationId(id)) return;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
+      await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ title: nextTitle }),
+      });
+    } catch { /* the list already shows the new title; the server copy updates on the next successful rename */ }
+  }, []);
 
   /** Persist a journal snapshot on the assistant turn that owns that workflow. */
   const updateExecutionReceipt = useCallback(async (receipt: ExecutionReceiptSnapshot): Promise<boolean> => {
@@ -522,5 +623,5 @@ export function useInvestigation(wallet: string | null) {
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, reset: newChat, newChat, open, remove, updateExecutionReceipt };
+  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt };
 }

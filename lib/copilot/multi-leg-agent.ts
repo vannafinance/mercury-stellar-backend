@@ -707,7 +707,7 @@ export function humanizeLegError(raw: string | null | undefined): string {
   // Same wallet-has-no-XLM case as the single-write path — a strategy leg must not
   // report it as a bare RPC dump when the single-write path explains it.
   if (isUnfundedWalletError(m)) return unfundedWalletMessage();
-  if (/fetch failed|failed to fetch|networkerror|econnrefused|enotfound|etimedout|abort(ed)?|timeout/i.test(m)) {
+  if (/fetch failed|failed to fetch|networkerror|econnreset|epipe|econnrefused|enotfound|etimedout|socket hang up|abort(ed)?|timeout/i.test(m)) {
     return "Could not reach the Vanna MCP server (network). Check you’re online, MCP URL is up, then retry.";
   }
   if (/\b401\b|\b403\b|unauthorized|rejected the token|workos/i.test(m)) {
