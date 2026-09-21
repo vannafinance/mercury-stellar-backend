@@ -18,7 +18,7 @@ export interface AutoApproveMenuProps {
 }
 
 const PILL =
-  "rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500";
+  "cursor-pointer rounded-full border px-3 py-1.5 text-[12.5px] font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500";
 
 function CapField({
   label,
@@ -137,7 +137,7 @@ export function AutoApproveMenu({
                 onToggle();
                 setOpen(false);
               }}
-              className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed ${
+              className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed ${
                 on ? "bg-violet-500" : "bg-vgray-100"
               }`}
             >
