@@ -45,6 +45,7 @@ import { currentTokenSubject, recordTokenUsage } from "./token-budget";
 import { assertFlashModel } from "./investigation/flash-policy";
 import { boundOnChainStrings } from "./investigation/onchain-strings";
 import type { RoutedIntent } from "./types";
+import { WORKFLOW_OPS } from "./workflow/types";
 import { decisionFromFunctionCalls } from "./investigation/decls";
 import {
   FC_ROUTE_SYSTEM,
@@ -1315,14 +1316,9 @@ function normalizeRoute(data: Record<string, unknown>): RoutedIntent {
 
   if (kind === "write") {
     const op = String(data.op ?? "");
-    const allowed = new Set([
+    const allowed = new Set<string>([
+      ...WORKFLOW_OPS,
       "create_account",
-      "lend",
-      "redeem",
-      "deposit_collateral",
-      "withdraw_collateral",
-      "borrow",
-      "repay",
       "deposit_and_borrow",
       "deploy_to_blend",
       "supply_to_blend",

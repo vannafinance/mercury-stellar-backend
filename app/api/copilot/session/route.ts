@@ -17,15 +17,26 @@ export async function GET(req: NextRequest) {
   if (!loaded.bound) {
     return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
   }
-  const { conversations, activeId } = await listConversations(loaded.bound.sub);
-  const active = activeId ? await readConversation(loaded.bound.sub, activeId) : null;
-  return loaded.commit(NextResponse.json({
-    conversations,
-    activeId,
-    turns: active?.turns ?? [],
-    continuation: active?.continuation ?? null,
-    result: active?.result ?? null,
-  }, NO_STORE));
+  try {
+    const { conversations, activeId } = await listConversations(loaded.bound.sub);
+    const active = activeId ? await readConversation(loaded.bound.sub, activeId) : null;
+    return loaded.commit(NextResponse.json({
+      conversations,
+      activeId,
+      turns: active?.turns ?? [],
+      continuation: active?.continuation ?? null,
+      result: active?.result ?? null,
+    }, NO_STORE));
+  } catch (error) {
+    console.warn("[copilot/session] failed to read conversations:", error instanceof Error ? error.message : error);
+    return loaded.commit(NextResponse.json({
+      conversations: [],
+      activeId: null,
+      turns: [],
+      continuation: null,
+      result: null,
+    }, NO_STORE));
+  }
 }
 
 /** "New chat": close the open conversation. Nothing is created until the first turn. */
@@ -34,7 +45,11 @@ export async function DELETE(req: NextRequest) {
   if (!loaded.bound) {
     return loaded.commit(NextResponse.json({ message: "Sign in to keep your conversations." }, { status: 401 }));
   }
-  await closeActiveConversation(loaded.bound.sub);
+  try {
+    await closeActiveConversation(loaded.bound.sub);
+  } catch (error) {
+    console.warn("[copilot/session] failed to close conversation:", error instanceof Error ? error.message : error);
+  }
   return loaded.commit(NextResponse.json({ activeId: null }, NO_STORE));
 }
 
@@ -55,6 +70,11 @@ export async function POST(req: NextRequest) {
   if (!user || !assistant || user.length > 8_000 || assistant.length > 32_000) {
     return loaded.commit(NextResponse.json({ message: "Invalid conversation turn." }, { status: 400 }));
   }
-  const recorded = await appendDirectSessionTurn({ subject: loaded.bound.sub, conversationId, user, assistant });
-  return loaded.commit(NextResponse.json({ conversationId: recorded.id }, NO_STORE));
+  try {
+    const recorded = await appendDirectSessionTurn({ subject: loaded.bound.sub, conversationId, user, assistant });
+    return loaded.commit(NextResponse.json({ conversationId: recorded.id }, NO_STORE));
+  } catch (error) {
+    console.warn("[copilot/session] failed to append turn:", error instanceof Error ? error.message : error);
+    return loaded.commit(NextResponse.json({ conversationId: null }, NO_STORE));
+  }
 }

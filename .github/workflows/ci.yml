@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, copilot-upgrade]
   push:
-    branches: [main, dev]
+    branches: [main, dev, copilot-upgrade]
 
 jobs:
   verify:

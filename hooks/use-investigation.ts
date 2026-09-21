@@ -366,7 +366,10 @@ export function useInvestigation(wallet: string | null) {
     applyBlank(owner);
     if (owner) {
       setConversations((previous) => {
-        const next = previous.filter((item) => item.id !== LIVE_CONVERSATION_ID);
+        const live = previous.find((item) => item.id === LIVE_CONVERSATION_ID);
+        const next = live
+          ? previous.map((item) => (item.id === LIVE_CONVERSATION_ID ? { ...item, id: `local:${Date.now()}` } : item))
+          : previous;
         writeStoredConversations(owner, next);
         return next;
       });

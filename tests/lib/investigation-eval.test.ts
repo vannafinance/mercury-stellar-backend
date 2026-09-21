@@ -184,12 +184,19 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(mcp.call).not.toHaveBeenCalled();
   });
 
-  it("refuses a conditional write instead of running the action", async () => {
+  it.each([
+    "if my health factor drops below 1.2 repay 10 XLM",
+    "when health factor is below 1.2, repay 10 XLM",
+    "when my health factor falls below 1.2, repay 10 XLM",
+    "once liquidation risk increases, withdraw my funds",
+    "as soon as HF drops below 1.2, repay 10 XLM",
+    "unless health factor rises above 1.5, withdraw 20 XLM",
+  ])("blocks conditional writes without calling dependencies: %s", async (prompt) => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
     const result = await researchTurn(
       {
-        message: "if my health factor drops below 1.2 repay 10 XLM",
-        wallet: SCOPE.trader, continuation: null, promptName: "conditional-repay",
+        message: prompt,
+        wallet: SCOPE.trader, continuation: null, promptName: "conditional-write",
       },
       deps(mcp, async () => ({ kind: "blocked", reason: "should not reach the model" })),
     );

@@ -688,11 +688,9 @@ async function snapshotPositionAnswer(
     } else if (askedIfSafe) {
       lead = infinite
         ? "Yes — no debt, so there is nothing to liquidate"
-        : pos.hf >= 1.3
-          ? `Yes, you're safe — health factor ${pos.hfText} is above the 1.30 floor`
-          : pos.hf > LIQUIDATION_THRESHOLD
-            ? `Below your 1.30 safety floor but not liquidatable yet — health factor ${pos.hfText}`
-            : `No — health factor ${pos.hfText} is at or below the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
+        : pos.hf > LIQUIDATION_THRESHOLD
+          ? `Yes, you're healthy — health factor ${pos.hfText} is above the ${LIQUIDATION_THRESHOLD.toFixed(2)} protocol liquidation line`
+          : `No — health factor ${pos.hfText} is at or below the ${LIQUIDATION_THRESHOLD.toFixed(2)} liquidation line`;
     } else {
       lead = `Health factor ${pos.hfText}`;
     }

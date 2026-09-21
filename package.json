@@ -59,6 +59,7 @@
     "eslint": "^9",
     "eslint-config-next": "^16.2.3",
     "happy-dom": "^20.9.0",
+    "playwright-core": "^1.63.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.7"

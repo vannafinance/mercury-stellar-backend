@@ -136,7 +136,10 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
  * decision, so nothing new has to be set to make conversations durable.
  */
 export function durableStore<T>(collection: string, localDirectory: string, secret: string, idRule: IdRule = UUID_ID): RecordStore<T> {
-  const project = process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT;
+  const project =
+    process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT;
   if (project) {
     return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret, undefined, undefined, collection, idRule);
   }

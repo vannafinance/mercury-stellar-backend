@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useViewportScale } from "@/lib/hooks/useViewportScale";
 
 /**
@@ -77,11 +77,26 @@ export function CopilotShell({
     setHeight(layout > 320 ? layout : 320);
   }, [zoom]);
 
-  useEffect(() => {
-    const frame = window.requestAnimationFrame(measure);
+  /**
+   * Measure before paint, then keep measuring whatever can move the shell's top edge.
+   *
+   * A single `requestAnimationFrame` was not enough: it fired before the navbar above had
+   * settled, the height state was never set, and the shell silently kept its fallback
+   * `calc(100dvh - 96px)` — 23px short of the viewport at 1440x900, which shows as a dead
+   * strip under the rail. The navbar's height is not a constant this file may assume, so
+   * the only reliable answer is to observe it: `useLayoutEffect` catches the first
+   * correct layout, and a ResizeObserver on the document element and on the shell's own
+   * parent catches every later reflow (font swap, banner, wallet row wrapping).
+   */
+  useLayoutEffect(() => {
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(document.documentElement);
+    const parent = shell.current?.parentElement;
+    if (parent) observer.observe(parent);
     window.addEventListener("resize", measure);
     return () => {
-      window.cancelAnimationFrame(frame);
+      observer.disconnect();
       window.removeEventListener("resize", measure);
     };
   }, [measure]);

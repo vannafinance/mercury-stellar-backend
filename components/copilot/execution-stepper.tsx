@@ -101,7 +101,7 @@ export function ExecutionStepper({
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-violet-500 underline hover:text-violet-600 dark:text-violet-400"
                       >
-                        <span className="break-all">tx {step.txHash}</span>
+                        <span className="break-all">tx {step.txHash.length > 12 ? `${step.txHash.slice(0, 8)}…` : step.txHash}</span>
                         <ExternalLink size={10} />
                       </a>
                     ) : (
