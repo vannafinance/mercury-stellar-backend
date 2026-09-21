@@ -5049,12 +5049,23 @@ export function CopilotWorkspace() {
   /** Same conditions the auto-submit effect uses, so the notice can't disagree with it. */
   // Multi-leg: every hop with XDR auto-submits when session signing is on — including
   // responses that older servers labeled needs_auto_sign.
+  /**
+   * The SAME question the auto-submit effect asks, with the same inputs.
+   *
+   * `allow_session_sign` was missing here and passed there, so the two disagreed
+   * exactly when the server withheld session-signing (`forbid_session_sign`, or a
+   * high-impact swap): the effect declined to sign, while this said it would and
+   * rendered the "no click needed" spinner INSTEAD of the Approve button. Nothing
+   * signed and nothing could be clicked — the run just span. Live, 21 Sep, on a
+   * staged deposit showing "risk gate · confirm".
+   */
   const willAutoSubmit = shouldSessionAutoSubmit({
     kind: response?.kind,
     sessionSigning,
     riskDecision: decision,
     autoSubmitBlocked,
     hasSignableXdr: isSignableXdr(response?.unsigned_xdr),
+    allowSessionSign: response?.preview?.allow_session_sign,
   });
   const txHash =
     response?.execution?.tx_hash ??

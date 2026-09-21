@@ -386,8 +386,18 @@ export function RunExecutionCard({
   const shape = useMemo(() => {
     const firstOpen = legs.findIndex((l) => !TERMINAL.has(l.status));
     const complete = total > 0 && legs.every((l) => l.status === "ok");
+    /**
+     * Where to point when every leg is already terminal.
+     *
+     * The last leg is the wrong answer: it is merely the furthest one nobody reached.
+     * The leg worth naming is the first that did NOT settle, because that is where the
+     * run actually stopped. Live, a run abandoned at leg 1 reported "Ready on leg 4 of
+     * 4" and offered to continue into a leg three steps past the failure.
+     */
+    const firstUnsettled = legs.findIndex((l) => l.status !== "ok");
+    const settledFallback = firstUnsettled === -1 ? Math.max(0, total - 1) : firstUnsettled;
     return {
-      focus: firstOpen === -1 ? Math.max(0, total - 1) : firstOpen,
+      focus: firstOpen === -1 ? settledFallback : firstOpen,
       complete,
       stopped: legs.find((l) => l.status === "stopped") ?? null,
       doneCount: legs.filter((l) => l.status === "ok").length,
@@ -396,6 +406,17 @@ export function RunExecutionCard({
       gate: legs.find((l) => l.gateReason && !TERMINAL.has(l.status)) ?? null,
       needsSign: legs.find((l) => l.status === "needs_sign") ?? null,
       running: legs.find((l) => l.status === "running") ?? null,
+      /**
+       * Every leg reached a terminal state and not one of them settled — the run was
+       * abandoned before it started. `stopped` and `failed` do not cover it, because a
+       * planner that gives up marks the legs `skipped`, which is terminal but neither.
+       * Without a case of its own this fell through to "ready" and invited the user to
+       * start a run that had already been called off.
+       */
+      abandoned:
+        total > 0 &&
+        legs.every((l) => TERMINAL.has(l.status)) &&
+        !legs.some((l) => l.status === "ok"),
     };
   }, [legs, total]);
 
@@ -537,7 +558,7 @@ export function RunExecutionCard({
 
   /** Headline, beat and the actions row all follow from the leg statuses. */
   const narration = useMemo(() => {
-    const { complete, stopped, failed, needsInput, gate, needsSign, running, doneCount, focus } = shape;
+    const { complete, stopped, failed, needsInput, gate, needsSign, running, doneCount, focus, abandoned } = shape;
     const nth = (i: number) => `leg ${i + 1} of ${total}`;
 
     if (complete) {
@@ -681,6 +702,18 @@ export function RunExecutionCard({
         beatSub: legs[focus] ? legs[focus].label : undefined,
       };
     }
+    if (abandoned) {
+      const at = legs[focus];
+      return {
+        headline: "run stopped",
+        headDanger: false,
+        beat: `Stopped at ${nth(focus)} — nothing ran`,
+        beatTone: "warn" as const,
+        beatSub: at
+          ? `${at.label} did not go through, so the later legs were skipped. Your position is unchanged.`
+          : "Nothing settled — your position is unchanged.",
+      };
+    }
     return {
       headline: onContinue ? "paused · health floor" : "ready",
       headDanger: false,
@@ -719,10 +752,11 @@ export function RunExecutionCard({
       role="group"
       aria-label="Strategy run"
       style={{
-        border: compactLp ? "none" : "1px solid var(--rc-line)",
-        borderRadius: 14,
+        border: compactLp ? "none" : "1px solid var(--rc-line-soft)",
+        borderRadius: 12,
         background: compactLp ? "transparent" : "var(--rc-surface)",
-        padding: compactLp ? 0 : "20px 22px 18px",
+        padding: compactLp ? 0 : 16,
+        boxShadow: compactLp ? "none" : "0 1px 2px 0 rgb(0 0 0 / 0.05)",
       }}
     >
       {!compactLp && (
@@ -922,12 +956,12 @@ export function RunExecutionCard({
                           border: `1px solid ${v.bd}`,
                           background: v.bg,
                           color: v.fg,
-                          borderRadius: 5,
-                          padding: "2px 7px",
+                          borderRadius: 6,
+                          padding: "2px 6px",
                           fontFamily: MONO,
-                          fontSize: 9,
+                          fontSize: 10,
                           fontWeight: 700,
-                          letterSpacing: ".18em",
+                          letterSpacing: ".05em",
                         }}
                       >
                         {l.venue}
@@ -935,9 +969,9 @@ export function RunExecutionCard({
                       <span
                         style={{
                           fontFamily: MONO,
-                          fontSize: 10,
+                          fontSize: 11,
                           fontWeight: 600,
-                          letterSpacing: ".1em",
+                          letterSpacing: ".02em",
                           color: later ? "var(--rc-quiet)" : "var(--rc-muted)",
                         }}
                       >
@@ -947,9 +981,9 @@ export function RunExecutionCard({
                         className="uppercase"
                         style={{
                           fontFamily: MONO,
-                          fontSize: 9,
+                          fontSize: 11,
                           fontWeight: 700,
-                          letterSpacing: ".16em",
+                          letterSpacing: ".05em",
                           color: meta.color,
                         }}
                       >
@@ -960,7 +994,7 @@ export function RunExecutionCard({
                     <p
                       className="m-0 mt-1.5"
                       style={{
-                        fontSize: isFocus ? 15.5 : 14,
+                        fontSize: isFocus ? 14 : 13,
                         lineHeight: "20px",
                         fontWeight: isFocus ? 600 : 400,
                         color: later
