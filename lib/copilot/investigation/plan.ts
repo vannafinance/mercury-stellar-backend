@@ -1317,8 +1317,13 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
           : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),
       ...(d.targetOut ? { targetOut: d.targetOut } : {}),
-      // Token units are frozen at approval; a USD resize cannot be substituted into token-denominated arguments.
-      sizing: { basis: "stated" },
+      /**
+       * Token units are frozen at approval; a USD resize cannot be substituted into
+       * token-denominated arguments. The one thing recorded beyond the number is where it
+       * came from when it was the whole of a position — that amount is a reading, and the
+       * write re-takes it rather than spending a figure the ledger has since moved past.
+       */
+      sizing: wholePositionRead(d.leg) ?? { basis: "stated" },
     };
     try { allowedInvocation(step, ctx.scope); } catch { throw new Reject(d.name, "this step is not an allowed protocol write"); }
     return step;
@@ -1569,11 +1574,13 @@ function aquariusPoolDataOf(observations: readonly Observation[], pairedAsset: s
 }
 
 /** A row's balance in an account read (`account_collateral` / `account_debt`), by the symbol the contract uses or the registry id. */
-function positionRowBalance(observations: readonly Observation[], capability: string, keys: readonly string[], symbol: string, id: string, now: number): string | null {
-  const read = [...observations].reverse().find((o) => o.capability === capability && o.status === "ok" && o.data && now - o.observedAt <= 60_000);
-  if (!read?.data) return null;
+/**
+ * This asset's balance out of a position payload. Shared with the write, which re-reads
+ * the same capability live and must read the answer the same way the sizer did.
+ */
+export function positionRowIn(data: Record<string, unknown>, keys: readonly string[], symbol: string, id: string): string | null {
   for (const key of keys) {
-    const rows = read.data[key];
+    const rows = data[key];
     if (!Array.isArray(rows)) continue;
     for (const row of rows) {
       if (!isRecord(row) || (row.symbol !== symbol && row.symbol !== id) || row.balance_untrusted === true) continue;
@@ -1584,6 +1591,12 @@ function positionRowBalance(observations: readonly Observation[], capability: st
     }
   }
   return null;
+}
+
+function positionRowBalance(observations: readonly Observation[], capability: string, keys: readonly string[], symbol: string, id: string, now: number): string | null {
+  const read = [...observations].reverse().find((o) => o.capability === capability && o.status === "ok" && o.data && now - o.observedAt <= 60_000);
+  if (!read?.data) return null;
+  return positionRowIn(read.data, keys, symbol, id);
 }
 
 /**
@@ -1844,11 +1857,29 @@ function grossSupplyApr(drafts: ReadonlyArray<{ leg: PlanLeg; usd: string | "max
 // ── the op-flow table, read for the sizer ───────────────────────────────────
 
 /** The row set each position read carries its balances under (the MCP's shapes, as normalised). */
-const POSITION_ROWS: Record<Exclude<NonNullable<OpFlow["positionRead"]>, "earn_position" | "farm_lp_position">, readonly string[]> = {
+export const POSITION_ROWS: Record<Exclude<NonNullable<OpFlow["positionRead"]>, "earn_position" | "farm_lp_position">, readonly string[]> = {
   blend_position: ["positions"],
   account_collateral: ["collateral", "positions", "balances"],
   account_debt: ["debt", "borrows", "positions"],
 };
+
+export function isPositionRowRead(read: string): read is keyof typeof POSITION_ROWS {
+  return read in POSITION_ROWS;
+}
+
+/**
+ * Record on the step that its amount WAS the whole position, and which read holds it.
+ *
+ * Only for the reads whose rows state a balance in the asset's own units — the set
+ * `POSITION_ROWS` already defines. Earn and LP are deliberately outside it: their amounts
+ * are vTokens and pool shares, converted through a rate the write would have to re-derive
+ * rather than re-read, which is a different job from asking the same source again.
+ */
+function wholePositionRead(leg: PlanLeg): { basis: "whole_position"; read: string } | null {
+  if (leg.sizing.kind !== "all_position") return null;
+  const read = OP_FLOW[leg.op].positionRead;
+  return read && isPositionRowRead(read) ? { basis: "whole_position", read } : null;
+}
 /** The rate row column each table rate names. */
 const RATE_COLUMN: Record<NonNullable<OpFlow["rate"]>, keyof Pick<RateComparison, "earnSupplyApr" | "marginBorrowApr" | "blendSupplyApr">> = {
   earn_supply: "earnSupplyApr", earn_borrow: "marginBorrowApr", blend_supply: "blendSupplyApr",
