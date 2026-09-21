@@ -13,6 +13,9 @@ describe("Copilot entry lanes", () => {
     "deposit 100 XLM, then borrow 20 BLUSDC and provide XLM/SOUSDC liquidity",
     "deposit 100 XLM into the margin account and borrow 2x BLUSDC and SOUSDC and then provide liquidity of BLUSDC in Blend and SOUSDC and XLM in Soroswap",
     "what is my health factor?",
+    // An instruction with no amount is still an instruction: "all" is a size, not a goal.
+    "withdraw all funds",
+    "remove XLM position or USDC position from Blend farm",
   ])("routes a plain capability directly: %s", (message) => {
     expect(classifyCopilotEntry(message)).toBe("direct");
   });
