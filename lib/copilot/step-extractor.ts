@@ -278,6 +278,26 @@ function clauseToStepSpanned(
   return fraction == null ? hit : { ...hit, step: { ...hit.step, fraction } };
 }
 
+/**
+ * A clause opening with an interrogative and naming no literal amount reads as a
+ * question, whatever verb it also contains.
+ *
+ * "can you tell me one thing supply to blend go through margin wallet or normal
+ * wallet" carries the write verb "supply" — live, 21 Sep, that alone was enough for
+ * this extractor to pull a `supply_blend` write with a missing amount, and the card
+ * then asked "How much BLUSDC to deploy to blend?" for a question that named no
+ * amount at all. "what is the best place to supply my USDC, earn or blend" is the
+ * same failure from the other clause: a comparison question, mined for a write
+ * because "supply" appears in it.
+ *
+ * Gated on the clause carrying no `amount asset` pair — the one signal a genuine
+ * write instruction always has and a question about that same verb never does — so
+ * "supply 25 AQUSDC to earn" is untouched; only a clause with nothing to size is
+ * deferred to `clauseToReadStep`, which already knows this phrase set.
+ */
+const QUESTION_OPENER =
+  /^\s*(?:tell me|show me|do you know|can you (?:tell|show)|what(?:'s| is| are)?|which|where|how(?:\s+much|\s+is)?|is|are|am|does|did|should|would|could)\b/i;
+
 function clauseToStepSpannedRaw(
   clause: string,
   global: { leverage: number | null; minHf: number | null },
@@ -291,6 +311,8 @@ function clauseToStepSpannedRaw(
 
   const pairSpan = (p: AmtAsset | null | undefined): Span[] =>
     p ? [{ start: p.start, end: p.end }] : [];
+
+  if (pairs.length === 0 && QUESTION_OPENER.test(clause)) return null;
 
   // Constraints only (HF) — not a write
   if (
