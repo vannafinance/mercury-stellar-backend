@@ -5312,19 +5312,21 @@ export function CopilotWorkspace() {
                         </>
                       ) : response && !liveAssistant ? (
                         <div className="min-w-0">
-                          {isError ? (
-                            <AssistantMessage tone="error">
-                              {chatProseFromStored(response.message)}
-                            </AssistantMessage>
-                          ) : response.answer ? (
-                            <AssistantMessage note={response.answer.note}>
-                              {response.answer.headline}
-                            </AssistantMessage>
-                          ) : (
-                            <AssistantMessage>
-                              {chatProseFromStored(response.message)}
-                            </AssistantMessage>
-                          )}
+                          {investigation.turns.length === 0 ? (
+                            isError ? (
+                              <AssistantMessage tone="error">
+                                {chatProseFromStored(response.message)}
+                              </AssistantMessage>
+                            ) : response.answer ? (
+                              <AssistantMessage note={response.answer.note}>
+                                {response.answer.headline}
+                              </AssistantMessage>
+                            ) : (
+                              <AssistantMessage>
+                                {chatProseFromStored(response.message)}
+                              </AssistantMessage>
+                            )
+                          ) : null}
                           {sim && !multiLeg && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
                         </div>
                       ) : null}

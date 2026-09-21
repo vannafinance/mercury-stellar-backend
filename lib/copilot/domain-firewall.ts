@@ -73,7 +73,7 @@ export const SELF_REFERENTIAL: RegExp[] = [
   // with "I only help with Vanna Finance…", which is both unhelpful and the answer to the
   // question it declined to give.
   /\bwhat\s+can\s+i\s+(do|ask|try)\b/i,
-  /\b(help|examples?|options)\b\s*\??$/i,
+  /^(?:what\s+(?:are\s+(?:my\s+)?options|can\s+you\s+do)|show\s+options|help|examples?|options)\s*\??$/i,
 ];
 
 /**
