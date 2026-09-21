@@ -731,7 +731,7 @@ describe("mergeCandidateSets — composed plans beside the fixed shapes", () => 
     expect(merged.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM")?.rationale).toBeTruthy();
   });
 
-  it("keeps a required borrow ahead of a higher-return idle option after merging", () => {
+  it("does not keep idle on the card after merging when a borrow is required", () => {
     const fixed = generateCandidates({
       grossCollateralUsd: CAPACITY.grossCollateralUsd, debtUsd: CAPACITY.debtUsd, floor: CAPACITY.floor,
       idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowingAllowed: true,
@@ -741,8 +741,8 @@ describe("mergeCandidateSets — composed plans beside the fixed shapes", () => 
       { op: "borrow", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "borrow 100 XLM" } },
     ])], ctx({ messages: ["borrow 100 XLM"], borrowing: "required", capacity: { ...CAPACITY, floor: null } }));
     const merged = mergeCandidateSets(fixed, plainBorrow, "required");
-    expect(merged.feasible[0]?.borrows).toBe(true);
-    expect(merged.feasible.some((candidate) => !candidate.borrows)).toBe(true);
+    expect(merged.feasible.length).toBeGreaterThan(0);
+    expect(merged.feasible.every((candidate) => candidate.borrows)).toBe(true);
   });
 
   it("lists a rejected plan with its leg and reason so 'no option' is never silent", () => {

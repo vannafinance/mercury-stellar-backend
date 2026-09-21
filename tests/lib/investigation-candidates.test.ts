@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { generateCandidates, idleWalletUsdFrom, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
+import { generateCandidates, idleWalletUsdFrom, rankingBorrowing, requestedBorrowFrom } from "@/lib/copilot/investigation/candidates";
 import { candidateId } from "@/lib/copilot/investigation/candidate-id";
 import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison";
 
@@ -9,9 +9,8 @@ import type { RateComparison } from "@/lib/copilot/investigation/rate-comparison
  * The model proposes nothing here: given rate evidence and the authoritative position,
  * the shapes are enumerable and every amount comes from the sizer. What these tests pin
  * are the two judgements the plan requires and that prose alone would not enforce —
- * a non-borrowing alternative is always offered when one exists, and a negative carry is
- * REJECTED with its reason rather than ranked below the others where it could still be
- * picked.
+ * a non-borrowing alternative is offered when idle exists and borrowing is not required,
+ * and a negative carry is REJECTED with its reason unless the user required that borrow.
  */
 
 // The live authorised account as dev computes it.
@@ -102,13 +101,40 @@ describe("candidate generation", () => {
     expect(blendIdle?.finalHealthFactor).toBeNull();
   });
 
-  it("ranks a required borrow ahead of idle alternatives while keeping the alternative visible", () => {
+  it("does not offer idle when a borrow is required", () => {
     const { feasible } = generateCandidates({
       ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
       comparisons: [comparison()],
     });
-    expect(feasible[0]?.borrows).toBe(true);
-    expect(feasible.some((candidate) => !candidate.borrows)).toBe(true);
+    expect(feasible.length).toBeGreaterThan(0);
+    expect(feasible.every((candidate) => candidate.borrows)).toBe(true);
+  });
+
+  it("still sizes a required borrow when carry is negative", () => {
+    const { feasible, rejected } = generateCandidates({
+      ...BASE, idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
+      comparisons: [comparison({ blendSupplyApr: "2", marginBorrowApr: "9", verdict: "cost_exceeds_supply" })],
+    });
+    expect(feasible.some((candidate) => candidate.borrows)).toBe(true);
+    expect(rejected).toEqual([]);
+  });
+
+  it("rejects a required borrow with no headroom as a deposit suggestion, not an idle substitute", () => {
+    const { feasible, rejected } = generateCandidates({
+      grossCollateralUsd: "1300", debtUsd: "1000", floor: "1.30",
+      idleWalletUsd: "680", idleWalletByAssetUsd: { BLUSDC: "680" }, borrowing: "required",
+      comparisons: [comparison()],
+    });
+    expect(feasible).toEqual([]);
+    expect(rejected[0]).toMatchObject({ acceptable: true });
+    expect(rejected[0].reason).toMatch(/Deposit or transfer/);
+  });
+
+  it("treats a typed borrow leg as required even when the goal said allowed", () => {
+    expect(rankingBorrowing("allowed", [{ op: "borrow" }])).toBe("required");
+    expect(rankingBorrowing("unspecified", null, [{ legs: [{ op: "borrow" }] }])).toBe("required");
+    expect(rankingBorrowing("forbidden", [{ op: "borrow" }])).toBe("forbidden");
+    expect(rankingBorrowing("allowed", [{ op: "lend" }])).toBe("allowed");
   });
 
   it("offers Earn idle when its supply APR beats Blend, compiling to a separate venue", () => {
