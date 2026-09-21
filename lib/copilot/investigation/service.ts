@@ -116,6 +116,18 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
 }): Promise<ResearchView> {
   const logPhase = dependencies.logPhase ?? (() => undefined);
   const codec = researchCodec(dependencies.secret, dependencies.server);
+  if (isConditionalWriteRequest(input.message)) {
+    return {
+      status: "blocked",
+      message:
+        "I can't schedule or execute conditional financial actions. " +
+        "Please submit a specific action for review when you are ready.",
+      originalRequest: input.message, refinements: [], understanding: null, question: null,
+      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+      warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
+      continuation: "", executionAllowed: false,
+    };
+  }
   /**
    * Answer before spending anything, when there is nothing to investigate. This runs ahead
    * of scope resolution as well as the model: "hi" was costing two MCP reads for the wallet
@@ -133,18 +145,6 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (immediate) {
     return {
       status: "replied", message: immediate.message,
-      originalRequest: input.message, refinements: [], understanding: null, question: null,
-      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
-      warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
-      continuation: "", executionAllowed: false,
-    };
-  }
-  if (isConditionalWriteRequest(input.message)) {
-    return {
-      status: "blocked",
-      message:
-        "I can't schedule or execute conditional financial actions. " +
-        "Please submit a specific action for review when you are ready.",
       originalRequest: input.message, refinements: [], understanding: null, question: null,
       facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
       warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },

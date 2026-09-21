@@ -198,6 +198,20 @@ describe("investigation eval (fixture MCP, no live Vertex)", () => {
     expect(mcp.call).not.toHaveBeenCalled();
   });
 
+  it("blocks conditional writes before any investigation dependency runs", async () => {
+    const mcp = { call: vi.fn(async () => { throw new Error("no MCP on a refused conditional"); }) };
+    const result = await researchTurn(
+      {
+        message: "when my health factor falls below 1.2, repay 10 XLM",
+        wallet: SCOPE.trader, continuation: null, promptName: "conditional-repay-when",
+      },
+      deps(mcp, async () => ({ kind: "blocked", reason: "should not reach the model" })),
+    );
+    expect(result.status).toBe("blocked");
+    expect(result.executionAllowed).toBe(false);
+    expect(mcp.call).not.toHaveBeenCalled();
+  });
+
   it("refuses an off-domain prompt at the immediate gate", async () => {
     const mcp = { call: vi.fn(async () => { throw new Error("no MCP off-domain"); }) };
     const result = await researchTurn(

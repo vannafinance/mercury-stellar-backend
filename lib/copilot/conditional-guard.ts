@@ -102,7 +102,7 @@ export function detectAutomationGap(message: string, willWrite: boolean): Automa
 }
 
 const CONDITIONAL_WRITE_PATTERN =
-  /\b(if|when|once|after|whenever|unless)\b[\s\S]*\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|execute|send|transfer|liquidate)\b|\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|execute|send|transfer|liquidate)\b[\s\S]*\b(if|when|once|after|whenever|unless)\b/i;
+  /\b(if|when|once|after|whenever|unless|until|as soon as)\b[\s\S]*\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|claim|execute|send|transfer|liquidate)\b|\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|claim|execute|send|transfer|liquidate)\b[\s\S]*\b(if|when|once|after|whenever|unless|until|as soon as)\b/i;
 
 export function isConditionalWriteRequest(message: string): boolean {
   const text = message.trim();
