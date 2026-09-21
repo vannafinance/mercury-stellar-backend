@@ -49,8 +49,10 @@ describe("investigation scope bindings", () => {
       mcp,
       new AbortController().signal,
     );
+    // Usable, and marked for what it is: the browser's claim, not a proved link.
     expect(scope).toEqual({
       subject: SUBJECT, trader: WALLET, smartAccount: null, network: "testnet",
+      unverified: "claimed",
     });
     expect(mcp.call).toHaveBeenCalledTimes(3);
   });
@@ -157,16 +159,48 @@ describe("investigation scope bindings", () => {
     );
   });
 
-  it("caches a new-wallet scope after the empty binding fallback resolves it", async () => {
+  /**
+   * A claim is re-asked every turn, never cached.
+   *
+   * The empty-bindings fallback takes `trader` from the request body. Caching that for
+   * five minutes would leave an address the browser merely named sitting where a later
+   * turn reads it as established — and a binding created in between, or a claim that was
+   * never true, would both be invisible. The fallback stays; its result is not kept.
+   */
+  it("does not cache the scope it took from an unproved claim", async () => {
     const mcp = {
       call: vi.fn(async (tool: string) => tool === "vanna_list_my_wallet_bindings"
         ? { has_assertion: true, sub: SUBJECT, bindings: [] }
         : { status: "required", smart_account: null }),
     };
     const input = { subject: SUBJECT, wallet: WALLET, network: "testnet" as const };
-    await resolveInvestigationScope(input, mcp, new AbortController().signal);
-    await resolveInvestigationScope(input, mcp, new AbortController().signal);
-    expect(mcp.call).toHaveBeenCalledTimes(3);
+    const first = await resolveInvestigationScope(input, mcp, new AbortController().signal);
+    const second = await resolveInvestigationScope(input, mcp, new AbortController().signal);
+    expect(first).toEqual(second);
+    expect(second.unverified).toBe("claimed");
+    // Both turns asked again: 2 binding reads + 2 account resolves, not 3 calls total.
+    expect(mcp.call.mock.calls.length).toBeGreaterThan(3);
+  });
+
+  /**
+   * The claim decides whose positions are read, so it must never look established.
+   * A subject with no bindings can name any public G-address — that is what the
+   * fallback is for — but the scope it produces has to carry the marker downstream,
+   * where the card and the caches decide what to trust.
+   */
+  it("marks a foreign address the subject never proved", async () => {
+    const mcp = {
+      call: vi.fn(async (tool: string) => tool === "vanna_list_my_wallet_bindings"
+        ? { has_assertion: true, sub: SUBJECT, bindings: [] }
+        : { status: "found_on_chain", smart_account: ACCOUNT }),
+    };
+    const scope = await resolveInvestigationScope(
+      { subject: SUBJECT, wallet: OTHER, network: "testnet" },
+      mcp,
+      new AbortController().signal,
+    );
+    expect(scope.trader).toBe(OTHER);
+    expect(scope.unverified).toBe("claimed");
   });
 
   it("expires the cache after five minutes", async () => {

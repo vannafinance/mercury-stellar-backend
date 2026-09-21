@@ -829,6 +829,10 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   });
   if (scope.unverified === "bindings") {
     warnings.push("I couldn't verify the wallet link this turn, so I did not load your margin account. Ask again in a moment.");
+  } else if (scope.unverified === "claimed") {
+    // The account is loaded — from the address the browser sent, which nothing has yet
+    // proved belongs to this login. Say that, rather than let the card imply a link.
+    warnings.push("This wallet isn't linked to your account yet, so I worked from the address your browser is connected to. Anything prepared here has to be signed by that wallet.");
   } else if (!scope.trader) {
     warnings.push("No verified wallet is connected. Only public market information was available.");
   } else if (!scope.smartAccount && !lifecycleOp) {

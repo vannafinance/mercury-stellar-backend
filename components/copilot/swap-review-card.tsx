@@ -11,6 +11,17 @@ interface SwapReviewCardProps {
   wallet: string | null;
   busy: boolean;
   autoSign: boolean;
+  /**
+   * The floor the write would actually use, from the server's re-quote of the pool.
+   *
+   * Present only when the pool has moved below the plan's sealed minimum AND the fresh
+   * fill is still fair. The card used to disable Confirm on exactly that comparison and
+   * send the reader off to ask for a new plan — while the executor, given the same
+   * reading, lowers the floor to what the pool pays now and settles the trade. Two rules
+   * for one decision, and the stricter one was in front of the person. This is the
+   * executor's answer, so the button agrees with what the write will do.
+   */
+  liveFloor?: { minOut: string; note: string } | null;
   onConfirm: () => void;
   onCancel?: () => void;
 }
@@ -91,7 +102,7 @@ export function SwapIntentPreviewCard({ intent, wallet, refusal }: {
 }
 
 /** A read-only quote. The proposal amount remains the server's sealed amount. */
-export function SwapReviewCard({ workflow, wallet, busy, autoSign, onConfirm, onCancel }: SwapReviewCardProps) {
+export function SwapReviewCard({ workflow, wallet, busy, autoSign, liveFloor, onConfirm, onCancel }: SwapReviewCardProps) {
   const swap = workflow.swap;
   const [quote, setQuote] = useState<LiveQuote | null>(null);
   const [checking, setChecking] = useState(false);
@@ -133,7 +144,10 @@ export function SwapReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
   if (!swap || workflow.status !== "proposed") return null;
   const minimum = Number(swap.minOut);
   const isFresh = !!activeQuote && now - activeQuote.checkedAt < 45_000;
-  const meetsFloor = !!activeQuote && Number.isFinite(minimum) && activeQuote.expectedOut >= minimum;
+  // The pool paying under the sealed minimum only stops the trade if the write would stop
+  // it too. When the server has re-quoted and says it would still settle, that is the answer.
+  const meetsFloor = !!liveFloor
+    || (!!activeQuote && Number.isFinite(minimum) && activeQuote.expectedOut >= minimum);
   const canConfirm = isFresh && meetsFloor && !busy && !checking;
   const exactOutput = swap.targetOut !== null;
 
@@ -164,9 +178,15 @@ export function SwapReviewCard({ workflow, wallet, busy, autoSign, onConfirm, on
       </dl>
       <p className="mt-3 text-[12.5px] leading-5 text-vgray-600">
         {activeQuote ? `The venue currently quotes ${amount(activeQuote.expectedOut)} ${swap.tokenOut} for this fixed input. ` : ""}
-        The transaction requires at least {amount(swap.minOut)} {swap.tokenOut}; otherwise it reverts.
+        The transaction requires at least {amount(liveFloor ? liveFloor.minOut : swap.minOut)} {swap.tokenOut}; otherwise it reverts.
         {exactOutput ? " The input includes the plan's quote buffer and is not editable here." : ""}
       </p>
+      {liveFloor && (
+        <p className="mt-2 text-[12.5px] leading-5 text-vgray-600" data-testid="swap-live-floor">
+          The pool moved since this plan was sized, so the floor sent with it is {amount(liveFloor.minOut)}{" "}
+          {swap.tokenOut} rather than the {amount(swap.minOut)} {swap.tokenOut} quoted then. {liveFloor.note}
+        </p>
+      )}
       {checking && <p role="status" className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-violet-500"><Loader2 size={13} className="animate-spin" /> Checking the pool…</p>}
       {(error || !meetsFloor && activeQuote || !isFresh && activeQuote) && (
         <p role="alert" className="mt-2 text-[12.5px] text-imperial-600">

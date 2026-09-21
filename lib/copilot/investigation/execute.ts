@@ -444,7 +444,20 @@ export async function advanceWorkflow(input: {
   }
   const hash = hashOf(build.tx_hash);
   const unsigned = typeof build.unsigned_xdr === "string" ? build.unsigned_xdr : null;
-  const result = { status: hash ? "signed_and_submitted" : unsigned && !build.error ? "needs_wallet_sign" : "error", build,
+  /**
+   * `signing_status` is the MCP saying what it did, and it outranks `error`.
+   *
+   * A write it could not auto-sign is not a write that failed: `maybe_auto_sign` keeps the
+   * built envelope and annotates it `signing_status: "needs_wallet_sign"` with the reason
+   * auto-sign was unavailable in `error` — an unbound wallet, a dead session, a cap. This
+   * line used to read `unsigned && !build.error`, so any reason at all disqualified a
+   * perfectly signable transaction from the wallet-sign route below and dropped it into
+   * "error", where `preBroadcastRejection` reported the MCP's own signing instructions to
+   * the user as a protocol rejection. A Freighter wallet has no Sign Service session by
+   * construction, so that was every write it ever made.
+   */
+  const needsWalletSign = build.signing_status === "needs_wallet_sign";
+  const result = { status: hash ? "signed_and_submitted" : unsigned && (needsWalletSign || !build.error) ? "needs_wallet_sign" : "error", build,
     submitted: null, unsigned_xdr: unsigned };
 
   /**
@@ -526,6 +539,14 @@ export function preBroadcastRejection(
   step?: { op?: string; args?: Record<string, unknown> },
 ): string | null {
   if (hash || typeof build.error !== "string" || !build.error) return null;
+  /**
+   * A transaction the wallet can still sign was not rejected. `maybe_auto_sign` returns
+   * the built envelope with `signing_status: "needs_wallet_sign"` and puts the reason
+   * auto-sign was unavailable in `error`; reading that as a refusal discarded the
+   * envelope and told the user the protocol had turned them down.
+   */
+  if (build.signing_status === "needs_wallet_sign"
+    && typeof build.unsigned_xdr === "string" && build.unsigned_xdr.length > 20) return null;
   const classified = typeof build.contract_diagnostic === "string" || typeof build.reason === "string" || typeof build.code === "string" || build.simulation_success === false;
   if (!classified) return null;
   const message = typeof build.message === "string" && build.message.trim() ? build.message.trim() : `${build.error}${build.reason ? ` (${String(build.reason).replaceAll("_", " ")})` : ""}`;

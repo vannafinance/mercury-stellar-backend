@@ -47,6 +47,12 @@ export function useWorkflow(wallet: string | null = null) {
    * so a newly prepared plan is never shown carrying the old one's reason.
    */
   const [withdrawn, setWithdrawn] = useState<{ id: string; revision: number; reason: string } | null>(null);
+  /**
+   * The pool's current answer for a waiting swap, from the same re-quote the write runs.
+   * Informational: it tells the reader what approving now would settle at. What actually
+   * gets signed is still decided at write time, by that same function.
+   */
+  const [liveQuote, setLiveQuote] = useState<{ id: string; revision: number; minOut: string; note: string } | null>(null);
   const storageKey = wallet ? `vanna-workflow:${wallet}` : null;
   const active = useRef<AbortController | null>(null);
   const viewRef = useRef<WorkflowView | null>(null);
@@ -137,9 +143,17 @@ export function useWorkflow(wallet: string | null = null) {
           method: "POST", headers, signal: controller.signal, cache: "no-store",
         });
         if (!response.ok || controller.signal.aborted) return;
-        const outcome = await response.json() as { fresh?: boolean; reason?: string };
-        if (outcome.fresh !== false || !outcome.reason || controller.signal.aborted) return;
-        setWithdrawn({ id: view.id, revision: view.revision, reason: outcome.reason });
+        const outcome = await response.json() as {
+          fresh?: boolean; reason?: string; quote?: { minOut: string; note: string };
+        };
+        if (controller.signal.aborted) return;
+        if (outcome.fresh === false && outcome.reason) {
+          setWithdrawn({ id: view.id, revision: view.revision, reason: outcome.reason });
+          return;
+        }
+        setLiveQuote(outcome.quote
+          ? { id: view.id, revision: view.revision, ...outcome.quote }
+          : null);
       } catch { /* the next ledger close asks again; Approve re-checks for real */ }
     })();
     return () => controller.abort();
@@ -251,11 +265,13 @@ export function useWorkflow(wallet: string | null = null) {
       if (active.current === controller) setState(previous => ({ ...previous, loading: false, error: error instanceof Error ? error.message : "Cancellation failed." }));
     }
   }, [state.view, state.loading]);
-  /** Only the plan actually on screen can be the withdrawn one. */
-  const stale = withdrawn && state.view
-    && withdrawn.id === state.view.id && withdrawn.revision === state.view.revision
-    && state.view.status === "proposed"
-    ? withdrawn.reason
+  /** Only the plan actually on screen can be the withdrawn one, or carry its live quote. */
+  const onScreen = (pinned: { id: string; revision: number } | null) =>
+    !!pinned && !!state.view && pinned.id === state.view.id
+    && pinned.revision === state.view.revision && state.view.status === "proposed";
+  const stale = onScreen(withdrawn) ? withdrawn!.reason : null;
+  const quote = onScreen(liveQuote) && !stale
+    ? { minOut: liveQuote!.minOut, note: liveQuote!.note }
     : null;
-  return { ...state, stale, propose, approve, confirm, resume, cancelPlan, reset };
+  return { ...state, stale, quote, propose, approve, confirm, resume, cancelPlan, reset };
 }

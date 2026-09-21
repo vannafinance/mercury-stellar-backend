@@ -33,6 +33,8 @@ export interface InvestigationCardProps {
    * against a price that has since moved must stop offering Approve, and say why.
    */
   planWithdrawn?: string | null;
+  /** The floor the write would use now, when the pool has moved under the sealed one. */
+  planLiveFloor?: { minOut: string; note: string } | null;
   workflowError?: string | null;
   workflowLoading?: boolean;
   onApprove?: () => void;
@@ -102,7 +104,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], onContinue, continueLabel,
-  onPropose, workflow, planWithdrawn, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
+  onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
   wallet = null, autoSign = false,
 }: InvestigationCardProps) {
   const result: ResearchView | null = researchResult ?? (workflow ? {
@@ -387,7 +389,7 @@ export function InvestigationCard({
               )}
               {workflow?.status === "proposed" && !planWithdrawn && workflow.swap && onApprove && (
                 <SwapReviewCard workflow={workflow} wallet={wallet} busy={!!workflowLoading}
-                  autoSign={autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
+                  autoSign={autoSign} liveFloor={planLiveFloor} onConfirm={onApprove} onCancel={onCancelPlan} />
               )}
               {workflow?.status === "proposed" && !planWithdrawn && workflow.steps.some((step) => step.op === "swap") && !workflow.swap && (
                 <section role="alert" className="rounded-xl border border-imperial-500/30 bg-surface p-4 text-[13px] text-imperial-600">

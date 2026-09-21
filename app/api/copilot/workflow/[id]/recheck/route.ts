@@ -5,6 +5,7 @@ import { getMcpClient } from "@/lib/copilot/mcp-client";
 import { copilotConfig } from "@/lib/copilot/config";
 import { ResearchError, resolveInvestigationScope } from "@/lib/copilot/investigation/scope";
 import { validateProposal, workflowJournal } from "@/lib/copilot/investigation/proposal";
+import { staleSwapFloor } from "@/lib/copilot/investigation/execute";
 import { logUnexpected } from "@/lib/copilot/log";
 
 /**
@@ -66,7 +67,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         return { fresh: false as const, reason: "The connected account changed. Prepare a new plan for this account." };
       }
       const reason = await validateProposal(record.proposal);
-      return reason ? { fresh: false as const, reason } : { fresh: true as const };
+      if (reason) return { fresh: false as const, reason };
+      /**
+       * A swap's floor is the number that goes stale fastest, and the pool is what decides
+       * it. `staleSwapFloor` is the same read-only re-quote the write itself runs moments
+       * before signing — asking it here means the waiting card shows the figure the write
+       * would use, instead of the one the pool offered when the plan was built. A price
+       * that moved far enough that the write would refuse is reported as not fresh, so the
+       * user learns it while reading rather than after clicking Approve.
+       */
+      const swapStep = record.proposal.steps.find((step) => step.op === "swap");
+      if (!swapStep || !scope.trader) return { fresh: true as const };
+      const verdict = await staleSwapFloor(
+        swapStep,
+        getMcpClient(),
+        scope.trader,
+        AbortSignal.any([req.signal, AbortSignal.timeout(20_000)]),
+        record.proposal.slippageAccepted === true,
+      );
+      if (verdict.kind === "refuse") return { fresh: false as const, reason: verdict.message };
+      if (verdict.kind === "adjusted") {
+        return { fresh: true as const, quote: { minOut: verdict.minOut, note: verdict.note } };
+      }
+      return { fresh: true as const };
     });
     return loaded.commit(NextResponse.json(outcome, { headers: { "Cache-Control": "no-store" } }));
   } catch (error) {
