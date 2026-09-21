@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { normalizeContractError } from '@/lib/errors/normalize';
 import { WalletService, ContractService, AssetType, ASSET_TYPES } from '@/lib/stellar-utils';
 import { setActiveWalletKind, getPrivyAuthControls, startPrivyConnect, type WalletKind } from '@/lib/wallet-adapter';
+import { clearWalletSession } from '@/lib/copilot/establish-wallet-session';
 import { hasUnexpiredPrivySession } from '@/lib/privy-session';
 import { useUserStore } from '@/store/user';
 import { clearMarginAccount } from '@/store/margin-account-info-store';
@@ -237,6 +238,7 @@ export const useWallet = () => {
           toast.error('Privy login is not available right now');
           return;
         }
+        void clearWalletSession();
         if (result === 'resync') {
           toast.success('Vanna wallet connected');
         } else if (result === 'pending-wallet') {
@@ -294,6 +296,7 @@ export const useWallet = () => {
       });
     }
     setActiveWalletKind(null);
+    void clearWalletSession();
 
     // Reset in-memory state so the UI doesn't keep showing the
     // previous wallet's totals (HF, collateral, debt, etc.) after disconnect.

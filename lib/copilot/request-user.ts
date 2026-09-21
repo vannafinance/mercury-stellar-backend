@@ -4,21 +4,26 @@
  * Kept separate from user-auth.ts / privy-auth.ts so those modules stay
  * framework-free (and therefore unit-testable without mocking NextRequest).
  *
- * ## Two anchors, one mechanism
+ * ## Three anchors, one mechanism
  *
- * Either identity system can prove the caller, and whichever does, its token
- * leaves this app the same way: as `X-Vanna-User-Assertion`, alongside the
- * unchanged M2M bearer.
+ * Privy and WorkOS prove the caller with a token that leaves this app as
+ * `X-Vanna-User-Assertion`, alongside the unchanged M2M bearer. Freighter has
+ * no such token; it proves the G-address with a SEP-53 signed challenge and a
+ * sealed cookie instead, and that cookie is never forwarded to the Sign Service.
  *
  *   Privy  (default)  the session the user already has from getting a wallet.
  *                     Nothing extra to click — the browser sends its access
  *                     token, this verifies it, and `sub` is `did:privy:…`.
  *   WorkOS (optional) the Connect OAuth login in app/api/auth/*. Still supported,
  *                     no longer required.
+ *   Stellar           Freighter (or any extension wallet) after it signs a
+ *                     one-time challenge. `sub` is `stellar:<G>`. Auto-sign stays
+ *                     off; reads and wallet-signed writes work.
  *
  * Privy is tried FIRST when both are present. The Privy session is the one tied
  * to the wallet the transaction actually spends from, so if the two ever
- * disagree, the wallet's own identity is the truthful answer.
+ * disagree, the wallet's own identity is the truthful answer. WorkOS is second.
+ * The Freighter cookie is last, so it cannot override a live Privy login.
  *
  * ## Refresh happens here, once, at the edge of the request
  *
@@ -46,6 +51,11 @@ import {
   type UserSession,
 } from "./user-auth";
 import type { BoundUser } from "./user-context";
+import {
+  WALLET_SESSION_COOKIE,
+  boundUserFromWalletSession,
+  type WalletProofSession,
+} from "./wallet-session";
 
 const SESSION_COOKIE_MAX_AGE = 30 * 24 * 3600;
 
@@ -127,6 +137,12 @@ async function loadPrivyUser(
   }
 }
 
+function loadStellarUser(req: NextRequest): BoundUser | null {
+  return boundUserFromWalletSession(
+    unseal<WalletProofSession>(req.cookies.get(WALLET_SESSION_COOKIE)?.value),
+  );
+}
+
 export async function loadUserFromRequest(req: NextRequest): Promise<LoadedUser> {
   const { user: privyUser, attempt: privy } = await loadPrivyUser(req);
   if (privyUser) {
@@ -135,7 +151,8 @@ export async function loadUserFromRequest(req: NextRequest): Promise<LoadedUser>
 
   const stored = unseal<UserSession>(req.cookies.get(SESSION_COOKIE)?.value);
   if (!stored?.accessToken || !stored.sub) {
-    return { session: null, bound: null, privy, commit: noChange };
+    const stellar = loadStellarUser(req);
+    return { session: null, bound: stellar, privy, commit: noChange };
   }
 
   const secure = req.nextUrl.protocol === "https:";
@@ -182,9 +199,10 @@ export async function loadUserFromRequest(req: NextRequest): Promise<LoadedUser>
     console.warn(
       `[user-auth] refresh failed for ${stored.sub}: ${e instanceof Error ? e.message : String(e)}`,
     );
+    const stellar = loadStellarUser(req);
     return {
       session: null,
-      bound: null,
+      bound: stellar,
       privy,
       commit: (res) => {
         res.cookies.delete(SESSION_COOKIE);

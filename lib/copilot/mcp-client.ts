@@ -537,7 +537,9 @@ class LiveMCPClient implements MCPClient {
     // earn a 401 on every auto-sign.
     const needsUser = callNeedsUserToken(tool);
     const user = needsUser ? currentUser() : null;
-    if (user) {
+    // Freighter proofs are bound users with no Sign Service token. Attaching an
+    // empty assertion would look identical to a dropped Privy header downstream.
+    if (user?.accessToken) {
       sessionHeaders["X-Vanna-User-Assertion"] = user.accessToken;
       // The last hop this app controls, stated positively.
       //

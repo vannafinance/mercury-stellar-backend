@@ -45,7 +45,8 @@ type GlobalWithStore = typeof globalThis & {
 export interface BoundUser {
   /**
    * The subject the Sign Service will key bindings on: `did:privy:…` for a Privy
-   * session (the default path), `user_…` for a WorkOS Connect OAuth login.
+   * session (the default path), `user_…` for a WorkOS Connect OAuth login,
+   * `stellar:<G>` for a Freighter ownership proof that never goes to Sign Service.
    */
   sub: string;
   email?: string;
@@ -53,10 +54,16 @@ export interface BoundUser {
    * The end-user's own token. Forwarded to the MCP as `X-Vanna-User-Assertion`,
    * NEVER as the bearer — the bearer stays the app's M2M credential, because the
    * two answer different questions ("which app is calling" vs "who is asking").
+   *
+   * Empty on `kind: "stellar"`: there is no Sign Service assertion to forward.
+   * Writes then wallet-sign in Freighter, which is the only signing that wallet
+   * can do.
    */
   accessToken: string;
   /** Which identity system minted `accessToken`. Diagnostics only. */
-  kind: "privy" | "workos";
+  kind: "privy" | "workos" | "stellar";
+  /** Proven G-address when `kind` is `stellar`. */
+  wallet?: string;
 }
 
 const globalWithStore = globalThis as GlobalWithStore;

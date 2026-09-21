@@ -10,7 +10,7 @@ import { analyseObservedRates } from "./rate-comparison";
 import { computeBorrowCapacity, computeAccountPosition, computeSizingBasis } from "./capacity";
 import { anchoredGoalFloor, anchoredSlippageAccepted, statedFloorFrom } from "./floor";
 import { SIZING_SOURCES_DISAGREE_WARNING, unpostedCollateralNote } from "./sizing-copy";
-import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, requestedBorrowFrom } from "./candidates";
+import { generateCandidates, idleWalletUsdFrom, idleWalletByAssetUsdFrom, idleWalletByAssetTokensFrom, mergeCandidateSets, rankingBorrowing, requestedBorrowFrom } from "./candidates";
 import { REQUESTED_ACTIONS_ID } from "./candidate-id";
 import { planCandidateId, planFromStatedActions, resolvePlans, shareSameOpLiteralActions, withBoughtAsset, withSharedLiteralAmount } from "./plan";
 import { simulateCandidates } from "./simulate";
@@ -435,15 +435,17 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   });
   const outcome = result.outcome;
   /**
-   * Borrow sizing is enabled by the typed goal/plan, not by re-reading the user's
-   * wording. A required borrow (or a composed borrow leg) needs a live capacity
+   * Borrow ranking is enabled by the typed goal/plan, not by re-reading the user's
+   * wording. A required borrow (or a composed/stated borrow leg) needs a live capacity
    * object even when the user did not provide a floor; capacity.ts applies the
    * configured safety buffer and records that provenance on the object.
    */
-  const hasComposedBorrow = outcome.kind === "research_complete"
-    && (outcome.plans ?? []).some((plan) => plan.legs.some((leg) => leg.op === "borrow"));
-  const needsBorrowCapacity = outcome.kind === "research_complete"
-    && (outcome.goal.borrowing === "required" || hasComposedBorrow);
+  const borrowing = rankingBorrowing(
+    outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified",
+    outcome.kind === "research_complete" ? outcome.goal.actions : undefined,
+    outcome.kind === "research_complete" ? outcome.plans : undefined,
+  );
+  const needsBorrowCapacity = borrowing === "required";
   const capacityMessages = prior && outcome.kind === "research_complete" && outcome.goal.relation === "new"
     ? [input.message]
     : messages;
@@ -566,9 +568,9 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   /**
    * Permission to borrow is not an instruction to borrow. "Unspecified" still offers
    * both the idle path and a levered path — the owner prompt says the copilot may take
-   * new loans. Only an explicit prohibition suppresses borrow shapes.
+   * new loans. Only an explicit prohibition suppresses borrow shapes. A typed borrow
+   * leg already coerced `borrowing` to required above.
    */
-  const borrowing = outcome.kind === "research_complete" ? outcome.goal.borrowing : "unspecified";
   const lifecycleOp = outcome.kind === "research_complete"
     ? anchoredLifecycleWrite(
       outcome.goal.write,

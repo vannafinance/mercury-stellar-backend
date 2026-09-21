@@ -8,12 +8,17 @@
  *
  * Two rules the plan calls for explicitly, both enforced here rather than left to prose:
  *
- *  - **A non-borrowing alternative is always offered when one exists.** Permission to
- *    borrow is not an instruction to borrow, so a strategy that leans on new debt must be
- *    presented next to the one that does not.
- *  - **A negative carry is rejected, not ranked.** If the borrow cost meets or exceeds the
- *    supply rate the position loses money by construction, and no health factor makes that
- *    acceptable. It is reported with its reason rather than silently dropped.
+ *  - **Permission to borrow is not an instruction to borrow.** When borrowing is
+ *    unspecified or allowed, a non-borrowing alternative is offered whenever one exists,
+ *    ranked ahead of any levered shape. When borrowing is required — typed on the goal
+ *    or present as a borrow leg — idle shapes are not generated, so they cannot occupy
+ *    the winner slot.
+ *  - **A negative carry is rejected, not ranked, unless the borrow was required.** If
+ *    the borrow cost meets or exceeds the supply rate the position loses money by
+ *    construction. An unspecified/allowed ask reports that reason. A required borrow is
+ *    still sized: the user already named the instruction, the same way a stated losing
+ *    plan is kept. No headroom is not an idle substitute — it is reported as a deposit
+ *    or transfer they can accept.
  *
  * Supplying is treated as health-factor NEUTRAL. Borrowed proceeds deployed into Blend
  * become a tracking receipt the contract still counts as collateral (measured: recorded
@@ -120,8 +125,17 @@ export interface CandidateSet {
   rejected: Array<{ label: string; reason: string; asset: string; acceptable?: true }>;
 }
 
+function signedWad(value: string): bigint {
+  if (value.startsWith("-")) return -decimalWad(value.slice(1) || "0");
+  return decimalWad(value);
+}
+
 function aprOf(candidate: Candidate): bigint {
-  return decimalWad(candidate.netAprPct ?? candidate.supplyAprPct ?? "0");
+  try {
+    return signedWad(candidate.netAprPct ?? candidate.supplyAprPct ?? "0");
+  } catch {
+    return ZERO;
+  }
 }
 
 /** Expected USD return at this size: amount × APR. Ranking uses this, not APR alone. */
@@ -205,20 +219,36 @@ function variantDecision(winner: Candidate, runnerUp: Candidate | undefined): Ca
   };
 }
 
+/**
+ * Coerce ranking intent from the typed goal, not from re-reading prose.
+ * A borrow leg on `actions` or `plans` is an instruction even when the model tagged
+ * borrowing as allowed or unspecified. Forbidden stays forbidden.
+ */
+export function rankingBorrowing(
+  borrowing: CandidateInput["borrowing"] = "unspecified",
+  actions?: ReadonlyArray<{ op: string }> | null,
+  plans?: ReadonlyArray<{ legs: ReadonlyArray<{ op: string }> }> | null,
+): NonNullable<CandidateInput["borrowing"]> {
+  if (borrowing === "forbidden") return "forbidden";
+  const typedBorrow = Boolean(
+    actions?.some((action) => action.op === "borrow")
+    || plans?.some((plan) => plan.legs.some((leg) => leg.op === "borrow")),
+  );
+  if (borrowing === "required" || typedBorrow) return "required";
+  return borrowing ?? "unspecified";
+}
+
 export function rankFeasible(
   feasible: Candidate[],
   borrowing: CandidateInput["borrowing"] = "unspecified",
 ): Candidate[] {
   const idle = feasible.filter((candidate) => !candidate.borrows).sort(byExpectedReturn);
   const borrow = feasible.filter((candidate) => candidate.borrows).sort(byNetThenSize);
-  // A required borrow is an instruction, not merely permission. Keep the idle
-  // alternative visible, but never let it occupy the winner slot when a borrow
-  // candidate was successfully sized.
-  const ranked = borrowing === "required" ? [...borrow, ...idle] : [...idle, ...borrow];
+  // A required borrow is an instruction. Do not keep idle on the card: ranking it
+  // second still let it win whenever the borrow failed to size.
+  if (borrowing === "required") return borrow;
+  const ranked = [...idle, ...borrow];
   const usdcIdle = idle.filter((candidate) => USDC_SET.has(candidate.asset));
-  // A required borrow has its own winner semantics; attaching an idle-only
-  // variant decision to the second-ranked candidate would mislabel the card.
-  if (borrowing === "required" && borrow.length > 0) return ranked;
   const winner = usdcIdle[0];
   if (!winner) return ranked;
   const runnerUp = usdcIdle.find((candidate) => candidate.asset !== winner.asset);
@@ -256,10 +286,11 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
       if (comparison.marginBorrowApr) borrow = decimalWad(comparison.marginBorrowApr);
     } catch { borrow = null; }
 
-    // 1. No new debt: commit what is already idle. Offered whenever anything is idle.
+    // 1. No new debt: commit what is already idle. Offered when something is idle and
+    //    the user did not require a borrow — permission is not an instruction.
     const assetIdle = input.idleWalletByAssetUsd?.[comparison.asset];
     const heldAmount = input.idleWalletByAssetTokens?.[comparison.asset] ?? null;
-    if (assetIdle !== undefined) {
+    if (input.borrowing !== "required" && assetIdle !== undefined) {
       let idle = ZERO;
       try {
         idle = decimalWad(assetIdle);
@@ -314,9 +345,10 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     // service supplies the configured safety floor; without either source, do not size.
     if (input.borrowingAllowed === false || input.floor === null) continue;
     if (supply === null || borrow === null) continue;
-    // 2. Borrow against headroom and supply the proceeds. Only worth doing on a real
-    //    positive carry; the comparison already computed that verdict from the same rates.
-    if (comparison.verdict !== "positive_before_costs" || supply <= borrow) {
+    // 2. Borrow against headroom and supply the proceeds. Unspecified/allowed asks
+    //    need a real positive carry. A required borrow is still sized: the user named
+    //    the instruction, same as a stated losing plan.
+    if (input.borrowing !== "required" && (comparison.verdict !== "positive_before_costs" || supply <= borrow)) {
       rejected.push({
         label: `Borrow ${comparison.asset} to supply to Blend`,
         asset: comparison.asset,
@@ -347,6 +379,7 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
     );
     if (!sized.ok) {
       const headroom = requested ? safeMaxBorrow(input) : null;
+      const noHeadroom = sized.reason === "no_capacity_at_floor";
       rejected.push({
         label: `Borrow ${comparison.asset} to supply to Blend`,
         asset: comparison.asset,
@@ -354,9 +387,12 @@ export function generateCandidates(input: CandidateInput): CandidateSet {
           ? headroom && headroom !== "0"
             ? `Borrowing ${requested} USD would take the health factor below your ${input.floor} floor. At most ${headroom} USD fits.`
             : `Borrowing ${requested} USD would take the health factor below your ${input.floor} floor, and there is no headroom at that floor.`
-          : sized.reason === "no_capacity_at_floor"
-            ? `No borrowing headroom left at a ${input.floor} health-factor floor.`
+          : noHeadroom
+            ? input.borrowing === "required"
+              ? `No borrowing headroom left at a ${input.floor} health-factor floor. Deposit or transfer collateral into the margin account, then this borrow can be sized.`
+              : `No borrowing headroom left at a ${input.floor} health-factor floor.`
             : `Could not size a borrow at a ${input.floor} floor (${sized.reason.replaceAll("_", " ")}).`,
+        ...(input.borrowing === "required" && noHeadroom ? { acceptable: true as const } : {}),
       });
       continue;
     }

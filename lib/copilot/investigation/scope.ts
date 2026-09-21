@@ -7,6 +7,7 @@ import { interruptible } from "./runtime";
 import type { InvestigationScope } from "./types";
 import { RETRY, withRetry } from "../retry-policy";
 import { setSpanAttr } from "../telemetry";
+import { stellarWalletFromSubject } from "../wallet-session";
 
 export class ResearchError extends Error {
   constructor(readonly code: string, message: string, readonly status = 409) { super(message); }
@@ -175,6 +176,24 @@ export async function resolveInvestigationScope(
    */
   if (input.subject === "guest") {
     return publicScope(input, input.wallet ? "session" : undefined);
+  }
+  const provenWallet = stellarWalletFromSubject(input.subject);
+  if (provenWallet) {
+    if (input.wallet && input.wallet !== provenWallet) {
+      throw new ResearchError(
+        "wallet_not_bound",
+        "This wallet isn't the one you signed in with. Reconnect it in the navbar before investigating its positions.",
+      );
+    }
+    const trader = input.wallet ?? provenWallet;
+    const cachedProven = scopeCache.get(cacheKey(input));
+    if (cachedProven && cachedProven.expiresAt > Date.now()) {
+      setSpanAttr("vanna.scope.cache", "hit");
+      console.info("[copilot] investigation phase", { phase: "scope_cache", hit: true, ms: 0 });
+      return cachedProven.scope;
+    }
+    const smartAccount = await resolveSmartAccount(mcp, signal, trader);
+    return remember(input, { subject: input.subject, trader, smartAccount, network: input.network });
   }
   const cached = scopeCache.get(cacheKey(input));
   if (cached && cached.expiresAt > Date.now()) {
