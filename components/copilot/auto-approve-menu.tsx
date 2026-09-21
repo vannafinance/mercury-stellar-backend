@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { HEADER_CONTROL } from "./conversation-menu";
 
 export interface AutoApproveMenuProps {
@@ -15,6 +16,14 @@ export interface AutoApproveMenuProps {
   onCapsMode: (mode: "defaults" | "custom") => void;
   onCustomTx: (value: string) => void;
   onCustomDay: (value: string) => void;
+  /**
+   * Where this control is mounted, which is the only thing that differs between the two
+   * call sites: `pill` is the header chip, `rail` is a full-width row in the left panel
+   * whose panel flies out to the right instead of dropping down. The toggle, the caps
+   * mode and the two limit fields are the same control in both — duplicating this
+   * component to move it would have duplicated all of that with it.
+   */
+  variant?: "pill" | "rail" | "mini";
 }
 
 const PILL =
@@ -82,16 +91,21 @@ export function AutoApproveMenu({
   onCapsMode,
   onCustomTx,
   onCustomDay,
+  variant = "pill",
 }: AutoApproveMenuProps) {
   const [open, setOpen] = useState(false);
+  const [flyoutPos, setFlyoutPos] = useState({ top: 0, left: 0 });
   const container = useRef<HTMLDivElement | null>(null);
   const trigger = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const close = () => setOpen(false);
     const onPointerDown = (event: PointerEvent) => {
-      if (!container.current?.contains(event.target as Node)) close();
+      const target = event.target as Node;
+      if (container.current?.contains(target) || panelRef.current?.contains(target)) return;
+      close();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -106,26 +120,35 @@ export function AutoApproveMenu({
     };
   }, [open]);
 
-  return (
-    <div ref={container} className="relative">
-      <button
-        ref={trigger}
-        type="button"
-        onClick={() => setOpen((wasOpen) => !wasOpen)}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        className={HEADER_CONTROL}
-      >
-        Auto-approve
-        <span className="tabular-nums text-vgray-400">{on ? "on" : "off"}</span>
-      </button>
+  const rail = variant === "rail";
+  const mini = variant === "mini";
 
-      {open && (
-        <div
-          role="dialog"
-          aria-label="Auto-approve"
-          className="absolute right-0 z-30 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
-        >
+  const toggle = () => {
+    if (!open) {
+      const rect = trigger.current?.getBoundingClientRect();
+      if (rect) {
+        const width = 248;
+        setFlyoutPos({
+          top: Math.max(8, Math.min(rect.top, window.innerHeight - 220)),
+          left: Math.min(rect.right + 10, window.innerWidth - width - 8),
+        });
+      }
+    }
+    setOpen((wasOpen) => !wasOpen);
+  };
+
+  const panel = (
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label="Auto-approve"
+      className={
+        rail || mini
+          ? "cp-root fixed z-[100] w-[248px] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
+          : "absolute right-0 z-30 mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-r2 border border-vgray-100 bg-surface p-3 shadow-lg"
+      }
+      style={rail || mini ? flyoutPos : undefined}
+    >
           <div className="flex items-center justify-between gap-3 px-1 py-1">
             <span className="text-[13px] font-semibold text-vgray-900">Auto-approve</span>
             <button
@@ -133,10 +156,8 @@ export function AutoApproveMenu({
               role="switch"
               aria-checked={on}
               disabled={busy}
-              onClick={() => {
-                onToggle();
-                setOpen(false);
-              }}
+              onClick={() => onToggle()}
+
               className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed ${
                 on ? "bg-violet-500" : "bg-vgray-100"
               }`}
@@ -199,8 +220,55 @@ export function AutoApproveMenu({
               />
             </div>
           )}
-        </div>
+    </div>
+  );
+
+  return (
+    <div ref={container} className="relative">
+      {rail ? (
+        <button
+          ref={trigger}
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          className="flex w-full cursor-pointer items-center justify-between gap-2 py-1.5"
+        >
+          <span className="text-[14px] leading-[21px] font-semibold text-vgray-900">Auto-approve</span>
+          <span className="flex items-center gap-1.5 text-[12px] leading-[18px] text-vgray-400">
+            {on ? "On" : "Off"}
+            <span aria-hidden className="inline-flex flex-none">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
+            </span>
+          </span>
+        </button>
+      ) : mini ? (
+        <button
+          ref={trigger}
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          aria-label={`Auto-approve ${on ? "on" : "off"}`}
+          title={`Auto-approve ${on ? "on" : "off"}`}
+          className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-r2 text-[12px] leading-[18px] text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+        >
+          {on ? "On" : "Off"}
+        </button>
+      ) : (
+        <button
+          ref={trigger}
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          className={HEADER_CONTROL}
+        >
+          Auto-approve
+          <span className="tabular-nums text-vgray-400">{on ? "on" : "off"}</span>
+        </button>
       )}
+      {open && (rail || mini) && typeof document !== "undefined" ? createPortal(panel, document.body) : open ? panel : null}
     </div>
   );
 }

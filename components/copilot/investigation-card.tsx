@@ -11,9 +11,7 @@ import { SwapIntentPreviewCard, SwapReviewCard } from "@/components/copilot/swap
 import { PlanReviewCard } from "@/components/copilot/plan-review-card";
 import { inFlight } from "@/hooks/use-workflow";
 import { formatElapsedMs, formatRunClock } from "@/lib/copilot/investigation/duration";
-import { investigationAnswerDocument } from "@/lib/copilot/investigation/answer-document";
-import { AnswerView } from "@/components/copilot/answer-view";
-import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { ChatTurns } from "@/components/copilot/chat-message";
 
 export interface InvestigationCardProps {
   prompt: string;
@@ -22,6 +20,8 @@ export interface InvestigationCardProps {
   loading: boolean;
   error: string | null;
   turns?: ThreadTurn[];
+  /** Workspace already paints the transcript; the card then only holds research/plan. */
+  omitTranscript?: boolean;
   /** Act on what was understood — the plan card takes over from here. */
   onContinue?: () => void;
   continueLabel?: string;
@@ -62,23 +62,6 @@ function toStepperStep(step: WorkflowView["steps"][number]): StepperStep {
   };
 }
 
-function receiptStepperSteps(receipt: ExecutionReceiptSnapshot): StepperStep[] {
-  return receipt.steps.map((step, index) => ({
-    id: `${receipt.workflowId}-${index}`,
-    label: "",
-    op: step.operation,
-    asset: step.asset,
-    amount: step.amount,
-    status: step.status === "settled" ? "settled"
-      : step.status === "failed" || step.status === "uncertain" ? "failed"
-        : step.status === "awaiting_signature" ? "signing"
-          : step.status === "submitted" || step.status === "submitting" ? "submitting"
-            : step.status === "invoking" ? "claiming" : "pending",
-    ...(step.txHash ? { txHash: step.txHash } : {}),
-    ...(step.settledLedger != null ? { ledger: step.settledLedger } : {}),
-  }));
-}
-
 type Borrowing = NonNullable<ResearchView["understanding"]>["borrowing"];
 const BORROWING: Record<Borrowing, string | null> = {
   unspecified: null,
@@ -103,7 +86,7 @@ const BTN_PRIMARY = "rounded-r2 bg-gradient px-3.5 py-2 text-[13px] font-semibol
 const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 export function InvestigationCard({
-  prompt, result: researchResult, progress, loading, error, turns = [], onContinue, continueLabel,
+  prompt, result: researchResult, progress, loading, error, turns = [], omitTranscript = false, onContinue, continueLabel,
   onPropose, workflow, planWithdrawn, planLiveFloor, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
   wallet = null, autoSign = false,
 }: InvestigationCardProps) {
@@ -158,15 +141,18 @@ export function InvestigationCard({
       ? `Checked in ${serverClock}, though it took ${deviceClock} to reach you`
       : `Checked in ${serverClock}`
     : !loading && deviceClock ? `Checked in ${deviceClock}` : null;
-  const answerDocument = result ? investigationAnswerDocument(result) : null;
 
-  // The thread ends with the assistant turn the reply block explains; the block is that turn.
   const lastTurn = turns[turns.length - 1];
-  const priorTurns = result && lastTurn?.role === "assistant" && lastTurn.text === result.message ? turns.slice(0, -1) : turns;
+  /**
+   * Hide the previous research while a new user turn is in flight (last row is
+   * the question). Empty `turns` still shows `result` so a live research card —
+   * and the options tests — keep the sized answer without a matching transcript row.
+   */
+  const resultIsLatest = !!result && lastTurn?.role !== "user";
   const currentStep = workflow ? Math.max(1, workflow.steps.findIndex((step) => step.status !== "settled") + 1) : 0;
 
   return (
-    <div aria-label="Copilot investigation" className="cp-console__section min-w-0">
+    <div aria-label="Copilot investigation" className="min-w-0">
       {!prompt && !result && !error ? (
         <div className="py-2">
           <Search size={20} className="mb-3 text-violet-500" aria-hidden="true" />
@@ -177,44 +163,11 @@ export function InvestigationCard({
         </div>
       ) : (
         <div className="space-y-5">
-          {priorTurns.length > 0 && (
-            <ol className="space-y-4" aria-label="Conversation">
-              {priorTurns.map((turn, index) => (
-                <li key={`${turn.role}-${index}`} className={turn.role === "user" ? "flex justify-end" : "min-w-0"}>
-                  {turn.role === "user" ? (
-                    <p className="max-w-[85%] rounded-r2 bg-violet-50 px-3.5 py-2 text-[14px] leading-6 text-vgray-900">{turn.text}</p>
-                  ) : (
-                    /*
-                     * An earlier reply is context, not the answer. Rendered in full it stacked
-                     * wall on wall — two long paragraphs reading as one — so it is clamped to
-                     * two lines and opens on click. Only the current reply stays expanded.
-                     */
-                    <div className="min-w-0 max-w-[68ch]">
-                      <details className="group">
-                        <summary className="cursor-pointer list-none text-[13.5px] leading-6 text-vgray-500 transition-colors hover:text-vgray-700 [&::-webkit-details-marker]:hidden">
-                          <span className="group-open:hidden" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                            {turn.text}
-                          </span>
-                          <span className="hidden group-open:inline">{turn.text}</span>
-                        </summary>
-                        {turn.question && index < priorTurns.length - 1 && (
-                          <p className="mt-1 text-[13px] leading-5 text-violet-500">{turn.question}</p>
-                        )}
-                      </details>
-                      {turn.executionReceipt && (
-                        <div className="mt-2">
-                          <ExecutionStepper
-                            steps={receiptStepperSteps(turn.executionReceipt)}
-                            currentStepIndex={Math.max(0, turn.executionReceipt.steps.findIndex((step) => step.status !== "settled"))}
-                            network={turn.executionReceipt.network}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ol>
+          {!omitTranscript && (
+            <ChatTurns
+              turns={turns}
+              hideAssistantText={loading && !workflow && result ? result.message : null}
+            />
           )}
 
           {loading && (
@@ -238,13 +191,9 @@ export function InvestigationCard({
             * thread already carries it, so during a run the answer area stays empty and the
             * spinner is the only thing under the new question.
             */}
-          {result && !(loading && !workflow) && (
-            <article aria-label="Copilot reply" className={`space-y-5${priorTurns.length ? " border-t border-vgray-100 pt-5" : ""}`}>
-              {/* The reply, then what was understood — the one line the user needs, not a list of reads. */}
-              <div className="max-w-[68ch]">
-                {answerDocument && <AnswerView answer={answerDocument} />}
-                {clock && <p className="mt-1 text-[12px] tabular-nums text-vgray-400">{clock}</p>}
-              </div>
+          {result && resultIsLatest && !(loading && !workflow) && (
+            <article aria-label="Copilot reply" className="space-y-5">
+              {clock && <p className="text-[12px] tabular-nums text-vgray-400">{clock}</p>}
 
               {result.understanding && (
                 <section className="space-y-2">

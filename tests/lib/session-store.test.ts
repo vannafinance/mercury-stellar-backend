@@ -110,6 +110,23 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     expect(active?.continuation).toBe("r2.token");
   });
 
+  it("records direct Copilot replies in the same recent conversation without changing their text", async () => {
+    const first = await store.appendDirectSessionTurn({
+      subject: "alice", user: "Price of XLM", assistant: "The price of XLM is $0.2117 according to the oracle.",
+    });
+    const second = await store.appendDirectSessionTurn({
+      subject: "alice", conversationId: first.id, user: "And my health?", assistant: "Your health factor is 70.41.",
+    });
+    expect(second.id).toBe(first.id);
+    expect((await store.listConversations("alice")).conversations[0]?.title).toBe("Price of XLM");
+    expect((await store.readConversation("alice", first.id))?.turns.map((turn) => turn.text)).toEqual([
+      "Price of XLM",
+      "The price of XLM is $0.2117 according to the oracle.",
+      "And my health?",
+      "Your health factor is 70.41.",
+    ]);
+  });
+
   it("a turn with no conversation id starts a second conversation, newest first; opening switches the active one", async () => {
     const a = await store.appendSessionTurn({ subject: "alice", user: "lend 1 XLM", result: view("Lend 1 XLM.") });
     const b = await store.appendSessionTurn({ subject: "alice", user: "repay 25% of my debt", result: view("Repay …") });
@@ -132,6 +149,15 @@ describe.each(BACKENDS)("copilot conversation store (%s backend)", (backend) => 
     expect(await store.listConversations("alice")).toEqual({ conversations: [], activeId: null });
     // The document is a tombstone: reading it back yields nothing, not the old transcript.
     expect(await store.readConversation("alice", a.id)).toBeNull();
+  });
+
+  it("renames a conversation without touching its transcript", async () => {
+    const a = await store.appendSessionTurn({ subject: "alice", user: "first prompt", result: view("one") });
+    expect(await store.renameConversation("alice", a.id, "Idle XLM plan")).toBe(true);
+    const list = await store.listConversations("alice");
+    expect(list.conversations[0]?.title).toBe("Idle XLM plan");
+    expect((await store.readConversation("alice", a.id))?.turns[0]?.text).toBe("first prompt");
+    expect(await store.renameConversation("bob", a.id, "stolen")).toBe(false);
   });
 
   it("one subject cannot read, open or delete another's conversation, even with its id", async () => {

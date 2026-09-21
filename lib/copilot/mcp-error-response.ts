@@ -1,6 +1,12 @@
 import { MCPAuthError, MCPCallError, MCPError } from "./mcp-client";
 import type { ChatResponse } from "./types";
 import { VertexError } from "./vertex";
+import { humanizeLegError } from "./multi-leg-agent";
+
+function copilotErrorMessage(raw: string): string {
+  const human = humanizeLegError(raw);
+  return human && human !== raw ? human : raw;
+}
 
 export function mcpErrorResponse(e: unknown, request_id: string, template_id?: string): ChatResponse {
   const code = e instanceof MCPError ? e.code : null;
@@ -38,7 +44,7 @@ export function mcpErrorResponse(e: unknown, request_id: string, template_id?: s
             : null;
     return {
       kind: "error",
-      message: `${codeMessage ?? `MCP error: ${e.message}`}${code ? ` Code: ${code}.` : ""}`,
+      message: `${codeMessage ?? copilotErrorMessage(`MCP error: ${e.message}`)}${code ? ` Code: ${code}.` : ""}`,
       data: diagnostic,
       intent: { template_id: template_id ?? null },
       request_id,
@@ -47,14 +53,14 @@ export function mcpErrorResponse(e: unknown, request_id: string, template_id?: s
   if (e instanceof VertexError) {
     return {
       kind: "error",
-      message: `Vertex error: ${e.message}`,
+      message: copilotErrorMessage(`Vertex error: ${e.message}`),
       intent: { template_id: template_id ?? null },
       request_id,
     };
   }
   return {
     kind: "error",
-    message: e instanceof Error ? e.message : "Copilot failed",
+    message: copilotErrorMessage(e instanceof Error ? e.message : "Copilot failed"),
     intent: { template_id: template_id ?? null },
     request_id,
   };

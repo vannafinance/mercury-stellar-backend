@@ -5,6 +5,7 @@
 
 import createNewStore from "@/zustand/index";
 import type { GuideAnswer } from "@/lib/copilot/guide-schema";
+import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 
 export type AssistantTurn = {
   role: "user" | "assistant";
@@ -17,6 +18,8 @@ export type AssistantTurn = {
   guide?: GuideAnswer | null;
   /** Whether a page was readable when this turn was sent, for the "general answer" note. */
   hasPageContext?: boolean;
+  /** Structured workflow facts; kept separate from the flattened assistant text. */
+  executionReceipt?: ExecutionReceiptSnapshot | null;
 };
 
 export interface AssistantSession {
@@ -39,6 +42,29 @@ export function appendAssistantTurn(turn: AssistantTurn) {
   const prev = useAssistantSessionStore.getState().turns;
   const next = [...prev, turn].slice(-40);
   useAssistantSessionStore.getState().set({ turns: next });
+}
+
+/**
+ * Attach the latest journal snapshot to the current assistant turn.
+ *
+ * Replaying a ledger poll is safe: the same workflow replaces the snapshot on the same
+ * turn instead of appending another prose turn.  A different workflow is not allowed to
+ * overwrite the latest receipt, which prevents a late poll from corrupting newer history.
+ */
+export function updateAssistantExecutionReceipt(receipt: ExecutionReceiptSnapshot): boolean {
+  const previous = useAssistantSessionStore.getState().turns;
+  const reversed = [...previous].map((turn, i) => ({ turn, i })).reverse();
+  const matching = reversed.find(({ turn }) =>
+    turn.role === "assistant" && turn.executionReceipt?.workflowId === receipt.workflowId);
+  const index = matching?.i ?? reversed.find(({ turn }) =>
+    turn.role === "assistant" && !turn.executionReceipt)?.i;
+  if (index == null) return false;
+  const current = previous[index].executionReceipt;
+  if (current && JSON.stringify(current) === JSON.stringify(receipt)) return true;
+  const turns = [...previous];
+  turns[index] = { ...turns[index], executionReceipt: receipt };
+  useAssistantSessionStore.getState().set({ turns });
+  return true;
 }
 
 export function setAssistantOpen(open: boolean) {
