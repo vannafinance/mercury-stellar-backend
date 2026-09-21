@@ -1449,6 +1449,18 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     const half = any(text, "half", "50%", "50 %");
     /**
+     * "Remove my liquidity" — no number, no "half" — is an explicit whole-position
+     * removal, the same reading `withdraw_from_blend` already gives "Remove my XLM
+     * position from Blend": stating the position IS the size, not a request to be
+     * asked. Live, this fell through to "Amount missing for 'remove liquidity'.
+     * Include a size like '10 BLUSDC' or '20 XLM'" on a message that named no size
+     * because it meant all of it — the same clause that TRIGGERED this branch
+     * ("remove my liquidity", one of the phrases above) was never read as an answer.
+     *
+     * Only when nothing else stated a size: an explicit amount or "half" still wins.
+     */
+    const all = amount == null && !half;
+    /**
      * Pair default XLM / USDC family from message. A named venue outranks a bare "USDC"
      * — "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
      * naming the venue explicitly already answers which USDC it means, same as `farm
@@ -1467,12 +1479,12 @@ export function routeMessage(message: string): RoutedIntent {
       op: "remove_liquidity",
       template_id: "remove_liquidity",
       asset: token_b,
-      amount: half ? null : amount,
+      amount: half || all ? null : amount,
       token_a: "XLM",
       token_b,
-      fraction: half ? 0.5 : null,
+      fraction: half ? 0.5 : all ? 1 : null,
       requires_account: true,
-      requires_amount: !half,
+      requires_amount: !half && !all,
     };
   }
 

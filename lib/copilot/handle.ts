@@ -2657,7 +2657,15 @@ async function runWrite(
           request_id: ctx.request_id,
         };
       }
-      if (action.fraction != null && action.fraction > 0 && action.fraction < 1 && !(action.amount != null && action.amount > 0)) {
+      /**
+       * `<= 1`, not `< 1`: a whole-position removal is `fraction === 1` (the router's
+       * "remove my liquidity", no number, no "half" case), and it needs the SAME
+       * live-read-and-multiply here that a fractional one gets — `live.shares * 1` is
+       * `live.shares`. Excluding it left the router's `fraction: 1` unconsumed, so
+       * even a correctly-recognised whole-position removal fell through to the same
+       * "How much should I remove?" clarification below as an unspecified one.
+       */
+      if (action.fraction != null && action.fraction > 0 && action.fraction <= 1 && !(action.amount != null && action.amount > 0)) {
         action = { ...action, amount: live.shares * action.fraction };
       }
       const want = action.amount;
