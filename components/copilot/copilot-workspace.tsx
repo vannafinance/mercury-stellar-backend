@@ -5307,6 +5307,7 @@ export function CopilotWorkspace() {
                 : undefined}
               workflow={workflow.view}
               planWithdrawn={workflow.stale}
+              planLiveFloor={workflow.quote}
               workflowError={workflow.error}
               workflowLoading={workflow.loading || signingJournal}
               onApprove={() => { void workflow.approve(); }}
