@@ -95,8 +95,21 @@ export function detectAutomationGap(message: string, willWrite: boolean): Automa
 
   // A condition around a read is harmless — reading a value changes nothing — so this
   // only guards writes.
-  if (willWrite && CONDITIONAL.test(m)) {
+  if ((willWrite || isConditionalWriteRequest(m)) && CONDITIONAL.test(m)) {
     return { kind: "conditional", message: CONDITIONAL_MESSAGE };
   }
   return null;
+}
+
+const CONDITIONAL_WRITE_PATTERN =
+  /\b(if|when|once|after|whenever|unless)\b[\s\S]*\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|execute|send|transfer|liquidate)\b|\b(repay|borrow|withdraw|deposit|supply|redeem|swap|trade|execute|send|transfer|liquidate)\b[\s\S]*\b(if|when|once|after|whenever|unless)\b/i;
+
+export function isConditionalWriteRequest(message: string): boolean {
+  const text = message.trim();
+  if (!text) return false;
+  if (!CONDITIONAL_WRITE_PATTERN.test(text)) return false;
+  // Informational / rate checks should not be blocked as conditional writes
+  if (/\b(rate|apy|apr|fee|price|utilization)\b/i.test(text)) return false;
+  if (/^(?:can|could|how|what|why|is it possible|may i)\b/i.test(text)) return false;
+  return true;
 }

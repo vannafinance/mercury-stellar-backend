@@ -19,7 +19,7 @@ import { compactResearchEvidence, reusableObservations } from "./evidence";
 import type { ResearchConversation } from "./continuation";
 import { collectStrategyReads, looksLikeStatedWrite, needsMarketSeed, readsForPlans, type StrategyRead } from "./strategy-reads";
 import { matchFastPath, fastPathView, healthObservations, priceObservation, parseWithdrawCheck, withdrawObservation, readHealthFastPath } from "./fast-path";
-import { detectAutomationGap } from "../conditional-guard";
+import { detectAutomationGap, isConditionalWriteRequest } from "../conditional-guard";
 import { parseStandingOrder, createStandingOrder, evaluateStandingOrders, STANDING_ORDER_OFFER } from "../standing-orders";
 import { anchoredLifecycleWrite } from "../workflow/lifecycle";
 import { wouldExceedTokenCap, tokenCapMessage } from "../token-budget";
@@ -133,6 +133,18 @@ async function executeResearchTurn(input: ResearchInput, dependencies: {
   if (immediate) {
     return {
       status: "replied", message: immediate.message,
+      originalRequest: input.message, refinements: [], understanding: null, question: null,
+      facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
+      warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
+      continuation: "", executionAllowed: false,
+    };
+  }
+  if (isConditionalWriteRequest(input.message)) {
+    return {
+      status: "blocked",
+      message:
+        "I can't schedule or execute conditional financial actions. " +
+        "Please submit a specific action for review when you are ready.",
       originalRequest: input.message, refinements: [], understanding: null, question: null,
       facts: [], capacity: null, candidates: null, rateComparisons: [], checks: [],
       warnings: [], scope: { wallet: input.wallet, smartAccount: null, network: dependencies.network },
