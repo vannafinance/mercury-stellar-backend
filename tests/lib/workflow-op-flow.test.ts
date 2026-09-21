@@ -142,6 +142,26 @@ describe("what the table decides downstream", () => {
     capacity: { grossCollateralUsd: "144", debtUsd: "54", floor: null }, comparisons: compareObservedRates(observations, NOW),
   });
 
+  it("re-sizes an all-position Blend exit after investigation evidence is compacted", async () => {
+    const { compactResearchEvidence } = await import("@/lib/copilot/investigation/evidence");
+    const observations: Observation[] = [
+      obs("w", "wallet_balances", { assets: [{ symbol: "XLM", balance: "1", decimals: 7, status: "ok" }], fee_reserve_xlm: "0.5" }),
+      obs("p", "asset_price", { price_usd: "0.18" }, { asset: "XLM" }),
+      obs("bp", "blend_position", { positions: [{ symbol: "XLM", underlying_value: "872.17" }] }),
+    ];
+    const sealed = compactResearchEvidence(observations, null, NOW);
+    const result = resolvePlans([
+      plan([{ op: "blend_withdraw", asset: "XLM", sizing: { kind: "all_position" } }]),
+    ], ctx(sealed.observations, ["remove my XLM position from Blend"]));
+
+    expect(result.rejected).toEqual([]);
+    expect(result.candidates[0]?.steps?.[0]).toMatchObject({
+      op: "blend_withdraw",
+      asset: "XLM",
+      amount: "872.17",
+    });
+  });
+
   it("a stated lend is funded from the wallet: the shape matrix found 'lend 100 XLM' offered from an empty wallet", () => {
     const empty = resolvePlans([plan([{ op: "lend", asset: "XLM", sizing: { kind: "literal", amount: "100", sourceQuote: "lend 100 XLM" } }])], ctx(rows("0", "0", "0"), ["lend 100 XLM"]));
     expect(empty.candidates).toEqual([]);

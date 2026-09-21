@@ -180,6 +180,18 @@ function compactData(capability: string, data: Record<string, unknown>): Record<
       ...(data.redeemable_human !== undefined ? { redeemable_human: data.redeemable_human } : {}),
     };
   }
+  if (capability === "blend_position") {
+    const positions = Array.isArray(data.positions) ? data.positions.flatMap((value) => {
+      if (!isRecord(value) || typeof value.symbol !== "string") return [];
+      return [{
+        symbol: value.symbol,
+        ...(value.balance !== undefined ? { balance: value.balance } : {}),
+        ...(value.underlying_value !== undefined ? { underlying_value: value.underlying_value } : {}),
+        ...(value.amount_human !== undefined ? { amount_human: value.amount_human } : {}),
+      }];
+    }) : [];
+    return { positions };
+  }
   if (capability === "wallet_balances") {
     const assets = Array.isArray(data.assets) ? data.assets.flatMap((row) => {
       if (!isRecord(row) || typeof row.symbol !== "string") return [];

@@ -82,6 +82,7 @@ import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
 import { VENUE_BY_OP } from "@/lib/copilot/plan-approval";
 import { PLAN_TTL_MS } from "@/lib/copilot/plan-ttl";
+import { claimDispatch, releaseDispatch } from "@/lib/copilot/dispatch-once";
 import { lpSides } from "@/lib/copilot/lp-pair";
 import { AnswerView } from "./answer-view";
 import { isUsdcVariantResolution, labelHasAmount, legKey, legKeyLoose } from "./leg-key";
@@ -1415,10 +1416,6 @@ export function CopilotWorkspace() {
 
   const workflow = useWorkflow(address);
   const persistedWorkflowReceiptRef = useRef<string | null>(null);
-  const proposedRef = useRef<string | null>(null);
-  const lifecycleWriteRef = useRef<string | null>(null);
-  const signedWorkflowStepRef = useRef<string | null>(null);
-  const approvedJournalRef = useRef<string | null>(null);
   const walletKind = useUserStore((s) => s.walletKind);
   const smartAccount = useMarginAccountInfoStore((s) => s.marginAccountAddress);
   const hasMarginAccount = useMarginAccountInfoStore((s) => s.hasMarginAccount);
@@ -1440,9 +1437,6 @@ export function CopilotWorkspace() {
    * journal keeps every proposal server-side, the screen shows one conversation at a time.
    */
   const leavePlanCard = useCallback(() => {
-    proposedRef.current = null;
-    signedWorkflowStepRef.current = null;
-    approvedJournalRef.current = null;
     setSigningJournal(false);
     workflow.reset();
     setIntentText("");
@@ -2428,7 +2422,7 @@ export function CopilotWorkspace() {
     async (
       body: Record<string, unknown>,
       promptLabel: string,
-      opts?: { chainHop?: boolean; background?: boolean },
+      opts?: { chainHop?: boolean; background?: boolean; signal?: AbortSignal },
     ) => {
       const silent = !!opts?.background;
       /** Header auto-approve on/off: toast only — do not steal the turn card or abort a run. */
@@ -2463,7 +2457,7 @@ export function CopilotWorkspace() {
             session_signing: autoApprove,
             ...body,
           }),
-          signal: ac.signal,
+          signal: opts?.signal ? AbortSignal.any([ac.signal, opts.signal]) : ac.signal,
         });
         if (cancelledRef.current) {
           return null;
@@ -2653,11 +2647,7 @@ export function CopilotWorkspace() {
   const runInvestigation = useCallback(async (text: string, signal?: AbortSignal) => {
     const continuing = shouldContinueInvestigation(text, investigation.result);
     if (shouldReplacePlan(text, investigation.result)) {
-      signedWorkflowStepRef.current = null;
-      approvedJournalRef.current = null;
       setSigningJournal(false);
-      proposedRef.current = null;
-      lifecycleWriteRef.current = null;
       resetWorkflow();
       resetStrategyAccumulator();
       setResponse(null);
@@ -2669,7 +2659,25 @@ export function CopilotWorkspace() {
     setPaletteOpen(false);
     await investigate(text, signal);
   }, [resetStrategyAccumulator, investigate, resetWorkflow, investigation.result]);
-  const entry = useCopilotEntry({ wallet: address, onInvestigate: runInvestigation });
+  const runDirect = useCallback(async (text: string, signal: AbortSignal) => {
+    const continuing = shouldContinueInvestigation(text, investigation.result);
+    if (shouldReplacePlan(text, investigation.result)) {
+      setSigningJournal(false);
+      resetWorkflow();
+      resetStrategyAccumulator();
+    } else if (!(continuing && investigation.result?.question)) {
+      setResponse(null);
+    }
+    setSubmitted(text);
+    setIntentText("");
+    setPaletteOpen(false);
+    await postCopilot({ message: text }, text, { signal });
+  }, [investigation.result, postCopilot, resetStrategyAccumulator, resetWorkflow]);
+  const entry = useCopilotEntry({
+    wallet: address,
+    onInvestigate: runInvestigation,
+    onDirect: runDirect,
+  });
 
   const { run: dispatchRun } = entry;
 
@@ -2709,41 +2717,50 @@ export function CopilotWorkspace() {
     const candidateId = view.proposalCandidateId;
     if (view.pendingWrite?.op || !candidateId || !view.continuation) return;
     if (workflow.view || workflow.loading) return;
-    const proposeKey = `${view.continuation}:${candidateId}`;
-    if (proposedRef.current === proposeKey) return;
-    proposedRef.current = proposeKey;
-    void proposePlan(view.continuation, candidateId);
-  }, [investigation.result, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading]);
+    /**
+     * A turn this page ran carries on by itself; a turn read back from the thread does not.
+     * Both arrive in the same `result`, so the two are told apart by where it came from —
+     * and the claim makes the dispatch survive a remount, which the old ref could not.
+     */
+    if (investigation.resultOrigin !== "live") return;
+    const proposeKey = `propose:${view.continuation}:${candidateId}`;
+    if (!claimDispatch(address, proposeKey)) return;
+    void proposePlan(view.continuation, candidateId).then((prepared) => {
+      if (!prepared) releaseDispatch(address, proposeKey);
+    });
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, proposePlan, workflow.view, workflow.loading, address]);
   useEffect(() => {
     const view = investigation.result;
     if (!view || investigation.loading || investigation.error) return;
     const op = view.pendingWrite?.op;
     if (!op) return;
-    const key = `${view.continuation}:${op}`;
-    if (lifecycleWriteRef.current === key) return;
-    lifecycleWriteRef.current = key;
-    void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest);
-  }, [investigation.result, investigation.loading, investigation.error, postCopilot]);
+    if (investigation.resultOrigin !== "live") return;
+    const key = `write:${view.continuation}:${op}`;
+    if (!claimDispatch(address, key)) return;
+    void postCopilot({ pending_write: { op }, message: view.originalRequest }, view.originalRequest).then((sent) => {
+      if (!sent) releaseDispatch(address, key);
+    });
+  }, [investigation.result, investigation.resultOrigin, investigation.loading, investigation.error, postCopilot, address]);
 
   const signJournalXdr = useCallback(async (auto = false) => {
     const view = workflow.view;
     if (!view || workflow.loading || signingJournal) return;
     const step = view.steps.find((entry) => entry.status === "awaiting_signature" && entry.unsignedXdr);
     if (!step?.unsignedXdr) return;
-    if (auto) {
-      if (signedWorkflowStepRef.current === step.id) return;
-      signedWorkflowStepRef.current = step.id;
-    }
+    const signKey = `sign:${view.id}:${step.id}`;
+    if (auto && !claimDispatch(address, signKey)) return;
     setSigningJournal(true);
     try {
       const result = await signWorkflowTransaction(step.unsignedXdr, { networkPassphrase: "Test SDF Network ; September 2015", address: address ?? undefined });
       if (result.error || !result.signedTxXdr || result.signerAddress && result.signerAddress !== address) {
         toast.error("The approved transaction could not be signed by the connected wallet.");
+        if (auto) releaseDispatch(address, signKey);
         return;
       }
       await confirmWorkflow(result.signedTxXdr);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The transaction could not be signed.");
+      if (auto) releaseDispatch(address, signKey);
     } finally {
       setSigningJournal(false);
     }
@@ -2753,12 +2770,16 @@ export function CopilotWorkspace() {
    * Auto-approve ON means the journal should not wait for a second click.
    * Propose no longer does the live price/balance pass — Approve does. The Sign
    * Service still enforces caps; this only presses Approve the way the user already armed.
-   * A transient risk miss leaves the journal `proposed`; `approvedJournalRef` stops a loop.
+   * A transient risk miss leaves the journal `proposed`; the one-shot claim stops a loop.
+   *
+   * A journal read back on mount is not an armed click either: `restored` keeps Approve
+   * waiting for the person, so returning to the page cannot broadcast what they left alone.
    */
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
-    if (!view || workflow.loading || workflow.error) return;
+    // A plan the live re-check withdrew is not one an armed session may press Approve on.
+    if (!view || workflow.loading || workflow.error || workflow.restored || workflow.stale) return;
     if (
       !shouldAutoApproveProposedWorkflow({
         sessionSigning,
@@ -2769,18 +2790,20 @@ export function CopilotWorkspace() {
     ) {
       return;
     }
-    if (approvedJournalRef.current === view.id) return;
-    approvedJournalRef.current = view.id;
-    void workflow.approve();
-  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.approve]);
+    const approveKey = `approve:${view.id}:${view.revision}`;
+    if (!claimDispatch(address, approveKey)) return;
+    void workflow.approve().then((approved) => {
+      if (!approved) releaseDispatch(address, approveKey);
+    });
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.error, workflow.restored, workflow.stale, workflow.approve, address]);
 
   useEffect(() => {
     if (!sessionSigning) return;
     const view = workflow.view;
-    if (!view || workflow.loading || signingJournal) return;
+    if (!view || workflow.loading || signingJournal || workflow.restored) return;
     if (!view.steps.some((step) => step.status === "awaiting_signature" && step.unsignedXdr)) return;
     void signJournalXdr(true);
-  }, [sessionSigning, workflow.view, workflow.loading, signingJournal, signJournalXdr]);
+  }, [sessionSigning, workflow.view, workflow.loading, workflow.restored, signingJournal, signJournalXdr]);
 
   const run = useCallback(async (text: string) => {
     if (signing) return;
@@ -5277,11 +5300,13 @@ export function CopilotWorkspace() {
               onPropose={investigation.result?.continuation
                 ? (candidateId) => {
                     const continuation = investigation.result!.continuation;
-                    proposedRef.current = `${continuation}:${candidateId}`;
+                    // Claimed here so the auto-prepare effect does not send the same plan again.
+                    claimDispatch(address, `propose:${continuation}:${candidateId}`);
                     void workflow.propose(continuation, candidateId);
                   }
                 : undefined}
               workflow={workflow.view}
+              planWithdrawn={workflow.stale}
               workflowError={workflow.error}
               workflowLoading={workflow.loading || signingJournal}
               onApprove={() => { void workflow.approve(); }}

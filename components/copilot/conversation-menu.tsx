@@ -66,7 +66,7 @@ function timeOf(updatedAt: number, bucket: Bucket): string {
 
 /** Shared by New chat, History, and Auto-approve so the header reads as one row of controls. */
 export const HEADER_CONTROL =
-  "flex items-center gap-1.5 rounded-full border border-vgray-100 px-3.5 py-[7px] text-[12.5px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
+  "flex cursor-pointer items-center gap-1.5 rounded-full border border-vgray-100 px-3.5 py-[7px] text-[12.5px] font-semibold text-vgray-800 transition-colors hover:border-violet-400 hover:text-violet-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:text-vgray-300";
 
 /**
  * New chat, and every earlier conversation behind one control.
@@ -163,7 +163,7 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
                                     type="button"
                                     onClick={() => { setAsked(null); onDelete(item.id); }}
                                     aria-label={`Delete "${item.title}"`}
-                                    className="flex items-center gap-1 rounded px-2 py-0.5 font-semibold text-imperial-500 hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+                                    className="flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 font-semibold text-imperial-500 hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
                                   >
                                     <Check size={13} aria-hidden="true" /> Delete
                                   </button>
@@ -171,7 +171,7 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
                                     type="button"
                                     onClick={() => setAsked(null)}
                                     aria-label="Keep this chat"
-                                    className="flex items-center gap-1 rounded px-2 py-0.5 text-vgray-700 hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
+                                    className="flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-vgray-700 hover:bg-surface focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500"
                                   >
                                     <X size={13} aria-hidden="true" /> Keep
                                   </button>
@@ -185,7 +185,7 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
                                   onClick={() => { setOpen(false); onOpen(item.id); }}
                                   aria-current={active ? "true" : undefined}
                                   title={item.title}
-                                  className={`flex w-full items-baseline justify-between gap-3 rounded-r2 px-2.5 py-2 pr-8 text-left text-[13px] leading-5 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 ${
+                                  className={`flex w-full cursor-pointer items-baseline justify-between gap-3 rounded-r2 px-2.5 py-2 pr-8 text-left text-[13px] leading-5 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 ${
                                     active ? "bg-violet-50 text-violet-500" : "text-vgray-800 hover:bg-violet-50/60"
                                   }`}
                                 >
@@ -198,7 +198,7 @@ export function ConversationMenu({ items, activeId, wallet, busy, onNew, onOpen,
                                   type="button"
                                   onClick={() => setAsked(item.id)}
                                   aria-label={`Delete "${item.title}"`}
-                                  className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-1 text-vgray-400 hover:text-imperial-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 group-hover:block group-focus-within:block"
+                                  className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 cursor-pointer rounded p-1 text-vgray-400 hover:text-imperial-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 group-hover:block group-focus-within:block"
                                 >
                                   <Trash2 size={14} aria-hidden="true" />
                                 </button>

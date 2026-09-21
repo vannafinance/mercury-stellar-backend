@@ -101,6 +101,7 @@ import { logCopilotEvent } from "./log";
 import { guardUserPrompt } from "./domain-firewall";
 import { currentTokenSubject } from "./token-budget";
 import { findLeverage, parseMinHealthFactor, routeMessage } from "./router";
+import { classifyCopilotEntry } from "./entry-lane";
 import { lpSides, readAmmOtherPerXlm, applyLpFillToSteps } from "./lp-pair";
 import { quoteDexSwap, swapPriceImpact, usdPriceFromOracleBatch, type SwapPriceImpact } from "./swap-quote";
 import { readFarmAmmLpShares } from "./farm-lp";
@@ -815,12 +816,11 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   /**
-   * The Copilot workspace investigates first and executes through the workflow journal.
-   * Re-planning a free-text prompt with keywords here is a second planner with different
-   * sizing semantics. Structured payloads (approved_plan, pending_write, resume, auto-sign)
-   * already returned above.
+   * Only explicit strategy goals belong to investigation. Plain capabilities continue
+   * through the deterministic action path below, which already implements auto-sign ON
+   * and Sign & Execute OFF. Structured continuations returned before this boundary.
    */
-  if (req.surface === "copilot") {
+  if (req.surface === "copilot" && classifyCopilotEntry(message) === "strategy") {
     return {
       kind: "blocked",
       message:
@@ -915,7 +915,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
   // Plan → approve → execute. A freshly routed plan is SHOWN, not run; it only
   // executes once the user sends it back as approved_plan (handled near the top of
   // this function, before routing, so approval never re-infers anything).
-  if (routed.kind === "plan") {
+  if (routed.kind === "plan" && req.surface !== "copilot") {
     const preview = await previewRoutedPlan({
       routed, message, mcp, userId, request_id,
     });
@@ -1702,6 +1702,73 @@ async function runWrite(
   // spendable (website does too) and always surface wallet vs spendable balances.
   let sizingNote: string | null = null;
   let sizingFacts: Record<string, unknown> | null = null;
+
+  // "Remove my XLM position from Blend" is an explicit 100% withdrawal, not a
+  // request to inspect the position and not a missing-amount clarification. Size it
+  // from the same live underlying balance the Farm page displays. An unread position
+  // is deliberately different from a confirmed zero position.
+  if (
+    action.op === "withdraw_from_blend" &&
+    !(action.amount != null && action.amount > 0) &&
+    action.fraction === 1
+  ) {
+    if (!smartAccount) {
+      return {
+        kind: "blocked",
+        message: "I need your smart account to read and withdraw the Blend position.",
+        intent: { template_id: action.op, slots: { asset: action.asset } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const requestedAsset = String(action.asset || "XLM").toUpperCase();
+    const blendAsset = requestedAsset === "BLUSDC" ? "USDC" : requestedAsset;
+    const displayAsset = blendAsset === "USDC" ? "BLUSDC" : blendAsset;
+    let underlyingValue: unknown;
+    try {
+      const { BlendService } = await import("@/lib/blend-utils");
+      const live = await BlendService.getUserBlendBalance(smartAccount, blendAsset as "XLM" | "USDC");
+      underlyingValue = live.underlyingBalance;
+    } catch {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${displayAsset} Blend position. Please retry before withdrawing.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, read_status: "unavailable" } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    const fullAmount =
+      typeof underlyingValue === "number" ? underlyingValue : Number.parseFloat(String(underlyingValue ?? ""));
+    if (!Number.isFinite(fullAmount)) {
+      return {
+        kind: "blocked",
+        message: `I couldn't read your live ${displayAsset} Blend position. Please retry before withdrawing.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, read_status: "invalid" } },
+        request_id: ctx.request_id,
+      };
+    }
+    if (fullAmount <= 0) {
+      return {
+        kind: "blocked",
+        message: `You have no ${displayAsset} supplied to Blend.`,
+        intent: { template_id: action.op, slots: { asset: displayAsset, balance: 0 } },
+        request_id: ctx.request_id,
+      };
+    }
+
+    action.amount = fullAmount;
+    action.asset = displayAsset;
+    action.fraction = null;
+    action.requires_amount = false;
+    sizingNote = `Sized from your live ${displayAsset} Blend position.`;
+    sizingFacts = {
+      asset: displayAsset,
+      blend_underlying_balance: fullAmount,
+      withdrawal_fraction: 1,
+    };
+  }
+
   if (action.op === "repay") {
     const sized = await resolveRepayAmount(action, {
       ...ctx,

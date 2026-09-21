@@ -28,6 +28,11 @@ export interface InvestigationCardProps {
   /** Prepare the journal proposal for one of the sized options. */
   onPropose?: (candidateId: string) => void;
   workflow?: WorkflowView | null;
+  /**
+   * Why the waiting plan no longer holds, from the live re-check. A plan sized minutes ago
+   * against a price that has since moved must stop offering Approve, and say why.
+   */
+  planWithdrawn?: string | null;
   workflowError?: string | null;
   workflowLoading?: boolean;
   onApprove?: () => void;
@@ -97,7 +102,7 @@ const BTN_QUIET = "rounded-r2 border border-vgray-100 px-3.5 py-2 text-[13px] fo
 
 export function InvestigationCard({
   prompt, result: researchResult, progress, loading, error, turns = [], onContinue, continueLabel,
-  onPropose, workflow, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
+  onPropose, workflow, planWithdrawn, workflowError, workflowLoading, onApprove, onSign, onResume, onCancelPlan,
   wallet = null, autoSign = false,
 }: InvestigationCardProps) {
   const result: ResearchView | null = researchResult ?? (workflow ? {
@@ -364,17 +369,33 @@ export function InvestigationCard({
                 </p>
               )}
 
-              {workflow?.status === "proposed" && workflow.swap && onApprove && (
+              {/* Withdrawn by the live re-check: the amounts below were true when they were read
+                  and are not any more, so the card states that instead of offering Approve. */}
+              {workflow?.status === "proposed" && planWithdrawn && (
+                <section role="alert" data-testid="plan-withdrawn" className="rounded-xl border border-imperial-500/30 bg-surface px-4 py-3.5">
+                  <SectionTitle>No longer valid</SectionTitle>
+                  <p className="mt-1.5 max-w-[68ch] text-[14px] leading-6 text-vgray-900">{planWithdrawn}</p>
+                  <p className="mt-1.5 max-w-[68ch] text-[13px] leading-5 text-vgray-500">
+                    Nothing was submitted. Ask again and the amounts will be sized from fresh reads.
+                  </p>
+                  {onCancelPlan && (
+                    <button type="button" onClick={onCancelPlan} disabled={workflowLoading} className={`${BTN_QUIET} mt-3`}>
+                      Clear this plan
+                    </button>
+                  )}
+                </section>
+              )}
+              {workflow?.status === "proposed" && !planWithdrawn && workflow.swap && onApprove && (
                 <SwapReviewCard workflow={workflow} wallet={wallet} busy={!!workflowLoading}
                   autoSign={autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
               )}
-              {workflow?.status === "proposed" && workflow.steps.some((step) => step.op === "swap") && !workflow.swap && (
+              {workflow?.status === "proposed" && !planWithdrawn && workflow.steps.some((step) => step.op === "swap") && !workflow.swap && (
                 <section role="alert" className="rounded-xl border border-imperial-500/30 bg-surface p-4 text-[13px] text-imperial-600">
                   The swap terms could not be reviewed. Ask copilot to prepare a new swap quote.
                   {onCancelPlan && <button type="button" onClick={onCancelPlan} className="ml-2 underline">Cancel plan</button>}
                 </section>
               )}
-              {workflow?.status === "proposed" && !workflow.steps.some((step) => step.op === "swap") && onApprove && (
+              {workflow?.status === "proposed" && !planWithdrawn && !workflow.steps.some((step) => step.op === "swap") && onApprove && (
                 <PlanReviewCard workflow={workflow} wallet={wallet ?? null} busy={!!workflowLoading}
                   autoSign={!!autoSign} onConfirm={onApprove} onCancel={onCancelPlan} />
               )}

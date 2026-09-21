@@ -35,11 +35,11 @@ describe("workflow approval and execution journal", () => {
       .toBe("6541.043333");
   });
 
-  it("still accepts approve after several minutes of waiting", async () => {
+  it("invalidates a strategy card after several minutes so stale terms cannot be approved", async () => {
     const { journal, create, advance } = fixture();
     const { proposal: p } = await create();
     advance(10 * 60_000);
-    await expect(journal.approve(p.id, identity, 1, p.digest, async () => null)).resolves.toMatchObject({ status: "approved" });
+    await expect(journal.approve(p.id, identity, 1, p.digest, async () => null)).rejects.toThrow("proposal_expired");
   });
 
   it("rejects wrong identity, modified approval, and expiration", async () => {

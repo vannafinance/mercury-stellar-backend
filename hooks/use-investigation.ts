@@ -100,8 +100,11 @@ export function useInvestigation(wallet: string | null) {
   const [state, setState] = useState<{
     wallet: string | null; loading: boolean; prompt: string; result: ResearchView | null;
     progress: InvestigationProgress | null; error: string | null; turns: ThreadTurn[];
-    conversationId: string | null;
-  }>({ wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null });
+    conversationId: string | null; resultOrigin: "live" | "restored";
+  }>({
+    wallet, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
+    conversationId: null, resultOrigin: "restored",
+  });
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const abort = useRef<AbortController | null>(null);
   const sequence = useRef(0);
@@ -172,11 +175,18 @@ export function useInvestigation(wallet: string | null) {
     lastResult.current = null;
     transcript.current = [];
     setState({
-      wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null,
+      wallet: owner, loading: false, prompt: "", result: null, progress: null, error: null, turns: [],
+      conversationId: null, resultOrigin: "restored",
     });
   }, []);
 
-  /** Paint a thread — from storage, the session payload or an opened conversation. */
+  /**
+   * Paint a thread — from storage, the session payload or an opened conversation.
+   *
+   * What is painted here is a record of a turn that already happened, which is why it is
+   * marked `restored`: the effects that carry a turn onward act on `live` only, so coming
+   * back to the page shows the last answer instead of running it again.
+   */
   const applyThread = useCallback((owner: string | null, thread: { turns: ThreadTurn[]; continuation: string | null; result: ResearchView | null; conversationId: string | null }) => {
     continuation.current = thread.continuation;
     conversationId.current = thread.conversationId;
@@ -186,6 +196,7 @@ export function useInvestigation(wallet: string | null) {
     setState({
       wallet: owner, loading: false, prompt: lastUser?.text ?? "", result: thread.result,
       progress: null, error: null, turns: thread.turns, conversationId: thread.conversationId,
+      resultOrigin: "restored",
     });
     rememberLive(owner, thread.turns, thread.conversationId);
   }, [rememberLive]);
@@ -401,7 +412,7 @@ export function useInvestigation(wallet: string | null) {
         result: previous.result,
         turns,
         progress: { kind: "scope", label: "Preparing your session" }, error: null,
-        conversationId: previous.conversationId,
+        conversationId: previous.conversationId, resultOrigin: previous.resultOrigin,
       };
     });
     let received = false;
@@ -460,7 +471,10 @@ export function useInvestigation(wallet: string | null) {
               turns, result: event.result, conversationId: landedIn,
             });
             rememberLive(owner, turns, landedIn);
-            return { ...previous, result: event.result, turns, progress: null, loading: false, conversationId: landedIn };
+            return {
+              ...previous, result: event.result, turns, progress: null, loading: false,
+              conversationId: landedIn, resultOrigin: "live" as const,
+            };
           });
         } else if (event.type === "error") {
           streamError = true;
@@ -506,7 +520,7 @@ export function useInvestigation(wallet: string | null) {
   }, [wallet, refreshConversations, rememberLive]);
 
   // Do not expose the previous wallet's state during the render before its effect resets.
-  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null };
+  const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
   return { ...visible, conversations, run, cancel, reset: newChat, newChat, open, remove, updateExecutionReceipt };
 }

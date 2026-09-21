@@ -9,11 +9,11 @@ const base = {
 };
 
 describe("Copilot surface does not keyword-plan", () => {
-  it("refuses a free-text prompt on the Copilot page", async () => {
+  it("keeps an explicit strategy prompt in the investigation lane", async () => {
     const res = await handleChat({
       ...base,
       surface: "copilot",
-      message: "what's my health factor?",
+      message: "build me a strategy that keeps my health factor above 1.3",
     });
     expect(res.kind).toBe("blocked");
     expect(res.intent?.template_id).toBe("investigation_owns_planning");

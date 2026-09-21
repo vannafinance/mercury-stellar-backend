@@ -20,7 +20,6 @@ export type StepReadiness =
 import type { InvestigationScope } from "../investigation/types";
 import { isRetryableRiskReason } from "./risk";
 import { logUnexpected } from "../log";
-import { PLAN_TTL_MS } from "../plan-ttl";
 
 export class WorkflowConflict extends Error {}
 type Identity = { scope: InvestigationScope; server: string };
@@ -31,12 +30,11 @@ function bound(record: WorkflowRecord, identity: Identity) {
 }
 
 /**
- * Waiting for Approve is not a quote timeout. Swap already re-quotes on submit; Earn and
- * the rest re-check live balances on Approve (`validateWorkflowRisk`) and again per step
- * (`readyForStep`). A 5-minute clock used to reject a plan the user was still reading.
- * This TTL only retires abandoned proposals.
+ * Strategy cards are live financial proposals, not durable instructions. Approval performs
+ * another risk/balance read, but after five minutes the user must prepare a fresh card so
+ * rates, balances, position sizes and pool state cannot be mistaken for current values.
  */
-export const PROPOSAL_TTL_MS = PLAN_TTL_MS;
+export const PROPOSAL_TTL_MS = 5 * 60_000;
 
 /** Every write is conditional; neither a repeated POST nor another replica can claim a leg twice. */
 export class WorkflowJournal {

@@ -153,12 +153,16 @@ function logPlanCoverageShadow(
      * `deploy_to_blend` a few lines down whenever it fires, clobbering whatever `kw` said.
      * "farm's" satisfied `\bfarm\b` (the apostrophe is a `\b` word boundary) with no check
      * for which direction the money should move. Same removal-verb carve-out as router.ts.
-     */
+    */
     const blendRemoveVerb = /\b(remove|withdraw|take out|takeout|pull out|unwind|redeem)\b/.test(lowerMsg);
+    const personalBlendSupply =
+      /\bmy\b[\s\S]{0,40}\b(?:blend\b[\s\S]{0,20}\bsupply|supply\b[\s\S]{0,20}\bblend)\b/i.test(message) ||
+      /\b(?:what|how much)\b[\s\S]{0,50}\b(?:i|my)\b[\s\S]{0,30}\b(?:supply|supplied)\b/i.test(message);
     const blendWrite =
       /\bblend\b/.test(lowerMsg) &&
       /\b(supply|deposit|deploy|farm|add|liquidity)\b/.test(lowerMsg) &&
       !blendRemoveVerb &&
+      !personalBlendSupply &&
       !/\b(stats|apy|position|btoken|how much)\b/.test(lowerMsg);
     /**
      * "What is my Holdings in Blend Pool" said "Holdings", not any of the words this
@@ -171,7 +175,8 @@ function logPlanCoverageShadow(
     const blendRead =
       /\bblend\b/.test(lowerMsg) &&
       !blendWrite &&
-      /\b(stats|apy|reserve|pays|yield|supplied|position|btoken|holdings?|how much)\b/.test(lowerMsg);
+      (/\b(stats|apy|reserve|pays|yield|supplied|position|btoken|holdings?|how much)\b/.test(lowerMsg) ||
+        personalBlendSupply);
 
     /** Prefer explicit tickers in the message over nested "USDC" inside BLUSDC. */
     const assetFromMessage = (): string | null => {
@@ -296,7 +301,9 @@ function logPlanCoverageShadow(
         named.length > 1 ||
         /\b(vs|versus| or |compare|pays more|better than)\b/i.test(message);
       const sym = !compare && named.length === 1 ? named[0]! : null;
-      const wantsPosition = /\b(supplied|positions?|btoken|holdings?|how much)\b/i.test(message);
+      const wantsPosition =
+        /\b(supplied|positions?|btoken|holdings?|how much)\b/i.test(message) ||
+        personalBlendSupply;
       /**
        * "What is my Holdings in Blend Pool" — Vertex/router had already picked
        * `vanna_list_blend_reserves` (the pool-wide stats tool), and `isBlendRead`
