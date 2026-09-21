@@ -5213,6 +5213,7 @@ export function CopilotWorkspace() {
               liveAssistant={liveAssistant}
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
+              sessionSigning={sessionSigning}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
               <ExecutionStepper
@@ -5228,6 +5229,7 @@ export function CopilotWorkspace() {
                   },
                 ]}
                 currentStepIndex={0}
+                autoApprove={sessionSigning}
               />
             ) : null}
             {(investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal) && (

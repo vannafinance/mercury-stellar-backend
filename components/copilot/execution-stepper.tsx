@@ -40,7 +40,14 @@ export function ExecutionStepper({
           Execution Progress
         </span>
         <span className="font-mono text-[11px] text-violet-500 dark:text-violet-400">
-          {autoApprove ? "Autonomous (Privy Session)" : "Step-by-Step Approval"}
+          {/*
+            No caller ever passed `autoApprove`, so this always read "Step-by-Step
+            Approval" — even mid-run, with a leg already settled by auto-dispatch, next
+            to a card proving the opposite. It also named only the Privy path; a
+            Freighter session armed for auto-dispatch is just as autonomous, it signs
+            in the extension popup rather than silently, which is not "step-by-step".
+          */}
+          {autoApprove ? "Autonomous" : "Step-by-Step Approval"}
         </span>
       </div>
 

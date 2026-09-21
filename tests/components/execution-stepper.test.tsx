@@ -41,7 +41,9 @@ describe("ExecutionStepper", () => {
     );
 
     expect(screen.getByText("Execution Progress")).toBeTruthy();
-    expect(screen.getByText("Autonomous (Privy Session)")).toBeTruthy();
+    // Not "(Privy Session)": a Freighter session armed for auto-dispatch is equally
+    // autonomous, it signs in the extension popup rather than silently.
+    expect(screen.getByText("Autonomous")).toBeTruthy();
     expect(screen.getByText("Deposit 1,000 USDC Collateral")).toBeTruthy();
     expect(screen.getByText("Borrow 500 XLM")).toBeTruthy();
     expect(screen.getByText("Supply to Blend")).toBeTruthy();

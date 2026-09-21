@@ -373,7 +373,7 @@ export function InvestigationCard({
                     </ol>
                   ) : (
                     <div className="mt-3">
-                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} />
+                      <ExecutionStepper steps={workflow.steps.map(toStepperStep)} currentStepIndex={Math.max(0, workflow.steps.findIndex((step) => step.status !== "settled"))} network={result.scope.network} autoApprove={!!autoSign} />
                     </div>
                   )}
                   <div className="mt-3 flex flex-wrap gap-2">

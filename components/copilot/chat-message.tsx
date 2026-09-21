@@ -124,11 +124,18 @@ function AssistantTurn({
   receipt,
   note,
   tone = "default",
+  sessionSigning = false,
 }: {
   text: string;
   receipt?: ThreadTurn["executionReceipt"];
   note?: string | null;
   tone?: "default" | "error";
+  /**
+   * Whether this session is armed to sign without a click — for whichever wallet is
+   * connected, Privy or Freighter. Threaded down only so the stepper's own header can
+   * say so; nothing here decides what actually gets signed.
+   */
+  sessionSigning?: boolean;
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
@@ -146,6 +153,7 @@ function AssistantTurn({
           steps={receiptStepperSteps(receipt)}
           currentStepIndex={Math.max(0, receipt.steps.findIndex((step) => step.status !== "settled"))}
           network={receipt.network}
+          autoApprove={sessionSigning}
         />
       ) : null}
     </>
@@ -161,6 +169,7 @@ export function ChatTurns({
   liveAssistant,
   liveNote,
   liveTone = "default",
+  sessionSigning = false,
 }: {
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
@@ -169,6 +178,7 @@ export function ChatTurns({
   liveAssistant?: string | null;
   liveNote?: string | null;
   liveTone?: "default" | "error";
+  sessionSigning?: boolean;
 }) {
   if (!turns.length && !pendingUser && !liveAssistant) return null;
   return (
@@ -179,7 +189,7 @@ export function ChatTurns({
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
             {group.assistant && !hideStaleAssistant ? (
-              <AssistantTurn text={group.assistant.text} receipt={group.assistant.executionReceipt} />
+              <AssistantTurn text={group.assistant.text} receipt={group.assistant.executionReceipt} sessionSigning={sessionSigning} />
             ) : null}
           </section>
         );
@@ -188,7 +198,7 @@ export function ChatTurns({
         <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {pendingUser ? <UserBubble>{pendingUser}</UserBubble> : null}
           {liveAssistant ? (
-            <AssistantTurn text={liveAssistant} note={liveNote} tone={liveTone} />
+            <AssistantTurn text={liveAssistant} note={liveNote} tone={liveTone} sessionSigning={sessionSigning} />
           ) : working ? (
             <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
           ) : null}

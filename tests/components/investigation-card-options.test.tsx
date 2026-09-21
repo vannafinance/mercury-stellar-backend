@@ -75,10 +75,16 @@ describe("investigation card / options", () => {
     expect(screen.getByRole("heading", { name: /^Options?$/ })).toBeTruthy();
     expect(screen.getByText(/Borrow BLUSDC to the 1.30 floor and supply it to Blend/)).toBeTruthy();
     expect(screen.getByText("+6.00% net APR")).toBeTruthy();
-    // The full-precision $6,541.043333… reads at the precision a person uses, and the
-    // projected floor is shown next to it — a size with no health consequence beside it
-    // is the number that gets approved without being understood.
-    expect(screen.getByText("$6,541.04")).toBeTruthy();
+    /**
+     * The full-precision figure reads at the precision a person uses, and the projected
+     * floor is shown next to it — a size with no health consequence beside it is the
+     * number that gets approved without being understood.
+     *
+     * $6,537.46, not $6,541.04: a derived max is sized one basis point INSIDE the
+     * floor (`FLOOR_MARGIN_BPS` in sizing.ts), not exactly on it, so the plan survives
+     * the gap between being sized and being re-validated before the write.
+     */
+    expect(screen.getByText("$6,537.46")).toBeTruthy();
     expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
   });
 
