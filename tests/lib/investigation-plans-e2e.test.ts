@@ -213,8 +213,13 @@ describe("model proposes, code disposes — end to end", () => {
       ["borrow", "XLM", proposal.steps[2].amount],
       ["supply_blend", "XLM", proposal.steps[2].amount],
     ]);
-    // Identical to the card's number: the fee reserve and the position were sealed with the evidence.
-    expect(Number(proposal.steps[2].amount)).toBeCloseTo(64442.57, 1);
+    /**
+     * Identical to the card's number: the fee reserve and the position were sealed with
+     * the evidence. A derived max is now sized one basis point inside the floor
+     * (`FLOOR_MARGIN_BPS` in sizing.ts), so this is slightly under the old exact-floor
+     * figure.
+     */
+    expect(Number(proposal.steps[2].amount)).toBeCloseTo(64386.93, 1);
     expect(mcp.call).not.toHaveBeenCalled();
     expect(turn).toBe(2);
   });
@@ -302,9 +307,13 @@ describe("model proposes, code disposes — end to end", () => {
     expect(harness.computeBorrowCapacity).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.objectContaining({ floor: "1.3" }));
     const levered = view.candidates?.feasible.find((c) => c.id === "composed:dc.XLM+sb.XLM+bo.XLM+sb.XLM");
     expect(levered, JSON.stringify(view.candidates?.rejected)).toBeTruthy();
-    // After the deposit, (8442.98 − 1.3·5102.54)/0.3 = 6,032.27 USD of borrow keeps HF at exactly 1.3.
-    expect(Number(levered!.amountUsd)).toBeCloseTo(7869.41, 0);
-    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.3, 6);
+    /**
+     * After the deposit, (8442.98 − 1.3·5102.54)/0.3 = 6,032.27 USD of borrow keeps HF
+     * at the floor. A derived max is now sized one basis point INSIDE the floor
+     * (`FLOOR_MARGIN_BPS` in sizing.ts), so this lands at 1.30013, not exactly 1.3.
+     */
+    expect(Number(levered!.amountUsd)).toBeCloseTo(7864.58, 0);
+    expect(Number(levered!.finalHealthFactor)).toBeCloseTo(1.30013, 5);
     expect(view.candidates?.rejected.map((r) => r.reason)).not.toContainEqual(expect.stringMatching(/needs the health-factor floor/));
   });
 
@@ -334,8 +343,12 @@ describe("model proposes, code disposes — end to end", () => {
     expect(proposal.status).toBe("proposed");
     expect(harness.computeSizingBasis).toHaveBeenCalledTimes(1);
     expect(proposal.steps.map((s) => s.op)).toEqual(["deposit_collateral", "supply_blend", "borrow", "supply_blend"]);
-    // Sized to the sealed 1.14 floor after the deposit: (8442.98 − 1.14·5102.54)/0.14 ≈ 18,747 USD → /0.18 XLM.
-    expect(Number(proposal.steps[2].amount)).toBeCloseTo(104209.71, 0);
+    /**
+     * Sized to the sealed 1.14 floor after the deposit: (8442.98 − 1.14·5102.54)/0.14 ≈
+     * 18,747 USD → /0.18 XLM. A derived max is now sized one basis point inside the
+     * floor (`FLOOR_MARGIN_BPS` in sizing.ts), so this is slightly under that figure.
+     */
+    expect(Number(proposal.steps[2].amount)).toBeCloseTo(104101.86, 0);
   });
 
   it("uses the rate a plan read fetched after the clock was taken (14 Sep: 'lend 25% of xlm' refused for no Earn rate)", async () => {

@@ -204,11 +204,18 @@ describe("resolvePlans — the 13 Sep prompt gets its options", () => {
     const c = candidates[0];
     expect(c.borrows).toBe(true);
     expect(c.amountBasis).toBe("derived_max_at_floor");
-    // x = (G − F·D)/(F − 1) = (6605.84 − 1.2·5102.54)/0.2 = 2413.96 USD → /0.18 XLM
-    expect(Number(c.amountUsd)).toBeCloseTo(2413.96, 2);
-    expect(Number(c.steps?.[0].amount)).toBeCloseTo(13410.89, 1);
+    /**
+     * A derived max is sized one basis point INSIDE the floor (`FLOOR_MARGIN_BPS` in
+     * sizing.ts), so this lands at 1.20012 rather than exactly 1.2 — the fix for a plan
+     * sized to a floor being refused by that same floor the instant anything moved
+     * before the write re-validated it. The closed form in the comment below is still
+     * the right shape; it is now solved against floor*(1+1bps), not floor itself.
+     */
+    // x = (G − F'·D)/(F' − 1), F' = 1.2 + 1.2×1bps = (6605.84 − 1.20012·5102.54)/0.20012
+    expect(Number(c.amountUsd)).toBeCloseTo(2409.45, 2);
+    expect(Number(c.steps?.[0].amount)).toBeCloseTo(13385.85, 1);
     expect(c.steps?.[1].amount).toBe(c.steps?.[0].amount);
-    expect(Number(c.finalHealthFactor)).toBeCloseTo(1.2, 6);
+    expect(Number(c.finalHealthFactor)).toBeCloseTo(1.20012, 5);
     // 168.63% Blend supply − 8% Earn XLM borrow.
     expect(Number(c.netAprPct)).toBeCloseTo(160.63, 1);
   });
@@ -995,8 +1002,13 @@ describe("resolvePlans — withdraw to the floor (14 Sep: 'how much xlm can i wi
       ctx({ observations: posted, messages: ["withdraw as much XLM as keeps my HF above 1.2"] }),
     );
     expect(rejected).toEqual([]);
-    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["withdraw_collateral", "2682.1777777"]]);
-    expect(Number(candidates[0]?.finalHealthFactor)).toBeCloseTo(1.2, 6);
+    /**
+     * A derived max is sized one basis point INSIDE the floor (`FLOOR_MARGIN_BPS` in
+     * sizing.ts), so this withdraws slightly less than the exact-floor figure and lands
+     * the health factor at 1.20012, not exactly 1.2.
+     */
+    expect(candidates[0]?.steps?.map((s) => [s.op, s.amount])).toEqual([["withdraw_collateral", "2678.7760844"]]);
+    expect(Number(candidates[0]?.finalHealthFactor)).toBeCloseTo(1.20012, 5);
     expect(candidates[0]?.amountBasis).toBe("derived_max_at_floor");
   });
 

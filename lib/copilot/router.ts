@@ -535,6 +535,27 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
   return null;
 }
 
+/**
+ * A health-factor CEILING, which is the one thing `matchMinHealthFactor` cannot read.
+ *
+ * "keep HF < 1.3", "HF below 1.3" and "hf under 1.25" match none of the floor
+ * patterns, so they parsed as NO health-factor constraint at all: a user who typed
+ * `<` where they meant `>` had their stated limit silently dropped, and only the
+ * liquidation line was left protecting them. Saying nothing is the failure here.
+ *
+ * The negated phrasings — "do NOT let hf go below 1.3" — are floors and already match
+ * as such, which is why this is only consulted once the floor patterns have declined:
+ * a sentence that is already a floor can never also be a ceiling.
+ */
+export function matchHealthFactorCeiling(text: string): number | null {
+  const m =
+    text.match(/(?:hf|health\s*factor)\s*(?:below|under|less\s+than|beneath|<=?)\s*(\d+(?:\.\d+)?)/i) ||
+    text.match(/(?:below|under|less\s+than|beneath)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n < 50 ? n : null;
+}
+
 export function parseMinHealthFactor(text: string): number | null {
   return matchMinHealthFactor(text)?.value ?? null;
 }

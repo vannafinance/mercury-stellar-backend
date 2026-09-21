@@ -82,9 +82,13 @@ describe("sizeLegs", () => {
     const result = sizeLegs(BASE, [leg("borrow", "max", "Borrow as much as the floor allows")], "1.30");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.legs[0].amountUsd).toBe("6541.043333333333333333");
-    // Exactly the floor, to the wei — the closed form does not overshoot and then trim.
-    expect(result.finalHealthFactor).toBe("1.3");
+    /**
+     * Lands on the MARGINED target (floor + 1bps, `FLOOR_MARGIN_BPS` in sizing.ts),
+     * not the stated 1.30 floor itself — a max sized exactly to a floor is invalid
+     * the instant anything moves before the write re-validates it.
+     */
+    expect(result.legs[0].amountUsd).toBe("6537.458085829473894645");
+    expect(result.finalHealthFactor).toBe("1.30013");
   });
 
   it("sizes a max withdrawal to the floor: G − F·D, capped by what is posted, and refuses a max on an op that cannot lower health", () => {
@@ -92,8 +96,10 @@ describe("sizeLegs", () => {
     const result = sizeLegs(BASE, [leg("withdraw_collateral", "max", "Withdraw as much as the floor allows")], "1.30");
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.legs[0].amountUsd).toBe("1962.313");
-    expect(result.finalHealthFactor).toBe("1.3");
+    // Same margined target as the borrow case above — both max formulas land on
+    // `sizeAgainst`, never on the stated floor itself.
+    expect(result.legs[0].amountUsd).toBe("1962.0872953");
+    expect(result.finalHealthFactor).toBe("1.30013");
     const capped = sizeLegs(BASE, [{ ...leg("withdraw_collateral", "max"), capUsd: "500" }], "1.30");
     expect(capped.ok && capped.legs[0].amountUsd).toBe("500");
     expect(sizeLegs(BASE, [leg("withdraw_collateral", "max")], "2.60")).toMatchObject({ ok: false, reason: "no_capacity_at_floor" });
