@@ -3618,8 +3618,15 @@ export function CopilotWorkspace() {
           });
           return;
         }
+        /**
+         * Same rule as the resume effect below: advancing is not signing.
+         *
+         * This is the hop that runs the instant a leg is signed and submitted, so with
+         * `!!autoApprove` here a run with the switch off stalled at exactly the moment
+         * it should have moved on - leg 1 on chain, the queue never asked for leg 2.
+         * Gating both sites made the stall survive fixing either one alone.
+         */
         const preferResume =
-          !!autoApprove &&
           !complete &&
           !pauseForLp &&
           (shouldAutoResume({
@@ -4209,8 +4216,24 @@ export function CopilotWorkspace() {
     // Prefer-resume alone must not decide completion (false complete + empty
     // remaining was the old shortcut that killed the queue mid-run).
     const done = cardComplete && remaining.length === 0;
+    /**
+     * Auto-approve skips the SIGNING PROMPT, not the plan.
+     *
+     * `!!autoApprove` used to gate this, so with the switch off a run simply stopped
+     * after the first leg settled: the queue never advanced, no signature was ever
+     * requested, and the card sat on "waiting to advance" with legs 2..n PENDING
+     * forever. Reported as the run being dropped after a step or two, and reproduced
+     * live on 21 Sep with "deposit 100 XLM into margin account" - leg 1 on chain,
+     * legs 2-5 stranded.
+     *
+     * Advancing is not signing. The hop returns `needs_wallet_sign` and the card shows
+     * Approve & sign; `shouldSessionAutoSubmit` still requires `sessionSigning`, so
+     * with auto-approve off nothing is ever signed without the user. The real pauses -
+     * an unsized LP leg and a breached HF floor - keep their own gates below.
+     *
+     * `shouldAutoResume` was already auto-approve-agnostic; only this call site was not.
+     */
     const preferResume =
-      !!autoApprove &&
       !cardComplete &&
       !pauseForLp &&
       !hfFloorPause &&

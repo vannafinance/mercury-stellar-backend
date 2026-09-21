@@ -98,6 +98,7 @@ export function ExecutionStepper({
                       <a
                         href={`https://stellar.expert/explorer/${network === "mainnet" || network === "public" ? "public" : "testnet"}/tx/${step.txHash}`}
                         target="_blank"
+                        aria-label={`tx ${step.txHash}`}
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-violet-500 underline hover:text-violet-600 dark:text-violet-400"
                       >
