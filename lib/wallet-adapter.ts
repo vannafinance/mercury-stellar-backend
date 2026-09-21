@@ -357,3 +357,16 @@ export async function signTransaction(
 
   return FreighterApi.signTransaction(xdr, opts);
 }
+
+/**
+ * Sign a UTF-8 string with the connected Freighter account (SEP-53).
+ *
+ * Used to prove the navbar G-address to copilot. Privy identity is a JWT, so
+ * this is never called on the Privy path.
+ */
+export async function signMessage(
+  message: string,
+  opts: { address: string },
+): Promise<{ signedMessage: string | Uint8Array | null; signerAddress?: string; error?: WalletApiError }> {
+  return FreighterApi.signMessage(message, opts);
+}

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { copilotRequestHeaders } from "@/lib/copilot/copilot-request";
 import { PRIVY_TOKEN_HEADER } from "@/lib/copilot/identity-header";
+import { walletSessionStatus } from "@/lib/copilot/establish-wallet-session";
 import { consumeResearchStream } from "@/lib/copilot/investigation/stream";
 import type { InvestigationProgress } from "@/lib/copilot/investigation/types";
 import type { ResearchView } from "@/lib/copilot/investigation/view";
@@ -40,14 +41,19 @@ function wait(ms: number, signal: AbortSignal): Promise<void> {
  * Privy can still be minting the access token after the navbar already shows a G-address.
  * Investigate used to fire as `guest` in that window, which is the deployed
  * "No verified wallet" dump. Sign-service already waits; this request must too.
+ *
+ * Freighter never mints that token. After the navbar connects, the signed
+ * wallet-session cookie is what makes the request not-guest. Wait for that
+ * cookie the same way, without treating a missing Privy header as failure.
  */
 async function requestHeaders(signal: AbortSignal, wallet: string | null) {
   let stop: () => void = () => {};
   const timed = async () => {
     let headers = await copilotRequestHeaders();
     if (!wallet || headers[PRIVY_TOKEN_HEADER]) return headers;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      await wait(250, signal);
+    for (let attempt = 0; attempt < 24; attempt++) {
+      if (await walletSessionStatus(wallet)) return headers;
+      await wait(400, signal);
       headers = await copilotRequestHeaders();
       if (headers[PRIVY_TOKEN_HEADER]) return headers;
     }

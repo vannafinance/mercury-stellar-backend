@@ -38,8 +38,9 @@ import { useUserStore } from "@/store/user";
  * `verifyQuorumIsSigner` resolves the wallet through Privy's own wallet list, so a wallet
  * Privy did not issue — Freighter — cannot pass it by construction, whatever the user
  * approves in the browser. Running this for an external wallet would produce a guaranteed
- * failure on every connect rather than a binding, so it is skipped until that path has an
- * ownership proof of its own. This is a capability boundary, not a preference.
+ * failure on every connect rather than a binding, so it is skipped. Freighter proves
+ * ownership with a SEP-53 challenge instead (`FreighterWalletSession`); that path does
+ * not attach a Vanna signer and does not enable auto-approve.
  */
 
 /** Per-tab record of wallets already bound, so a reload does not redo the round trip. */
