@@ -37,7 +37,7 @@ vi.mock("@/lib/copilot/investigation/scope", async (importOriginal) => {
 });
 
 const { WorkflowJournal } = await import("@/lib/copilot/workflow/journal");
-const { advanceWorkflow, staleLiquidityAmounts, staleSwapFloor } = await import("@/lib/copilot/investigation/execute");
+const { advanceWorkflow, staleLiquidityAmounts, staleSwapFloor, stalePositionAmount } = await import("@/lib/copilot/investigation/execute");
 type McpCall = Pick<import("@/lib/copilot/mcp-client").MCPClient, "call">;
 
 const SCOPE = {
@@ -437,5 +437,162 @@ describe("advanceWorkflow — LP amounts are refreshed against the pool before t
     expect(seen).toEqual(["vanna_get_aquarius_pool_stats"]);
     expect(view.steps[0].status).toBe("failed");
     expect(String(view.steps[0].message)).toContain("live reserves could not be refreshed");
+  });
+});
+
+/**
+ * "All of it" is a reading, and a reading goes stale while the plan waits for a click.
+ *
+ * A Blend supply accrues through its b-rate with nobody touching anything, so the
+ * underlying the plan named stops being the underlying the position holds — between
+ * sizing and approval, and again between approval and a signature when auto-sign is off.
+ * Sending the frozen figure leaves dust behind, or reverts on chain when the balance
+ * moved the other way, which is the worst moment to find out.
+ *
+ * The distinction pinned below is intent, not arithmetic: a number the user SAID is never
+ * re-derived, and only a step whose sizing recorded `whole_position` is re-read.
+ */
+describe("advanceWorkflow — an amount that was the whole position is re-read before it is sent", () => {
+  const BLEND = "vanna_get_blend_position";
+  const signal = () => new AbortController().signal;
+
+  /** A Blend exit sized from the position read, as `resolvePlan` records it. */
+  const wholeStep = {
+    id: "one", op: "blend_withdraw" as const, asset: "BLUSDC", amount: "876.38",
+    label: "Withdraw all BLUSDC from Blend",
+    tool: "vanna_blend_withdraw",
+    args: { symbol: "USDC", amount: "876.38", smart_account: SCOPE.smartAccount, trader: SCOPE.trader },
+    sizing: { basis: "whole_position" as const, read: "blend_position" },
+  };
+  const holding = (underlying: string) => ({ positions: [{ symbol: "USDC", underlying_value: underlying }] });
+
+  it("sends what the position holds now, not the figure frozen at approval", async () => {
+    const mcp: McpCall = { call: async () => holding("880.1207731") };
+    const verdict = await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal());
+    expect(verdict.kind).toBe("adjusted");
+    if (verdict.kind === "adjusted") {
+      expect(verdict.amount).toBe("880.1207731");
+      expect(verdict.note).toContain("876.38");
+      expect(verdict.note).toContain("880.1207731");
+    }
+  });
+
+  it("re-reads a position that SHRANK just as readily as one that grew", async () => {
+    const mcp: McpCall = { call: async () => holding("400") };
+    const verdict = await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal());
+    expect(verdict.kind).toBe("adjusted");
+    if (verdict.kind === "adjusted") expect(verdict.amount).toBe("400");
+  });
+
+  it("leaves a number the user stated alone, and never spends a read on it", async () => {
+    const seen: string[] = [];
+    const mcp: McpCall = { call: async (tool) => { seen.push(tool); return holding("880.12"); } };
+    const stated = { ...wholeStep, sizing: { basis: "stated" as const } };
+    expect(await stalePositionAmount(stated, stated.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+    expect(seen).toEqual([]);
+  });
+
+  it("leaves a step with no sizing recorded alone — nothing claims it was the whole position", async () => {
+    const seen: string[] = [];
+    const mcp: McpCall = { call: async (tool) => { seen.push(tool); return holding("880.12"); } };
+    const { sizing: _sizing, ...bare } = wholeStep;
+    expect(await stalePositionAmount(bare, bare.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+    expect(seen).toEqual([]);
+  });
+
+  it("does not touch a write whose size is not called `amount`, and spends no read on it", async () => {
+    // A swap is sized off account_collateral too, but states its size as `amount_in`.
+    // Re-reading it would produce a note about an amount the args never carried.
+    const seen: string[] = [];
+    const mcp: McpCall = { call: async (tool) => { seen.push(tool); return holding("880.12"); } };
+    const swapArgs = { token_in: "USDC", token_out: "XLM", amount_in: "876.38", trader: SCOPE.trader };
+    const swapStep = {
+      ...wholeStep, op: "swap" as const, tool: "vanna_swap", args: swapArgs,
+      sizing: { basis: "whole_position" as const, read: "account_collateral" },
+    };
+    expect(await stalePositionAmount(swapStep, swapArgs, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+    expect(seen).toEqual([]);
+  });
+
+  it("sends the approved amount unchanged when the position has not moved", async () => {
+    const mcp: McpCall = { call: async () => holding("876.38") };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("treats a trailing-zero re-read as unchanged rather than an adjustment", async () => {
+    const mcp: McpCall = { call: async () => holding("876.3800000") };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("refuses when the position has since emptied, and says so instead of reverting on chain", async () => {
+    const mcp: McpCall = { call: async () => holding("0") };
+    const verdict = await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal());
+    expect(verdict.kind).toBe("refuse");
+    if (verdict.kind === "refuse") expect(verdict.message).toContain("no BLUSDC left in that position");
+  });
+
+  it("fails open: a read that errors never blocks an exit the user approved", async () => {
+    const mcp: McpCall = { call: async () => { throw new Error("upstream down"); } };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("fails open: an MCP error payload leaves the approved amount alone", async () => {
+    const mcp: McpCall = { call: async () => ({ error: "unavailable" }) };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("fails open: a payload with no row for this asset is not read as an empty position", async () => {
+    // The refusal is for a position that reads ZERO, never for one that failed to parse.
+    const mcp: McpCall = { call: async () => ({ positions: [{ symbol: "XLM", underlying_value: "12" }] }) };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("fails open: a row the read marked untrusted is not spent", async () => {
+    const mcp: McpCall = { call: async () => ({ positions: [{ symbol: "USDC", underlying_value: "880.12", balance_untrusted: true }] }) };
+    expect(await stalePositionAmount(wholeStep, wholeStep.args, mcp, SCOPE, signal())).toEqual({ kind: "unchanged" });
+  });
+
+  it("end to end: the MCP receives the re-read amount and the note records what happened", async () => {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Exit the Blend USDC supply",
+      messages: ["withdraw all my blend usdc"], assumptions: [], constraints: [],
+      floor: "1.30",
+      steps: [wholeStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    const seen: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const mcp: McpCall = {
+      call: async (tool, args) => {
+        seen.push({ tool, args: args as Record<string, unknown> });
+        if (tool === BLEND) return holding("880.1207731");
+        return { status: "signed_and_submitted", tx_hash: HASH };
+      },
+    };
+    const view = await advance(created.proposal.id, mcp);
+    expect(seen.map((c) => c.tool)).toEqual([BLEND, "vanna_blend_withdraw"]);
+    expect(seen[1].args).toEqual(expect.objectContaining({ amount: "880.1207731", symbol: "USDC" }));
+    expect(view.status).toBe("completed");
+    // The note is folded into the record's message on settle (`journal.settled`),
+    // which is where the card reads it from.
+    expect(String(view.message)).toContain("880.1207731");
+    expect(String(view.message)).toContain("876.38");
+  });
+
+  it("end to end: an emptied position fails the step without sending a write", async () => {
+    const journal = new WorkflowJournal(harness.store);
+    const created = await journal.create({
+      scope: SCOPE, server: SERVER, objective: "Exit the Blend USDC supply",
+      messages: ["withdraw all my blend usdc"], assumptions: [], constraints: [],
+      floor: "1.30",
+      steps: [wholeStep],
+    });
+    await journal.approve(created.proposal.id, { scope: SCOPE, server: SERVER }, 1, created.proposal.digest, async () => null);
+    const seen: string[] = [];
+    const mcp: McpCall = { call: async (tool) => { seen.push(tool); return holding("0"); } };
+    const view = await advance(created.proposal.id, mcp);
+    expect(seen).toEqual([BLEND]);
+    expect(view.steps[0].status).toBe("failed");
+    expect(String(view.steps[0].message)).toContain("no BLUSDC left in that position");
   });
 });

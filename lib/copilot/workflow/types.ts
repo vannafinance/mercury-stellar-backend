@@ -152,7 +152,19 @@ export function feeds(earlier: WorkflowOp, later: WorkflowOp): boolean {
  */
 export type StepSizing =
   | { basis: "stated" }
-  | { basis: "derived_max_at_floor"; minAmountUsd: string };
+  | { basis: "derived_max_at_floor"; minAmountUsd: string }
+  /**
+   * The amount was the WHOLE of a position when the plan was sized, not a figure the user
+   * named. `read` is the capability that holds it, so the write can ask the same source again.
+   *
+   * A position denominated in receipt tokens grows on its own: a Blend bToken accrues
+   * through its b-rate, posted collateral moves with the account. Freezing "all of it" as a
+   * literal therefore goes stale with nobody touching anything, and the exit either leaves
+   * dust behind or reverts on chain after it has been signed. Recording the intent is what
+   * lets the write tell "876.38, the number they asked for" from "876.38, which was all of
+   * it at the time".
+   */
+  | { basis: "whole_position"; read: string };
 
 export interface ProposalStep {
   id: string;

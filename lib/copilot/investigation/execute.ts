@@ -18,6 +18,10 @@ import { validateWorkflowRisk } from "../workflow/risk";
 import { appendAudit } from "../audit-log";
 import { checkpointFromJournal, saveCheckpoint } from "../checkpoint";
 import { ResearchError, resolveInvestigationScope } from "./scope";
+import type { InvestigationScope } from "./types";
+import { resolveRead } from "./catalog";
+import { isPositionRowRead, POSITION_ROWS, positionRowIn } from "./plan";
+import { resolveAssetDef } from "../registry/assets";
 import { workflowJournal } from "./proposal";
 import { TOOLS } from "../workflow/allowlist";
 import { WALLET_OPS } from "../workflow/types";
@@ -54,6 +58,12 @@ function identityOf(proposal: WorkflowProposal) {
 export type StaleFloorVerdict =
   | { kind: "unchanged" }
   | { kind: "adjusted"; minOut: string; note: string }
+  | { kind: "refuse"; message: string };
+
+/** What re-reading a whole-position amount immediately before the write decided. */
+export type StalePositionVerdict =
+  | { kind: "unchanged" }
+  | { kind: "adjusted"; amount: string; note: string }
   | { kind: "refuse"; message: string };
 
 /** What refreshing an LP deposit against the pool immediately before the write decided. */
@@ -201,6 +211,81 @@ function tokenAmount(value: bigint, places = 7): string {
   let kept = fraction.slice(0, places);
   while (kept.endsWith("0")) kept = kept.slice(0, -1);
   return kept ? `${whole}.${kept}` : whole;
+}
+
+/**
+ * "All of it" is a reading, so the write takes the reading again.
+ *
+ * ## The race this closes
+ *
+ * A full exit is sized from a position read, frozen into the proposal as a literal, and
+ * then waits — for the proposal to build, for a person to press Approve, and with
+ * auto-sign off for that person to sign. A Blend supply does not hold still through any
+ * of that: the b-rate accrues, so the underlying the plan named is quietly no longer the
+ * underlying the position holds. Send the frozen figure and the exit either leaves dust
+ * behind or, when the balance moved the other way, reverts on chain — after signing,
+ * which is the worst moment to learn it.
+ *
+ * Only steps whose sizing recorded `whole_position` are touched. A number the user stated
+ * is never re-derived: "withdraw 100" means 100 even if the position grew, and that is the
+ * distinction `StepSizing` exists to carry.
+ *
+ * Fails OPEN. A read that is unavailable, slow or shaped unexpectedly leaves the approved
+ * amount alone — the protocol's own balance check is still the backstop, and a read being
+ * down is not a reason to refuse an exit the user approved. A position that now reads ZERO
+ * is the one hard stop: there is nothing to withdraw, and saying so beats a revert.
+ */
+export async function stalePositionAmount(
+  step: ProposalStep,
+  args: Record<string, unknown>,
+  mcp: Pick<MCPClient, "call">,
+  scope: InvestigationScope,
+  signal: AbortSignal,
+): Promise<StalePositionVerdict> {
+  const unchanged: StalePositionVerdict = { kind: "unchanged" };
+  const sizing = step.sizing;
+  if (!sizing || sizing.basis !== "whole_position" || !isPositionRowRead(sizing.read)) return unchanged;
+  // Only the plain `amount` field, which is how every position op that states a token
+  // size names it. A tool whose size is called something else -- a swap's `amount_in` --
+  // cannot take the re-read figure, and "adjusted" must never come back for a write whose
+  // args this cannot actually change, or the note would describe an amount nobody sent.
+  // Returning here rather than after the read also spares that write a pointless call.
+  if (typeof args.amount !== "string") return unchanged;
+  if (!scope.trader) return unchanged;
+  const def = resolveAssetDef(step.asset);
+  if (!def?.marginSymbol) return unchanged;
+
+  let data: Record<string, unknown>;
+  try {
+    const read = resolveRead(sizing.read, {}, scope);
+    const payload = await interruptible(
+      () => mcp.call(read.tool, read.args, scope.trader!),
+      AbortSignal.any([signal, AbortSignal.timeout(REQUOTE_MS)]),
+    );
+    if (!isRecord(payload) || payload.error) return unchanged;
+    data = payload;
+  } catch { return unchanged; }
+
+  // The protocol's own rendering of the balance: already at the token's precision, so it
+  // is used as read rather than re-rounded against a decimals table this path cannot see.
+  const amount = positionRowIn(data, POSITION_ROWS[sizing.read], def.marginSymbol, def.id);
+  if (amount === null) return unchanged;
+  let amountWad: bigint;
+  try { amountWad = decimalWad(amount); } catch { return unchanged; }
+  if (amountWad <= ZERO) {
+    return {
+      kind: "refuse",
+      message: `There is no ${def.displayLabel ?? def.id} left in that position to withdraw. Nothing was submitted.`,
+    };
+  }
+  let approvedWad: bigint;
+  try { approvedWad = decimalWad(step.amount); } catch { return unchanged; }
+  if (amountWad === approvedWad) return unchanged;
+  return {
+    kind: "adjusted",
+    amount,
+    note: `The whole position was ${step.amount} ${def.displayLabel ?? def.id} when this was prepared and is ${amount} now, so that is what was withdrawn.`,
+  };
 }
 
 /**
@@ -405,7 +490,19 @@ export async function advanceWorkflow(input: {
   if (liquidity.kind === "refuse") {
     return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: liquidity.message }));
   }
-  const swapAdjustedArgs = stale.kind === "adjusted" ? { ...invocation.args, min_out: stale.minOut } : invocation.args;
+  /**
+   * An amount that WAS the whole position is re-read from the same source that produced
+   * it. The position accrues while the plan waits for a click, and the frozen figure is
+   * the one that leaves dust or reverts.
+   */
+  const position = await stalePositionAmount(step, invocation.args, input.mcp, scope, input.signal);
+  if (position.kind === "refuse") {
+    return workflowView(await journal.invocationResult(input.id, identity, step.id, { kind: "failed", message: position.message }));
+  }
+  const positionArgs = position.kind === "adjusted"
+    ? { ...invocation.args, amount: position.amount }
+    : invocation.args;
+  const swapAdjustedArgs = stale.kind === "adjusted" ? { ...positionArgs, min_out: stale.minOut } : positionArgs;
   const adjustedArgs = liquidity.kind === "adjusted"
     ? {
         ...swapAdjustedArgs,
@@ -422,6 +519,7 @@ export async function advanceWorkflow(input: {
   const note = [
     stale.kind === "adjusted" ? stale.note : null,
     liquidity.kind === "adjusted" ? liquidity.note : null,
+    position.kind === "adjusted" ? position.note : null,
   ].filter((value): value is string => !!value).join(" ") || null;
 
   let build: Record<string, unknown>;
