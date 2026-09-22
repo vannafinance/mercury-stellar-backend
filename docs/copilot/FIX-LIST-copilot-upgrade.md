@@ -275,17 +275,43 @@ The chain, all confirmed in code:
 4. `journal.create` throws; it is not a `WorkflowConflict`, so `proposal.ts:279` re-throws.
 5. The route catches it and returns **409 `proposal_unavailable`** with a logged stack.
 
-### Why this never appeared before
-The keyword/direct lane never calls `/workflow/propose`. Only the investigation lane
-proposes. Investigate-first routes every prompt through it, so it exercises a store that has
-never actually worked.
+### CORRECTION — this is a regression, not a path that never worked
 
-### What happens on deploy
-The deployed site runs the keyword lane today, so it does not touch this path and is
-unaffected. **Investigate-first cannot ship until a Firestore database exists** in whatever
-project the deployment names. In production ADC comes from the service account, so no
-interactive login is involved — but the database still has to exist, and the IAM grant for it
-was previously rejected (see [[copilot-workflow-store-grant-rejected]]).
+An earlier draft of this section claimed the workflow path had never worked. That was wrong,
+and Aditya was right to push back. `.local/copilot-workflows` holds **193 records**, the last
+written **20 Sep 11:35** — investigation proposed and executed fine, against local files.
+
+`git show 3e0587d^:lib/copilot/workflow/store.ts` shows what changed:
+
+```js
+// BEFORE
+const project = process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT;   // only this
+
+// AFTER (3e0587d, "conversation history is durable in prod, on the journal's own store")
+const project =
+  process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT ||
+  process.env.GOOGLE_CLOUD_PROJECT ||     // <- added, and set in every local .env.local for Vertex
+  process.env.GCLOUD_PROJECT;
+```
+
+The commit widened the lookup so CONVERSATIONS would be durable in production without new
+configuration. The side effect: the WORKFLOW store in local development stopped using files
+and began calling a Firestore database in Vertex's project, which has never existed. The
+records stop on the day it landed.
+
+The widening did not achieve its own goal either — with no database in `vanna-mcp`, production
+conversations are not durable now.
+
+**Fixed 23 Sep:** `durableStore` only inherits `GOOGLE_CLOUD_PROJECT` when actually running deployed
+(`NODE_ENV=production` or `K_SERVICE`). Development goes back to local files unless
+`COPILOT_WORKFLOW_FIRESTORE_PROJECT` explicitly asks for Firestore. Deployed behaviour is
+unchanged.
+
+### Still true, and still a blocker for shipping investigate-first
+There is no Firestore database in `vanna-mcp`. The deployed site does not hit this today because
+it runs the keyword lane, which never calls `/workflow/propose`. If investigate-first ships, the
+deployed site WILL hit it and 409 exactly as local did. Create the database, or point
+`COPILOT_WORKFLOW_FIRESTORE_PROJECT` at a project that has one, before shipping.
 
 ### Two code defects worth fixing regardless of the lane decision
 

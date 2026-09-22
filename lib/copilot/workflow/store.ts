@@ -136,14 +136,31 @@ export class FirestoreRecordStore<T> implements RecordStore<T> {
  * decision, so nothing new has to be set to make conversations durable.
  */
 export function durableStore<T>(collection: string, localDirectory: string, secret: string, idRule: IdRule = UUID_ID): RecordStore<T> {
+  /**
+   * The store's OWN variable is the only one that names it in development.
+   *
+   * 3e0587d widened this to fall back on GOOGLE_CLOUD_PROJECT so conversations would be
+   * durable in production without new configuration. That variable is also set in every
+   * local .env.local, because Vertex needs it — so the widening silently moved the WORKFLOW
+   * store off local files and onto a Firestore database in Vertex's project. There is no
+   * Firestore database in that project, so every propose 404s and surfaces as a 409
+   * "A plan could not be prepared". `.local/copilot-workflows` stops at 20 Sep, the day it
+   * landed; 193 records were written before that and none since.
+   *
+   * Production keeps the wide lookup: there GOOGLE_CLOUD_PROJECT names a real deployment and
+   * the hard failure below still catches a genuinely unconfigured one. Development goes back
+   * to files unless it explicitly asks for Firestore.
+   */
+  const runningDeployed = process.env.NODE_ENV === "production" || !!process.env.K_SERVICE;
   const project =
     process.env.COPILOT_WORKFLOW_FIRESTORE_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    process.env.GCLOUD_PROJECT;
+    (runningDeployed
+      ? process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT
+      : undefined);
   if (project) {
     return new FirestoreRecordStore(project, process.env.COPILOT_WORKFLOW_FIRESTORE_DATABASE || "(default)", secret, undefined, undefined, collection, idRule);
   }
-  if (process.env.NODE_ENV === "production" || process.env.K_SERVICE) throw new Error("durable_workflow_store_not_configured");
+  if (runningDeployed) throw new Error("durable_workflow_store_not_configured");
   return new LocalRecordStore(resolve(process.cwd(), localDirectory), secret, idRule);
 }
 
