@@ -230,7 +230,15 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
     text.match(
       /(?:keep|maintain|hold|stay|above|over|min(?:imum)?)\s*(?:my\s+)?(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?|of\s+)?\s*(\d+(?:\.\d+)?)/i,
     ) ||
-    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|>=?)\s*(\d+(?:\.\d+)?)/i) ||
+    /**
+     * `floor` is how the product itself names this number — the approval card says
+     * "your 1.3 health-factor floor" — so a user echoing it back reads as a floor here
+     * too. Without it, "borrow BLUSDC to HF floor 1.40" matched no pattern at all, and
+     * both halves of that failed at once: the stated floor was dropped (nothing
+     * enforced it), and 1.40, the only number in the sentence, was left unclaimed for
+     * the amount scan to read as the borrow size (findings C1, 15 Sep).
+     */
+    text.match(/(?:hf|health\s*factor)\s*(?:above|over|at\s+least|floor(?:\s+of)?|>=?)\s*(\d+(?:\.\d+)?)/i) ||
     text.match(/(?:above|over|at\s+least)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i) ||
     text.match(
       /(?:hf|health\s*factor)[^.]{0,40}?(?:not|never|no|without)\s+[^.]{0,24}?(?:below|under|lower\s+than|beneath|dropping\s+below|dipping\s+below)\s*(\d+(?:\.\d+)?)/i,
