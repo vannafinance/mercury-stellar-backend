@@ -334,3 +334,58 @@ Two housekeeping notes:
 - **The workflow store inherits Vertex's project.** "One project configures them all" holds
   only if that project has Firestore. Naming Vertex's project as the fallback for a durable
   store couples two unrelated deployment decisions.
+
+---
+
+## `lend me 50xlm` becomes a BORROW — investigate-first drops an existing guard
+
+Found 23 Sep on `try/investigate-first`, auto-approve ON, one click from executing.
+
+| Prompt | Understood as | `borrowing` |
+|---|---|---|
+| `lend me 50xlm` | **"Borrow 50 XLM."** | **required** |
+| `lend 50 XLM` | "Lend 50 XLM into Vanna Earn." | forbidden |
+| `lend me 50 XLM into earn` | "Lend 50 XLM into Vanna Earn" | unspecified |
+
+The word **"me"** inverts the action. Supplying capital becomes taking on debt.
+
+The model is not being stupid — "lend me X" idiomatically means "loan me X", where the
+speaker RECEIVES. That reading is defensible English. It is the wrong reading of a product
+whose Earn surface is called Lend, and the two readings are opposite financial actions, so
+this is a case to ASK about, never to pick silently.
+
+It compounds: `borrowing: "required"` makes `rankFeasible` return borrow shapes ONLY
+(`candidates.ts:249`). A misread verb does not merely add a wrong option, it deletes the safe
+one — the non-borrowing shape is never offered.
+
+### This is a regression from the experiment, not a pre-existing bug
+`routeMessage("lend me 50xlm")` returns `op: lend`. The keyword lane gets it right.
+
+### The guard already exists and is wired to the wrong path
+`lib/copilot/leg-direction.ts` was written for exactly this class — its docstring cites
+"withdraw 30 XLM from blend and lend it in earn" planning money INTO Blend, "one signature
+from executing." Its principle:
+
+> Direction is already stated once, as data, in `OP_FLOW`'s `from`/`to` pockets. This reads
+> it rather than teaching a planner which verbs mean "out" — a verb-to-op table is how the
+> two got to disagree in the first place.
+
+`OP_FLOW` states the contradiction as data:
+
+```
+lend:   from wallet → to earn     health: neutral
+borrow: from debt   → to account  health: lowers
+```
+
+`leg-direction.ts` is imported by `router.ts` ONLY. The investigation path never calls it.
+
+**Fix direction (no phrasing, no verb table):** run the existing direction check against the
+op the investigation chose, comparing it with the verb the extractor already found in the
+prompt. Opposite source pocket or opposite health effect = a disagreement to surface, not a
+choice to make silently. Adding "lend me" to any regex, list, or model-prompt sentence is
+banned — that is the verb-to-op table the guard exists to replace.
+
+### What this means for the lane decision
+Investigate-first is not strictly safer. It fixes the invented-asset bug (`deposit it` → XLM)
+and loses the direction guard. The conclusion is not "one lane is better" — it is that the
+direction check must apply to whichever path does the planning.
