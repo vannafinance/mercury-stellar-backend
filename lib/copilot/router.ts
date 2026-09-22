@@ -250,7 +250,37 @@ function findAmount(text: string): number | null {
     " ",
   );
   const noLev = noPretendPrice.replace(LEVERAGE_RE, " ").replace(/\b\d+(?:\.\d+)?\s*%/g, " ");
-  const m = noLev.match(BARE_AMOUNT_RE);
+  /**
+   * A health-factor limit is a threshold, never a size.
+   *
+   * Live, 22 Sep: "deploy my idle funds into blend and keeping HF above 1.4" staged
+   * `Supply 1.4 XLM to Blend` — the floor became the amount, and the projected impact
+   * gave it away by showing health and collateral unchanged. "keeping HF below 2" put
+   * 2 XLM through the same hole. The user never stated a size in either sentence; the
+   * only number in it was the limit they set ON the size.
+   *
+   * Masked rather than matched, for the same reason the leverage, percentage and
+   * pretend-price clauses above are: this bare fallback cannot tell one digit from
+   * another, so a number that is already spoken for must be gone before it looks. Both
+   * spans come from the shared detectors — `plan-sanitize.ts` guards the planner's own
+   * amounts with `isLikelyHfFloorAmount`, but that runs only in `llm-planner.ts`, and
+   * the router reaches this line without passing through it.
+   *
+   * An explicit "N ASSET" never gets here: `AMOUNT_ASSET_RE` returns above, so
+   * "supply 20 XLM keeping HF above 1.4" is still 20.
+   */
+  const blank = (text: string, span: { start: number; end: number } | null) =>
+    span ? text.slice(0, span.start) + " ".repeat(span.end - span.start) + text.slice(span.end) : text;
+  const noFloor = blank(noLev, matchMinHealthFactor(noLev));
+  const noCeiling = blank(noFloor, matchHealthFactorCeilingSpan(noFloor));
+  /**
+   * "to HF floor 1.40" states the same threshold in a phrasing neither detector reads,
+   * and read 1.40 as the borrow size (findings C1, 15 Sep). The amount-after-verb
+   * finder already treats `floor` immediately before a number as never a quantity; this
+   * one needs the same, because the only number in that sentence IS the floor.
+   */
+  const noHfLimit = noCeiling.replace(/\bfloor\s*(?:of\s*)?\d+(?:\.\d+)?/gi, " ");
+  const m = noHfLimit.match(BARE_AMOUNT_RE);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -551,12 +581,26 @@ export function matchMinHealthFactor(text: string): MinHealthFactorMatch | null 
  * a sentence that is already a floor can never also be a ceiling.
  */
 export function matchHealthFactorCeiling(text: string): number | null {
+  return matchHealthFactorCeilingSpan(text)?.value ?? null;
+}
+
+/**
+ * The ceiling with its position, so a caller can tell a THRESHOLD from a size.
+ *
+ * Same split as `matchMinHealthFactor` / `parseMinHealthFactor`: the regexes live in
+ * one place and the value-only reading is derived from the span, so the two can never
+ * disagree about what counts as a ceiling.
+ */
+export function matchHealthFactorCeilingSpan(
+  text: string,
+): { value: number; start: number; end: number } | null {
   const m =
     text.match(/(?:hf|health\s*factor)\s*(?:below|under|less\s+than|beneath|<=?)\s*(\d+(?:\.\d+)?)/i) ||
     text.match(/(?:below|under|less\s+than|beneath)\s*(\d+(?:\.\d+)?)\s*(?:hf|health)/i);
-  if (!m) return null;
+  if (!m || m.index == null) return null;
   const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 && n < 50 ? n : null;
+  if (!(Number.isFinite(n) && n > 0 && n < 50)) return null;
+  return { value: n, start: m.index, end: m.index + m[0].length };
 }
 
 export function parseMinHealthFactor(text: string): number | null {
