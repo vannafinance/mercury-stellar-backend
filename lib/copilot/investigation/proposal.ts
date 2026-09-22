@@ -25,6 +25,8 @@ import { researchEvidenceReusable } from "./evidence";
 import { resolveInvestigationScope, ResearchError } from "./scope";
 import { WorkflowJournal, WorkflowConflict } from "../workflow/journal";
 import { workflowStore } from "../workflow/store";
+import { disagreesOnNewDebt, drawsNewDebt } from "../leg-direction";
+import { clauseToStep } from "../step-extractor";
 import { workflowView, type WorkflowProposal, type WorkflowRecord, type WorkflowView } from "../workflow/types";
 import { getMcpClient } from "../mcp-client";
 import { validateWorkflowRisk } from "../workflow/risk";
@@ -244,6 +246,48 @@ export async function proposeWorkflow(input: {
     throw new ResearchError("compile_failed", compileMessage(compiled.reason));
   }
 
+
+  /**
+   * Two readings of one sentence that disagree about creating debt stop here.
+   *
+   * The investigation's reading and the deterministic extractor's reading of the SAME words
+   * are compared on one axis — does this draw new debt — taken from `OP_FLOW` rather than
+   * from any verb list. Live, 23 Sep: "lend me 50xlm" compiled a `borrow`, while the
+   * extractor read `lend`. Auto-approve was on and the card offered "Approve and run".
+   *
+   * It stops at propose rather than during research so a wrong reading is never the thing
+   * a click executes, while answers, comparisons and refusals are untouched. Both readings
+   * are defensible English, so neither is chosen here: the disagreement is handed back.
+   */
+  const spoken = prior.messages[prior.messages.length - 1] ?? "";
+  const extracted = clauseToStep(spoken, { leverage: null, minHf: null });
+  const spokenOp = extracted?.kind === "write" ? extracted.op : null;
+  /**
+   * Only a SINGLE-action reading can disagree with itself.
+   *
+   * The first version compared the sentence's one op against EVERY compiled step, which
+   * blocked legitimate leveraged plans: a leveraged Blend shape properly contains a borrow
+   * leg though the sentence's verb is "supply", and choosing that candidate IS consent to
+   * the borrow. Three plan tests caught it. A multi-leg plan is a shape the user picked; a
+   * one-step plan is this sentence read back, and only there does "the other reading" mean
+   * anything.
+   */
+  const soleStep = compiled.steps.length === 1 ? compiled.steps[0] : null;
+  if (spokenOp && soleStep) {
+    const conflicting = disagreesOnNewDebt(spokenOp, soleStep.op) ? soleStep : null;
+    if (conflicting) {
+      const borrowing = drawsNewDebt(conflicting.op) ? conflicting.op : spokenOp;
+      const funded = drawsNewDebt(conflicting.op) ? spokenOp : conflicting.op;
+      throw new ResearchError(
+        "debt_reading_ambiguous",
+        `I read two different things in that, and they disagree about borrowing: one is ` +
+          `${String(funded).replace(/_/g, " ")} using funds you already hold, the other is ` +
+          `${String(borrowing).replace(/_/g, " ")}, which takes on new debt. Say which you meant ` +
+          `and I will prepare it.`,
+        409,
+      );
+    }
+  }
   const derived = compiled.steps.find((step) => step.sizing?.basis === "derived_max_at_floor");
   const assumptions = [
     "Token amounts use the oracle price read for this proposal, not a ticker peg.",
