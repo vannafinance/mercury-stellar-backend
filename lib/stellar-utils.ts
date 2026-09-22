@@ -388,16 +388,14 @@ export class ContractService {
 
       const sim = await server.simulateTransaction(tx);
       if (!StellarSdk.rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-        if (options?.throwOnError) throw new Error(`Token balance simulation failed for ${tokenContract}`);
-        return '0';
+        throw new Error(`Token balance simulation failed for ${tokenContract}`);
       }
 
       const raw = StellarSdk.scValToNative(sim.result.retval) as bigint;
       const decimals = options?.decimals ?? await this.getTokenDecimals(tokenContract);
       return (Number(raw) / 10 ** decimals).toFixed(7);
     } catch (error) {
-      if (options?.throwOnError) throw error;
-      return '0';
+      throw error;
     }
   }
 

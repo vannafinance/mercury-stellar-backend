@@ -3,14 +3,16 @@
  * Prevention path: setup before MCP. Fallback: never surface raw HostError #13.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   classifyTrustlineFailure,
   isTrustlineMissingError,
   readinessDisplayAsset,
+  walletSacBalance,
 } from "@/lib/copilot/asset-readiness";
 import { humanizeMcpWriteError } from "@/lib/copilot/mcp-write";
 import { normalizeDepositCollateralError } from "@/lib/errors/normalize";
+import { ContractService } from "@/lib/stellar-utils";
 
 describe("readinessDisplayAsset", () => {
   it("maps Blend aliases to BLUSDC", () => {
@@ -87,5 +89,29 @@ describe("normalizeDepositCollateralError trustline", () => {
     );
     expect(out).toMatch(/Faucet|trustline/i);
     expect(out).not.toMatch(/HostError/i);
+  });
+});
+
+describe("walletSacBalance — failed simulation is unknown, not zero", () => {
+  const g = "G" + "A".repeat(55);
+
+  it("returns POSITIVE_INFINITY when simulation throws an error", async () => {
+    const spy = vi
+      .spyOn(ContractService, "getSorobanTokenWalletBalance")
+      .mockRejectedValueOnce(new Error("Token balance simulation failed for test-contract"));
+
+    const bal = await walletSacBalance(g, "AQUSDC");
+    expect(bal).toBe(Number.POSITIVE_INFINITY);
+    spy.mockRestore();
+  });
+
+  it("returns parsed numerical balance on success", async () => {
+    const spy = vi
+      .spyOn(ContractService, "getSorobanTokenWalletBalance")
+      .mockResolvedValueOnce("42.5000000");
+
+    const bal = await walletSacBalance(g, "AQUSDC");
+    expect(bal).toBe(42.5);
+    spy.mockRestore();
   });
 });

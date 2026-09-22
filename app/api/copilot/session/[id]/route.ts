@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadUserFromRequest } from "@/lib/copilot/request-user";
-import { deleteConversation, openConversation, renameConversation, updateSessionExecutionReceipt } from "@/lib/copilot/session-store";
+import { deleteConversation, openConversation, renameConversation, updateSessionExecutionReceipt, updateSessionAssistantText } from "@/lib/copilot/session-store";
 import type { ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
 import { WORKFLOW_OPS, type StepStatus, type WorkflowRecord } from "@/lib/copilot/workflow/types";
 
@@ -87,6 +87,11 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
       return loaded.commit(NextResponse.json({ message: "That conversation does not exist." }, { status: 404 }));
     }
     return loaded.commit(NextResponse.json({ renamed: true }, NO_STORE));
+  }
+  if (typeof payload?.assistantText === "string") {
+    const updated = await updateSessionAssistantText({ subject: loaded.bound.sub, conversationId: id, text: payload.assistantText });
+    if (!updated) return loaded.commit(NextResponse.json({ message: "That conversation cannot accept this text update." }, { status: 409 }));
+    return loaded.commit(NextResponse.json({ updated: true }, NO_STORE));
   }
   return loaded.commit(NextResponse.json({ message: "Invalid receipt." }, { status: 400 }));
 }

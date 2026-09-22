@@ -123,10 +123,16 @@ export class MarginAccountService {
 
     if (!tokenContract) return { ok: true };
 
-    const balanceStr = await ContractService.getSorobanTokenWalletBalance(
-      tokenContract,
-      walletAddress,
-    );
+    let balanceStr = "0";
+    try {
+      balanceStr = await ContractService.getSorobanTokenWalletBalance(
+        tokenContract,
+        walletAddress,
+      );
+    } catch {
+      // Failed simulation must not be mistaken for an empty wallet
+      return { ok: true };
+    }
     const available = parseFloat(balanceStr) || 0;
     if (available + 1e-7 < depositAmount) {
       if (available <= 1e-7) {

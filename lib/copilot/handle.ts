@@ -1557,7 +1557,7 @@ function assetSetupSignResponse(
     kind: "needs_wallet_sign",
     message:
       readiness.message +
-      `\n\nWallet sign required for setup — full unsigned_xdr is attached (${readiness.unsigned_xdr.length} chars). ` +
+      `\n\nWallet sign required for setup — full unsigned_xdr is attached. ` +
       `After this confirms, Copilot continues: ${resumeLabel}.`,
     data: factsForUi({
       asset_setup: true,

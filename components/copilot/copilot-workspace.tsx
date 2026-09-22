@@ -1044,6 +1044,25 @@ function isMultiLegResponse(data?: Record<string, unknown> | null): boolean {
   return !!(data && (data.multi_leg === true || Array.isArray(data.multi_leg_steps)));
 }
 
+function isRealStrategyRun(
+  steps: Array<{ op?: string }> | null | undefined,
+  data?: Record<string, unknown> | null,
+): boolean {
+  if (data?.asset_setup === true) return false;
+  const rawSteps = steps && steps.length > 0
+    ? steps
+    : Array.isArray(data?.multi_leg_steps)
+      ? (data!.multi_leg_steps as Array<{ op?: string }>)
+      : [];
+  const nonSetupOps = rawSteps.filter(
+    (s) => s.op && s.op !== "ensure_asset_setup" && s.op !== "asset_setup" && s.op !== "report",
+  );
+  if (rawSteps.length > 0) {
+    return nonSetupOps.length > 1;
+  }
+  return data?.multi_leg === true && ((data?.remaining_legs != null) || ((data?.total_steps as number) ?? 0) > 1);
+}
+
 /**
  * Whether a resume hop response means "this leg was accepted by the server and
  * we may advance the client queue to the next leg".
@@ -3442,6 +3461,14 @@ export function CopilotWorkspace() {
         );
         pushActivity(summary, result.hash);
         await refreshRailStats({ force: true });
+        if (investigation.turns.length > 0) {
+          const settledSentence = `${summary} settled.`;
+          void investigation.updateLastAssistantText(
+            response?.message && !response.message.includes("unsigned_xdr is attached") && !response.message.includes("is not ready")
+              ? response.message
+              : settledSentence,
+          );
+        }
 
         // Wait until Horizon shows this tx's sequence as applied before asking MCP
         // to build the next leg. Otherwise hop 2 is simulated against a stale seq and
@@ -3762,7 +3789,7 @@ export function CopilotWorkspace() {
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
           await refreshRailStats({ force: true });
-          await postCopilot(
+          const hop = await postCopilot(
             {
               message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
               pending_write: {
@@ -3776,6 +3803,9 @@ export function CopilotWorkspace() {
             label,
             { chainHop: true },
           );
+          if (hop?.message) {
+            void investigation.updateLastAssistantText(hop.message);
+          }
           return;
         }
 
@@ -4433,7 +4463,7 @@ export function CopilotWorkspace() {
           prompt: submitted,
         };
       }
-      await postCopilot(
+      const hop = await postCopilot(
         {
           message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
           pending_write: {
@@ -4447,8 +4477,11 @@ export function CopilotWorkspace() {
         label,
         { chainHop: true },
       );
+      if (hop?.message) {
+        void investigation.updateLastAssistantText(hop.message);
+      }
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf, investigation]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -4623,7 +4656,7 @@ export function CopilotWorkspace() {
   }, [liveHf, submitted]);
 
   const multiLeg =
-    isMultiLegResponse(response?.data ?? null) || strategySteps.length > 0;
+    isRealStrategyRun(strategySteps, response?.data ?? null);
   const strategyOpen = (() => {
     const src = strategySteps.length
       ? strategySteps
@@ -5213,22 +5246,29 @@ export function CopilotWorkspace() {
               liveAssistant={liveAssistant}
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
+              sessionSigning={sessionSigning}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
-              <ExecutionStepper
-                steps={[
-                  {
-                    id: "direct-tx",
-                    label: "",
-                    op: String(action?.op ?? "submit"),
-                    asset: String(action?.asset ?? ""),
-                    amount: String(action?.amount ?? ""),
-                    status: "settled",
-                    txHash,
-                  },
-                ]}
-                currentStepIndex={0}
-              />
+              <div className="flex items-start gap-3 max-w-[85%]">
+                <div className="w-6 shrink-0" aria-hidden="true" />
+                <div className="min-w-0 w-full">
+                  <ExecutionStepper
+                    steps={[
+                      {
+                        id: "direct-tx",
+                        label: "",
+                        op: String(action?.op ?? "submit"),
+                        asset: String(action?.asset ?? ""),
+                        amount: String(action?.amount ?? ""),
+                        status: "settled",
+                        txHash,
+                      },
+                    ]}
+                    currentStepIndex={0}
+                    autoApprove={sessionSigning}
+                  />
+                </div>
+              </div>
             ) : null}
             {(investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal) && (
               <InvestigationCard

@@ -529,6 +529,51 @@ export function useInvestigation(wallet: string | null) {
     } catch { return false; }
   }, [refreshConversations]);
 
+  /**
+   * Update the latest assistant turn in the conversation.
+   * When a chained action (e.g. deposit after asset setup) completes and settles,
+   * this replaces the pre-setup text with the actual settled action message.
+   */
+  const updateLastAssistantText = useCallback(async (newText: string): Promise<boolean> => {
+    const owner = activeWallet.current;
+    const clean = newText.trim();
+    if (!clean) return false;
+    const id = conversationId.current;
+    let found = false;
+    setState((previous) => {
+      const idx = [...previous.turns].map((t, i) => ({ t, i })).reverse().find(({ t }) => t.role === "assistant")?.i;
+      if (idx == null) return previous;
+      found = true;
+      const updatedTurns = [...previous.turns];
+      updatedTurns[idx] = { ...updatedTurns[idx], text: clean };
+      transcript.current = updatedTurns.map((t) => ({ role: t.role, text: t.text }));
+      if (owner) {
+        writeStoredThread(owner, {
+          wallet: owner,
+          turns: updatedTurns,
+          continuation: continuation.current,
+          result: lastResult.current,
+          conversationId: id,
+        });
+      }
+      rememberLive(owner, updatedTurns, id);
+      return { ...previous, turns: updatedTurns };
+    });
+    if (!found || !owner || !id || isLocalConversationId(id)) return found;
+    try {
+      const headers = await requestHeaders(AbortSignal.timeout(8_000), owner);
+      await fetch(`/api/copilot/session/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ assistantText: clean }),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [rememberLive]);
+
   const run = useCallback(async (message: string, signal?: AbortSignal) => {
     const prompt = message.trim();
     if (!prompt) return;
@@ -675,5 +720,5 @@ export function useInvestigation(wallet: string | null) {
   // Do not expose the previous wallet's state during the render before its effect resets.
   const visible = state.wallet === wallet ? state : { ...state, loading: false, prompt: "", result: null, progress: null, error: null, turns: [], conversationId: null, resultOrigin: "restored" as const };
   /** `reset` keeps its name for the workspace: it is "new chat" now, not "wipe the thread". */
-  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt };
+  return { ...visible, conversations, run, cancel, recordDirect, reset: newChat, newChat, open, remove, rename, updateExecutionReceipt, updateLastAssistantText };
 }

@@ -79,3 +79,19 @@ describe('ContractService.getPoolStats — asset routing', () => {
     }
   });
 });
+
+describe('ContractService.getSorobanTokenWalletBalance', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('throws an error on failed simulation instead of returning 0', async () => {
+    // If the contract or account does not exist or simulation fails, it must throw
+    await expect(
+      ContractService.getSorobanTokenWalletBalance(
+        'CA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVWAC',
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        undefined,
+        { sourceSequence: '100', decimals: 7 }
+      )
+    ).rejects.toThrow();
+  });
+});

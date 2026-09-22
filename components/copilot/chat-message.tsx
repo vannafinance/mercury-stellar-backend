@@ -124,31 +124,54 @@ function AssistantTurn({
   receipt,
   note,
   tone = "default",
+  sessionSigning,
 }: {
   text: string;
   receipt?: ThreadTurn["executionReceipt"];
   note?: string | null;
   tone?: "default" | "error";
+  sessionSigning?: boolean;
 }) {
   if (/^Investigation cancelled\./i.test(text)) {
     return (
-      <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
-        <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
-        <span>{text}</span>
-      </p>
+      <div className="flex items-start gap-3 max-w-[85%]">
+        <img
+          src="/logos/vanna-icon.png"
+          alt="Vanna"
+          width={24}
+          height={24}
+          className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+        />
+        <p role="alert" className="flex items-start gap-2 text-[14px] leading-6 text-vgray-700">
+          <CircleAlert size={17} className="mt-1 shrink-0 text-imperial-500" aria-hidden="true" />
+          <span>{text}</span>
+        </p>
+      </div>
     );
   }
   return (
-    <>
-      <AssistantMessage note={note} tone={tone}>{chatProseFromStored(text)}</AssistantMessage>
-      {receipt ? (
-        <ExecutionStepper
-          steps={receiptStepperSteps(receipt)}
-          currentStepIndex={Math.max(0, receipt.steps.findIndex((step) => step.status !== "settled"))}
-          network={receipt.network}
-        />
-      ) : null}
-    </>
+    <div className="flex items-start gap-3 max-w-[85%]">
+      <img
+        src="/logos/vanna-icon.png"
+        alt="Vanna"
+        width={24}
+        height={24}
+        className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+      />
+      <div className="flex flex-col gap-2 min-w-0 w-full">
+        <AssistantMessage note={note} tone={tone}>{chatProseFromStored(text)}</AssistantMessage>
+        {receipt ? (
+          <div className="w-full">
+            <ExecutionStepper
+              steps={receiptStepperSteps(receipt)}
+              currentStepIndex={Math.max(0, receipt.steps.findIndex((step) => step.status !== "settled"))}
+              network={receipt.network}
+              autoApprove={sessionSigning}
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -161,6 +184,7 @@ export function ChatTurns({
   liveAssistant,
   liveNote,
   liveTone = "default",
+  sessionSigning,
 }: {
   turns: ThreadTurn[];
   hideAssistantText?: string | null;
@@ -169,8 +193,9 @@ export function ChatTurns({
   liveAssistant?: string | null;
   liveNote?: string | null;
   liveTone?: "default" | "error";
+  sessionSigning?: boolean;
 }) {
-  if (!turns.length && !pendingUser && !liveAssistant) return null;
+  if (!turns.length && !pendingUser && !liveAssistant && !working) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 34 }} aria-label="Conversation">
       {groupChatTurns(turns).map((group, index) => {
@@ -179,18 +204,36 @@ export function ChatTurns({
           <section key={`turn-${index}`} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {group.user ? <UserBubble>{group.user.text}</UserBubble> : null}
             {group.assistant && !hideStaleAssistant ? (
-              <AssistantTurn text={group.assistant.text} receipt={group.assistant.executionReceipt} />
+              <AssistantTurn
+                text={group.assistant.text}
+                receipt={group.assistant.executionReceipt}
+                sessionSigning={sessionSigning}
+              />
             ) : null}
           </section>
         );
       })}
-      {pendingUser || liveAssistant ? (
+      {pendingUser || liveAssistant || working ? (
         <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {pendingUser ? <UserBubble>{pendingUser}</UserBubble> : null}
           {liveAssistant ? (
-            <AssistantTurn text={liveAssistant} note={liveNote} tone={liveTone} />
+            <AssistantTurn
+              text={liveAssistant}
+              note={liveNote}
+              tone={liveTone}
+              sessionSigning={sessionSigning}
+            />
           ) : working ? (
-            <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
+            <div className="flex items-start gap-3 max-w-[85%]">
+              <img
+                src="/logos/vanna-icon.png"
+                alt="Vanna"
+                width={24}
+                height={24}
+                className="h-6 w-6 shrink-0 mt-0.5 rounded-full"
+              />
+              <p role="status" aria-live="polite" className="text-[13px] leading-[20px] text-violet-500">Working…</p>
+            </div>
           ) : null}
         </section>
       ) : null}
