@@ -1310,9 +1310,16 @@ function resolvePlan(plan: ProposedPlan, ctx: PlanContext): Candidate {
          * true: the user accepted this fill in their own words, anchored verbatim before
          * the plan was sealed. Every other swap reaches MCP without it and is withheld
          * there — which is the case the gate was built for.
+         *
+         * A whole Earn position is `redeem_all`. The tool re-reads the verified vToken
+         * balance at submit. Sending the vToken count captured when the plan was built
+         * leaves a remainder once that balance moves, and re-deriving underlying here
+         * would be a second rate. A stated amount stays a partial redeem.
          */
-        out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined,
-          acknowledgedPriceImpact: ctx.goal?.slippageAccepted?.accepted === true }
+        d.leg.op === "redeem" && d.leg.sizing.kind === "all_position"
+          ? { redeemAll: true }
+          : out && dex ? { tokenOut: out.marginSymbol ?? out.id, venue: dex, minOut: minOut ?? undefined,
+            acknowledgedPriceImpact: ctx.goal?.slippageAccepted?.accepted === true }
           : d.leg.op === "remove_liquidity" && dex ? { venue: dex }
           : paired && dex && addLiquidity ? { tokenOut: paired.marginSymbol ?? paired.id, venue: dex, amountB: addLiquidity.amountB, minOut: addLiquidity.minLiquidityOut }
           : undefined),
@@ -1870,14 +1877,16 @@ export function isPositionRowRead(read: string): read is keyof typeof POSITION_R
 /**
  * Record on the step that its amount WAS the whole position, and which read holds it.
  *
- * Only for the reads whose rows state a balance in the asset's own units — the set
- * `POSITION_ROWS` already defines. Earn and LP are deliberately outside it: their amounts
- * are vTokens and pool shares, converted through a rate the write would have to re-derive
- * rather than re-read, which is a different job from asking the same source again.
+ * Position rows in the asset's own units are re-read by `stalePositionAmount`.
+ * A whole Earn redeem is recorded the same way, but the write does not re-parse those
+ * rows: `vanna_redeem`'s `redeem_all` reads the verified vToken balance itself.
+ * LP stays outside this. Its shares are not that tool flag, and a zero `min_a`/`min_b`
+ * is a different gap from re-reading a balance.
  */
 function wholePositionRead(leg: PlanLeg): { basis: "whole_position"; read: string } | null {
   if (leg.sizing.kind !== "all_position") return null;
   const read = OP_FLOW[leg.op].positionRead;
+  if (read === "earn_position") return { basis: "whole_position", read };
   return read && isPositionRowRead(read) ? { basis: "whole_position", read } : null;
 }
 /** The rate row column each table rate names. */

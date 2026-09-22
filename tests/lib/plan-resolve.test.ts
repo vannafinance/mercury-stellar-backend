@@ -1243,7 +1243,8 @@ describe("resolvePlans — redeem and withdraw", () => {
       ["redeem", "4918.2651397", "vanna_redeem"],
       ["deposit_collateral", "5000.786863", "vanna_deposit_collateral"],
     ]);
-    expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", amount: "4918.2651397", lender: SCOPE.trader });
+    expect(c.steps![0].args).toEqual({ symbol: "AQUSDC", redeem_all: true, lender: SCOPE.trader });
+    expect(c.steps![0].sizing).toEqual({ basis: "whole_position", read: "earn_position" });
     expect(c.steps![0].label).toMatch(/Redeem 4918.2651397 AQUSDC vTokens from Earn \(≈ 5000.78/);
     expect(c.steps![1].args).toEqual({ smart_account: SCOPE.smartAccount, symbol: "AQUSDC", amount: "5000.786863", trader: SCOPE.trader });
     // One sum of money passes through two legs: deployed is what lands, not twice that.
