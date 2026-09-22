@@ -14,6 +14,9 @@ const LIFECYCLE_WRITE =
 
 const SWAP_ACTION = /\b(swap|trade|exchange|convert)\b/i;
 
+/** Annotated `boolean`, not a literal, so the keyword lane below still narrows and type-checks. */
+const INVESTIGATE_FIRST: boolean = true;
+
 /**
  * Classify a copilot prompt into "direct" or "strategy".
  *
@@ -28,6 +31,23 @@ const SWAP_ACTION = /\b(swap|trade|exchange|convert)\b/i;
 export function classifyCopilotEntry(message: string): CopilotEntryLane {
   const text = message.trim();
   if (!text) return "direct";
+
+  /**
+   * EXPERIMENT (branch try/investigate-first): restore "investigate first, then act".
+   *
+   * Everything below this line is the keyword lane introduced by 9c197cd on 20 Sep, which
+   * replaced "EVERY prompt is investigated first, then acted on". Every defect in
+   * docs/copilot/FIX-LIST-copilot-upgrade.md is the failure mode that change predicted: a
+   * concrete instruction skips investigation and executes against whatever the keyword
+   * path inferred.
+   *
+   * Reads cost nothing here - investigation/fast-path.ts already answers them without the
+   * loop (measured 22 Sep: health 16ms, price 0.55s). Writes pay the research (~8s) and
+   * gain a plan card, which is the product decision this experiment exists to test.
+   *
+   * Remove this return to go back to the keyword lane.
+   */
+  if (INVESTIGATE_FIRST) return "strategy";
 
   // Dedicated review flows that remain on the strategy/investigation loop
   if (SWAP_ACTION.test(text) || LIFECYCLE_WRITE.test(text)) {
