@@ -24,7 +24,8 @@ import { formatValue } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
 import { useShallow } from "zustand/shallow";
 import { useAccountSnapshot } from "@/hooks/use-account-snapshot";
-import { deriveMarginHealth } from "@/lib/margin-health";
+import { deriveMarginHealth, deriveNetLeverage } from "@/lib/margin-health";
+import { isTrackingSymbol } from "@/lib/analytics/stellar/canon";
 
 // useSearchParams() opts this page out of static prerendering unless it's
 // isolated behind its own Suspense boundary — everything else on the page
@@ -91,6 +92,8 @@ const MarginContent = () => {
     netAvailableCollateral,
     timeToLiquidation,
     storeBorrowRate,
+    collateralBalances,
+    borrowedBalances,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       hasMarginAccount: state.hasMarginAccount,
@@ -99,6 +102,8 @@ const MarginContent = () => {
       netAvailableCollateral: state.netAvailableCollateral,
       timeToLiquidation: state.timeToLiquidation,
       storeBorrowRate: state.borrowRate,
+      collateralBalances: state.collateralBalances,
+      borrowedBalances: state.borrowedBalances,
     })),
   );
 
@@ -191,6 +196,44 @@ const MarginContent = () => {
   const effNetAvailable = derivedHealth.netAvailableCollateral;
   const effCollateralLeft = derivedHealth.collateralLeftBeforeLiquidation;
 
+  // Match Current Positions "Leverage Taken" exactly: equity = net deposited
+  // collateral USD (exclude farm receipts + subtract same-token borrow so
+  // borrowed BLUSDC sitting in the wallet isn't counted as deposited equity).
+  const effNetLeverage = useMemo(() => {
+    const canon = (token: string): string => {
+      const n = token.toUpperCase();
+      if (n === "BLEND_XLM") return "XLM";
+      if (n === "BLEND_USDC" || n === "USDC") return "BLUSDC";
+      if (n === "AQUIRESUSDC" || n === "AQUARIUS_USDC") return "AQUSDC";
+      if (n === "SOROSWAPUSDC" || n === "SOROSWAP_USDC") return "SOUSDC";
+      return n;
+    };
+
+    const borrowUsdByToken = new Map<string, number>();
+    for (const [token, bal] of Object.entries(borrowedBalances ?? {})) {
+      const usd = parseFloat(bal.usdValue || "0");
+      if (!(usd > 0.01)) continue;
+      const key = canon(token);
+      borrowUsdByToken.set(key, (borrowUsdByToken.get(key) ?? 0) + usd);
+    }
+
+    let equityUsd = 0;
+    for (const [token, bal] of Object.entries(collateralBalances ?? {})) {
+      if (isTrackingSymbol(token)) continue;
+      const grossUsd = parseFloat(bal.usdValue || "0");
+      if (!(grossUsd > 0.01)) continue;
+      const key = canon(token);
+      const borrowedUsd = borrowUsdByToken.get(key) ?? 0;
+      equityUsd += Math.max(0, grossUsd - borrowedUsd);
+    }
+
+    const debtUsd = effBorrowed > 0.01 ? effBorrowed : 0;
+    if (!(equityUsd > 0.01) && effNetAvailable > 0.01) {
+      equityUsd = effNetAvailable;
+    }
+    return deriveNetLeverage({ equityUsd, debtUsd });
+  }, [collateralBalances, borrowedBalances, effBorrowed, effNetAvailable]);
+
   // Shimmer (never a 0 or spinner) until we have a snapshot to show. Once it
   // resolves — from the per-account cache on reload (instant) or the network on
   // first-ever load — real values render directly.
@@ -209,6 +252,7 @@ const MarginContent = () => {
       collateralLeftBeforeLiquidation: effCollateralLeft,
       netAvailableCollateral: effNetAvailable,
       netAmountBorrowed: effBorrowed,
+      netLeverageTaken: effNetLeverage,
       // Realised P&L is 0 until proper deposit-history accounting is wired up;
       // showing totalValue here misled users into reading their own equity as
       // "profit". Once we track per-user cost basis we can compute
@@ -220,6 +264,7 @@ const MarginContent = () => {
     effCollateralLeft,
     effNetAvailable,
     effBorrowed,
+    effNetLeverage,
     effGrossCollateral,
     effHasAccount,
   ]);
@@ -320,7 +365,7 @@ const MarginContent = () => {
 
   // Format account stats value with explicit units, following industry
   // conventions: Health Factor is a bare unitless ratio (Aave/Compound style,
-  // never with ×), USD totals with $ prefix, P&L with signed $ prefix (+/-).
+  // never with ×), leverage is Nx (never $), USD totals with $ prefix.
   const formatAccountStatValue = (itemId: string, value: number) => {
     if (itemId === "netHealthFactor") {
       if (value === Infinity || !isFinite(value) || value >= 999) {
@@ -330,6 +375,12 @@ const MarginContent = () => {
         type: "health-factor",
         showZeroAsDash: false,
       });
+    }
+
+    // Always "3.31x" style — never fall through to the USD formatter below.
+    if (itemId === "netLeverageTaken") {
+      if (!Number.isFinite(value) || value <= 0) return "—";
+      return `${value.toFixed(2)}x`;
     }
 
     const usdText = formatValue(Math.abs(value), {
@@ -370,12 +421,13 @@ const MarginContent = () => {
   }, [accountStats]);
 
   // Industry-standard P&L coloring: green when positive, red when negative,
-  // neutral (default) at exactly zero.
+  // neutral (default) at exactly zero. Leverage matches other KPI values (white).
   const accountStatsValueColors = useMemo(() => {
+    const colors: Record<string, string> = {};
     const pnl = accountStats?.netProfitAndLoss ?? 0;
-    if (pnl > 0) return { netProfitAndLoss: "text-emerald-500" };
-    if (pnl < 0) return { netProfitAndLoss: "text-rose-500" };
-    return undefined;
+    if (pnl > 0) colors.netProfitAndLoss = "text-emerald-500";
+    if (pnl < 0) colors.netProfitAndLoss = "text-rose-500";
+    return colors;
   }, [accountStats?.netProfitAndLoss]);
 
   return (
@@ -505,7 +557,8 @@ const MarginContent = () => {
             items={ACCOUNT_STATS_ITEMS}
             values={accountStatsValues}
             valueColors={accountStatsValueColors}
-            gridCols="grid-cols-4"
+            gridCols="grid-cols-5"
+            compact
             loading={showStatsSkeleton}
           />
         </motion.section>

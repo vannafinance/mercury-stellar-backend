@@ -16,7 +16,12 @@ vi.mock("@/lib/pool-stats", () => ({
   getAllPoolStats: mocks.getAllPoolStats,
 }));
 
+import { NextRequest } from "next/server";
+
 import { GET } from "@/app/api/pools/route";
+
+/** The handler reads `?fresh=1` off the request, so every call needs one. */
+const req = (url = "http://localhost/api/pools") => new NextRequest(url);
 
 const poolStat = (over: Partial<Record<string, string>> = {}) => ({
   utilizationRate: "47.00",
@@ -44,7 +49,7 @@ describe("GET /api/pools", () => {
     const pools = allPools();
     mocks.getAllPoolStats.mockResolvedValue(pools);
 
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(200);
 
     const body = await res.json();
@@ -60,18 +65,25 @@ describe("GET /api/pools", () => {
     }
   });
 
-  it("sets the long edge-cache header (pool stats are identical per user)", async () => {
+  it("sets a short edge-cache header so post-tx UIs catch up in ~1-2s", async () => {
     mocks.getAllPoolStats.mockResolvedValue(allPools());
-    const res = await GET();
+    const res = await GET(req());
     expect(res.headers.get("Cache-Control")).toBe(
-      "public, s-maxage=30, stale-while-revalidate=120",
+      "public, s-maxage=5, stale-while-revalidate=30",
     );
+  });
+
+  it("bypasses the CDN entirely on ?fresh=1 (post-tx resync)", async () => {
+    mocks.getAllPoolStats.mockResolvedValue(allPools());
+    const res = await GET(req("http://localhost/api/pools?fresh=1"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
   });
 
   it("502s with pool_stats_failed + no-store when the chain read throws", async () => {
     mocks.getAllPoolStats.mockRejectedValue(new Error("rpc timeout"));
 
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(502);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
 
@@ -82,7 +94,7 @@ describe("GET /api/pools", () => {
 
   it("502 detail falls back to a string when a non-Error is thrown", async () => {
     mocks.getAllPoolStats.mockRejectedValue("boom");
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(502);
     expect((await res.json()).detail).toBe("pool stats failed");
   });

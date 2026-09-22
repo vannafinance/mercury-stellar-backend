@@ -230,7 +230,6 @@ export function normalizeTransferCollateralError(
     maxSafe?: number;
     isFullWithdraw?: boolean;
     maxExecutableWithdraw?: number;
-    xlmBuffer?: number;
   } = {},
 ): string {
   const compact = (raw ?? '').split('\nEvent log')[0]?.trim() ?? '';
@@ -242,7 +241,7 @@ export function normalizeTransferCollateralError(
     lower.includes('error(contract, #10)') ||
     lower.includes('resulting balance is not within the allowed range')
   ) {
-    return 'You cannot transfer all your wallet balance. Please keep at least 1 XLM in your wallet.';
+    return 'Token balance is outside the allowed range. Refresh balances; for wallet transfers, check the wallet minimum reserve and fees.';
   }
   const code = contractErrorCode(compact);
   if (code !== null) {
@@ -265,17 +264,10 @@ export function normalizeTransferCollateralError(
     lower.includes('withdraw transaction failed on-chain') ||
     lower.includes('withdraw collateral failed with status')
   ) {
-    if (opts.isFullWithdraw && typeof opts.xlmBuffer === 'number' && typeof opts.maxExecutableWithdraw === 'number') {
-      return `~${opts.xlmBuffer} XLM stay locked in the margin account as Stellar base reserve. You can withdraw at most ${opts.maxExecutableWithdraw.toFixed(2)} XLM.`;
-    }
-    if (typeof opts.maxSafe === 'number' && opts.maxSafe > 0)
-      return `Withdrawal failed on-chain. Max transferable right now: ${opts.maxSafe.toFixed(2)} ${asset}.`;
-    return appendTxHash('Withdrawal failed on-chain. Please retry with a slightly smaller amount.', compact);
+    return appendTxHash('Withdrawal failed on-chain. Refresh balances and check the transaction error before retrying.', compact);
   }
 
   if (lower.includes('hosterror')) {
-    if (opts.isFullWithdraw && typeof opts.maxExecutableWithdraw === 'number')
-      return `Full withdrawal can fail due to on-chain rounding/state dust. Try up to ${opts.maxExecutableWithdraw.toFixed(2)} ${asset}.`;
     return appendTxHash('Transfer failed on-chain. Please retry in a moment.', compact);
   }
 

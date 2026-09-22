@@ -3,7 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { FIELD_FORMAT_MAP, LARGE_FORMAT_FIELDS, USD_FIELDS } from "@/lib/constants/margin";
+import { FIELD_FORMAT_MAP, LARGE_FORMAT_FIELDS, USD_FIELDS, PRECISE_NUMBER_FIELDS } from "@/lib/constants/margin";
 import { formatValue, FormatType } from "@/lib/utils/format-value";
 import { useTheme } from "@/contexts/theme-context";
 import { AddressBadge, isStellarContractAddress } from "@/components/ui/address-badge";
@@ -62,9 +62,12 @@ const formatFieldValue = (
     return "<$0.01";
   }
 
+  const isPreciseField = PRECISE_NUMBER_FIELDS.includes(id as (typeof PRECISE_NUMBER_FIELDS)[number]);
+  const decimals = isPreciseField ? 7 : undefined;
+
   if (!formatType) {
     // Fallback to default number formatting
-    const formatted = formatValue(value, { type: "number" });
+    const formatted = formatValue(value, { type: "number", decimals });
     return isUsdField ? `$${formatted}` : formatted;
   }
 
@@ -74,6 +77,7 @@ const formatFieldValue = (
   const formatted = formatValue(value, {
     type: formatType,
     useLargeFormat,
+    decimals,
   });
   return isUsdField ? `$${formatted}` : formatted;
 };

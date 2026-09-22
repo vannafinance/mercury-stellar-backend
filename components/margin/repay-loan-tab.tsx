@@ -333,19 +333,21 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         // that safety margin: the wallet's OWN confirmation popup shows the
         // raw amount being sent — before any contract-side clamping — so the
         // user saw "Repaying 1500" for a debt of ~500 and had no way to know
-        // the contract would only actually take ~500. A small buffer (0.5%,
-        // floored at a fixed minimum for tiny debts) comfortably covers any
-        // realistic sign-and-confirm delay while keeping the number the
-        // wallet shows close to the real debt, not the whole account.
-        const REPAY_BUFFER_BPS = BigInt(50); // 0.5%
-        const REPAY_BUFFER_FLOOR_WAD = BigInt("10000000000000"); // 0.00001 token, min buffer for tiny debts
+        // the contract would only actually take ~500. A 1% buffer (floored at
+        // 0.01 token for tiny debts) covers long Freighter confirm delays
+        // while keeping the wallet number close to the real debt.
+        const REPAY_BUFFER_BPS = BigInt(100); // 1%
+        const REPAY_BUFFER_FLOOR_WAD = BigInt("10000000000000000"); // 0.01 token
         const bufferedDebtWad = debtWad > BigInt(0)
           ? debtWad + (() => {
               const proportional = (debtWad * REPAY_BUFFER_BPS) / BigInt(10_000);
               return proportional > REPAY_BUFFER_FLOOR_WAD ? proportional : REPAY_BUFFER_FLOOR_WAD;
             })()
           : debtWad;
-        const finalRepayWad = selectedRepayPercentage === 100 && marginBalWad > BigInt(0)
+        // 100% always starts from live debtWad (+ buffer), never the float
+        // input — toFixed(7) chip fill can sit a few stroops under true debt
+        // and leave a sub-cent residual that then shows as "<$0.01".
+        const finalRepayWad = selectedRepayPercentage === 100 && debtWad > BigInt(0) && marginBalWad > BigInt(0)
           ? (bufferedDebtWad > marginBalWad ? marginBalWad : bufferedDebtWad)
           : (cappedToDebt > marginBalWad ? marginBalWad : cappedToDebt);
 
@@ -695,6 +697,9 @@ export const RepayLoanTab = ({ prefilledAsset }: RepayLoanTabProps = {}) => {
         <RepayPreviewSection
           repayAmount={repayAmount}
           selectedTokenPrice={selectedTokenPrice}
+          isFullRepay={selectedRepayPercentage === 100}
+          availableBalance={repayStats.availableBalance}
+          outstandingDebt={repayStats.netOutstandingAmountToPay}
         />
 
         {/* Action buttons */}
@@ -776,6 +781,12 @@ interface RepayPreviewSectionProps {
   repayAmount: number;
   /** Live oracle price of the selected repay token. */
   selectedTokenPrice: number;
+  /** True when the 100% chip is active — preview should show a clean wipe. */
+  isFullRepay?: boolean;
+  /** Margin-account balance of the repay token (token units). */
+  availableBalance?: number;
+  /** Live outstanding debt for the repay token (token units). */
+  outstandingDebt?: number;
 }
 
 /**
@@ -793,6 +804,9 @@ interface RepayPreviewSectionProps {
 const RepayPreviewSection = ({
   repayAmount,
   selectedTokenPrice,
+  isFullRepay = false,
+  availableBalance = 0,
+  outstandingDebt = 0,
 }: RepayPreviewSectionProps) => {
   const totalCollateralValue = useMarginAccountInfoStore((s) => s.totalCollateralValue);
   const totalBorrowedValue = useMarginAccountInfoStore((s) => s.totalBorrowedValue);
@@ -810,10 +824,20 @@ const RepayPreviewSection = ({
   const hfBefore = avgHealthFactor > 0 ? avgHealthFactor : HF_INF_SENTINEL;
   const bufferBefore = Math.max(0, gross - totalBorrowedValue * LIQUIDATION_THRESHOLD);
 
+  // 100% with enough balance clears the loan — float chip fill can leave a
+  // sub-cent gap vs store totalBorrowedValue that previously rendered as
+  // "<$0.01" even though the on-chain buffered repay will wipe debt.
+  const canClearFully =
+    isFullRepay &&
+    availableBalance + 1e-9 >= outstandingDebt &&
+    outstandingDebt > 0;
+
   const cappedRepay = Math.min(repayUsd, totalBorrowedValue);
-  const debtAfter = Math.max(0, totalBorrowedValue - cappedRepay);
-  const grossAfter = Math.max(0, gross - cappedRepay);
-  const hfAfter = debtAfter > 0 ? grossAfter / debtAfter : HF_INF_SENTINEL;
+  const debtAfter = canClearFully ? 0 : Math.max(0, totalBorrowedValue - cappedRepay);
+  const grossAfter = canClearFully
+    ? Math.max(0, gross - totalBorrowedValue)
+    : Math.max(0, gross - cappedRepay);
+  const hfAfter = debtAfter > 0.01 ? grossAfter / debtAfter : HF_INF_SENTINEL;
   const bufferAfter = Math.max(0, grossAfter - debtAfter * LIQUIDATION_THRESHOLD);
 
   const rows: PreviewRow[] = [

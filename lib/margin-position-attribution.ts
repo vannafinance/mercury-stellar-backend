@@ -1,5 +1,9 @@
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
+  // A Blend-tracked deposit/withdraw can carry the pool's internal tracking
+  // symbol (BLEND_XLM) instead of the plain underlying "XLM" — without this,
+  // it fell through unmapped and rendered as the raw "BLEND_XLM".
+  if (normalized === "BLEND_XLM") return "XLM";
   if (normalized === "BLEND_USDC" || normalized === "USDC") return "BLUSDC";
   if (normalized === "AQUIRESUSDC" || normalized === "AQUARIUS_USDC") return "AQUSDC";
   if (normalized === "SOROSWAPUSDC" || normalized === "SOROSWAP_USDC") return "SOUSDC";
@@ -87,15 +91,19 @@ export function buildNetBorrowCashByToken(
 }
 
 /**
- * Interest accrued till date = current on-chain debt + repayments − borrows.
- * Returns null when the original borrow history is unavailable so the UI does
- * not mislabel the entire live debt as interest.
+ * Interest accrued till date = current on-chain debt − net cash borrowed
+ * (Σ borrow − Σ repay from chain events). When the user over-repaid (negative
+ * net), this still counts lifetime interest (remaining + already paid).
+ *
+ * Cleared / dust debt returns 0 so a 100% repay's interest buffer doesn't
+ * leave a phantom "$0.05 Interest accrued" next to Borrowed Assets "$0".
  */
 export function calculateAccruedBorrowInterest(
   currentDebt: number,
   netBorrowCash: number | undefined,
 ): number | null {
   if (netBorrowCash === undefined || !Number.isFinite(currentDebt)) return null;
+  if (!(currentDebt > 1e-6)) return 0;
   return Math.max(0, currentDebt - netBorrowCash);
 }
 

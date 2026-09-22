@@ -16,6 +16,11 @@ import {
   calculateAccruedBorrowInterest,
 } from "@/lib/margin-position-attribution";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
+import {
+  deriveMarginHealth,
+  HEALTH_FACTOR_INFINITY_SENTINEL,
+  LIQUIDATION_THRESHOLD,
+} from "@/lib/margin-health";
 
 interface PositionstableProps {
   /** Fired from a row's Repay button; passes the borrowed asset to prefill the Repay tab. */
@@ -36,6 +41,10 @@ const PRICEABLE_TOKENS = ['XLM', 'USDC', 'BLUSDC', 'AQUSDC', 'SOUSDC'];
 
 const canonicalToken = (token: string): string => {
   const normalized = token.toUpperCase();
+  // A Blend-tracked deposit/withdraw history row can carry the pool's
+  // internal tracking symbol (BLEND_XLM) instead of plain "XLM" — without
+  // this it fell through unmapped and rendered as the raw "BLEND_XLM".
+  if (normalized === 'BLEND_XLM') return 'XLM';
   if (normalized === 'BLEND_USDC' || normalized === 'USDC') return 'BLUSDC';
   if (normalized === 'AQUIRESUSDC' || normalized === 'AQUARIUS_USDC') return 'AQUSDC';
   if (normalized === 'SOROSWAPUSDC' || normalized === 'SOROSWAP_USDC') return 'SOUSDC';
@@ -58,6 +67,22 @@ const formatTokenName = (asset: string): string => {
 // Delegate to the shared adaptive formatter: "$0.00" for true zero, "<$0.01" for
 // sub-cent dust, "$X.XX" otherwise — consistent with the header and repay tab.
 const formatInterestUsd = (value: number): string => formatUsdValue(value);
+
+const formatHealthFactor = (hf: number): string => {
+  if (!Number.isFinite(hf) || hf <= 0) return "-";
+  if (hf >= HEALTH_FACTOR_INFINITY_SENTINEL) return "∞";
+  return hf.toFixed(2);
+};
+
+const healthFactorTone = (hf: number, isDark: boolean): string => {
+  if (!Number.isFinite(hf) || hf <= 0 || hf >= HEALTH_FACTOR_INFINITY_SENTINEL) {
+    return isDark ? "text-white" : "text-[#111]";
+  }
+  if (hf < LIQUIDATION_THRESHOLD) return "text-[#FC5457]";
+  if (hf < 1.5) return "text-[#E6A23C]";
+  return "text-[#22C55E]";
+};
+
 const formatDetailedTokenAmount = (value: number): string =>
   Number.isFinite(value)
     ? value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 7 })
@@ -168,12 +193,16 @@ export const Positionstable = ({
     borrowedBalances,
     collateralBalances,
     netAvailableCollateral,
+    grossCollateralValue,
+    totalBorrowedValue,
     hasMarginAccount,
   } = useMarginAccountInfoStore(
     useShallow((state) => ({
       borrowedBalances: state.borrowedBalances,
       collateralBalances: state.collateralBalances,
       netAvailableCollateral: state.netAvailableCollateral,
+      grossCollateralValue: state.grossCollateralValue,
+      totalBorrowedValue: state.totalBorrowedValue,
       hasMarginAccount: state.hasMarginAccount,
     })),
   );
@@ -298,6 +327,14 @@ export const Positionstable = ({
       ? parseFloat((1 + totalBorrowUsd / equityUsd).toFixed(2))
       : (totalBorrowUsd > 0 ? 0 : 1);
 
+    // Cross-margin: one shared health factor for the account (same as the top bar).
+    const health = deriveMarginHealth({
+      grossCollateralValue: grossCollateralValue > 0.01 ? grossCollateralValue : totalCollateralUsd,
+      effectiveDebtValue: totalBorrowedValue > 0.01 ? totalBorrowedValue : totalBorrowUsd,
+      totalBorrowedValue: totalBorrowedValue > 0.01 ? totalBorrowedValue : totalBorrowUsd,
+    });
+    const healthFactor = health.avgHealthFactor;
+
     // Interest accrued across every borrow. Only counted when we've actually
     // seen borrow/repay history for that token — a missing history entry
     // means "principal unknown", not "principal is 0". The latter would
@@ -305,8 +342,15 @@ export const Positionstable = ({
     // opened before Mercury indexed this account (e.g. via a raw/CLI
     // transaction with no matching event) — the same failure mode fixed on
     // the Earn page's Net Earnings.
+    //
+    // Also: skip interest when every remaining borrow is sub-cent dust
+    // (Borrowed Assets already renders those as "$0") so a near-full repay
+    // doesn't leave a phantom "$0.05 Interest accrued" next to empty debt.
     let interestAccruedUsd = 0;
-    if (!historyInitialLoading) {
+    const visibleBorrowUsd = borrowedArray
+      .filter((b) => b.usdValue >= BORROW_DUST_USD)
+      .reduce((sum, b) => sum + b.usdValue, 0);
+    if (!historyInitialLoading && visibleBorrowUsd >= BORROW_DUST_USD) {
       for (const [canonical, entry] of borrowEntries) {
         const currentAmt = parseFloat(entry.balance.amount || '0');
         const interest = calculateAccruedBorrowInterest(
@@ -325,6 +369,7 @@ export const Positionstable = ({
       collaterals,
       borrowed: borrowedArray,
       leverage,
+      healthFactor,
       interestAccrued: parseFloat(interestAccruedUsd.toFixed(4)),
       isOpen: true,
       user: "",
@@ -333,6 +378,8 @@ export const Positionstable = ({
     borrowedBalances,
     collateralBalances,
     netAvailableCollateral,
+    grossCollateralValue,
+    totalBorrowedValue,
     history,
     historyInitialLoading,
     tokenPrices,
@@ -627,12 +674,25 @@ export const Positionstable = ({
         transition={{ duration: 0.3, delay: idx * 0.08 + 0.2 }}
       >
         {item.leverage > 0 ? (
-          <span className="text-[#703AE6]">{item.leverage}x</span>
+          <span className={isDark ? "text-white" : "text-[#111111]"}>{item.leverage}x</span>
         ) : (
           <span className={isDark ? "text-[#666666]" : "text-[#A0A0A0]"}>
             -
           </span>
         )}
+      </motion.div>
+
+      {/* Health Factor column — original flex layout (same as other columns). */}
+      <motion.div
+        className={`flex flex-col justify-center w-full py-[16px] px-[12px] text-[14px] font-semibold ${
+          healthFactorTone(item.healthFactor, isDark)
+        }`}
+        initial={{ opacity: 0 }}
+        whileInView={{ opacity: 1 }}
+        viewport={{ once: true }}
+        transition={{ duration: 0.3, delay: idx * 0.08 + 0.22 }}
+      >
+        {formatHealthFactor(item.healthFactor)}
       </motion.div>
 
       {/* Interest accrued column */}
@@ -785,11 +845,17 @@ export const Positionstable = ({
         </div>
 
         {/* Stats strip */}
-        <div className={`rounded-md px-3 py-2 grid grid-cols-2 gap-2 ${isDark ? "bg-[#1A1A1A]" : "bg-[#F0F0F0]"}`}>
+        <div className={`rounded-md px-3 py-2 grid grid-cols-3 gap-2 ${isDark ? "bg-[#1A1A1A]" : "bg-[#F0F0F0]"}`}>
           <div>
             <p className={lbl}>Leverage</p>
-            <p className={`text-[13px] font-semibold ${item.leverage > 0 ? "text-[#703AE6]" : isDark ? "text-[#666]" : "text-[#A0A0A0]"}`}>
+            <p className={`text-[13px] font-semibold ${item.leverage > 0 ? (isDark ? "text-white" : "text-[#111]") : isDark ? "text-[#666]" : "text-[#A0A0A0]"}`}>
               {item.leverage > 0 ? `${item.leverage}x` : "-"}
+            </p>
+          </div>
+          <div>
+            <p className={lbl}>Health Factor</p>
+            <p className={`text-[13px] font-semibold ${healthFactorTone(item.healthFactor, isDark)}`}>
+              {formatHealthFactor(item.healthFactor)}
             </p>
           </div>
           <div>

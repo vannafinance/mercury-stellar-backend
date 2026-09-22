@@ -13,7 +13,7 @@
  */
 import Image from "next/image";
 import { useState, useEffect, useCallback, useRef, memo } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "@/contexts/theme-context";
 import { useUserStore } from "@/store/user";
@@ -50,6 +50,8 @@ export const AddLiquidity = memo(function AddLiquidity() {
   const userAddress = useUserStore((state) => state.address);
   const selectedRow = useFarmStore((state) => state.selectedRow);
   const tabType = useFarmStore((state) => state.tabType);
+  const setFarmData = useFarmStore((state) => state.set);
+  const router = useRouter();
 
   // `selectedRow` lives in a client-side store populated only when navigating
   // here by clicking a row on the Farm list page — a hard reload (or a direct
@@ -336,6 +338,15 @@ export const AddLiquidity = memo(function AddLiquidity() {
     setAmountB("");
     setTxStatus("idle");
     setTxError("");
+    // Mirror the Earn page's asset dropdown: navigate so the WHOLE page —
+    // header stats, chart, position tables, all keyed off the [id] route
+    // param in app/farm/[id]/page.tsx — reflects the newly picked pool, not
+    // just this panel's own local state. `tabType: "single"` guards against
+    // a stale "multi" left over from a previous Aquarius/Soroswap visit,
+    // which would otherwise misclassify this Blend xlm/usdc route as a
+    // multi-asset pool (see app/farm/[id]/page.tsx's isAquariusEarly check).
+    setFarmData({ tabType: "single" });
+    router.push(`/farm/${token.toLowerCase()}`);
   };
 
   const qc = useQueryClient();
@@ -615,6 +626,46 @@ export const AddLiquidity = memo(function AddLiquidity() {
             })}
           </div>
         </div>
+
+        {(() => {
+          const totalShares = parseFloat(
+            isSoroswapPool ? soroswapPoolStats?.totalShares ?? "0" : aquariusPoolStats?.totalShares ?? "0"
+          );
+          const amtA = parseFloat(amountA) || 0;
+          const amtB = parseFloat(amountB) || 0;
+          if (!(amtA > 0) || !(amtB > 0) || !(reserveA > 0) || !(reserveB > 0)) return null;
+          // Constant-product pools mint shares proportional to the smaller of
+          // the two sides' contribution ratio — mirrors how the router itself
+          // clamps a lopsided deposit, so this never overstates what a
+          // mismatched amountA/amountB pair would actually mint.
+          const shareFromA = (amtA / reserveA) * totalShares;
+          const shareFromB = (amtB / reserveB) * totalShares;
+          const estimatedShares = totalShares > 0 ? Math.min(shareFromA, shareFromB) : 0;
+          const poolShareAfter = totalShares > 0
+            ? (estimatedShares / (totalShares + estimatedShares)) * 100
+            : 100;
+          return (
+            <div className={`w-full h-fit p-[16px] rounded-[16px] flex flex-col gap-[10px] ${
+              isDark ? "bg-[#111111]" : "bg-white"
+            }`}>
+              <span className={`text-[12px] font-semibold ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
+                You will receive
+              </span>
+              <div className="flex items-baseline gap-[6px]">
+                <span className={`text-[20px] font-bold ${isDark ? "text-white" : "text-[#111111]"}`}>
+                  {estimatedShares > 0 ? estimatedShares.toFixed(estimatedShares < 1 ? 6 : 2) : "0"}
+                </span>
+                <span className={`text-[13px] font-medium ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
+                  LP shares
+                </span>
+              </div>
+              <div className={`text-[12px] font-medium ${isDark ? "text-[#919191]" : "text-[#76737B]"}`}>
+                Backed by {amtA.toFixed(4)} {tokenA} + {amtB.toFixed(4)} {tokenBLabel}
+                {totalShares > 0 && ` · ${poolShareAfter < 0.01 ? "<0.01" : poolShareAfter.toFixed(2)}% of pool`}
+              </div>
+            </div>
+          );
+        })()}
 
         {isAquariusPool && aquariusRegistryMissing && (
           <div className={`w-full h-fit p-[12px] rounded-[12px] text-[12px] ${

@@ -10,6 +10,7 @@ import { useTokenPrices } from "@/hooks/use-token-prices";
 import { useTheme } from "@/contexts/theme-context";
 import { Button } from "@/components/ui/button";
 import { Dropdown } from "@/components/ui/dropdown";
+import { maxMarginWithdrawal, marginWithdrawalPreset } from "@/lib/utils/margin-withdraw";
 import { validateAmountChange } from "@/lib/utils/sanitize-amount";
 import { normalizeTransferCollateralError } from "@/lib/errors/normalize";
 import { DEPOSIT_PERCENTAGES, PERCENTAGE_COLORS } from "@/lib/constants/margin";
@@ -46,12 +47,6 @@ const normalizeContractTokenSymbol = (symbol: string): string =>
         : symbol;
 
 const LIQUIDATION_THRESHOLD = 1.1;
-const BORROW_DUST_USD = 0.01;
-const XLM_TRANSFER_EPSILON = 1e-7;
-// See transfer-collateral.tsx's identical constant for the on-chain-reserve
-// rationale (base reserve + storage TTL/rent + b_rate rounding dust).
-const XLM_MARGIN_WITHDRAW_BUFFER = 5;
-
 export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose }) => {
   const [amount, setAmount] = useState("");
   const [selectedAsset, setSelectedAsset] = useState<AssetType>(ASSET_TYPES.XLM);
@@ -83,29 +78,10 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
   const cfg = ASSET_DISPLAY[selectedAsset] ?? ASSET_DISPLAY.XLM;
   const availableBalance = collateralBalances[sym]?.amount || "0";
   const numAvailable = parseFloat(availableBalance) || 0;
-  const hasMeaningfulDebt = totalBorrowedValue > BORROW_DUST_USD;
+  const hasMeaningfulDebt = totalBorrowedValue > 0;
   const selectedTokenPrice = tokenPrices[sym] ?? 1;
 
-  // Health-factor-aware safe withdraw cap — identical math to
-  // transfer-collateral.tsx's "WB" mode: gross_before = avgHF × debt,
-  // withdrawing W keeps gross_after / debt ≥ 1.1 only while W ≤ (avgHF − 1.1) × debt.
-  const maxRiskSafeWithdraw = (() => {
-    if (!hasMeaningfulDebt) return numAvailable;
-    const withdrawableUsd = Math.max(0, (avgHealthFactor - LIQUIDATION_THRESHOLD) * totalBorrowedValue);
-    if (selectedTokenPrice <= 0) return 0;
-    const rawToken = withdrawableUsd / selectedTokenPrice;
-    const withdrawableToken =
-      numAvailable > 0 && rawToken < numAvailable && (numAvailable - rawToken) / numAvailable < 0.001
-        ? numAvailable
-        : rawToken;
-    return Math.max(0, Math.min(numAvailable, withdrawableToken) - XLM_TRANSFER_EPSILON);
-  })();
-  const maxExecutableWithdraw = (() => {
-    if (sym === "XLM" && !hasMeaningfulDebt) {
-      return Math.max(0, Math.min(maxRiskSafeWithdraw, numAvailable - XLM_MARGIN_WITHDRAW_BUFFER));
-    }
-    return Math.max(0, maxRiskSafeWithdraw - XLM_TRANSFER_EPSILON);
-  })();
+  const maxExecutableWithdraw = maxMarginWithdrawal(numAvailable, totalBorrowedValue, avgHealthFactor, selectedTokenPrice);
 
   const numAmount = parseFloat(amount) || 0;
   const projectedHfAfter = (() => {
@@ -116,7 +92,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
     return Math.max(0, grossBefore - withdrawUsd) / totalBorrowedValue;
   })();
   const isBelowLiqThreshold =
-    numAmount > 0 && hasMeaningfulDebt && projectedHfAfter < LIQUIDATION_THRESHOLD;
+    numAmount > 0 && hasMeaningfulDebt && projectedHfAfter <= LIQUIDATION_THRESHOLD;
 
   const previewRows =
     numAmount > 0
@@ -138,12 +114,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
     } catch (e) {
       const raw = e instanceof Error ? e.message : "Withdrawal failed. Please try again.";
       setMessage({
-        text: normalizeTransferCollateralError(raw, cfg.label, {
-          maxSafe: maxExecutableWithdraw,
-          isFullWithdraw: !hasMeaningfulDebt,
-          maxExecutableWithdraw,
-          xlmBuffer: XLM_MARGIN_WITHDRAW_BUFFER,
-        }),
+        text: normalizeTransferCollateralError(raw, cfg.label),
         type: "error",
       });
       return { success: false };
@@ -182,7 +153,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
 
   const handlePercentageClick = (pct: number) => {
     setPercentage(pct);
-    setAmount(((maxExecutableWithdraw * pct) / 100).toFixed(2));
+    setAmount(marginWithdrawalPreset(availableBalance, maxExecutableWithdraw, pct));
   };
 
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -193,7 +164,7 @@ export const WithdrawModal: React.FC<WithdrawModalProps> = ({ isOpen, onClose })
   };
 
   const isValid =
-    !!amount && numAmount > 0 && numAmount <= maxExecutableWithdraw + XLM_TRANSFER_EPSILON && !isBelowLiqThreshold;
+    !!amount && numAmount > 0 && numAmount <= maxExecutableWithdraw && !isBelowLiqThreshold;
   const exceedsBalance = !!amount && numAmount > numAvailable && numAvailable > 0;
 
   return (

@@ -7,6 +7,7 @@ import createNewStore from "@/zustand/index";
 import { MarginAccountService, type MarginAccount } from "@/lib/margin-utils";
 import { computeMarginSnapshot } from "@/lib/account-snapshot";
 import { deriveMarginHealth } from "@/lib/margin-health";
+import { MARGIN_SAC_BALANCE_KEYS } from "@/lib/analytics/stellar/farmTrackingCollateral";
 import { showTxStep, showTxSuccess, showTxError } from "@/lib/tx-progress";
 import { normalizeCreateAccountError } from "@/lib/errors/normalize";
 import { numberAmountToWad } from "@/lib/utils/sanitize-amount";
@@ -534,14 +535,23 @@ export const refreshBorrowedBalances = async (
     const snap = await computeMarginSnapshot(marginAccountAddress, {
       onPartial: (p) => {
         const prev = useMarginAccountInfoStore.getState();
-        // MERGE collateral, don't replace. The partial read only has the
-        // non-SAC collateral (AQUSDC/SOUSDC); XLM/BLUSDC arrive later in the
-        // full pass via the SAC reconcile. Replacing here briefly blanked a
-        // still-valid collateral list — and wiped the optimistic deposit —
-        // which left the MB collateral grid stuck in its loading skeleton for
-        // the whole reconcile window. Preserving prior keys keeps the grid
-        // populated; the full snapshot below sets the authoritative set.
-        const mergedCollateral = { ...prev.collateralBalances, ...p.collateralBalances };
+        // MERGE collateral, don't replace: replacing briefly blanked a still-
+        // valid collateral list — and wiped the optimistic deposit — which left
+        // the MB collateral grid stuck in its loading skeleton for the whole
+        // reconcile window. Preserving prior keys keeps the grid populated; the
+        // full snapshot below sets the authoritative set.
+        //
+        // And NEVER let the fast ledger partial overwrite SAC keys
+        // (XLM/BLUSDC/AQUSDC/SOUSDC). Those are owned by
+        // reconcileMarginRawSacCollateral; CollateralBalanceWAD for them is often
+        // stale (e.g. post-swap) and briefly flashing the lower ledger amount is
+        // what caused XLM to flicker 87.69 ↔ 45.65 for ~1s. Filtering them out of
+        // the partial keeps the previous (correct) value on screen instead.
+        const sacKeys = new Set(MARGIN_SAC_BALANCE_KEYS);
+        const partialNonSac = Object.fromEntries(
+          Object.entries(p.collateralBalances).filter(([k]) => !sacKeys.has(k)),
+        );
+        const mergedCollateral = { ...prev.collateralBalances, ...partialNonSac };
         // Re-derive provisional health from the MERGED collateral so the health
         // factor stays coherent with the debt (never a stale ∞ over fresh debt)
         // without dipping when the partial read is missing SAC collateral.

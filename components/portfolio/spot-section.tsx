@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Table } from "@/components/earn/table";
 import { transactionTableHeadings } from "@/components/earn/acitivity-tab";
 import { useTheme } from "@/contexts/theme-context";
@@ -37,6 +37,7 @@ export const SpotSection = () => {
   const [activeTab, setActiveTab] = useState("balances");
   const userAddress = useUserStore((s) => s.address);
   const marginAccountAddress = useMarginAccountInfoStore((s) => s.marginAccountAddress);
+  const qc = useQueryClient();
 
   const { balance: xlm } = useSoroswapTokenBalance(marginAccountAddress, "XLM");
   const { balance: aqUsdc } = useAquariusTokenBalance(marginAccountAddress, "USDC");
@@ -83,19 +84,29 @@ export const SpotSection = () => {
   const totalSpotUsd = rows.reduce((s, r) => s + r.usd, 0);
 
   // Spot History — every margin-account swap (Aquarius + Soroswap), newest
-  // first. A real useQuery (not a plain useMemo) so a completed swap actually
-  // shows up without a page reload: SwapCard's mutation already calls
-  // `qc.invalidateQueries({ queryKey: ['spot'] })` on success, but that was a
-  // no-op against a bare useMemo with no matching query to invalidate — the
-  // symptom reported live ("history only appears after I refresh"). Giving
-  // this a `['spot', 'history', marginAccountAddress]` key lets that existing
-  // prefix-match invalidation actually reach it.
-  const { data: historyEntries = [] } = useQuery({
+  // first. Real useQuery so swap invalidation and mount refetch both work.
+  // Cold load used to look empty because Mercury pagination blocked for
+  // 15–30s (data defaulted to []); we now timeout sources, refetch on mount,
+  // and schedule short catch-up invalidations like SwapCard does post-tx.
+  const { data: historyEntries = [], isLoading: historyLoading, isFetching: historyFetching } = useQuery({
     queryKey: ['spot', 'history', marginAccountAddress ?? null],
     queryFn: () => getSpotHistory(marginAccountAddress),
     enabled: Boolean(marginAccountAddress),
     staleTime: 4_000,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
   });
+
+  // Bootstrap catch-up: indexer lag / first-page Mercury misses on cold open.
+  useEffect(() => {
+    if (!marginAccountAddress) return;
+    const timers = [1_500, 4_000, 8_000].map((d) =>
+      window.setTimeout(() => {
+        void qc.invalidateQueries({ queryKey: ['spot', 'history', marginAccountAddress] });
+      }, d),
+    );
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, [marginAccountAddress, qc]);
 
   const historyTableBody = useMemo(
     () => ({
@@ -162,15 +173,27 @@ export const SpotSection = () => {
         // balances — Spot History can still have entries (e.g. swapped back
         // out already), and the Table component's own empty state covers the
         // genuinely-empty case for both tabs.
-        <Table
-          filterDropdownPosition="left"
-          heading={{ tabsItems: SPOT_TABS, tabType: "solid" }}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          filters={{ allChainDropdown: false, filters: [], filterTabType: "solid" }}
-          tableHeadings={tableData.headings}
-          tableBody={tableData.body}
-        />
+        <>
+          {isHistoryTab && historyLoading && historyEntries.length === 0 && (
+            <div className={`text-[12px] px-1 ${isDark ? "text-[#A0A0A0]" : "text-[#777]"}`}>
+              Loading spot history…
+            </div>
+          )}
+          {isHistoryTab && !historyLoading && historyFetching && historyEntries.length > 0 && (
+            <div className={`text-[11px] px-1 ${isDark ? "text-[#666]" : "text-[#999]"}`}>
+              Refreshing history…
+            </div>
+          )}
+          <Table
+            filterDropdownPosition="left"
+            heading={{ tabsItems: SPOT_TABS, tabType: "solid" }}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            filters={{ allChainDropdown: false, filters: [], filterTabType: "solid" }}
+            tableHeadings={tableData.headings}
+            tableBody={tableData.body}
+          />
+        </>
       )}
     </div>
   );
