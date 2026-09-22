@@ -645,6 +645,7 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
       smartAccount,
       request_id,
       message: message || action.op,
+      sessionSigning: req.session_signing === true,
     });
     // Multi-hop chain: after this leg, attach the follow_up as next_step
     // (e.g. borrow done → auto supply_to_blend for levered Blend farm).
@@ -1073,7 +1074,14 @@ export async function handleChat(req: ChatRequest): Promise<ChatResponse> {
         request_id,
       };
     }
-    return runWrite(action, { userId, trader, smartAccount, request_id, message });
+    return runWrite(action, {
+      userId,
+      trader,
+      smartAccount,
+      request_id,
+      message,
+      sessionSigning: req.session_signing === true,
+    });
   }
 
   return { kind: "error", message: "Unhandled intent.", request_id };
@@ -1650,6 +1658,8 @@ async function runWrite(
     smartAccount: string | null;
     request_id: string;
     message: string;
+    /** Auto-approve armed for this request — see the LP pair clarification below. */
+    sessionSigning?: boolean;
   },
 ): Promise<ChatResponse> {
   // Reject statically impossible asset/venue combinations before resolving a wallet or
@@ -2647,10 +2657,23 @@ async function runWrite(
    * One named side (e.g. “Add 100 XLM in Aquarius”) is sized to the live ratio,
    * then shown as two Farm-style boxes so the user can edit either side or sign as-is.
    * A resume that already carries both amounts skips this and stages.
+   *
+   * So does an armed auto-approve session. Both amounts are already known here — the
+   * side the user named, and the other one derived from the pool's live reserves — so
+   * the boxes are an offer to edit, not a missing input. Every other op honours the
+   * switch once it is sized; pausing this one anyway is why "provide 20 XLM and AQUSDC
+   * liquidity on aquarius" sat on `paused · needs input` with auto-approve on (22 Sep,
+   * live), and why the multi-leg "borrow 20 SOUSDC and provide it with XLM" stopped
+   * after the borrow. A swap gets past this because its amount arrives stated; the LP
+   * pair's second number is derived, and derivation was being treated as absence.
+   *
+   * What still pauses: an unsized pair (either side null or zero) falls through to the
+   * sizing path above — there the question is real, and no switch answers it.
    */
   if (
     action.op === "add_liquidity" &&
     !inboundLpPair &&
+    !ctx.sessionSigning &&
     action.amount_a != null &&
     action.amount_a > 0 &&
     action.amount_b != null &&
