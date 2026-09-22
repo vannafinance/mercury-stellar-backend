@@ -299,19 +299,31 @@ configuration. The side effect: the WORKFLOW store in local development stopped 
 and began calling a Firestore database in Vertex's project, which has never existed. The
 records stop on the day it landed.
 
-The widening did not achieve its own goal either — with no database in `vanna-mcp`, production
-conversations are not durable now.
+There is a SECOND half to this, found 23 Sep after Aditya created a `(default)` database.
+`vanna-mcp` already had a NAMED database, `copilot-workflows`, holding 3 workflow docs and 3
+conversation docs — so PRODUCTION has been writing successfully all along. `.env.example:8`
+documents `COPILOT_WORKFLOW_FIRESTORE_DATABASE=copilot-workflows`; the deployment sets it,
+and `.env.local` does not. So local fell back to the code default `"(default)"`, which did not
+exist until 23 Sep.
+
+So the local break needed BOTH: 3e0587d supplying a project from Vertex, and the missing
+database variable sending it to a database nobody had created.
 
 **Fixed 23 Sep:** `durableStore` only inherits `GOOGLE_CLOUD_PROJECT` when actually running deployed
 (`NODE_ENV=production` or `K_SERVICE`). Development goes back to local files unless
 `COPILOT_WORKFLOW_FIRESTORE_PROJECT` explicitly asks for Firestore. Deployed behaviour is
 unchanged.
 
-### Still true, and still a blocker for shipping investigate-first
-There is no Firestore database in `vanna-mcp`. The deployed site does not hit this today because
-it runs the keyword lane, which never calls `/workflow/propose`. If investigate-first ships, the
-deployed site WILL hit it and 409 exactly as local did. Create the database, or point
-`COPILOT_WORKFLOW_FIRESTORE_PROJECT` at a project that has one, before shipping.
+### Not a shipping blocker after all
+Production already works — it names the `copilot-workflows` database explicitly and has records
+there. Investigate-first does not need new infrastructure to ship.
+
+Two housekeeping notes:
+- The `(default)` database created on 23 Sep is empty and is NOT the store in use. Check nothing
+  else claims it before deleting it, and do not point the app at it.
+- Local now uses files (the fix above). To make local mirror production exactly instead, add
+  `COPILOT_WORKFLOW_FIRESTORE_DATABASE=copilot-workflows` to `.env.local` — at the cost of writing
+  development runs into the shared store.
 
 ### Two code defects worth fixing regardless of the lane decision
 
