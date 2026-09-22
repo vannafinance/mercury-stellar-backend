@@ -1763,14 +1763,16 @@ export function CopilotWorkspace() {
     setHfPaused(false);
   }, []);
 
-  const storedFreighterAutoApprove = useCopilotSettingsStore(
+  const storedAutoApprove = useCopilotSettingsStore(
     (s) => (address ? Boolean(s.autoApproveByWallet[address]) : false)
   );
-  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedFreighterAutoApprove;
+  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedAutoApprove;
 
   // Session signing via Sign Service applies to Privy embedded wallets.
   // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
   const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
+
+  const [autoApprovePending, setAutoApprovePending] = useState(false);
 
   /**
    * What the Sign Service last reported for this wallet (`GET /sessions` on
@@ -1801,9 +1803,13 @@ export function CopilotWorkspace() {
 
   /** Whether anything server-side is actually holding the caps. */
   const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
-  // The browser value is only a display cache. The Sign Service session is the
-  // authority, so a switch changed by MCP is reflected here after the read.
-  const autoApprove = capsEnforced;
+
+  /** Whether auto-approve is toggled on in the UI by the user. */
+  const autoApproveUiOn = Boolean(address) && storedAutoApprove;
+
+  // The browser value is the user's intent. The Sign Service session is the
+  // authority, so a switch changed by MCP or remote session sync updates the store.
+  const autoApprove = autoApproveUiOn;
 
   /**
    * On wallet connect, read the live Sign Service session. Without this the rail
@@ -3071,10 +3077,13 @@ export function CopilotWorkspace() {
         if (opts?.quiet) setSubmitted(label);
         const finished = await completeWalletBindInApp(data.wallet_bind);
         if (finished) return;
+        if (address) setAutoApprove(address, false);
       }
 
       if (address && data && action !== "start") {
         applyAutoSignOutcome(action, data);
+      } else if (address && !data && action !== "disable") {
+        setAutoApprove(address, false);
       }
     },
     [
@@ -3090,7 +3099,7 @@ export function CopilotWorkspace() {
   );
 
   const handleAutoApproveToggle = useCallback(() => {
-    if (loading) return;
+    if (loading || autoApprovePending) return;
     if (!address) {
       toast.error("Connect a wallet first.");
       return;
@@ -3105,9 +3114,13 @@ export function CopilotWorkspace() {
       }
       return;
     }
-    if (sessionSigning) {
+    if (autoApproveUiOn) {
       setAutoApprove(address, false);
-      void enableAutoSign("disable", { quiet: true });
+      setSignServiceState((prev) => ({ ...prev, status: "unknown" }));
+      setAutoApprovePending(true);
+      void enableAutoSign("disable", { quiet: true }).finally(() => {
+        setAutoApprovePending(false);
+      });
       toast.success("Auto-approve off");
       return;
     }
@@ -3126,13 +3139,18 @@ export function CopilotWorkspace() {
       toast.error("Enter a per-tx cap above 0.");
       return;
     }
-    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true });
+    setAutoApprove(address, true);
+    setAutoApprovePending(true);
+    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true }).finally(() => {
+      setAutoApprovePending(false);
+    });
   }, [
     loading,
+    autoApprovePending,
     address,
     walletKind,
     freighterAutoApprove,
-    sessionSigning,
+    autoApproveUiOn,
     sessionSigningAvailable,
     capsEnforced,
     savedCaps,
@@ -5183,8 +5201,8 @@ export function CopilotWorkspace() {
           <CopilotRailTop
             onNewChat={startNewChat}
             autoApprove={{
-              on: sessionSigning,
-              busy: loading,
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
               capsMode: railCapsMode,
               customTx,
               customDay,
@@ -5214,8 +5232,8 @@ export function CopilotWorkspace() {
             onExpand={() => setRailCollapsed(false)}
             onNewChat={startNewChat}
             autoApprove={{
-              on: sessionSigning,
-              busy: loading,
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
               capsMode: railCapsMode,
               customTx,
               customDay,
@@ -6021,7 +6039,7 @@ export function CopilotWorkspace() {
 
         </div>
             <p className="mt-1.5 text-center text-[11px] leading-[17px] text-vgray-400">
-              {sessionSigning
+              {autoApproveUiOn
                 ? "Auto-approve on · writes inside the limits run without a prompt"
                 : "Auto-approve off · every write asks for a signature"}
             </p>

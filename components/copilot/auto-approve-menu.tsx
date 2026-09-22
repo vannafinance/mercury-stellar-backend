@@ -158,7 +158,7 @@ export function AutoApproveMenu({
               disabled={busy}
               onClick={() => onToggle()}
 
-              className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed ${
+              className={`relative h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500 disabled:cursor-not-allowed disabled:opacity-75 ${
                 on ? "bg-violet-500" : "bg-vgray-100"
               }`}
             >
