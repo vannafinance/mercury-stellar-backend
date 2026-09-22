@@ -1173,7 +1173,18 @@ async function resolveBalanceFractionAmount(
   if (action.op === "withdraw_collateral") {
     if (!ctx.smartAccount) return null;
     const pos = await readMarginPositions(ctx.smartAccount);
-    const row = pos?.collateral.find((r) => sameAsset(r.symbol, asset));
+    // Same rule as the repay sizing below: null is a failed snapshot, not an empty
+    // account, and the two must not share a sentence.
+    if (!pos) {
+      return {
+        kind: "blocked",
+        message:
+          "I could not read your margin account just now, so I don't know how much " +
+          `${ui} you have posted — nothing was withdrawn. Try again in a moment.`,
+        request_id: ctx.request_id,
+      };
+    }
+    const row = pos.collateral.find((r) => sameAsset(r.symbol, asset));
     if (!row) {
       return {
         kind: "blocked",
@@ -1345,7 +1356,24 @@ async function resolveRepayAmount(
   }
 
   const pos = await readMarginPositions(ctx.smartAccount);
-  if (!pos || !pos.borrowed.length) {
+  /**
+   * A failed read is not an empty account.
+   *
+   * `readMarginPositions` returns null only when the snapshot threw — an empty account
+   * comes back with empty arrays. Both were answered "You have no outstanding margin debt
+   * to repay", so a dropped RPC told the user their debt was gone. Live: the Margin page
+   * and the rail both showed 5.0036772 BLUSDC owed while this said there was none.
+   */
+  if (!pos) {
+    return {
+      kind: "blocked",
+      message:
+        "I could not read your margin account just now, so I don't know what you owe — " +
+        "nothing was repaid. Your live figures are on the Margin page; try again in a moment.",
+      request_id: ctx.request_id,
+    };
+  }
+  if (!pos.borrowed.length) {
     return {
       kind: "blocked",
       message: "You have no outstanding margin debt to repay.",
@@ -2512,6 +2540,17 @@ async function runWrite(
    */
   let addLiquidityNote: string | null = null;
   let inboundLpPair = false;
+  /**
+   * Set when the pool's live reserves were needed and could not be read.
+   *
+   * The ratio read sat in a `try` whose `catch` said "best-effort — an unreachable
+   * pool-stats read must never block the add", and the pair was then shown anyway: a
+   * reserve read that returned nothing left the amounts exactly as the router had guessed
+   * them, and the editor opened on "Add 20 XLM + 0.2273 AQUSDC" — about 88 XLM to the
+   * dollar — presented as the pool's own ratio. A pair nobody could price is worse than
+   * no pair; a failed read has to be said, not swallowed.
+   */
+  let lpReservesUnread: string | null = null;
   if (action.op === "add_liquidity") {
     const aIsXlm = action.token_a === "XLM";
     const bIsXlm = action.token_b === "XLM";
@@ -2582,11 +2621,26 @@ async function runWrite(
               writeBack(xlmGiven!, correctedOther);
             }
           }
+        } else {
+          lpReservesUnread = `${otherToken || "that"} pool reserves came back empty`;
         }
-      } catch {
-        /* best-effort — an unreachable pool-stats read must never block the add */
+      } catch (e) {
+        lpReservesUnread = e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160);
       }
     }
+  }
+
+  if (lpReservesUnread) {
+    return {
+      kind: "blocked",
+      message:
+        "I could not read the pool's live reserves just now, so I can't size the two sides " +
+        "of this add — and I won't show a pair I can't stand behind. Nothing was submitted. " +
+        "Try again in a moment, or add liquidity from the Farm page, which reads the same pool.",
+      intent: { template_id: "add_liquidity" },
+      data: { lp_reserve_read_error: lpReservesUnread },
+      request_id: ctx.request_id,
+    };
   }
 
   /**

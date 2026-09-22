@@ -78,6 +78,45 @@ export function localExecutionAnswer(opts: {
   };
 }
 
+/**
+ * The closing receipt for ONE signed write — what was signed, its hash, that it settled.
+ *
+ * The turn text after a single-leg write was picked from `response.message`, the sentence
+ * written BEFORE the signature, unless that sentence happened to contain one of two
+ * phrases. So a settled deposit kept narrating a signature it was still waiting for, and
+ * any wording the two phrases did not cover slipped through. A receipt is not a message
+ * that survived a filter; it is built from what actually happened, so there is no wording
+ * for it to depend on.
+ */
+export function singleWriteReceiptAnswer(opts: {
+  summary?: string | null;
+  op?: string | null;
+  asset?: string | null;
+  amount?: number | string | null;
+  txHash?: string | null;
+  hf?: number | null;
+}): StructuredAnswer {
+  const amount =
+    opts.amount == null || opts.amount === "" ? null : String(opts.amount).trim();
+  const action = [opts.op?.replace(/_/g, " ").trim(), amount, opts.asset?.trim()]
+    .filter((p) => p && p.length)
+    .join(" ");
+  const what = (opts.summary ?? "").trim() || action || "Your transaction";
+
+  const facts: StructuredAnswer["facts"] = [];
+  if (action && action !== what) facts.push({ label: "signed", value: action });
+  if (opts.txHash) facts.push({ label: "transaction", value: opts.txHash });
+  const hf = Number(opts.hf);
+  if (Number.isFinite(hf) && hf > 0) {
+    facts.push({
+      label: "health factor",
+      value: hf >= 999 ? "∞" : hf.toFixed(2),
+      tone: hf < 1.1 ? "bad" : "good",
+    });
+  }
+  return { headline: `${what.replace(/[.\s]+$/, "")} — settled on-chain.`, facts, venue: "none" };
+}
+
 /** A durable, machine-readable workflow receipt; never reconstructed from prose. */
 export type ExecutionReceiptStep = {
   operation: WorkflowOp;

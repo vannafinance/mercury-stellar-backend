@@ -12,7 +12,7 @@ import {
 import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
-import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
+import { earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
 import { autoSignAllowed } from "./guardrail-policy";
 
 /**
@@ -415,6 +415,19 @@ export function staticStepBlocker(
         "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”"
       );
     }
+    const checkLpVenue = (sym: string): string | null => {
+      if (!sym) return null;
+      const def = resolveAssetDef(sym);
+      if (def && def.id !== "XLM" && !def.lpVenue) {
+        const supported = lpPairs()
+          .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+          .join(" and ");
+        return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
+      }
+      return null;
+    };
+    const unsupported = checkLpVenue(aRaw) || checkLpVenue(bRaw);
+    if (unsupported) return unsupported;
   }
   if (op === "remove_liquidity") {
     const bRaw = norm(params.token_b) || norm(params.asset);
@@ -424,6 +437,13 @@ export function staticStepBlocker(
         "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
         "or name AQUSDC/SOUSDC explicitly."
       );
+    }
+    const def = resolveAssetDef(bRaw);
+    if (def && def.id !== "XLM" && !def.lpVenue) {
+      const supported = lpPairs()
+        .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+        .join(" and ");
+      return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
     }
   }
   if (op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend") {

@@ -12,10 +12,17 @@ export const runtime = "nodejs";
 const CACHE = "private, no-store, max-age=0";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ addr: string }> },
 ) {
   const { addr } = await params;
+  /**
+   * `?after=<tx hash>` — the caller has just seen a transaction settle and this read must
+   * contain it. Without it, a snapshot already in flight (started before that transaction
+   * landed) was handed back, and the rail kept showing the pre-transaction health factor
+   * until the user reloaded. See `computeMarginSnapshot`'s `freshAfter`.
+   */
+  const freshAfter = new URL(req.url).searchParams.get("after");
   if (!addr || addr.length < 10) {
     return NextResponse.json(
       { error: "invalid_address" },
@@ -37,7 +44,7 @@ export async function GET(
       );
     }
 
-    const snapshot = await computeMarginSnapshot(marginAccountAddress);
+    const snapshot = await computeMarginSnapshot(marginAccountAddress, { freshAfter });
     return NextResponse.json(
       { hasMarginAccount: true, marginAccountAddress, ...snapshot },
       { headers: { "Cache-Control": CACHE } },

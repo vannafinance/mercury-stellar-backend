@@ -36,7 +36,33 @@ export function explainRead(tool: string, data: Record<string, unknown>, questio
   if (data.error) {
     return `I couldn't complete that read: ${String(data.message ?? data.error)}.`;
   }
+  const grounded = groundedReadSentence(tool, data);
+  if (grounded) return grounded;
 
+  // Generic: flatten a few top-level scalar facts
+  const facts: string[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (v == null || typeof v === "object") continue;
+    if (/wad|raw|address/i.test(k)) continue;
+    facts.push(`${k.replace(/_/g, " ")}: ${v}`);
+    if (facts.length >= 6) break;
+  }
+  if (facts.length) return `Here's what I found for “${question.slice(0, 60)}”: ${facts.join("; ")}.`;
+  return `Received data for ${tool}, but no human-readable fields to summarize.`;
+}
+
+/**
+ * The sentence this module can build from the read's OWN named fields — or null when it
+ * has no such knowledge of the tool and would only be flattening a payload.
+ *
+ * Split out of {@link explainRead} so callers can tell the two apart. `explainRead` was
+ * only ever reached when the model composer THREW; a composer that returned happily but
+ * left the figure out looked like a success, so nothing here ever ran. "What is my health
+ * factor?" is the case that exposed it: this branch derives the health factor from
+ * collateral/debt/threshold when the payload omits it, and the composer instead wrote up
+ * LTV and distance-to-liquidation and never mentioned a health factor at all.
+ */
+export function groundedReadSentence(tool: string, data: Record<string, unknown>): string | null {
   switch (tool) {
     case "vanna_get_price": {
       const symbol = String(pick(data, ["symbol"]) ?? "asset");
@@ -200,19 +226,71 @@ export function explainRead(tool: string, data: Record<string, unknown>, questio
       const sa = pick(data, ["smart_account", "account", "margin_account"]);
       return sa ? `Resolved smart account: ${sa}.` : "No smart account found for that wallet.";
     }
-    default: {
-      // Generic: flatten a few top-level scalar facts
-      const facts: string[] = [];
-      for (const [k, v] of Object.entries(data)) {
-        if (v == null || typeof v === "object") continue;
-        if (/wad|raw|address/i.test(k)) continue;
-        facts.push(`${k.replace(/_/g, " ")}: ${v}`);
-        if (facts.length >= 6) break;
-      }
-      if (facts.length) return `Here's what I found for “${question.slice(0, 60)}”: ${facts.join("; ")}.`;
-      return `Received data for ${tool}, but no human-readable fields to summarize.`;
-    }
+    default:
+      return null;
   }
+}
+
+/**
+ * Standalone figures in a sentence — a number that is not glued to letters.
+ *
+ * So `59.40`, `$1,836.02` and `2.85%` count; the `6E` inside `CAZLR6E…` does not, which
+ * is what keeps an address-listing answer from being treated as a numeric one.
+ */
+function figuresIn(text: string): number[] {
+  const out: number[] = [];
+  const re = /(?<![A-Za-z0-9._-])\$?(-?\d[\d,]*(?:\.\d+)?)%?(?![A-Za-z0-9._-])/g;
+  for (const m of text.matchAll(re)) {
+    const n = Number(m[1]!.replace(/,/g, ""));
+    if (Number.isFinite(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Never ship an answer that omits the figure the read returned.
+ *
+ * The model composer is free to phrase a read however it likes; it is not free to drop
+ * the number. Live failures of exactly this kind: "how much can I borrow?" answered "You
+ * can borrow 1 USDC" on an account with ~$1.8k of collateral, and "what is my health
+ * factor?" answered with LTV and distance-to-liquidation and no health factor.
+ *
+ * The check is general rather than per-tool. {@link groundedReadSentence} already knows,
+ * for every read it can summarise, which of the payload's fields IS the answer, and each
+ * of its cases is written answer-first — so the first standalone figure in its sentence is
+ * the figure the question was about. If the composer's answer does not contain that
+ * figure, the composer answered a different question and its headline is replaced with the
+ * grounded one. A read this module has no knowledge of, or a grounded sentence with no
+ * figure in it (an address list, a yes/no), imposes nothing and the composer stands.
+ */
+export function enforceGroundedFigure<T extends { headline: string; facts: Array<{ value: string }> }>(
+  answer: T | null,
+  tool: string,
+  data: Record<string, unknown>,
+): T | null {
+  if (data.error) return answer;
+  /**
+   * A verdict read answers true or false. `vanna_can_borrow` / `vanna_can_withdraw`
+   * return `allowed` plus the headroom that produced it, so the first figure in their
+   * grounded sentence is context, not the answer — checking the composer against it would
+   * overwrite a correct "yes, you can borrow 20" with the limit. Keyed on the payload
+   * carrying a boolean verdict, which is those reads' own contract.
+   */
+  const verdict =
+    typeof data.allowed === "boolean" ||
+    typeof data.can_borrow === "boolean" ||
+    typeof data.can_withdraw === "boolean";
+  if (verdict) return answer;
+  const grounded = groundedReadSentence(tool, data);
+  if (!grounded) return answer;
+  const wanted = figuresIn(grounded)[0];
+  if (wanted == null) return answer;
+  if (!answer) return answer;
+
+  const shown = [answer.headline, ...answer.facts.map((f) => f.value)].flatMap(figuresIn);
+  const tolerance = Math.max(Math.abs(wanted) * 0.005, 0.005);
+  if (shown.some((n) => Math.abs(n - wanted) <= tolerance)) return answer;
+  return { ...answer, headline: grounded };
 }
 
 function summarizeList(label: string, data: Record<string, unknown>, keys: string[]): string {

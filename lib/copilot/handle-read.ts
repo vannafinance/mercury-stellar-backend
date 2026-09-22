@@ -6,7 +6,7 @@
  */
 
 import { copilotConfig } from "./config";
-import { explainRead, factsForUi } from "./explain";
+import { enforceGroundedFigure, explainRead, factsForUi } from "./explain";
 import { getMcpClient } from "./mcp-client";
 import { RETRY, withRetry } from "./retry-policy";
 import { earnPoolSymbol, displayUsdcLabel, marginCollateralSymbol } from "./mcp-write";
@@ -70,7 +70,13 @@ const SNAPSHOT_TRUTH_TOOLS = new Set([
  *
  * Returns null on any failure so the MCP path still runs — a slower answer beats no answer.
  */
-type MarginPositionRow = { symbol: string; amount: string; usd: number };
+type MarginPositionRow = {
+  symbol: string;
+  amount: string;
+  usd: number;
+  /** The oracle gave no usable price. The balance is real; its USD value is unknown. */
+  unpriced?: true;
+};
 
 type MarginPositions = {
   hf: number;
@@ -332,15 +338,35 @@ export async function readMarginPositions(smartAccount: string): Promise<MarginP
     const snap = await computeMarginSnapshot(smartAccount);
     const hf = snap.avgHealthFactor;
 
-    /** Dust is noise in a position list; below a cent is not a holding. */
+    /**
+     * Dust is noise in a position list; below a cent is not a holding.
+     *
+     * But dust is a statement about the BALANCE, and this filtered on the USD valuation —
+     * so a row the oracle could not price (`usdValue` empty, `NaN`, or the `|| 0` that
+     * swallowed it) was dropped as if the user held nothing. Live: the Margin page and the
+     * rail both showed 5.0036772 BLUSDC still owed while "repay all" answered "you have no
+     * outstanding margin debt", because that one row priced to 0 here and vanished.
+     *
+     * A row is dust only when it is priced AND worth less than a cent. An unpriced row
+     * with a real balance is kept, with `usd: 0` so no total is inflated by a number
+     * nobody has — it is a holding whose value is unknown, not a holding that is absent.
+     */
     const rows = (balances: typeof snap.collateralBalances): MarginPositionRow[] =>
       Object.entries(balances)
-        .map(([symbol, bal]) => ({
-          symbol,
-          amount: bal.amount,
-          usd: Number.parseFloat(bal.usdValue) || 0,
-        }))
-        .filter((p) => p.usd > 0.01)
+        .map(([symbol, bal]) => {
+          const usd = Number.parseFloat(bal.usdValue);
+          const priced = Number.isFinite(usd);
+          const units = Number.parseFloat(String(bal.amount).replace(/,/g, ""));
+          return {
+            symbol,
+            amount: bal.amount,
+            usd: priced ? usd : 0,
+            ...(priced ? {} : { unpriced: true as const }),
+            units: Number.isFinite(units) ? units : 0,
+          };
+        })
+        .filter((p) => (p.usd > 0.01 ? true : !("unpriced" in p) ? false : p.units > 0))
+        .map(({ units: _units, ...row }) => row)
         .sort((a, b) => b.usd - a.usd);
 
     const borrowedRows = rows(snap.borrowedBalances);
@@ -1417,7 +1443,7 @@ async function farmPositionAnswer(
     smartAccount: string | null;
     request_id: string;
   },
-  venue?: "blend" | "aquarius" | "soroswap" | null,
+  venue?: "blend" | "aquarius" | "soroswap" | "lp" | null,
   asset?: string | null,
 ): Promise<ChatResponse> {
   if (!ctx.smartAccount) {
@@ -1455,11 +1481,12 @@ async function farmPositionAnswer(
     const xlmPrice = getCachedTokenPrice("XLM") || 0;
     const usdcPrice = getCachedTokenPrice("USDC") || 1;
 
+    const settle = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
     const [blendXlm, blendUsdc, soroswapLp, soroswapStats, blendXlmReserve, blendUsdcReserve, ...aquariusResults] = await Promise.all([
-      BlendService.getUserBlendBalance(ctx.smartAccount, "XLM"),
-      BlendService.getUserBlendBalance(ctx.smartAccount, "USDC"),
-      SoroswapService.getLpBalance(ctx.smartAccount),
-      SoroswapService.getPoolStats(),
+      settle(BlendService.getUserBlendBalance(ctx.smartAccount, "XLM"), null),
+      settle(BlendService.getUserBlendBalance(ctx.smartAccount, "USDC"), null),
+      settle(SoroswapService.getLpBalance(ctx.smartAccount), "0"),
+      settle(SoroswapService.getPoolStats(), null),
       typeof BlendService.getBlendReserveData === "function"
         ? BlendService.getBlendReserveData("XLM").catch(() => null)
         : Promise.resolve(null),
@@ -1467,16 +1494,19 @@ async function farmPositionAnswer(
         ? BlendService.getBlendReserveData("USDC").catch(() => null)
         : Promise.resolve(null),
       ...AQUARIUS_POOLS.flatMap((pool) => [
-        AquariusService.getUserLpBalance(ctx.smartAccount!, pool.poolAddress, pool.tokens[0], pool.tokens[1]),
-        AquariusService.getAquariusPoolStats(pool.poolAddress),
+        settle(
+          AquariusService.getUserLpBalance(ctx.smartAccount!, pool.poolAddress, pool.tokens[0], pool.tokens[1]),
+          "0",
+        ),
+        settle(AquariusService.getAquariusPoolStats(pool.poolAddress), null),
       ]),
     ]);
 
     if (!venue || venue === "blend") {
-      const xlmUnderlying = Number.parseFloat(blendXlm.underlyingBalance) || 0;
+      const xlmUnderlying = Number.parseFloat(blendXlm?.underlyingBalance ?? "") || 0;
       if (xlmUnderlying > DUST) {
         const usd = xlmUnderlying * xlmPrice;
-        const bTok = fmtPosAmount(blendXlm.bTokenBalance);
+        const bTok = fmtPosAmount(blendXlm?.bTokenBalance ?? "0");
         facts.push({ label: "Blend · XLM", value: `${fmtPosAmount(String(xlmUnderlying))} XLM (${money(usd)})` });
         tableRows.push([
           "Blend",
@@ -1485,10 +1515,10 @@ async function farmPositionAnswer(
         ]);
         totalUsd += usd;
       }
-      const usdcUnderlying = Number.parseFloat(blendUsdc.underlyingBalance) || 0;
+      const usdcUnderlying = Number.parseFloat(blendUsdc?.underlyingBalance ?? "") || 0;
       if (usdcUnderlying > DUST) {
         const usd = usdcUnderlying * usdcPrice;
-        const bTok = fmtPosAmount(blendUsdc.bTokenBalance);
+        const bTok = fmtPosAmount(blendUsdc?.bTokenBalance ?? "0");
         facts.push({ label: "Blend · BLUSDC", value: `${fmtPosAmount(String(usdcUnderlying))} BLUSDC (${money(usd)})` });
         tableRows.push([
           "Blend",
@@ -1499,7 +1529,7 @@ async function farmPositionAnswer(
       }
     }
 
-    if (!venue || venue === "soroswap") {
+    if (!venue || venue === "soroswap" || venue === "lp") {
       const ssLp = Number.parseFloat(soroswapLp) || 0;
       const ssShares = Number.parseFloat(soroswapStats?.totalShares ?? "0");
       if (ssLp > DUST && soroswapStats && ssShares > 0) {
@@ -1528,7 +1558,7 @@ async function farmPositionAnswer(
       }
     }
 
-    if (!venue || venue === "aquarius") {
+    if (!venue || venue === "aquarius" || venue === "lp") {
       AQUARIUS_POOLS.forEach((pool, i) => {
         const lp = Number.parseFloat(String(aquariusResults[i * 2] ?? "0")) || 0;
         const stats = aquariusResults[i * 2 + 1] as Awaited<ReturnType<typeof AquariusService.getAquariusPoolStats>>;
@@ -1970,7 +2000,18 @@ export async function runRead(
   // as the Farm page. Vertex maps these questions onto `vanna_get_farm_overview`, which
   // reads Registry tracking tokens (Aquarius LP = 0 while Farm shows 1.64 LP). Never
   // let that MCP path answer a holdings question.
-  if (routed.template_id === "query_blend") {
+  /**
+   * Honour the reserve the route resolved.
+   *
+   * This branch ran `farmStatsAnswer` for every `query_blend` turn, discarding the tool
+   * the router had already chosen. So "what is the blend XLM supply APY" — routed
+   * correctly to `vanna_get_blend_reserve_stats` with `symbol: XLM` — was answered with
+   * the whole-venue table instead: an XLM column, a USDC column, and the account's Farm
+   * holdings including an Aquarius LP, for a question about one number on one reserve.
+   * The venue table is the right answer only when the route asked for the venue, which it
+   * signals by picking the list read (`vanna_list_blend_reserves`) over the scoped one.
+   */
+  if (routed.template_id === "query_blend" && routed.tool !== "vanna_get_blend_reserve_stats") {
     return farmStatsAnswer(ctx, "blend");
   }
 
@@ -1986,7 +2027,7 @@ export async function runRead(
     const scopedAsset = typeof routed.args?.asset === "string" ? routed.args.asset : null;
     return farmPositionAnswer(
       ctx,
-      venue === "blend" || venue === "aquarius" || venue === "soroswap" ? venue : null,
+      venue === "blend" || venue === "aquarius" || venue === "soroswap" || venue === "lp" ? venue : null,
       scopedAsset,
     );
   }
@@ -2053,6 +2094,105 @@ export async function runRead(
     } catch (e) {
       return mcpErrorResponse(e, ctx.request_id, routed.template_id);
     }
+  }
+
+  /**
+   * "How much can I borrow?" with no asset named — headroom for every asset, not one.
+   *
+   * `vanna_get_max_borrow` answers for one symbol, and `buildToolArgs` defaults an unnamed
+   * symbol to USDC. So an assetless question was answered for a single token the user
+   * never mentioned, and (before the route was fixed) via `vanna_can_borrow`, a yes/no on
+   * an amount that had not been stated — which the composer wrote up as "You can borrow 1
+   * USDC" over a payload whose own headroom field read 559.8.
+   *
+   * The absence of a symbol IS the request for all of them; no sentinel value is needed.
+   * The assets come from the registry (`marginCollateralSymbols`), so an asset the margin
+   * protocol starts accepting appears here with no edit. The figures are read straight
+   * from the tool's payload and rendered, never paraphrased, and the sentence names the
+   * smallest and largest headroom so the range is the answer.
+   */
+  if (routed.tool === "vanna_get_max_borrow" && routed.args?.symbol == null) {
+    if (!ctx.smartAccount) {
+      return {
+        kind: "unavailable",
+        message: "Connect your wallet to read how much you can borrow.",
+        intent: { template_id: routed.template_id },
+        request_id: ctx.request_id,
+      };
+    }
+    const { marginCollateralSymbols } = await import("./registry/assets");
+    const mcp = getMcpClient();
+    const symbols = marginCollateralSymbols();
+    const rows: Array<{ symbol: string; max: number | null; error: string | null }> = [];
+    for (const symbol of symbols) {
+      try {
+        const data = await mcp.call(
+          "vanna_get_max_borrow",
+          { smart_account: ctx.smartAccount, symbol },
+          ctx.userId,
+        );
+        const raw =
+          data.max_borrow_human ??
+          data.max_borrow ??
+          data.amount_human ??
+          data.headroom_human ??
+          data.pool_headroom_human ??
+          data.headroom;
+        const n = Number(String(raw ?? "").replace(/,/g, ""));
+        rows.push({
+          symbol: displayUsdcLabel(symbol, symbol),
+          max: Number.isFinite(n) ? n : null,
+          error: data.error ? String(data.message ?? data.error).slice(0, 120) : null,
+        });
+      } catch (e) {
+        rows.push({
+          symbol: displayUsdcLabel(symbol, symbol),
+          max: null,
+          error: e instanceof Error ? e.message.slice(0, 120) : String(e).slice(0, 120),
+        });
+      }
+    }
+
+    const priced = rows.filter((r): r is { symbol: string; max: number; error: null } => r.max != null);
+    if (!priced.length) {
+      return {
+        kind: "unavailable",
+        message:
+          "I could not read your borrowing headroom just now — the read failed for every asset, " +
+          "so I have no figure to give you. Your live limits are on the Margin page.",
+        intent: { template_id: routed.template_id },
+        mcp: { tool: "vanna_get_max_borrow", has_unsigned_xdr: false },
+        request_id: ctx.request_id,
+      };
+    }
+    const sorted = [...priced].sort((a, b) => a.max - b.max);
+    const low = sorted[0]!;
+    const high = sorted[sorted.length - 1]!;
+    const num = (n: number) => fmtPosAmount(String(n));
+    const structured: StructuredAnswer = {
+      headline:
+        priced.length === 1
+          ? `You can borrow up to ${num(high.max)} ${high.symbol} right now.`
+          : `Your borrowing headroom runs from ${num(low.max)} ${low.symbol} to ${num(high.max)} ${high.symbol}, ` +
+            `depending on which asset you take.`,
+      kicker: "Headroom by asset:",
+      facts: [
+        ...[...priced].reverse().map((r) => ({ label: r.symbol, value: `${num(r.max)} ${r.symbol}` })),
+        ...rows
+          .filter((r) => r.max == null)
+          .map((r) => ({ label: r.symbol, value: "read failed", tone: "warn" as const })),
+      ],
+      note: "Each figure is the most that asset alone allows — borrowing one reduces the others.",
+      venue: "margin",
+    };
+    return {
+      kind: "answer",
+      message: answerToText(structured),
+      answer: structured,
+      intent: { template_id: routed.template_id, slots: { assets: priced.length } },
+      mcp: { tool: "vanna_get_max_borrow", has_unsigned_xdr: false },
+      request_id: ctx.request_id,
+    };
   }
 
   // Fan-out: all Vanna earn pools (Sanujit E3/E4) — MCP has no list-all tool.
@@ -2370,6 +2510,10 @@ export async function runRead(
         });
       } else {
         structured = await vertexExplainStructured(ctx.message, routed.tool, data);
+        // The composer may phrase the read however it likes; it may not leave out the
+        // figure the read returned. See enforceGroundedFigure for the two live failures
+        // this exists for (headroom answered "1 USDC", health answered without an HF).
+        structured = enforceGroundedFigure(structured, routed.tool, data);
       }
       /**
        * An enumeration must arrive whole — but only when the question WAS one.

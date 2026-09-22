@@ -17,6 +17,7 @@ import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { matchFastPath } from "./investigation/read-cache";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
+import { namesEarnPoolMetric } from "./earn-pool-copy";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -1405,7 +1406,7 @@ export function routeMessage(message: string): RoutedIntent {
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : "AQUSDC");
+      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",
@@ -1621,13 +1622,40 @@ export function routeMessage(message: string): RoutedIntent {
      * it apart from a genuine "USDC". When nothing was named, ask for both amount
      * and asset together instead of inventing an asset the user never said.
      */
+    /**
+     * A sizing word IS a quantity. "Borrow the max I can safely" states how much without
+     * stating a number, so it is an instruction missing only its asset — the clarify
+     * below is the right answer for it, and the headroom read is not.
+     */
+    const sizedWithoutNumber = findAmountFraction(text) != null || findBalanceFraction(text) != null;
+    if (asset == null && amount == null && !sizedWithoutNumber) {
+      /**
+       * Neither a size nor an asset is not an instruction to borrow — there is nothing
+       * to execute in it. "How much i can borrow" landed here (the exclusion list above
+       * knows "can i borrow", not "i can borrow") and was answered with "How much do you
+       * want to borrow, and in which asset?" — the user's own question handed back.
+       *
+       * Rather than growing that list by one more wording, the branch now asks what a
+       * write actually needs: a write with no quantity and no asset has nothing to stage,
+       * and the read that answers what borrowing is possible is the headroom fan-out.
+       * Naming an asset alone still stages a write and prompts for the size, which is a
+       * real instruction missing one field.
+       */
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     if (asset == null) {
       return {
         kind: "clarify",
         message:
           amount != null
             ? `Borrow ${amount} of which asset? e.g. "borrow ${amount} XLM" or "borrow ${amount} BLUSDC".`
-            : `How much do you want to borrow, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
+            : `Borrow how much, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
         template_id: "borrow_amount_and_asset",
       };
     }
@@ -2154,6 +2182,24 @@ export function routeMessage(message: string): RoutedIntent {
         ? "soroswap"
         : null;
   if (asksAboutHoldings && !actsOnPosition && any(text, "farm", "blend", "aquarius", "soroswap") && !any(text, "earn")) {
+    /**
+     * One venue and one asset is one position, and Blend publishes that read directly.
+     *
+     * "What is my current XLM Blend supply" went to the whole-farm overview, whose answer
+     * is the Farm page's Deposit TVL headline plus every venue's holdings — so a question
+     * about one reserve was headlined "Your Blend Deposit TVL is $0.00" with a dust row
+     * under it. The overview is what answers "what am I farming"; a named venue AND a
+     * named asset have already narrowed it to a position that has its own read.
+     */
+    if (farmVenue === "blend" && asset) {
+      return {
+        kind: "read",
+        tool: "vanna_get_blend_position",
+        args: { symbol: asset.toUpperCase() === "BLUSDC" ? "USDC" : asset.toUpperCase() },
+        requires_account: true,
+        template_id: "query_blend_position",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_get_farm_overview",
@@ -2192,6 +2238,19 @@ export function routeMessage(message: string): RoutedIntent {
       args: {},
       requires_account: true,
       template_id: "query_margin_positions",
+    };
+  }
+  // "what are my LP positions" names neither Blend nor a pool venue, so it used to
+  // fall through to the all-positions fan-out. That read pulls Blend first, and a
+  // Soroban ECONNRESET there failed the whole turn before Aquarius or Soroswap
+  // were answered.
+  if (asksAboutHoldings && !actsOnPosition && any(text, "lp", "liquidity") && !any(text, "earn", "blend")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_farm_overview",
+      args: { venue: "lp" },
+      requires_account: true,
+      template_id: "query_farm_position",
     };
   }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
@@ -2333,7 +2392,7 @@ export function routeMessage(message: string): RoutedIntent {
     return {
       kind: "read",
       tool: "vanna_get_max_borrow",
-      args: { symbol: asset ?? "USDC" },
+      args: asset ? { symbol: asset } : {},
       requires_account: true,
       template_id: "query_available_credit",
     };
@@ -2358,12 +2417,35 @@ export function routeMessage(message: string): RoutedIntent {
         usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
+    /**
+     * `vanna_can_borrow` is a yes/no test on ONE amount. With no amount there is nothing
+     * for it to test, and it was still being called — `symbol: "USDC"`, no `amount` — so
+     * "how much can I borrow?" got a pass/fail on an unstated figure, which the composer
+     * then wrote up as "You can borrow 1 USDC" against ~$1.8k of collateral and ~$36 of
+     * debt. Headroom is a different read: `vanna_get_max_borrow`, the same one the credit
+     * branch above already uses.
+     *
+     * The discriminator is the presence of an amount, not the wording. Any phrasing that
+     * reaches here without a figure is asking how much, whatever words it used.
+     */
+    if (amount == null) {
+      // No asset named means every asset — see the fan-out in handle-read.ts, which
+      // treats a missing symbol as the request for the whole range rather than
+      // defaulting to a token the user never said.
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: asset ? { symbol: asset } : {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_borrow",
       args: {
         symbol: asset ?? "USDC",
-        ...(amount != null ? { amount: String(amount) } : {}),
+        amount: String(amount),
       },
       requires_account: true,
       template_id: "query_can_borrow",
@@ -2619,12 +2701,19 @@ export function routeMessage(message: string): RoutedIntent {
     /**
      * "How is my XLM pool doing?" names a ticker but not Earn vs Farm · Blend.
      * Ask rather than guessing the Earn lending pool (or the Blend reserve).
+     *
+     * But only when the question is about the SURFACE. "What is the XLM supply APY" names
+     * a figure the Earn pool read returns, and got the chip anyway — while the identical
+     * sentence with the word "earn" in it answered straight away. A question that names
+     * the figure has already said what it wants; the chip is for the one that has not.
+     * See `namesEarnPoolMetric`, which reads that vocabulary off the read's own fields.
      */
     const venueNamed = any(text, "earn", "blend", "farm", "aquarius", "soroswap", "lending");
     if (
       asset &&
       /^(XLM|BLUSDC|AQUSDC|SOUSDC)$/i.test(asset) &&
-      !venueNamed
+      !venueNamed &&
+      !namesEarnPoolMetric(text)
     ) {
       const venues =
         asset === "AQUSDC"
