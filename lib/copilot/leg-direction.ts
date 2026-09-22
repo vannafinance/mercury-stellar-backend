@@ -1,4 +1,4 @@
-import { OP_FLOW, type Pocket, type WorkflowOp } from "./workflow/types";
+import { OP_FLOW, POCKET_HOLDER, type Pocket, type WorkflowOp } from "./workflow/types";
 
 /**
  * Which way a leg moves value, and whether that contradicts what the user said.
@@ -34,19 +34,35 @@ export function flowOf(op: string): { from: Pocket; to: Pocket } | null {
 }
 
 /**
- * The words a user says for each pocket. `debt` is deliberately absent: nobody says
- * "from my debt" to mean the borrow draws on it, and reading "repay from my debt" as a
- * source would refuse a legitimate repay.
+ * `debt` is a pocket but never a spoken source.
+ *
+ * Every other pocket is somewhere a user can say money came "from". Debt is borrowing
+ * capacity — a borrow draws on it, but nobody says "from my debt" to mean that, while
+ * "repay from my wallet" is ordinary. Read as a stated source it would make `repay`
+ * (account → debt) look like it lands in the source, and refuse a legitimate repay.
  */
-const VENUE_POCKETS: Readonly<Record<string, Pocket>> = {
-  blend: "blend",
-  earn: "earn",
-  wallet: "wallet",
+const UNSPOKEN_POCKETS: readonly Pocket[] = ["debt"];
+
+/** Words that name a pocket without being its key. Everything else IS its key. */
+const POCKET_SYNONYMS: Readonly<Record<string, Pocket>> = {
   margin: "account",
   collateral: "account",
-  account: "account",
-  lp: "lp",
   pool: "lp",
+};
+
+/**
+ * The words a user says for each pocket, derived from the pocket table rather than
+ * listed here — a pocket's own name is the word for it, so a pocket added to
+ * `POCKET_HOLDER` is understood without touching this file. Only the words that differ
+ * from the key need saying.
+ */
+const VENUE_POCKETS: Readonly<Record<string, Pocket>> = {
+  ...Object.fromEntries(
+    (Object.keys(POCKET_HOLDER) as Pocket[])
+      .filter((pocket) => !UNSPOKEN_POCKETS.includes(pocket))
+      .map((pocket) => [pocket, pocket] as const),
+  ),
+  ...POCKET_SYNONYMS,
 };
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { contradictsStatedSource, flowOf, statedSourcePockets } from "@/lib/copilot/leg-direction";
 import { routeMessage } from "@/lib/copilot/router";
-import { OP_FLOW, WORKFLOW_OPS } from "@/lib/copilot/workflow/types";
+import { OP_FLOW, POCKET_HOLDER, WORKFLOW_OPS } from "@/lib/copilot/workflow/types";
 
 /**
  * Money must not move the way the user did not ask.
@@ -89,6 +89,24 @@ describe("a source is read from grammar, not from a verb", () => {
 
   it("names no source when the sentence states none", () => {
     expect(statedSourcePockets("supply 20 XLM to blend").size).toBe(0);
+  });
+
+  /**
+   * The vocabulary is derived from `POCKET_HOLDER`, not written out, so every pocket a
+   * user can speak of is understood without being listed — including any added later.
+   * `debt` is the one deliberate exclusion: nobody says "from my debt" to mean a borrow
+   * draws on it, and reading it as a source would refuse a legitimate repay.
+   */
+  it("understands every spoken pocket by its own name, with no list to maintain", () => {
+    for (const pocket of Object.keys(POCKET_HOLDER) as Array<keyof typeof POCKET_HOLDER>) {
+      const seen = statedSourcePockets(`take it from ${pocket}`);
+      if (pocket === "debt") expect(seen.size, "debt must not read as a source").toBe(0);
+      else expect(seen, `"${pocket}" should be read as a source`).toContain(pocket);
+    }
+  });
+
+  it("does not refuse a repay, which lands in debt by definition", () => {
+    expect(contradictsStatedSource("repay", "repay it from my wallet")).toBe(false);
   });
 
   /**
