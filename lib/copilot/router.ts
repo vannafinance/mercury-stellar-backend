@@ -1439,14 +1439,29 @@ export function routeMessage(message: string): RoutedIntent {
   // Soft NL: “earn me yield from farm / invest for max profit” — handled in runWrite ranking.
   if (isMaxYieldInvestIntent(text) || any(text, "earn me something", "earn me yield from farm", "invest in market pools")) {
     const minHf = parseMinHealthFactor(raw);
+    /**
+     * Wanting the best yield says nothing about the size, so this branch asked for one
+     * even when the sentence had already given it: "invest my idle tokens in farm
+     * market" answered "How much XLM do you want to supply to Blend?" (22 Sep, live),
+     * and "invest all my USDC for max profit" did the same with "all my USDC" sitting
+     * in it. `requires_amount` was hard `true` and no fraction was carried, so a stated
+     * share had nowhere to go — the Earn lend branch below already reads exactly this
+     * and sizes off the live balance.
+     *
+     * The ranking preference and the size are two separate instructions;
+     * `findBalanceFraction` keeps them apart, refusing to read the "max" of "max yield"
+     * as a size.
+     */
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "lend",
       template_id: "invest_max_yield",
       asset: asset ?? null,
       amount,
+      fraction,
       requires_account: false,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
       prefer_max_yield: true,
       min_hf: minHf,
     };
@@ -1516,15 +1531,24 @@ export function routeMessage(message: string): RoutedIntent {
     (!any(text, "supply apy", "borrow apy", "btoken", "pays more", "which reserve") &&
       (!any(text, "position") || any(text, "add", "liquidity")))
   ) {
+    /**
+     * "deploy my idle funds into blend" states its size — everything idle — and was
+     * asked "How much XLM do you want to supply to Blend?" anyway (22 Sep, live),
+     * because `requires_amount` was hard `true` here and no share was carried. Same
+     * reading as the Earn lend branch below, so the two cannot disagree about what
+     * counts as a size.
+     */
+    const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deploy_to_blend",
       template_id: "deploy_to_blend",
       asset: asset ?? "XLM",
       amount,
+      fraction,
       multi_leg: false,
       requires_account: true,
-      requires_amount: true,
+      requires_amount: amount == null && fraction == null,
       leverage: leverage ?? null,
     };
   }

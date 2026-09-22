@@ -59,6 +59,23 @@ export function findBalanceFraction(text: string): number | null {
   if (/\b(?:one\s*)?half\b/.test(t)) return 0.5;
   if (/\b(?:a\s+)?quarter\b/.test(t)) return 0.25;
 
+  /**
+   * "Idle" names the pot AND the share: everything not already at work.
+   *
+   * Live, 22 Sep: "invest my idle tokens in farm market" answered "How much XLM do you
+   * want to supply to Blend?" — asking for a number the sentence had already given.
+   * Every idle phrasing did it, because none of them reach the rungs below: "idle
+   * tokens" and "idle funds" name no balance the `namesBalance` gate recognises, and
+   * "my idle balance" names one but then says neither "all" nor "max", so the share
+   * came back null and the write was left unsized.
+   *
+   * It belongs here rather than beside the callers for the reason this file exists —
+   * one place decides what counts as a size, so the router and the planner cannot
+   * disagree about it. Checked after the percent and half/quarter rungs, so "half my
+   * idle balance" is still a half.
+   */
+  if (/\bidle\b/.test(t)) return 1;
+
   // Which balance is this a share OF? Without an answer, "all" is not a size.
   const namesBalance =
     /\b(?:wallet|balance|holdings?|collateral|i\s+have|i've\s+got)\b/.test(t) ||
