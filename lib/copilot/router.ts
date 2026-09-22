@@ -18,6 +18,7 @@ import { matchFastPath } from "./investigation/read-cache";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
 import { namesEarnPoolMetric } from "./earn-pool-copy";
+import { contradictsStatedSource } from "./leg-direction";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -996,6 +997,25 @@ function tryMultiGoalPlan(
   });
 
   if (deduped.length < 2) return null;
+
+  /**
+   * A plan that moves money the way the user did not ask is never the best available
+   * answer.
+   *
+   * Live, 22 Sep: "withdraw 30 XLM from blend and lend it in earn" came back as
+   * `lend 30 XLM` then `deploy_to_blend BLUSDC` — INTO Blend, in an asset never
+   * mentioned, waiting on a signature. The Blend leg is pushed on the presence of the
+   * word "blend" alone, so a sentence taking money OUT of Blend builds a leg putting
+   * money in.
+   *
+   * Refused whole rather than repaired: dropping the offending leg would leave a plan
+   * missing something the user stated, and re-pointing it would be this same guessing
+   * in the other direction. Refusing lets the single-leg route read the sentence,
+   * which it already does correctly — the direction is right, and the message is the
+   * user's own words rather than an inversion of them. Planning both legs faithfully
+   * is the stated-action path's job, not this keyword builder's.
+   */
+  if (deduped.some((step) => contradictsStatedSource(String(step.op), raw))) return null;
 
   const parts = deduped.map((s, i) => {
     const a = s.amount != null ? `${s.amount} ` : "";
