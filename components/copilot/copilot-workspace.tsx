@@ -2833,6 +2833,20 @@ export function CopilotWorkspace() {
     const view = workflow.view;
     const network = investigation.result?.scope.network;
     if (!view || !network || !investigation.conversationId) return;
+    /**
+     * A receipt records what HAPPENED to a run, so there is nothing to record until one
+     * starts.
+     *
+     * This fired on any workflow view, including `proposed` — the state a plan sits in while
+     * it waits for Approve. The turn therefore grew an EXECUTION PROGRESS card whose only leg
+     * read "Queued", and because the turn renders above the investigation card, that card sat
+     * ABOVE the approval it had not been given yet. Reported 23 Sep on "lend 50 xlm".
+     *
+     * `proposed` and `validating` are the two positions before approval in the status machine
+     * (`WorkflowRecord["status"]`); every other position describes a run that has begun or
+     * finished, and those still write their receipt as before.
+     */
+    if (view.status === "proposed" || view.status === "validating") return;
     const receipt = executionReceiptFromWorkflowView(view, network);
     const key = JSON.stringify(receipt);
     if (persistedWorkflowReceiptRef.current === key) return;
