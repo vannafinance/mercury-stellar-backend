@@ -45,6 +45,7 @@ describe("usePoolData — /api/pools fetch + tick invalidation", () => {
 
   beforeEach(() => {
     currentTick = 0;
+    sessionStorage.clear();
     fetchMock = vi.fn(
       async () =>
         ({ ok: true, status: 200, json: async () => mockPools }) as unknown as Response,
@@ -64,9 +65,21 @@ describe("usePoolData — /api/pools fetch + tick invalidation", () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/pools");
+    expect(fetchMock).toHaveBeenCalledWith("/api/pools", { cache: "default" });
     expect(result.current.pools.XLM.supplyAPY).toBe("7.00");
     expect(result.current.pools.USDC.exchangeRate).toBe("1.0526316");
+  });
+
+  // A mutation sets earn:pools:fresh so the next read bypasses the CDN;
+  // without it Total Supply / APY stayed stale for 15-20s after a supply.
+  it("bypasses the CDN once when a mutation just landed, then clears the flag", async () => {
+    sessionStorage.setItem("earn:pools:fresh", "1");
+
+    const { result } = renderHook(usePoolData, { wrapper: makeWrapper(qc) });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/pools?fresh=1", { cache: "no-store" });
+    expect(sessionStorage.getItem("earn:pools:fresh")).toBeNull();
   });
 
   it("does not enter isLoading=true when tick increments (stale-while-revalidate)", async () => {
