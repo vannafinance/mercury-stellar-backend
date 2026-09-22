@@ -22,7 +22,7 @@ export function writeArgsFor(
   symbol: string,
   amount: string,
   scope: Pick<InvestigationScope, "trader" | "smartAccount">,
-  extra?: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean },
+  extra?: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean; redeemAll?: boolean },
 ): Record<string, unknown> {
   if (op === "add_liquidity") {
     // vanna_add_liquidity(smart_account, token_a, token_b, amount_a, amount_b, min_liquidity_out, trader, venue)
@@ -54,6 +54,11 @@ export function writeArgsFor(
     if (extra?.acknowledgedPriceImpact) args.acknowledged_price_impact = true;
     return args;
   }
+  if (op === "redeem" && extra?.redeemAll) {
+    // vanna_redeem(symbol, lender, redeem_all) re-reads the verified vToken balance.
+    // A frozen human amount is a partial redeem; "all of it" must not send one.
+    return { symbol, redeem_all: true, lender: scope.trader };
+  }
   return WALLET_OPS.includes(op)
     ? { symbol, amount, lender: scope.trader }
     : { symbol, amount, trader: scope.trader, smart_account: scope.smartAccount };
@@ -67,13 +72,16 @@ export function allowedInvocation(step: ProposalStep, scope: Pick<InvestigationS
   if (!asset || asset.id !== step.asset) throw new Error("invalid_write_asset");
   const symbol = WALLET_OPS.includes(step.op) ? asset.earnSymbol : asset.marginSymbol;
   if (!symbol || (OP_FLOW[step.op].venue === "blend" && !asset.blendReserve)) throw new Error("write_not_allowed");
-  let extra: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean } | undefined;
+  let extra: { tokenOut?: string; venue?: string; minOut?: string; amountB?: string; acknowledgedPriceImpact?: boolean; redeemAll?: boolean } | undefined;
   /**
    * Entering a pool names the other side of the pair and the paired amount the sizer
    * derived for it — the ratio is not the model's to guess, and never re-derived here from
    * whatever step.args happens to carry: allowedInvocation's job is to confirm the step
    * matches what writeArgsFor would build from the SAME inputs, not to re-price anything.
    */
+  if (step.op === "redeem" && step.sizing?.basis === "whole_position" && step.sizing.read === "earn_position") {
+    extra = { redeemAll: true };
+  }
   if (step.op === "add_liquidity") {
     const other = typeof step.args.token_b === "string" ? resolveAssetDef(step.args.token_b) : null;
     const venue = typeof step.args.venue === "string" ? step.args.venue : "";

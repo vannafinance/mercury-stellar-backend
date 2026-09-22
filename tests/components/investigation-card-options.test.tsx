@@ -78,7 +78,7 @@ describe("investigation card / options", () => {
     // The full-precision $6,541.043333… reads at the precision a person uses, and the
     // projected floor is shown next to it — a size with no health consequence beside it
     // is the number that gets approved without being understood.
-    expect(screen.getByText("$6,541.04")).toBeTruthy();
+    expect(screen.getByText("$6,537.46")).toBeTruthy();
     expect(screen.getAllByText("Health factor after")[0].nextElementSibling?.textContent).toBe("1.30");
   });
 

@@ -50,12 +50,15 @@ describe("'my farm position' routes to the Farm-only read, not the margin fan-ou
     }
   });
 
-  it("my Blend/XLM position stats is holdings, not pool-wide reserve APY", () => {
+  // Still holdings rather than pool-wide reserve APY — but a named venue AND a named
+  // asset is one position, which Blend publishes its own read for. The farm overview
+  // headlines with Deposit TVL across every venue, which is not what was asked.
+  it("my Blend/XLM position stats is that one Blend position", () => {
     const r = routeMessage("what is my xlm blend pool positions stats?");
     expect(r.kind).toBe("read");
     if (r.kind === "read") {
-      expect(r.template_id).toBe("query_farm_position");
-      expect(r.args).toMatchObject({ venue: "blend" });
+      expect(r.template_id).toBe("query_blend_position");
+      expect(r.args).toMatchObject({ symbol: "XLM" });
     }
   });
 

@@ -1173,7 +1173,18 @@ async function resolveBalanceFractionAmount(
   if (action.op === "withdraw_collateral") {
     if (!ctx.smartAccount) return null;
     const pos = await readMarginPositions(ctx.smartAccount);
-    const row = pos?.collateral.find((r) => sameAsset(r.symbol, asset));
+    // Same rule as the repay sizing below: null is a failed snapshot, not an empty
+    // account, and the two must not share a sentence.
+    if (!pos) {
+      return {
+        kind: "blocked",
+        message:
+          "I could not read your margin account just now, so I don't know how much " +
+          `${ui} you have posted — nothing was withdrawn. Try again in a moment.`,
+        request_id: ctx.request_id,
+      };
+    }
+    const row = pos.collateral.find((r) => sameAsset(r.symbol, asset));
     if (!row) {
       return {
         kind: "blocked",
@@ -1345,7 +1356,24 @@ async function resolveRepayAmount(
   }
 
   const pos = await readMarginPositions(ctx.smartAccount);
-  if (!pos || !pos.borrowed.length) {
+  /**
+   * A failed read is not an empty account.
+   *
+   * `readMarginPositions` returns null only when the snapshot threw — an empty account
+   * comes back with empty arrays. Both were answered "You have no outstanding margin debt
+   * to repay", so a dropped RPC told the user their debt was gone. Live: the Margin page
+   * and the rail both showed 5.0036772 BLUSDC owed while this said there was none.
+   */
+  if (!pos) {
+    return {
+      kind: "blocked",
+      message:
+        "I could not read your margin account just now, so I don't know what you owe — " +
+        "nothing was repaid. Your live figures are on the Margin page; try again in a moment.",
+      request_id: ctx.request_id,
+    };
+  }
+  if (!pos.borrowed.length) {
     return {
       kind: "blocked",
       message: "You have no outstanding margin debt to repay.",
@@ -1557,7 +1585,7 @@ function assetSetupSignResponse(
     kind: "needs_wallet_sign",
     message:
       readiness.message +
-      `\n\nWallet sign required for setup — full unsigned_xdr is attached (${readiness.unsigned_xdr.length} chars). ` +
+      `\n\nWallet sign required for setup — full unsigned_xdr is attached. ` +
       `After this confirms, Copilot continues: ${resumeLabel}.`,
     data: factsForUi({
       asset_setup: true,
@@ -2091,7 +2119,7 @@ async function runWrite(
   // either, and asking "which USDC?" there is the copilot ignoring both answers the
   // user already gave. Only a slot that is genuinely bare USDC may prompt.
   const ambiguousSlot =
-    !usdcOps.has(action.op) || highestPickFacts ? null : ambiguousUsdcSlot(action);
+    !usdcOps.has(action.op) || highestPickFacts ? null : ambiguousUsdcSlot(action, ctx.message);
   if (ambiguousSlot) {
     const slotContext =
       ambiguousSlot === "borrow"
@@ -2123,6 +2151,19 @@ async function runWrite(
         template_id: "clarify_usdc_variant",
         slots: { op: action.op, amount: action.amount, asset: "USDC", slot: ambiguousSlot },
       },
+      request_id: ctx.request_id,
+    };
+  }
+
+  // Earn redeem: if asset was not named, clarify which asset without offering USDC variant chips
+  if (action.op === "redeem" && !action.asset) {
+    return {
+      kind: "clarification",
+      message:
+        action.amount != null
+          ? `Redeem ${action.amount} of which asset from Earn? e.g. “redeem ${action.amount} XLM” or “redeem ${action.amount} BLUSDC”.`
+          : `Which asset do you want to redeem from Earn? e.g. “redeem 10 XLM from earn” or “redeem all BLUSDC”.`,
+      intent: { template_id: "redeem", slots: { asset: null, amount: action.amount } },
       request_id: ctx.request_id,
     };
   }
@@ -2499,6 +2540,17 @@ async function runWrite(
    */
   let addLiquidityNote: string | null = null;
   let inboundLpPair = false;
+  /**
+   * Set when the pool's live reserves were needed and could not be read.
+   *
+   * The ratio read sat in a `try` whose `catch` said "best-effort — an unreachable
+   * pool-stats read must never block the add", and the pair was then shown anyway: a
+   * reserve read that returned nothing left the amounts exactly as the router had guessed
+   * them, and the editor opened on "Add 20 XLM + 0.2273 AQUSDC" — about 88 XLM to the
+   * dollar — presented as the pool's own ratio. A pair nobody could price is worse than
+   * no pair; a failed read has to be said, not swallowed.
+   */
+  let lpReservesUnread: string | null = null;
   if (action.op === "add_liquidity") {
     const aIsXlm = action.token_a === "XLM";
     const bIsXlm = action.token_b === "XLM";
@@ -2569,11 +2621,26 @@ async function runWrite(
               writeBack(xlmGiven!, correctedOther);
             }
           }
+        } else {
+          lpReservesUnread = `${otherToken || "that"} pool reserves came back empty`;
         }
-      } catch {
-        /* best-effort — an unreachable pool-stats read must never block the add */
+      } catch (e) {
+        lpReservesUnread = e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160);
       }
     }
+  }
+
+  if (lpReservesUnread) {
+    return {
+      kind: "blocked",
+      message:
+        "I could not read the pool's live reserves just now, so I can't size the two sides " +
+        "of this add — and I won't show a pair I can't stand behind. Nothing was submitted. " +
+        "Try again in a moment, or add liquidity from the Farm page, which reads the same pool.",
+      intent: { template_id: "add_liquidity" },
+      data: { lp_reserve_read_error: lpReservesUnread },
+      request_id: ctx.request_id,
+    };
   }
 
   /**
@@ -2657,7 +2724,15 @@ async function runWrite(
           request_id: ctx.request_id,
         };
       }
-      if (action.fraction != null && action.fraction > 0 && action.fraction < 1 && !(action.amount != null && action.amount > 0)) {
+      /**
+       * `<= 1`, not `< 1`: a whole-position removal is `fraction === 1` (the router's
+       * "remove my liquidity", no number, no "half" case), and it needs the SAME
+       * live-read-and-multiply here that a fractional one gets — `live.shares * 1` is
+       * `live.shares`. Excluding it left the router's `fraction: 1` unconsumed, so
+       * even a correctly-recognised whole-position removal fell through to the same
+       * "How much should I remove?" clarification below as an unspecified one.
+       */
+      if (action.fraction != null && action.fraction > 0 && action.fraction <= 1 && !(action.amount != null && action.amount > 0)) {
         action = { ...action, amount: live.shares * action.fraction };
       }
       const want = action.amount;

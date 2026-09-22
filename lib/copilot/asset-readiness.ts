@@ -88,7 +88,7 @@ function sacContractFor(display: string): string | null {
   return null;
 }
 
-async function walletSacBalance(trader: string, display: string): Promise<number> {
+export async function walletSacBalance(trader: string, display: string): Promise<number> {
   if (display === "XLM") {
     try {
       const server = new StellarSdk.Horizon.Server(HORIZON_URL);
@@ -125,8 +125,19 @@ async function walletSacBalance(trader: string, display: string): Promise<number
   }
   const contract = sacContractFor(display);
   if (!contract) return Number.POSITIVE_INFINITY; // unknown — don't block
-  const bal = await ContractService.getSorobanTokenWalletBalance(contract, trader);
-  return parseFloat(bal) || 0;
+  try {
+    const bal = await ContractService.getSorobanTokenWalletBalance(contract, trader, trader, {
+      decimals: 7,
+      throwOnError: true,
+    });
+    return parseFloat(bal) || 0;
+  } catch (e) {
+    console.warn(
+      `[copilot] SAC balance check failed for ${trader} (${display}) — treating as unknown, not zero:`,
+      e instanceof Error ? e.message : e,
+    );
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /** Fetch Blend faucet envelope (partially signed). Empty ops ⇒ already set up. */

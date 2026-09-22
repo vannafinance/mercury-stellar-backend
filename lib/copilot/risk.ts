@@ -6,6 +6,7 @@
 import { copilotConfig } from "./config";
 import type { MCPClient } from "./mcp-client";
 import type { CopilotAction, RiskResult, Simulation } from "./types";
+import { OP_FLOW } from "./workflow/types";
 
 const LIQ_THRESHOLD = 1.0; // HF < 1.0 = liquidatable
 /**
@@ -293,6 +294,19 @@ export async function evaluateWriteRisk(
     liquidation_threshold: LIQ_THRESHOLD,
     amount_usd: amountUsd,
     asset,
+    /**
+     * Whether this op moves margin health at all — read off `OP_FLOW`, which already
+     * declares it per op and is the same table the sizer and the planner use.
+     *
+     * It was only ever set on the `!requires_account` branch above, so an op that spends
+     * FROM the margin account but changes neither collateral nor debt — a Blend supply, a
+     * Blend withdraw — came down this path and produced a real-looking projection of
+     * itself: "59.40 → 59.40", drawn as a health card over a write that cannot move
+     * health. `OP_FLOW[op].health === "neutral"` is that fact, stated once, where the
+     * rest of the system already reads it.
+     */
+    margin_applicable:
+      (OP_FLOW as Record<string, { health: string } | undefined>)[action.op]?.health !== "neutral",
   };
 
   // User-stated floor (“keep HF above 1.5”) beats default config floor.

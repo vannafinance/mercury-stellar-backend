@@ -68,7 +68,9 @@ import {
   strategyIsComplete,
 } from "./resume-policy";
 import { shouldPauseForHealthFloor } from "@/lib/copilot/hf-pause";
-import { executionReceiptFromWorkflowView, localExecutionAnswer } from "@/lib/copilot/execution-receipt";
+import { executionReceiptFromWorkflowView, localExecutionAnswer, singleWriteReceiptAnswer, type ExecutionReceiptSnapshot } from "@/lib/copilot/execution-receipt";
+import { answerToText } from "@/lib/copilot/answer-schema";
+import { shortWriteLabel } from "@/lib/copilot/execution-copy";
 import { executeClientTools } from "@/lib/assistant/client-tools";
 import { getPrivyAuthControls, signTransaction as signWorkflowTransaction } from "@/lib/wallet-adapter";
 import { PlanApprovalCard, type PlanPreview } from "./plan-approval-card";
@@ -1044,6 +1046,25 @@ function isMultiLegResponse(data?: Record<string, unknown> | null): boolean {
   return !!(data && (data.multi_leg === true || Array.isArray(data.multi_leg_steps)));
 }
 
+function isRealStrategyRun(
+  steps: Array<{ op?: string }> | null | undefined,
+  data?: Record<string, unknown> | null,
+): boolean {
+  if (data?.asset_setup === true) return false;
+  const rawSteps = steps && steps.length > 0
+    ? steps
+    : Array.isArray(data?.multi_leg_steps)
+      ? (data!.multi_leg_steps as Array<{ op?: string }>)
+      : [];
+  const nonSetupOps = rawSteps.filter(
+    (s) => s.op && s.op !== "ensure_asset_setup" && s.op !== "asset_setup" && s.op !== "report",
+  );
+  if (rawSteps.length > 0) {
+    return nonSetupOps.length > 1;
+  }
+  return data?.multi_leg === true && ((data?.remaining_legs != null) || ((data?.total_steps as number) ?? 0) > 1);
+}
+
 /**
  * Whether a resume hop response means "this leg was accepted by the server and
  * we may advance the client queue to the next leg".
@@ -1263,11 +1284,71 @@ function FactsGrid({
 }
 
 /**
+ * Project the served simulation onto the account the user is actually looking at.
+ *
+ * The server builds a simulation from a snapshot it takes when the card is built. After a
+ * transaction settles that snapshot is a lap behind: a withdraw card opened at "49.41 →
+ * 54.22" while the rail beside it already read 59.40, and the borrow card before it had
+ * finished at 51.36 against a rail of 51.31. Two health factors on one screen, both
+ * presented as current.
+ *
+ * What the simulation contributes is the EFFECT of the action — the collateral and debt
+ * deltas — which is the part the client cannot compute. The baseline is the account state,
+ * and there is exactly one of those on this page: the store the rail renders from. So the
+ * deltas are re-applied to the live figures and the health factor is recomputed with
+ * `deriveMarginHealth`, the same function the rail uses, which is what makes the two
+ * numbers incapable of disagreeing.
+ *
+ * Falls back to the served simulation whenever the store has no funded account to rebase
+ * onto — an unconnected wallet, or a first paint before the snapshot lands.
+ */
+function rebaseSimulationOnLiveAccount(sim: Simulation): Simulation {
+  // An op that never touches margin has a deliberately empty baseline and its own
+  // message; giving it live collateral would turn "None" into a full no-op projection.
+  if (sim.margin_applicable === false) return sim;
+  const store = useMarginAccountInfoStore.getState();
+  if (!store.hasMarginAccount) return sim;
+  const gross = store.grossCollateralValue ?? 0;
+  const debt = store.totalBorrowedValue ?? 0;
+  if (!(gross > 0) && !(debt > 0)) return sim;
+  if (!Number.isFinite(sim.collateral_before) || !Number.isFinite(sim.debt_before)) return sim;
+
+  const dCollateral = sim.collateral_after - sim.collateral_before;
+  const dDebt = sim.debt_after - sim.debt_before;
+  if (!Number.isFinite(dCollateral) || !Number.isFinite(dDebt)) return sim;
+
+  const collateralAfter = Math.max(0, gross + dCollateral);
+  const debtAfter = Math.max(0, debt + dDebt);
+  const hf = (collateral: number, owed: number): number | null => {
+    if (!(owed > 0.01)) return null;
+    const derived = deriveMarginHealth({
+      grossCollateralValue: collateral,
+      effectiveDebtValue: owed,
+      totalBorrowedValue: owed,
+    });
+    return Number.isFinite(derived.avgHealthFactor) ? derived.avgHealthFactor : null;
+  };
+
+  return {
+    ...sim,
+    collateral_before: gross,
+    collateral_after: collateralAfter,
+    debt_before: debt,
+    debt_after: debtAfter,
+    hf_before: hf(gross, debt),
+    hf_after: hf(collateralAfter, debtAfter),
+    ltv_before: gross > 0 ? debt / gross : 0,
+    ltv_after: collateralAfter > 0 ? debtAfter / collateralAfter : 0,
+  };
+}
+
+/**
  * Before→after projection for a staged write. Informational: the binding gates
  * run in the MCP server and the Sign Service, so this panel only appears when
  * the brain managed to read the account and project the impact.
  */
-function ImpactPanel({ sim }: { sim: Simulation }) {
+function ImpactPanel({ sim: served }: { sim: Simulation }) {
+  const sim = rebaseSimulationOnLiveAccount(served);
   const after = sim.hf_after;
   const color = hfColor(after);
   const rows: Array<{ k: string; before: string; after: string }> = [
@@ -1744,14 +1825,16 @@ export function CopilotWorkspace() {
     setHfPaused(false);
   }, []);
 
-  const storedFreighterAutoApprove = useCopilotSettingsStore(
+  const storedAutoApprove = useCopilotSettingsStore(
     (s) => (address ? Boolean(s.autoApproveByWallet[address]) : false)
   );
-  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedFreighterAutoApprove;
+  const freighterAutoApprove = walletKind === "freighter" && Boolean(address) && storedAutoApprove;
 
   // Session signing via Sign Service applies to Privy embedded wallets.
   // For Freighter, auto-approve acts as auto-dispatch directly to the extension popup.
   const sessionSigningAvailable = (walletKind === "privy" || walletKind === "freighter") && !!address;
+
+  const [autoApprovePending, setAutoApprovePending] = useState(false);
 
   /**
    * What the Sign Service last reported for this wallet (`GET /sessions` on
@@ -1782,9 +1865,13 @@ export function CopilotWorkspace() {
 
   /** Whether anything server-side is actually holding the caps. */
   const capsEnforced = signServiceState.address === address && signServiceState.status === "ok";
-  // The browser value is only a display cache. The Sign Service session is the
-  // authority, so a switch changed by MCP is reflected here after the read.
-  const autoApprove = capsEnforced;
+
+  /** Whether auto-approve is toggled on in the UI by the user. */
+  const autoApproveUiOn = Boolean(address) && storedAutoApprove;
+
+  // The browser value is the user's intent. The Sign Service session is the
+  // authority, so a switch changed by MCP or remote session sync updates the store.
+  const autoApprove = autoApproveUiOn;
 
   /**
    * On wallet connect, read the live Sign Service session. Without this the rail
@@ -2034,7 +2121,14 @@ export function CopilotWorkspace() {
 
   /** Force-refresh rail stats after a prompt/sign so values match margin page. */
   const refreshRailStats = useCallback(
-    async (opts?: { force?: boolean }) => {
+    /**
+     * `after` is a settled transaction hash. The snapshot route is cached for 15s on
+     * TIME, so a refresh fired the instant a write landed was answered from the body
+     * taken before it — which is why the rail held the old health factor until the user
+     * reloaded the page. Passing the hash makes the read go past that cache, so the event
+     * that changed the account is what invalidates it.
+     */
+    async (opts?: { force?: boolean; after?: string | null }) => {
       if (!address) return;
       const force = opts?.force !== false;
       try {
@@ -2046,7 +2140,7 @@ export function CopilotWorkspace() {
         if (acct) {
           await refreshBorrowedBalances(acct, force);
         }
-        await refreshSnapshot();
+        await refreshSnapshot(opts?.after ?? null);
       } catch {
         // Rail refresh is best-effort — never block the agent turn.
       }
@@ -2567,7 +2661,7 @@ export function CopilotWorkspace() {
           data.kind === "executed" ||
           data.kind === "needs_wallet_sign" ||
           Boolean(data.execution?.tx_hash);
-        void refreshRailStats({ force });
+        void refreshRailStats({ force, after: data.execution?.tx_hash ?? null });
         return data;
       } catch (e) {
         // Cancel must leave already-executed legs in the log and on the card.
@@ -2578,7 +2672,22 @@ export function CopilotWorkspace() {
         ) {
           return null;
         }
-        const failed: ChatResponse = { kind: "error", message: "Copilot request failed." };
+        /**
+         * Say what failed.
+         *
+         * This catch replaced every reply with one sentence, so a session-append
+         * rejected by Google (`invalid_grant` / `invalid_rapt`, in the same minute as
+         * the reported turn), a network drop and a JSON parse error were all "Copilot
+         * request failed." — and the actual reason was only ever in the console. The
+         * thrown value already carries it; nothing needed to be invented, only kept.
+         */
+        const detail = e instanceof Error ? e.message.trim() : String(e ?? "").trim();
+        const failed: ChatResponse = {
+          kind: "error",
+          message: detail
+            ? `That request failed before it could answer: ${detail}`
+            : "That request failed before it could answer, and returned no reason.",
+        };
         if (!silent) {
           setResponse(failed);
           pushLog(promptLabel, failed);
@@ -2590,6 +2699,29 @@ export function CopilotWorkspace() {
       }
     },
     [address, smartAccount, autoApprove, pushLog, pushActivity, refreshRailStats, absorbStrategySteps],
+  );
+
+  /**
+   * Write an outcome into the conversation, not just a toast.
+   *
+   * Cancel flipped `cancelledRef` and raised a toast; nothing reached the thread, so a
+   * stopped run left the last thing the copilot said standing as if it were still true —
+   * a staged panel asking for a signature the user had just refused. A toast is gone in
+   * three seconds and is not a record.
+   *
+   * Appends when the prompt has no turn yet (cancelled mid-request, before the reply was
+   * recorded) and replaces the pending assistant line when it does (cancelled at the
+   * signature, where that line is the staged request being answered).
+   */
+  const noteOutcome = useCallback(
+    (text: string) => {
+      const prompt = (submitted || originalIntentRef.current || "").trim();
+      const recorded =
+        !!prompt && investigation.turns.some((t) => t.role === "user" && t.text === prompt);
+      if (recorded) void investigation.updateLastAssistantText(text);
+      else if (prompt) void investigation.recordDirect(prompt, text);
+    },
+    [investigation, submitted],
   );
 
   const cancelInFlight = useCallback(() => {
@@ -2608,7 +2740,10 @@ export function CopilotWorkspace() {
     toast("Request cancelled — completed steps stay in the log. Nothing further will be submitted.", {
       duration: 3500,
     });
-  }, []);
+    noteOutcome(
+      "Cancelled. Nothing was submitted — any step that had already settled stays on-chain.",
+    );
+  }, [noteOutcome]);
 
   const { run: investigate } = investigation;
   const resetWorkflow = workflow.reset;
@@ -2638,7 +2773,28 @@ export function CopilotWorkspace() {
     setSubmitted(text);
     setIntentText("");
     const direct = await postCopilot({ message: text }, text, { signal });
-    if (direct?.message) await investigation.recordDirect(text, direct.message);
+    /**
+     * A write's turn is what it is about to do, not the signing boilerplate.
+     *
+     * `message` on a staged write is `readyToSignMessage` — "Built and ready — approve to
+     * sign it with your wallet." — which is chrome for a card, and it was what the
+     * conversation kept as the record of the turn. `human_summary` is the sentence the
+     * write actually names ("Supply 50 XLM to Blend"), and it is replaced by the receipt
+     * once the transaction settles.
+     */
+    const actionSummary = direct?.preview?.action
+      ? shortWriteLabel({
+          op: direct.preview.action.op,
+          amount: direct.preview.action.amount,
+          asset: direct.preview.action.asset,
+          token_a: direct.preview.action.token_a,
+          token_b: direct.preview.action.token_b,
+          venue: direct.preview.action.venue,
+        })
+      : null;
+    const rawLine = (direct?.preview?.human_summary || "").trim() || (direct?.message || "").trim();
+    const line = /built and ready/i.test(rawLine) ? (actionSummary || text) : (rawLine || actionSummary || text);
+    if (line) await investigation.recordDirect(text, line);
   }, [investigation, postCopilot, resetStrategyAccumulator, resetWorkflow]);
   const entry = useCopilotEntry({
     wallet: address,
@@ -3052,10 +3208,13 @@ export function CopilotWorkspace() {
         if (opts?.quiet) setSubmitted(label);
         const finished = await completeWalletBindInApp(data.wallet_bind);
         if (finished) return;
+        if (address) setAutoApprove(address, false);
       }
 
       if (address && data && action !== "start") {
         applyAutoSignOutcome(action, data);
+      } else if (address && !data && action !== "disable") {
+        setAutoApprove(address, false);
       }
     },
     [
@@ -3071,7 +3230,7 @@ export function CopilotWorkspace() {
   );
 
   const handleAutoApproveToggle = useCallback(() => {
-    if (loading) return;
+    if (loading || autoApprovePending) return;
     if (!address) {
       toast.error("Connect a wallet first.");
       return;
@@ -3086,9 +3245,13 @@ export function CopilotWorkspace() {
       }
       return;
     }
-    if (sessionSigning) {
+    if (autoApproveUiOn) {
       setAutoApprove(address, false);
-      void enableAutoSign("disable", { quiet: true });
+      setSignServiceState((prev) => ({ ...prev, status: "unknown" }));
+      setAutoApprovePending(true);
+      void enableAutoSign("disable", { quiet: true }).finally(() => {
+        setAutoApprovePending(false);
+      });
       toast.success("Auto-approve off");
       return;
     }
@@ -3107,13 +3270,18 @@ export function CopilotWorkspace() {
       toast.error("Enter a per-tx cap above 0.");
       return;
     }
-    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true });
+    setAutoApprove(address, true);
+    setAutoApprovePending(true);
+    void enableAutoSign(railCapsMode === "custom" ? "custom" : "use_defaults", { quiet: true }).finally(() => {
+      setAutoApprovePending(false);
+    });
   }, [
     loading,
+    autoApprovePending,
     address,
     walletKind,
     freighterAutoApprove,
-    sessionSigning,
+    autoApproveUiOn,
     sessionSigningAvailable,
     capsEnforced,
     savedCaps,
@@ -3441,7 +3609,47 @@ export function CopilotWorkspace() {
           },
         );
         pushActivity(summary, result.hash);
-        await refreshRailStats({ force: true });
+        await refreshRailStats({ force: true, after: result.hash ?? null });
+        if (result.hash) {
+          const receipt: ExecutionReceiptSnapshot = {
+            workflowId: response?.request_id || `tx-${result.hash.slice(0, 8)}`,
+            status: "completed",
+            network: investigation.result?.scope.network || "testnet",
+            steps: [
+              {
+                operation: (action?.op as any) ?? "submit",
+                asset: String(action?.asset ?? action?.token_b ?? ""),
+                amount: String(action?.amount ?? action?.amount_a ?? ""),
+                status: "settled",
+                txHash: result.hash,
+              },
+            ],
+          };
+          void updateExecutionReceipt(receipt);
+        }
+        if (investigation.turns.length > 0) {
+          /**
+           * The turn becomes the receipt, not the request.
+           *
+           * `response.message` is the sentence written before the signature — it describes
+           * a signature still being waited for. It was kept as the turn text unless it
+           * contained one of two exact phrases, so every other pre-signature wording
+           * survived as the record of a settled transaction. Built from what happened
+           * instead: what was signed, its hash, the health factor the rail now shows.
+           */
+          void investigation.updateLastAssistantText(
+            answerToText(
+              singleWriteReceiptAnswer({
+                summary,
+                op: action?.op ?? null,
+                asset: action?.asset ?? null,
+                amount: action?.amount ?? null,
+                txHash: result.hash ?? null,
+                hf: readLiveHfFromStore(),
+              }),
+            ),
+          );
+        }
 
         // Wait until Horizon shows this tx's sequence as applied before asking MCP
         // to build the next leg. Otherwise hop 2 is simulated against a stale seq and
@@ -3705,7 +3913,7 @@ export function CopilotWorkspace() {
           setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
-          await refreshRailStats({ force: true });
+          await refreshRailStats({ force: true, after: result.hash ?? null });
           const hop = await postCopilot(
             {
               message: parentPrompt,
@@ -3761,8 +3969,8 @@ export function CopilotWorkspace() {
           setLoading(true);
           await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
           if (cancelledRef.current) return;
-          await refreshRailStats({ force: true });
-          await postCopilot(
+          await refreshRailStats({ force: true, after: result.hash ?? null });
+          const hop = await postCopilot(
             {
               message: `${nextStep.op.replace(/_/g, " ")} ${nextStep.amount} ${nextStep.asset || ""}`.trim(),
               pending_write: {
@@ -3776,6 +3984,9 @@ export function CopilotWorkspace() {
             label,
             { chainHop: true },
           );
+          if (hop?.message) {
+            void investigation.updateLastAssistantText(hop.message);
+          }
           return;
         }
 
@@ -3987,6 +4198,12 @@ export function CopilotWorkspace() {
         }
 
         toast.error(errText);
+        // The refusal belongs in the thread, not only in a toast — see noteOutcome.
+        // A rejected signature that leaves no record reads, on the next scroll, like a
+        // request that is still waiting.
+        if (!("hash" in result && result.hash)) {
+          noteOutcome(`The signature was not completed — nothing was submitted. ${errText}`);
+        }
         // Sign/submit failed: stay on needs_wallet_sign (same staged panel) but stop
         // the auto-submit spinner for THIS hop so Approve & sign is available.
         // Do not advance multi-leg queue on a failed signature.
@@ -4007,6 +4224,7 @@ export function CopilotWorkspace() {
     address,
     smartAccount,
     submitted,
+    noteOutcome,
     pushActivity,
     postCopilot,
     refreshRailStats,
@@ -4316,7 +4534,7 @@ export function CopilotWorkspace() {
         setLoading(true);
         await new Promise((r) => setTimeout(r, CHAIN_DELAY_MS));
         if (cancelledRef.current) return;
-        await refreshRailStats({ force: true });
+        await refreshRailStats({ force: true, after: response.execution?.tx_hash ?? null });
         if (cancelledRef.current) return;
         const hop = await postCopilot(
           {
@@ -4433,7 +4651,7 @@ export function CopilotWorkspace() {
           prompt: submitted,
         };
       }
-      await postCopilot(
+      const hop = await postCopilot(
         {
           message: `${next.op.replace(/_/g, " ")} ${next.amount} ${next.asset || ""}`.trim(),
           pending_write: {
@@ -4447,8 +4665,11 @@ export function CopilotWorkspace() {
         label,
         { chainHop: true },
       );
+      if (hop?.message) {
+        void investigation.updateLastAssistantText(hop.message);
+      }
     })();
-  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf]);
+  }, [response, loading, signing, postCopilot, refreshRailStats, submitted, autoApprove, absorbStrategySteps, hfPaused, liveHf, investigation]);
 
   /**
    * Liquidation guardian (auto-approve / session signing only).
@@ -4623,7 +4844,7 @@ export function CopilotWorkspace() {
   }, [liveHf, submitted]);
 
   const multiLeg =
-    isMultiLegResponse(response?.data ?? null) || strategySteps.length > 0;
+    isRealStrategyRun(strategySteps, response?.data ?? null);
   const strategyOpen = (() => {
     const src = strategySteps.length
       ? strategySteps
@@ -4660,10 +4881,29 @@ export function CopilotWorkspace() {
    */
   const bindGate =
     response?.kind === "needs_wallet_bind" ? (response.wallet_bind ?? null) : null;
+  /**
+   * A signature that has already been given is not a signature still being waited on.
+   *
+   * The staged panel — "Approve & sign", the impact projection, the Step-by-Step Approval
+   * header — is derived from `response.kind`, and the kind stays `needs_wallet_sign` on
+   * any path that stamps the hash without rewriting it. So a plain "Deposit 5 AQUSDC" left
+   * its approval card on screen after the transaction had settled, asking for a signature
+   * the chain already had, while the receipt sat in the turn above it.
+   *
+   * Derived from the one fact that settles it: a transaction hash exists for this
+   * response. That holds for every path that can produce one — wallet signature, session
+   * auto-sign, a resumed leg — rather than for the kinds we happened to think of.
+   */
+  const responseSubmitted = Boolean(
+    response?.execution?.tx_hash ||
+      (typeof (response?.data as { tx_hash?: unknown } | undefined)?.tx_hash === "string" &&
+        (response?.data as { tx_hash: string }).tx_hash),
+  );
   // needs_auto_sign + XDR is staged (session auto-sign), not the enable-caps gate.
   const stagedForSessionSign =
-    response?.kind === "needs_wallet_sign" ||
-    (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr));
+    !responseSubmitted &&
+    (response?.kind === "needs_wallet_sign" ||
+      (response?.kind === "needs_auto_sign" && isSignableXdr(response.unsigned_xdr)));
   const phase = bindGate
     ? "bind"
     : loading
@@ -4674,7 +4914,7 @@ export function CopilotWorkspace() {
           ? "autosign"
           : stagedForSessionSign
             ? "staged"
-            : response?.kind === "executed"
+            : response?.kind === "executed" || responseSubmitted
               ? "done"
               : response
                 ? "answer"
@@ -5065,6 +5305,17 @@ export function CopilotWorkspace() {
   useEffect(() => setSavedCaps(readAutoCaps()), []);
 
   const sim = response?.preview?.simulation ?? null;
+  /**
+   * Does this write move margin health?
+   *
+   * `OP_FLOW` (lib/copilot/workflow/types.ts) declares it per op and `evaluateWriteRisk`
+   * passes the answer through as `margin_applicable`, so the card no longer names ops.
+   * The list it replaces — swap, add_liquidity, remove_liquidity — had to be extended by
+   * hand for every health-neutral op added, and Blend supply and Blend withdraw were
+   * never added: both drew a full "projected impact" card reading 59.40 → 59.40 over a
+   * write that cannot change a health factor, and did it while covering the thread.
+   */
+  const marginProjected = sim?.margin_applicable !== false;
   const reasons = response?.preview?.risk?.reasons ?? [];
   const decision = response?.preview?.risk?.decision;
   const action = response?.preview?.action;
@@ -5115,9 +5366,17 @@ export function CopilotWorkspace() {
     phase === "staged" ||
     phase === "bind" ||
     phase === "done";
-  /** Live `/api/copilot` reply, painted before (or if) it is mirrored into the session. */
+  /**
+   * Live `/api/copilot` reply, painted before (or if) it is mirrored into the session.
+   *
+   * `response.message` — never `answer.headline`. For a structured answer the message IS
+   * the headline plus the figures, flattened by `answerToText`, and `ChatTurns` renders
+   * that whole document (chat-message.tsx). Taking the headline alone dropped the
+   * holdings the read had already fetched, and did it only for the live turn, so the
+   * same answer gained rows the moment the session reloaded.
+   */
   const liveReply = response
-    ? (isError ? response.message : (response.answer?.headline || response.message))
+    ? (response.preview?.human_summary || "").trim() || response.message
     : null;
   const liveAssistant = liveReply && !submittedRecorded ? liveReply : null;
   /**
@@ -5144,12 +5403,14 @@ export function CopilotWorkspace() {
         collapsed={railCollapsed}
         onToggleCollapsed={() => setRailCollapsed((v) => !v)}
         empty={stageEmpty}
+        justSubmitted={Boolean(pendingUser && loading)}
+        scrollKey={`${investigation.turns.length}-${pendingUser}-${liveReply}-${loading}-${response?.request_id}`}
         railTop={
           <CopilotRailTop
             onNewChat={startNewChat}
             autoApprove={{
-              on: sessionSigning,
-              busy: loading,
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
               capsMode: railCapsMode,
               customTx,
               customDay,
@@ -5179,8 +5440,8 @@ export function CopilotWorkspace() {
             onExpand={() => setRailCollapsed(false)}
             onNewChat={startNewChat}
             autoApprove={{
-              on: sessionSigning,
-              busy: loading,
+              on: autoApproveUiOn,
+              busy: autoApprovePending || loading,
               capsMode: railCapsMode,
               customTx,
               customDay,
@@ -5213,22 +5474,29 @@ export function CopilotWorkspace() {
               liveAssistant={liveAssistant}
               liveNote={!isError ? response?.answer?.note : null}
               liveTone={isError ? "error" : "default"}
+              sessionSigning={sessionSigning}
             />
             {txHash && !investigation.turns.some((turn) => turn.executionReceipt) ? (
-              <ExecutionStepper
-                steps={[
-                  {
-                    id: "direct-tx",
-                    label: "",
-                    op: String(action?.op ?? "submit"),
-                    asset: String(action?.asset ?? ""),
-                    amount: String(action?.amount ?? ""),
-                    status: "settled",
-                    txHash,
-                  },
-                ]}
-                currentStepIndex={0}
-              />
+              <div className="flex items-start gap-2.5 max-w-[85%]">
+                <div className="w-[18px] shrink-0" aria-hidden="true" />
+                <div className="min-w-0 w-full">
+                  <ExecutionStepper
+                    steps={[
+                      {
+                        id: "direct-tx",
+                        label: "",
+                        op: String(action?.op ?? "submit"),
+                        asset: String(action?.asset ?? ""),
+                        amount: String(action?.amount ?? ""),
+                        status: "settled",
+                        txHash,
+                      },
+                    ]}
+                    currentStepIndex={0}
+                    autoApprove={sessionSigning}
+                  />
+                </div>
+              </div>
             ) : null}
             {(investigation.loading || investigation.result || investigation.error || workflow.view || workflow.loading || signingJournal) && (
               <InvestigationCard
@@ -5378,7 +5646,7 @@ export function CopilotWorkspace() {
                               </AssistantMessage>
                             )
                           ) : null}
-                          {sim && !multiLeg && action?.op !== "swap" && action?.op !== "add_liquidity" && <ImpactPanel sim={sim} />}
+                          {sim && !multiLeg && marginProjected && <ImpactPanel sim={sim} />}
                         </div>
                       ) : null}
 
@@ -5470,132 +5738,62 @@ export function CopilotWorkspace() {
                     />
                   )}
 
-                  {/* Staged write — MCP built the XDR, wallet signs once */}
-                  {phase === "staged" && response && (
+                  {/* Staged write — execution progress stepper inside the thread */}
+                  {phase === "staged" && response && !txHash && (
                     <div
                       ref={stagedSectionRef}
-                      className="mt-[26px]"
+                      className="mt-4 flex flex-col gap-3"
                       style={{ animation: "cp-in 300ms ease-out forwards" }}
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        {/* With auto-approve on this never waits for a click, so calling it
-                            "Staged action" and showing a signature request — then submitting
-                            a second later anyway — read as the copilot changing its mind. */}
-                        <Eyebrow n="03">{willAutoSubmit ? "Auto-approving" : "Staged action"}</Eyebrow>
-                        {decision && <RiskChip decision={decision} />}
-                      </div>
-
-                      <div className="mt-3.5 flex flex-wrap items-start justify-between gap-6">
-                        <div className="max-w-full min-w-0">
-                          <p className="whitespace-nowrap text-h6 font-semibold text-vgray-900">
-                            {response.preview?.human_summary || response.message}
-                          </p>
-                          {/* Full agent note (e.g. the 2-step plan). Suppressed while
-                              auto-approving: it talks about needing a signature. */}
-                          {!willAutoSubmit &&
-                            response.message &&
-                            response.preview?.human_summary &&
-                            response.message.trim() !== response.preview.human_summary.trim() && (
-                              <p className="mt-2 whitespace-pre-wrap text-body-2 leading-relaxed text-vgray-600">
-                                {response.message}
-                              </p>
-                            )}
-                        </div>
-                      </div>
-
-                      {action?.multi_leg && (
-                        <p className="mt-3.5 rounded-2xl border border-vgray-100 bg-surface px-[18px] py-3 font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: WARN_INK }}>
-                          multi-step strategy · legs are not atomic
-                        </p>
-                      )}
-
-                      {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
-
-                      {reasons.length > 0 && (
-                        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1">
-                          {reasons.map((r, i) => {
-                            const bad = decision === "block";
-                            const color = bad ? BAD_INK : action?.multi_leg ? WARN_INK : OK_INK;
-                            return (
-                              <span key={i} className="inline-flex items-center gap-2 text-body-2 text-vgray-500">
-                                {bad || action?.multi_leg ? (
-                                  <CircleAlert size={14} className="shrink-0" style={{ color }} />
-                                ) : (
-                                  <ShieldCheck size={14} className="shrink-0" style={{ color }} />
-                                )}
-                                {r}
-                              </span>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {action?.amount != null && action.op !== "add_liquidity" && (
-                        <div className="mt-5">
-                          {action.op === "swap" && action.expected_out != null && action.expected_out > 0 ? (
-                            <>
-                              <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
-                                You pay {action.amount} {action.asset ?? ""} → you receive ~
-                                {Number(action.expected_out).toLocaleString(undefined, { maximumFractionDigits: 4 })}{" "}
-                                {action.token_b || ""}
-                              </p>
-                              <SwapOracleRateLine
-                                tokenIn={String(action.asset || action.token_a || "XLM")}
-                                tokenOut={String(action.token_b || "")}
-                              />
-                            </>
-                          ) : (
-                            <p className="m-0 font-mono text-[17px] leading-7 text-vgray-900">
-                              {action.op === "remove_liquidity"
-                                ? `Removing ${action.amount} LP`
-                                : `${action.amount} ${action.asset ?? ""}`}
-                              {action.op === "remove_liquidity" && (action.token_a || action.token_b)
-                                ? ` · ${action.token_a}/${action.token_b}${action.venue ? ` · ${action.venue}` : ""}`
-                                : ""}
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Staged writes use the one-line title (shortWriteLabel). MCP's
-                          SUMMARY paragraph is not a fact the user needs before signing. */}
+                      <ExecutionStepper
+                        steps={[
+                          {
+                            id: "direct-tx",
+                            label:
+                              response.preview?.human_summary ||
+                              `${action?.op?.replace(/_/g, " ") ?? "submit"} ${action?.amount ?? ""} ${action?.asset ?? ""}`.trim(),
+                            op: String(action?.op ?? "submit"),
+                            asset: String(action?.asset ?? ""),
+                            amount: String(action?.amount ?? ""),
+                            status: signing ? "signing" : willAutoSubmit ? "submitting" : "pending",
+                          },
+                        ]}
+                        currentStepIndex={0}
+                        autoApprove={sessionSigning}
+                      />
 
                       {sessionSigning && !willAutoSubmit && (
-                        <p className="mt-[18px] flex items-start gap-[7px] font-mono text-[11px]" style={{ color: WARN_INK }}>
+                        <p className="flex items-start gap-1.5 font-mono text-[11px]" style={{ color: WARN_INK }}>
                           <CircleAlert size={13} className="mt-px shrink-0" />
                           {decision === "block"
-                            ? "auto-approve is on, but the risk gate blocked this write — it will not auto-sign"
+                            ? "Auto-approve is on, but the risk gate blocked this write — manual approval required."
                             : autoSubmitBlocked
-                              ? "auto-sign failed for this step — click Approve & sign to retry"
-                              : "auto-approve is on — approve once if auto-sign did not start"}
+                              ? "Auto-sign failed for this step — click Approve & sign to retry."
+                              : "Auto-approve is on — click Approve & sign if auto-sign did not start."}
                         </p>
                       )}
 
-                      {/* One state, not two. Auto-approve shows a progress line and no
-                          button at all — offering "Approve & sign" for a second before
-                          submitting on its own is the confusing part. */}
                       {willAutoSubmit ? (
-                        <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
-                          <div className="flex flex-1 items-center gap-2.5 rounded-r3 border border-violet-50 bg-violet-50 px-6 py-4 font-mono text-[12px] font-semibold text-violet-500">
-                            <Loader2 size={15} className="animate-spin" />
-                            auto-approving — signing and submitting for you, no click needed
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <div className="flex flex-1 items-center gap-2.5 rounded-lg border border-violet-100 bg-violet-50/60 px-4 py-3 font-mono text-[12px] font-semibold text-violet-600">
+                            <Loader2 size={14} className="animate-spin" />
+                            Auto-approving — signing and submitting for you…
                           </div>
                           <button
                             type="button"
                             onClick={reset}
-                            className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                            className="rounded-lg px-3.5 py-2.5 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-600"
                           >
                             Cancel
                           </button>
                         </div>
                       ) : (
-                        <div className="mt-[22px] flex flex-wrap items-center gap-2.5">
+                        <div className="flex flex-wrap items-center gap-2.5">
                           <button
                             type="button"
                             disabled={!address || signing}
                             onClick={signWithWallet}
-                            className="flex-1 rounded-r3 bg-gradient px-6 py-[15px] text-[15px] font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                            style={{ boxShadow: "0 12px 30px -10px rgba(112,58,230,.6)" }}
+                            className="flex-1 rounded-lg bg-gradient px-5 py-3 text-[14px] font-semibold text-white shadow-sm transition-opacity hover:opacity-90 disabled:opacity-40"
                           >
                             {signing
                               ? "Signing…"
@@ -5606,22 +5804,22 @@ export function CopilotWorkspace() {
                                   : "Approve & sign"}
                           </button>
                           {!signing && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIntentText(submitted || "");
-                              setResponse(null);
-                              inputRef.current?.focus();
-                            }}
-                            className="rounded-r3 border border-vgray-100 bg-transparent px-[22px] py-[15px] text-[14px] font-semibold text-vgray-800 transition-colors hover:border-violet-50 hover:bg-violet-50 hover:text-violet-500"
-                          >
-                            Modify
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIntentText(submitted || "");
+                                setResponse(null);
+                                inputRef.current?.focus();
+                              }}
+                              className="rounded-lg border border-vgray-200 bg-transparent px-4 py-3 text-[13px] font-semibold text-vgray-700 transition-colors hover:border-violet-100 hover:bg-violet-50 hover:text-violet-600"
+                            >
+                              Modify
+                            </button>
                           )}
                           <button
                             type="button"
                             onClick={reset}
-                            className="rounded-r3 px-[18px] py-[15px] text-[14px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-500"
+                            className="rounded-lg px-3.5 py-3 text-[13px] font-semibold text-vgray-500 transition-colors hover:bg-violet-50 hover:text-violet-600"
                           >
                             Cancel
                           </button>
@@ -5763,7 +5961,7 @@ export function CopilotWorkspace() {
                         {decision && <RiskChip decision={decision} />}
                       </div>
                       <p className="whitespace-pre-wrap text-subtext text-vgray-800">{response.message}</p>
-                      {sim && action?.op !== "swap" && action?.op !== "add_liquidity" && action?.op !== "remove_liquidity" && <ImpactPanel sim={sim} />}
+                      {sim && marginProjected && <ImpactPanel sim={sim} />}
                       <div className="rounded-r4 border border-violet-100 bg-violet-50 p-4">
                         <p className="mb-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-violet-600">
                           <ShieldCheck size={14} /> enable auto-sign
@@ -5972,14 +6170,11 @@ export function CopilotWorkspace() {
             </div>
           </form>
 
-          {entry.loading && !loading && !investigation.loading && (
-            <p role="status" className="mt-3 text-[13px] text-violet-500">Understanding your request…</p>
-          )}
           {entry.error && <p role="alert" className="mt-3 text-[13px] text-imperial-500">{entry.error}</p>}
 
         </div>
             <p className="mt-1.5 text-center text-[11px] leading-[17px] text-vgray-400">
-              {sessionSigning
+              {autoApproveUiOn
                 ? "Auto-approve on · writes inside the limits run without a prompt"
                 : "Auto-approve off · every write asks for a signature"}
             </p>

@@ -40,7 +40,7 @@ export function ExecutionStepper({
           Execution Progress
         </span>
         <span className="font-mono text-[11px] text-violet-500 dark:text-violet-400">
-          {autoApprove ? "Autonomous (Privy Session)" : "Step-by-Step Approval"}
+          {autoApprove ? "Autonomous" : "Step-by-Step Approval"}
         </span>
       </div>
 

@@ -373,3 +373,25 @@ export async function updateSessionExecutionReceipt(input: {
 
 /** Short alias for callers that think of this operation as an upsert. */
 export const upsertSessionExecutionReceipt = updateSessionExecutionReceipt;
+
+/** Update the latest assistant turn's text in a conversation. */
+export async function updateSessionAssistantText(input: {
+  subject: string;
+  conversationId: string;
+  text: string;
+}): Promise<boolean> {
+  if (!usable(input.subject) || !input.conversationId || !input.text.trim()) return false;
+  for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+    const stored = await stores().conversation.read(input.conversationId);
+    if (!stored || stored.value.subject !== input.subject || stored.value.deleted) return false;
+    const reversed = [...stored.value.turns].map((turn, i) => ({ turn, i })).reverse();
+    const index = reversed.find(({ turn }) => turn.role === "assistant")?.i;
+    if (index == null) return false;
+    const turns = [...stored.value.turns];
+    turns[index] = { ...turns[index], text: input.text.trim() };
+    const updated: CopilotConversation = { ...stored.value, turns, updatedAt: Date.now() };
+    if (!await stores().conversation.write(input.conversationId, stored.version, updated)) continue;
+    return true;
+  }
+  return false;
+}

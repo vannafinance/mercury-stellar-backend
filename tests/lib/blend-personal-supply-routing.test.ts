@@ -15,6 +15,14 @@ vi.mock("@/lib/copilot/vertex", async (importOriginal) => ({
 import { resolveUnnamedIntent } from "@/lib/copilot/unnamed-intent";
 import { routeMessage } from "@/lib/copilot/router";
 
+/**
+ * One venue plus one asset is one position, and it has its own read.
+ *
+ * This used to assert the whole-farm overview. That answer is headlined with the Farm
+ * page's Deposit TVL and lists every venue's holdings, so the reported prompt came back
+ * "Your Blend Deposit TVL is $0.00" with a dust row under it — the right venue, the wrong
+ * question. `vanna_get_blend_position` answers the reserve that was actually named.
+ */
 describe("personal Blend supply routing", () => {
   it("does not steal an instruction to remove the complete XLM position", () => {
     const routed = routeMessage("Remove my XLM position from Blend farm.");
@@ -32,9 +40,9 @@ describe("personal Blend supply routing", () => {
     const routed = routeMessage("What is my current XLM Blend supply?");
     expect(routed).toMatchObject({
       kind: "read",
-      tool: "vanna_get_farm_overview",
-      template_id: "query_farm_position",
-      args: { venue: "blend", asset: "XLM" },
+      tool: "vanna_get_blend_position",
+      template_id: "query_blend_position",
+      args: { symbol: "XLM" },
     });
   });
 
@@ -50,9 +58,9 @@ describe("personal Blend supply routing", () => {
     if (result.kind !== "ok") return;
     expect(result.routed).toMatchObject({
       kind: "read",
-      tool: "vanna_get_farm_overview",
-      template_id: "query_farm_position",
-      args: { venue: "blend", asset: "XLM" },
+      tool: "vanna_get_blend_position",
+      template_id: "query_blend_position",
+      args: { symbol: "XLM" },
     });
   });
 

@@ -50,6 +50,10 @@ export interface CopilotShellProps {
    * bottom and the thread takes the remaining height.
    */
   empty: boolean;
+  /** When a send or reply landing changes the thread content, triggers the bottom-scroll check. */
+  scrollKey?: unknown;
+  /** When the user has just submitted a prompt, forces scrolling to bottom unconditionally. */
+  justSubmitted?: boolean;
 }
 
 export function CopilotShell({
@@ -61,8 +65,40 @@ export function CopilotShell({
   thread,
   composer,
   empty,
+  scrollKey,
+  justSubmitted,
 }: CopilotShellProps) {
   const shell = useRef<HTMLDivElement | null>(null);
+  const stageScrollRef = useRef<HTMLDivElement | null>(null);
+  const wasNearBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = stageScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    wasNearBottomRef.current = distanceFromBottom <= 120;
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = stageScrollRef.current;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          wasNearBottomRef.current = true;
+        }
+      });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (justSubmitted) {
+      wasNearBottomRef.current = true;
+      scrollToBottom();
+    } else if (wasNearBottomRef.current) {
+      scrollToBottom();
+    }
+  }, [scrollKey, justSubmitted, scrollToBottom]);
   const zoom = useViewportScale(1440);
   const [height, setHeight] = useState<number | null>(null);
 
@@ -216,7 +252,12 @@ export function CopilotShell({
           transition: "grid-template-rows .48s cubic-bezier(.22,1,.36,1)",
         }}
       >
-        <div className="cp-stage-scroll" style={{ minWidth: 0, minHeight: 0, overflowY: "auto", padding: "0 20px" }}>
+        <div
+          ref={stageScrollRef}
+          onScroll={handleScroll}
+          className="cp-stage-scroll"
+          style={{ minWidth: 0, minHeight: 0, overflowY: "auto", padding: "0 20px" }}
+        >
           <div style={{ maxWidth: 760, margin: "0 auto" }}>{thread}</div>
         </div>
         <div style={{ minWidth: 0, padding: "8px 20px 14px" }}>

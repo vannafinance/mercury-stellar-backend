@@ -629,7 +629,20 @@ class LiveMCPClient implements MCPClient {
         this.resetSession();
         return this.executeCall(tool, args, _userId, false);
       }
-      throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`);
+      /**
+       * The status travels as a field, not only inside the sentence.
+       *
+       * Without `httpStatus` here every non-auth transport failure reached the user as the
+       * raw string — `MCP call 'vanna_blend_withdraw' failed (429): {"error":"rate_limited"…}`
+       * — because nothing downstream could see what the status was and act on it. It is
+       * parsed out of the payload where possible so a coded refusal keeps its code too.
+       */
+      const parsed = parseErrorObject(text);
+      throw new MCPCallError(`MCP call '${tool}' failed (${callRes.status}): ${text.slice(0, 300)}`, {
+        code: errorCode(parsed),
+        httpStatus: callRes.status,
+        retryable: callRes.status === 429 || callRes.status >= 500,
+      });
     }
 
     const payload = await consumeSseJson(callRes);

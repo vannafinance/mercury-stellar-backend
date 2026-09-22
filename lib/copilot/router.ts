@@ -17,6 +17,7 @@ import { findAmountFraction, findBalanceFraction } from "./amount-intent";
 import { matchFastPath } from "./investigation/read-cache";
 import { ASSET_SCAN_ORDER } from "./registry/assets";
 import { needsUsdcVariant, usdcVariantClarifyMessage } from "./mcp-write";
+import { namesEarnPoolMetric } from "./earn-pool-copy";
 
 /**
  * Scan order comes from the asset registry — one membership list, guarded by a test,
@@ -48,11 +49,9 @@ const EARN_POOL_ASSETS = new Set(["XLM", "BLUSDC", "AQUSDC", "SOUSDC"]);
 const ADDR_RE = /\b[GC][A-Z0-9]{55,56}\b/g;
 const AMOUNT_ASSET_RE = new RegExp(String.raw`(\d+(?:\.\d+)?)\s*(${ASSET_ALT})\b`, "i");
 const BARE_AMOUNT_RE = /(\d+(?:\.\d+)?)/;
-// `×` (U+00D7) needs no trailing \b the way ascii "x" does — it's never a prefix of a
-// real word, and the app's OWN summaries/labels render leverage as "2×", not "2x" (see
-// step-extractor.ts's PLAN_SUMMARY and plan-approval.ts's labelFor). Matching only ascii
-// "x" meant a resent/rendered summary silently lost its leverage on the round trip.
-const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×)/i;
+// `×` (U+00D7) needs no trailing \b the way ascii "x" does, but must not match when
+// directly followed by letters (e.g. "10×lm" where × is the letter X of XLM).
+const LEVERAGE_RE = /(\d+(?:\.\d+)?)\s*(?:x\b|×(?![a-zA-Z]))/i;
 
 function stripAddresses(message: string): string {
   return message.replace(ADDR_RE, " ");
@@ -63,9 +62,10 @@ function stripAddresses(message: string): string {
  * Never treat the "USDC" inside "BLUSDC" as bare USDC.
  */
 export function findAsset(text: string): string | null {
-  const upper = text.toUpperCase();
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const upper = normalized.toUpperCase();
   for (const a of ASSETS) {
-    const re = new RegExp(`(?:^|[^A-Z0-9])${a}(?:[^A-Z0-9]|$)`);
+    const re = new RegExp(`(?:^|[^A-Z])${a}(?:[^A-Z0-9]|$)`);
     if (re.test(upper)) return a;
   }
   return null;
@@ -81,9 +81,10 @@ export function findAsset(text: string): string | null {
  * the USDC inside BLUSDC never matches on its own.
  */
 export function firstAssetByPosition(text: string): string | null {
-  const m = text
+  const normalized = text.replace(/[×\u00d7\u2715\u2716\u2a2f]/g, "X");
+  const m = normalized
     .toUpperCase()
-    .match(new RegExp(`(?:^|[^A-Z0-9])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
+    .match(new RegExp(`(?:^|[^A-Z])(${ASSETS.join("|")})(?:[^A-Z0-9]|$)`));
   return m ? (m[1] as string) : null;
 }
 
@@ -214,7 +215,9 @@ export function findUnsupportedAsset(text: string): string | null {
 function normalizeShorthandAmounts(text: string): string {
   return text
     .replace(/(\d),(?=\d{3}\b)/g, "$1")
-    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000));
+    .replace(/\b(\d+(?:\.\d+)?)\s*k\b/gi, (_m, n) => String(Number(n) * 1000))
+    .replace(/(\d)\s*[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "$1 X")
+    .replace(/[×\u00d7\u2715\u2716\u2a2f](?=[a-zA-Z])/g, "X");
 }
 
 function findAmount(text: string): number | null {
@@ -667,7 +670,7 @@ function tryMultiGoalPlan(
     steps.push({
       kind: "write",
       op: "repay",
-      asset: repayM?.[2]?.toUpperCase() ?? asset ?? "USDC",
+      asset: repayM?.[2]?.toUpperCase() ?? asset ?? null,
       amount: repayM ? Number(repayM[1]) : null,
     });
   }
@@ -1292,7 +1295,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "lend",
       template_id: "invest_max_yield",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: false,
       requires_amount: true,
@@ -1403,7 +1406,7 @@ export function routeMessage(message: string): RoutedIntent {
      */
     const venueOtherToken = any(text, "soroswap") ? "SOUSDC" : any(text, "aquarius") ? "AQUSDC" : null;
     const token_b =
-      dual?.token_b ?? single?.otherToken ?? venueOtherToken ?? (asset && asset !== "XLM" ? asset : "AQUSDC");
+      dual?.token_b ?? single?.otherToken ?? (asset && asset !== "XLM" ? asset : venueOtherToken) ?? "AQUSDC";
     return {
       kind: "write",
       op: "add_liquidity",
@@ -1449,6 +1452,18 @@ export function routeMessage(message: string): RoutedIntent {
   ) {
     const half = any(text, "half", "50%", "50 %");
     /**
+     * "Remove my liquidity" — no number, no "half" — is an explicit whole-position
+     * removal, the same reading `withdraw_from_blend` already gives "Remove my XLM
+     * position from Blend": stating the position IS the size, not a request to be
+     * asked. Live, this fell through to "Amount missing for 'remove liquidity'.
+     * Include a size like '10 BLUSDC' or '20 XLM'" on a message that named no size
+     * because it meant all of it — the same clause that TRIGGERED this branch
+     * ("remove my liquidity", one of the phrases above) was never read as an answer.
+     *
+     * Only when nothing else stated a size: an explicit amount or "half" still wins.
+     */
+    const all = amount == null && !half;
+    /**
      * Pair default XLM / USDC family from message. A named venue outranks a bare "USDC"
      * — "remove 10 LP from Aquarius XLM and USDC Pool" says "USDC", not "AQUSDC", but
      * naming the venue explicitly already answers which USDC it means, same as `farm
@@ -1467,12 +1482,12 @@ export function routeMessage(message: string): RoutedIntent {
       op: "remove_liquidity",
       template_id: "remove_liquidity",
       asset: token_b,
-      amount: half ? null : amount,
+      amount: half || all ? null : amount,
       token_a: "XLM",
       token_b,
-      fraction: half ? 0.5 : null,
+      fraction: half ? 0.5 : all ? 1 : null,
       requires_account: true,
-      requires_amount: !half,
+      requires_amount: !half && !all,
     };
   }
 
@@ -1497,7 +1512,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "deposit_and_borrow",
       template_id: "deposit_and_borrow",
-      asset: findCollateralAsset(raw) ?? asset ?? "USDC",
+      asset: findCollateralAsset(raw) ?? asset ?? null,
       amount,
       borrow_asset: findBorrowAsset(raw),
       borrow_amount: leverage != null && leverage > 1 ? null : findBorrowAmount(raw),
@@ -1607,13 +1622,40 @@ export function routeMessage(message: string): RoutedIntent {
      * it apart from a genuine "USDC". When nothing was named, ask for both amount
      * and asset together instead of inventing an asset the user never said.
      */
+    /**
+     * A sizing word IS a quantity. "Borrow the max I can safely" states how much without
+     * stating a number, so it is an instruction missing only its asset — the clarify
+     * below is the right answer for it, and the headroom read is not.
+     */
+    const sizedWithoutNumber = findAmountFraction(text) != null || findBalanceFraction(text) != null;
+    if (asset == null && amount == null && !sizedWithoutNumber) {
+      /**
+       * Neither a size nor an asset is not an instruction to borrow — there is nothing
+       * to execute in it. "How much i can borrow" landed here (the exclusion list above
+       * knows "can i borrow", not "i can borrow") and was answered with "How much do you
+       * want to borrow, and in which asset?" — the user's own question handed back.
+       *
+       * Rather than growing that list by one more wording, the branch now asks what a
+       * write actually needs: a write with no quantity and no asset has nothing to stage,
+       * and the read that answers what borrowing is possible is the headroom fan-out.
+       * Naming an asset alone still stages a write and prompts for the size, which is a
+       * real instruction missing one field.
+       */
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     if (asset == null) {
       return {
         kind: "clarify",
         message:
           amount != null
             ? `Borrow ${amount} of which asset? e.g. "borrow ${amount} XLM" or "borrow ${amount} BLUSDC".`
-            : `How much do you want to borrow, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
+            : `Borrow how much, and in which asset? e.g. "borrow 50 XLM" or "borrow 20 BLUSDC".`,
         template_id: "borrow_amount_and_asset",
       };
     }
@@ -1621,7 +1663,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "borrow",
       template_id: "borrow",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: true,
       requires_amount: true,
@@ -1649,12 +1691,22 @@ export function routeMessage(message: string): RoutedIntent {
     ((any(text, "deposit") && any(text, "collateral")) ||
       any(text, "add collateral", "post collateral", "as collateral"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1682,12 +1734,22 @@ export function routeMessage(message: string): RoutedIntent {
     ((any(text, "withdraw", "transfer", "move", "send") && any(text, "collateral")) ||
       any(text, "take out collateral", "pull collateral"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Withdraw ${amount} of which collateral asset? e.g. "withdraw ${amount} XLM collateral".`
+            : `How much collateral do you want to withdraw, and in which asset? e.g. "withdraw 50 XLM collateral".`,
+        template_id: "withdraw_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "withdraw_collateral",
       template_id: "withdraw_collateral",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1821,6 +1883,16 @@ export function routeMessage(message: string): RoutedIntent {
         !asksAboutOwnPoolDeposit &&
         any(text, "pool", "earn", "vault", "to the pool", "into the pool", "to earn")));
   if (isLendWrite) {
+    if (asset == null && !wantsHighestPool && !isMaxYieldInvestIntent(text)) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Supply ${amount} of which asset to Earn? e.g. "lend ${amount} XLM" or "lend ${amount} BLUSDC".`
+            : `How much do you want to supply to Earn, and in which asset? e.g. "lend 50 XLM" or "lend 20 BLUSDC".`,
+        template_id: "lend_amount_and_asset",
+      };
+    }
     const minHf = parseMinHealthFactor(raw);
     // "supply 50% of the XLM in my wallet" states a size. Carried as a fraction and
     // sized off the live wallet balance in handle.ts — same rungs as the Earn form.
@@ -1829,7 +1901,7 @@ export function routeMessage(message: string): RoutedIntent {
       kind: "write",
       op: "lend",
       template_id: wantsHighestPool || isMaxYieldInvestIntent(text) ? "lend_highest" : "lend",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: false,
@@ -1848,12 +1920,22 @@ export function routeMessage(message: string): RoutedIntent {
   // write clause above uses, so a possessive/question shape naming a pool/earn/vault
   // deposit never reaches a write trigger at all.
   if (any(text, "deposit") && !asksAboutOwnPoolDeposit && !/\btvl\b|\btotal\s+value\s+locked\b/i.test(text)) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Deposit ${amount} of which collateral asset? e.g. "deposit ${amount} XLM as collateral" or "deposit ${amount} BLUSDC".`
+            : `How much collateral do you want to deposit, and in which asset? e.g. "deposit 100 XLM as collateral".`,
+        template_id: "deposit_collateral_amount_and_asset",
+      };
+    }
     const fraction = amount == null ? findBalanceFraction(raw) : null;
     return {
       kind: "write",
       op: "deposit_collateral",
       template_id: "deposit_collateral",
-      asset: asset ?? "XLM",
+      asset: asset ?? null,
       amount,
       fraction,
       requires_account: true,
@@ -1865,11 +1947,21 @@ export function routeMessage(message: string): RoutedIntent {
     any(text, "redeem") ||
     (any(text, "withdraw") && any(text, "pool", "supply", "earn", "from the pool", "my supply"))
   ) {
+    if (asset == null) {
+      return {
+        kind: "clarify",
+        message:
+          amount != null
+            ? `Redeem ${amount} of which asset from Earn? e.g. "redeem ${amount} XLM" or "redeem ${amount} BLUSDC".`
+            : `How much do you want to redeem from Earn, and in which asset? e.g. "redeem 10 XLM" or "redeem all BLUSDC".`,
+        template_id: "redeem_amount_and_asset",
+      };
+    }
     return {
       kind: "write",
       op: "redeem",
       template_id: "redeem",
-      asset: asset ?? "USDC",
+      asset: asset ?? null,
       amount,
       requires_account: false,
       requires_amount: true,
@@ -2090,6 +2182,24 @@ export function routeMessage(message: string): RoutedIntent {
         ? "soroswap"
         : null;
   if (asksAboutHoldings && !actsOnPosition && any(text, "farm", "blend", "aquarius", "soroswap") && !any(text, "earn")) {
+    /**
+     * One venue and one asset is one position, and Blend publishes that read directly.
+     *
+     * "What is my current XLM Blend supply" went to the whole-farm overview, whose answer
+     * is the Farm page's Deposit TVL headline plus every venue's holdings — so a question
+     * about one reserve was headlined "Your Blend Deposit TVL is $0.00" with a dust row
+     * under it. The overview is what answers "what am I farming"; a named venue AND a
+     * named asset have already narrowed it to a position that has its own read.
+     */
+    if (farmVenue === "blend" && asset) {
+      return {
+        kind: "read",
+        tool: "vanna_get_blend_position",
+        args: { symbol: asset.toUpperCase() === "BLUSDC" ? "USDC" : asset.toUpperCase() },
+        requires_account: true,
+        template_id: "query_blend_position",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_get_farm_overview",
@@ -2128,6 +2238,19 @@ export function routeMessage(message: string): RoutedIntent {
       args: {},
       requires_account: true,
       template_id: "query_margin_positions",
+    };
+  }
+  // "what are my LP positions" names neither Blend nor a pool venue, so it used to
+  // fall through to the all-positions fan-out. That read pulls Blend first, and a
+  // Soroban ECONNRESET there failed the whole turn before Aquarius or Soroswap
+  // were answered.
+  if (asksAboutHoldings && !actsOnPosition && any(text, "lp", "liquidity") && !any(text, "earn", "blend")) {
+    return {
+      kind: "read",
+      tool: "vanna_get_farm_overview",
+      args: { venue: "lp" },
+      requires_account: true,
+      template_id: "query_farm_position",
     };
   }
   if (asksAboutHoldings && !actsOnPosition && !namesOneVenue) {
@@ -2269,7 +2392,7 @@ export function routeMessage(message: string): RoutedIntent {
     return {
       kind: "read",
       tool: "vanna_get_max_borrow",
-      args: { symbol: asset ?? "USDC" },
+      args: asset ? { symbol: asset } : {},
       requires_account: true,
       template_id: "query_available_credit",
     };
@@ -2294,12 +2417,35 @@ export function routeMessage(message: string): RoutedIntent {
         usdc_variants: ["BLUSDC", "AQUSDC", "SOUSDC"],
       };
     }
+    /**
+     * `vanna_can_borrow` is a yes/no test on ONE amount. With no amount there is nothing
+     * for it to test, and it was still being called — `symbol: "USDC"`, no `amount` — so
+     * "how much can I borrow?" got a pass/fail on an unstated figure, which the composer
+     * then wrote up as "You can borrow 1 USDC" against ~$1.8k of collateral and ~$36 of
+     * debt. Headroom is a different read: `vanna_get_max_borrow`, the same one the credit
+     * branch above already uses.
+     *
+     * The discriminator is the presence of an amount, not the wording. Any phrasing that
+     * reaches here without a figure is asking how much, whatever words it used.
+     */
+    if (amount == null) {
+      // No asset named means every asset — see the fan-out in handle-read.ts, which
+      // treats a missing symbol as the request for the whole range rather than
+      // defaulting to a token the user never said.
+      return {
+        kind: "read",
+        tool: "vanna_get_max_borrow",
+        args: asset ? { symbol: asset } : {},
+        requires_account: true,
+        template_id: "query_available_credit",
+      };
+    }
     return {
       kind: "read",
       tool: "vanna_can_borrow",
       args: {
         symbol: asset ?? "USDC",
-        ...(amount != null ? { amount: String(amount) } : {}),
+        amount: String(amount),
       },
       requires_account: true,
       template_id: "query_can_borrow",
@@ -2555,12 +2701,19 @@ export function routeMessage(message: string): RoutedIntent {
     /**
      * "How is my XLM pool doing?" names a ticker but not Earn vs Farm · Blend.
      * Ask rather than guessing the Earn lending pool (or the Blend reserve).
+     *
+     * But only when the question is about the SURFACE. "What is the XLM supply APY" names
+     * a figure the Earn pool read returns, and got the chip anyway — while the identical
+     * sentence with the word "earn" in it answered straight away. A question that names
+     * the figure has already said what it wants; the chip is for the one that has not.
+     * See `namesEarnPoolMetric`, which reads that vocabulary off the read's own fields.
      */
     const venueNamed = any(text, "earn", "blend", "farm", "aquarius", "soroswap", "lending");
     if (
       asset &&
       /^(XLM|BLUSDC|AQUSDC|SOUSDC)$/i.test(asset) &&
-      !venueNamed
+      !venueNamed &&
+      !namesEarnPoolMetric(text)
     ) {
       const venues =
         asset === "AQUSDC"

@@ -12,7 +12,7 @@ import {
 import { cleanExecutionCopy, fmtLpAmt, humanizeStroopCounts } from "./execution-copy";
 import type { MCPClient } from "./mcp-client";
 import type { AccountCtx } from "./tool-args";
-import { earnPoolSymbols, resolveAssetDef } from "./registry/assets";
+import { earnPoolSymbols, lpPairs, resolveAssetDef } from "./registry/assets";
 import { autoSignAllowed } from "./guardrail-policy";
 
 /**
@@ -127,10 +127,19 @@ export function needsUsdcVariant(asset?: string | null): boolean {
  * Returns null when nothing is ambiguous, which is the answer for every message that
  * names a concrete token: AQUSDC, BLUSDC, SOUSDC, XLM, AQUA. Only bare "USDC" prompts.
  */
-export function ambiguousUsdcSlot(action: {
-  asset?: string | null;
-  borrow_asset?: string | null;
-}): "collateral" | "borrow" | null {
+export function ambiguousUsdcSlot(
+  action: {
+    asset?: string | null;
+    borrow_asset?: string | null;
+  },
+  userMessage?: string,
+): "collateral" | "borrow" | null {
+  if (userMessage != null) {
+    // Only prompt when the user's own text contains the ambiguous bare USDC token.
+    // A default inserted by the router or downstream must not count.
+    const hasBareUsdcInText = /(?:^|[^A-Z0-9])USDC(?:[^A-Z0-9]|$)/i.test(userMessage);
+    if (!hasBareUsdcInText) return null;
+  }
   if (needsUsdcVariant(action.asset)) return "collateral";
   if (needsUsdcVariant(action.borrow_asset)) return "borrow";
   return null;
@@ -406,6 +415,19 @@ export function staticStepBlocker(
         "  • Farm Blend with BLUSDC: “farm Blend at 2x with 20 BLUSDC” / “supply 20 BLUSDC to Blend”"
       );
     }
+    const checkLpVenue = (sym: string): string | null => {
+      if (!sym) return null;
+      const def = resolveAssetDef(sym);
+      if (def && def.id !== "XLM" && !def.lpVenue) {
+        const supported = lpPairs()
+          .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+          .join(" and ");
+        return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
+      }
+      return null;
+    };
+    const unsupported = checkLpVenue(aRaw) || checkLpVenue(bRaw);
+    if (unsupported) return unsupported;
   }
   if (op === "remove_liquidity") {
     const bRaw = norm(params.token_b) || norm(params.asset);
@@ -415,6 +437,13 @@ export function staticStepBlocker(
         "For Aquarius use “remove half my liquidity from XLM/USDC” (AQUSDC pair) " +
         "or name AQUSDC/SOUSDC explicitly."
       );
+    }
+    const def = resolveAssetDef(bRaw);
+    if (def && def.id !== "XLM" && !def.lpVenue) {
+      const supported = lpPairs()
+        .map((p) => `${p.tokens[0]}/${p.tokens[1]} on ${p.venue}`)
+        .join(" and ");
+      return `${def.id} has no LP venue. Supported LP pairs are ${supported}.`;
     }
   }
   if (op === "deploy_to_blend" || op === "supply_to_blend" || op === "withdraw_from_blend") {
@@ -523,6 +552,11 @@ export function mapOpToMcpStep(
     case "redeem":
     case "withdraw_supply": {
       if (!trader) return { blocker: "Connect your wallet to redeem." };
+      if (!params.asset) {
+        return {
+          blocker: "Which asset do you want to redeem from Earn? e.g. “redeem 10 XLM from earn” or “redeem all BLUSDC”.",
+        };
+      }
       const args: Record<string, unknown> = { symbol, lender: trader };
       if (amount) args.amount = amount;
       else args.redeem_all = true;
